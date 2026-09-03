@@ -1474,30 +1474,101 @@ input[type="number"] {
 .oc-vf-mode-btn { padding: 4px 12px; font-size: 12px; }
 
 .vf-curve-editor {
-  margin-top: 10px;
-  padding: 12px 14px;
+  margin-top: 8px;
+  padding: 8px 10px 10px;
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-inset) 55%, transparent);
 }
-.vf-curve-svg {
-  display: block;
+.vf-curve-point-count { display: flex; justify-content: flex-end; margin: 4px 0 5px; }
+.vf-curve-stage {
+  position: relative;
   width: 100%;
-  min-height: 220px;
-  margin: 8px 0 12px;
+  height: 190px;
   background: var(--bg-inset);
   border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.vf-curve-freq-max {
+  position: absolute;
+  top: 5px;
+  left: 7px;
+  z-index: 2;
+  color: var(--text-dim);
+  font: 11px var(--mono);
+  pointer-events: none;
+}
+.vf-curve-plot-host { position: relative; width: 100%; height: 100%; }
+.vf-curve-svg {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 .vf-curve-plot { fill: color-mix(in srgb, var(--accent) 9%, var(--bg-inset)); }
-.vf-curve-grid { stroke: var(--border); stroke-width: 1; }
-.vf-curve-line { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; }
-.vf-curve-point { fill: var(--accent); stroke: var(--bg-inset); stroke-width: 2; cursor: grab; }
-.vf-curve-point:focus { outline: none; stroke: var(--text); }
-.vf-curve-points { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
-.vf-curve-point-row { display: flex; align-items: end; gap: 8px; flex-wrap: wrap; }
-.vf-curve-point-label { min-width: 54px; color: var(--text-muted); font: 12px var(--mono); padding-bottom: 7px; }
-.vf-curve-field { display: flex; flex-direction: column; gap: 3px; color: var(--text-muted); font-size: 11px; }
-.vf-curve-input { width: 110px; padding: 5px 7px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text); font: 12px var(--mono); }
-.vf-curve-input:focus { outline: none; border-color: var(--accent); }
+.vf-curve-grid { stroke: var(--border); stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+.vf-curve-line { fill: none; stroke: var(--accent); stroke-width: 0.9; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.vf-curve-dots { position: absolute; inset: 0; }
+.vf-curve-dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--bg-elev);
+  border: 2px solid var(--accent);
+  cursor: grab;
+  touch-action: none;
+}
+.vf-curve-dot:hover { background: var(--accent-soft); }
+.vf-curve-dot-selected { background: var(--accent); }
+.vf-curve-readout {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  margin-top: -7px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: 11px;
+  font-family: var(--mono);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+.vf-curve-readout-editing { pointer-events: auto; }
+.vf-curve-readout-label { color: var(--accent); font-weight: 650; }
+.vf-curve-readout-fields { display: none; }
+.vf-curve-readout-editing .vf-curve-readout-fields { display: flex; gap: 7px; }
+.vf-curve-readout-field { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 10px; }
+.vf-curve-readout-input {
+  width: 58px;
+  padding: 2px 5px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.vf-curve-readout-input:focus { outline: none; border-color: var(--accent); }
+.vf-curve-readout-below { transform: translate(-50%, 0); margin-top: 9px; }
+.vf-curve-axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 5px 2px 0;
+}
+.vf-curve-actions { display: flex; gap: 8px; margin-top: 8px; }
 
 .oc-meta {
   display: flex;

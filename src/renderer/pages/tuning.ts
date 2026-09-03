@@ -77,6 +77,15 @@ import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
 import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-editor.ts';
 import { isBattlemageGpuName } from '../pure/hardware-icons.ts';
+import {
+  VF_EDITOR_MAX_POINTS,
+  addVfPointAtMidGap,
+  moveVfPoint,
+  normalizeVfCurvePoints,
+  removeVfPoint,
+  vfCurvePointLabel,
+  vfVoltageMv,
+} from '../pure/vf-curve.ts';
 // M4-H (B): the profiles page's prompt modal + id generator + the
 // settingsFromState helper, reused by the "Save as Profile" card (the
 // profiles page's own create/save flows stay).
@@ -177,6 +186,7 @@ let vfCurveSupported = false;
 let vfCurveDraft: Array<{ voltageV: number; freqMhz: number }> = [];
 let vfCurveApplied: Array<{ voltageV: number; freqMhz: number }> = [];
 let vfCurveWasApplied = false;
+let activeVfEditingCleanup: (() => void) | null = null;
 // M17f: the power-limit card's sysman PL1/PL2 read-out line - the
 // Level Zero Sysman layer's sustained (PL1) + burst (PL2) limits. The
 // freshness = per-apply (the apply paths re-fetch) + one-shot at render
@@ -238,6 +248,8 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   vfCurveDraft = [];
   vfCurveApplied = [];
   vfCurveWasApplied = false;
+  activeVfEditingCleanup?.();
+  activeVfEditingCleanup = null;
   cards.clear();
   valueNodes.clear();
   valueInputs.clear();
@@ -501,13 +513,14 @@ export const tuningPage: Page = {
     const curveBounds = caps.vfCurveRange ?? {
       voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 400, freqMaxMhz: 4300, maxPoints: 32,
     };
+    const vfEditorMaxPoints = Math.min(VF_EDITOR_MAX_POINTS, Math.max(2, curveBounds.maxPoints));
     const initialCurve = Array.isArray(state.vfCurve) && state.vfCurve.length >= 2
       ? state.vfCurve
       : [
           { voltageV: Math.max(curveBounds.voltageMinV, 0.7), freqMhz: Math.max(curveBounds.freqMinMhz, 1800) },
           { voltageV: Math.min(curveBounds.voltageMaxV, 1.0), freqMhz: Math.min(curveBounds.freqMaxMhz, 2850) },
         ];
-    vfCurveDraft = initialCurve.map((p) => ({ voltageV: p.voltageV, freqMhz: p.freqMhz }));
+    vfCurveDraft = normalizeVfCurvePoints(initialCurve, curveBounds, vfEditorMaxPoints);
     vfCurveApplied = vfCurveDraft.map((p) => ({ ...p }));
 
     // M17e (Run B): the gpuLock-capable freq card's Lock-mode editor element
@@ -580,116 +593,283 @@ export const tuningPage: Page = {
       applyBtn.textContent = busy ? APPLY_BTN_BUSY_TEXT : APPLY_BTN_TEXT;
     };
 
-    const drawVfCurve = (svg: SVGSVGElement, pointInputs: Array<[HTMLInputElement, HTMLInputElement]>): void => {
-      const width = 640;
-      const height = 260;
-      const pad = 30;
-      const xOf = (v: number) => pad + ((v - curveBounds.voltageMinV) / (curveBounds.voltageMaxV - curveBounds.voltageMinV)) * (width - pad * 2);
-      const yOf = (f: number) => height - pad - ((f - curveBounds.freqMinMhz) / (curveBounds.freqMaxMhz - curveBounds.freqMinMhz)) * (height - pad * 2);
-      const clampPoint = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+    const drawVfCurve = (svg: SVGSVGElement): void => {
+      const xOf = (v: number) => ((v - curveBounds.voltageMinV) / (curveBounds.voltageMaxV - curveBounds.voltageMinV)) * 100;
+      const yOf = (f: number) => 100 - ((f - curveBounds.freqMinMhz) / (curveBounds.freqMaxMhz - curveBounds.freqMinMhz)) * 100;
       svg.replaceChildren();
-      svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-      svg.append(svgEl('rect', { x: pad, y: pad, width: width - pad * 2, height: height - pad * 2, class: 'vf-curve-plot' }));
+      svg.setAttribute('viewBox', '0 0 100 100');
+      svg.setAttribute('preserveAspectRatio', 'none');
+      svg.append(svgEl('rect', { x: 0, y: 0, width: 100, height: 100, class: 'vf-curve-plot' }));
       for (let i = 0; i <= 4; i += 1) {
-        const x = pad + (width - pad * 2) * i / 4;
-        const y = pad + (height - pad * 2) * i / 4;
+        const x = 100 * i / 4;
+        const y = 100 * i / 4;
         svg.append(
-          svgEl('line', { x1: x, y1: pad, x2: x, y2: height - pad, class: 'vf-curve-grid' }),
-          svgEl('line', { x1: pad, y1: y, x2: width - pad, y2: y, class: 'vf-curve-grid' }),
+          svgEl('line', { x1: x, y1: 0, x2: x, y2: 100, class: 'vf-curve-grid' }),
+          svgEl('line', { x1: 0, y1: y, x2: 100, y2: y, class: 'vf-curve-grid' }),
         );
       }
-      const points = vfCurveDraft.map((p) => `${xOf(p.voltageV)},${yOf(p.freqMhz)}`).join(' ');
+      const points = vfCurveDraft.map((point) => `${xOf(point.voltageV)},${yOf(point.freqMhz)}`).join(' ');
       svg.append(svgEl('polyline', { points, class: 'vf-curve-line' }));
-      let dragIndex = -1;
-      const updateDraggedPoint = (event: PointerEvent): void => {
-        if (dragIndex < 0) return;
-        const rect = svg.getBoundingClientRect();
-        if (!rect.width || !rect.height) return;
-        const x = clampPoint((event.clientX - rect.left) / rect.width * width, pad, width - pad);
-        const y = clampPoint((event.clientY - rect.top) / rect.height * height, pad, height - pad);
-        const prior = vfCurveDraft[dragIndex - 1];
-        const next = vfCurveDraft[dragIndex + 1];
-        const voltageFloor = Math.max(curveBounds.voltageMinV, (prior?.voltageV ?? curveBounds.voltageMinV) + 0.001);
-        const voltageCeiling = Math.min(curveBounds.voltageMaxV, (next?.voltageV ?? curveBounds.voltageMaxV) - 0.001);
-        const freqFloor = Math.max(curveBounds.freqMinMhz, prior?.freqMhz ?? curveBounds.freqMinMhz);
-        const freqCeiling = Math.min(curveBounds.freqMaxMhz, next?.freqMhz ?? curveBounds.freqMaxMhz);
-        vfCurveDraft[dragIndex] = {
-          voltageV: Number(clampPoint(curveBounds.voltageMinV + (x - pad) / (width - pad * 2) * (curveBounds.voltageMaxV - curveBounds.voltageMinV), voltageFloor, voltageCeiling).toFixed(3)),
-          freqMhz: Math.round(clampPoint(curveBounds.freqMaxMhz - (y - pad) / (height - pad * 2) * (curveBounds.freqMaxMhz - curveBounds.freqMinMhz), freqFloor, freqCeiling)),
-        };
-        const inputPair = pointInputs[dragIndex];
-        if (inputPair) {
-          inputPair[0].value = String(vfCurveDraft[dragIndex].voltageV);
-          inputPair[1].value = String(vfCurveDraft[dragIndex].freqMhz);
-        }
-        drawVfCurve(svg, pointInputs);
-        refreshChip('gpuFreqOffsetMhz');
-        updateFloating();
-      };
-      svg.onpointermove = updateDraggedPoint;
-      svg.onpointerup = (event: PointerEvent) => {
-        dragIndex = -1;
-        try { svg.releasePointerCapture(event.pointerId); } catch { /* pointer already released */ }
-      };
-      vfCurveDraft.forEach((point, index) => {
-        const circle = svgEl('circle', { cx: xOf(point.voltageV), cy: yOf(point.freqMhz), r: 7, class: 'vf-curve-point', tabindex: 0, 'aria-label': `Point ${index + 1}` });
-        circle.onpointerdown = (event: PointerEvent) => {
-          event.preventDefault();
-          dragIndex = index;
-          try { svg.setPointerCapture(event.pointerId); } catch { /* pointer capture is optional */ }
-        };
-        svg.append(circle);
-      });
     };
 
     const buildVfCurveEditor = (): HTMLElement => {
       const host = el('div', { class: 'vf-curve-editor', hidden: !vfCurveMode });
       const svg = svgEl('svg', { class: 'vf-curve-svg', role: 'img', 'aria-label': 'Voltage-frequency curve editor' });
-      const pointsHost = el('div', { class: 'vf-curve-points' });
-      const pointInputs: Array<[HTMLInputElement, HTMLInputElement]> = [];
-      const redraw = (): void => {
-        pointInputs.length = 0;
-        clear(pointsHost);
-        vfCurveDraft.forEach((point, index) => {
-          const voltage = el('input', { type: 'number', class: 'vf-curve-input', min: curveBounds.voltageMinV, max: curveBounds.voltageMaxV, step: '0.001', value: point.voltageV, 'aria-label': `Point ${index + 1} voltage in volts` }) as HTMLInputElement;
-          const frequency = el('input', { type: 'number', class: 'vf-curve-input', min: curveBounds.freqMinMhz, max: curveBounds.freqMaxMhz, step: '1', value: point.freqMhz, 'aria-label': `Point ${index + 1} frequency in MHz` }) as HTMLInputElement;
-          const pair: [HTMLInputElement, HTMLInputElement] = [voltage, frequency];
-          pointInputs.push(pair);
-          const commit = (): void => {
-            const v = Number(voltage.value);
-            const f = Number(frequency.value);
-            if (!Number.isFinite(v) || !Number.isFinite(f)) return;
-            vfCurveDraft[index] = { voltageV: Number(v.toFixed(3)), freqMhz: Math.round(f) };
-            drawVfCurve(svg, pointInputs);
-            refreshChip('gpuFreqOffsetMhz');
-            updateFloating();
-          };
-          voltage.addEventListener('change', commit);
-          frequency.addEventListener('change', commit);
-          pointsHost.append(el('div', { class: 'vf-curve-point-row' }, [
-            el('span', { class: 'vf-curve-point-label', text: `Point ${index + 1}` }),
-            el('label', { class: 'vf-curve-field' }, [el('span', { text: 'Voltage (V)' }), voltage]),
-            el('label', { class: 'vf-curve-field' }, [el('span', { text: 'Frequency (MHz)' }), frequency]),
-            el('button', { class: 'btn btn-ghost btn-sm', text: 'Remove', disabled: vfCurveDraft.length <= 2, onClick: () => { vfCurveDraft.splice(index, 1); redraw(); drawVfCurve(svg, pointInputs); refreshChip('gpuFreqOffsetMhz'); updateFloating(); } }),
-          ]));
-        });
-        drawVfCurve(svg, pointInputs);
+      const dotsLayer = el('div', { class: 'vf-curve-dots' });
+      const plot = el('div', { class: 'vf-curve-plot-host' }, [svg, dotsLayer]);
+      const stage = el('div', { class: 'vf-curve-stage' }, [
+        el('span', { class: 'vf-curve-freq-max', text: `${Math.round(curveBounds.freqMaxMhz)} MHz` }),
+        plot,
+      ]);
+      let hoverReadout: HTMLElement | null = null;
+      let readoutVisible = false;
+      let dragActive = false;
+      let dragMoved = false;
+      let editingIdx: number | null = null;
+      let selectedIdx = Math.max(0, vfCurveDraft.length - 1);
+      let readoutIdx = selectedIdx;
+      let pointerInsideReadout = false;
+      const readoutContains = (node: EventTarget | null): boolean => {
+        if (!hoverReadout || !node || !(node instanceof Node)) return false;
+        return node === hoverReadout || hoverReadout.contains(node);
       };
-      redraw();
-      host.append(
-        el('p', { class: 'card-note', text: `Drag points or edit them below. Voltage ${curveBounds.voltageMinV.toFixed(3)}–${curveBounds.voltageMaxV.toFixed(3)} V · frequency ${curveBounds.freqMinMhz}–${curveBounds.freqMaxMhz} MHz.` }),
-        svg,
-        pointsHost,
-        el('button', { class: 'btn btn-ghost btn-sm', text: 'Add point', disabled: vfCurveDraft.length >= curveBounds.maxPoints, onClick: () => {
-          const last = vfCurveDraft[vfCurveDraft.length - 1];
-          const voltage = Math.min(curveBounds.voltageMaxV, Number((last.voltageV + 0.05).toFixed(3)));
-          const frequency = Math.min(curveBounds.freqMaxMhz, Math.max(last.freqMhz, last.freqMhz + 100));
-          if (voltage <= last.voltageV || frequency < last.freqMhz) return;
-          vfCurveDraft.push({ voltageV: voltage, freqMhz: frequency });
+      const showReadout = (index: number, editable: boolean): void => {
+        const point = vfCurveDraft[index];
+        if (!hoverReadout || !point) return;
+        readoutIdx = index;
+        selectedIdx = index;
+        hoverReadout.classList.toggle('vf-curve-readout-editing', editable);
+        const label = hoverReadout.querySelector<HTMLElement>('.vf-curve-readout-label');
+        const voltageInput = hoverReadout.querySelector<HTMLInputElement>('input[data-readout-field="voltage"]');
+        const frequencyInput = hoverReadout.querySelector<HTMLInputElement>('input[data-readout-field="frequency"]');
+        if (label) label.textContent = vfCurvePointLabel(point, index);
+        if (voltageInput) voltageInput.value = String(vfVoltageMv(point.voltageV));
+        if (frequencyInput) frequencyInput.value = String(Math.round(point.freqMhz));
+        hoverReadout.dataset['idx'] = String(index);
+        const xPct = ((point.voltageV - curveBounds.voltageMinV) / (curveBounds.voltageMaxV - curveBounds.voltageMinV)) * 100;
+        const yPct = 100 - ((point.freqMhz - curveBounds.freqMinMhz) / (curveBounds.freqMaxMhz - curveBounds.freqMinMhz)) * 100;
+        hoverReadout.hidden = false;
+        const layerRect = dotsLayer.getBoundingClientRect();
+        if (layerRect.width > 0 && layerRect.height > 0) {
+          const box = hoverReadout.getBoundingClientRect();
+          const dotX = (layerRect.width * xPct) / 100;
+          const dotY = (layerRect.height * yPct) / 100;
+          const below = dotY - 8 - box.height < 0 && dotY + 10 + box.height <= layerRect.height;
+          hoverReadout.classList.toggle('vf-curve-readout-below', below);
+          hoverReadout.style.left = `${Math.min(Math.max(box.width / 2, dotX), layerRect.width - box.width / 2)}px`;
+          hoverReadout.style.top = `${dotY}px`;
+        } else {
+          hoverReadout.classList.remove('vf-curve-readout-below');
+          hoverReadout.style.left = `${xPct}%`;
+          hoverReadout.style.top = `${yPct}%`;
+        }
+        readoutVisible = true;
+      };
+      const hideReadout = (): void => {
+        if (hoverReadout) hoverReadout.hidden = true;
+        readoutVisible = false;
+        pointerInsideReadout = false;
+      };
+      const stopEditing = (): void => {
+        editingIdx = null;
+        activeVfEditingCleanup?.();
+        activeVfEditingCleanup = null;
+      };
+      const startEditing = (index: number): void => {
+        activeVfEditingCleanup?.();
+        editingIdx = index;
+        const guard = (event: PointerEvent): void => {
+          if (event.target instanceof Element && event.target.closest('.vf-curve-dots')) return;
+          stopEditing();
+          hideReadout();
+        };
+        document.addEventListener('pointerdown', guard);
+        activeVfEditingCleanup = () => document.removeEventListener('pointerdown', guard);
+        showReadout(index, true);
+      };
+      const resetReadout = (): void => {
+        dragActive = false;
+        dragMoved = false;
+        stopEditing();
+        hideReadout();
+      };
+      const onEditPoint = (index: number, raw: number, input: HTMLInputElement, field: 'voltage' | 'frequency'): void => {
+        if (input.value.trim() === '' || !Number.isFinite(raw)) return;
+        const point = vfCurveDraft[index];
+        if (!point) return;
+        vfCurveDraft = moveVfPoint(
+          vfCurveDraft,
+          index,
+          field === 'voltage' ? raw / 1000 : point.voltageV,
+          field === 'frequency' ? raw : point.freqMhz,
+          curveBounds,
+        );
+        const moved = vfCurveDraft[index];
+        const dot = dotsLayer.querySelector<HTMLElement>(`.vf-curve-dot[data-idx="${index}"]`);
+        if (dot && moved) {
+          dot.style.left = `${((moved.voltageV - curveBounds.voltageMinV) / (curveBounds.voltageMaxV - curveBounds.voltageMinV)) * 100}%`;
+          dot.style.top = `${100 - ((moved.freqMhz - curveBounds.freqMinMhz) / (curveBounds.freqMaxMhz - curveBounds.freqMinMhz)) * 100}%`;
+        }
+        if (readoutVisible) showReadout(index, editingIdx !== null);
+        refreshChip('gpuFreqOffsetMhz');
+        updateFloating();
+      };
+      const renderDots = (): void => {
+        clear(dotsLayer);
+        vfCurveDraft.forEach((point, index) => {
+          const xPct = ((point.voltageV - curveBounds.voltageMinV) / (curveBounds.voltageMaxV - curveBounds.voltageMinV)) * 100;
+          const yPct = 100 - ((point.freqMhz - curveBounds.freqMinMhz) / (curveBounds.freqMaxMhz - curveBounds.freqMinMhz)) * 100;
+          const dot = el('div', {
+            class: `vf-curve-dot${index === selectedIdx ? ' vf-curve-dot-selected' : ''}`,
+            role: 'button',
+            tabindex: '0',
+            'aria-label': `Point ${index + 1}: ${vfCurvePointLabel(point, index)}`,
+            dataset: { idx: String(index) },
+          });
+          dot.style.left = `${xPct}%`;
+          dot.style.top = `${yPct}%`;
+          dot.addEventListener('pointerover', () => {
+            if (editingIdx === null) showReadout(index, false);
+          });
+          dot.addEventListener('pointerout', (event: PointerEvent) => {
+            if (dragActive || editingIdx !== null) return;
+            if (readoutContains(event.relatedTarget) || pointerInsideReadout) return;
+            hideReadout();
+          });
+          dot.addEventListener('pointerdown', (event: PointerEvent) => {
+            event.preventDefault();
+            vfCurveDraft = normalizeVfCurvePoints(vfCurveDraft, curveBounds, vfEditorMaxPoints);
+            selectedIdx = index;
+            readoutIdx = index;
+            dragActive = true;
+            dragMoved = false;
+            const startX = event.clientX;
+            const startY = event.clientY;
+            readoutVisible = true;
+            showReadout(index, false);
+            const rect = plot.getBoundingClientRect();
+            const onMove = (moveEvent: PointerEvent): void => {
+              if (!dragMoved && (Math.abs(moveEvent.clientX - startX) > 4 || Math.abs(moveEvent.clientY - startY) > 4)) dragMoved = true;
+              if (!dragMoved || !rect.width || !rect.height) return;
+              const xPct = Math.min(100, Math.max(0, ((moveEvent.clientX - rect.left) / rect.width) * 100));
+              const yPct = Math.min(100, Math.max(0, ((moveEvent.clientY - rect.top) / rect.height) * 100));
+              const voltage = curveBounds.voltageMinV + (xPct / 100) * (curveBounds.voltageMaxV - curveBounds.voltageMinV);
+              const frequency = curveBounds.freqMaxMhz - (yPct / 100) * (curveBounds.freqMaxMhz - curveBounds.freqMinMhz);
+              vfCurveDraft = moveVfPoint(vfCurveDraft, index, voltage, frequency, curveBounds);
+              redraw();
+              refreshChip('gpuFreqOffsetMhz');
+              updateFloating();
+            };
+            const onUp = (): void => {
+              window.removeEventListener('pointermove', onMove);
+              window.removeEventListener('pointerup', onUp);
+              dragActive = false;
+              if (dragMoved) {
+                hideReadout();
+                stopEditing();
+              } else {
+                startEditing(index);
+              }
+            };
+            window.addEventListener('pointermove', onMove);
+            window.addEventListener('pointerup', onUp);
+          });
+          dotsLayer.append(dot);
+        });
+        hoverReadout = el('div', { class: 'vf-curve-readout', hidden: true }, [
+          el('span', { class: 'vf-curve-readout-label' }),
+          el('div', { class: 'vf-curve-readout-fields' }, [
+            el('label', { class: 'vf-curve-readout-field' }, [
+              el('span', { class: 'vf-curve-readout-field-label', text: 'Voltage (mV)' }),
+              el('input', {
+                type: 'number',
+                class: 'vf-curve-readout-input',
+                dataset: { readoutField: 'voltage' },
+                min: vfVoltageMv(curveBounds.voltageMinV),
+                max: vfVoltageMv(curveBounds.voltageMaxV),
+                step: 1,
+                oninput: (event: Event) => onEditPoint(Number(hoverReadout?.dataset['idx'] ?? 0), Number((event.target as HTMLInputElement).value), event.target as HTMLInputElement, 'voltage'),
+              }),
+            ]),
+            el('label', { class: 'vf-curve-readout-field' }, [
+              el('span', { class: 'vf-curve-readout-field-label', text: 'Frequency (MHz)' }),
+              el('input', {
+                type: 'number',
+                class: 'vf-curve-readout-input',
+                dataset: { readoutField: 'frequency' },
+                min: Math.round(curveBounds.freqMinMhz),
+                max: Math.round(curveBounds.freqMaxMhz),
+                step: 1,
+                oninput: (event: Event) => onEditPoint(Number(hoverReadout?.dataset['idx'] ?? 0), Number((event.target as HTMLInputElement).value), event.target as HTMLInputElement, 'frequency'),
+              }),
+            ]),
+          ]),
+        ]);
+        hoverReadout.addEventListener('pointerenter', () => { pointerInsideReadout = true; });
+        hoverReadout.addEventListener('pointerleave', () => {
+          pointerInsideReadout = false;
+          if (editingIdx === null && !hoverReadout?.contains(document.activeElement)) hideReadout();
+        });
+        hoverReadout.addEventListener('focusout', (event: FocusEvent) => {
+          if (readoutContains(event.relatedTarget) || pointerInsideReadout || editingIdx !== null) return;
+          hideReadout();
+        });
+        dotsLayer.append(hoverReadout);
+        if (readoutVisible) showReadout(editingIdx ?? readoutIdx, editingIdx !== null);
+      };
+      const pointCountNode = el('span', { class: 'chip', text: `${vfCurveDraft.length}/${vfEditorMaxPoints} points` });
+      const addPointButton = el('button', {
+        class: 'btn btn-ghost btn-sm',
+        text: 'Add point',
+        title: `Point limit: ${vfEditorMaxPoints}`,
+        onClick: () => {
+          resetReadout();
+          const next = addVfPointAtMidGap(vfCurveDraft, curveBounds, vfEditorMaxPoints);
+          if (!next) {
+            toast('warn', 'No room for another point', `The curve is at the ${vfEditorMaxPoints}-point limit or has no legal gap.`);
+            return;
+          }
+          vfCurveDraft = next;
+          selectedIdx = vfCurveDraft.length - 1;
+          readoutIdx = selectedIdx;
           redraw();
           refreshChip('gpuFreqOffsetMhz');
           updateFloating();
-        } }),
+        },
+      });
+      const removePointButton = el('button', {
+        class: 'btn btn-ghost btn-sm',
+        text: 'Remove point',
+        onClick: () => {
+          resetReadout();
+          vfCurveDraft = removeVfPoint(vfCurveDraft, selectedIdx);
+          selectedIdx = Math.min(selectedIdx, vfCurveDraft.length - 1);
+          readoutIdx = selectedIdx;
+          redraw();
+          refreshChip('gpuFreqOffsetMhz');
+          updateFloating();
+        },
+      });
+      const redraw = (): void => {
+        pointCountNode.textContent = `${vfCurveDraft.length}/${vfEditorMaxPoints} points`;
+        addPointButton.disabled = vfCurveDraft.length >= vfEditorMaxPoints;
+        removePointButton.disabled = vfCurveDraft.length <= 2;
+        drawVfCurve(svg);
+        renderDots();
+      };
+      redraw();
+      host.append(
+        el('p', { class: 'card-note', text: `Hover a point for values; click to edit. Voltage ${vfVoltageMv(curveBounds.voltageMinV)}–${vfVoltageMv(curveBounds.voltageMaxV)} mV · frequency ${Math.round(curveBounds.freqMinMhz)}–${Math.round(curveBounds.freqMaxMhz)} MHz.` }),
+        el('div', { class: 'vf-curve-point-count' }, [pointCountNode]),
+        stage,
+        el('div', { class: 'vf-curve-axis' }, [
+          el('span', { text: `${vfVoltageMv(curveBounds.voltageMinV)} mV` }),
+          el('span', { text: `${vfVoltageMv(curveBounds.voltageMaxV)} mV` }),
+        ]),
+        el('div', { class: 'vf-curve-actions' }, [
+          addPointButton,
+          removePointButton,
+        ]),
       );
       return host;
     };
@@ -1840,7 +2020,8 @@ export const tuningPage: Page = {
     if (ocStateChanged(currentState, s.state)) {
       currentState = s.state;
       if (vfCurveSupported && !vfCurveWasApplied && Array.isArray(s.state?.vfCurve) && s.state.vfCurve.length >= 2) {
-        vfCurveDraft = s.state.vfCurve.map((point) => ({ ...point }));
+        const bounds = s.caps?.vfCurveRange ?? { voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 400, freqMaxMhz: 4300, maxPoints: 32 };
+        vfCurveDraft = normalizeVfCurvePoints(s.state.vfCurve, bounds, Math.min(VF_EDITOR_MAX_POINTS, bounds.maxPoints));
         vfCurveApplied = vfCurveDraft.map((point) => ({ ...point }));
       }
       // Re-sync slider values from the driver for controls that were never
