@@ -57,7 +57,7 @@ import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS
 import { GameProfileStore } from './store/game-profile-store.js';
 import { RecordingStore } from './store/recording-store.js';
 import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js';
-import { formatDxgiLuid } from './recording-pure.js';
+import { formatDxgiLuid, recordingRuntimeEncoderIdForTarget } from './recording-pure.js';
 import { normalizeDxgiLuid } from './recording-pure.js';
 import { listRecordingCaptureTargets, mergeRecordingDisplayMetadata, recordingCaptureSelection } from './recording-capture.js';
 import { trimRecordingClipToDuration } from './recording-clip.js';
@@ -1518,7 +1518,7 @@ async function main() {
       context.selectionId ?? encoderId,
       context.adapterTarget ?? null,
     ),
-    resolveEncoderTarget: async (target) => {
+    resolveEncoderTarget: async (target, encoderId) => {
       // The recording page stores a stable GPU key/BDF in its concrete
       // GPU+codec selection. Resolve that physical row to the DXGI LUID at
       // start time so the patched recording runtime can initialize QSV on
@@ -1572,13 +1572,20 @@ async function main() {
       // again by PCI/BDF can miss a provider-enriched BDF and previously left
       // the recording runtime free to fall back to adapter 0 (the display GPU).
       const inventoryLuid = normalizeDxgiLuid(device.osLuid ?? device.osController?.luid ?? device.luid ?? device.adapterLuid);
-      if (inventoryLuid) return { luid: inventoryLuid };
+      const runtimeEncoderId = recordingRuntimeEncoderIdForTarget(encoderId, device.displayActive);
+      if (inventoryLuid) return {
+        luid: inventoryLuid,
+        ...(runtimeEncoderId !== encoderId ? { runtimeEncoderId } : {}),
+      };
       const luid = await fpsAdapter.adapterLuidOf?.(`0x${deviceId}`, device.bdf) ?? null;
       if (!formatDxgiLuid(luid)) throw targetUnavailable('DXGI did not report the selected adapter');
       // The runtime's adapter selector must receive one unambiguous physical
       // identity. Keep BDF/deviceKey in the app-side selection, but send only
       // the resolved DXGI LUID to Ascent so it cannot fall back to adapter 0.
-      return { luid: formatDxgiLuid(luid) };
+      return {
+        luid: formatDxgiLuid(luid),
+        ...(runtimeEncoderId !== encoderId ? { runtimeEncoderId } : {}),
+      };
     },
     // Resolve the selected native display/window at the moment capture
     // starts. Electron's display.id is not an HMONITOR, so the helper keeps

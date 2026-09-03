@@ -7,6 +7,20 @@ export const RECORDING_RUNTIME_DIRECTORY = 'recording-runtime';
 export const RECORDING_AUDIO_SOURCE_MODES = Object.freeze(['system', 'custom']);
 export const RECORDING_CAPTURE_TARGET_TYPES = Object.freeze(['display', 'window']);
 export const RECORDING_CAPTURE_COLOR_MODES = Object.freeze(['auto', 'sdr', 'hdr']);
+// The texture-sharing QSV encoders can only consume frames created on the
+// display-output adapter. When a user explicitly selects another physical
+// Intel adapter, Arc Power uses the matching non-texture QSV variant so the
+// capture frames can be uploaded to that encoder's device.
+export const RECORDING_NON_DISPLAY_ENCODER_IDS = Object.freeze({
+  obs_qsv11_v2: 'obs_qsv11_soft_v2',
+  obs_qsv11_hevc: 'obs_qsv11_hevc_soft',
+  obs_qsv11_av1: 'obs_qsv11_av1_soft',
+});
+
+export function recordingRuntimeEncoderIdForTarget(encoderId, displayActive) {
+  if (displayActive !== false) return encoderId;
+  return RECORDING_NON_DISPLAY_ENCODER_IDS[encoderId] ?? encoderId;
+}
 export const RECORDING_CLIP_NAME_PHRASES = Object.freeze([
   'Great Play', 'Nice Shot', 'Outplay', 'Genius Play', 'Beautiful Moment', 'Arc Moment', 'Crazy Clip',
 ]);

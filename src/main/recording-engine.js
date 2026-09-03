@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn as spawnProcess } from 'node:child_process';
-import { consumeAscentJsonObjects, ASCENT_MAX_MESSAGE_BYTES, recordingOutputDimensions, resolveRecordingRuntimeCandidates, normalizeRecordingAudioSettings } from './recording-pure.js';
+import { consumeAscentJsonObjects, ASCENT_MAX_MESSAGE_BYTES, recordingOutputDimensions, resolveRecordingRuntimeCandidates, normalizeRecordingAudioSettings, recordingRuntimeEncoderIdForTarget } from './recording-pure.js';
 
 export const ASCENT_COMMANDS = Object.freeze({ SHUTDOWN: 1, QUERY_MACHINE_INFO: 2, START: 3, STOP: 4, START_REPLAY_CAPTURE: 8, STOP_REPLAY_CAPTURE: 9, SPLIT_VIDEO: 12 });
 export const ASCENT_RECORDER_TYPES = Object.freeze({ VIDEO: 1, REPLAY: 2, STREAMING: 3 });
@@ -93,7 +93,12 @@ function encoderProfileOf(encoderId) {
   // obs-qsv11 uses the normal OBS profile names. H.264 supports High while
   // HEVC and AV1 use Main. Keeping this codec-specific prevents H.264 from
   // silently falling back to a less efficient Main profile.
-  return encoderId === 'obs_qsv11_v2' ? 'high' : 'main';
+  return encoderId === 'obs_qsv11_v2' || encoderId === 'obs_qsv11_soft_v2' ? 'high' : 'main';
+}
+
+function runtimeEncoderIdOf(encoderId, requestedRuntimeEncoderId) {
+  const expectedNonDisplayId = recordingRuntimeEncoderIdForTarget(encoderId, false);
+  return requestedRuntimeEncoderId === expectedNonDisplayId ? requestedRuntimeEncoderId : encoderId;
 }
 
 function isUsableEncoder(encoder) {
@@ -366,6 +371,11 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
   const outputHeight = output.height;
   const selection = parseRecordingEncoderSelection(settings.encoderId);
   const encoderId = selection?.codec ?? settings.encoderId;
+  // The canonical encoder ID remains the app's persisted/demotion identity.
+  // Only the internal runtime ID changes for a concrete non-display target;
+  // this selects Ascent's cross-adapter QSV path without losing GPU ownership
+  // in the UI or profile store.
+  const runtimeEncoderId = runtimeEncoderIdOf(encoderId, settings.runtimeEncoderId);
   const adapterTarget = normalizedAdapterTarget(settings.encoderTarget ?? selection?.target);
   // The app keeps the complete stable identity (device key/BDF/LUID) for
   // matching, persistence, and diagnostics. The recording runtime must get
@@ -400,7 +410,7 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
       // file's color metadata aligned with the pixels sent to the encoder.
       extra_options: colorSettingsOf(settings),
       video_encoder: {
-        id: encoderId,
+        id: runtimeEncoderId,
         ...(adapterTargetPayload ? { adapter_target: adapterTargetPayload } : {}),
         // Ascent-OBS maps the QSV name "quality" to TU1, which is the
         // Intel Media SDK best-quality target usage. Sending the semantic
@@ -416,7 +426,7 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
         cbr: true,
         bitrate: settings.bitrateKbps,
         max_bitrate: settings.bitrateKbps,
-        profile: encoderProfileOf(encoderId),
+        profile: encoderProfileOf(runtimeEncoderId),
         keyint_sec: 2,
         latency: 'normal',
         bframes: 3,
@@ -845,6 +855,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     // honored or fail with the actual encoder availability message.
     const resolvedEncoder = resolveRecordingEncoderSelection(settings.encoderId, state.encoders);
     let resolvedAdapterTarget = resolvedEncoder.adapterTarget;
+    let runtimeEncoderId = resolvedEncoder.encoderId;
     if (resolvedAdapterTarget) {
       // The renderer carries the stable physical identity in the selected
       // GPU+codec id. Resolve that identity to the DXGI LUID in the main
@@ -852,7 +863,9 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // encoder choice bound to the selected physical adapter even when
       // the runtime's machine-info inventory is global. Any bridge failure
       // is propagated: a concrete choice must never start unresolved.
-      resolvedAdapterTarget = normalizedAdapterTarget(await resolveEncoderTarget(resolvedAdapterTarget)) ?? resolvedAdapterTarget;
+      const targetResolution = await resolveEncoderTarget(resolvedAdapterTarget, resolvedEncoder.encoderId);
+      resolvedAdapterTarget = normalizedAdapterTarget(targetResolution) ?? resolvedAdapterTarget;
+      if (typeof targetResolution?.runtimeEncoderId === 'string') runtimeEncoderId = targetResolution.runtimeEncoderId;
     }
     const demotionKeys = new Set([
       encoderDemotionKey(resolvedEncoder.encoderId, resolvedEncoder.adapterTarget),
@@ -866,6 +879,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const payload = buildAscentStartPayload({
       ...settings,
       encoderId: resolvedEncoder.encoderId,
+      runtimeEncoderId,
       // Keep the original identity for app-side matching and persistence;
       // runtimeAdapterTarget is deliberately reduced to the resolved LUID in
       // the START payload.
@@ -890,7 +904,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       } else if (startingRecorder?.identifier === identifier) {
         startingRecorders.delete(mode);
       }
-      const encoderId = payload.video_settings.video_encoder.id;
+      // Keep failure/demotion state keyed by the canonical codec and physical
+      // selection. A non-display target uses a soft runtime variant internally,
+      // which is not part of the machine-info encoder inventory.
+      const encoderId = resolvedEncoder.encoderId;
       if (isEncoderStartRejection(error) && state.encoders.some((item) => item.type === encoderId)) {
         const failedTarget = resolvedEncoder.adapterTarget ?? resolvedAdapterTarget;
         demotedEncoders.add(encoderDemotionKey(encoderId, failedTarget));
