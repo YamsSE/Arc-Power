@@ -8,6 +8,26 @@ import type { DisplaySettings, DisplayState } from '../types.ts';
 
 export type Display = DisplayState['displays'][number];
 
+/**
+ * Resolve the selected display without letting an absent stable key collapse
+ * every row onto the first display. Numeric ids are session-local, but remain
+ * the correct fallback when the driver could not prove a display key.
+ */
+export function selectedDisplayOf(
+  displays: ReadonlyArray<Display> | null | undefined,
+  selectedDisplayKey: string | null | undefined,
+  selectedDisplayId: number | null | undefined,
+): Display | null {
+  const rows = Array.isArray(displays) ? displays : [];
+  const keyed = typeof selectedDisplayKey === 'string' && selectedDisplayKey.length > 0
+    ? rows.find((display) => display.displayKey === selectedDisplayKey)
+    : undefined;
+  return keyed
+    ?? rows.find((display) => display.id === selectedDisplayId)
+    ?? rows[0]
+    ?? null;
+}
+
 export const DISPLAY_QUANTIZATION_OPTIONS: NonNullable<DisplaySettings['quantizationRange']>[] = ['default', 'limited', 'full'];
 export const DISPLAY_WIRE_FORMAT_OPTIONS: NonNullable<DisplaySettings['wireFormat']>['model'][] = ['RGB', 'YCbCr420', 'YCbCr422', 'YCbCr444'];
 export const DISPLAY_BPC_OPTIONS = [6, 8, 10, 12];

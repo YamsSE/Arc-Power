@@ -103,6 +103,7 @@
 import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import koffi from 'koffi';
+import { dedicatedMemoryBytesOf } from './backend/units.js';
 
 const execFile = promisify(nodeExecFile);
 
@@ -247,8 +248,7 @@ export function instanceMatchesLuid(instanceName, luid) {
 export function gpuMemoryUsageOf(rows, luid, target = {}) {
   if (!luid) return null;
   const integratedOrMobile = target?.integrated === true || target?.mobile === true;
-  const hasDedicatedCapacity = Number.isFinite(target?.dedicatedCapacityBytes)
-    && Number.isInteger(target.dedicatedCapacityBytes) && target.dedicatedCapacityBytes > 0;
+  const hasDedicatedCapacity = dedicatedMemoryBytesOf(target?.dedicatedCapacityBytes, integratedOrMobile) !== null;
   const source = integratedOrMobile && !hasDedicatedCapacity ? 'shared' : 'dedicated';
   const field = source === 'shared' ? 'sharedUsage' : 'dedicatedUsage';
   let total = 0;

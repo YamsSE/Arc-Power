@@ -76,6 +76,7 @@ import {
   scalingMethodOptionsForView,
   type DisplayColorRange,
   isDisplayControlDirtyVsApplied as isDisplayControlDirtyVsAppliedPure,
+  selectedDisplayOf,
 } from '../pure/display.ts';
 import type { DisplayCapability, DisplaySettings, DisplayState, FrameGenOverride, FlipMode, GraphicsSettings, GraphicsState, LowLatency } from '../types.ts';
 
@@ -323,9 +324,7 @@ function resetPageState() {
  *  nothing loaded or the display list is empty - the honest degrade). */
 function selectedDisplay(): DisplayState['displays'][number] | null {
   if (!displayState) return null;
-  return displayState.displays.find((d) => d.displayKey === selectedDisplayKey)
-    ?? displayState.displays.find((d) => d.id === selectedDisplayId)
-    ?? displayState.displays[0] ?? null;
+  return selectedDisplayOf(displayState.displays, selectedDisplayKey, selectedDisplayId);
 }
 
 function scalingViewOf(display: DisplayState['displays'][number] | null): string {

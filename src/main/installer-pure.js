@@ -51,10 +51,15 @@ function isPathWithin(parent, candidate) {
   return normalizedParent === normalizedCandidate || normalizedCandidate.startsWith(prefix);
 }
 
-/** True only for the portable wrapper carrying the custom installer name. */
+/**
+ * True for the portable wrapper carrying the custom installer name, including
+ * the suffixes Windows/download managers add to duplicate or versioned files.
+ * Keep the match anchored so the portable and installed app executables can
+ * never enter installer mode just because their path contains "installer".
+ */
 export function isInstallerExecutablePath(value) {
   return typeof value === 'string'
-    && path.basename(value).toLowerCase() === INSTALLER_ARTIFACT_NAME.toLowerCase();
+    && /^arc[- _]?power[- _]?installer(?:[- _.(].*)?\.exe$/i.test(path.basename(value));
 }
 
 /** The default is deliberately per-user and never under Program Files. */

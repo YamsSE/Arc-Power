@@ -17,8 +17,9 @@
 //     A770's canControl=false property is a lie, the driver honors table
 //     writes with the FAN enum's PERCENT encoding);
 //   - ctlOverclockWaiverSet is called only when constructed with
-//     allowAutoWaiver: true (smoke/tests) or via setWaiverAccepted()
-//     (explicit user acceptance - M2a product path).
+//     allowAutoWaiver: true (smoke/tests), via setWaiverAccepted()
+//     (explicit user acceptance - M2a product path), or when an already
+//     accepted waiver is explicitly replayed inside an isolated worker.
 
 import koffi from 'koffi';
 import fs from 'node:fs';
@@ -49,7 +50,7 @@ import {
   DISPLAY_GLOBAL_VRR_MODE_OPTIONS,
   DISPLAY_SCALING_FLASH_WARNING,
 } from './backend.interface.js';
-import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName, sortDevicesDiscreteFirst, deviceHardwareKey, isIntegratedStyleDevice, isIntelIntegratedOrMobileArc } from './units.js';
+import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName, sortDevicesDiscreteFirst, deviceHardwareKey, isIntegratedStyleDevice, isIntelIntegratedOrMobileArc, dedicatedMemoryBytesOf } from './units.js';
 import { EXTENDED_TL_MAX_C } from '../old-igcl.js';
 import { classifyXeFgExecutable } from '../game-profile-capabilities.js';
 // M17c: the pure AIB decode (aibOf + the laptop branch). The renderer TS
@@ -1337,20 +1338,21 @@ export class IgclBackend {
 
   _refreshMemoryInfo(dev) {
     const validBytes = (value) => Number.isFinite(value) && Number.isInteger(value) && value > 0 ? value : null;
+    const integratedOrMobile = dev.integrated === true || dev.mobile === true;
     let info = null;
     try { info = this._adapterMemoryInfoOf ? this._adapterMemoryInfoOf(dev) : null; } catch { info = null; }
-    const dedicatedFromDxgi = validBytes(info?.dedicatedVideoMemoryBytes);
+    const dedicatedFromDxgi = dedicatedMemoryBytesOf(info?.dedicatedVideoMemoryBytes, integratedOrMobile);
     // DXGI reports the adapter's actual dedicated segment size.  The WMI /
     // registry value is retained as a fallback because older drivers can
     // omit the DXGI descriptor, but it may under-report Battlemage cards
     // (11 GiB shown for a 12 GiB B580).
-    const dedicatedFromVram = validBytes(this._vramBytesOf ? this._vramBytesOf(dev) : null);
+    const dedicatedFromVram = dedicatedMemoryBytesOf(this._vramBytesOf ? this._vramBytesOf(dev) : null, integratedOrMobile);
     dev.vramBytes = dedicatedFromDxgi ?? dedicatedFromVram;
     dev.sharedMemoryBytes = null;
     dev.sharedMemorySource = null;
     // Shared capacity is not VRAM. It is eligible only for an explicitly
     // integrated/mobile adapter, and only while dedicated capacity is absent.
-    if (dev.vramBytes === null && (dev.integrated === true || dev.mobile === true)) {
+    if (dev.vramBytes === null && integratedOrMobile) {
       let shared = validBytes(info?.sharedSystemMemoryBytes);
       let source = shared === null ? null : 'dxgi';
       if (shared === null && this._sharedMemoryBytesOf) {
@@ -5376,8 +5378,9 @@ export class IgclBackend {
 
   /**
    * Boot-time seeding of a persisted waiver acceptance (F1): sets ONLY the
-   * in-memory flag - NEVER calls ctlOverclockWaiverSet, which must run only
-   * on explicit user acceptance (waiver-accept -> setWaiverAccepted). Called
+   * in-memory flag and never calls ctlOverclockWaiverSet. A caller that already
+   * holds persisted consent may explicitly replay that consent in its own
+   * isolated worker context by calling setWaiverAccepted afterwards. Called
    * from main at boot with the ProfileStore's persisted settings.
    * @param {number} deviceId
    * @param {boolean} accepted
@@ -5446,7 +5449,7 @@ export class IgclBackend {
       gpuClockMhz: integratedOrMobile
         ? (effectiveClockMhz ?? currentClockMhz)
         : (currentClockMhz ?? effectiveClockMhz),
-      memClockMhz: item('vramCurrentClockFrequency'),
+      memClockMhz: item('vramCurrentClockFrequency') ?? item('vramCurrentEffectiveFrequency'),
       tempC: item('gpuCurrentTemperature'),
       vramTempC: item('vramCurrentTemperature'),
       gpuVoltageV: item('gpuVoltage'),
@@ -5484,19 +5487,15 @@ export class IgclBackend {
     // ctlTemperatureGetState - the igcl_api.h temperature surface). The
     // honest '-' stays when the driver reports no sensor (the N4-style
     // once-per-session degrade note - the 32.0.101.8860 regression
-    // precedent). M17c (step-5 N2): the NO-SENSOR verdict latches per
-    // device - a failed probe (no sensor / enum / read failure) is marked
-    // so the fallback does NOT re-enumerate + re-scan sensor properties
-    // on every 500 ms tick (the native churn stops after the first failed
-    // probe); a device that HAS a sensor keeps reading every tick.
+    // precedent). M17c (step-5 N2): only a definitive zero-sensor verdict
+    // latches per device. Transient enum/fill/property/state failures are
+    // retried so a startup race cannot permanently hide a temperature.
     if (sample.tempC === undefined) {
       const sensorTemp = this._tempSensorNoSensor.has(deviceId)
         ? undefined
         : this._temperatureSensorTempC(dev, deviceId);
       if (sensorTemp !== undefined) {
         sample.tempC = sensorTemp;
-      } else {
-        this._tempSensorNoSensor.add(deviceId);
       }
     }
 
@@ -5556,8 +5555,9 @@ export class IgclBackend {
    *   tempC);
    * - a failed enumeration -> undefined;
    * - zero sensors -> undefined + the ONCE-PER-SESSION N4-style degrade
-   *   note (the 32.0.101.8860 regression precedent: a driver build that
-   *   reports no sensor must not spam every telemetry tick);
+   *   note, and that definitive verdict is latched (the 32.0.101.8860
+   *   regression precedent: a driver build that reports no sensor must not
+   *   spam every telemetry tick);
    * - a failed read -> undefined.
    * @param {object} dev the device payload (handle)
    * @param {number} deviceId for the once-per-session note flag
@@ -5575,20 +5575,20 @@ export class IgclBackend {
     };
     try {
       // Phase 1: the count probe (the ctlEnumerateDevices pattern). The
-      // handles pointer is [optional] in the header - pass a dummy buffer
-      // (null-pointer handling varies across koffi versions).
+      // handles pointer is optional in the header; pass null for the
+      // ABI-defined count-then-fill call.
       const countBuf = koffi.alloc('uint32', 1);
       koffi.encode(countBuf, 0, 'uint32', 0);
-      const probeBuf = koffi.alloc('uint8', 8);
-      let result = lib.ctlEnumTemperatureSensors(dev.handle, countBuf, probeBuf);
+      let result = lib.ctlEnumTemperatureSensors(dev.handle, countBuf, null);
       if (result !== CTL_RESULT.SUCCESS) return undefined;
       const count = koffi.decode(countBuf, 0, 'uint32') | 0;
       if (count === 0) {
+        this._tempSensorNoSensor.add(deviceId);
         noteNoSensor('ctlEnumTemperatureSensors reports no sensor');
         return undefined;
       }
-      // Phase 2: the fill - a raw handle array (8 bytes per handle).
-      const handlesBuf = koffi.alloc('uint8', count * 8);
+      // Phase 2: the fill - an array of opaque sensor handles.
+      const handlesBuf = koffi.alloc('void*', count);
       result = lib.ctlEnumTemperatureSensors(dev.handle, countBuf, handlesBuf);
       if (result !== CTL_RESULT.SUCCESS) return undefined;
       // Prefer the GPU-domain sensor (type 1); fall back to the first.

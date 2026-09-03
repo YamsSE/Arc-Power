@@ -168,12 +168,14 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
         return 1;
       }
     }
-    // The parent already accepted the waiver through the user dialog; the
-    // worker only ever seeds the IN-MEMORY flag (restoreWaiverState - never
-    // ctlOverclockWaiverSet, which runs only on explicit user acceptance
-    // via the waiver-accept op).
+    // The parent already accepted the waiver through the user dialog. The
+    // worker has its own IGCL context, so replay that cached consent into the
+    // driver before an apply; this is not a new acceptance or a user prompt.
     if (req.waiverAccepted === true) {
       await backend.restoreWaiverState(deviceId, true);
+      if (op === 'apply' && typeof backend.setWaiverAccepted === 'function') {
+        await backend.setWaiverAccepted(deviceId);
+      }
     }
 
     if (op === 'waiver-accept') {

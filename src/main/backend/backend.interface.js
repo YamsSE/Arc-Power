@@ -276,11 +276,11 @@
  *   //   A770's 48.3 MHz offset) is written back unchanged.
  *   resetToDefaults(deviceId: number): Promise<void>,
  *   setWaiverAccepted(deviceId: number): Promise<void>,
- *   // Restore a persisted waiver acceptance into the IN-MEMORY flag ONLY -
- *   // NEVER calls the driver (the contract distinction from
- *   // setWaiverAccepted, which is the only path that runs the driver-side
- *   // waiver set). Used for boot-time seeding (seedWaiverState) and for
- *   // clearing the stale flag when the driver reports the waiver as lost.
+   *   // Restore a persisted waiver acceptance into the IN-MEMORY flag ONLY -
+   *   // NEVER calls the driver. A caller that already has persisted consent
+   *   // may explicitly replay it in its own isolated worker by calling
+   *   // setWaiverAccepted afterwards. Used for boot-time seeding
+   *   // (seedWaiverState) and for clearing a stale flag.
  *   restoreWaiverState(deviceId: number, accepted: boolean): Promise<void>,
  *   sampleRawTelemetry(deviceId: number): Promise<RawTelemetrySample>,
  *   onRawTelemetry(deviceId: number, cb: (s: RawTelemetrySample) => void): Unsub,

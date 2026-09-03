@@ -8,6 +8,26 @@
 
 import { CTL_UNITS } from './igcl-bindings.js';
 
+// Integrated Arc adapters can expose a small reserved/aperture segment as
+// "dedicated" memory even though applications use the shared system pool.
+// Keep the threshold conservative so a real discrete allocation is never
+// reclassified as shared memory.
+export const INTEGRATED_DEDICATED_MEMORY_PLACEHOLDER_BYTES = 256 * 1024 ** 2;
+
+/**
+ * Return a usable dedicated-memory capacity, or null when the value is
+ * absent/invalid. On explicitly integrated/mobile adapters, the small DXGI
+ * aperture is not usable VRAM and must not suppress shared-memory fallback.
+ * @param {unknown} value
+ * @param {boolean} integratedOrMobile
+ * @returns {number|null}
+ */
+export function dedicatedMemoryBytesOf(value, integratedOrMobile = false) {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) return null;
+  if (integratedOrMobile && value <= INTEGRATED_DEDICATED_MEMORY_PLACEHOLDER_BYTES) return null;
+  return value;
+}
+
 /**
  * Canonical unit string for a CTL_UNITS value.
  * @param {number} units CTL_UNITS value from ctl_oc_control_info_t
