@@ -78,14 +78,13 @@ export interface HeaderGpuBadges {
  * chip token (A770/B580/etc.) so enriched names with VRAM suffixes do not
  * make the header grow or wrap.
  */
-export function headerGpuBadges(devices: DeviceInfo[], selectedId: number | null): HeaderGpuBadges | null {
+export function headerGpuBadges(devices: DeviceInfo[]): HeaderGpuBadges[] {
   const ordered = dashboardGpuOrder(devices);
-  const index = ordered.findIndex((device) => device.id === selectedId);
-  if (index < 0) return null;
-  const device = ordered[index];
-  const chip = chipLabelGpu(device.name);
-  const arcChip = chip?.match(/\b[AB]\d{3,4}\b/i)?.[0] ?? chip ?? 'GPU';
-  return { index: index + 1, label: arcChip, displayOutput: device.displayActive === true };
+  return ordered.map((device, index) => {
+    const chip = chipLabelGpu(device.name);
+    const arcChip = chip?.match(/\b[AB]\d{3,4}\b/i)?.[0] ?? chip ?? 'GPU';
+    return { index: index + 1, label: arcChip, displayOutput: device.displayActive === true };
+  });
 }
 
 export class GpuHeader {
@@ -140,11 +139,16 @@ export class GpuHeader {
     const gpuMeta = noIntelPresentation
       ? 'Non supported GPU'
       : s.bootError ?? '';
-    const badges = !noIntelPresentation ? headerGpuBadges(s.devices, s.deviceId) : null;
-    const identity = badges
-      ? el('div', { class: 'gpu-header-pills', 'aria-label': `${badges.label} GPU ${badges.index}${badges.displayOutput ? ', Display Output' : ''}` }, [
-          el('span', { class: 'chip gpu-header-pill gpu-header-gpu-pill', text: `GPU ${badges.index} · ${badges.label}` }),
-          badges.displayOutput ? el('span', { class: 'chip gpu-header-pill gpu-header-output-pill', text: 'Display Output' }) : null,
+    const badges = !noIntelPresentation ? headerGpuBadges(s.devices) : [];
+    const identity = badges.length > 0
+      ? el('div', {
+          class: 'gpu-header-pills',
+          'aria-label': badges.map((badge) => `GPU ${badge.index} ${badge.label}${badge.displayOutput ? ', Display Output' : ''}`).join('; '),
+        }, [
+          ...badges.flatMap((badge) => [
+            el('span', { class: 'chip gpu-header-pill gpu-header-gpu-pill', text: `GPU ${badge.index} · ${badge.label}` }),
+            badge.displayOutput ? el('span', { class: 'chip gpu-header-pill gpu-header-output-pill', text: 'Display Output' }) : null,
+          ]),
           gpuMeta ? el('span', { class: 'gpu-meta', text: gpuMeta }) : null,
         ])
       : el('div', { class: 'gpu-legacy-identity' }, [
