@@ -407,12 +407,17 @@ export function createSysmanHelperProxy({
    * degrades the instant not-ready verdict), NEVER on reads or the ready
    * path.
    */
-  const writeAutoUpgradeIntent = ({ pl1W, pl2W }) => {
+  const writeAutoUpgradeIntent = ({ pl1W, pl2W, deviceId, physicalTarget = null }) => {
     try {
       if (!Number.isFinite(pl1W) || !Number.isFinite(pl2W)) return;
       const target = resolveIntentFilePath();
       const tmp = `${target}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ pl1W, pl2W, ts: Date.now() }), 'utf8');
+      const intent = { pl1W, pl2W, ts: Date.now() };
+      if (Number.isInteger(deviceId) && deviceId >= 0) intent.deviceId = deviceId;
+      if (physicalTarget && typeof physicalTarget === 'object' && !Array.isArray(physicalTarget)) {
+        intent.physicalTarget = physicalTarget;
+      }
+      fs.writeFileSync(tmp, JSON.stringify(intent), 'utf8');
       fs.renameSync(tmp, target);
     } catch (err) {
       log(`auto-upgrade intent write failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -744,7 +749,12 @@ export function createSysmanHelperProxy({
           while (queue.length > 0) {
             const call = queue.shift();
             debugLog({ ts: Date.now(), event: 'resp', id: call.id, op: call.op, spawnError: NOT_READY_MESSAGE, out: null });
-            if (call.op === 'set') writeAutoUpgradeIntent({ pl1W: call.payload?.sustainedW, pl2W: call.payload?.burstW });
+            if (call.op === 'set') writeAutoUpgradeIntent({
+              pl1W: call.payload?.sustainedW,
+              pl2W: call.payload?.burstW,
+              deviceId: call.payload?.deviceId,
+              physicalTarget: call.payload?.physicalTarget,
+            });
             call.resolve({ out: { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE }, reason: null });
           }
           break;
@@ -921,20 +931,24 @@ export function createSysmanHelperProxy({
       }
     },
     /**
-     * M17f (step-4 N2): the deviceId is ACCEPTED for the mock-scoped
-     * contract and IGNORED - the consumer is device-agnostic (the real
-     * layer resolves the one enumerated card power domain).
+     * M163: the deviceId and physicalTarget are carried through the helper
+     * protocol so the consumer can select the requested Sysman power domain
+     * by physical identity on a multi-GPU machine.
      * M17n (round-1 S5 + round-2 N5): a NOT-READY or NOT-CONNECTED read
      * answers NULL IMMEDIATELY (the same ready-line grace as the set) -
      * the read-out renders the session '(set)'/'-' instantly; the boot
      * one-shot + the per-apply refresh never hang; the 30 s bound applies
      * only to ready-helper round trips.
      * @param {number} [deviceId]
+     * @param {object|null} [physicalTarget]
      * @returns {Promise<{ sustainedW: number, burstW: number, peakW: number } | null>}
      */
-    async readLimits(deviceId) {
+    async readLimits(deviceId, physicalTarget = null) {
       if (!(await readyGate())) return null;
-      const { out } = await enqueue({ op: 'read' });
+      const payload = {};
+      if (Number.isInteger(deviceId) && deviceId >= 0) payload.deviceId = deviceId;
+      if (physicalTarget && typeof physicalTarget === 'object' && !Array.isArray(physicalTarget)) payload.physicalTarget = physicalTarget;
+      const { out } = await enqueue({ op: 'read', payload });
       if (out?.ok === true
         && typeof out.sustainedW === 'number'
         && typeof out.burstW === 'number'
@@ -957,19 +971,24 @@ export function createSysmanHelperProxy({
      * apply-routing companion's V2-CLAMP fallback triggers on this
      * errorCode ONLY.
      * @param {{ sustainedW: number, burstW: number }} limits
+     * @param {number} [deviceId]
+     * @param {object|null} [physicalTarget]
      * @returns {Promise<{ ok: boolean, errorCode?: string, message?: string }>}
      */
-    async setLimits({ sustainedW, burstW }) {
+    async setLimits({ sustainedW, burstW }, deviceId, physicalTarget = null) {
       if (!(await readyGate())) {
         debugLog({ ts: Date.now(), event: 'resp', op: 'set', spawnError: NOT_READY_MESSAGE, out: null });
         // M17o: the not-ready SET writes the AUTO-UPGRADE INTENT (the pair
         // the apply wanted) - the detached helper's one-shot applies the
         // exact value when its ze init lands (the V2-clamp covers PL2
         // meanwhile - the 'no one waits 15 minutes' contract).
-        writeAutoUpgradeIntent({ pl1W: sustainedW, pl2W: burstW });
+        writeAutoUpgradeIntent({ pl1W: sustainedW, pl2W: burstW, deviceId, physicalTarget });
         return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
       }
-      const { out, reason } = await enqueue({ op: 'set', payload: { sustainedW, burstW } });
+      const payload = { sustainedW, burstW };
+      if (Number.isInteger(deviceId) && deviceId >= 0) payload.deviceId = deviceId;
+      if (physicalTarget && typeof physicalTarget === 'object' && !Array.isArray(physicalTarget)) payload.physicalTarget = physicalTarget;
+      const { out, reason } = await enqueue({ op: 'set', payload });
       if (!out) return { ok: false, errorCode: 'helper-failed', message: reason ?? 'the sysman helper produced no result' };
       const result = { ok: out.ok === true };
       if (out.errorCode !== undefined) result.errorCode = out.errorCode;

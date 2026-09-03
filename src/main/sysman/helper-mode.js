@@ -160,7 +160,7 @@ export const HELPER_IDLE_MS_ENV = 'RID_SYSMAN_HELPER_IDLE_MS';
 /**
  * M17o THE AUTO-UPGRADE INTENT FILE (the proxy's not-ready set verdict
  * sites write it; the helper's one-shot consumes it when the init lands):
- * %TEMP%\arcpower-sysman-intent.json - { pl1W, pl2W, ts }. The path is
+ * %TEMP%\arcpower-sysman-intent.json - { pl1W, pl2W, ts, deviceId?, physicalTarget? }. The path is
  * overridable via the RID_SYSMAN_INTENT_FILE env var (the test seam).
  */
 export const SYSMAN_INTENT_FILE_ENV = 'RID_SYSMAN_INTENT_FILE';
@@ -212,10 +212,10 @@ function idleMsFromEnv() {
  * result mapping. The one-shot form writes the payload to the out file;
  * the pipe form writes it as a JSON line on the connection - the payload
  * shape is IDENTICAL so the proxy's consumer contract never diverges.
- * @param {{ id?: string, op?: string, sustainedW?: unknown, burstW?: unknown }} req
+ * @param {{ id?: string, op?: string, sustainedW?: unknown, burstW?: unknown, deviceId?: number, physicalTarget?: object|null }} req
  * @param {{
- *   readLimits: (deviceId?: number) => object | null | Promise<object | null>,
- *   setLimits: ({ sustainedW: number, burstW: number }) => object | Promise<object>,
+ *   readLimits: (deviceId?: number, physicalTarget?: object|null) => object | null | Promise<object | null>,
+ *   setLimits: ({ sustainedW: number, burstW: number }, deviceId?: number, physicalTarget?: object|null) => object | Promise<object>,
  * }} consumer
  * @param {(s: string) => void} log
  * @returns {Promise<{ payload: object, exitCode: number }>}
@@ -228,7 +228,7 @@ async function dispatchRequest(req, consumer, log) {
     // consumer's honest degrade) becomes the unavailable refusal.
     let limits = null;
     try {
-      limits = await consumer.readLimits();
+      limits = await consumer.readLimits(req?.deviceId, req?.physicalTarget ?? null);
     } catch (err) {
       log(`readLimits failed: ${err.message}`);
     }
@@ -252,7 +252,7 @@ async function dispatchRequest(req, consumer, log) {
     }
     let result = null;
     try {
-      result = await consumer.setLimits({ sustainedW, burstW });
+      result = await consumer.setLimits({ sustainedW, burstW }, req?.deviceId, req?.physicalTarget ?? null);
     } catch (err) {
       log(`setLimits failed: ${err.message}`);
       result = { ok: false, errorCode: 'io-failed', message: err.message };
@@ -272,8 +272,8 @@ async function dispatchRequest(req, consumer, log) {
  *   reqPath: string,
  *   outPath: string,
  *   consumer: {
- *     readLimits: (deviceId?: number) => { sustainedW: number, burstW: number, peakW: number } | null | Promise<...>,
- *     setLimits: ({ sustainedW: number, burstW: number }) => { ok: boolean, errorCode?: string, message?: string } | Promise<...>,
+ *     readLimits: (deviceId?: number, physicalTarget?: object|null) => { sustainedW: number, burstW: number, peakW: number } | null | Promise<...>,
+ *     setLimits: ({ sustainedW: number, burstW: number }, deviceId?: number, physicalTarget?: object|null) => { ok: boolean, errorCode?: string, message?: string } | Promise<...>,
  *   },
  *   log?: (s: string) => void,
  * }} deps
@@ -379,8 +379,8 @@ async function writeOut(outPath, payload, id) {
  *
  * @param {{
  *   createConsumer: () => {
- *     readLimits: (deviceId?: number) => { sustainedW: number, burstW: number, peakW: number } | null | Promise<...>,
- *     setLimits: ({ sustainedW: number, burstW: number }) => { ok: boolean, errorCode?: string, message?: string } | Promise<...>,
+ *     readLimits: (deviceId?: number, physicalTarget?: object|null) => { sustainedW: number, burstW: number, peakW: number } | null | Promise<...>,
+ *     setLimits: ({ sustainedW: number, burstW: number }, deviceId?: number, physicalTarget?: object|null) => { ok: boolean, errorCode?: string, message?: string } | Promise<...>,
  *   },
  *   log?: (s: string) => void,          // default: the file writer (round-1 S3)
  *   logFilePath?: string,               // the helper's log file (default %TEMP%\arcpower-sysman-helper.log)
@@ -487,7 +487,7 @@ export function runSysmanHelperPipeMode({
       return;
     }
     if (!intent || typeof intent !== 'object' || typeof intent.pl1W !== 'number' || typeof intent.pl2W !== 'number' || typeof intent.ts !== 'number') {
-      helperLog('intent ignored: the intent file is malformed (expected { pl1W, pl2W, ts }) - no intent');
+      helperLog('intent ignored: the intent file is malformed (expected { pl1W, pl2W, ts, deviceId?, physicalTarget? }) - no intent');
       return;
     }
     if (Date.now() - intent.ts > INTENT_FRESH_WINDOW_MS) {
@@ -498,7 +498,13 @@ export function runSysmanHelperPipeMode({
     // Apply through the SAME internal dispatch the pipe set uses (the
     // one-shot runs BEFORE the ready sweep, so the global serialization
     // latch is trivially free - no pipe set can be in flight).
-    const { payload } = await dispatchRequest({ op: 'set', sustainedW: intent.pl1W, burstW: intent.pl2W }, consumer, helperLog);
+    const { payload } = await dispatchRequest({
+      op: 'set',
+      sustainedW: intent.pl1W,
+      burstW: intent.pl2W,
+      deviceId: intent.deviceId,
+      physicalTarget: intent.physicalTarget ?? null,
+    }, consumer, helperLog);
     try { await fs.promises.unlink(intentPath); } catch (err) { helperLog(`intent delete failed: ${err instanceof Error ? err.message : String(err)}`); }
     if (payload && payload.ok === true) {
       helperLog(`intent applied: PL1 ${intent.pl1W} W PL2 ${intent.pl2W} W`);
@@ -676,7 +682,11 @@ export function runSysmanHelperPipeMode({
     let probe = null;
     try {
       candidate = createConsumer();
-      probe = await candidate.readLimits();
+      // The init probe only establishes that the helper's Sysman context is
+      // alive. It is deliberately marked as a probe so a multi-GPU consumer
+      // may inspect one read-only domain without authorizing an ordinal
+      // target for later requests.
+      probe = await candidate.readLimits(null, { probe: true });
     } catch (err) {
       if (settled) return; // a bind conflict resolved mid-probe - the exit stays 0
       helperLog(`ze init failed on the first attempt (${err instanceof Error ? err.message : String(err)}) - exiting ${HELPER_INIT_FAILED_EXIT_CODE} (the in-process retry is gone: the next warm() spawns a FRESH helper process, whose init lands on attempt 1)`);

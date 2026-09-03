@@ -91,6 +91,31 @@ function pciIdsFromTargetKey(deviceKey) {
   return vendor && device ? { vendor, device } : null;
 }
 
+/**
+ * Normalize the BDF shapes that cross the parent -> worker boundary.  The
+ * old IGCL properties API returns an object while the unified inventory sends
+ * the canonical `domain:bus:device.function` string.  Keep the comparison
+ * physical and lossless; never use an adapter ordinal as a fallback.
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function normalizeBdf(value) {
+  if (typeof value === 'string') {
+    const match = value.trim().match(/^(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,2}):([0-9a-f]{1,2})\.([0-7])$/i);
+    if (!match) return null;
+    return `${Number.parseInt(match[1] ?? '0', 16).toString(16).padStart(4, '0')}:${Number.parseInt(match[2], 16).toString(16).padStart(2, '0')}:${Number.parseInt(match[3], 16).toString(16).padStart(2, '0')}.${match[4]}`;
+  }
+  if (!value || typeof value !== 'object') return null;
+  const bdf = /** @type {{ domain?: unknown, segment?: unknown, bus?: unknown, device?: unknown, function?: unknown, func?: unknown }} */ (value);
+  const domain = Number(bdf.domain ?? bdf.segment ?? 0);
+  const bus = Number(bdf.bus);
+  const device = Number(bdf.device);
+  const fn = Number(bdf.function ?? bdf.func ?? 0);
+  if (![domain, bus, device, fn].every(Number.isInteger)
+    || domain < 0 || bus < 0 || device < 0 || fn < 0) return null;
+  return `${domain.toString(16).padStart(4, '0')}:${bus.toString(16).padStart(2, '0')}:${device.toString(16).padStart(2, '0')}.${fn}`;
+}
+
 
 // 2023-era ctl_oc_properties_t (igcl repo ~v109/v127): 6 controls, Size 296,
 // Version 0. Uses the ctl_oc_control_info_t layout already defined by
@@ -402,7 +427,35 @@ export class OldIgcl {
     this._waivedDevices.add(waiverKey);
   }
 
-  async _selectDevice(deviceId, deviceKey) {
+  async _selectDevice(deviceId, deviceKey, physicalTarget = null) {
+    // M163: resolve the parent-provided physical proof before any legacy
+    // primary/device-id shortcut. The proof is the only safe selector when
+    // the unified inventory has no durable key or when the two runtimes
+    // enumerate adapters in different orders.
+    const proofBdf = normalizeBdf(physicalTarget?.bdf ?? physicalTarget?.controllerBdf);
+    const proofVendor = normalizePciId(physicalTarget?.pciVendorId);
+    const proofDevice = normalizePciId(physicalTarget?.pciDeviceId);
+    const proofMatches = proofBdf
+      ? this._devices.filter((entry) => {
+          const identity = entry.identity;
+          if (!identity || normalizeBdf(identity.bdf) !== proofBdf) return false;
+          if (proofVendor && normalizePciId(identity.pciVendorId) !== proofVendor) return false;
+          if (proofDevice && normalizePciId(identity.pciDeviceId) !== proofDevice) return false;
+          return true;
+        })
+      : [];
+    if (proofBdf) {
+      const selected = proofMatches.length === 1 ? proofMatches[0] : null;
+      if (!selected || !selected.identity) return null;
+      try {
+        await this._ensureWaiver(selected.handle, selected.identity.deviceKey);
+      } catch {
+        return null;
+      }
+      this._device = selected.handle;
+      return selected;
+    }
+
     const hasKey = typeof deviceKey === 'string' && deviceKey.length > 0;
     if (!hasKey) {
       if (deviceId != null && deviceId !== 0) return null;
@@ -417,6 +470,12 @@ export class OldIgcl {
     // some runtimes expose those properties for only a subset of enumerated
     // handles. Accept a PNP key when exactly one known legacy identity has
     // the same PCI pair; never guess between duplicate adapters.
+    // M163: the parent proof is authoritative when the unified inventory
+    // key and the old runtime's enumeration disagree. This is the failure
+    // mode that made an Alchemist advanced PL/TL write hit the other GPU and
+    // return ERROR_INVALID_ARGUMENT/read-back differences. Select by the
+    // exact physical BDF + PCI pair first; never let an ordinal or a cached
+    // primary handle win on a multi-GPU system.
     const exact = this._devices.find((entry) => entry.identity?.deviceKey === deviceKey);
     const pci = exact ? null : pciIdsFromTargetKey(deviceKey);
     const pciMatches = pci
@@ -454,15 +513,16 @@ export class OldIgcl {
    * @param {number} value canonical W or C
    * @param {number|undefined|null} deviceId
    * @param {string|undefined|null} deviceKey stable PCI/BDF identity
+   * @param {object|null} physicalTarget parent-validated physical proof
    * @returns {Promise<OldIgclPerControl>}
    */
-  async _setScalar(control, value, deviceId = 0, deviceKey = null) {
-    const run = this._setQueue.then(() => this._setScalarLocked(control, value, deviceId, deviceKey));
+  async _setScalar(control, value, deviceId = 0, deviceKey = null, physicalTarget = null) {
+    const run = this._setQueue.then(() => this._setScalarLocked(control, value, deviceId, deviceKey, physicalTarget));
     this._setQueue = run.catch(() => {});
     return run;
   }
 
-  async _setScalarLocked(control, value, deviceId = 0, deviceKey = null) {
+  async _setScalarLocked(control, value, deviceId = 0, deviceKey = null, physicalTarget = null) {
     if (control === 'tempLimitC' ? !(await this.isTempCapable()) : !(await this.isCapable())) {
       return {
         ok: false,
@@ -471,7 +531,7 @@ export class OldIgcl {
         message: 'extended power/temp limit requires the bundled 2023 IGCL runtime - it failed to load on this driver',
       };
     }
-    const selected = await this._selectDevice(deviceId, deviceKey);
+    const selected = await this._selectDevice(deviceId, deviceKey, physicalTarget);
     if (!selected) {
       return {
         ok: false,
@@ -532,14 +592,15 @@ export class OldIgcl {
    * @param {number} value
    * @param {number|undefined|null} deviceId
    * @param {string|undefined|null} deviceKey
+   * @param {object|null} physicalTarget parent-validated physical proof
    * @returns {Promise<OldIgclPerControl>}
    */
-  async setPowerLimitW(w, deviceId = 0, deviceKey = null) {
-    return this._setScalar('powerLimitW', w, deviceId, deviceKey);
+  async setPowerLimitW(w, deviceId = 0, deviceKey = null, physicalTarget = null) {
+    return this._setScalar('powerLimitW', w, deviceId, deviceKey, physicalTarget);
   }
 
-  async setTempLimitC(c, deviceId = 0, deviceKey = null) {
-    return this._setScalar('tempLimitC', c, deviceId, deviceKey);
+  async setTempLimitC(c, deviceId = 0, deviceKey = null, physicalTarget = null) {
+    return this._setScalar('tempLimitC', c, deviceId, deviceKey, physicalTarget);
   }
 
   async close() {

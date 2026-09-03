@@ -35,14 +35,14 @@ const W = (powerMw) => Math.round((powerMw / 1000) * 10) / 10;
  * whole init chain on every telemetry/apply tick).
  *
  * Contract (the plan's interface, pinned):
- *   readLimits(deviceId) -> { sustainedW, burstW, peakW } | null
- *   setLimits({ sustainedW, burstW }) -> { ok, errorCode?, message? }
+ *   readLimits(deviceId, physicalTarget) -> { sustainedW, burstW, peakW } | null
+ *   setLimits({ sustainedW, burstW }, deviceId, physicalTarget) -> { ok, errorCode?, message? }
  *
- * The real adapter is DEVICE-AGNOSTIC: the layer resolves the enumerated
- * card power domain once (ze/zes enumerate the same devices in the same
- * order), so readLimits accepts the deviceId for the MOCK-scoped contract
- * and ignores it (the M17f step-4 N2 note: the domain is per-device; the
- * MOCK keys on the deviceId - the real layer reads the one card domain).
+ * The real adapter keeps one power-domain context per Sysman device. The
+ * physical BDF proof from the parent inventory selects that context; a
+ * multi-GPU request without a matching proof is refused instead of falling
+ * back to the first enumerated card. This is required because the helper's
+ * Sysman enumeration order is not the app's GPU order.
  *
  * @param {{
  *   findLoader?: () => string | null,
@@ -51,11 +51,45 @@ const W = (powerMw) => Math.round((powerMw / 1000) * 10) / 10;
  * }} [opts]
  */
 export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = loadSysman, log = (s) => console.log(`[sysman] ${s}`) } = {}) {
-  /** @type {{ lib: object, pwrHandle: unknown } | null} */
+  /** @type {{ lib: object, devices: Array<{ pwrHandle: unknown, bdf: string|null }> } | null} */
   let ready = null;
   /** @type {string | null} */
   let degradeReason = null;
   let degradeNoted = false;
+
+  const normalizeBdf = (value) => {
+    if (typeof value === 'string') {
+      const match = value.trim().match(/^(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,2}):([0-9a-f]{1,2})\.([0-7])$/i);
+      if (!match) return null;
+      return `${Number.parseInt(match[1] ?? '0', 16).toString(16).padStart(4, '0')}:${Number.parseInt(match[2], 16).toString(16).padStart(2, '0')}:${Number.parseInt(match[3], 16).toString(16).padStart(2, '0')}.${match[4]}`;
+    }
+    if (!value || typeof value !== 'object') return null;
+    const bdf = value;
+    const domain = Number(bdf.domain ?? bdf.segment ?? 0);
+    const bus = Number(bdf.bus);
+    const device = Number(bdf.device);
+    const fn = Number(bdf.function ?? bdf.func ?? 0);
+    if (![domain, bus, device, fn].every(Number.isInteger)
+      || domain < 0 || bus < 0 || device < 0 || fn < 0) return null;
+    return `${domain.toString(16).padStart(4, '0')}:${bus.toString(16).padStart(2, '0')}:${device.toString(16).padStart(2, '0')}.${fn}`;
+  };
+
+  const targetBdf = (physicalTarget) => normalizeBdf(physicalTarget?.bdf ?? physicalTarget?.controllerBdf);
+
+  const resolveDevice = (devices, deviceId = 0, physicalTarget = null, forProbe = false) => {
+    const wantedBdf = targetBdf(physicalTarget);
+    if (wantedBdf) {
+      const matches = devices.filter((device) => device.bdf === wantedBdf);
+      return matches.length === 1 ? matches[0] : null;
+    }
+    if (devices.length === 1) return devices[0];
+    // The helper's init probe is read-only and needs one usable context to
+    // establish readiness. Actual reads/writes always carry the parent
+    // physical proof after the IPC routing fix, so no production operation
+    // can use this ordinal fallback.
+    if (forProbe && devices.length > 0) return devices[0];
+    return null;
+  };
 
   const ensure = () => {
     if (ready !== null) return ready;
@@ -78,9 +112,9 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       return null;
     }
     try {
-      // The ze/zes init chain (the M2b probe pattern - match by
-      // enumeration order: ze and zes enumerate the same devices in the
-      // same order, the documented Level Zero contract).
+      // The ze/zes init chain (the M2b probe pattern). The ze list is kept
+      // for loader/device readiness, while the Sysman list below is routed
+      // by each adapter's own PCI/BDF properties rather than by ordinal.
       let r = lib.zeInit(0);
       if (!zeOk(r)) throw new Error(`zeInit: ${describeZeResult(r)}`);
       const zeDriverCountBuf = koffi.alloc('uint32', 1);
@@ -121,48 +155,61 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       r = lib.zesDeviceGet(zesDriver, zesCountBuf, zesDevBuf);
       if (!zeOk(r)) throw new Error(`zesDeviceGet fill: ${describeZeResult(r)}`);
 
-      // M17h THE DOMAIN-RESOLUTION FIX (the root cause of the dev-box
-      // 'PL1 - / PL2 -' + the companion degrade): the power domain resolves
-      // via zesDeviceEnumPowerDomains FIRST (the two-step count+fill - the
-      // enumerateHandles helper, sysman-bindings.js - the general spec'd
-      // contract; the dev A770: SUCCESS count 1, the domain reads the
-      // limits) with zesDeviceGetCardPowerDomain as the FALLBACK when the
-      // enum yields NO USABLE domain (count 0, an enum error, OR the
-      // enumerated handle FAILS a one-shot zesPowerGetLimits probe at
-      // ensure()-time - the Acer box's getter path is PROVEN-GOOD today
-      // while its enum behavior is unknown, so the fallback fires on 'no
-      // usable domain from the enum', never only on the enum call failing).
-      const zesDev = koffi.decode(zesDevBuf, 0, 'void*');
-      const en = enumerateHandles((countBuf, arr) => lib.zesDeviceEnumPowerDomains(zesDev, countBuf, arr));
-      let pwrHandle = null;
-      let enumVerdict = null;
-      if (!zeOk(en.result)) {
-        enumVerdict = `zesDeviceEnumPowerDomains: ${describeZeResult(en.result)}`;
-      } else if (en.handles.length === 0) {
-        enumVerdict = 'zesDeviceEnumPowerDomains yielded no domains (count 0)';
-      } else {
-        // The one-shot probe: the FIRST enumerated handle that reads the
-        // limits is the usable domain; every handle failing the probe
-        // means the enum yielded NO usable domain (the round-1 S2 trigger).
-        for (const candidate of en.handles) {
-          const sb = koffi.alloc('zes_power_sustained_limit_t', 1);
-          const bb = koffi.alloc('zes_power_burst_limit_t', 1);
-          const pb = koffi.alloc('zes_power_peak_limit_t', 1);
-          if (zeOk(lib.zesPowerGetLimits(candidate, sb, bb, pb))) { pwrHandle = candidate; break; }
+      // M163: resolve a power-domain context for EVERY Sysman device. The
+      // PCI API is optional on older loaders, but when present it gives the
+      // exact BDF needed to route A770/B580 (and arbitrary future MGPU
+      // combinations) without trusting enumeration order.
+      const devices = [];
+      for (let i = 0; i < zesDevCount; i++) {
+        const zesDev = koffi.decode(zesDevBuf, i * 8, 'void*');
+        let bdf = null;
+        if (typeof lib.zesDevicePciGetProperties === 'function') {
+          try {
+            const pciBuf = koffi.alloc('zes_pci_properties_t', 1);
+            koffi.encode(pciBuf, 'zes_pci_properties_t', { stype: 2, pNext: null });
+            const pciRes = lib.zesDevicePciGetProperties(zesDev, pciBuf);
+            if (zeOk(pciRes)) {
+              const props = koffi.decode(pciBuf, 'zes_pci_properties_t');
+              bdf = normalizeBdf(props.address);
+            }
+          } catch {
+            bdf = null;
+          }
         }
-        if (pwrHandle === null) enumVerdict = 'the enumerated power domains failed the one-shot zesPowerGetLimits probe';
-      }
-      if (pwrHandle === null) {
-        // The getter fallback (the M17f consumer's original call).
-        const pwrBuf = koffi.alloc('void*', 1);
-        r = lib.zesDeviceGetCardPowerDomain(zesDev, pwrBuf);
-        if (zeOk(r)) {
-          pwrHandle = koffi.decode(pwrBuf, 0, 'void*');
+
+        // Prefer the enumerated power domains, with the card-domain getter
+        // as the compatibility fallback used by older Intel drivers.
+        const en = enumerateHandles((countBuf, arr) => lib.zesDeviceEnumPowerDomains(zesDev, countBuf, arr));
+        let pwrHandle = null;
+        let enumVerdict = null;
+        if (!zeOk(en.result)) {
+          enumVerdict = `zesDeviceEnumPowerDomains: ${describeZeResult(en.result)}`;
+        } else if (en.handles.length === 0) {
+          enumVerdict = 'zesDeviceEnumPowerDomains yielded no domains (count 0)';
         } else {
-          throw new Error(`no usable power domain: ${enumVerdict}; fallback zesDeviceGetCardPowerDomain: ${describeZeResult(r)}`);
+          for (const candidate of en.handles) {
+            const sb = koffi.alloc('zes_power_sustained_limit_t', 1);
+            const bb = koffi.alloc('zes_power_burst_limit_t', 1);
+            const pb = koffi.alloc('zes_power_peak_limit_t', 1);
+            if (zeOk(lib.zesPowerGetLimits(candidate, sb, bb, pb))) { pwrHandle = candidate; break; }
+          }
+          if (pwrHandle === null) enumVerdict = 'the enumerated power domains failed the one-shot zesPowerGetLimits probe';
         }
+        if (pwrHandle === null) {
+          const pwrBuf = koffi.alloc('void*', 1);
+          r = lib.zesDeviceGetCardPowerDomain(zesDev, pwrBuf);
+          if (zeOk(r)) {
+            pwrHandle = koffi.decode(pwrBuf, 0, 'void*');
+          } else {
+            // One adapter without a power domain must not hide the usable
+            // contexts of the other adapters.
+            log(`Sysman GPU ${i + 1} has no usable power domain (${enumVerdict}; fallback ${describeZeResult(r)})`);
+          }
+        }
+        if (pwrHandle !== null) devices.push({ pwrHandle, bdf });
       }
-      ready = { lib, pwrHandle };
+      if (devices.length === 0) throw new Error('no usable power domain on any Sysman device');
+      ready = { lib, devices };
       return ready;
     } catch (err) {
       degradeReason = err instanceof Error ? err.message : String(err);
@@ -177,19 +224,25 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
   };
 
   return {
-    /** M17f (step-4 N2): the deviceId is ACCEPTED for the mock-scoped
-     *  contract and IGNORED - the real layer resolves the one enumerated
-     *  card power domain (device-agnostic).
+    /** M163: resolve the requested Sysman power domain by physical BDF.
+     *  A multi-GPU request without a matching proof is an honest null, never
+     *  an ordinal fallback to the first GPU.
      *  @param {number} [deviceId]
+     *  @param {object|null} [physicalTarget]
      *  @returns {{ sustainedW: number, burstW: number, peakW: number } | null} */
-    readLimits(deviceId) {
+    readLimits(deviceId = 0, physicalTarget = null) {
       const r = ensure();
       if (!r) { noteDegrade(); return null; }
+      const device = resolveDevice(r.devices, deviceId, physicalTarget, physicalTarget?.probe === true);
+      if (!device) {
+        log('Sysman read skipped: the requested GPU has no unique PCI/BDF power-domain match');
+        return null;
+      }
       try {
         const sb = koffi.alloc('zes_power_sustained_limit_t', 1);
         const bb = koffi.alloc('zes_power_burst_limit_t', 1);
         const pb = koffi.alloc('zes_power_peak_limit_t', 1);
-        const res = r.lib.zesPowerGetLimits(r.pwrHandle, sb, bb, pb);
+        const res = r.lib.zesPowerGetLimits(device.pwrHandle, sb, bb, pb);
         if (!zeOk(res)) { noteDegrade(); return null; }
         const sustained = koffi.decode(sb, 'zes_power_sustained_limit_t');
         const burst = koffi.decode(bb, 'zes_power_burst_limit_t');
@@ -208,14 +261,20 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
      * errorCode is the MAPPED ze_result name (e.g. 'ERROR_NOT_AVAILABLE' -
      * the arbitration-vs-enforcement taxonomy keys on it).
      * @param {{ sustainedW: number, burstW: number }} limits
+     * @param {number} [deviceId]
+     * @param {object|null} [physicalTarget]
      * @returns {{ ok: boolean, errorCode?: string, message?: string }}
      */
-    setLimits({ sustainedW, burstW }) {
+    setLimits({ sustainedW, burstW }, deviceId = 0, physicalTarget = null) {
       if (!Number.isFinite(sustainedW) || !Number.isFinite(burstW)) {
         return { ok: false, errorCode: 'invalid-argument', message: 'sustainedW and burstW must be finite numbers' };
       }
       const r = ensure();
       if (!r) { noteDegrade(); return { ok: false, errorCode: 'unavailable', message: 'the sysman layer is unavailable (ze_loader.dll or the card power domain absent)' }; }
+      const device = resolveDevice(r.devices, deviceId, physicalTarget);
+      if (!device) {
+        return { ok: false, errorCode: 'unsupported', message: 'the requested GPU has no unique PCI/BDF Sysman power-domain match' };
+      }
       try {
         // Preserve the current interval (the sustained struct's interval
         // field - ms) from a live read when one is available.
@@ -223,14 +282,14 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
         const sb = koffi.alloc('zes_power_sustained_limit_t', 1);
         const bb = koffi.alloc('zes_power_burst_limit_t', 1);
         const pb = koffi.alloc('zes_power_peak_limit_t', 1);
-        const cur = r.lib.zesPowerGetLimits(r.pwrHandle, sb, bb, pb);
+        const cur = r.lib.zesPowerGetLimits(device.pwrHandle, sb, bb, pb);
         if (zeOk(cur)) {
           const sustained = koffi.decode(sb, 'zes_power_sustained_limit_t');
           if (Number.isFinite(sustained.interval)) interval = sustained.interval;
         }
         koffi.encode(sb, 'zes_power_sustained_limit_t', { enabled: 1, power: Math.round(sustainedW * 1000), interval });
         koffi.encode(bb, 'zes_power_burst_limit_t', { enabled: 1, power: Math.round(burstW * 1000) });
-        const res = r.lib.zesPowerSetLimits(r.pwrHandle, sb, bb, null);
+        const res = r.lib.zesPowerSetLimits(device.pwrHandle, sb, bb, null);
         if (!zeOk(res)) {
           return { ok: false, errorCode: describeZeResult(res).split(' ')[0], message: describeZeResult(res) };
         }
@@ -289,11 +348,9 @@ export function createMockSysmanPowerLimits({ backend }) {
   return {
     /** the recorded setLimits calls ({ sustainedW, burstW } each) */
     get calls() { return calls; },
-    /** M17f (step-4 N2): DEVICE-SCOPED - the read keys on the deviceId
-     *  (the multi-device read-out mismatch fix: the mock hardcoded device
-     *  0, so the iGPU's honest no-PL '-' was masked by the a770's fixture
-     *  mirror). The domain is per-device. */
-    async readLimits(deviceId = 0) {
+    /** M163: DEVICE-SCOPED - the mock keys on deviceId and accepts the same
+     *  physicalTarget argument as the real Sysman adapter. */
+    async readLimits(deviceId = 0, physicalTarget = null) {
       let pl = null;
       try {
         const s = await backend.getCurrentSettings(deviceId);
@@ -310,10 +367,9 @@ export function createMockSysmanPowerLimits({ backend }) {
         : pl;
       return { sustainedW: watts, burstW: watts, peakW: 800 };
     },
-    /** M21: the deviceId rides as the SECOND argument (the routed companion
-     *  passes its own deviceId through; the real adapter + the proxy take
-     *  the limits object only and ignore the extra argument). */
-    async setLimits({ sustainedW, burstW }, deviceId = 0) {
+    /** M163: the routed companion passes both the deviceId and physical
+     *  target through the same contract used by the real adapter. */
+    async setLimits({ sustainedW, burstW }, deviceId = 0, physicalTarget = null) {
       calls.push({ sustainedW, burstW });
       // M21: the sysman-PRIMARY state write (see the doc above) - the
       // CANONICAL per-device accessor; silent about its verdict (the mock

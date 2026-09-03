@@ -2086,7 +2086,10 @@ export function createIpcHandlers({
         if (target?.synthetic || target?.backendKind === 'os') return null;
         if (!sysmanPowerLimits) return null;
         try {
-          return await sysmanPowerLimits.readLimits(deviceId);
+          // M163: Sysman is a separate process/context, so carry the same
+          // physical proof used by elevated applies. A session id alone is
+          // not enough when the helper enumerates multiple adapters.
+          return await sysmanPowerLimits.readLimits(deviceId, physicalTargetOf(target));
         } catch {
           return null;
         }

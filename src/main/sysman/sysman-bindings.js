@@ -210,6 +210,32 @@ const zes_power_peak_limit_t = koffi.struct('zes_power_peak_limit_t', {
   powerDC: 'int32',
 });
 
+// zes_pci_properties_t is the stable physical identity seam for Sysman
+// devices. The helper must not assume that ze/zes enumeration order maps to
+// the app's GPU order when more than one adapter is installed.
+const zes_pci_address_t = koffi.struct('zes_pci_address_t', {
+  domain: 'uint32',
+  bus: 'uint32',
+  device: 'uint32',
+  function: 'uint32',
+});
+
+const zes_pci_speed_t = koffi.struct('zes_pci_speed_t', {
+  gen: 'int32',
+  width: 'int32',
+  maxBandwidth: 'int64',
+});
+
+const zes_pci_properties_t = koffi.struct('zes_pci_properties_t', {
+  stype: 'uint32',
+  pNext: 'void*',
+  address: 'zes_pci_address_t',
+  maxSpeed: 'zes_pci_speed_t',
+  haveBandwidthCounters: 'uint8',
+  havePacketCounters: 'uint8',
+  haveReplayCounters: 'uint8',
+});
+
 // zes_overclock_properties_t { stype u32 @0, pNext void* @8, domainType u32
 //   @16, AvailableControls u32 @20, VFProgramType u32 @24, NumberOfVFPoints
 //   u32 @28 } = 32 (align 8)
@@ -235,6 +261,9 @@ const EXPECTED_SIZES = {
   zes_power_sustained_limit_t: 12,
   zes_power_burst_limit_t: 8,
   zes_power_peak_limit_t: 8,
+  zes_pci_address_t: 16,
+  zes_pci_speed_t: 16,
+  zes_pci_properties_t: 56,
   zes_overclock_properties_t: 32,
   zes_control_property_t: 40,
 };
@@ -305,6 +334,10 @@ export function loadSysman(dllPath) {
   bind('zesInit', 'uint32', ['uint32']); // zes_init_flags_t (must be 0)
   bind('zesDriverGet', 'uint32', ['uint32*', 'void**']); // zes_driver_handle_t*
   bind('zesDeviceGet', 'uint32', ['void*', 'uint32*', 'void**']); // (zes driver, count, zes_device_handle_t*)
+  // Physical BDF identity for per-device Sysman routing. Optional because
+  // older loaders may not export this diagnostic API; the consumer degrades
+  // safely instead of falling back to an ambiguous ordinal.
+  bind('zesDevicePciGetProperties', 'uint32', ['void*', 'zes_pci_properties_t*']);
 
   // Overclock waiver + state
   bind('zesDeviceSetOverclockWaiver', 'uint32', ['void*']);
