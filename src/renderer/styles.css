@@ -2211,35 +2211,73 @@ input[type="number"] {
 
 /* ------------------------------------------------------------ monitoring */
 
-/* M168: the Monitoring readout follows the Metrics layout users know from
-   GPU control suites: every source gets its own compact, independently
-   collapsible panel. The panel grid stays dense on wide windows and becomes
-   one-column without hiding any adapter on smaller windows. */
+/* M169: the Monitoring surface follows the compact Metrics workspace from
+   GPU control suites: cards on the left, an always-visible metric chooser on
+   the right, and a separate detailed trend inspector below. */
+.monitoring-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(238px, 276px); gap: 12px; align-items: start; }
+.monitoring-metrics-column { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .telemetry-metrics-card { padding: 12px; }
-.telemetry-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 8px; }
-.telemetry-panel { min-width: 0; padding: 0; overflow: hidden; border-color: color-mix(in srgb, var(--accent) 18%, var(--border)); background: color-mix(in srgb, var(--bg-elev) 90%, var(--accent) 10%); }
-.telemetry-panel-head { appearance: none; width: 100%; min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 0; color: var(--text); background: transparent; font: 650 12.5px var(--font); text-align: left; cursor: pointer; }
+.telemetry-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.telemetry-panel { min-width: 0; padding: 0; overflow: hidden; border-color: color-mix(in srgb, var(--accent) 24%, var(--border)); background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 8%), var(--bg-elev)); }
+.telemetry-panel[data-telemetry-panel="fps"] { grid-column: 1 / -1; }
+.telemetry-panel-head { appearance: none; width: 100%; min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 0; color: var(--text); background: transparent; font: 650 12.5px var(--font); text-align: left; cursor: pointer; }
 .telemetry-panel-head:hover, .telemetry-panel-head:focus-visible { background: color-mix(in srgb, var(--accent-soft) 70%, transparent); outline: none; }
 .telemetry-panel-head:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
 .telemetry-panel-chevron { width: 11px; color: var(--accent); font-size: 12px; }
 .telemetry-panel-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .telemetry-panel-badge { margin-left: auto; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 7px; border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border)); border-radius: 999px; color: var(--text-muted); font: 550 10px var(--mono); }
-.telemetry-panel-body { border-top: 1px solid var(--border); padding: 8px; }
+.telemetry-panel-body { border-top: 1px solid var(--border); padding: 7px; }
 .telemetry-panel-body[hidden] { display: none; }
-.telemetry-metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 5px; }
-.telemetry-metric { min-width: 0; min-height: 53px; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto 1fr; column-gap: 4px; padding: 6px 7px; border: 1px solid color-mix(in srgb, var(--border) 86%, var(--accent)); border-radius: 6px; background: color-mix(in srgb, var(--bg-inset) 82%, var(--bg-elev)); }
-.telemetry-metric-value { grid-column: 1; grid-row: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font: 650 16px var(--mono); line-height: 1.15; }
+.telemetry-metric-grid { display: flex; flex-direction: column; gap: 5px; }
+.telemetry-metric { min-width: 0; min-height: 60px; display: grid; grid-template-columns: minmax(116px, .62fr) minmax(94px, 1fr); align-items: center; gap: 8px; padding: 6px 7px; border: 1px solid color-mix(in srgb, var(--border) 86%, var(--accent)); border-radius: 6px; background: color-mix(in srgb, var(--bg-inset) 82%, var(--bg-elev)); }
+.telemetry-metric-copy { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; align-items: end; }
+.telemetry-metric-value { grid-column: 1; grid-row: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font: 650 22px var(--mono); line-height: 1.05; font-variant-numeric: tabular-nums; }
 .telemetry-metric-unit { grid-column: 2; grid-row: 1; align-self: end; color: var(--accent); font: 550 10px var(--mono); white-space: nowrap; }
-.telemetry-metric-label { grid-column: 1 / -1; grid-row: 2; min-width: 0; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); font-size: 10px; }
+.telemetry-metric-label { grid-column: 1 / -1; grid-row: 2; min-width: 0; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 10px; }
+.telemetry-metric-sparkline { display: block; width: 100%; height: 46px; min-width: 0; border-radius: 3px; background: var(--bg-inset); }
+.telemetry-metric-sparkline-empty { background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px); background-size: 25% 50%, 25% 100%; opacity: .7; }
 .telemetry-section-heading { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 9px; }
 .telemetry-section-heading .card-title { margin: 0; }
 .telemetry-section-heading .card-note { margin: 3px 0 0; }
 .telemetry-live-badge { flex: 0 0 auto; margin-left: auto; padding: 4px 8px; border: 1px solid color-mix(in srgb, var(--success) 40%, var(--border)); border-radius: 999px; color: var(--success); font: 650 10px var(--mono); white-space: nowrap; }
 .telemetry-live-badge-muted { border-color: var(--border); color: var(--text-dim); }
-.telemetry-trends { padding: 12px; }
+.telemetry-tracking-card { min-width: 0; padding: 12px; position: sticky; top: 10px; }
+.telemetry-tracking-heading { display: flex; align-items: flex-start; gap: 8px; }
+.telemetry-tracking-heading .card-title { margin: 0; }
+.telemetry-tracking-heading .card-note { margin: 3px 0 0; }
+.telemetry-tracking-live { margin-left: auto; padding: 3px 7px; border: 1px solid color-mix(in srgb, var(--success) 42%, var(--border)); border-radius: 999px; color: var(--success); font: 650 10px var(--mono); }
+.telemetry-log-button { width: 100%; margin: 10px 0; }
+.telemetry-sampling-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
+.telemetry-sampling-row strong { color: var(--text); font: 650 11px var(--mono); }
+.telemetry-tracking-label { margin: 12px 0 5px; color: var(--text-muted); font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; }
+.telemetry-tracking-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.telemetry-tracking-group + .telemetry-tracking-group { border-top: 1px solid var(--border); }
+.telemetry-tracking-group-head { appearance: none; width: 100%; display: flex; align-items: center; gap: 7px; min-height: 42px; padding: 7px 8px; border: 0; color: var(--text); background: transparent; text-align: left; cursor: pointer; font: inherit; }
+.telemetry-tracking-group-head:hover, .telemetry-tracking-group-head:focus-visible { background: var(--accent-soft); outline: none; }
+.telemetry-tracking-chevron { width: 11px; color: var(--accent); }
+.telemetry-tracking-group-copy { min-width: 0; display: grid; gap: 1px; }
+.telemetry-tracking-group-copy strong { font-size: 11.5px; }
+.telemetry-tracking-group-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); font: 500 9.5px var(--mono); }
+.telemetry-tracking-count { margin-left: auto; min-width: 19px; padding: 2px 5px; border-radius: 999px; background: var(--bg-inset); color: var(--text-dim); font: 550 10px var(--mono); text-align: center; }
+.telemetry-tracking-options[hidden] { display: none; }
+.telemetry-tracking-option { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 5px; padding: 5px 8px 5px 25px; border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); color: var(--text-muted); font-size: 10.5px; }
+.telemetry-tracking-option-mark { color: var(--accent); font-size: 14px; line-height: 1; }
+.telemetry-tracking-option-copy { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.telemetry-tracking-toggle { display: inline-flex; align-items: center; justify-content: center; min-width: 39px; padding: 3px 6px; border: 1px solid var(--border-strong); border-radius: 999px; color: var(--text-dim); background: var(--control-bg); font: 650 9px var(--mono); cursor: pointer; }
+.telemetry-tracking-toggle.active { border-color: color-mix(in srgb, var(--accent) 70%, var(--border)); color: var(--on-accent); background: var(--accent); }
+.telemetry-trends { margin-top: 12px; padding: 12px; }
 .telemetry-trend-stack { gap: 6px; }
 .seg-source { margin-left: auto; min-width: 0; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); font: 500 10px var(--mono); }
 .telemetry-trends .seg-unit { margin-left: 0; }
+
+@media (max-width: 900px) {
+  .monitoring-workspace { grid-template-columns: 1fr; }
+  .telemetry-tracking-card { position: static; }
+}
+@media (max-width: 620px) {
+  .telemetry-metrics { grid-template-columns: 1fr; }
+  .telemetry-metric { grid-template-columns: minmax(108px, .7fr) minmax(80px, 1fr); }
+}
 
 .seg-stack {
   display: flex;

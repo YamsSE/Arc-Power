@@ -3858,6 +3858,23 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`M168: telemetry GPU/GPU memory panels are not paired: ${telemetryPanelCounts}`);
   }
   step('mon-panels', `Metrics has independent FPS, Latency, CPU, System memory, GPU and GPU memory panels (${panelCounts.gpu} GPU pair${panelCounts.gpu === 1 ? '' : 's'})`);
+  const trackingSnapshot = await js(`JSON.stringify({ groups: Array.from(document.querySelectorAll('.telemetry-tracking-group')).map((g) => g.querySelector('.telemetry-tracking-group-copy strong')?.textContent ?? ''), miniGraphs: document.querySelectorAll('.telemetry-metric canvas.telemetry-metric-sparkline').length })`);
+  const tracking = JSON.parse(trackingSnapshot);
+  if (tracking.groups.length < 6 || (panelCounts.gpu > 1 && !tracking.groups.includes('GPU 2'))) {
+    fail(`M169: Tracking does not expose independent categories for every source: ${trackingSnapshot}`);
+  }
+  await js(`document.querySelector('.telemetry-tracking-group-head')?.click()`);
+  if (!(await waitFor(win, `document.querySelector('.telemetry-tracking-options')?.hidden === false`))) {
+    fail('M169: Tracking category did not expand');
+  }
+  const trackingToggle = await js(`document.querySelector('.telemetry-tracking-option button.telemetry-tracking-toggle') !== null`);
+  if (!trackingToggle) fail('M169: Tracking category has no per-readout toggle');
+  await js(`document.querySelector('.telemetry-tracking-option button.telemetry-tracking-toggle')?.click()`);
+  if (!(await waitFor(win, `document.querySelector('#mon-readout-fps .mon-fps-tile')?.hidden === true`))) {
+    fail('M169: Tracking toggle did not hide the selected readout');
+  }
+  await js(`document.querySelector('.telemetry-tracking-option button.telemetry-tracking-toggle')?.click()`);
+  step('mon-tracking', `Tracking exposes ${tracking.groups.length} independent categories, per-readout toggles, and ${tracking.miniGraphs} compact live mini-graphs`);
   const allHidden = await js(`Array.from(document.querySelectorAll('.seg-card .seg-body')).every((b) => b.classList.contains('is-collapsed'))`);
   if (!allHidden) fail('segment defaults wrong: every segment should start collapsed');
   step('mon-segments', '5 segments render; every graph starts collapsed');
