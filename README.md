@@ -91,3 +91,7 @@ Arc Power is not affiliated with or endorsed by Intel Corporation.
 - [Feature and safety details](docs/features.md)
 - [License - GPL-2.0](LICENSE)
 - [Third-party notices](THIRD_PARTY_NOTICES.txt)
+
+## Credits
+
+OBS integration powered by [Ascent OBS](https://github.com/judehek/ascent-obs).
