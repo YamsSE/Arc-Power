@@ -732,8 +732,11 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         : null,
     ]);
 
+    // Active state is per physical GPU, not per focused GPU. The focused GPU
+    // still controls which card can be overwritten, but it must not decide
+    // which already-loaded profile receives the blue active treatment.
     const filtered = envelope.profiles
-      .filter((p) => showFilter === 'all' || profileIsActiveForGpu(p, envelope.settings, envelope.profiles, gpuIdentity.key));
+      .filter((p) => showFilter === 'all' || activeIds.has(p.id));
     filtered.sort((a, b) => sortMode === 'recent' ? b.createdAt.localeCompare(a.createdAt) : a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
     const listCard = el('section', { class: 'profile-browser' }, [
       el('div', { class: 'profile-browser-head' }, [
@@ -761,8 +764,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         ? el('p', { class: 'card-note profile-empty', text: envelope.profiles.length === 0 ? 'No profiles yet - add one to get started.' : 'No profiles match the current filter.' })
         : el('div', { class: `profile-list profile-cards ${cardMode === 'grid' ? 'profile-grid' : 'profile-list-mode'}` }, filtered.map((p) => profileRow(
           p,
-          profileIsActiveForGpu(p, envelope.settings, envelope.profiles, gpuIdentity.key),
-          profileIsActiveOnOtherGpu(p, envelope.settings, envelope.profiles, gpuIdentity.key),
+          activeIds.has(p.id),
           gpuIdentity.key,
         ))),
     ]);
@@ -772,7 +774,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     root.append(modeToggle(), bootCard, listCard);
   };
 
-  const profileRow = (p: Profile, active: boolean, activeOnOtherGpu: boolean, deviceKey: string | null): HTMLElement => {
+  const profileRow = (p: Profile, active: boolean, deviceKey: string | null): HTMLElement => {
     const usableOnCurrentGpu = profileMatchesGpu(p, deviceKey);
     const gpuLabel = profileOwnerLabel(p);
     // F3 instant apply (M2C-B): the Load button is a single trigger - one
@@ -789,14 +791,13 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       void onLoad(p, () => { loadInFlight = false; });
     });
     const row = el('div', {
-      class: `profile-row${active ? ' profile-active' : ''}${activeOnOtherGpu ? ' profile-active-other' : ''}`,
+      class: `profile-row${active ? ' profile-active' : ''}`,
       dataset: { id: p.id },
     }, [
       el('div', { class: 'profile-info' }, [
         el('span', { class: 'profile-name', text: p.name }),
         el('span', { class: 'badge profile-gpu-badge', text: gpuLabel, title: 'GPU this tuning profile belongs to' }),
-        active ? el('span', { class: 'badge profile-badge', text: 'Active', title: 'Active for this GPU' })
-          : activeOnOtherGpu ? el('span', { class: 'badge profile-badge', text: 'Active elsewhere', title: 'Active on another GPU' }) : null,
+        active ? el('span', { class: 'badge profile-badge', text: 'Active', title: 'Active for this profile\'s GPU' }) : null,
       ]),
       el('div', { class: 'chips profile-chips' }, settingsSummary(p.settings, caps, p.deviceName ?? caps?.deviceName ?? '').map((t) => el('span', { class: 'chip', text: t }))),
       el('div', { class: 'profile-actions' }, [
