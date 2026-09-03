@@ -25,6 +25,9 @@
 import { el, clear } from '../dom.ts';
 import type { Store } from '../router.ts';
 import { decodeDriverVersion, formatDriverDate } from '../pure/driver.ts';
+import { dashboardGpuOrder } from '../pure/dashboard.ts';
+import { chipLabelGpu } from '../pure/chip-label.ts';
+import type { DeviceInfo } from '../types.ts';
 
 export { healthLevel as healthStatus } from '../pure/status.ts';
 export type { HealthLevel as StatusLevel } from '../pure/status.ts';
@@ -61,6 +64,28 @@ export function driverLine(device: { driverVersion: string } | null | undefined,
   if (!version) return null;
   const date = formatDriverDate(driverDate);
   return date ? `${version} - ${date}` : version;
+}
+
+export interface HeaderGpuBadges {
+  index: number;
+  label: string;
+  displayOutput: boolean;
+}
+
+/**
+ * M159: keep the shell context compact while using the same display-output
+ * ordering as the dashboard. The model is deliberately reduced to the Arc
+ * chip token (A770/B580/etc.) so enriched names with VRAM suffixes do not
+ * make the header grow or wrap.
+ */
+export function headerGpuBadges(devices: DeviceInfo[], selectedId: number | null): HeaderGpuBadges | null {
+  const ordered = dashboardGpuOrder(devices);
+  const index = ordered.findIndex((device) => device.id === selectedId);
+  if (index < 0) return null;
+  const device = ordered[index];
+  const chip = chipLabelGpu(device.name);
+  const arcChip = chip?.match(/\b[AB]\d{3,4}\b/i)?.[0] ?? chip ?? 'GPU';
+  return { index: index + 1, label: arcChip, displayOutput: device.displayActive === true };
 }
 
 export class GpuHeader {
@@ -115,17 +140,22 @@ export class GpuHeader {
     const gpuMeta = noIntelPresentation
       ? 'Non supported GPU'
       : s.bootError ?? '';
+    const badges = !noIntelPresentation ? headerGpuBadges(s.devices, s.deviceId) : null;
+    const identity = badges
+      ? el('div', { class: 'gpu-header-pills', 'aria-label': `${badges.label} GPU ${badges.index}${badges.displayOutput ? ', Display Output' : ''}` }, [
+          el('span', { class: 'chip gpu-header-pill gpu-header-gpu-pill', text: `GPU ${badges.index} · ${badges.label}` }),
+          badges.displayOutput ? el('span', { class: 'chip gpu-header-pill gpu-header-output-pill', text: 'Display Output' }) : null,
+          gpuMeta ? el('span', { class: 'gpu-meta', text: gpuMeta }) : null,
+        ])
+      : el('div', { class: 'gpu-legacy-identity' }, [
+          el('div', { class: 'gpu-name', text: gpuName }),
+          gpuMeta ? el('div', { class: 'gpu-meta', text: gpuMeta }) : null,
+        ]);
     clear(this.mount);
     this.mount.append(
       el('div', { class: 'gpu-header' }, [
         el('div', { class: 'gpu-identity' }, [
-          el('div', { class: 'gpu-name', text: gpuName }),
-          // M4-A/M5: the display label carries the release-stage suffix
-          // (' Beta' for the -beta.x line only - the M11 "Alpha" scheme
-          // removal: a stable release shows the plain version, e.g. the
-          // 1.0 Release 'Arc Power Ver. 1.0.0'); the app:version IPC keeps
-          // the bare semver (test/ipc-core pins the package.json version).
-          el('div', { class: 'gpu-meta', text: gpuMeta }),
+          identity,
         ]),
         el('div', { class: 'gpu-status' }, [fsSelect, mockBadge]),
       ]),
