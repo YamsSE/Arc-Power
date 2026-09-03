@@ -4208,6 +4208,14 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (gameLabels.includes('Endurance Gaming')) fail('M55: Endurance Gaming was exposed on the discrete mock adapter');
     await js(`(() => { const controlFor = (label) => Array.from(document.querySelectorAll('.game-profile-detail .profile-setting-row')).find((row) => row.querySelector('.profile-setting-label strong')?.textContent.trim() === label)?.querySelector('select'); const frame = controlFor('Frame Synchronization'); const latency = controlFor('Low Latency Mode'); if (!frame || !latency) return false; frame.value = 'vsync-off'; frame.dispatchEvent(new Event('change', { bubbles: true })); latency.value = 'on'; latency.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
     if (!(await waitFor(win, `window.arcPower.gameCatalogList().then((e) => e.settings.some((s) => s.exePath.endsWith('cyberpunk2077.exe') && s.graphics.flipMode === 'vsync-off' && s.graphics.lowLatency === 'on'))`, 8000))) fail('M55: Game Profile settings did not read back independently from the catalog');
+    if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
+      const targetCount = await js(`document.querySelectorAll('.game-profile-gpu-switch button').length`);
+      if (targetCount < 2) fail(`M163: Game Profile GPU switch exposed ${targetCount} target(s), expected at least two`);
+      await js(`document.querySelectorAll('.game-profile-gpu-switch button')[1]?.click()`);
+      if (!(await waitFor(win, `document.querySelectorAll('.game-profile-gpu-switch button.active').length === 1 && document.querySelector('.game-profile-target-copy small')?.textContent?.trim().length > 0`))) fail('M163: switching Game Profile GPU targets did not update the selected adapter');
+      await js(`document.querySelectorAll('.game-profile-gpu-switch button')[0]?.click()`);
+      if (!(await waitFor(win, `document.querySelectorAll('.game-profile-gpu-switch button.active').length === 1`))) fail('M163: Game Profile GPU switch did not return to the first adapter');
+    }
     await js(`document.querySelector('.game-profile-back')?.click()`);
     await js(`Array.from(document.querySelectorAll('.game-catalog-card')).find((b) => (b.dataset.exePath ?? '').endsWith('rid-verify-one.exe'))?.click()`);
     if (!(await waitFor(win, `!!document.querySelector('.game-profile-back') && (document.body.textContent ?? '').includes('Back to catalog')`))) fail('M140: clicking the unknown fixture did not open the game detail view');
@@ -5241,8 +5249,8 @@ export async function runGraphicsVerify(win, backend) {
   // the device resolution to land before navigating (the page's deviceId
   // guard would otherwise show the honest 'No GPU available.' race state;
   // the initial 'Arc Power' placeholder must NOT satisfy the wait).
-  if (!(await waitFor(win, `(() => { const n = (document.querySelector('.gpu-name')?.textContent ?? '').trim(); return n.includes('Arc A770') || n === 'Non supported GPU' || n.includes('AMD Radeon'); })()`, 10000))) {
-    fail(`M8: the boot device resolution never landed (header '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}')`);
+  if (!(await waitFor(win, `(() => { const n = (document.querySelector('.gpu-name')?.textContent ?? '').trim(); const pills = Array.from(document.querySelectorAll('.gpu-header-gpu-pill')).map((p) => (p.textContent ?? '').trim()); return n.includes('Arc A770') || pills.some((p) => p.includes('A770')) || n === 'Non supported GPU' || n.includes('AMD Radeon'); })()`, 10000))) {
+    fail(`M8: the boot device resolution never landed (header '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}', pills '${await js(`Array.from(document.querySelectorAll('.gpu-header-gpu-pill')).map((p) => (p.textContent ?? '').trim()).join('|')`)}')`);
   }
   const navOrder = await js(`JSON.stringify(Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link-label')).map((l) => (l.textContent ?? '').trim()))`);
   const navLabels = JSON.parse(navOrder);

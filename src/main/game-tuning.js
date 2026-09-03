@@ -1,7 +1,7 @@
 // Foreground game -> OC profile lifecycle for executable-keyed Game Profiles.
 // The controller owns no persistence. It polls the existing foreground
-// detector and sidecar, applies a saved profile on entry, and restores the
-// active normal profile when that process exits.
+// detector and sidecar, applies every matching per-GPU assignment on entry,
+// and restores each target's captured normal profile when that process exits.
 
 import { canonicalExePath } from './store/game-profile-store.js';
 
@@ -21,6 +21,16 @@ function isProcessAliveDefault(pid) {
     // liveness answer; all other errors mean the process is gone.
     return err?.code === 'EPERM';
   }
+}
+
+function isDeviceKey(value) {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function deviceKeyMatches(device, key) {
+  return isDeviceKey(key) && device?.synthetic !== true && device?.backendKind !== 'os'
+    && device?.identityAmbiguous !== true
+    && (device?.deviceKey === key || (Array.isArray(device?.deviceKeys) && device.deviceKeys.includes(key)));
 }
 
 function stateToSettings(state) {
@@ -45,6 +55,45 @@ function applySucceeded(result) {
   return true;
 }
 
+function profileIdOf(value) {
+  return typeof value === 'string' && /^\S+$/.test(value) ? value : null;
+}
+
+/**
+ * Convert both the current legacy record and the new per-GPU shape into
+ * assignment descriptors. An explicit non-empty gpuProfiles array owns the
+ * record; the legacy fields are used only when that array is absent/empty.
+ */
+function assignmentsOf(game) {
+  if (Array.isArray(game?.gpuProfiles) && game.gpuProfiles.length > 0) {
+    return game.gpuProfiles.map((assignment) => ({
+      deviceKey: isDeviceKey(assignment?.deviceKey) ? assignment.deviceKey : null,
+      enabled: assignment?.enabled === true,
+      tuningProfileId: profileIdOf(assignment?.tuningProfileId),
+      legacyFallback: assignment?.deviceKey == null,
+    }));
+  }
+  return [{
+    deviceKey: null,
+    enabled: game?.enabled === true,
+    tuningProfileId: profileIdOf(game?.tuningProfileId),
+    legacyFallback: true,
+  }];
+}
+
+function profileCanApplyToAssignment(profile, assignment, target) {
+  const profileKey = isDeviceKey(profile?.deviceKey) ? profile.deviceKey : null;
+  if (assignment.deviceKey !== null) {
+    // The assignment itself is the explicit target for a legacy/unkeyed
+    // profile. A keyed profile, however, can only run on its own adapter.
+    return profileKey === null || profileKey === assignment.deviceKey || deviceKeyMatches(target, profileKey);
+  }
+  // Unkeyed profiles remain usable through the old persisted-deviceId path.
+  // A keyed legacy assignment is accepted only when its profile is keyed to
+  // the same physical target; it must never cross-apply to another adapter.
+  return profileKey === null || deviceKeyMatches(target, profileKey);
+}
+
 /**
  * @param {{
  *   foregroundApi: { detectProcess: () => Promise<{ pid: number, exePath: string } | null> },
@@ -52,6 +101,7 @@ function applySucceeded(result) {
  *   store: { loadProfiles: () => Promise<object[]>, loadSettings: () => Promise<object> },
  *   applyProfile: (deviceId: number, settings: object) => Promise<object>,
  *   readCurrent?: (deviceId: number) => Promise<object>,
+ *   listDevices?: () => Promise<Array<{ id: number, deviceKey?: string }>>,
  *   isProcessAlive?: (pid: number) => boolean,
  *   intervalMs?: number,
  * }} deps
@@ -62,7 +112,8 @@ export function createGameTuningController(deps) {
   let timer = null;
   let stopped = false;
   let active = null;
-  let lastFailedSignature = null;
+  let pendingRestore = null;
+  let failedAttempt = null;
   let inFlight = null;
 
   const loadSnapshot = async () => {
@@ -81,37 +132,133 @@ export function createGameTuningController(deps) {
     };
   };
 
-  const gameTargetFor = (processInfo, snapshot) => {
-    const exePath = canonicalExePath(processInfo?.exePath);
-    if (!exePath || !snapshot.catalog.some((entry) => entry?.exePath === exePath)) return null;
-    const game = snapshot.gameSettings.find((item) => item?.exePath === exePath);
-    if (!game || game.enabled !== true || typeof game.tuningProfileId !== 'string') return null;
-    const profile = snapshot.profiles.find((item) => item?.id === game.tuningProfileId);
-    if (!profile) return null;
-    return { exePath, game, profile };
+  const resolveAssignmentTargets = async (game, snapshot) => {
+    const assignments = assignmentsOf(game);
+    const needsInventory = assignments.some((assignment) => assignment.deviceKey !== null)
+      || typeof deps.listDevices === 'function';
+    let devices = null;
+    if (needsInventory && typeof deps.listDevices === 'function') {
+      try {
+        const listed = await deps.listDevices();
+        devices = Array.isArray(listed) ? listed : [];
+      } catch {
+        // A keyed assignment cannot be resolved without a current physical
+        // inventory. It is skipped below rather than falling back by ordinal.
+        devices = null;
+      }
+    }
+
+    const targets = [];
+    for (const assignment of assignments) {
+      if (!assignment.enabled || assignment.tuningProfileId === null) continue;
+      let target = null;
+      if (assignment.deviceKey !== null) {
+        if (!devices) continue;
+        const matches = devices.filter((device) => deviceKeyMatches(device, assignment.deviceKey));
+        // Exact physical identity is mandatory. Missing keys and collisions
+        // are both fail-closed; device order is never a tie-breaker.
+        if (matches.length !== 1 || !Number.isInteger(matches[0]?.id) || matches[0].id < 0) continue;
+        target = {
+          deviceId: matches[0].id,
+          deviceKey: isDeviceKey(matches[0].deviceKey) ? matches[0].deviceKey : assignment.deviceKey,
+          deviceKeys: Array.isArray(matches[0].deviceKeys) ? matches[0].deviceKeys : null,
+        };
+      } else if (snapshot.deviceId !== null) {
+        const listed = devices?.find((device) => device?.id === snapshot.deviceId) ?? null;
+        target = {
+          deviceId: snapshot.deviceId,
+          deviceKey: isDeviceKey(listed?.deviceKey)
+            ? listed.deviceKey
+            : (isDeviceKey(snapshot.settings?.deviceKey) ? snapshot.settings.deviceKey : null),
+          deviceKeys: Array.isArray(listed?.deviceKeys) ? listed.deviceKeys : null,
+        };
+      }
+      if (!target) continue;
+      const dedupeKey = isDeviceKey(target.deviceKey) ? `key:${target.deviceKey}` : `id:${target.deviceId}`;
+      const existingIndex = targets.findIndex((item) => {
+        const itemKey = isDeviceKey(item.deviceKey) ? `key:${item.deviceKey}` : `id:${item.deviceId}`;
+        return itemKey === dedupeKey;
+      });
+      if (existingIndex < 0) {
+        targets.push({ assignment, ...target });
+      } else if (assignment.deviceKey !== null && targets[existingIndex].assignment.deviceKey === null) {
+        // A keyed assignment wins when the migrated null-key fallback lands
+        // on the same physical adapter.
+        targets[existingIndex] = { assignment, ...target };
+      }
+    }
+    return targets;
   };
 
-  const normalSettingsFor = async (snapshot) => {
-    const normal = snapshot.profiles.find((profile) => profile?.id === snapshot.settings?.activeProfileId);
-    if (normal?.settings && typeof normal.settings === 'object') return normal.settings;
-    if (deps.readCurrent && snapshot.deviceId !== null) {
-      try { return stateToSettings(await deps.readCurrent(snapshot.deviceId)); } catch { /* best effort */ }
+  const gameTargetsFor = async (processInfo, snapshot) => {
+    const exePath = canonicalExePath(processInfo?.exePath);
+    if (!exePath || !snapshot.catalog.some((entry) => entry?.exePath === exePath)) return [];
+    const game = snapshot.gameSettings.find((item) => item?.exePath === exePath);
+    if (!game) return [];
+    const candidates = await resolveAssignmentTargets(game, snapshot);
+    return candidates.flatMap((target) => {
+      const profile = snapshot.profiles.find((item) => item?.id === target.assignment.tuningProfileId);
+      if (!profile || !profileCanApplyToAssignment(profile, target.assignment, target)) return [];
+      return [{ exePath, game, profile, ...target }];
+    });
+  };
+
+  const normalSettingsFor = async (target, snapshot) => {
+    const activeMap = snapshot.settings?.activeProfileIds;
+    const mappedId = isDeviceKey(target.deviceKey) && activeMap && typeof activeMap === 'object' && !Array.isArray(activeMap)
+      ? profileIdOf(activeMap[target.deviceKey])
+      : null;
+    const scalarId = profileIdOf(snapshot.settings?.activeProfileId);
+    const candidateIds = [...new Set([mappedId, scalarId].filter(Boolean))];
+    for (const profileId of candidateIds) {
+      const profile = snapshot.profiles.find((item) => item?.id === profileId);
+      if (!profile || !profile?.settings || typeof profile.settings !== 'object') continue;
+      const profileKey = isDeviceKey(profile.deviceKey) ? profile.deviceKey : null;
+      if (profileKey !== null && !deviceKeyMatches(target, profileKey)) continue;
+      return profile.settings;
+    }
+    if (deps.readCurrent) {
+      try { return stateToSettings(await deps.readCurrent(target.deviceId)); } catch { /* best effort */ }
     }
     return {};
   };
 
   const restore = async (record) => {
-    let snapshot = null;
-    try { snapshot = await loadSnapshot(); } catch { /* use captured normal state */ }
-    const deviceId = snapshot?.deviceId ?? record.deviceId;
-    const normal = snapshot ? await normalSettingsFor(snapshot) : record.normalSettings;
-    if (deviceId !== null && normal && typeof normal === 'object') {
-      try { await deps.applyProfile(deviceId, normal); } catch { /* best effort on exit */ }
+    // Restore each successful target even when another adapter's restore
+    // throws. The captured payload is intentional: it represents the normal
+    // state that existed immediately before this game session took over.
+    const remaining = [];
+    for (const target of record?.targets ?? []) {
+      try {
+        const result = await deps.applyProfile(target.deviceId, target.normalSettings);
+        if (!applySucceeded(result)) remaining.push(target);
+      } catch { remaining.push(target); }
     }
+    return remaining;
   };
+
+  const signatureOf = (processInfo, targets) => json({
+    pid: processInfo?.pid,
+    exePath: targets[0]?.exePath ?? canonicalExePath(processInfo?.exePath),
+    assignments: targets.map((target) => ({
+      deviceId: target.deviceId,
+      deviceKey: target.deviceKey,
+      profileId: target.profile.id,
+      updatedAt: target.game.updatedAt,
+      settings: target.profile.settings,
+    })),
+  });
 
   const tick = async () => {
     if (stopped) return;
+    if (pendingRestore) {
+      const remaining = await restore(pendingRestore);
+      if (remaining.length > 0) {
+        pendingRestore = { ...pendingRestore, targets: remaining };
+        return;
+      }
+      pendingRestore = null;
+    }
     let processInfo = null;
     let snapshot;
     try {
@@ -125,48 +272,83 @@ export function createGameTuningController(deps) {
       if (!isProcessAlive(active.pid)) {
         const record = active;
         active = null;
-        await restore(record);
+        const remaining = await restore(record);
+        if (remaining.length > 0) {
+          pendingRestore = { ...record, targets: remaining };
+          return;
+        }
       } else {
-        const nextTarget = gameTargetFor(processInfo, snapshot);
-        // The foreground window can move to an unrelated app while the game
-        // keeps running. Keep its tuning active until that PID actually exits;
-        // only a different configured game should trigger a handoff.
-        if (!nextTarget) return;
-        if (nextTarget.exePath === active.exePath && processInfo?.pid === active.pid) return;
+        const nextTargets = await gameTargetsFor(processInfo, snapshot);
+        const foregroundExePath = canonicalExePath(processInfo?.exePath);
+        const sameProcess = foregroundExePath === active.exePath && processInfo?.pid === active.pid;
+        const nextSignature = sameProcess && nextTargets.length > 0 ? signatureOf(processInfo, nextTargets) : null;
+        if (sameProcess && nextSignature === active.signature) return;
+        // An unrelated foreground app does not end a live game session. A
+        // configured game handoff, or a changed/disabled assignment for the
+        // same process, must restore before the next apply.
+        if (!sameProcess && nextTargets.length === 0) return;
         const record = active;
         active = null;
-        await restore(record);
+        const remaining = await restore(record);
+        if (remaining.length > 0) {
+          pendingRestore = { ...record, targets: remaining };
+          return;
+        }
+        failedAttempt = null;
       }
     }
 
-    const target = gameTargetFor(processInfo, snapshot);
-    if (!target || snapshot.deviceId === null) return;
-    const signature = json({
-      pid: processInfo.pid,
-      exePath: target.exePath,
-      profileId: target.profile.id,
-      updatedAt: target.game.updatedAt,
-      deviceId: snapshot.deviceId,
-      settings: target.profile.settings,
-    });
-    if (signature === lastFailedSignature) return;
-    const normalSettings = await normalSettingsFor(snapshot);
-    try {
-      const result = await deps.applyProfile(snapshot.deviceId, target.profile.settings ?? {});
-      if (!applySucceeded(result)) {
-        lastFailedSignature = signature;
-        return;
-      }
-      lastFailedSignature = null;
-      active = {
-        pid: processInfo.pid,
-        exePath: target.exePath,
-        deviceId: snapshot.deviceId,
+    const targets = await gameTargetsFor(processInfo, snapshot);
+    if (targets.length === 0) return;
+    const signature = signatureOf(processInfo, targets);
+    if (failedAttempt?.signature === signature && failedAttempt.retryUsed) return;
+
+    const attempted = [];
+    const prepared = [];
+    let applyFailed = false;
+    for (const target of targets) {
+      const normalSettings = await normalSettingsFor(target, snapshot);
+      const attemptedTarget = {
+        deviceId: target.deviceId,
+        deviceKey: target.deviceKey,
         normalSettings,
       };
-    } catch {
-      lastFailedSignature = signature;
+      attempted.push(attemptedTarget);
+      try {
+        const result = await deps.applyProfile(target.deviceId, target.profile.settings ?? {});
+        if (!applySucceeded(result)) {
+          applyFailed = true;
+          continue;
+        }
+        prepared.push(attemptedTarget);
+      } catch {
+        // One failed adapter must not prevent independent assignments from
+        // being attempted on the remaining physical adapters.
+        applyFailed = true;
+      }
     }
+    if (applyFailed) {
+      // A failed driver call may have changed part of its target before
+      // returning an error. Restore every attempted adapter, including
+      // successful independent adapters, before exposing a retryable failure.
+      const remaining = await restore({ targets: attempted });
+      if (remaining.length > 0) {
+        pendingRestore = { pid: processInfo.pid, exePath: targets[0].exePath, signature, targets: remaining };
+      }
+      const retryUsed = failedAttempt?.signature === signature;
+      failedAttempt = { signature, retryUsed };
+      return;
+    }
+    failedAttempt = null;
+    active = {
+      pid: processInfo.pid,
+      exePath: targets[0].exePath,
+      // Retain the legacy single-target fields for diagnostics/tests.
+      deviceId: prepared[0].deviceId,
+      normalSettings: prepared[0].normalSettings,
+      targets: prepared,
+      signature,
+    };
   };
 
   const runTick = () => {
@@ -190,7 +372,17 @@ export function createGameTuningController(deps) {
       if (active) {
         const record = active;
         active = null;
+        const remaining = await restore(record);
+        if (remaining.length > 0) pendingRestore = { ...record, targets: remaining };
+      }
+      if (pendingRestore) {
+        const record = pendingRestore;
+        pendingRestore = null;
         await restore(record);
+      }
+      if (pendingRestore) {
+        const remaining = await restore(pendingRestore);
+        pendingRestore = remaining.length > 0 ? { ...pendingRestore, targets: remaining } : null;
       }
     },
     /** Exposed for deterministic tests and diagnostics. */

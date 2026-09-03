@@ -2679,6 +2679,15 @@ input[type="number"] {
 .game-profile-title .card-title { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 .profile-breadcrumb-sep { color: var(--text-dim); font-size: 20px; }
 .profile-app-badge { display: flex; gap: 8px; align-items: center; padding: 8px 10px; color: var(--text-dim); font-size: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-inset); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.game-profile-target-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.game-profile-target-copy { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.game-profile-target-copy small { overflow: hidden; color: var(--text-dim); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.game-profile-gpu-switch { display: inline-flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.game-profile-gpu-switch .active { border-color: var(--accent); color: var(--accent); background: var(--bg-inset); }
+@media (max-width: 760px) {
+  .game-profile-target-card { align-items: flex-start; flex-direction: column; }
+  .game-profile-gpu-switch { justify-content: flex-start; }
+}
 .profile-app-dot { color: var(--accent); }
 .profile-sidecar-warning { border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--bg-inset)); }
 .profile-associated-apps { display: flex; flex-direction: column; gap: 6px; }

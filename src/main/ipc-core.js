@@ -46,7 +46,7 @@ import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVE
 // RID_MOCK_VENDOR).
 import { createVendorTelemetry } from './vendor-telemetry/vendor-telemetry.js';
 import { physicalTargetOf } from './gpu-inventory.js';
-import { GameProfileStore, canonicalExePath, normalizeAssociation, normalizeGameSettings } from './store/game-profile-store.js';
+import { GameProfileStore, canonicalExePath, mergeGameGpuProfiles, mergeGameGpuProfilePatch, normalizeAssociation, normalizeGameGpuProfile, normalizeGameSettings } from './store/game-profile-store.js';
 import { createGameScanAdapter, normalizeScannedApps } from './game-scan.js';
 import { validateSafeGameCandidate } from './game-candidate.js';
 import { collisionSafeRecordingPath, normalizeRecordingSettings, recordingAbsolutePath, RECORDING_AUDIO_SOURCE_MODES, RECORDING_CAPTURE_COLOR_MODES, RECORDING_CAPTURE_TARGET_TYPES, RECORDING_FPS_MAX, RECORDING_FPS_MIN, RECORDING_MODES, RECORDING_RESOLUTIONS, safeVideoExtension, validateRecordingProcessNames } from './recording-pure.js';
@@ -1185,7 +1185,17 @@ export function createIpcHandlers({
       async load(validIds) { return this._items.filter((item) => !validIds || validIds.has(item.profileId)); },
       async upsert(item) { this._items = [...this._items.filter((x) => !(x.profileId === item.profileId && x.exePath === item.exePath)), item]; return this._items; },
       async delete(profileId, exePath) { this._items = this._items.filter((x) => !(x.profileId === profileId && x.exePath === exePath)); return this._items; },
-      async cleanupProfile(profileId) { this._items = this._items.filter((x) => x.profileId !== profileId); return this._items; },
+      async cleanupProfile(profileId) {
+        this._items = this._items.filter((x) => x.profileId !== profileId);
+        this._settings = this._settings.map((item) => ({
+          ...item,
+          tuningProfileId: item.tuningProfileId === profileId ? null : item.tuningProfileId,
+          gpuProfiles: Array.isArray(item.gpuProfiles) ? item.gpuProfiles.map((assignment) => assignment.tuningProfileId === profileId
+            ? { ...assignment, tuningProfileId: null }
+            : assignment) : item.gpuProfiles,
+        }));
+        return this._items;
+      },
       async loadCatalog() { return { catalog: this._catalog, settings: this._settings }; },
       async syncCatalog(entries) { this._catalog = [...this._catalog, ...entries.filter((entry) => !this._catalog.some((x) => x.exePath === entry.exePath))]; return this._catalog; },
       async addCatalogEntry(entry) { this._catalog = [...this._catalog.filter((x) => x.exePath !== entry.exePath), entry]; return { catalog: this._catalog, settings: this._settings }; },
@@ -1900,6 +1910,27 @@ export function createIpcHandlers({
     }
     if (typeof backend.listDevices === 'function') {
       return (await backend.listDevices()).find((device) => device.id === deviceId) ?? null;
+    }
+    return null;
+  };
+
+  // Resolve a Game Profile assignment by stable physical identity. The
+  // legacy null-key assignment may still follow the persisted focused GPU;
+  // keyed assignments must never fall back to an ordinal device id.
+  const gameProfileTarget = async (deviceKey, persisted) => {
+    let devices = [];
+    try { devices = typeof backend.listDevices === 'function' ? await backend.listDevices() : []; } catch { devices = []; }
+    if (typeof deviceKey === 'string' && deviceKey.length > 0) {
+      const matches = devices.filter((device) => device?.synthetic !== true
+        && device?.backendKind !== 'os'
+        && device?.identityAmbiguous !== true
+        && (device?.deviceKey === deviceKey || (Array.isArray(device?.deviceKeys) && device.deviceKeys.includes(deviceKey))));
+      return matches.length === 1 ? matches[0] : null;
+    }
+    if (Number.isInteger(persisted?.deviceId) && persisted.deviceId >= 0) {
+      const match = devices.find((device) => device?.id === persisted.deviceId
+        && device?.synthetic !== true && device?.backendKind !== 'os' && device?.identityAmbiguous !== true);
+      return match ?? null;
     }
     return null;
   };
@@ -3054,8 +3085,17 @@ export function createIpcHandlers({
         return { catalog: await gameProfiles.syncCatalog(normalizeScannedApps(payload, [], { requireExists: true }), { authoritative: true }) };
       },
 
-      'game-settings-save': async (payload) => {
+      'game-settings-save': async (payload) => serializeGameProfileMutation(async () => {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('game-settings-save: payload must be an object');
+        if (Object.prototype.hasOwnProperty.call(payload, 'gpuProfiles')) throw new Error('game-settings-save: save one GPU assignment at a time');
+        if (payload.deviceKey !== undefined && payload.deviceKey !== null
+          && (typeof payload.deviceKey !== 'string' || payload.deviceKey.trim().length === 0 || payload.deviceKey.length > 256)) {
+          throw new Error('game-settings-save: deviceKey must be a non-empty stable GPU key or null');
+        }
+        if (payload.deviceName !== undefined && payload.deviceName !== null
+          && (typeof payload.deviceName !== 'string' || payload.deviceName.trim().length === 0 || payload.deviceName.length > 256)) {
+          throw new Error('game-settings-save: deviceName must be a non-empty GPU name or null');
+        }
         const clean = normalizeGameSettings(payload);
         if (!clean) throw new Error('game-settings-save: exePath must be an absolute Windows path');
         const safePath = validateSafeGameCandidate(clean.exePath);
@@ -3064,24 +3104,42 @@ export function createIpcHandlers({
         if (!catalog?.catalog?.some((entry) => entry.exePath === safePath)) {
           throw new Error('game-settings-save: executable is not present in the game catalog');
         }
-        if (clean.tuningProfileId !== null) {
+        const targetKey = payload.deviceKey === undefined || payload.deviceKey === null ? null : payload.deviceKey.trim();
+        const persisted = await store.loadSettings();
+        const previous = catalog.settings?.find((item) => item.exePath === safePath) ?? null;
+        const previousAssignment = previous?.gpuProfiles?.find((item) => (item.deviceKey ?? null) === targetKey) ?? null;
+        const assignment = mergeGameGpuProfilePatch(previousAssignment, {
+          ...payload,
+          deviceKey: targetKey,
+          graphics: clean.graphics,
+        });
+        const target = await gameProfileTarget(targetKey, persisted);
+        const targetDeviceId = Number.isInteger(target?.id) ? target.id : null;
+        if (assignment.tuningProfileId !== null) {
           const profiles = await store.loadProfiles();
-          if (!profiles.some((profile) => profile.id === clean.tuningProfileId)) {
+          const selectedProfile = profiles.find((profile) => profile.id === assignment.tuningProfileId);
+          if (!selectedProfile) {
             throw new Error('game-settings-save: tuning profile was not found');
           }
+          const profileTargetsDevice = !selectedProfile.deviceKey
+            || selectedProfile.deviceKey === targetKey
+            || selectedProfile.deviceKey === target?.deviceKey
+            || (Array.isArray(target?.deviceKeys) && target.deviceKeys.includes(selectedProfile.deviceKey));
+          if (!profileTargetsDevice) {
+            throw new Error('game-settings-save: tuning profile belongs to another GPU');
+          }
         }
-        const persisted = await store.loadSettings();
-        let graphics = clean.graphics;
+        let graphics = assignment.graphics;
         let xeFgRefusal = null;
         if (Object.prototype.hasOwnProperty.call(graphics, 'frameGenOverride')) {
           let capabilities = null;
-          if (Number.isInteger(persisted?.deviceId) && typeof backend.getGameProfileCapabilities === 'function') {
-            try { capabilities = await backend.getGameProfileCapabilities(persisted.deviceId, safePath); } catch { /* fail closed below */ }
+          if (targetDeviceId !== null && typeof backend.getGameProfileCapabilities === 'function') {
+            try { capabilities = await backend.getGameProfileCapabilities(targetDeviceId, safePath); } catch { /* fail closed below */ }
           }
           if (capabilities?.xeFg !== true) {
             const { frameGenOverride: _ignored, ...withoutXeFg } = graphics;
             graphics = withoutXeFg;
-            if (clean.enabled === true) {
+            if (assignment.enabled === true) {
               xeFgRefusal = {
                 ok: false,
                 errorCode: 'unsupported',
@@ -3093,15 +3151,20 @@ export function createIpcHandlers({
         // Never persist an XeFG override for an executable that the capability
         // gate did not prove eligible. This also cleans stale values from an
         // older sidecar when a profile is edited after the gate is tightened.
-        const saved = await gameProfiles.saveSettings({ ...payload, ...clean, exePath: safePath, graphics });
+        const finalAssignment = normalizeGameGpuProfile({ ...assignment, graphics });
+        const saved = await gameProfiles.saveSettings({
+          ...previous,
+          exePath: safePath,
+          gpuProfiles: mergeGameGpuProfiles(previous?.gpuProfiles, [finalAssignment]),
+        });
         let apply;
-        if (!Number.isInteger(persisted?.deviceId) || typeof backend.setGameProfileSettings !== 'function') {
+        if (targetDeviceId === null || typeof backend.setGameProfileSettings !== 'function') {
           apply = { ok: false, skipped: true, errorCode: 'unsupported', message: 'The selected graphics adapter cannot apply per-game driver settings.' };
         } else {
           try {
             // Always update the driver scope. Disabling Use Profile must
             // restore this executable to the global graphics settings.
-            apply = await backend.setGameProfileSettings(persisted.deviceId, safePath, saved.graphics ?? {}, saved.enabled === true);
+            apply = await backend.setGameProfileSettings(targetDeviceId, safePath, graphics, assignment.enabled === true);
             if (xeFgRefusal) {
               apply = {
                 ...apply,
@@ -3114,7 +3177,7 @@ export function createIpcHandlers({
           }
         }
         return { settings: saved, apply };
-      },
+      }),
 
       'game-settings-delete': async (payload) => {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('game-settings-delete: payload must be an object');

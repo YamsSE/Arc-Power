@@ -191,7 +191,7 @@ export interface ArcPowerApi {
   gameCatalogAdd(): Promise<GameCatalogEnvelope & { canceled: boolean }>;
   gameProfileCapabilities(deviceId: number, exePath?: string): Promise<GameProfileCapabilities>;
   gameCatalogSync(apps: GameApplication[]): Promise<{ catalog: GameCatalogEntry[] }>;
-  gameSettingsSave(settings: Partial<GameSettingsRecord> & { exePath: string }): Promise<{ settings: GameSettingsRecord; apply?: { ok: boolean; skipped?: boolean; errorCode?: string; message?: string; perControl?: Record<string, unknown> } }>;
+  gameSettingsSave(settings: Partial<GameSettingsRecord> & { exePath: string; deviceKey?: string | null; deviceName?: string | null }): Promise<{ settings: GameSettingsRecord; apply?: { ok: boolean; skipped?: boolean; errorCode?: string; message?: string; perControl?: Record<string, unknown> } }>;
   gameSettingsDelete(settings: { exePath: string }): Promise<GameCatalogEnvelope>;
   gameProfilesList(): Promise<GameProfilesEnvelope>;
   gameProfileSave(association: Partial<GameAssociation> & { profileId: string; exePath: string }): Promise<GameProfilesEnvelope>;

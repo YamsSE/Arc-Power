@@ -892,12 +892,25 @@ export interface GameProfileCapabilities {
   xeFgReason?: string | null;
 }
 
-export interface GameSettingsRecord {
-  exePath: string;
+export interface GameGpuProfile {
+  /** Stable physical GPU identity; null is retained only for legacy entries. */
+  deviceKey: string | null;
+  deviceName?: string | null;
   enabled: boolean;
-  /** Optional OC preset applied while this executable is running. */
   tuningProfileId: string | null;
   graphics: GameProfileGraphics;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface GameSettingsRecord {
+  exePath: string;
+  /** Legacy aliases retained for older sidecars/callers; new UI uses gpuProfiles. */
+  enabled: boolean;
+  tuningProfileId: string | null;
+  graphics: GameProfileGraphics;
+  /** One independent Game Profile assignment per physical GPU. */
+  gpuProfiles: GameGpuProfile[];
   createdAt: string;
   updatedAt: string;
 }

@@ -9,7 +9,7 @@ import { canonicalExePath, validateSafeGameCandidate } from '../game-candidate.j
 // Backward-compatible export for existing store callers/tests.
 export { canonicalExePath } from '../game-candidate.js';
 
-export const GAME_PROFILE_SCHEMA_VERSION = 2;
+export const GAME_PROFILE_SCHEMA_VERSION = 3;
 export const MAX_BANNER_DATA_LENGTH = 12_000_000;
 
 export function deterministicArtworkKey(value) {
@@ -66,21 +66,111 @@ function cleanTime(value, fallback) {
   return typeof value === 'string' && value.length <= 80 ? value : fallback;
 }
 
-export function normalizeGameSettings(raw) {
+function cleanGpuKey(value) {
+  if (value === null || value === undefined || value === '') return null;
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= 256 ? value.trim() : null;
+}
+
+function cleanGpuName(value) {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= 256 ? value.trim() : null;
+}
+
+/** Normalize one executable's settings for one physical GPU. */
+export function normalizeGameGpuProfile(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const exePath = canonicalExePath(raw.exePath);
-  if (!exePath) return null;
+  if (Object.prototype.hasOwnProperty.call(raw, 'deviceKey')
+    && raw.deviceKey !== null && raw.deviceKey !== undefined
+    && (typeof raw.deviceKey !== 'string' || raw.deviceKey.trim().length === 0 || raw.deviceKey.length > 256)) return null;
   const now = new Date().toISOString();
   return {
-    exePath,
-    // A discovered game is inert until the user explicitly enables its
-    // per-game profile. This prevents a newly scanned catalog from changing
-    // game behavior merely by existing.
+    deviceKey: cleanGpuKey(raw.deviceKey),
+    deviceName: cleanGpuName(raw.deviceName),
     enabled: raw.enabled === true,
     tuningProfileId: typeof raw.tuningProfileId === 'string' && /^\S+$/.test(raw.tuningProfileId)
       ? raw.tuningProfileId
       : null,
     graphics: cleanGraphics(raw.graphics),
+    createdAt: cleanTime(raw.createdAt, now),
+    updatedAt: cleanTime(raw.updatedAt, now),
+  };
+}
+
+/** Merge a partial assignment while preserving omitted fields. */
+export function mergeGameGpuProfilePatch(current, patch) {
+  const source = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {};
+  const has = (key) => Object.prototype.hasOwnProperty.call(source, key);
+  const graphics = source.graphics && typeof source.graphics === 'object' && !Array.isArray(source.graphics)
+    ? { ...(current?.graphics ?? {}), ...source.graphics }
+    : (current?.graphics ?? {});
+  return normalizeGameGpuProfile({
+    ...(current ?? {}),
+    ...(has('deviceKey') && source.deviceKey !== undefined ? { deviceKey: source.deviceKey } : {}),
+    ...(has('deviceName') && source.deviceName !== undefined ? { deviceName: source.deviceName } : {}),
+    ...(has('enabled') && typeof source.enabled === 'boolean' ? { enabled: source.enabled } : {}),
+    ...(has('tuningProfileId') && source.tuningProfileId !== undefined ? { tuningProfileId: source.tuningProfileId } : {}),
+    graphics,
+  });
+}
+
+function gpuProfileKey(profile) {
+  return profile?.deviceKey ?? '__legacy__';
+}
+
+/** Merge GPU assignments without collapsing different physical adapters. */
+export function mergeGameGpuProfiles(...lists) {
+  const byKey = new Map();
+  for (const list of lists) {
+    for (const raw of Array.isArray(list) ? list : []) {
+      const profile = normalizeGameGpuProfile(raw);
+      if (!profile) continue;
+      const previous = byKey.get(gpuProfileKey(profile));
+      byKey.set(gpuProfileKey(profile), previous ? {
+        ...previous,
+        ...profile,
+        deviceName: profile.deviceName ?? previous.deviceName,
+        graphics: profile.graphics,
+        createdAt: previous.createdAt || profile.createdAt,
+      } : profile);
+    }
+  }
+  return [...byKey.values()];
+}
+
+function legacyGpuProfile(raw) {
+  return normalizeGameGpuProfile({
+    deviceKey: null,
+    deviceName: null,
+    enabled: raw?.enabled,
+    tuningProfileId: raw?.tuningProfileId,
+    graphics: raw?.graphics,
+    createdAt: raw?.createdAt,
+    updatedAt: raw?.updatedAt,
+  });
+}
+
+export function normalizeGameSettings(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const exePath = canonicalExePath(raw.exePath);
+  if (!exePath) return null;
+  const now = new Date().toISOString();
+  const supplied = Array.isArray(raw.gpuProfiles)
+    ? mergeGameGpuProfiles(raw.gpuProfiles)
+    : [normalizeGameGpuProfile({
+      ...raw,
+      deviceKey: Object.prototype.hasOwnProperty.call(raw, 'deviceKey') ? raw.deviceKey : null,
+      deviceName: Object.prototype.hasOwnProperty.call(raw, 'deviceName') ? raw.deviceName : null,
+    })];
+  const gpuProfiles = supplied.length > 0 ? supplied : [legacyGpuProfile(raw)];
+  const displayProfile = gpuProfiles.find((profile) => profile.deviceKey === null) ?? gpuProfiles[0];
+  return {
+    exePath,
+    // These aliases remain for older callers and sidecars. New code uses the
+    // GPU-specific entries below; the aliases mirror the first/legacy entry
+    // so older integrations keep reading a truthful value.
+    enabled: displayProfile?.enabled === true,
+    tuningProfileId: displayProfile?.tuningProfileId ?? null,
+    graphics: displayProfile?.graphics ?? {},
+    gpuProfiles,
     createdAt: cleanTime(raw.createdAt, now),
     updatedAt: cleanTime(raw.updatedAt, now),
   };
@@ -128,7 +218,17 @@ function normalizeSettings(raw) {
     const settings = normalizeGameSettings(item);
     if (!settings) continue;
     const previous = byPath.get(settings.exePath);
-    byPath.set(settings.exePath, previous ? { ...previous, ...settings, graphics: { ...previous.graphics, ...settings.graphics }, createdAt: previous.createdAt || settings.createdAt } : settings);
+    if (!previous) {
+      byPath.set(settings.exePath, settings);
+      continue;
+    }
+    const merged = normalizeGameSettings({
+      ...previous,
+      ...settings,
+      gpuProfiles: mergeGameGpuProfiles(previous.gpuProfiles, settings.gpuProfiles),
+      createdAt: previous.createdAt || settings.createdAt,
+    });
+    byPath.set(settings.exePath, merged);
   }
   return [...byPath.values()].sort((a, b) => a.exePath.localeCompare(b.exePath));
 }
@@ -348,7 +448,17 @@ export class GameProfileStore {
         }));
         const existingSettings = data.settings.find((item) => item.exePath === association.exePath);
         data.settings = data.settings.filter((item) => item.exePath !== association.exePath);
-        data.settings.push(normalizeGameSettings({ ...(existingSettings ?? {}), ...association, graphics: { ...(existingSettings?.graphics ?? {}), ...(association.graphics ?? {}) } }));
+        const legacyAssignment = normalizeGameGpuProfile({
+          deviceKey: null,
+          enabled: association.enabled,
+          tuningProfileId: association.profileId,
+          graphics: { ...(existingSettings?.graphics ?? {}), ...(association.graphics ?? {}) },
+        });
+        data.settings.push(normalizeGameSettings({
+          ...(existingSettings ?? {}),
+          ...association,
+          gpuProfiles: mergeGameGpuProfiles(existingSettings?.gpuProfiles, [legacyAssignment]),
+        }));
       }
       return this._saveDataUnlocked(data).associations;
     });
@@ -372,7 +482,20 @@ export class GameProfileStore {
       const data = this._loadDataUnlocked(validProfileIds);
       const current = data.associations;
       const next = current.filter((item) => item.profileId !== profileId);
-      if (next.length !== current.length) { data.associations = next; this._saveDataUnlocked(data); }
+      const currentSettings = data.settings;
+      const cleanedSettings = currentSettings.map((item) => normalizeGameSettings({
+        ...item,
+        tuningProfileId: item.tuningProfileId === profileId ? null : item.tuningProfileId,
+        gpuProfiles: item.gpuProfiles?.map((assignment) => assignment.tuningProfileId === profileId
+          ? { ...assignment, tuningProfileId: null }
+          : assignment),
+      }));
+      const settingsChanged = JSON.stringify(cleanedSettings) !== JSON.stringify(currentSettings);
+      if (next.length !== current.length || settingsChanged) {
+        data.associations = next;
+        data.settings = cleanedSettings;
+        this._saveDataUnlocked(data);
+      }
       return next;
     });
   }
@@ -458,8 +581,22 @@ export class GameProfileStore {
         throw new Error('game-settings-save: executable is not present in the game catalog');
       }
       const previous = data.settings.find((item) => item.exePath === settings.exePath);
+      const previousAssignments = Array.isArray(previous?.gpuProfiles) ? previous.gpuProfiles : [];
+      const rawAssignments = Array.isArray(raw?.gpuProfiles) ? raw.gpuProfiles : [raw];
+      const patches = rawAssignments.map((item) => {
+        const normalized = normalizeGameGpuProfile(item);
+        const key = normalized?.deviceKey ?? null;
+        const current = previousAssignments.find((candidate) => (candidate.deviceKey ?? null) === key) ?? null;
+        return mergeGameGpuProfilePatch(current, item);
+      }).filter(Boolean);
       data.settings = data.settings.filter((item) => item.exePath !== settings.exePath);
-      data.settings.push({ ...settings, createdAt: previous?.createdAt ?? settings.createdAt });
+      const merged = normalizeGameSettings({
+        ...previous,
+        ...settings,
+        gpuProfiles: mergeGameGpuProfiles(previous?.gpuProfiles, patches),
+        createdAt: previous?.createdAt ?? settings.createdAt,
+      });
+      data.settings.push(merged);
       return this._saveDataUnlocked(data).settings.find((item) => item.exePath === settings.exePath);
     });
   }

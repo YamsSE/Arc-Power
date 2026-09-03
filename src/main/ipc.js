@@ -167,6 +167,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         foregroundApi,
         gameProfiles,
         store,
+        listDevices: () => backend.listDevices(),
         applyProfile: (deviceId, settings) => handlers['apply-settings'](deviceId, settings, { profileApply: true }),
         readCurrent: (deviceId) => handlers['get-current-settings'](deviceId),
       })

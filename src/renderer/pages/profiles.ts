@@ -30,7 +30,7 @@ import { chipLabelGpu } from '../pure/chip-label.ts';
 import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import { controlDisplay, formatValue } from '../pure/slider.ts';
 import type { AppState } from '../router.ts';
-import type { Capabilities, DeviceInfo, DeviceState, FlipMode, FrameGenOverride, GameCatalogEntry, GameProfileCapabilities, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, RangeInfo, Settings, StartupGetState } from '../types.ts';
+import type { Capabilities, DeviceInfo, DeviceState, FlipMode, FrameGenOverride, GameCatalogEntry, GameGpuProfile, GameProfileCapabilities, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, RangeInfo, Settings, StartupGetState } from '../types.ts';
 
 const SCALAR_KEYS = ['powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct'];
 const MAX_GAME_BANNER_DATA_LENGTH = 12_000_000;
@@ -449,6 +449,30 @@ export const profilesPage: Page = {
   },
 };
 
+/** Merge one Game Profile GPU assignment without treating null as missing.
+ * Selecting Normal intentionally clears tuningProfileId, while an omitted
+ * field means that only another part of the assignment is being edited. */
+export function mergeGameGpuSettings(current: GameGpuProfile, patch: Partial<GameGpuProfile>): Pick<GameGpuProfile, 'enabled' | 'tuningProfileId' | 'graphics'> {
+  return {
+    enabled: patch.enabled !== undefined ? patch.enabled : current.enabled,
+    tuningProfileId: patch.tuningProfileId !== undefined ? patch.tuningProfileId : current.tuningProfileId,
+    graphics: patch.graphics ? { ...(current.graphics ?? {}), ...patch.graphics } : (current.graphics ?? {}),
+  };
+}
+
+/** Game Profile targets must be uniquely addressable writable physical GPUs. */
+export function gameProfileTargetDevices(devices: DeviceInfo[]): DeviceInfo[] {
+  return (Array.isArray(devices) ? devices : []).filter((device) => device.synthetic !== true
+    && device.backendKind !== 'os' && device.identityAmbiguous !== true
+    && typeof device.deviceKey === 'string' && device.deviceKey.length > 0);
+}
+
+export function gameProfileTargetDevice(devices: DeviceInfo[], deviceKey: string | null): DeviceInfo | null {
+  if (typeof deviceKey !== 'string' || deviceKey.length === 0) return null;
+  const matches = gameProfileTargetDevices(devices).filter((device) => device.deviceKey === deviceKey);
+  return matches.length === 1 ? matches[0] : null;
+}
+
 async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const root = container.querySelector('#profiles-root') as HTMLElement;
   const s = ctx.store.get();
@@ -476,6 +500,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let gameCapabilityRequestGeneration = 0;
   let viewMode: 'oc' | 'game' = 'oc';
   let selectedGameExePath: string | null = null;
+  let selectedGameDeviceKey: string | null = profileGpuIdentity(s).key;
   let startupWarning: string | null = null;
   let showFilter = 'all';
   let sortMode = 'alphabetical';
@@ -484,7 +509,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const updateProfileCopy = (): void => {
     if (!profileSubtitle) return;
     profileSubtitle.textContent = viewMode === 'game'
-      ? 'Save and load named game presets. Enable a game profile only when that executable should override the global graphics settings.'
+      ? 'Save and load named game presets. Enable a game profile only when that executable should override the selected GPU\'s graphics settings.'
       : 'Save and load named tuning presets. Each profile is tied to the GPU shown on its card and applies only to that GPU.';
   };
   try {
@@ -537,14 +562,45 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     });
   };
 
+  const gameDevices = (): DeviceInfo[] => {
+    return gameProfileTargetDevices(s.devices);
+  };
+
+  const gameDeviceFor = (deviceKey: string | null): DeviceInfo | null => {
+    return gameProfileTargetDevice(gameDevices(), deviceKey);
+  };
+
+  const gameGpuLabel = (device: DeviceInfo): string => {
+    const chip = chipLabelGpu(device.name) ?? device.name;
+    return chip.match(/\b(?:A|B)\d{3,4}\b/i)?.[0] ?? chip;
+  };
+
   const gameSettingFor = (exePath: string): GameSettingsRecord | null => gameSettings.find((item) => item.exePath === exePath) ?? null;
+
+  const gameGpuSettingFor = (record: GameSettingsRecord | null, device: DeviceInfo): GameGpuProfile => {
+    const key = device.deviceKey ?? null;
+    const exact = record?.gpuProfiles?.find((profile) => (profile.deviceKey ?? null) === key);
+    if (exact) return exact;
+    const legacy = record?.gpuProfiles?.find((profile) => profile.deviceKey === null)
+      ?? (record && !record.gpuProfiles ? {
+        deviceKey: null,
+        deviceName: null,
+        enabled: record.enabled,
+        tuningProfileId: record.tuningProfileId,
+        graphics: record.graphics,
+      } : null);
+    if (legacy && device.id === deviceId) return { ...legacy, deviceKey: key, deviceName: device.name };
+    return { deviceKey: key, deviceName: device.name, enabled: false, tuningProfileId: null, graphics: {} };
+  };
+
+  const gameProfileEnabled = (record: GameSettingsRecord | null): boolean => record?.gpuProfiles?.some((profile) => profile.enabled === true) || record?.enabled === true;
 
   const renderGameCatalog = (): void => {
     const cards = gameCatalog.map((game) => {
       const settings = gameSettingFor(game.exePath);
       return el('button', { class: 'game-catalog-card', dataset: { exePath: game.exePath }, onclick: () => void openGameDetail(game) }, [
         gameBannerTile(game.banner, game.artwork, game.displayName, 'game-catalog-artwork'),
-        el('span', { class: 'game-catalog-copy' }, [el('strong', { text: game.displayName }), el('small', { text: settings?.enabled === false ? 'Use Profile off' : 'Installed game' })]),
+        el('span', { class: 'game-catalog-copy' }, [el('strong', { text: game.displayName }), el('small', { text: gameProfileEnabled(settings) ? 'Game Profile enabled' : 'Game Profile off' })]),
       ]);
     });
     clear(root);
@@ -565,27 +621,41 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]));
   };
 
-  const openGameDetail = async (game: GameCatalogEntry): Promise<void> => {
+  const openGameDetail = async (game: GameCatalogEntry, requestedDeviceKey: string | null = selectedGameDeviceKey): Promise<void> => {
     selectedGameExePath = game.exePath;
+    const targetDevice = gameDeviceFor(requestedDeviceKey);
+    selectedGameDeviceKey = targetDevice?.deviceKey ?? requestedDeviceKey;
+    if (!targetDevice) {
+      renderGameDetail(game, null);
+      return;
+    }
     const requestGeneration = ++gameCapabilityRequestGeneration;
     gameProfileCapabilities = { enduranceGaming: false, xeFg: false, xeFgOptions: [] };
     try {
-      const capabilities = await api.gameProfileCapabilities(deviceId, game.exePath);
+      const capabilities = await api.gameProfileCapabilities(targetDevice?.id ?? deviceId, game.exePath);
       if (requestGeneration !== gameCapabilityRequestGeneration || selectedGameExePath !== game.exePath) return;
       gameProfileCapabilities = capabilities;
     } catch { /* unsupported surface stays hidden */ }
-    if (requestGeneration === gameCapabilityRequestGeneration && viewMode === 'game' && selectedGameExePath === game.exePath) renderGameDetail(game);
+    if (requestGeneration === gameCapabilityRequestGeneration && viewMode === 'game' && selectedGameExePath === game.exePath) renderGameDetail(game, targetDevice ?? gameDeviceFor(selectedGameDeviceKey));
   };
 
-  const renderGameDetail = (game: GameCatalogEntry): void => {
+  const renderGameDetail = (game: GameCatalogEntry, targetDevice: DeviceInfo | null = gameDeviceFor(selectedGameDeviceKey)): void => {
+    if (!targetDevice) {
+      clear(root);
+      root.append(modeToggle(), el('p', { class: 'page-subtitle', text: 'No writable GPU is available for Game Profiles.' }));
+      return;
+    }
     const current = gameSettingFor(game.exePath);
-    const graphics: GameProfileGraphics = current?.graphics ?? {};
-    const selectedTuningProfileId = current?.tuningProfileId && envelope.profiles.some((profile) => profile.id === current.tuningProfileId)
-      ? current.tuningProfileId
+    const gpuSettings = gameGpuSettingFor(current, targetDevice);
+    const graphics: GameProfileGraphics = gpuSettings.graphics ?? {};
+    const targetKey = targetDevice.deviceKey ?? null;
+    const availableProfiles = envelope.profiles.filter((profile) => !profile.deviceKey || profile.deviceKey === targetKey);
+    const selectedTuningProfileId = gpuSettings.tuningProfileId && availableProfiles.some((profile) => profile.id === gpuSettings.tuningProfileId)
+      ? gpuSettings.tuningProfileId
       : '';
     const tuning = el('select', { class: 'profile-setting-control game-setting-control', value: selectedTuningProfileId }, [
-      el('option', { value: '', text: 'Normal (Active Profile)' }),
-      ...envelope.profiles.map((profile) => el('option', { value: profile.id, text: profile.name })),
+      el('option', { value: '', text: `Normal (${gameGpuLabel(targetDevice)} active profile)` }),
+      ...availableProfiles.map((profile) => el('option', { value: profile.id, text: `${profile.name} · ${profileOwnerLabel(profile).replace(/^GPU:\s*/, '')}` })),
     ]) as HTMLSelectElement;
     const endurance = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.enduranceGaming ?? 'off', disabled: !gameProfileCapabilities.enduranceGaming }, [
       el('option', { value: 'off', text: 'Off' }), el('option', { value: 'on', text: 'On' }),
@@ -607,17 +677,26 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const latency = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.lowLatency ?? 'off' }, [
       el('option', { value: 'off', text: 'Off' }), el('option', { value: 'on', text: 'On' }), el('option', { value: 'on-boost', text: 'On + Boost' }),
     ]) as HTMLSelectElement;
-    const save = (patch: Partial<GameSettingsRecord>): void => { void onGameSettingsSave(game, patch); };
+    const save = (patch: Partial<GameGpuProfile>): void => { void onGameSettingsSave(game, targetDevice, patch); };
+    const gpuSwitch = el('div', { class: 'game-profile-gpu-switch', role: 'tablist', 'aria-label': 'Game Profile GPU' }, gameDevices().map((device) => el('button', {
+      class: `btn btn-ghost btn-sm${(device.deviceKey ?? null) === targetKey ? ' active' : ''}`,
+      text: gameGpuLabel(device),
+      title: device.name,
+      role: 'tab',
+      'aria-selected': (device.deviceKey ?? null) === targetKey ? 'true' : 'false',
+      onclick: () => void openGameDetail(game, device.deviceKey ?? null),
+    })));
     const detail = el('div', { class: 'profile-detail game-profile-detail' }, [
         el('div', { class: 'profile-detail-head game-profile-detail-head' }, [
           el('button', { class: 'btn btn-ghost btn-sm game-profile-back', text: 'Back to catalog', onclick: () => { selectedGameExePath = null; renderGameCatalog(); } }),
           el('div', { class: 'game-profile-title' }, [el('span', { class: 'profile-breadcrumb-sep', text: '›' }), el('h2', { class: 'card-title', text: game.displayName })]),
         ]),
       el('div', { class: 'profile-app-badge' }, [artworkTile(game.artwork, game.displayName, 'profile-artwork-small'), el('span', { text: `${game.displayName}  ·  ${game.exePath}` })]),
-      el('section', { class: 'card profile-use-card' }, [el('label', { class: 'profile-use-toggle' }, [el('input', { class: 'game-use-profile', type: 'checkbox', checked: current?.enabled === true, onchange: (ev: Event) => save({ enabled: (ev.target as HTMLInputElement).checked }) }), el('span', { text: 'Use Profile' })]), el('span', { class: 'card-note', text: 'Game profiles start disabled; enable this only when this executable should use its settings.' })]),
+      el('section', { class: 'card game-profile-target-card' }, [el('div', { class: 'game-profile-target-copy' }, [el('strong', { text: 'GPU target' }), el('small', { text: targetDevice.name })]), gpuSwitch]),
+      el('section', { class: 'card profile-use-card' }, [el('label', { class: 'profile-use-toggle' }, [el('input', { class: 'game-use-profile', type: 'checkbox', checked: gpuSettings.enabled === true, onchange: (ev: Event) => save({ enabled: (ev.target as HTMLInputElement).checked }) }), el('span', { text: `Use Profile for ${gameGpuLabel(targetDevice)}` })]), el('span', { class: 'card-note', text: 'This assignment affects only the selected GPU. Other GPU assignments remain independent.' })]),
       el('section', { class: 'profile-settings-section game-igs-settings' }, [
         el('h3', { class: 'profile-section-title', text: 'Tuning Profile' }),
-        settingRow('Overclock preset', 'Applied while this game is running, then restored to the active normal profile when it closes.', tuning),
+        settingRow('Overclock preset', `Applied to ${gameGpuLabel(targetDevice)} while this game is running, then restored to that GPU's active normal profile.`, tuning),
       ]),
       ...(gameProfileCapabilities.enduranceGaming ? [el('section', { class: 'profile-settings-section game-igs-settings' }, [
         el('h3', { class: 'profile-section-title', text: 'General' }),
@@ -630,7 +709,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         settingRow('FPS Limiter', 'Saved independently for this executable.', el('span', { class: 'profile-inline-control' }, [fps, fpsValue])),
         settingRow('Low Latency Mode', 'Improves the responsiveness between user input and graphics rendering for a better gaming experience.', latency),
       ]),
-      el('p', { class: 'profile-capability-note', text: gameProfileCapabilities.enduranceGaming ? 'When Use Profile is enabled, the selected tuning preset is applied while the game runs and the Graphics values are applied through the driver per-application profile.' : 'When Use Profile is enabled, the selected tuning preset is applied while the game runs and the Graphics values are applied through the driver per-application profile.' }),
+      el('p', { class: 'profile-capability-note', text: `When Use Profile is enabled for ${gameGpuLabel(targetDevice)}, its tuning preset and Graphics values are applied only to that GPU.` }),
     ]);
     tuning.addEventListener('change', () => save({ tuningProfileId: tuning.value || null }));
     endurance.addEventListener('change', () => save({ graphics: { enduranceGaming: endurance.value as 'off' | 'on' } }));
@@ -813,15 +892,19 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const settingRow = (label: string, note: string, control: Node): HTMLElement => el('div', { class: 'profile-setting-row' }, [el('div', { class: 'profile-setting-label' }, [el('strong', { text: label }), el('small', { text: note })]), control]);
 
   let gameSettingsSaveQueue: Promise<void> = Promise.resolve();
-  const onGameSettingsSave = async (game: GameCatalogEntry, patch: Partial<GameSettingsRecord>): Promise<void> => {
+  const onGameSettingsSave = async (game: GameCatalogEntry, targetDevice: DeviceInfo, patch: Partial<GameGpuProfile>): Promise<void> => {
     const operation = gameSettingsSaveQueue.then(async () => {
       try {
         const current = gameSettingFor(game.exePath);
+        const currentGpu = gameGpuSettingFor(current, targetDevice);
+        const next = mergeGameGpuSettings(currentGpu, patch);
         const result = await api.gameSettingsSave({
-          ...current,
-          ...patch,
           exePath: game.exePath,
-          graphics: patch.graphics ? { ...(current?.graphics ?? {}), ...patch.graphics } : (current?.graphics ?? {}),
+          deviceKey: targetDevice.deviceKey ?? null,
+          deviceName: targetDevice.name,
+          enabled: next.enabled,
+          tuningProfileId: next.tuningProfileId,
+          graphics: next.graphics,
         });
         gameSettings = [...gameSettings.filter((item) => item.exePath !== game.exePath), result.settings];
         gameCatalogSession.settings = gameSettings;
