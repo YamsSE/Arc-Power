@@ -66,24 +66,17 @@ export function driverLine(device: { driverVersion: string } | null | undefined,
   return date ? `${version} - ${date}` : version;
 }
 
-export interface HeaderGpuBadges {
+interface HeaderGpuBadge {
   index: number;
   label: string;
-  displayOutput: boolean;
 }
 
-/**
- * M159: keep the shell context compact while using the same display-output
- * ordering as the dashboard. The model is deliberately reduced to the Arc
- * chip token (A770/B580/etc.) so enriched names with VRAM suffixes do not
- * make the header grow or wrap.
- */
-export function headerGpuBadges(devices: DeviceInfo[]): HeaderGpuBadges[] {
-  const ordered = dashboardGpuOrder(devices);
-  return ordered.map((device, index) => {
+/** M162: show every detected GPU in the global shell context without making
+ * any one adapter look globally focused. Tuning and Graphics own focus. */
+function headerGpuBadges(devices: DeviceInfo[]): HeaderGpuBadge[] {
+  return dashboardGpuOrder(devices).map((device, index) => {
     const chip = chipLabelGpu(device.name);
-    const arcChip = chip?.match(/\b[AB]\d{3,4}\b/i)?.[0] ?? chip ?? 'GPU';
-    return { index: index + 1, label: arcChip, displayOutput: device.displayActive === true };
+    return { index: index + 1, label: chip?.match(/\b[AB]\d{3,4}\b/i)?.[0] ?? chip ?? 'GPU' };
   });
 }
 
@@ -139,29 +132,37 @@ export class GpuHeader {
     const gpuMeta = noIntelPresentation
       ? 'Non supported GPU'
       : s.bootError ?? '';
+    // M162: show every detected GPU in the global shell header without making
+    // any one adapter look globally focused. Tuning and Graphics own focus.
+    // Keep the legacy no-Intel/error text only when it is useful.
     const badges = !noIntelPresentation ? headerGpuBadges(s.devices) : [];
     const identity = badges.length > 0
       ? el('div', {
           class: 'gpu-header-pills',
-          'aria-label': badges.map((badge) => `GPU ${badge.index} ${badge.label}${badge.displayOutput ? ', Display Output' : ''}`).join('; '),
+          'aria-label': badges.map((badge) => `GPU ${badge.index} ${badge.label}`).join('; '),
         }, [
-          ...badges.flatMap((badge) => [
-            el('span', { class: 'chip gpu-header-pill gpu-header-gpu-pill', text: `GPU ${badge.index} · ${badge.label}` }),
-            badge.displayOutput ? el('span', { class: 'chip gpu-header-pill gpu-header-output-pill', text: 'Display Output' }) : null,
-          ]),
+          ...badges.map((badge) => el('span', {
+            class: 'chip gpu-header-pill gpu-header-gpu-pill',
+            text: `GPU ${badge.index} · ${badge.label}`,
+          })),
           gpuMeta ? el('span', { class: 'gpu-meta', text: gpuMeta }) : null,
         ])
-      : el('div', { class: 'gpu-legacy-identity' }, [
-          el('div', { class: 'gpu-name', text: gpuName }),
-          gpuMeta ? el('div', { class: 'gpu-meta', text: gpuMeta }) : null,
-        ]);
+      : noIntelPresentation || gpuMeta
+        ? el('div', { class: 'gpu-legacy-identity' }, [
+            noIntelPresentation ? el('div', { class: 'gpu-name', text: gpuName }) : null,
+            gpuMeta ? el('div', { class: 'gpu-meta', text: gpuMeta }) : null,
+          ])
+        : null;
+    const status = [fsSelect, mockBadge].filter((node): node is HTMLElement => node !== null);
+    if (!identity && status.length === 0) {
+      clear(this.mount);
+      return;
+    }
     clear(this.mount);
     this.mount.append(
       el('div', { class: 'gpu-header' }, [
-        el('div', { class: 'gpu-identity' }, [
-          identity,
-        ]),
-        el('div', { class: 'gpu-status' }, [fsSelect, mockBadge]),
+        identity ? el('div', { class: 'gpu-identity' }, [identity]) : null,
+        status.length > 0 ? el('div', { class: 'gpu-status' }, status) : null,
       ]),
     );
   }
