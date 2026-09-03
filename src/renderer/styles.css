@@ -1483,17 +1483,19 @@ input[type="number"] {
 .vf-curve-stage {
   position: relative;
   width: 100%;
-  height: 190px;
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
+  height: 184px;
+  background: color-mix(in srgb, var(--bg-inset) 96%, var(--accent));
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
-.vf-curve-freq-max {
+.vf-curve-y-axis {
   position: absolute;
-  top: 5px;
-  left: 7px;
+  inset: 7px auto 7px 7px;
   z-index: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
   color: var(--text-dim);
   font: 11px var(--mono);
   pointer-events: none;
@@ -1507,7 +1509,8 @@ input[type="number"] {
   height: 100%;
 }
 .vf-curve-plot { fill: color-mix(in srgb, var(--accent) 9%, var(--bg-inset)); }
-.vf-curve-grid { stroke: var(--border); stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+.vf-curve-grid { stroke: color-mix(in srgb, var(--accent) 28%, var(--border-strong)); stroke-width: 0.7; vector-effect: non-scaling-stroke; }
+.vf-curve-grid-edge { stroke: color-mix(in srgb, var(--accent) 42%, var(--border-strong)); stroke-width: 1; }
 .vf-curve-line { fill: none; stroke: var(--accent); stroke-width: 0.9; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .vf-curve-dots { position: absolute; inset: 0; }
 .vf-curve-dot {
@@ -2216,10 +2219,11 @@ input[type="number"] {
    the right, and a separate detailed trend inspector below. */
 .monitoring-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(238px, 276px); gap: 12px; align-items: start; }
 .monitoring-metrics-column { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-.telemetry-metrics-card { padding: 12px; }
-.telemetry-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.telemetry-metrics-card { padding: 11px; }
+.telemetry-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .telemetry-panel { min-width: 0; padding: 0; overflow: hidden; border-color: color-mix(in srgb, var(--accent) 24%, var(--border)); background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 8%), var(--bg-elev)); }
 .telemetry-panel[data-telemetry-panel="fps"] { grid-column: 1 / -1; }
+.telemetry-gpu-pair { min-width: 0; grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .telemetry-panel-head { appearance: none; width: 100%; min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 0; color: var(--text); background: transparent; font: 650 12.5px var(--font); text-align: left; cursor: pointer; }
 .telemetry-panel-head:hover, .telemetry-panel-head:focus-visible { background: color-mix(in srgb, var(--accent-soft) 70%, transparent); outline: none; }
 .telemetry-panel-head:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
@@ -2228,13 +2232,14 @@ input[type="number"] {
 .telemetry-panel-badge { margin-left: auto; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 7px; border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border)); border-radius: 999px; color: var(--text-muted); font: 550 10px var(--mono); }
 .telemetry-panel-body { border-top: 1px solid var(--border); padding: 7px; }
 .telemetry-panel-body[hidden] { display: none; }
-.telemetry-metric-grid { display: flex; flex-direction: column; gap: 5px; }
-.telemetry-metric { min-width: 0; min-height: 60px; display: grid; grid-template-columns: minmax(116px, .62fr) minmax(94px, 1fr); align-items: center; gap: 8px; padding: 6px 7px; border: 1px solid color-mix(in srgb, var(--border) 86%, var(--accent)); border-radius: 6px; background: color-mix(in srgb, var(--bg-inset) 82%, var(--bg-elev)); }
+.telemetry-metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.telemetry-panel[data-telemetry-panel="fps"] .telemetry-metric-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.telemetry-metric { min-width: 0; min-height: 56px; display: grid; grid-template-columns: minmax(84px, .62fr) minmax(64px, 1fr); align-items: center; gap: 7px; padding: 6px 7px; border: 1px solid color-mix(in srgb, var(--border) 86%, var(--accent)); border-radius: 6px; background: color-mix(in srgb, var(--bg-inset) 82%, var(--bg-elev)); }
 .telemetry-metric-copy { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; align-items: end; }
-.telemetry-metric-value { grid-column: 1; grid-row: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font: 650 22px var(--mono); line-height: 1.05; font-variant-numeric: tabular-nums; }
+.telemetry-metric-value { grid-column: 1; grid-row: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font: 650 20px var(--mono); line-height: 1.05; font-variant-numeric: tabular-nums; }
 .telemetry-metric-unit { grid-column: 2; grid-row: 1; align-self: end; color: var(--accent); font: 550 10px var(--mono); white-space: nowrap; }
 .telemetry-metric-label { grid-column: 1 / -1; grid-row: 2; min-width: 0; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 10px; }
-.telemetry-metric-sparkline { display: block; width: 100%; height: 46px; min-width: 0; border-radius: 3px; background: var(--bg-inset); }
+.telemetry-metric-sparkline { display: block; width: 100%; height: 38px; min-width: 0; border-radius: 3px; background: var(--bg-inset); }
 .telemetry-metric-sparkline-empty { background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px); background-size: 25% 50%, 25% 100%; opacity: .7; }
 .telemetry-section-heading { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 9px; }
 .telemetry-section-heading .card-title { margin: 0; }
@@ -2274,9 +2279,13 @@ input[type="number"] {
   .monitoring-workspace { grid-template-columns: 1fr; }
   .telemetry-tracking-card { position: static; }
 }
+@media (max-width: 760px) {
+  .telemetry-panel[data-telemetry-panel="fps"] .telemetry-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .telemetry-gpu-pair { grid-template-columns: 1fr; }
+}
 @media (max-width: 620px) {
   .telemetry-metrics { grid-template-columns: 1fr; }
-  .telemetry-metric { grid-template-columns: minmax(108px, .7fr) minmax(80px, 1fr); }
+  .telemetry-metric { grid-template-columns: minmax(98px, .7fr) minmax(80px, 1fr); }
 }
 
 .seg-stack {

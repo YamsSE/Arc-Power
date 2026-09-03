@@ -600,12 +600,17 @@ export const tuningPage: Page = {
       svg.setAttribute('viewBox', '0 0 100 100');
       svg.setAttribute('preserveAspectRatio', 'none');
       svg.append(svgEl('rect', { x: 0, y: 0, width: 100, height: 100, class: 'vf-curve-plot' }));
-      for (let i = 0; i <= 4; i += 1) {
-        const x = 100 * i / 4;
-        const y = 100 * i / 4;
+      // Keep the editor aligned to the compact IGS-style 5 x 5 chart grid:
+      // the end points are grid lines too, so every point can be read against
+      // the same voltage/frequency coordinate system while dragging.
+      const gridColumns = 5;
+      const gridRows = 4;
+      for (let i = 0; i <= gridColumns; i += 1) {
+        const x = 100 * i / gridColumns;
+        const y = 100 * i / gridRows;
         svg.append(
-          svgEl('line', { x1: x, y1: 0, x2: x, y2: 100, class: 'vf-curve-grid' }),
-          svgEl('line', { x1: 0, y1: y, x2: 100, y2: y, class: 'vf-curve-grid' }),
+          svgEl('line', { x1: x, y1: 0, x2: x, y2: 100, class: `vf-curve-grid${i === 0 || i === gridColumns ? ' vf-curve-grid-edge' : ''}` }),
+          ...(i <= gridRows ? [svgEl('line', { x1: 0, y1: y, x2: 100, y2: y, class: `vf-curve-grid${i === 0 || i === gridRows ? ' vf-curve-grid-edge' : ''}` })] : []),
         );
       }
       const points = vfCurveDraft.map((point) => `${xOf(point.voltageV)},${yOf(point.freqMhz)}`).join(' ');
@@ -617,8 +622,13 @@ export const tuningPage: Page = {
       const svg = svgEl('svg', { class: 'vf-curve-svg', role: 'img', 'aria-label': 'Voltage-frequency curve editor' });
       const dotsLayer = el('div', { class: 'vf-curve-dots' });
       const plot = el('div', { class: 'vf-curve-plot-host' }, [svg, dotsLayer]);
-      const stage = el('div', { class: 'vf-curve-stage' }, [
-        el('span', { class: 'vf-curve-freq-max', text: `${Math.round(curveBounds.freqMaxMhz)} MHz` }),
+      const freqMid = Math.round((curveBounds.freqMaxMhz + curveBounds.freqMinMhz) / 2);
+      const stage = el('div', { class: 'vf-curve-stage', 'aria-label': 'Voltage-frequency curve grid' }, [
+        el('div', { class: 'vf-curve-y-axis', 'aria-hidden': 'true' }, [
+          el('span', { text: `${Math.round(curveBounds.freqMaxMhz)} MHz` }),
+          el('span', { text: `${freqMid} MHz` }),
+          el('span', { text: `${Math.round(curveBounds.freqMinMhz)} MHz` }),
+        ]),
         plot,
       ]);
       let hoverReadout: HTMLElement | null = null;

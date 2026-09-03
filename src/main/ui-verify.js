@@ -3138,6 +3138,17 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await js(`!!document.querySelector('.oc-card[data-control="vramFreqOffsetGts"]')`))) {
     fail('M4J (D): the VRAM clock editor is missing on the b580 swap (vramFreqOffset native)');
   }
+  const vfModeButton = await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((b) => (b.textContent ?? '').trim() === 'Voltage-Frequency Curve') !== undefined`);
+  if (!vfModeButton) fail('M170: the Battlemage Voltage-Frequency Curve mode button is missing');
+  await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((b) => (b.textContent ?? '').trim() === 'Voltage-Frequency Curve')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.vf-curve-stage')`))) fail('M170: the Voltage-Frequency Curve grid did not render');
+  const vfGrid = await js(`JSON.stringify({ lines: document.querySelectorAll('.vf-curve-grid').length, axis: document.querySelectorAll('.vf-curve-y-axis span').length, points: document.querySelectorAll('.vf-curve-dot').length })`);
+  const vfGridShape = JSON.parse(vfGrid);
+  if (vfGridShape.lines !== 11 || vfGridShape.axis !== 3 || vfGridShape.points < 2) {
+    fail(`M170: Voltage-Frequency Curve grid shape is wrong: ${vfGrid}`);
+  }
+  await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((b) => (b.textContent ?? '').trim() === 'Offset')?.click()`);
+  step('vf-grid', `Battlemage curve editor renders a compact coordinate grid (${vfGridShape.lines} grid lines, ${vfGridShape.axis} frequency ticks, ${vfGridShape.points} draggable points)`);
   step('fs-swap-b580', `swap -> b580: PL readout '217 W', user-facing watt units, gpuLock unsupported, vfCurve supported, VRAM clock editor present`);
 
   // M2D: the swap payload replaces the boot driver date - the HEALTH card's
@@ -3856,6 +3867,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const panelCounts = JSON.parse(telemetryPanelCounts);
   if (panelCounts.gpu < 1 || panelCounts.memory !== panelCounts.gpu) {
     fail(`M168: telemetry GPU/GPU memory panels are not paired: ${telemetryPanelCounts}`);
+  }
+  const gpuPairs = await js(`JSON.stringify(Array.from(document.querySelectorAll('.telemetry-gpu-pair')).map((pair) => ({ panels: pair.querySelectorAll('.telemetry-panel').length, labels: Array.from(pair.querySelectorAll('.telemetry-panel-title')).map((x) => x.textContent) })))`);
+  const pairSnapshot = JSON.parse(gpuPairs);
+  if (pairSnapshot.length !== panelCounts.gpu || pairSnapshot.some((pair) => pair.panels !== 2)) {
+    fail(`M170: each GPU must have one compact GPU/memory card pair: ${gpuPairs}`);
   }
   step('mon-panels', `Metrics has independent FPS, Latency, CPU, System memory, GPU and GPU memory panels (${panelCounts.gpu} GPU pair${panelCounts.gpu === 1 ? '' : 's'})`);
   const trackingSnapshot = await js(`JSON.stringify({ groups: Array.from(document.querySelectorAll('.telemetry-tracking-group')).map((g) => g.querySelector('.telemetry-tracking-group-copy strong')?.textContent ?? ''), miniGraphs: document.querySelectorAll('.telemetry-metric canvas.telemetry-metric-sparkline').length })`);

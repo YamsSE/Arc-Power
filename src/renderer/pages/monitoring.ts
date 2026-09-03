@@ -787,16 +787,19 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
     telemetryPanel('cpu', 'CPU', 'System', cpuMetricNodes(s), true, 'mon-readout-cpu'),
     telemetryPanel('system-memory', 'System memory', 'System', systemMetricNodes(s), true, 'mon-readout-system-memory'),
   );
-  s.devices.forEach((device, index) => {
+  const appendGpuPair = (device: DeviceInfo | null, index: number, badge: string): void => {
     const label = `GPU ${index + 1}`;
+    const gpuPanel = telemetryPanel(`gpu-${device?.id ?? 'vendor'}`, label, badge, gpuMetricNodes(device, s), true, index === 0 ? 'mon-readout-gpu' : `mon-readout-gpu-${index + 1}`);
+    const memoryPanel = telemetryPanel(`gpu-memory-${device?.id ?? 'vendor'}`, `${label} memory`, badge, gpuMemoryMetricNodes(device, s), true, index === 0 ? 'mon-readout-gpu-memory' : `mon-readout-gpu-memory-${index + 1}`);
+    panels.append(el('div', { class: 'telemetry-gpu-pair', dataset: { telemetryGpuPair: String(device?.id ?? 'vendor') } }, [gpuPanel, memoryPanel]));
+  };
+  s.devices.forEach((device, index) => {
     const badge = device.displayActive === true ? `${shortGpuName(device)} · Display output` : shortGpuName(device);
-    panels.append(telemetryPanel(`gpu-${device.id}`, label, badge, gpuMetricNodes(device, s), true, index === 0 ? 'mon-readout-gpu' : `mon-readout-gpu-${index + 1}`));
-    panels.append(telemetryPanel(`gpu-memory-${device.id}`, `${label} memory`, badge, gpuMemoryMetricNodes(device, s), true, index === 0 ? 'mon-readout-gpu-memory' : `mon-readout-gpu-memory-${index + 1}`));
+    appendGpuPair(device, index, badge);
   });
   if (s.devices.length === 0 && s.osGpu) {
     const badge = shortGpuNameFromName(s.osGpu.name);
-    panels.append(telemetryPanel('gpu-vendor', 'GPU', badge, gpuMetricNodes(null, s), true, 'mon-readout-gpu'));
-    panels.append(telemetryPanel('gpu-memory-vendor', 'GPU memory', badge, gpuMemoryMetricNodes(null, s), true, 'mon-readout-gpu-memory'));
+    appendGpuPair(null, 0, badge);
   }
   m.fpsTileValue = panels.querySelector('.mon-fps-tile .stat-value') as HTMLElement;
 
