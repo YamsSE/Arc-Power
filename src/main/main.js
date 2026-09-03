@@ -58,6 +58,7 @@ import { GameProfileStore } from './store/game-profile-store.js';
 import { RecordingStore } from './store/recording-store.js';
 import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js';
 import { formatDxgiLuid } from './recording-pure.js';
+import { normalizeDxgiLuid } from './recording-pure.js';
 import { listRecordingCaptureTargets, mergeRecordingDisplayMetadata, recordingCaptureSelection } from './recording-capture.js';
 import { trimRecordingClipToDuration } from './recording-clip.js';
 import { captureRecordingScreenshot } from './recording-screenshot.js';
@@ -878,8 +879,7 @@ async function main() {
       console.log(`[boot-apply] waiver seeding skipped: ${err.message}`);
     }
     try {
-      const s = await bootStore.loadSettings();
-      if (typeof bootBackend.setOcMode === 'function') bootBackend.setOcMode(s.ocMode);
+      await seedOcMode(bootBackend, bootStore);
     } catch (err) {
       console.log(`[boot-apply] oc-mode seeding skipped: ${err.message}`);
     }
@@ -1567,8 +1567,14 @@ async function main() {
         ? device.pciDeviceId.match(/0x0*([0-9a-fA-F]{1,4})$/)?.[1]
         : null;
       if (!deviceId) throw targetUnavailable('the selected GPU has no PCI device id');
+      // The unified Windows inventory already carries the exact DXGI LUID
+      // for many adapters. Prefer that direct physical proof: resolving it
+      // again by PCI/BDF can miss a provider-enriched BDF and previously left
+      // the recording runtime free to fall back to adapter 0 (the display GPU).
+      const inventoryLuid = normalizeDxgiLuid(device.osLuid ?? device.osController?.luid ?? device.luid ?? device.adapterLuid);
+      if (inventoryLuid) return { luid: inventoryLuid };
       const luid = await fpsAdapter.adapterLuidOf?.(`0x${deviceId}`, device.bdf) ?? null;
-      if (!luid || !Number.isFinite(luid.low) || !Number.isFinite(luid.high)) throw targetUnavailable('DXGI did not report the selected adapter');
+      if (!formatDxgiLuid(luid)) throw targetUnavailable('DXGI did not report the selected adapter');
       // The runtime's adapter selector must receive one unambiguous physical
       // identity. Keep BDF/deviceKey in the app-side selection, but send only
       // the resolved DXGI LUID to Ascent so it cannot fall back to adapter 0.
@@ -2141,8 +2147,7 @@ async function main() {
     // getCapabilities exposes the right range set from the first query (a
     // persisted 'advanced' must not wait for the next manual toggle).
     try {
-      const s = await store.loadSettings();
-      if (typeof backend.setOcMode === 'function') backend.setOcMode(s.ocMode);
+      await seedOcMode(backend, store);
     } catch (err) {
       console.log(`[boot] oc-mode seeding skipped: ${err.message}`);
     }

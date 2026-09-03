@@ -146,6 +146,18 @@ function normalizeActiveProfileIds(v) {
   return out;
 }
 
+/** Normalize the per-physical-GPU Stock/Advanced tuning modes. */
+function normalizeOcModes(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const out = {};
+  for (const [deviceKey, mode] of Object.entries(v)) {
+    if (normalizeProfileGpuKey(deviceKey) && (mode === 'stock' || mode === 'advanced')) {
+      out[deviceKey] = mode;
+    }
+  }
+  return out;
+}
+
 /**
  * Resolve the active tuning profiles without collapsing a multi-GPU map to
  * the legacy scalar slot. The scalar remains a compatibility fallback for
@@ -185,7 +197,7 @@ export function activeProfileEntries(settings, profiles) {
 }
 
 
-export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT, OVERLAY_RECORDING_PILL_DEFAULT, normalizeActiveProfileIds, normalizeProfileGpuKey, normalizeProfileGpuLabel };
+export { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_COLOR_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT, OVERLAY_RECORDING_PILL_DEFAULT, normalizeActiveProfileIds, normalizeOcModes, normalizeProfileGpuKey, normalizeProfileGpuLabel };
 
 function defaultDataDir() {
   return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
@@ -396,7 +408,7 @@ export class ProfileStore {
    * files -> the defaults (off / 'P' / 'right'; the M5 overlaySettings
    * pattern, NO schema bump - NO scale key, the panel is a fixed compact
    * size).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -558,11 +570,15 @@ export class ProfileStore {
     // settings envelopes when absent so legacy callers remain byte/shape
     // compatible; once present it is normalized and round-tripped.
     if (data.activeProfileIds !== undefined) out.activeProfileIds = normalizeActiveProfileIds(data.activeProfileIds);
+    // Per-GPU tuning modes are additive for the same reason: old settings
+    // keep the scalar compatibility mode until a device-specific toggle is
+    // saved.
+    if (data.ocModes !== undefined) out.ocModes = normalizeOcModes(data.ocModes);
     return out;
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
   async saveSettings(settings) {
     const persisted = {
@@ -652,12 +668,17 @@ export class ProfileStore {
       ? normalizeActiveProfileIds(settings.activeProfileIds)
       : this._settingsCache?.activeProfileIds;
     if (activeProfileMap !== undefined) persisted.activeProfileIds = normalizeActiveProfileIds(activeProfileMap);
+    const ocModeMap = settings.ocModes !== undefined
+      ? normalizeOcModes(settings.ocModes)
+      : this._settingsCache?.ocModes;
+    if (ocModeMap !== undefined) persisted.ocModes = normalizeOcModes(ocModeMap);
     this._writeAtomic(this.settingsPath, persisted);
     // M4-D2: keep the sync cache in lockstep with the persisted write - the
     // close handler must see the very toggle it just persisted.
     this._settingsCache = this._settingsFromData({
       ...settings,
       ...(activeProfileMap !== undefined ? { activeProfileIds: activeProfileMap } : {}),
+      ...(ocModeMap !== undefined ? { ocModes: ocModeMap } : {}),
       schemaVersion: SCHEMA_VERSION,
     });
   }

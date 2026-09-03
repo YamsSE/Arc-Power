@@ -742,6 +742,23 @@ export async function seedOcMode(backend, store) {
   try {
     const s = await store.loadSettings();
     if (typeof backend.setOcMode === 'function') backend.setOcMode(s.ocMode);
+    // M157: restore keyed modes after the adapter inventory is available.
+    // The scalar remains the backwards-compatible fallback for old settings
+    // files and for the short pre-inventory seed.
+    if (s.ocModes && typeof s.ocModes === 'object' && typeof backend.listDevices === 'function') {
+      try {
+        const devices = await backend.listDevices();
+        for (const device of devices) {
+          const mode = typeof device?.deviceKey === 'string' ? s.ocModes[device.deviceKey] : null;
+          if ((mode === 'stock' || mode === 'advanced') && typeof backend.setOcMode === 'function') {
+            await backend.setOcMode(mode, device.id);
+          }
+        }
+      } catch {
+        // The pre-window call can occur before backend enumeration. The
+        // post-init boot call repeats this keyed restore.
+      }
+    }
     return s.ocMode;
   } catch {
     return null;
@@ -1869,6 +1886,24 @@ export function createIpcHandlers({
     return normalizeApply({ result: retry.result, state: retry.state, ...(retry.extendedUnavailable === true ? { extendedUnavailable: true } : {}), ...(retry.extendedUnavailablePartial === true ? { extendedUnavailablePartial: true } : {}) });
   };
 
+  // Resolve a session id to its durable physical adapter identity. The
+  // unified inventory exposes getDeviceTarget, while direct test/mock
+  // backends may only expose getTarget or listDevices. Keeping this fallback
+  // here makes per-GPU tuning mode persistence work through the same IPC
+  // contract in every backend shape.
+  const modeTarget = async (deviceId) => {
+    if (typeof backend.getDeviceTarget === 'function') {
+      return backend.getDeviceTarget(deviceId);
+    }
+    if (typeof backend.getTarget === 'function') {
+      return backend.getTarget(deviceId);
+    }
+    if (typeof backend.listDevices === 'function') {
+      return (await backend.listDevices()).find((device) => device.id === deviceId) ?? null;
+    }
+    return null;
+  };
+
   const handlers = {
     'health': async () => collectHealth(backend),
 
@@ -2148,8 +2183,26 @@ export function createIpcHandlers({
         // A770) must refuse with OC_CEILING_REFUSAL_MSG, never a
         // silent clamp. The flagless interactive path is UNCHANGED - the
         // mode still gates the slider applies.
-        const ocMode = (await store.loadSettings()).ocMode;
         const caps = await backend.getCapabilities(deviceId);
+        const persisted = await store.loadSettings();
+        // Capabilities are the authoritative mode for this physical GPU.
+        // The persisted scalar/map fallback is only for older backends that
+        // do not yet echo ocMode in their capability payload.
+        const targetKey = typeof caps?.deviceKey === 'string' ? caps.deviceKey : null;
+        const keyedMode = targetKey && persisted.ocModes && typeof persisted.ocModes === 'object'
+          ? persisted.ocModes[targetKey]
+          : null;
+        // A keyed persisted mode wins for a physical adapter. With no keyed
+        // override, retain the legacy scalar setting as the session default;
+        // the capability echo is only a fallback for older callers that do
+        // not persist settings. This keeps direct IPC tests and old settings
+        // files compatible while preventing one GPU's keyed mode from
+        // leaking into another GPU's apply gate.
+        const ocMode = keyedMode === 'advanced' || keyedMode === 'stock'
+          ? keyedMode
+          : persisted.ocMode === 'advanced' || persisted.ocMode === 'stock'
+            ? persisted.ocMode
+            : caps?.ocMode;
         if (caps?.overclockingSupported === false) {
           const perControl = Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: false, errorCode: 'unsupported', message: 'overclocking is not supported on this GPU' }]));
           return { result: { ok: Object.keys(perControl).length === 0, perControl }, state: await backend.getCurrentSettings(deviceId) };
@@ -3206,6 +3259,9 @@ export function createIpcHandlers({
             : {}),
           // M3-C-E: the OC mode is never touched by the profiles patch.
           ocMode: cur.ocMode,
+          // M157: preserve each physical GPU's tuning mode through this
+          // unrelated read-modify-write channel.
+          ...(cur.ocModes !== undefined ? { ocModes: cur.ocModes } : {}),
           // M4-B: the once-only Advanced-mode warning acceptance is never
           // touched by the profiles patch either.
           advancedModeAccepted: cur.advancedModeAccepted,
@@ -3464,28 +3520,52 @@ export function createIpcHandlers({
         return next;
       },
 
-      // M3-C-E: the OC mode (stock | advanced), persisted in settings.json.
-      // The mode drives which limits getCapabilities exposes (extended
-      // ranges only in advanced) and the shared pre-clamp refusal gate in
-      // every apply path.
-      'oc-mode-get': async (...args) => {
-        assertNoPayload(args, 'oc-mode-get');
+      // M3-C-E/M157: the OC mode is persisted per physical GPU. The scalar
+      // remains a compatibility fallback for old settings files; an
+      // inventory key is required before a mixed-session toggle can be
+      // stored or routed to one adapter.
+      'oc-mode-get': async (deviceId = null) => {
+        if (deviceId !== null && (!Number.isInteger(deviceId) || deviceId < 0)) {
+          throw new Error('oc-mode-get takes no payload or a valid device id');
+        }
         const s = await store.loadSettings();
-        return { ocMode: s.ocMode };
+        if (deviceId === null) return { ocMode: s.ocMode };
+        const target = await modeTarget(deviceId);
+        const deviceKey = typeof target?.deviceKey === 'string' ? target.deviceKey : null;
+        const saved = deviceKey && s.ocModes && typeof s.ocModes === 'object' ? s.ocModes[deviceKey] : null;
+        return { ocMode: OC_MODES.includes(saved) ? saved : s.ocMode, deviceKey };
       },
 
-      'oc-mode-set': async (ocMode) => {
+      'oc-mode-set': async (ocMode, deviceId = null) => {
         if (!OC_MODES.includes(ocMode)) {
           throw new Error(`oc-mode-set: ocMode must be one of ${OC_MODES.join(', ')}`);
         }
+        if (deviceId !== null) assertValidDeviceId(deviceId);
         const cur = await store.loadSettings();
-        await store.saveSettings({ ...cur, ocMode });
-        // Invalidate the backend's per-device caps cache: getCapabilities
-        // re-derives the extended ranges from the new mode on the next call.
-        if (typeof backend.setOcMode === 'function') {
-          await backend.setOcMode(ocMode);
+        let deviceKey = null;
+        if (deviceId !== null) {
+          const target = await modeTarget(deviceId);
+          deviceKey = typeof target?.deviceKey === 'string' ? target.deviceKey : null;
         }
-        return { ocMode };
+        const ocModes = deviceKey
+          ? { ...(cur.ocModes ?? {}), [deviceKey]: ocMode }
+          : cur.ocModes;
+        // A targeted toggle changes only the keyed override. Keep the scalar
+        // as the legacy/default mode for every physical GPU without an
+        // override; changing it here would make the other adapter appear to
+        // switch modes too. The no-id form retains the old global behavior.
+        await store.saveSettings({
+          ...cur,
+          ...(deviceId === null ? { ocMode } : {}),
+          ...(ocModes !== undefined ? { ocModes } : {}),
+        });
+        // Invalidate only the selected device's caps cache. Its ranges are
+        // re-derived from the new mode; every other adapter keeps its own
+        // tuning surface untouched.
+        if (typeof backend.setOcMode === 'function') {
+          await backend.setOcMode(ocMode, deviceId);
+        }
+        return deviceId === null ? { ocMode } : { ocMode, deviceKey };
       },
 
       // M4-B: the Advanced OC Mode warning is accepted ONCE and

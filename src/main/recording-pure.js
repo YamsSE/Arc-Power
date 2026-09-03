@@ -77,6 +77,24 @@ export function formatDxgiLuid(value) {
   return `${hex(value.high)}:${hex(value.low)}`;
 }
 
+/** Normalize a DXGI LUID supplied by either the Windows inventory or the
+ * native adapter bridge. Windows controller snapshots can cross the JSON
+ * boundary as an object, a decimal high:low pair, or Ascent's hex pair. */
+export function normalizeDxgiLuid(value) {
+  if (value && typeof value === 'object') return formatDxgiLuid(value);
+  if (typeof value !== 'string') return null;
+  const match = value.trim().match(/^(-?(?:0x)?[0-9a-f]+):(-?(?:0x)?[0-9a-f]+)$/i);
+  if (!match) return null;
+  const parsePart = (text) => {
+    const base = /^-?0x/i.test(text) || /[a-f]/i.test(text) ? 16 : 10;
+    const number = Number.parseInt(text, base);
+    return Number.isSafeInteger(number) ? number : null;
+  };
+  const high = parsePart(match[1]);
+  const low = parsePart(match[2]);
+  return high === null || low === null ? null : formatDxgiLuid({ high, low });
+}
+
 export function recordingBitrateRange(resolution = DEFAULT_RECORDING_SETTINGS.resolution) {
   return RECORDING_BITRATE_RANGES[resolution] ?? RECORDING_BITRATE_RANGES.default;
 }

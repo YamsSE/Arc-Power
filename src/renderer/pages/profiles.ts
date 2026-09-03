@@ -30,7 +30,7 @@ import { chipLabelGpu } from '../pure/chip-label.ts';
 import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import { controlDisplay, formatValue } from '../pure/slider.ts';
 import type { AppState } from '../router.ts';
-import type { Capabilities, DeviceState, FlipMode, FrameGenOverride, GameCatalogEntry, GameProfileCapabilities, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, RangeInfo, Settings, StartupGetState } from '../types.ts';
+import type { Capabilities, DeviceInfo, DeviceState, FlipMode, FrameGenOverride, GameCatalogEntry, GameProfileCapabilities, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, RangeInfo, Settings, StartupGetState } from '../types.ts';
 
 const SCALAR_KEYS = ['powerLimitW', 'gpuVoltOffsetV', 'gpuFreqOffsetMhz', 'tempLimitC', 'vramFreqOffsetGts', 'vramVoltOffsetV', 'fixedFanPct'];
 const MAX_GAME_BANNER_DATA_LENGTH = 12_000_000;
@@ -107,6 +107,37 @@ export function profileGpuIdentity(state: Pick<AppState, 'devices' | 'deviceId' 
     key: gpu?.deviceKey ?? state.caps?.deviceKey ?? null,
     label: gpu?.name ?? state.caps?.deviceName ?? 'Current GPU',
   };
+}
+
+/** Resolve a saved profile to its physical adapter without using the focused
+ * adapter as an ordinal fallback. Legacy profiles intentionally target the
+ * focused adapter until their first successful load binds them. */
+export function profileTargetDevice(
+  state: Pick<AppState, 'devices' | 'deviceId'>,
+  profile: Pick<Profile, 'deviceKey'>,
+): DeviceInfo | null {
+  const devices = Array.isArray(state.devices) ? state.devices : [];
+  if (typeof profile.deviceKey === 'string' && profile.deviceKey.trim()) {
+    const matches = devices.filter((device) => device.deviceKey === profile.deviceKey);
+    return matches.length === 1 ? matches[0] : null;
+  }
+  if (!Number.isInteger(state.deviceId)) return null;
+  return devices.find((device) => device.id === state.deviceId) ?? null;
+}
+
+/** M156: every tuning profile card identifies its owning physical adapter. */
+export function profileOwnerLabel(profile: Pick<Profile, 'deviceKey' | 'deviceName'>): string {
+  const model = chipLabelGpu(profile.deviceName ?? '');
+  if (model) {
+    // Inventory names may carry a test-fixture marker or the VRAM suffix
+    // (for example, "A770 fixture 16GB GDDR6"). A profile badge identifies
+    // the GPU model only, so stop before those descriptive tokens.
+    const tokens = model.split(/\s+/).filter((token) => token.toLowerCase() !== 'mock');
+    const cutoff = tokens.findIndex((token) => /^(?:fixture|\d+(?:\.\d+)?(?:gb|mb)|gddr\d*x?|hbm\d*)$/i.test(token));
+    const compact = tokens.slice(0, cutoff >= 0 ? cutoff : tokens.length).join(' ').trim();
+    if (compact) return `GPU: ${compact}`;
+  }
+  return profile.deviceKey ? 'GPU: Unknown' : 'GPU: Legacy';
 }
 
 /** A profile without a key is a legacy profile and can be migrated on the
@@ -454,7 +485,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     if (!profileSubtitle) return;
     profileSubtitle.textContent = viewMode === 'game'
       ? 'Save and load named game presets. Enable a game profile only when that executable should override the global graphics settings.'
-      : 'Save and load named tuning presets. Loading applies the profile immediately; the active profile can start at boot.';
+      : 'Save and load named tuning presets. Each profile is tied to the GPU shown on its card and applies only to that GPU.';
   };
   try {
     // The optional per-game sidecar must never gate the legacy profile page.
@@ -708,7 +739,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       el('div', { class: 'profile-browser-head' }, [
         el('div', { class: 'profile-browser-title' }, [
           el('h2', { class: 'card-title', text: 'Profiles' }),
-          el('p', { class: 'card-note', text: 'Save GPU tuning presets.' }),
+          el('p', { class: 'card-note', text: 'Each profile shows the physical GPU it belongs to.' }),
         ]),
       ]),
       el('div', { class: 'profile-browser-toolbar' }, [
@@ -743,10 +774,14 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
 
   const profileRow = (p: Profile, active: boolean, activeOnOtherGpu: boolean, deviceKey: string | null): HTMLElement => {
     const usableOnCurrentGpu = profileMatchesGpu(p, deviceKey);
-    const gpuLabel = chipLabelGpu(p.deviceName) ?? 'GPU';
+    const gpuLabel = profileOwnerLabel(p);
     // F3 instant apply (M2C-B): the Load button is a single trigger - one
     // attempt, immediate result (no in-flight cancel surface anymore).
-    const loadBtn = el('button', { class: 'btn btn-primary btn-sm', text: 'Load', disabled: !usableOnCurrentGpu, title: usableOnCurrentGpu ? 'Apply this profile to the current GPU' : 'This profile belongs to another GPU' });
+    const loadBtn = el('button', {
+      class: 'btn btn-primary btn-sm',
+      text: 'Load',
+      title: usableOnCurrentGpu ? 'Apply this profile to the current GPU' : `Apply this profile directly to ${gpuLabel}`,
+    });
     let loadInFlight = false;
     loadBtn.addEventListener('click', () => {
       if (loadInFlight) return;
@@ -759,8 +794,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     }, [
       el('div', { class: 'profile-info' }, [
         el('span', { class: 'profile-name', text: p.name }),
-        active ? el('span', { class: 'badge profile-badge', text: gpuLabel, title: 'Active for this GPU' })
-          : activeOnOtherGpu ? el('span', { class: 'badge profile-badge', text: `${gpuLabel} active`, title: 'Active on another GPU' }) : null,
+        el('span', { class: 'badge profile-gpu-badge', text: gpuLabel, title: 'GPU this tuning profile belongs to' }),
+        active ? el('span', { class: 'badge profile-badge', text: 'Active', title: 'Active for this GPU' })
+          : activeOnOtherGpu ? el('span', { class: 'badge profile-badge', text: 'Active elsewhere', title: 'Active on another GPU' }) : null,
       ]),
       el('div', { class: 'chips profile-chips' }, settingsSummary(p.settings, caps, p.deviceName ?? caps?.deviceName ?? '').map((t) => el('span', { class: 'chip', text: t }))),
       el('div', { class: 'profile-actions' }, [
@@ -940,136 +976,123 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
 
   const onLoad = async (p: Profile, done: () => void): Promise<void> => {
     const live = ctx.store.get();
-    const deviceId = live.deviceId;
-    const currentGpu = profileGpuIdentity(live);
-    if (deviceId === null) { done(); return; }
-    if (!profileMatchesGpu(p, currentGpu.key)) {
+    const targetDevice = profileTargetDevice(live, p);
+    if (!targetDevice || !Number.isInteger(targetDevice.id)) {
       done();
-      toast('warn', 'Profile belongs to another GPU', 'Switch to the GPU shown by this profile before loading it.');
+      toast('warn', 'Profile GPU unavailable', `This profile belongs to ${profileOwnerLabel(p)}, which is not currently available.`);
       return;
     }
-    // M3-C review F4: the waiver gate reads the LIVE store's caps - an
-    // in-session acceptance must not re-prompt (the mount-time caps lag
-    // until a re-render).
-    const liveCaps = ctx.store.get().caps;
-    // M17 (B50-class): OC-locked devices have no waiver - skip the gate (the
-    // per-control 'unsupported' refusals are the honest floor).
-    const decision = await ensureWaiver(deviceId, liveCaps?.waiverAccepted === true, caps.deviceName || 'this GPU', liveCaps?.overclockingSupported !== false);
-    if (decision === 'cancelled') {
-      done();
-      toast('info', 'Load cancelled', 'The warranty waiver must be accepted before applying a profile.');
-      return;
-    }
-    // M3-C-D (double-dialog decision): NO per-apply extended-range confirm
-    // on the Profiles page - in Advanced mode the mode-enable confirm
-    // already warned; M4O: in Stock mode the profile apply is NOT gated by
-    // the OC mode either (the profile applies as saved against the
-    // driver's true limits - the flagless slider gate does not apply here;
-    // the >375 W ceiling (M21: the sysman-primary ceiling) + the runtime-capability refusals still surface
-    // as per-control error toasts below, never a dead-end confirm).
-    // M2C-C: a non-elevated product app delegates to the elevated worker -
-    // explain before the UAC prompt. M4-D2: distributed EXEs request
-    // administrator access; retain the workerApply path for development and
-    // legacy non-elevated sessions.
-    if (ctx.store.get().workerApply && !ctx.store.get().elevated) {
-      toast('info', 'Administrator approval needed', 'Administrator approval is needed to apply GPU settings.');
-    }
+    const targetDeviceId = targetDevice.id;
+    const targetGpuKey = targetDevice.deviceKey ?? null;
+    const targetGpuLabel = targetDevice.name || p.deviceName || 'this GPU';
+    const updateFocusedStore = (patch: Partial<AppState>): void => {
+      // Loading a profile for GPU 2 must not replace GPU 1's focused state or
+      // refresh the overlay back to an empty sample. The target's driver calls
+      // still run directly against targetDeviceId.
+      if (ctx.store.get().deviceId === targetDeviceId) ctx.store.set(patch);
+    };
     try {
-      const before = ctx.store.get().state as DeviceState;
-      // M4O: the profile apply carries { profileApply: true } - the OC-mode
-      // gate (the interactive slider gate) must NOT block a saved profile
-      // (uniform with the boot/tray/--apply-profile paths: the profile
-      // applies as saved against the driver's true limits; the >375 W
-      // ceiling (M21: the sysman-primary ceiling) + the runtime-capability
-      // refusals still apply in main).
-      const settingsToApply = profileSettingsForCapabilities(p.settings, liveCaps ?? caps);
-      const { result, state: fresh } = await api.applySettings(deviceId, settingsToApply, { profileApply: true });
-      // M3-C review F2: only store a NON-NULL fresh state - a refusal
-      // envelope's null state must never null out the store's device state
-      // (that renders the OC page 'Loading device capabilities…' forever
-      // and throws in the dirty helpers).
-      if (fresh) ctx.store.set({ state: fresh });
-      // M3-A: record the outcome for the dashboard "OC working" health row.
-      {
-        const failed = Object.entries(result.perControl)
-          .filter(([, per]) => !per.ok)
-          .map(([k, per]) => `${CONTROL_LABELS[k] ?? k}: ${per.message ?? per.errorCode ?? 'failed'}`)
-          .join('; ');
-        ctx.store.set({
-          lastApply: {
-            ok: result.ok,
-            at: Date.now(),
-            detail: result.ok ? `Profile "${p.name}" applied` : (failed || `Profile "${p.name}" failed`),
-          },
-        });
+      // A profile's physical key is authoritative. Only legacy profiles use
+      // the focused adapter, and only until their first successful load binds
+      // them to that adapter.
+      let targetCaps = targetDeviceId === live.deviceId ? live.caps : await api.getCapabilities(targetDeviceId);
+      let targetState = targetDeviceId === live.deviceId ? live.state : await api.getCurrentSettings(targetDeviceId);
+      if (!targetCaps || !targetState) throw new Error(`Could not read ${profileOwnerLabel(p)} before loading the profile.`);
+
+      // M3-C review F4: the waiver gate reads the target adapter's LIVE caps,
+      // not the focused GPU's caps.
+      const decision = await ensureWaiver(targetDeviceId, targetCaps.waiverAccepted === true, targetGpuLabel, targetCaps.overclockingSupported !== false);
+      if (decision === 'cancelled') {
+        toast('info', 'Load cancelled', 'The warranty waiver must be accepted before applying a profile.');
+        return;
       }
-      // M4-D: a waiver-not-set failure must not dead-end the load
-      // with a confusing error - re-prompt the waiver dialog AUTOMATICALLY
-      // (the fresh caps reflect the driver truth, refreshed like the OC
-      // page does) and retry ONCE. Never a loop; the counter resets on
-      // success, so a later driver-side loss still gets its own retry.
-      // Accepted-store sessions never reach this branch (MAIN silently
-      // re-sets + retries - the failure does not surface).
-      if (!result.ok) {
-        const freshCaps = await api.getCapabilities(deviceId);
-        ctx.store.set({ caps: freshCaps });
-        if (waiverRetryCount === 0
-          && Object.values(result.perControl).some((p) => p?.errorCode === 'waiver-not-set')) {
+      // M2C-C: a non-elevated product app delegates to the elevated worker -
+      // explain before the UAC prompt. M4-D2: distributed EXEs request
+      // administrator access; retain the workerApply path for development and
+      // legacy non-elevated sessions.
+      if (ctx.store.get().workerApply && !ctx.store.get().elevated) {
+        toast('info', 'Administrator approval needed', 'Administrator approval is needed to apply GPU settings.');
+      }
+
+      let appliedResponse: Awaited<ReturnType<typeof api.applySettings>> | null = null;
+      let before = targetState;
+      for (;;) {
+        // M4O: { profileApply: true } keeps saved profiles independent of the
+        // interactive OC-mode gate; runtime capability refusals still surface
+        // as per-control error toasts.
+        const settingsToApply = profileSettingsForCapabilities(p.settings, targetCaps);
+        appliedResponse = await api.applySettings(targetDeviceId, settingsToApply, { profileApply: true });
+        const { result, state: fresh } = appliedResponse;
+        if (fresh) {
+          targetState = fresh;
+          updateFocusedStore({ state: fresh });
+        }
+        // M4-D: a waiver-not-set failure re-prompts once using fresh caps and
+        // retries the same physical target. This local retry deliberately
+        // avoids re-reading the focused GPU's caps for GPU 2 profiles.
+        if (!result.ok && waiverRetryCount === 0
+          && Object.values(result.perControl).some((control) => control?.errorCode === 'waiver-not-set')) {
+          const freshCaps = await api.getCapabilities(targetDeviceId);
+          targetCaps = freshCaps;
+          updateFocusedStore({ caps: freshCaps });
           waiverRetryCount += 1;
-          const retryDecision = await ensureWaiver(deviceId, freshCaps.waiverAccepted === true, caps.deviceName || 'this GPU', freshCaps.overclockingSupported !== false);
+          const retryDecision = await ensureWaiver(targetDeviceId, freshCaps.waiverAccepted === true, targetGpuLabel, freshCaps.overclockingSupported !== false);
           if (retryDecision === 'accepted') {
-            // The store caps flag must be patched BEFORE the retry - the
-            // retry re-enters the pre-load waiver gate, which reads the
-            // store flag; without the patch it would re-show the dialog
-            // (the user just accepted - no second prompt).
-            const cur2 = ctx.store.get();
-            if (cur2.caps && cur2.caps.waiverAccepted !== true) {
-              ctx.store.set({ caps: { ...cur2.caps, waiverAccepted: true } });
-            }
-            return onLoad(p, done);
+            const acceptedCaps = { ...freshCaps, waiverAccepted: true };
+            targetCaps = acceptedCaps;
+            updateFocusedStore({ caps: acceptedCaps });
+            before = targetState;
+            continue;
           }
         }
+        break;
       }
+      if (!appliedResponse) throw new Error('Profile apply did not return a result.');
+      const { result } = appliedResponse;
+      // M3-A: record the outcome for the dashboard "OC working" health row,
+      // but only when this was the focused adapter.
+      const failed = Object.entries(result.perControl)
+        .filter(([, per]) => !per.ok)
+        .map(([key, per]) => `${CONTROL_LABELS[key] ?? key}: ${per.message ?? per.errorCode ?? 'failed'}`)
+        .join('; ');
+      updateFocusedStore({
+        lastApply: {
+          ok: result.ok,
+          at: Date.now(),
+          detail: result.ok ? `Profile "${p.name}" applied` : (failed || `Profile "${p.name}" failed`),
+        },
+        caps: { ...targetCaps, waiverAccepted: true },
+      });
+
       let changed = 0;
       for (const [key, per] of Object.entries(result.perControl)) {
         if (!per.ok) {
-          // F3 instant: refusals carry the composed actionable message;
-          // hard errors keep the errorCode mapping (M17d item 0b: the
-          // shared applyFailureText preference).
           toast('error', `${CONTROL_LABELS[key] ?? key} failed`, applyFailureText(per, key));
         } else if (!isNoopApply(key, p.settings, before)) {
           changed += 1;
           toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
         }
       }
-      ctx.store.set({ caps: { ...caps, waiverAccepted: true } });
       // M4-D: a successful load resets the auto-retry counter - a later
       // driver-side waiver loss gets its own single retry.
       if (result.ok) waiverRetryCount = 0;
-      // M2b step-5 NIT 2: only a fully-successful apply (result.ok) may mark
-      // the profile active and claim "applied to the GPU" - a partially-
-      // failed load keeps the per-control error toasts but marks nothing.
+      // Only a fully-successful apply may mark the profile active. The map is
+      // keyed by the target physical GPU, never by the currently focused one.
       const outcome = profileApplyOutcome(result, p.name, changed);
       if (outcome.markActive) {
-        // A pre-M152 profile has no physical identity. Bind it only after a
-        // successful explicit load, so its next use is isolated to the GPU
-        // that was actually tuned rather than remaining globally reusable.
-        if (!p.deviceKey && currentGpu.key) {
-          await api.profilesSave({ ...p, deviceKey: currentGpu.key, deviceName: currentGpu.label });
+        if (!p.deviceKey && targetGpuKey) {
+          await api.profilesSave({ ...p, deviceKey: targetGpuKey, deviceName: targetGpuLabel });
         }
-        // M152: one active slot per physical GPU. Keep the scalar in sync for
-        // old builds/files, but make the durable map authoritative whenever a
-        // physical key is available.
         const currentMap = activeProfileIds((await api.profilesList()).settings);
-        if (currentGpu.key) currentMap[currentGpu.key] = p.id;
+        if (targetGpuKey) currentMap[targetGpuKey] = p.id;
         await api.profilesSettingsSave({ activeProfileIds: currentMap, activeProfileId: p.id });
-        toast('info', 'Profile loaded', outcome.toast ?? '');
+        toast('info', 'Profile loaded', outcome.toast ?? `Applied to ${profileOwnerLabel({ deviceKey: targetGpuKey, deviceName: targetGpuLabel })}.`);
         void api.trayRebuild().catch(() => {});
       }
       await refresh();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: msg } });
+      updateFocusedStore({ lastApply: { ok: false, at: Date.now(), detail: msg } });
       if (/administrator approval/i.test(msg)) {
         toast('error', 'Load requires administrator approval', msg);
       } else {

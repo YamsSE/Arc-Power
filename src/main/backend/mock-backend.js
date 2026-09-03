@@ -281,6 +281,10 @@ export class MockBackend {
     // or the constructor opt flips it to stock so the refusal path is
     // exercisable without hardware. A session knob, kept across swaps.
     this._ocMode = opts.ocMode === 'stock' ? 'stock' : 'advanced';
+    // Tuning mode is per physical adapter. Keep the scalar as the legacy
+    // fallback used by single-device callers, while keyed entries isolate
+    // Alchemist and Battlemage in a mixed session.
+    this._ocModeByDeviceKey = new Map();
     // The energy step override is a session knob too - _applyFeatureset
     // recomputes the step from the ACTIVE featureset's powerW (M2D: after a
     // swap the monitoring power readout must derive from the new device).
@@ -454,7 +458,13 @@ export class MockBackend {
       const prior = this._deviceStateByKey.get(device.deviceKey);
       return {
         device,
-        caps: this._buildCaps(featureset, extended, fanCanControl, device.deviceKey),
+        caps: this._buildCaps(
+          featureset,
+          extended,
+          fanCanControl,
+          device.deviceKey,
+          this._ocModeByDeviceKey.get(device.deviceKey) ?? this._ocMode,
+        ),
         state: this._buildState(featureset),
         featureset,
         extendedCapable: extended,
@@ -524,7 +534,7 @@ export class MockBackend {
     this._failOnce = {};
   }
 
-  _buildCaps(fs, extended, fanCanControl = this._fanCanControl, deviceKey = null) {
+  _buildCaps(fs, extended, fanCanControl = this._fanCanControl, deviceKey = null, ocMode = this._ocMode) {
     // Parity with IgclBackend: every control key is emitted explicitly
     // (supported -> true, otherwise false) so consumers never see undefined.
     const controls = {
@@ -538,10 +548,10 @@ export class MockBackend {
     // mode reports the standard ranges (mirrors IgclBackend). M4-F: the
     // per-device flag (device 0: the session overlay; device 1: its own
     // featureset - the arc-igpu is never extended-capable).
-    if (extended && this._ocMode === 'advanced' && ranges.powerLimitW && fs.extended?.plMax) {
+    if (extended && ocMode === 'advanced' && ranges.powerLimitW && fs.extended?.plMax) {
       ranges.powerLimitW.max = fs.extended.plMax;
     }
-    if (extended && this._ocMode === 'advanced' && ranges.tempLimitC && fs.extended?.tlMax) {
+    if (extended && ocMode === 'advanced' && ranges.tempLimitC && fs.extended?.tlMax) {
       ranges.tempLimitC.max = fs.extended.tlMax;
     }
     const caps = {
@@ -572,7 +582,8 @@ export class MockBackend {
     };
     // M2C-C: the bundled-2023-runtime flag - the UI exposes the extended
     // maxes only when it is set AND the OC mode is advanced (M3-C-E).
-    if (extended && this._ocMode === 'advanced') caps.extendedRanges = true;
+    if (extended && ocMode === 'advanced') caps.extendedRanges = true;
+    caps.ocMode = ocMode;
     // M17c: the AIB-identity fields - the SAME decode the real backend
     // runs in getCapabilities (pure/aib.ts from the fixture subsystem
     // fields + the injected laptopInfoOf provider - the mock mirrors the
@@ -603,19 +614,35 @@ export class MockBackend {
   }
 
   /**
-   * M3-C-E: switch the mock's OC mode and rebuild the caps (the extended
-   * ranges appear/disappear exactly like the real backend's caps cache
-   * invalidation). Returns the effective mode.
+   * M3-C-E: switch the mock's OC mode and rebuild only the selected
+   * adapter's caps. A missing device id keeps the legacy/default mode for
+   * older one-device callers.
    * @param {'stock'|'advanced'} mode
+   * @param {number|null|undefined} [deviceId]
    * @returns {'stock'|'advanced'}
    */
-  setOcMode(mode) {
+  setOcMode(mode, deviceId = null) {
     const next = mode === 'stock' ? 'stock' : 'advanced';
+    if (Number.isInteger(deviceId) && deviceId >= 0) {
+      const entry = this._entry(deviceId);
+      const key = entry.device?.deviceKey;
+      if (typeof key === 'string' && key.length > 0) this._ocModeByDeviceKey.set(key, next);
+      const rebuilt = this._buildCaps(
+        entry.featureset,
+        entry.extendedCapable,
+        entry.caps?.fan?.canControl === true,
+        key,
+        next,
+      );
+      if (deviceId === 0) this._caps = rebuilt;
+      else entry.caps = rebuilt;
+      return next;
+    }
     if (next !== this._ocMode) {
       this._ocMode = next;
-      // M4-F: the mode is global (not per-device) - the caps cache of BOTH
-      // devices is invalidated (the arc-igpu has no extended ranges either
-      // way; rebuilding it keeps its caps honest under the stock flip).
+      // Legacy no-id callers still change the shared fallback and rebuild all
+      // device caps. Normal UI toggles use the id-scoped branch above, which
+      // leaves every other physical adapter's tuning surface untouched.
       const sortedPrimary = this._primaryFeatureset;
       const primaryExtended = this._extendedOverlay !== undefined
         ? this._extendedOverlay
@@ -623,9 +650,15 @@ export class MockBackend {
       const primaryFan = sortedPrimary.hasFan && (this._fanOverlay !== undefined
         ? this._fanOverlay
         : sortedPrimary.fanCanControl === true);
-      this._caps = this._buildCaps(sortedPrimary, primaryExtended, primaryFan, this._device?.deviceKey ?? null);
+      this._caps = this._buildCaps(sortedPrimary, primaryExtended, primaryFan, this._device?.deviceKey ?? null, next);
       for (const e of this._extraDevices.values()) {
-        e.caps = this._buildCaps(e.featureset, e.featureset.extendedRanges === true, e.featureset.hasFan && e.featureset.fanCanControl === true, e.device.deviceKey);
+        e.caps = this._buildCaps(
+          e.featureset,
+          e.featureset.extendedRanges === true,
+          e.featureset.hasFan && e.featureset.fanCanControl === true,
+          e.device.deviceKey,
+          this._ocModeByDeviceKey.get(e.device.deviceKey) ?? next,
+        );
       }
     }
     return next;
@@ -927,8 +960,10 @@ export class MockBackend {
     // from the bundled-runtime capability flag. The real backend exposes the
     // documented 375 W / 115 C shape in Advanced even when the runtime probe
     // is unavailable; the apply gate still owns the honest runtime refusal.
-    const advanced = this._ocMode === 'advanced';
-    caps.ocMode = this._ocMode;
+    const entry = this._entry(deviceId);
+    const mode = this._ocModeByDeviceKey.get(entry.device?.deviceKey) ?? this._ocMode;
+    const advanced = mode === 'advanced';
+    caps.ocMode = mode;
     const limits = deviceLimitsOf(identity, { advanced });
     if (limits) {
       const row = limits.listed ? limits : defaultLimitsOf(advanced);
@@ -1513,7 +1548,8 @@ export class MockBackend {
     // gate). Units-aware: the percent-unit b580 never records (the units
     // gate in apply-routing skips the companion there too).
     const plUnits = caps.ranges.powerLimitW?.units;
-    if (this._ocMode === 'advanced'
+    const mode = this._ocModeByDeviceKey.get(e.device?.deviceKey) ?? this._ocMode;
+    if (mode === 'advanced'
       && settings.powerLimitW !== undefined
       && (plUnits === undefined || plUnits === 'W')) {
       this._v2CompanionCalls.push(settings.powerLimitW);

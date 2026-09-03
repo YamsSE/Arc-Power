@@ -111,9 +111,22 @@ function fanUnitForProperties(properties) {
   // Prefer percent when the driver advertises it: it is the canonical UI
   // unit and preserves the existing Alchemist/IGS route.
   if ((supported & (1 << FAN_UNITS_PERCENT)) !== 0) return FAN_UNITS_PERCENT;
-  if ((supported & (1 << FAN_UNITS_RPM)) !== 0 && Number(properties?.maxRPM) > 0) return FAN_UNITS_RPM;
+  // `supportedUnits` describes the unit accepted by the fan-state API, not
+  // the unit used by the temperature/speed table API. Both Arc generations
+  // on the live driver advertise RPM here (and the Alchemist reports
+  // maxRPM=-1), while ctlFanSetSpeedTableMode still requires the FAN enum's
+  // PERCENT unit. Keep RPM as the state-unit answer even when maxRPM is
+  // unknown; fanPctFromSpeed will reject an RPM value it cannot normalize.
+  if ((supported & (1 << FAN_UNITS_RPM)) !== 0) return FAN_UNITS_RPM;
   return null;
 }
+
+// Intel's ctl_fan_speed_t table/fixed APIs use the FAN enum's PERCENT value
+// (1) on the Arc driver even when ctl_fan_properties_t advertises RPM only.
+// This is deliberately separate from fanUnitForProperties: selecting RPM for
+// writes makes the probe fail on both A770 and B580, which leaves the UI with
+// no Curve control despite the table setter accepting percent values.
+const FAN_CONTROL_UNITS = FAN_UNITS_PERCENT;
 
 function fanSpeedFromPct(value, units, maxRpm) {
   const pct = clampFanPct(value);
@@ -150,7 +163,10 @@ export const FAN_PROBE_CACHE_FILENAME = 'fan-probe-cache.json';
 // tried the fallback) must NOT be trusted once the code grew the fallback -
 // the version gates the cache: a missing/mismatched probeVersion is a miss
 // (the probe re-runs once and re-persists under the current version).
-export const FAN_PROBE_VERSION = 2;
+// v3: the Arc table/fixed write unit is now kept separate from the
+// properties/state unit. This invalidates v2 successes that were learned
+// with the RPM-derived write encoding.
+export const FAN_PROBE_VERSION = 3;
 
 export function fanProbeCacheFile() {
   const dir = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
@@ -1004,6 +1020,11 @@ export class IgclBackend {
       ? opts.vrrRegistry
       : (opts.lib ? null : createVrrRegistry());
     this._ocMode = opts.ocMode === 'advanced' ? 'advanced' : 'stock';
+    // Stock/Advanced is a tuning-surface preference, not a process-global
+    // GPU setting. Keep a separate mode for each enumerated adapter so
+    // changing an Alchemist card cannot rebuild Battlemage's limits (or the
+    // other way around). `_ocMode` remains the legacy/default fallback.
+    this._ocModeByDevice = new Map();
     this._apiHandle = null;
     this._levelZeroOk = false;
     this._igscFullOk = null;
@@ -1062,19 +1083,29 @@ export class IgclBackend {
   }
 
   /**
-   * M3-C-E: switch the OC mode and INVALIDATE the per-device caps cache -
-   * the next getCapabilities re-derives the ranges from the new mode
-   * (extended ranges exposed only in advanced). Returns the effective mode.
+   * M3-C-E: switch the OC mode and invalidate the selected device's caps
+   * cache. A missing device id keeps the legacy/default mode for callers
+   * that do not yet have an inventory target.
    * @param {'stock'|'advanced'} mode
+   * @param {number|null|undefined} [deviceId]
    * @returns {'stock'|'advanced'}
    */
-  setOcMode(mode) {
+  setOcMode(mode, deviceId = null) {
     const next = mode === 'advanced' ? 'advanced' : 'stock';
+    if (Number.isInteger(deviceId) && deviceId >= 0) {
+      this._ocModeByDevice.set(deviceId, next);
+      this._caps.delete(deviceId);
+      return next;
+    }
     if (next !== this._ocMode) {
       this._ocMode = next;
       this._caps.clear();
     }
     return next;
+  }
+
+  _ocModeFor(deviceId) {
+    return this._ocModeByDevice.get(deviceId) ?? this._ocMode;
   }
 
   /**
@@ -1625,15 +1656,14 @@ export class IgclBackend {
       if (lib.ctlFanGetProperties(fan, propBuf) === CTL_RESULT.SUCCESS) fanProperties = koffi.decode(propBuf, 'ctl_fan_properties_t');
     }
 
-    const fanUnits = fanUnitForProperties(fanProperties);
+    // The table/fixed control ABI is independent of the state-unit bitmask.
+    // Arc boards commonly report RPM-only properties but accept the FAN
+    // enum's PERCENT table encoding.
+    const fanUnits = FAN_CONTROL_UNITS;
     const maxRpm = Number(fanProperties?.maxRPM);
-    if (fanUnits === null) {
-      console.error('[igcl-backend] fan probe: the driver did not advertise a usable RPM or percent speed unit');
-      return { probeOk: false, writeAccepted: false, fixedOk: false };
-    }
 
-    // Intel's sample encoding: Size/Version filled, the driver's advertised
-    // FAN speed unit, strictly ascending temps, safe speeds 0-90%. Point count honors
+    // Intel's sample encoding: Size/Version filled, FAN-enum PERCENT units,
+    // strictly ascending temps, safe speeds 0-90%. Point count honors
     // the card's maxPoints (capped at the live-verified 10-point sample).
     const pointCount = Number.isInteger(maxPoints) && maxPoints > 0 ? Math.min(10, maxPoints) : 10;
     const expected = [];
@@ -1741,7 +1771,7 @@ export class IgclBackend {
    * @param {number} deviceId
    * @returns {Promise<boolean>}
    */
-  async _runFixedProbe(fan, deviceId, fanUnits = FAN_UNITS_PERCENT, maxRpm = -1) {
+  async _runFixedProbe(fan, deviceId, fanUnits = FAN_CONTROL_UNITS, maxRpm = -1) {
     const lib = this._libOrThrow();
     const FIXED_PCT = 50;
     const fixed = { Size: koffi.sizeof('ctl_fan_speed_t'), Version: 0, speed: fanSpeedFromPct(FIXED_PCT, fanUnits, maxRpm), units: fanUnits };
@@ -1795,8 +1825,8 @@ export class IgclBackend {
       console.error('[igcl-backend] fixed fan probe: the dedicated API refused and ctlFanSetSpeedTableMode is unavailable - no flat-table fallback possible, fixedOk stays false');
       return false;
     }
-    // A flat 2-point 50% table (20C/100C, the driver's native speed unit - the
-    // probe convention shared with the apply path).
+    // A flat 2-point 50% table (20C/100C, FAN-enum PERCENT units - the probe
+    // convention shared with the apply path).
     const table = [20, 100].map((t) => ({
       Size: koffi.sizeof('ctl_fan_temp_speed_t'),
       Version: 0,
@@ -1856,7 +1886,7 @@ export class IgclBackend {
    * @param {number} deviceId
    * @returns {Promise<boolean>}
    */
-  async _restoreFanDefault(fan, deviceId, fanUnits = FAN_UNITS_PERCENT, maxRpm = -1) {
+  async _restoreFanDefault(fan, deviceId, fanUnits = FAN_CONTROL_UNITS, maxRpm = -1) {
     const lib = this._libOrThrow();
     const settle = (ms) => new Promise((r) => setTimeout(r, ms));
     if (this._isUnavailable(lib.ctlFanSetDefaultMode) || this._isUnavailable(lib.ctlFanGetConfig)) return false;
@@ -1974,6 +2004,7 @@ export class IgclBackend {
     }
     const lib = this._libOrThrow();
     const dev = await this._device(deviceId);
+    const ocMode = this._ocModeFor(deviceId);
 
     const caps = {
       oemName: 'Intel',
@@ -2072,7 +2103,7 @@ export class IgclBackend {
           || typeof this._extended?.isTempCapable === 'function';
         if (!explicitControlContract) {
           delete caps.extendedControls;
-          if (runtimeCapable && this._ocMode === 'advanced'
+          if (runtimeCapable && ocMode === 'advanced'
             && ((caps.ranges.powerLimitW?.units === 'W') || (caps.ranges.tempLimitC?.units === 'C'))) {
             if (caps.ranges.powerLimitW?.units === 'W') {
               caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: SYSMAN_PL_MAX_W };
@@ -2100,7 +2131,7 @@ export class IgclBackend {
             powerLimitW: Boolean(powerCapable && hasW),
             tempLimitC: Boolean(tempCapable && hasC),
           };
-          if (this._ocMode === 'advanced' && (caps.extendedControls.powerLimitW || caps.extendedControls.tempLimitC)) {
+          if (ocMode === 'advanced' && (caps.extendedControls.powerLimitW || caps.extendedControls.tempLimitC)) {
             if (caps.extendedControls.powerLimitW) {
               caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: SYSMAN_PL_MAX_W };
             }
@@ -2110,7 +2141,7 @@ export class IgclBackend {
               caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: TEMP_LIMIT_MAX_C };
             }
             caps.extendedRanges = true;
-          } else if (this._ocMode === 'advanced' && hasC) {
+          } else if (ocMode === 'advanced' && hasC) {
             caps.ranges.tempLimitC = { ...caps.ranges.tempLimitC, max: TEMP_LIMIT_MAX_C };
           }
         }
@@ -2264,9 +2295,10 @@ export class IgclBackend {
           maxRpm: fp.maxRPM,
           maxCurvePoints: fp.maxPoints,
           // The native API uses a bit mask for supportedUnits. Battlemage
-          // commonly exposes RPM only; retain percent as the UI contract and
-          // convert at the native boundary instead of writing percent values
-          // into an RPM-only driver surface.
+          // commonly exposes RPM only for state, while the Arc table/fixed
+          // control path accepts the FAN enum's percent encoding. Keep the
+          // state-unit report honest; the write boundary uses
+          // FAN_CONTROL_UNITS above.
           speedUnits: fanUnitForProperties(fp) === FAN_UNITS_RPM ? 'rpm' : 'percent',
         };
       }
@@ -2317,18 +2349,19 @@ export class IgclBackend {
     // `extendedRanges` remains the separate runtime-write capability signal;
     // an installed but KMD-rejected companion must not make Advanced render
     // as Stock while the apply path reports its honest limitation.
-    caps.ocMode = this._ocMode;
+    const ocMode = this._ocModeFor(deviceId);
+    caps.ocMode = ocMode;
     const identity = {
       pciDeviceId: caps.pciDeviceId ?? dev?.pciDeviceId ?? null,
       aibVendor: caps.aibVendor ?? null,
       aibModel: caps.aibModel ?? null,
     };
-    const limits = deviceLimitsOf(identity, { advanced: this._ocMode === 'advanced' });
+    const limits = deviceLimitsOf(identity, { advanced: ocMode === 'advanced' });
     if (limits) {
       // The UNLISTED path gets the DEFAULT row of the selected mode
       // (stock 252/90, advanced 315/115); a LISTED card's row is the
       // selected mode's AIB/KMD shape.
-      const row = limits.listed ? limits : defaultLimitsOf(this._ocMode === 'advanced');
+      const row = limits.listed ? limits : defaultLimitsOf(ocMode === 'advanced');
       for (const [canonical, override] of Object.entries(row)) {
         if (canonical === 'listed') continue;
         const range = caps.ranges[canonical];
@@ -2345,7 +2378,7 @@ export class IgclBackend {
             // directions - the props may under-report the grid-aligned
             // 0.230); the store merge below is the only downward force.
             next = { ...next, max: override.max };
-          } else if (this._ocMode === 'advanced') {
+          } else if (ocMode === 'advanced') {
             // Advanced W/C controls expose the documented KMD ceiling even
             // when the bundled V1 runtime is unavailable; the apply gate
             // separately refuses values that require that runtime.
@@ -4868,7 +4901,10 @@ export class IgclBackend {
         return;
       }
 
-      const fanUnits = caps.fan.speedUnits === 'rpm' ? FAN_UNITS_RPM : FAN_UNITS_PERCENT;
+      // Do not derive the write unit from caps.fan.speedUnits. That field
+      // reflects the state API's advertised unit, while the Arc table/fixed
+      // setters accept FAN-enum PERCENT on both A770 and B580.
+      const fanUnits = FAN_CONTROL_UNITS;
       const fanMaxRpm = Number(caps.fan.maxRpm);
       const pct = (p) => ({
         Size: koffi.sizeof('ctl_fan_speed_t'),

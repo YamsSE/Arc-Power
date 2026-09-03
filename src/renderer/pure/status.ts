@@ -11,7 +11,7 @@
 //   driver - "Driver installed": the IGCL runtime loaded + a driver version;
 //            the detail shows the driver version + date like the device card
 //            (driverLine: "32.0.101.8861 - Jul 05, 2026");
-//   device - "Device detected": a GPU is enumerated (or the boot error);
+//   device - "GPU 1 Detected": the first GPU is enumerated (or the boot error);
 //            M16: this row renders ABOVE the driver row (the flip);
 //   oc - "OC status" (M16 rename of "OC Status"): the STOCK-STATE verdict -
 //        "No Overclock Applied" / "Overclock Applied" (the M4-B last-apply
@@ -139,21 +139,22 @@ export function driverRow(input: HealthInput): HealthRow {
 }
 
 /**
- * "Device detected": the GPU is enumerated (or the boot error says why not).
+ * "GPU 1 Detected": the first GPU is enumerated (or the boot error says why
+ * not). Multi-GPU dashboard rows use the same GPU-numbered vocabulary.
  * 1.0.1 no-Intel round: on the no-device path the row shows the OS GPU name
  * (warn - no error text, no "searching" state).
  */
 export function deviceRow(input: HealthInput): HealthRow {
   if (input.hasIntelGpu === false) {
-    return { id: 'device', label: 'Device detected', level: 'warn', detail: input.osGpuName ?? 'No GPU detected' };
+    return { id: 'device', label: 'GPU 1 Detected', level: 'warn', detail: input.osGpuName ?? 'No GPU detected' };
   }
   if (input.device) {
-    return { id: 'device', label: 'Device detected', level: 'ok', detail: input.device.name };
+    return { id: 'device', label: 'GPU 1 Detected', level: 'ok', detail: input.device.name };
   }
   if (input.bootError) {
-    return { id: 'device', label: 'Device detected', level: 'error', detail: input.bootError };
+    return { id: 'device', label: 'GPU 1 Detected', level: 'error', detail: input.bootError };
   }
-  return { id: 'device', label: 'Device detected', level: 'unknown', detail: 'Searching for a graphics device…' };
+  return { id: 'device', label: 'GPU 1 Detected', level: 'unknown', detail: 'Searching for a graphics device…' };
 }
 
 /**

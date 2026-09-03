@@ -2746,6 +2746,7 @@ input[type="number"] {
 .tweak-collapse-body.is-collapsed .tweak-collapse-inner { padding-top: 0; padding-bottom: 0; }
 .tweak-collapse-inner > .card-body, .tweak-collapse-inner > .card-footer { min-height: 0; overflow: hidden; }
 .profile-name { font-weight: 650; font-size: 13.5px; }
+.profile-gpu-badge { background: var(--bg-inset); color: var(--text-dim); border: 1px solid var(--border-strong); }
 .profile-badge { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); border: 1px solid rgba(var(--accent-rgb), 0.4); }
 
 .profile-grid .profile-row { flex-direction: column; align-items: stretch; justify-content: space-between; }

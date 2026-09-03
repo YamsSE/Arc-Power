@@ -163,11 +163,11 @@ export interface ArcPowerApi {
   bootApplyOutcome(): Promise<{ ok: boolean; detail: string; at: number } | null>;
   /** M2C-C: elevation state (cached koffi probe, no spawn). */
   appElevated(): Promise<ElevationState>;
-  /** M3-C-E: the persisted OC mode ('stock'|'advanced'). */
-  ocModeGet(): Promise<{ ocMode: 'stock' | 'advanced' }>;
-  /** M3-C-E: persist + activate the OC mode; invalidates the caps cache
-   *  (the renderer re-fetches caps after the toggle). */
-  ocModeSet(ocMode: 'stock' | 'advanced'): Promise<{ ocMode: 'stock' | 'advanced' }>;
+  /** M3-C-E/M157: get the Stock/Advanced mode for one physical GPU. */
+  ocModeGet(deviceId?: number | null): Promise<{ ocMode: 'stock' | 'advanced'; deviceKey?: string | null }>;
+  /** M3-C-E/M157: persist + activate the mode for one physical GPU; the
+   * renderer re-fetches that GPU's caps after the toggle. */
+  ocModeSet(ocMode: 'stock' | 'advanced', deviceId?: number | null): Promise<{ ocMode: 'stock' | 'advanced'; deviceKey?: string | null }>;
   /** M4-B: whether the Advanced OC Mode warning was already accepted
    *  (persisted - a re-boot must not re-ask). */
   advancedModeAcceptedGet(): Promise<{ accepted: boolean }>;

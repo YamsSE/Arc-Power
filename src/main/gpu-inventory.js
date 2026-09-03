@@ -856,7 +856,15 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
       return backend.extendedApply(control, value, d.backendId);
     },
     async backendIdOf(id) { return (await route(id)).backendId; },
-    setOcMode(mode) { return backend.setOcMode?.(mode); },
+    // Stock/Advanced belongs to the selected physical adapter. Keep the
+    // no-id form for legacy callers, but never apply an id-scoped toggle to
+    // every GPU in a mixed Alchemist/Battlemage session.
+    async setOcMode(mode, id = null) {
+      if (!Number.isInteger(id) || id < 0) return backend.setOcMode?.(mode);
+      const d = await route(id);
+      if (d.synthetic) return mode === 'advanced' ? 'advanced' : 'stock';
+      return backend.setOcMode?.(mode, d.backendId);
+    },
     setVramBytesOf(fn) { return backend.setVramBytesOf?.(fn); },
     async health() { return backend.health(); },
     async devicePciIdOf(id) { return (await route(id)).pciDeviceId ?? null; },

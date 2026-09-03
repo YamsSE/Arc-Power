@@ -4273,8 +4273,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const activeAfterLoad = await js(`window.arcPower.profilesList().then((e) => e.settings.activeProfileId)`);
   const createdId = await js(`window.arcPower.profilesList().then((e) => (e.profiles.find((p) => p.name === 'ui-verify profile') ?? {}).id)`);
   if (activeAfterLoad !== createdId) fail(`load did not mark the profile active (${activeAfterLoad} != ${createdId})`);
+  const createdProfileGpuLabel = await js(`document.querySelector('.profile-row[data-id="${createdId}"] .profile-gpu-badge')?.textContent.trim() ?? ''`);
+  if (!/^GPU: (A|B)\d{3}$/.test(createdProfileGpuLabel)) fail(`profile GPU ownership label is missing or not a compact physical GPU model (${createdProfileGpuLabel})`);
   if (!(await waitFor(win, `!!document.querySelector('.profile-row.profile-active')`))) fail('active profile is not highlighted');
-  step('profiles-load', 'load applied the profile: 2 toasts, active highlight, activeProfileId persisted');
+  step('profiles-load', `load applied the profile: 2 toasts, ${createdProfileGpuLabel} ownership label, active highlight, activeProfileId persisted`);
   await clearToasts();
 
   // --- M4-D: the profile LOAD auto re-prompt + single retry -------

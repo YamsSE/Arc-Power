@@ -687,7 +687,9 @@ async function boot() {
   // M3-C-E: the persisted OC mode (stock|advanced). Failure degrades to the
   // safe default ('stock' - main keeps its own default; the toggle re-syncs).
   try {
-    const m = await api.ocModeGet();
+    // The mode is owned by the focused physical GPU. Reading the legacy
+    // process-wide value here can resurrect another card's mode after boot.
+    const m = await api.ocModeGet(deviceId);
     store.set({ ocMode: m?.ocMode === 'advanced' ? 'advanced' : 'stock' });
   } catch {
     store.set({ ocMode: 'stock' });

@@ -1106,7 +1106,7 @@ export const tuningPage: Page = {
         }
       }
       try {
-        await api.ocModeSet(mode);
+        await api.ocModeSet(mode, deviceId);
         // Mode changes invalidate both capability ranges and the live
         // read-back. Pair them from the same device before rendering.
         const [freshCaps, freshState] = await Promise.all([
@@ -1129,7 +1129,7 @@ export const tuningPage: Page = {
         // not silently disagree about the active mode.
         let rolledBack = false;
         try {
-          await api.ocModeSet(previousMode);
+          await api.ocModeSet(previousMode, deviceId);
           rolledBack = true;
         } catch {
           // Keep the honest failure toast below; the backend may need a fresh
