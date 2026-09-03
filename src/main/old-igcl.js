@@ -445,7 +445,23 @@ export class OldIgcl {
         })
       : [];
     if (proofBdf) {
-      const selected = proofMatches.length === 1 ? proofMatches[0] : null;
+      let selected = proofMatches.length === 1 ? proofMatches[0] : null;
+      // M164: the bundled 2023 runtime used on this driver can expose a
+      // zeroed adapter_bdf for every handle, while the parent backend has a
+      // real BDF from Windows. In that shape the BDFs cannot agree, but a
+      // unique PCI vendor/device pair still identifies the physical adapter.
+      // Permit that fallback only when every legacy identity has an unknown
+      // BDF; if the legacy runtime exposes any real BDF, a mismatch remains a
+      // hard refusal so an identical card is never guessed by ordinal.
+      if (!selected && proofVendor && proofDevice) {
+        const pciMatches = this._devices.filter((entry) => entry.identity
+          && normalizePciId(entry.identity.pciVendorId) === proofVendor
+          && normalizePciId(entry.identity.pciDeviceId) === proofDevice);
+        const legacyBdfUnavailable = this._devices.length > 0
+          && this._devices.every((entry) => normalizeBdf(entry.identity?.bdf) === null
+            || normalizeBdf(entry.identity?.bdf) === '0000:00:00.0');
+        if (legacyBdfUnavailable && pciMatches.length === 1) selected = pciMatches[0];
+      }
       if (!selected || !selected.identity) return null;
       try {
         await this._ensureWaiver(selected.handle, selected.identity.deviceKey);
