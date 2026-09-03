@@ -638,6 +638,9 @@ export const tuningPage: Page = {
         if (!hoverReadout || !point) return;
         readoutIdx = index;
         selectedIdx = index;
+        dotsLayer.querySelectorAll<HTMLElement>('.vf-curve-dot').forEach((dot, dotIndex) => {
+          dot.classList.toggle('vf-curve-dot-selected', dotIndex === index);
+        });
         hoverReadout.classList.toggle('vf-curve-readout-editing', editable);
         const label = hoverReadout.querySelector<HTMLElement>('.vf-curve-readout-label');
         const voltageInput = hoverReadout.querySelector<HTMLInputElement>('input[data-readout-field="voltage"]');
@@ -693,8 +696,15 @@ export const tuningPage: Page = {
         stopEditing();
         hideReadout();
       };
+      // Commit text-field edits only after the user finishes the value. The
+      // old oninput path clamped every keystroke and then wrote the clamped
+      // value back into the field, so deleting/retyping a number made the
+      // point jump and made multi-digit values nearly impossible to enter.
       const onEditPoint = (index: number, raw: number, input: HTMLInputElement, field: 'voltage' | 'frequency'): void => {
-        if (input.value.trim() === '' || !Number.isFinite(raw)) return;
+        if (input.value.trim() === '' || !Number.isFinite(raw)) {
+          showReadout(index, true);
+          return;
+        }
         const point = vfCurveDraft[index];
         if (!point) return;
         vfCurveDraft = moveVfPoint(
@@ -704,13 +714,11 @@ export const tuningPage: Page = {
           field === 'frequency' ? raw : point.freqMhz,
           curveBounds,
         );
-        const moved = vfCurveDraft[index];
-        const dot = dotsLayer.querySelector<HTMLElement>(`.vf-curve-dot[data-idx="${index}"]`);
-        if (dot && moved) {
-          dot.style.left = `${((moved.voltageV - curveBounds.voltageMinV) / (curveBounds.voltageMaxV - curveBounds.voltageMinV)) * 100}%`;
-          dot.style.top = `${100 - ((moved.freqMhz - curveBounds.freqMinMhz) / (curveBounds.freqMaxMhz - curveBounds.freqMinMhz)) * 100}%`;
-        }
-        if (readoutVisible) showReadout(index, editingIdx !== null);
+        // Redraw both the line and the point together. Updating only the dot
+        // left the SVG curve behind, which made a valid edit look broken.
+        selectedIdx = index;
+        readoutIdx = index;
+        redraw();
         refreshChip('gpuFreqOffsetMhz');
         updateFloating();
       };
@@ -788,7 +796,7 @@ export const tuningPage: Page = {
                 min: vfVoltageMv(curveBounds.voltageMinV),
                 max: vfVoltageMv(curveBounds.voltageMaxV),
                 step: 1,
-                oninput: (event: Event) => onEditPoint(Number(hoverReadout?.dataset['idx'] ?? 0), Number((event.target as HTMLInputElement).value), event.target as HTMLInputElement, 'voltage'),
+                onchange: (event: Event) => onEditPoint(Number(hoverReadout?.dataset['idx'] ?? 0), Number((event.target as HTMLInputElement).value), event.target as HTMLInputElement, 'voltage'),
               }),
             ]),
             el('label', { class: 'vf-curve-readout-field' }, [
@@ -800,7 +808,7 @@ export const tuningPage: Page = {
                 min: Math.round(curveBounds.freqMinMhz),
                 max: Math.round(curveBounds.freqMaxMhz),
                 step: 1,
-                oninput: (event: Event) => onEditPoint(Number(hoverReadout?.dataset['idx'] ?? 0), Number((event.target as HTMLInputElement).value), event.target as HTMLInputElement, 'frequency'),
+                onchange: (event: Event) => onEditPoint(Number(hoverReadout?.dataset['idx'] ?? 0), Number((event.target as HTMLInputElement).value), event.target as HTMLInputElement, 'frequency'),
               }),
             ]),
           ]),

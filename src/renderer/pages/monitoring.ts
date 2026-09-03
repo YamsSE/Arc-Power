@@ -1,17 +1,17 @@
-// Arc Power - Monitoring page (M2b-B): live readout grid fed by the
-// telemetry IPC push + one rolling Canvas graph per segment (core clock,
-// temperature, power, utilization, fan) with a 60 s window. Each segment is
-// COLLAPSIBLE (header row + chevron; every segment starts collapsed so the
-// monitoring page does not expand a large graph unexpectedly on entry).
+// Arc Power - Monitoring page (M2b-B/M168): a compact Metrics surface fed by
+// the telemetry IPC push. FPS, CPU, system memory, and every physical GPU get
+// their own independently collapsible readout panel; GPU history remains in
+// one rolling Canvas trend per signal and per adapter with a 60 s window.
+// Trend cards start collapsed so the page stays dense on entry.
 // FPS comes from the fps-poll IPC channel (the ETW/PresentMon lane first -
 // the foreground program's per-frame present stream; the DXGI
 // frame-statistics / output-duplication adapter as the fallback); when no
 // present data is being captured the page shows "FPS unavailable"
 // gracefully - never an error.
 //
-// M4M (B): the live readout is TWO labeled groups like the dashboard - the
-// CPU group (the dashboard CPU tiles verbatim) ABOVE the GPU group (the
-// existing tiles + the GPU-memory MiB tile + the FPS tile). The M4-D2
+// M168: the former two-group readout is replaced by the Metrics panel grid;
+// each panel owns its own dropdown and all fields stay bound to the matching
+// physical adapter. The M4-D2
 // "Log to file" card is DELETED from this page (item G - the Settings page
 // keeps the persisted toggle; the boot-level log writer is untouched).
 //
@@ -20,13 +20,15 @@
 // and the thin Canvas drawing.
 
 import { el, clear } from '../dom.ts';
-import type { Page, PageContext } from '../router.ts';
+import type { AppState, Page, PageContext } from '../router.ts';
 import { consumeOverlayViewRequest } from '../router.ts';
 import { api } from '../ipc.ts';
-import type { TelemetrySample } from '../types.ts';
+import type { DeviceInfo, FpsSample, TelemetrySample } from '../types.ts';
 import { setLatestFps } from '../log-state.ts';
 import { ghzFreq } from '../pure/sysinfo.ts';
 import { formatGpuMemoryGb, gpuMemoryLabel } from '../pure/gpu-memory.ts';
+import { chipLabelGpu } from '../pure/chip-label.ts';
+import { deviceHardwareKey, stripVramSuffix } from '../pure/device.ts';
 import { renderOverlaySettings } from './overlay-settings.ts';
 import {
   pushSeries,
@@ -74,12 +76,31 @@ interface MonState {
   canvases: Map<string, HTMLCanvasElement>;
   fpsTileValue: HTMLElement | null;
   fpsNote: HTMLElement | null;
+  metricBindings: MetricBinding[];
+  fpsBindings: FpsBinding[];
   // M4-C (round-1 fix): the last hover's crosshair position (canvas CSS
   // px), persisted so a STATIONARY hover survives telemetry ticks -
   // redrawAll passes it back into drawSeries. Without it the crosshair
   // vanished on every tick (the popup stayed, the crosshair flickered out
   // until the next pointermove). Cleared on pointer-leave / collapse.
   hover: { segId: string; x: number; y: number } | null;
+}
+
+interface MetricReadout {
+  value: string;
+  unit: string;
+}
+
+interface MetricBinding {
+  valueNode: HTMLElement;
+  unitNode: HTMLElement;
+  read: (state: AppState) => MetricReadout;
+}
+
+interface FpsBinding {
+  id: 'fps' | 'frame-time' | 'gpu-busy' | 'average' | 'low-1' | 'low-01' | 'p99';
+  valueNode: HTMLElement;
+  unitNode: HTMLElement;
 }
 
 let mon: MonState | null = null;
@@ -103,49 +124,165 @@ function statValue(v: number | null | undefined, decimals = 0): string {
   return v === undefined || v === null || !Number.isFinite(v) ? '-' : decimals > 0 ? v.toFixed(decimals) : String(Math.round(v));
 }
 
-function statTileNode(t: { label: string; value: string; unit: string; extraClass?: string }): HTMLElement {
-  return el('div', { class: `stat-tile${t.extraClass ? ` ${t.extraClass}` : ''}` }, [
-    el('div', { class: 'stat-value', text: t.value }),
-    el('div', { class: 'stat-unit', text: t.unit }),
-    el('div', { class: 'stat-label', text: t.label }),
+function memoryGb(bytes: number | null | undefined): string {
+  return typeof bytes === 'number' && Number.isFinite(bytes) && bytes > 0 ? (bytes / 1e9).toFixed(1) : '-';
+}
+
+function throttleText(sample: TelemetrySample | null): string {
+  if (!sample?.throttle) return '-';
+  const labels = [
+    ['power', 'Power'],
+    ['temp', 'Temperature'],
+    ['current', 'Current'],
+    ['voltage', 'Voltage'],
+    ['util', 'Utilization'],
+  ] as const;
+  const active = labels.filter(([key]) => sample.throttle?.[key]).map(([, label]) => label);
+  return active.length > 0 ? active.join(', ') : 'None';
+}
+
+function deviceKeyOf(device: DeviceInfo): string {
+  return device.deviceKey ?? deviceHardwareKey(device);
+}
+
+function sampleForDevice(state: AppState, device: DeviceInfo): TelemetrySample | null {
+  return state.latestSamples[deviceKeyOf(device)] ?? (state.deviceId === device.id ? state.latestSample : null);
+}
+
+function systemSample(state: AppState): TelemetrySample | null {
+  return state.latestSample ?? Object.values(state.latestSamples)[0] ?? null;
+}
+
+function defaultFpsDevice(state: AppState): DeviceInfo | null {
+  return state.devices.find((device) => device.displayActive === true)
+    ?? state.devices.find((device) => device.id === state.deviceId)
+    ?? state.devices[0]
+    ?? null;
+}
+
+function shortGpuName(device: DeviceInfo): string {
+  const plainName = stripVramSuffix(device.name);
+  return chipLabelGpu(plainName) ?? plainName;
+}
+
+function shortGpuNameFromName(name: string | null | undefined): string {
+  const plainName = stripVramSuffix(String(name ?? 'GPU'));
+  return chipLabelGpu(plainName) ?? plainName;
+}
+
+function graphKey(deviceId: number, segmentId: string): string {
+  return `gpu-${deviceId}-${segmentId}`;
+}
+
+function updateMetricBindings(state: AppState): void {
+  if (!mon) return;
+  for (const binding of mon.metricBindings) {
+    const readout = binding.read(state);
+    binding.valueNode.textContent = readout.value;
+    binding.unitNode.textContent = readout.unit;
+  }
+}
+
+function metricNode(
+  label: string,
+  read: (state: AppState) => MetricReadout,
+  state: AppState,
+  extraClass = '',
+): HTMLElement {
+  const readout = read(state);
+  const valueNode = el('div', { class: 'telemetry-metric-value stat-value', text: readout.value });
+  const unitNode = el('div', { class: 'telemetry-metric-unit stat-unit', text: readout.unit });
+  if (mon) mon.metricBindings.push({ valueNode, unitNode, read });
+  return el('div', { class: `telemetry-metric stat-tile${extraClass ? ` ${extraClass}` : ''}` }, [
+    valueNode,
+    unitNode,
+    el('div', { class: 'telemetry-metric-label stat-label', text: label }),
   ]);
 }
 
-/** M4M (B)/M4N (B): the CPU group - the DASHBOARD CPU tiles verbatim (same
- *  labels + same statValue formatting): Util / Core Frequency (GHz - the
- *  shared ghzFreq helper) / Temperature / Power. */
-function cpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string }> {
+function cpuMetricNodes(state: AppState): HTMLElement[] {
   return [
-    { label: 'Util', value: statValue(sample?.cpuUtilPct), unit: '%' },
-    { label: 'Core Frequency', value: ghzFreq(sample?.cpuFreqMhz), unit: 'GHz' },
-    { label: 'Temperature', value: statValue(sample?.cpuTempC), unit: '°C' },
-    { label: 'Power', value: statValue(sample?.cpuPowerW, 1), unit: 'W' },
+    metricNode('Util', (s) => ({ value: statValue(systemSample(s)?.cpuUtilPct), unit: '%' }), state),
+    metricNode('Core Frequency', (s) => ({ value: ghzFreq(systemSample(s)?.cpuFreqMhz), unit: 'GHz' }), state),
+    metricNode('Temperature', (s) => ({ value: statValue(systemSample(s)?.cpuTempC), unit: '°C' }), state),
+    metricNode('Power', (s) => ({ value: statValue(systemSample(s)?.cpuPowerW, 1), unit: 'W' }), state),
   ];
 }
 
-/** M4M (B)/M4N (B): the GPU group - the DASHBOARD GPU tile set (Util FIRST,
- *  the M4N rename of 'Utilization' -> 'Util', 'Power' already matched) +
- *  the GPU-memory tile (M4N: the GPU-memory MiB tile becomes a source-aware
- *  label in GB via the shared formatter - 2971324416 bytes -> '3.0') + the FPS tile (the
- *  mon-fps-tile class - pollFps owns it, last). */
-function gpuStatTiles(sample: TelemetrySample | null): Array<{ label: string; value: string; unit: string; extraClass?: string }> {
+function systemMetricNodes(state: AppState): HTMLElement[] {
   return [
-    // M4-I (D4): the util tile reads `gpuUtilPct ?? utilPct` like the graph
-    // segment (the no-Intel OS-counter source; IGCL wins when populated).
-    { label: 'Util', value: statValue(sample?.gpuUtilPct ?? sample?.utilPct), unit: '%' },
-    { label: 'Core clock', value: statValue(sample?.gpuClockMhz), unit: 'MHz' },
-    { label: 'Memory clock', value: statValue(sample?.memClockMhz), unit: 'MHz' },
-    { label: gpuMemoryLabel(sample?.gpuMemorySource), value: formatGpuMemoryGb(sample?.gpuMemUsedBytes), unit: 'GB' },
-    // M16: the GPU voltage + the VRAM temperature tiles (the same fields
-    // the overlay's new rows show - gpuVoltageV volts with 3 decimals,
-    // vramTempC °C; both already ride the telemetry stream).
-    { label: 'Voltage', value: statValue(sample?.gpuVoltageV, 3), unit: 'V' },
-    { label: 'VramTemp', value: statValue(sample?.vramTempC), unit: '°C' },
-    { label: 'Temperature', value: statValue(sample?.tempC), unit: '°C' },
-    { label: 'Power', value: statValue(sample?.powerW, 1), unit: 'W' },
-    { label: 'Fan', value: statValue(sample?.fanRpm?.[0]), unit: 'RPM' },
-    { label: 'FPS', value: '-', unit: 'FPS', extraClass: 'mon-fps-tile' },
+    metricNode('RAM in use', (s) => ({ value: memoryGb(systemSample(s)?.memoryUsedBytes), unit: 'GB' }), state),
+    metricNode('RAM capacity', (s) => ({ value: memoryGb(s.sysinfo?.ram.totalBytes), unit: 'GB' }), state),
   ];
+}
+
+function gpuMetricNodes(device: DeviceInfo | null, state: AppState): HTMLElement[] {
+  const readSample = (s: AppState): TelemetrySample | null => device ? sampleForDevice(s, device) : systemSample(s);
+  const sample = readSample(state);
+  const fanCount = Math.max(1, sample?.fanRpm?.length ?? 1);
+  const nodes = [
+    metricNode('Util', (s) => {
+      const v = readSample(s);
+      return { value: statValue(v?.gpuUtilPct ?? v?.utilPct), unit: '%' };
+    }, state),
+    metricNode('Core clock', (s) => ({ value: statValue(readSample(s)?.gpuClockMhz), unit: 'MHz' }), state),
+    metricNode('Voltage', (s) => ({ value: statValue(readSample(s)?.gpuVoltageV, 3), unit: 'V' }), state),
+    metricNode('Temperature', (s) => ({ value: statValue(readSample(s)?.tempC), unit: '°C' }), state),
+    metricNode('Power', (s) => ({ value: statValue(readSample(s)?.powerW, 1), unit: 'W' }), state),
+  ];
+  for (let fan = 0; fan < fanCount; fan++) {
+    nodes.push(metricNode(`Fan ${fan + 1}`, (s) => ({ value: statValue(readSample(s)?.fanRpm?.[fan]), unit: 'RPM' }), state));
+  }
+  nodes.push(metricNode('Throttle', (s) => ({ value: throttleText(readSample(s)), unit: '' }), state));
+  return nodes;
+}
+
+function gpuMemoryMetricNodes(device: DeviceInfo | null, state: AppState): HTMLElement[] {
+  const readSample = (s: AppState): TelemetrySample | null => device ? sampleForDevice(s, device) : systemSample(s);
+  return [
+    metricNode('VRAM in use', (s) => {
+      const v = readSample(s);
+      return { value: formatGpuMemoryGb(v?.gpuMemUsedBytes), unit: gpuMemoryLabel(v?.gpuMemorySource) === 'VRAM' ? 'GB' : 'GB shared' };
+    }, state),
+    metricNode('Memory clock', (s) => ({ value: statValue(readSample(s)?.memClockMhz), unit: 'MHz' }), state),
+    metricNode('VramTemp', (s) => ({ value: statValue(readSample(s)?.vramTempC), unit: '°C' }), state),
+  ];
+}
+
+function latencyMetricNodes(state: AppState): HTMLElement[] {
+  return [
+    // The current FPS adapters expose frame time, not a measured end-to-end
+    // input/render/present latency. Keep this honest until that source exists.
+    metricNode('Render latency', () => ({ value: '-', unit: 'ms' }), state),
+  ];
+}
+
+function fpsMetricNode(label: string, id: FpsBinding['id'], unit: string): HTMLElement {
+  const valueNode = el('div', { class: 'telemetry-metric-value stat-value', text: '-' });
+  const unitNode = el('div', { class: 'telemetry-metric-unit stat-unit', text: unit });
+  if (mon) mon.fpsBindings.push({ id, valueNode, unitNode });
+  return el('div', { class: `telemetry-metric stat-tile${id === 'fps' ? ' mon-fps-tile' : ''}` }, [
+    valueNode,
+    unitNode,
+    el('div', { class: 'telemetry-metric-label stat-label', text: label }),
+  ]);
+}
+
+function refreshFpsMetrics(sample: FpsSample | null): void {
+  if (!mon) return;
+  const values: Record<FpsBinding['id'], { value: string; unit: string }> = {
+    fps: { value: statValue(sample?.fps), unit: 'FPS' },
+    'frame-time': { value: statValue(sample?.frameTimeMs, 1), unit: 'ms' },
+    'gpu-busy': { value: statValue(sample?.gpuBusy), unit: '%' },
+    average: { value: statValue(sample?.avgFps), unit: 'FPS' },
+    'low-1': { value: statValue(sample?.low1Pct), unit: 'FPS' },
+    'low-01': { value: statValue(sample?.low01Pct), unit: 'FPS' },
+    p99: { value: statValue(sample?.p99), unit: 'FPS' },
+  };
+  for (const binding of mon.fpsBindings) {
+    binding.valueNode.textContent = values[binding.id].value;
+    binding.unitNode.textContent = values[binding.id].unit;
+  }
 }
 
 /**
@@ -244,7 +381,7 @@ function drawSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], crosshair:
 
 async function pollFps(): Promise<void> {
   if (!mon || mon.deviceId === null) return;
-  let sample: { fps: number | null; frameTimeMs: number | null; gpuBusy: number | null } | null = null;
+  let sample: FpsSample | null = null;
   try {
     sample = await api.fpsPoll(mon.deviceId);
   } catch {
@@ -256,6 +393,7 @@ async function pollFps(): Promise<void> {
   // Monitoring page is not the current page (the BOOT-level subscription
   // does the logging).
   setLatestFps(sample?.fps ?? null);
+  refreshFpsMetrics(sample);
   if (mon.fpsTileValue && mon.fpsNote) {
     if (sample && sample.fps !== null && Number.isFinite(sample.fps)) {
       mon.fpsTileValue.textContent = String(Math.round(sample.fps));
@@ -278,11 +416,13 @@ export const monitoringPage: Page = {
     }
     const s = ctx.store.get();
     mon = {
-      deviceId: s.deviceId,
-      series: Object.fromEntries(SEGMENTS.map((seg) => [seg.id, [] as SeriesPoint[]])),
+      deviceId: defaultFpsDevice(s)?.id ?? null,
+      series: {},
       canvases: new Map(),
       fpsTileValue: null,
       fpsNote: null,
+      metricBindings: [],
+      fpsBindings: [],
       hover: null,
     };
 
@@ -360,41 +500,26 @@ export const monitoringPage: Page = {
 
   onUpdate(container: HTMLElement, ctx: PageContext) {
     if (!mon) return;
-    const sample = ctx.store.get().latestSample;
-    const now = sample?.t ?? Date.now();
-    for (const seg of SEGMENTS) {
-      const value = seg.value(sample);
-      if (value !== undefined) {
-        // M4-D2 fix ("the lines overlap"): the REAL driver's
-        // telemetry t occasionally ticks BACKWARD (live-verified: 8 folds
-        // in 40 s under load) - an unsorted push would fold the polyline
-        // over itself. sortSeriesByTime keeps the drawn line on the true
-        // chronological timeline - never a fold, never overlapping.
-        mon.series[seg.id] = trimSeriesWindow(
-          sortSeriesByTime(pushSeries(mon.series[seg.id], sample?.t ?? now, value)),
-          now,
-          GRAPH_WINDOW_S,
-        );
+    const state = ctx.store.get();
+    const telemetryDevices: Array<DeviceInfo | null> = state.devices.length > 0 ? state.devices : [null];
+    for (const device of telemetryDevices) {
+      const sample = device ? sampleForDevice(state, device) : systemSample(state);
+      const now = sample?.t ?? Date.now();
+      for (const seg of SEGMENTS) {
+        const value = seg.value(sample);
+        if (value !== undefined) {
+          const key = graphKey(device?.id ?? 0, seg.id);
+          // The real driver's telemetry timestamp can occasionally tick
+          // backwards. Sorting before drawing prevents a folded polyline.
+          mon.series[key] = trimSeriesWindow(
+            sortSeriesByTime(pushSeries(mon.series[key] ?? [], sample?.t ?? now, value)),
+            now,
+            GRAPH_WINDOW_S,
+          );
+        }
       }
     }
-    // M4M (B): refresh the readout groups IN PLACE - rebuild each grid per
-    // tick (the dashboard pattern). The FPS tile is owned by pollFps - the
-    // rebuild KEEPS the existing tile element (moved to the end of the GPU
-    // grid) so the poll's live value is never stomped. M9: the grids only
-    // exist while the MONITORING view is active (the overlay view leaves
-    // them absent - the null-safe lookup just returns).
-    const refreshGroup = (id: string, tiles: Array<{ label: string; value: string; unit: string; extraClass?: string }>): void => {
-      const grid = container.querySelector<HTMLElement>(`#${id}`);
-      if (!grid) return;
-      const fpsTile = grid.querySelector<HTMLElement>('.mon-fps-tile');
-      clear(grid);
-      grid.append(...tiles.filter((t) => t.extraClass !== 'mon-fps-tile').map(statTileNode));
-      if (fpsTile) grid.append(fpsTile);
-    };
-    if (sample) {
-      refreshGroup('mon-readout-cpu', cpuStatTiles(sample));
-      refreshGroup('mon-readout-gpu', gpuStatTiles(sample));
-    }
+    updateMetricBindings(state);
     redrawAll();
   },
 };
@@ -406,12 +531,44 @@ export const monitoringPage: Page = {
  *  so pollFps + redrawAll always write into the LIVE view and never into
  *  the detached nodes a clear(viewContainer) orphans (a re-shown view
  *  would otherwise show a frozen FPS tile + empty graphs). */
+function telemetryPanel(
+  key: string,
+  title: string,
+  badge: string,
+  bodyChildren: HTMLElement[],
+  open = true,
+  id?: string,
+): HTMLElement {
+  const body = el('div', { class: 'telemetry-panel-body' }, [
+    el('div', { class: 'telemetry-metric-grid' }, bodyChildren),
+  ]);
+  body.hidden = !open;
+  const head = el('button', {
+    class: 'telemetry-panel-head',
+    type: 'button',
+    'aria-expanded': String(open),
+    onClick: () => {
+      const nextOpen = body.hidden;
+      body.hidden = !nextOpen;
+      head.setAttribute('aria-expanded', String(nextOpen));
+      head.querySelector('.telemetry-panel-chevron')!.textContent = nextOpen ? '▾' : '▸';
+    },
+  }, [
+    el('span', { class: 'telemetry-panel-chevron', text: open ? '▾' : '▸' }),
+    el('span', { class: 'telemetry-panel-title', text: title }),
+    el('span', { class: 'telemetry-panel-badge', text: badge }),
+  ]);
+  return el('section', { class: 'card telemetry-panel', id, dataset: { telemetryPanel: key } }, [head, body]);
+}
+
 function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
   const m = mon;
   if (!m) return;
   clear(container);
   const s = ctx.store.get();
   m.canvases = new Map();
+  m.metricBindings = [];
+  m.fpsBindings = [];
   const fpsNote = el('p', { class: 'card-note mon-fps-note', text: FPS_CHECKING_NOTE });
   m.fpsNote = fpsNote;
 
@@ -420,27 +577,49 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
     el('span', { class: 'monitoring-summary-note', text: '60-second rolling window · hover a graph for detail' }),
   ]);
 
-  // M4M (B): the readout card renders TWO labeled groups (CPU above GPU -
-  // the dashboard pattern), each with its own grid (mon-readout-cpu /
-  // mon-readout-gpu; both keep the compact .mon-readout styling). The
-  // FPS tile starts '-' - pollFps owns it from the first poll.
-  const readout = el('section', { class: 'card' }, [
-    el('h2', { class: 'card-title', text: 'Live readout' }),
-    el('div', { class: 'readout-group' }, [
-      el('div', { class: 'readout-group-label', text: 'CPU' }),
-      el('div', { class: 'readout-grid mon-readout', id: 'mon-readout-cpu' }, cpuStatTiles(s.latestSample).map(statTileNode)),
+  const panels = el('div', { class: 'telemetry-metrics' });
+  panels.append(
+    telemetryPanel('fps', 'FPS & frame pacing', 'Display output', [
+      fpsMetricNode('Frame rate', 'fps', 'FPS'),
+      fpsMetricNode('Frame time', 'frame-time', 'ms'),
+      fpsMetricNode('GPU busy', 'gpu-busy', '%'),
+      fpsMetricNode('Average', 'average', 'FPS'),
+      fpsMetricNode('1% low', 'low-1', 'FPS'),
+      fpsMetricNode('0.1% low', 'low-01', 'FPS'),
+      fpsMetricNode('P99', 'p99', 'FPS'),
+    ], true, 'mon-readout-fps'),
+    telemetryPanel('latency', 'Latency', 'Unavailable', latencyMetricNodes(s), true, 'mon-readout-latency'),
+    telemetryPanel('cpu', 'CPU', 'System', cpuMetricNodes(s), true, 'mon-readout-cpu'),
+    telemetryPanel('system-memory', 'System memory', 'System', systemMetricNodes(s), true, 'mon-readout-system-memory'),
+  );
+  s.devices.forEach((device, index) => {
+    const label = `GPU ${index + 1}`;
+    const badge = device.displayActive === true ? `${shortGpuName(device)} · Display output` : shortGpuName(device);
+    panels.append(telemetryPanel(`gpu-${device.id}`, label, badge, gpuMetricNodes(device, s), true, index === 0 ? 'mon-readout-gpu' : `mon-readout-gpu-${index + 1}`));
+    panels.append(telemetryPanel(`gpu-memory-${device.id}`, `${label} memory`, badge, gpuMemoryMetricNodes(device, s), true, index === 0 ? 'mon-readout-gpu-memory' : `mon-readout-gpu-memory-${index + 1}`));
+  });
+  if (s.devices.length === 0 && s.osGpu) {
+    const badge = shortGpuNameFromName(s.osGpu.name);
+    panels.append(telemetryPanel('gpu-vendor', 'GPU', badge, gpuMetricNodes(null, s), true, 'mon-readout-gpu'));
+    panels.append(telemetryPanel('gpu-memory-vendor', 'GPU memory', badge, gpuMemoryMetricNodes(null, s), true, 'mon-readout-gpu-memory'));
+  }
+  m.fpsTileValue = panels.querySelector('.mon-fps-tile .stat-value') as HTMLElement;
+
+  const readout = el('section', { class: 'card telemetry-metrics-card' }, [
+    el('div', { class: 'telemetry-section-heading' }, [
+      el('div', {}, [el('h2', { class: 'card-title', text: 'Metrics' }), el('p', { class: 'card-note', text: 'Choose a section to expand its complete live readout.' })]),
+      el('span', { class: 'telemetry-live-badge', text: `${s.devices.length} GPU${s.devices.length === 1 ? '' : 's'}` }),
     ]),
-    el('div', { class: 'readout-group' }, [
-      el('div', { class: 'readout-group-label', text: 'GPU' }),
-      el('div', { class: 'readout-grid mon-readout', id: 'mon-readout-gpu' }, gpuStatTiles(s.latestSample).map(statTileNode)),
-    ]),
+    panels,
     fpsNote,
   ]);
-  m.fpsTileValue = readout.querySelector('.mon-fps-tile .stat-value') as HTMLElement;
 
-  const graphs = el('section', { class: 'seg-stack' }, SEGMENTS.map((seg, idx) => {
+  const graphDevices: Array<DeviceInfo | null> = s.devices.length > 0 ? s.devices : [null];
+  const graphEntries = graphDevices.flatMap((device, deviceIndex) => SEGMENTS.map((seg) => ({ device, deviceIndex, seg })));
+  const graphs = el('section', { class: 'seg-stack telemetry-trend-stack' }, graphEntries.map(({ device, deviceIndex, seg }) => {
+    const seriesId = graphKey(device?.id ?? 0, seg.id);
     const canvas = el('canvas', { class: 'seg-canvas' });
-    m.canvases.set(seg.id, canvas);
+    m.canvases.set(seriesId, canvas);
     const popup = el('div', { class: 'seg-popup', hidden: true });
     // Keep the canvas and its absolutely-positioned popup inside one grid
     // child.  With two direct children, the collapsed grid only removed the
@@ -462,11 +641,12 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
           popup.hidden = true;
           if (mon) mon.hover = null;
         }
-        drawSeries(canvas, mon?.series[seg.id] ?? []);
+        drawSeries(canvas, mon?.series[seriesId] ?? []);
       },
     }, [
       el('span', { class: 'seg-chevron', text: '▸' }),
-      el('span', { class: 'seg-label', text: seg.label }),
+      el('span', { class: 'seg-label', text: `GPU ${deviceIndex + 1} · ${seg.label}` }),
+      el('span', { class: 'seg-source', text: device ? shortGpuName(device) : shortGpuNameFromName(s.osGpu?.name) }),
       el('span', { class: 'seg-unit', text: seg.unit }),
     ]);
     // All segments are collapsed by default; expanding one draws its current
@@ -477,11 +657,11 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
     const hideHover = () => {
       popup.hidden = true;
       if (mon) mon.hover = null;
-      drawSeries(canvas, mon?.series[seg.id] ?? []);
+      drawSeries(canvas, mon?.series[seriesId] ?? []);
     };
     canvas.addEventListener('pointermove', (ev) => {
       if (body.classList.contains('is-collapsed')) return;
-      const points = mon?.series[seg.id] ?? [];
+      const points = mon?.series[seriesId] ?? [];
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
       if (w === 0 || h === 0 || points.length === 0) return;
@@ -547,14 +727,22 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
       // M4-C (round-1 fix): persist the hover so redrawAll can re-draw
       // the crosshair on telemetry ticks (a stationary hover used to lose
       // it every second while the popup stayed).
-      if (mon) mon.hover = { segId: seg.id, x, y };
+      if (mon) mon.hover = { segId: seriesId, x, y };
       drawSeries(canvas, points, { x, y });
     });
     canvas.addEventListener('pointerleave', hideHover);
     return el('div', { class: 'card seg-card' }, [head, body]);
   }));
 
-  container.append(monitoringSummary, readout, graphs);
+  const trends = el('section', { class: 'telemetry-trends card' }, [
+    el('div', { class: 'telemetry-section-heading' }, [
+      el('div', {}, [el('h2', { class: 'card-title', text: 'Trends' }), el('p', { class: 'card-note', text: 'GPU history over the last 60 seconds. Expand a signal to inspect it.' })]),
+      el('span', { class: 'telemetry-live-badge telemetry-live-badge-muted', text: `${graphEntries.length} signals` }),
+    ]),
+    graphs,
+  ]);
+
+  container.append(monitoringSummary, readout, trends);
 }
 
 function redrawAll(): void {

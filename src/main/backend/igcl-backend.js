@@ -2501,6 +2501,37 @@ export class IgclBackend {
   // Read-back
   // -------------------------------------------------------------------------
 
+  /**
+   * Read the current driver's legacy Celsius temperature-limit getter.
+   *
+   * The bundled 2023 writer and the current DriverStore runtime expose
+   * separate temperature surfaces. On the affected Alchemist driver, the
+   * bundled writer's getter returns 0 after a successful extended write while
+   * the current runtime's legacy getter carries the real extended value.
+   * Keep this as an explicit, identity-bound verification seam instead of
+   * weakening the normal V2 read-back (which is correctly limited to the
+   * stock 90 °C range).
+   *
+   * @param {number} deviceId
+   * @returns {Promise<number|null>}
+   */
+  async getExtendedTemperatureLimitC(deviceId) {
+    await this._device(deviceId);
+    const lib = this._libOrThrow();
+    const getter = lib.ctlOverclockTemperatureLimitGet;
+    if (this._isUnavailable(getter)) return null;
+    const dev = await this._device(deviceId);
+    const buf = koffi.alloc('double', 1);
+    try {
+      const result = getter(dev.handle, buf);
+      if (result !== CTL_RESULT.SUCCESS) return null;
+      const value = koffi.decode(buf, 'double');
+      return Number.isFinite(value) && value >= 0 ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
   async getCurrentSettings(deviceId) {
     await this._device(deviceId);
     const caps = await this.getCapabilities(deviceId);

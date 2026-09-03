@@ -3847,9 +3847,17 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   // --- 9. M2b-B Monitoring: readout grid + collapsible Canvas segments ------
   await js(`location.hash = '#/monitoring'`);
-  if (!(await waitFor(win, `document.querySelectorAll('.seg-card').length === 5`))) {
-    fail(`expected 5 monitoring segments, got ${await js(`document.querySelectorAll('.seg-card').length`)}`);
+  const gpuMetricPanelSelector = '.telemetry-panel[data-telemetry-panel^="gpu-"]:not([data-telemetry-panel^="gpu-memory-"])';
+  const gpuMemoryPanelSelector = '.telemetry-panel[data-telemetry-panel^="gpu-memory-"]';
+  if (!(await waitFor(win, `document.querySelectorAll('.seg-card').length === document.querySelectorAll('${gpuMetricPanelSelector}').length * 5`))) {
+    fail(`expected 5 trends per GPU, got ${await js(`document.querySelectorAll('.seg-card').length`)}`);
   }
+  const telemetryPanelCounts = await js(`JSON.stringify({ gpu: document.querySelectorAll('${gpuMetricPanelSelector}').length, memory: document.querySelectorAll('${gpuMemoryPanelSelector}').length, titles: Array.from(document.querySelectorAll('.telemetry-panel .telemetry-panel-title')).map((x) => x.textContent) })`);
+  const panelCounts = JSON.parse(telemetryPanelCounts);
+  if (panelCounts.gpu < 1 || panelCounts.memory !== panelCounts.gpu) {
+    fail(`M168: telemetry GPU/GPU memory panels are not paired: ${telemetryPanelCounts}`);
+  }
+  step('mon-panels', `Metrics has independent FPS, Latency, CPU, System memory, GPU and GPU memory panels (${panelCounts.gpu} GPU pair${panelCounts.gpu === 1 ? '' : 's'})`);
   const allHidden = await js(`Array.from(document.querySelectorAll('.seg-card .seg-body')).every((b) => b.classList.contains('is-collapsed'))`);
   if (!allHidden) fail('segment defaults wrong: every segment should start collapsed');
   step('mon-segments', '5 segments render; every graph starts collapsed');
@@ -3862,29 +3870,32 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!collapsedAgain) fail('first segment did not collapse again');
   step('mon-collapse', 'segment header click toggles collapse/expand (chevron)');
 
-  // M4M (B)/M4N (B): the readout is TWO groups - CPU (the dashboard tiles
-  // verbatim, M4N order: Util / Core Frequency (GHz) / Temperature / Power)
-  // ABOVE GPU (the dashboard GPU order, M4N: Util / Core clock / Memory
-  // clock / VRAM (GB) / Temperature / Power / Fan + the FPS tile - the
-  // M4M 'Utilization' tile is renamed 'Util', the MiB tile becomes 'VRAM').
-  // The tile lookups are GROUP-SCOPED (both groups carry Temperature-like
-  // labels).
+  // M168: the readout is a set of independent, collapsible metric panels.
+  // GPU and GPU memory stay separate, and every panel is scoped to its
+  // matching physical adapter.
   const cpuLabels = await js(`Array.from(document.querySelectorAll('#mon-readout-cpu .stat-label')).map((l) => l.textContent).join(',')`);
   const gpuLabels = await js(`Array.from(document.querySelectorAll('#mon-readout-gpu .stat-label')).map((l) => l.textContent).join(',')`);
+  const gpuMemoryLabels = await js(`Array.from(document.querySelectorAll('#mon-readout-gpu-memory .stat-label')).map((l) => l.textContent).join(',')`);
   if (cpuLabels.split(',').join(',') !== 'Util,Core Frequency,Temperature,Power') {
     fail(`M4N: the monitoring CPU group order is '${cpuLabels}' (expected Util, Core Frequency, Temperature, Power - the dashboard order)`);
   }
-  if (gpuLabels.split(',').join(',') !== 'Util,Core clock,Memory clock,VRAM,Voltage,VramTemp,Temperature,Power,Fan,FPS') {
-    fail(`M16: the monitoring GPU group order is '${gpuLabels}' (expected Util, Core clock, Memory clock, VRAM, Voltage, VramTemp, Temperature, Power, Fan, FPS - the M16 Voltage + VramTemp tiles)`);
+  if (gpuLabels.split(',').join(',') !== 'Util,Core clock,Voltage,Temperature,Power,Fan 1,Throttle') {
+    fail(`M168: the monitoring GPU group order is '${gpuLabels}' (expected the GPU readout including Throttle)`);
+  }
+  if (gpuMemoryLabels.split(',').join(',') !== 'VRAM in use,Memory clock,VramTemp') {
+    fail(`M168: the monitoring GPU memory group order is '${gpuMemoryLabels}' (expected VRAM in use, Memory clock, VramTemp)`);
   }
   for (const want of ['Core Frequency', 'Util', 'Temperature', 'Power']) {
     if (!cpuLabels.includes(want)) fail(`monitoring CPU group missing '${want}' (got '${cpuLabels}')`);
   }
-  for (const want of ['Core clock', 'Memory clock', 'Temperature', 'Power', 'Util', 'Fan', 'FPS', 'VRAM', 'Voltage', 'VramTemp']) {
+  for (const want of ['Core clock', 'Temperature', 'Power', 'Util', 'Fan 1', 'Throttle', 'Voltage']) {
     if (!gpuLabels.includes(want)) fail(`monitoring GPU group missing '${want}' (got '${gpuLabels}')`);
   }
-  if (await js(`Array.from(document.querySelectorAll('#mon-readout-gpu .stat-label')).some((l) => l.textContent === 'Utilization' || l.textContent === 'GPU memory')`)) {
-    fail(`M4N: the old monitoring labels 'Utilization'/'GPU memory' are still rendered (got '${gpuLabels}')`);
+  for (const want of ['VRAM in use', 'Memory clock', 'VramTemp']) {
+    if (!gpuMemoryLabels.includes(want)) fail(`monitoring GPU memory group missing '${want}' (got '${gpuMemoryLabels}')`);
+  }
+  if (await js(`Array.from(document.querySelectorAll('#mon-readout-gpu .stat-label, #mon-readout-gpu-memory .stat-label')).some((l) => l.textContent === 'Utilization' || l.textContent === 'GPU memory')`)) {
+    fail(`M4N: the old monitoring labels 'Utilization'/'GPU memory' are still rendered (got '${gpuLabels}' / '${gpuMemoryLabels}')`);
   }
   // M4-D2 (§11)/M4N: the tiles read the mock system-stats (42 % util,
   // 61 °C, 2971324416 bytes -> '3.0' GB VRAM, 4300 MHz -> '4.3' GHz).
@@ -3909,12 +3920,12 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(cpuTemp === '61' || cpuTemp === '62' || (frozenActive && cpuTemp === '-'))) {
     fail(`CPU Temperature tile is '${cpuTemp}' (expected '61'|'62' - the varying mock${frozenActive ? ', or the frozen "-"' : ''})`);
   }
-  if ((await js(tileOf('gpu', 'VRAM'))) !== '3.0') fail(`VRAM tile is '${await js(tileOf('gpu', 'VRAM'))}' (expected '3.0' GB - 2971324416 / 1e9, one decimal)`);
+  if ((await js(tileOf('gpu-memory', 'VRAM in use'))) !== '3.0') fail(`VRAM tile is '${await js(tileOf('gpu-memory', 'VRAM in use'))}' (expected '3.0' GB - 2971324416 / 1e9, one decimal)`);
   // M16: the Voltage + VramTemp tiles read the mock telemetry (0.652 V /
   // tempCBase + 8 + tick%10 -> 44..53 °C - the temp is pattern-matched).
   if ((await js(tileOf('gpu', 'Voltage'))) !== '0.652') fail(`Voltage tile is '${await js(tileOf('gpu', 'Voltage'))}' (expected '0.652' V - the mock gpuVoltageV)`);
-  if (!/^\d+$/.test(await js(tileOf('gpu', 'VramTemp')))) fail(`VramTemp tile is '${await js(tileOf('gpu', 'VramTemp'))}' (expected the 44..53 °C ramp)`);
-  step('mon-readout', `monitoring readout groups: CPU '${cpuLabels}', GPU '${gpuLabels}'; CPU Util 42 % / Core Frequency 4.3 GHz / CPU temp ${cpuTemp} °C / VRAM 3.0 GB / Voltage 0.652 V / VramTemp ${await js(tileOf('gpu', 'VramTemp'))} °C (compact)`);
+  if (!/^\d+$/.test(await js(tileOf('gpu-memory', 'VramTemp')))) fail(`VramTemp tile is '${await js(tileOf('gpu-memory', 'VramTemp'))}' (expected the 44..53 °C ramp)`);
+  step('mon-readout', `monitoring readout panels: CPU '${cpuLabels}', GPU '${gpuLabels}', GPU memory '${gpuMemoryLabels}'; CPU Util 42 % / Core Frequency 4.3 GHz / CPU temp ${cpuTemp} °C / VRAM 3.0 GB / Voltage 0.652 V / VramTemp ${await js(tileOf('gpu-memory', 'VramTemp'))} °C (compact)`);
 
   // M4-I (C1): RID_MOCK_FROZEN_TEMP=1 -> the mock temp is CONSTANT, so the
   // shared frozenDrop reports null after 5 identical samples - the CPU
@@ -3942,8 +3953,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   if (process.env.RID_MOCK_FPS === '1') {
     // M4-D2: RID_MOCK_FPS=1 -> the FPS tile shows the FIXED mock value.
-    if (!(await waitFor(win, `(${tileOf('gpu', 'FPS')}) === '60'`, 8000))) {
-      fail(`FPS tile is '${await js(tileOf('gpu', 'FPS'))}' (expected '60' - the RID_MOCK_FPS fixed sample)`);
+    if (!(await waitFor(win, `(${tileOf('fps', 'Frame rate')}) === '60'`, 8000))) {
+      fail(`FPS tile is '${await js(tileOf('fps', 'Frame rate'))}' (expected '60' - the RID_MOCK_FPS fixed sample)`);
     }
     step('mon-fps-mock', `RID_MOCK_FPS=1: FPS tile reads the fixed mock value (60)`);
   } else {
@@ -3967,8 +3978,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('mon-log-toggle', 'M4M (G): Monitoring has NO Log to file card; the Settings page HAS the .settings-checkbox[data-setting="monitorLogToFile"] toggle');
 
   const canvases = await js(`document.querySelectorAll('.seg-canvas').length`);
-  if (canvases !== 5) fail(`expected 5 canvases, got ${canvases}`);
-  step('mon-canvas', `${canvases} canvas graphs rendered from telemetry pushes`);
+  const expectedCanvases = await js(`Math.max(1, document.querySelectorAll('${gpuMetricPanelSelector}').length) * 5`);
+  if (canvases !== expectedCanvases) fail(`expected ${expectedCanvases} canvases (5 trends per GPU), got ${canvases}`);
+  step('mon-canvas', `${canvases} canvas graphs rendered from per-GPU telemetry pushes`);
 
   // --- M9: the Monitoring | Overlay view switch (the S2 re-registration) ----
   // The view pill renders 'Monitoring | Overlay' at the page top; the
@@ -3987,16 +3999,16 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   // monitoring -> the readout grid returns.
   await js(`(() => { const b = Array.from(document.querySelectorAll('.mon-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Monitoring'); b.click(); })()`);
-  if (!(await waitFor(win, `document.querySelectorAll('#mon-readout-gpu .stat-tile').length >= 10`, 8000))) {
-    fail('M16: switching back to the Monitoring view did not return the readout grid (10 GPU tiles - the M16 Voltage + VramTemp added)');
+  if (!(await waitFor(win, `document.querySelectorAll('#mon-readout-gpu .stat-tile').length >= 7 && document.querySelectorAll('#mon-readout-gpu-memory .stat-tile').length >= 3`, 8000))) {
+    fail('M168: switching back to the Monitoring view did not return the GPU readout');
   }
   // The FPS tile is LIVE after the round trip (the S2 re-registration - the
   // poll writes into the re-registered tile, never the detached one).
   if (process.env.RID_MOCK_FPS === '1') {
-    if (!(await waitFor(win, `(${tileOf('gpu', 'FPS')}) === '60'`, 8000))) {
-      fail(`M9 (S2): the FPS tile is '${await js(tileOf('gpu', 'FPS'))}' after the view round trip (expected '60' - the poll must write into the re-registered tile)`);
+    if (!(await waitFor(win, `(${tileOf('fps', 'Frame rate')}) === '60'`, 8000))) {
+      fail(`M9 (S2): the FPS tile is '${await js(tileOf('fps', 'Frame rate'))}' after the view round trip (expected '60' - the poll must write into the re-registered tile)`);
     }
-    step('m9-mon-view-switch', `M9: the Monitoring|Overlay pill round-tripped; the readout grid returned + the FPS tile stays live (S2 re-registration, ${await js(tileOf('gpu', 'FPS'))} FPS)`);
+    step('m9-mon-view-switch', `M9: the Monitoring|Overlay pill round-tripped; the readout grid returned + the FPS tile stays live (S2 re-registration, ${await js(tileOf('fps', 'Frame rate'))} FPS)`);
   } else {
     if (!(await waitFor(win, `(document.querySelector('.mon-fps-note')?.textContent ?? '').includes('FPS unavailable')`, 5000))) {
       fail('M9 (S2): the FPS note did not re-render after the view round trip');
@@ -6188,10 +6200,14 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   // --- monitoring readouts render per featureset ----------------------------
   await js(`location.hash = '#/monitoring'`);
   await sleep(250);
-  if (!(await waitFor(win, `document.querySelectorAll('.seg-card').length === 5`))) {
-    fail(`expected 5 monitoring segments, got ${await js(`document.querySelectorAll('.seg-card').length`)}`);
+  if (!(await waitFor(win, `document.querySelectorAll('.seg-card').length === document.querySelectorAll('.telemetry-panel[data-telemetry-panel^="gpu-"]:not([data-telemetry-panel^="gpu-memory-"])').length * 5`))) {
+    fail(`expected 5 trends per GPU, got ${await js(`document.querySelectorAll('.seg-card').length`)}`);
   }
-  const fanTile = await js(`Array.from(document.querySelectorAll('#mon-readout-gpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Fan')?.querySelector('.stat-value')?.textContent ?? ''`);
+  const fanTile = await js(`Array.from(document.querySelectorAll('#mon-readout-gpu .stat-tile')).find((t) => (t.querySelector('.stat-label')?.textContent ?? '') === 'Fan 1')?.querySelector('.stat-value')?.textContent ?? ''`);
+  const gpuMemoryLabels = await js(`Array.from(document.querySelectorAll('#mon-readout-gpu-memory .stat-label')).map((l) => l.textContent).join(',')`);
+  if (gpuMemoryLabels !== 'VRAM in use,Memory clock,VramTemp') {
+    fail(`M168: '${fsId}' GPU memory panel order is '${gpuMemoryLabels}'`);
+  }
   if (fsId === 'arc-igpu') {
     if (fanTile !== '-') fail(`iGPU fan tile should read '-' (no fan), got '${fanTile}'`);
     step('mon-igpu', `arc-igpu: monitoring renders, fan tile '${fanTile}'`);
@@ -6825,8 +6841,10 @@ export async function runNoIntelVerify(win) {
   }
   const monCpuTiles = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('#mon-readout-cpu .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()])))`);
   const monGpuTiles = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('#mon-readout-gpu .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()])))`);
+  const monGpuMemoryTiles = await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('#mon-readout-gpu-memory .stat-tile')).map((t) => [(t.querySelector('.stat-label')?.textContent ?? '').trim(), (t.querySelector('.stat-value')?.textContent ?? '').trim()])))`);
   const cpu = JSON.parse(monCpuTiles);
   const gpu = JSON.parse(monGpuTiles);
+  const gpuMemory = JSON.parse(monGpuMemoryTiles);
   // M4-I (C1): the mock temp VARIES 61/62 - accept either.
   if (cpu['Temperature'] !== '61' && cpu['Temperature'] !== '62') {
     fail(`1.0.1: the CPU Temperature tile is '${cpu['Temperature']}' (expected 61|62 - the varying mock)`);
@@ -6834,17 +6852,17 @@ export async function runNoIntelVerify(win) {
   // M17d: the VRAM tile reads the NVML used-VRAM now (4 GiB -> '4.3' GB -
   // the M4M '3.0' sys-stats pin INVERTS; the vendor readouts win the
   // composition).
-  if (gpu['VRAM'] !== '4.3') fail(`M17d: the VRAM tile is '${gpu['VRAM']}' (expected '4.3' GB from the NVML used-VRAM 4294967296 bytes)`);
+  if (gpuMemory['VRAM in use'] !== '4.3') fail(`M17d: the VRAM tile is '${gpuMemory['VRAM in use']}' (expected '4.3' GB from the NVML used-VRAM 4294967296 bytes)`);
   if (gpu['Core clock'] !== '1965') fail(`M17d: the core-clock tile is '${gpu['Core clock']}' (expected '1965' - the LIVE NVML clock graphics; the M4-I '-' pin INVERTS)`);
-  if (gpu['Memory clock'] !== '7010') fail(`M17d: the memory-clock tile is '${gpu['Memory clock']}' (expected '7010' - the LIVE NVML_CLOCK_MEM)`);
-  if (gpu['VramTemp'] !== '58') fail(`M17d: the VRAM-temp tile is '${gpu['VramTemp']}' (expected '58' - the NVML_FI_DEV_MEMORY_TEMP field-values read)`);
+  if (gpuMemory['Memory clock'] !== '7010') fail(`M17d: the memory-clock tile is '${gpuMemory['Memory clock']}' (expected '7010' - the LIVE NVML_CLOCK_MEM)`);
+  if (gpuMemory['VramTemp'] !== '58') fail(`M17d: the VRAM-temp tile is '${gpuMemory['VramTemp']}' (expected '58' - the NVML_FI_DEV_MEMORY_TEMP field-values read)`);
   if (gpu['Temperature'] !== '62') fail(`M17d: the GPU temperature tile is '${gpu['Temperature']}' (expected '62' - the NVML temp)`);
   if (gpu['Power'] !== '152.4') fail(`M17d: the GPU power tile is '${gpu['Power']}' (expected '152.4' - the NVML mW->W readout)`);
   // M4-I (D4): the Util tile reads `gpuUtilPct ?? utilPct` - on no-Intel the
   // OS GPUEngine counter (the mock's fixed 42) is the only source (the
   // NVML util is utilPct - the OS counter wins the ??:).
   if (gpu['Util'] !== '42') fail(`1.0.1/M4-I: the monitoring Util tile is '${gpu['Util']}' (expected 42 - gpuUtilPct from the no-device sys-stats push)`);
-  step('monitoring', `monitoring: CPU Util 42 %, CPU Temperature ${cpu['Temperature']} °C; GPU tiles LIVE from the vendor lane - Core clock 1965, Memory clock 7010, VRAM 4.3 GB (the NVML used-VRAM), VramTemp 58, Temperature 62, Power 152.4 W, Util 42 % (M4-I: gpuUtilPct ?? utilPct)`);
+  step('monitoring', `monitoring: CPU Util 42 %, CPU Temperature ${cpu['Temperature']} °C; GPU and GPU memory panels LIVE from the vendor lane - Core clock 1965, Memory clock 7010, VRAM 4.3 GB (the NVML used-VRAM), VramTemp 58, Temperature 62, Power 152.4 W, Util 42 % (M4-I: gpuUtilPct ?? utilPct)`);
 
   // --- 7. the Tuning page: 'No GPU available.', never the caps-loading text --
   // deviceId is null on no-Intel: the page must present the honest no-device
