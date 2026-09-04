@@ -1086,6 +1086,7 @@ export interface RecordingSettings {
   bitrateKbps: number;
   captureTarget: RecordingCaptureTarget;
   captureColorMode: RecordingCaptureColorMode;
+  showCursor: boolean;
   replayLengthSec: number;
   audio: RecordingAudioSettings;
   hotkeys: RecordingHotkeys;

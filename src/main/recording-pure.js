@@ -70,6 +70,7 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
     windowTitle: '',
   },
   captureColorMode: 'auto',
+  showCursor: false,
   replayLengthSec: 30,
   audio: {
     microphone: { enabled: false, deviceId: '', volume: 1, mono: false },
@@ -321,6 +322,7 @@ export function normalizeRecordingSettings(raw = {}) {
     captureColorMode: RECORDING_CAPTURE_COLOR_MODES.includes(source.captureColorMode)
       ? source.captureColorMode
       : DEFAULT_RECORDING_SETTINGS.captureColorMode,
+    showCursor: source.showCursor === true,
     replayLengthSec: Math.min(3600, Math.max(5, replayLength)),
     audio: normalizeRecordingAudioSettings({ ...DEFAULT_RECORDING_SETTINGS.audio, ...(source.audio ?? {}) }),
     hotkeys: {

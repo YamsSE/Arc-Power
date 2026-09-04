@@ -2492,7 +2492,10 @@ export class IgclBackend {
     try {
       const numBuf = koffi.alloc('uint32', 1);
       koffi.encode(numBuf, 'uint32', 0);
-      const result = lib.ctlOverclockReadVFCurve(handle, 1 /* LIVE */, 2 /* ELABORATE */, numBuf, null);
+      // The editor writes the driver's simplified table. Probing the same
+      // native shape avoids advertising a curve that is only readable in the
+      // 50-point elaborate form but cannot be written back by the driver.
+      const result = lib.ctlOverclockReadVFCurve(handle, 1 /* LIVE */, 0 /* SIMPLIFIED */, numBuf, null);
       return result === CTL_RESULT.SUCCESS;
     } catch {
       return false;
@@ -2579,16 +2582,19 @@ export class IgclBackend {
       }
     }
 
-    // VF curve is the LIVE Battlemage curve shown by the editor. Voltage is
-    // documented by IGCL as millivolts; the renderer/backend contract uses V.
+    // VF curve is the LIVE Battlemage simplified curve shown by the editor.
+    // The driver also exposes an elaborate 50-point table, but downsampling
+    // that table would synthesize voltage steps and can make a write invalid.
+    // Voltage is documented by IGCL as millivolts; the renderer/backend
+    // contract uses V.
     if (caps.controls.vfCurve && !this._isUnavailable(lib.ctlOverclockReadVFCurve)) {
       const numBuf = koffi.alloc('uint32', 1);
       koffi.encode(numBuf, 'uint32', 0);
-      let result = lib.ctlOverclockReadVFCurve(dev.handle, 1, 2, numBuf, null);
+      let result = lib.ctlOverclockReadVFCurve(dev.handle, 1, 0, numBuf, null);
       const num = koffi.decode(numBuf, 'uint32');
       if (result === CTL_RESULT.SUCCESS && num > 0 && num < 10000) {
         const curveBuf = koffi.alloc('ctl_voltage_frequency_point_t', num);
-        result = lib.ctlOverclockReadVFCurve(dev.handle, 1, 2, numBuf, curveBuf);
+        result = lib.ctlOverclockReadVFCurve(dev.handle, 1, 0, numBuf, curveBuf);
         if (result === CTL_RESULT.SUCCESS) {
           const sz = koffi.sizeof('ctl_voltage_frequency_point_t');
           state.vfCurve = [];
@@ -5278,7 +5284,7 @@ export class IgclBackend {
             } else {
               const numBuf = koffi.alloc('uint32', 1);
               koffi.encode(numBuf, 'uint32', 0);
-              let res = lib.ctlOverclockReadVFCurve(dev.handle, 1, 2, numBuf, null);
+              let res = lib.ctlOverclockReadVFCurve(dev.handle, 1, 0, numBuf, null);
               const num = koffi.decode(numBuf, 'uint32');
               if (res !== CTL_RESULT.SUCCESS) {
                 v = { ok: false, message: `VF curve write succeeded but read-back failed (${describeResult(res)})` };
@@ -5286,7 +5292,7 @@ export class IgclBackend {
                 v = { ok: false, message: `VF curve read-back ${num} points != requested ${points.length}` };
               } else {
                 const curveBuf = koffi.alloc('ctl_voltage_frequency_point_t', num);
-                res = lib.ctlOverclockReadVFCurve(dev.handle, 1, 2, numBuf, curveBuf);
+                res = lib.ctlOverclockReadVFCurve(dev.handle, 1, 0, numBuf, curveBuf);
                 if (res !== CTL_RESULT.SUCCESS) {
                   v = { ok: false, message: `VF curve read-back failed (${describeResult(res)})` };
                 } else {

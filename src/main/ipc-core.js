@@ -58,7 +58,7 @@ const require = createRequire(import.meta.url);
 // when no electron app exists (tests).
 const PKG_VERSION = require('../../package.json').version ?? '0.0.0';
 
-const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'bitrateKbps', 'captureTarget', 'captureColorMode', 'replayLengthSec', 'hotkeys', 'audio']);
+const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'bitrateKbps', 'captureTarget', 'captureColorMode', 'showCursor', 'replayLengthSec', 'hotkeys', 'audio']);
 export { recordingAbsolutePath };
 
 const execFileAsync = promisify(execFile);
@@ -129,6 +129,7 @@ function recordingPatch(patch) {
   if (patch.encoderId !== undefined && (typeof patch.encoderId !== 'string' || patch.encoderId.length > 128)) throw new Error('recording-settings-save: invalid encoder id');
   if (patch.bitrateKbps !== undefined && (typeof patch.bitrateKbps !== 'number' || !Number.isFinite(patch.bitrateKbps) || patch.bitrateKbps <= 0)) throw new Error('recording-settings-save: bitrate must be a positive number');
   if (patch.captureColorMode !== undefined && !RECORDING_CAPTURE_COLOR_MODES.includes(patch.captureColorMode)) throw new Error('recording-settings-save: invalid capture color mode');
+  if (patch.showCursor !== undefined && typeof patch.showCursor !== 'boolean') throw new Error('recording-settings-save: show cursor must be a boolean');
   if (patch.captureTarget !== undefined) {
     const target = patch.captureTarget;
     if (!target || typeof target !== 'object' || Array.isArray(target)) throw new Error('recording-settings-save: capture target must be an object');

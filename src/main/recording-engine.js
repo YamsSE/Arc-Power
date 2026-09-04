@@ -66,19 +66,20 @@ function captureDimensionsOf(settings = {}) {
 
 function captureSourceOf(settings = {}) {
   const source = settings.captureSource && typeof settings.captureSource === 'object' ? settings.captureSource : {};
+  const showCursor = settings.showCursor === true;
   if (source.type === 'window' && Number.isSafeInteger(source.windowHandle) && source.windowHandle > 0) {
     return {
-      monitor: { enable: false, force: false, cursor: false, monitor_handle: 0 },
+      monitor: { enable: false, force: false, cursor: showCursor, monitor_handle: 0 },
       // Ascent-OBS names this source window_capture. Sending it as "window"
       // is silently ignored by the runtime, leaving no active source and
       // producing the generic command error (-4) on program capture.
-      window_capture: { enable: true, force: true, cursor: false, window_handle: source.windowHandle },
+      window_capture: { enable: true, force: true, cursor: showCursor, window_handle: source.windowHandle },
     };
   }
   const monitorHandle = Number.isSafeInteger(source.monitorHandle) && source.monitorHandle >= 0 && source.monitorHandle <= 0xffffffff
     ? source.monitorHandle
     : 0;
-  return { monitor: { enable: true, force: false, cursor: false, monitor_handle: monitorHandle } };
+  return { monitor: { enable: true, force: false, cursor: showCursor, monitor_handle: monitorHandle } };
 }
 
 function colorSettingsOf(settings = {}) {

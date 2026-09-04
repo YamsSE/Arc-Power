@@ -272,6 +272,7 @@ function recordingSettingsPatchFrom(value: RecordingSettings): RecordingSettings
     bitrateKbps: value.bitrateKbps,
     captureTarget: { ...value.captureTarget },
     captureColorMode: value.captureColorMode,
+    showCursor: value.showCursor,
     replayLengthSec: value.replayLengthSec,
     audio: {
       microphone: { ...value.audio.microphone },
@@ -433,6 +434,7 @@ function renderCapturePanel(): HTMLElement {
     ]) : null,
     renderCaptureActions(),
     renderCaptureTargetSettings(),
+    renderCaptureCursorSetting(),
     renderRecordingPillSetting(),
     status.error && status.available ? el('p', { class: 'recording-inline-error', text: messageOf(status.error) }) : null,
     status.hotkeys.error ? el('p', { class: 'recording-inline-error', text: `Shortcut registration issue: ${messageOf(status.hotkeys.error)}` }) : null,
@@ -568,6 +570,22 @@ function renderCaptureTargetSettings(): HTMLElement {
     field('Capture target', targetSelect, sourceNote),
     field('Color handling', colorMode, 'Auto follows the selected source.'),
     button(recordingTargetsBusy ? 'Refreshing…' : 'Refresh targets', () => void refreshRecordingCaptureTargets(true), 'btn btn-secondary recording-target-refresh', recordingTargetsBusy),
+  ]);
+}
+
+function renderCaptureCursorSetting(): HTMLElement {
+  const working = settingsForRender();
+  return el('label', { class: 'recording-check-row recording-cursor-setting' }, [
+    el('input', {
+      type: 'checkbox',
+      class: 'settings-checkbox',
+      checked: working?.showCursor === true,
+      onchange: (event: Event) => stagePatch({ showCursor: (event.target as HTMLInputElement).checked }),
+    }),
+    el('span', {}, [
+      el('strong', { text: 'Show cursor in recording' }),
+      el('span', { class: 'recording-field-note', text: 'Includes the mouse pointer in display and window captures.' }),
+    ]),
   ]);
 }
 
