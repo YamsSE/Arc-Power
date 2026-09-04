@@ -9,7 +9,7 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeImage } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { mkdir, cp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -179,8 +179,30 @@ async function copyPackagedPayload(sourceRoot, installDir) {
   process.noAsar = true;
   try {
     await cp(sourceRoot, installDir, { recursive: true, force: true });
+    verifyCopiedPayload(sourceRoot, installDir);
   } finally {
     process.noAsar = previousNoAsar;
+  }
+}
+
+function sha256File(filePath) {
+  return createHash('sha256').update(readFileSync(filePath)).digest('hex');
+}
+
+function verifyCopiedPayload(sourceRoot, installDir) {
+  const requiredFiles = [
+    INSTALLED_EXECUTABLE_NAME,
+    path.join('resources', 'app.asar'),
+  ];
+  for (const relativePath of requiredFiles) {
+    const sourcePath = path.join(sourceRoot, relativePath);
+    const destinationPath = path.join(installDir, relativePath);
+    if (!existsSync(sourcePath) || !existsSync(destinationPath)) {
+      throw new Error(`Arc Power update verification failed: ${relativePath} is missing after copy`);
+    }
+    if (sha256File(sourcePath) !== sha256File(destinationPath)) {
+      throw new Error(`Arc Power update verification failed: ${relativePath} does not match the downloaded payload`);
+    }
   }
 }
 

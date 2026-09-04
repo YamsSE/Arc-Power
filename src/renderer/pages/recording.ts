@@ -575,16 +575,19 @@ function renderCaptureTargetSettings(): HTMLElement {
 
 function renderCaptureCursorSetting(): HTMLElement {
   const working = settingsForRender();
-  return el('label', { class: 'recording-check-row recording-cursor-setting' }, [
-    el('input', {
-      type: 'checkbox',
-      class: 'settings-checkbox',
-      checked: working?.showCursor === true,
-      onchange: (event: Event) => stagePatch({ showCursor: (event.target as HTMLInputElement).checked }),
-    }),
-    el('span', {}, [
+  return el('div', { class: 'recording-cursor-setting' }, [
+    el('div', { class: 'recording-cursor-setting-copy' }, [
       el('strong', { text: 'Show cursor in recording' }),
       el('span', { class: 'recording-field-note', text: 'Includes the mouse pointer in display and window captures.' }),
+    ]),
+    el('label', { class: 'recording-check-row' }, [
+      el('input', {
+        type: 'checkbox',
+        class: 'settings-checkbox',
+        ariaLabel: 'Show cursor in recording',
+        checked: working?.showCursor === true,
+        onchange: (event: Event) => stagePatch({ showCursor: (event.target as HTMLInputElement).checked }),
+      }),
     ]),
   ]);
 }

@@ -44,7 +44,7 @@ import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShort
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { resolveArcPowerCachePath, shouldClearCache, filterRelaunchArgs, ensureCacheDirectorySync, resetCacheDirectorySync } from './cache-lifecycle.js';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
@@ -78,7 +78,7 @@ import { createAdvancedOverlayWindow } from './advanced-overlay.js';
 import { createStartup, createMockStartup, resolveLogonExecPath } from './startup.js';
 import { attachStartupUpdateStatus, createStartupSplash } from './splash.js';
 import { runInstallerMode } from './installer.js';
-import { installerModeFromEnvironment } from './installer-pure.js';
+import { INSTALLED_EXECUTABLE_NAME, installerModeFromEnvironment, resolveNewerInstalledExecutable } from './installer-pure.js';
 import { checkForUpdates } from './auto-update.js';
 import { createStartupUpdateCoordinator, shouldBlockStartupSplashClose } from './startup-update.js';
 import { createStartupUpdateHandoff } from './startup-update-handoff.js';
@@ -176,15 +176,66 @@ function portableParentExecutableFile() {
 
 function installedRegistryMatchesExecutable() {
   if (!app.isPackaged || process.platform !== 'win32') return false;
+  const registration = readInstalledRegistryRegistration();
+  if (!registration?.InstallLocation) return false;
+  return path.resolve(registration.InstallLocation).toLowerCase() === path.dirname(process.execPath).toLowerCase();
+}
+
+function readInstalledRegistryRegistration() {
+  if (!app.isPackaged || process.platform !== 'win32') return null;
   try {
     const output = execFileSync('powershell.exe', [
       '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-      '-Command', "try { $entry = Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Arc Power' -ErrorAction Stop; if ($entry.InstallLocation) { [Console]::Write([string]$entry.InstallLocation) } } catch {}",
+      '-Command', "try { $entry = Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Arc Power' -ErrorAction Stop; [pscustomobject]@{ DisplayName = [string]$entry.DisplayName; DisplayVersion = [string]$entry.DisplayVersion; InstallLocation = [string]$entry.InstallLocation; DisplayIcon = [string]$entry.DisplayIcon; UninstallString = [string]$entry.UninstallString } | ConvertTo-Json -Compress } catch {}",
     ], { encoding: 'utf8', windowsHide: true, timeout: 2000 });
-    const registeredInstallDir = String(output).trim();
-    if (!registeredInstallDir || !path.isAbsolute(registeredInstallDir)) return false;
-    return path.resolve(registeredInstallDir).toLowerCase() === path.dirname(process.execPath).toLowerCase();
+    const text = String(output).trim();
+    return text ? JSON.parse(text) : null;
   } catch {
+    return null;
+  }
+}
+
+function redirectStaleInstalledLaunch() {
+  if (!app.isPackaged || process.platform !== 'win32' || portableWrapperPath
+    || headless || uiVerify || profileBoot || bootApply
+    || applyProfileId || workerReqFile || sysmanHelperIdx >= 0 || sysmanHelperPipeIdx >= 0) return false;
+  const registration = readInstalledRegistryRegistration();
+  const registeredExecutable = typeof registration?.InstallLocation === 'string' && path.isAbsolute(registration.InstallLocation)
+    ? path.join(path.resolve(registration.InstallLocation), INSTALLED_EXECUTABLE_NAME)
+    : null;
+  const target = resolveNewerInstalledExecutable({
+    currentExecutable: process.execPath,
+    currentVersion: app.getVersion(),
+    registration,
+    executableExists: registeredExecutable ? fs.existsSync(registeredExecutable) : false,
+  });
+  if (!target) return false;
+  const environment = { ...process.env };
+  delete environment.PORTABLE_EXECUTABLE_FILE;
+  delete environment.PORTABLE_EXECUTABLE_DIR;
+  delete environment.PORTABLE_EXECUTABLE_APP_FILENAME;
+  try {
+    const child = spawn(target, [], {
+      cwd: path.dirname(target),
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+      env: environment,
+    });
+    return new Promise((resolve) => {
+      child.once('error', (error) => {
+        console.error(`[boot] unable to redirect stale Arc Power launch: ${error.message}`);
+        resolve(false);
+      });
+      child.once('spawn', () => {
+        child.unref();
+        console.log(`[boot] redirected stale Arc Power ${app.getVersion()} launch to ${target}`);
+        void app.whenReady().then(() => app.quit());
+        resolve(true);
+      });
+    });
+  } catch (error) {
+    console.error(`[boot] unable to redirect stale Arc Power launch: ${error.message}`);
     return false;
   }
 }
@@ -531,6 +582,11 @@ async function main() {
     await runInstallerMode(installerMode);
     return;
   }
+  // An older shortcut or pinned taskbar entry may still launch a previous
+  // copy after an update. Check the registered installed target before the
+  // startup splash and instance lock so the stale copy never becomes the
+  // process the user sees again.
+  if (await redirectStaleInstalledLaunch()) return;
   const installedBuild = app.isPackaged && !portableWrapperPath && installedRegistryMatchesExecutable();
   // Set the Windows identity before any window is created so taskbar grouping
   // resolves to the Arc Power app and not a stale/default Electron identity.

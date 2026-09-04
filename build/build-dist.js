@@ -62,7 +62,7 @@ for (const artifact of [
   unpacked,
   path.join(dist, 'Arc-Power_Installer.exe.blockmap'),
   path.join(dist, 'latest.yml'),
-  path.join(dist, 'arc-power-1.1.0-x64.nsis.7z'),
+  path.join(dist, 'arc-power-1.1.1-x64.nsis.7z'),
 ]) rmSync(artifact, { force: true, recursive: artifact === unpacked });
 
 function runBuilder(target, extraArgs = []) {

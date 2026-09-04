@@ -3070,8 +3070,9 @@ input[type="number"] {
 .recording-pill-setting-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .recording-pill-setting-copy strong { color: var(--text); font: 650 12px var(--font); }
 .recording-pill-setting .recording-check-row { flex: 0 0 auto; white-space: nowrap; }
-.recording-cursor-setting { margin-top: 10px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--accent) 23%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--bg-inset) 70%, transparent); }
-.recording-cursor-setting > span { display: flex; flex-direction: column; gap: 3px; }
+.recording-cursor-setting { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 10px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--accent) 23%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--bg-inset) 70%, transparent); }
+.recording-cursor-setting-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.recording-cursor-setting .recording-check-row { flex: 0 0 auto; white-space: nowrap; }
 .recording-cursor-setting strong { font: 650 12px var(--font); }
 .recording-capture-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
 .recording-capture-target-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, .42fr) auto; align-items: end; gap: 10px; margin-top: 12px; padding-top: 11px; border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }

@@ -373,6 +373,52 @@ export function validateInstalledUpdateTarget({
   return Object.freeze({ installDir: normalizedInstallDir, executablePath: expectedExecutablePath });
 }
 
+function compareDottedVersions(left, right) {
+  const parse = (value) => {
+    const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(String(value ?? '').trim());
+    return match ? match.slice(1, 4).map(Number) : null;
+  };
+  const a = parse(left);
+  const b = parse(right);
+  if (!a || !b) return null;
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
+}
+
+/**
+ * Resolve a newer registered install when Windows starts an older Arc Power
+ * copy through a stale shortcut or pinned taskbar entry. The updater rewrites
+ * the canonical shortcuts, but this launch guard also repairs old shortcuts
+ * that survived an earlier installer version. Invalid or incomplete registry
+ * data is ignored so an unrelated executable can never be launched here.
+ */
+export function resolveNewerInstalledExecutable({
+  currentExecutable,
+  currentVersion,
+  registration,
+  executableExists = false,
+} = {}) {
+  if (typeof currentExecutable !== 'string' || !path.isAbsolute(currentExecutable)) return null;
+  if (typeof currentVersion !== 'string' || !registration || typeof registration !== 'object') return null;
+  if (String(registration.DisplayName ?? '').trim().toLowerCase() !== PRODUCT_NAME.toLowerCase()) return null;
+  const versionOrder = compareDottedVersions(registration.DisplayVersion, currentVersion);
+  if (versionOrder === null || versionOrder <= 0 || executableExists !== true) return null;
+  try {
+    const validated = validateInstalledUpdateTarget({
+      installDir: registration.InstallLocation,
+      registration,
+      executableExists: true,
+      destinationIsSafe: true,
+    });
+    if (comparablePath(validated.executablePath) === comparablePath(currentExecutable)) return null;
+    return validated.executablePath;
+  } catch {
+    return null;
+  }
+}
+
 /** Classify the structured Get-ScheduledTask probe without inspecting text. */
 export function classifyScheduledTaskProbe({ found = false, errorCategory = null } = {}) {
   if (found === true) return 'present';

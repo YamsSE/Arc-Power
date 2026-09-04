@@ -127,6 +127,7 @@ for ($attempt = 0; $attempt -lt 20 -and -not $moved; $attempt++) {
     $sourceLength = (Get-Item -LiteralPath $DownloadedPath).Length
     $stagedLength = (Get-Item -LiteralPath $stagedPath).Length
     if ($sourceLength -le 0 -or $stagedLength -ne $sourceLength) { throw 'staged update length mismatch' }
+    $sourceHash = (Get-FileHash -LiteralPath $DownloadedPath -Algorithm SHA256).Hash
 
     if (Test-Path -LiteralPath $TargetPath -PathType Leaf) {
       try {
@@ -137,7 +138,8 @@ for ($attempt = 0; $attempt -lt 20 -and -not $moved; $attempt++) {
     } else {
       Move-Item -LiteralPath $stagedPath -Destination $TargetPath -Force
     }
-    $moved = (Test-Path -LiteralPath $TargetPath -PathType Leaf) -and ((Get-Item -LiteralPath $TargetPath).Length -eq $sourceLength)
+    $targetHash = if (Test-Path -LiteralPath $TargetPath -PathType Leaf) { (Get-FileHash -LiteralPath $TargetPath -Algorithm SHA256).Hash } else { '' }
+    $moved = (Test-Path -LiteralPath $TargetPath -PathType Leaf) -and ((Get-Item -LiteralPath $TargetPath).Length -eq $sourceLength) -and ($targetHash -eq $sourceHash)
   } catch {
     Write-Diagnostic ("replacement attempt {0} failed: {1}" -f $attempt, $_.Exception.Message)
     Remove-Item -LiteralPath $stagedPath -Force -ErrorAction SilentlyContinue

@@ -70,6 +70,7 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 // bSupported:false - the probe-3 evidence).
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
+import { prepareVfCurveForDriver } from '../../renderer/pure/vf-curve.ts';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
@@ -2492,10 +2493,14 @@ export class IgclBackend {
     try {
       const numBuf = koffi.alloc('uint32', 1);
       koffi.encode(numBuf, 'uint32', 0);
-      // The editor writes the driver's simplified table. Probing the same
-      // native shape avoids advertising a curve that is only readable in the
-      // 50-point elaborate form but cannot be written back by the driver.
-      const result = lib.ctlOverclockReadVFCurve(handle, 1 /* LIVE */, 0 /* SIMPLIFIED */, numBuf, null);
+      // The documented custom-write flow is read-modify-write from the STOCK
+      // simplified table. Some driver builds expose only LIVE, so retain the
+      // live fallback while still probing the shape the writer expects first.
+      let result = lib.ctlOverclockReadVFCurve(handle, 0 /* STOCK */, 0 /* SIMPLIFIED */, numBuf, null);
+      if (result !== CTL_RESULT.SUCCESS) {
+        koffi.encode(numBuf, 'uint32', 0);
+        result = lib.ctlOverclockReadVFCurve(handle, 1 /* LIVE */, 0 /* SIMPLIFIED */, numBuf, null);
+      }
       return result === CTL_RESULT.SUCCESS;
     } catch {
       return false;
@@ -5297,7 +5302,9 @@ export class IgclBackend {
         fail('vfCurve', 'unsupported', 'custom VF curve not supported on this device');
       } else {
         const curve = settings.vfCurve;
-        const curveRange = caps.vfCurveRange;
+        const curveRange = caps.vfCurveRange ?? {
+          voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 0, freqMaxMhz: 4300, maxPoints: 32,
+        };
         const validShape = Array.isArray(curve) && curve.length >= 2 && curve.length <= (curveRange?.maxPoints ?? 32)
           && curve.every((p) => Number.isFinite(p?.voltageV) && Number.isFinite(p?.freqMhz));
         const validOrder = validShape && curve.every((p, i) => i === 0
@@ -5308,70 +5315,77 @@ export class IgclBackend {
         if (!validShape || !validOrder || !validRange) {
           fail('vfCurve', 'out-of-range', 'VF curve points must be ordered and stay within the driver voltage/frequency range');
         } else {
-          const points = curve.map((p) => ({ Voltage: Math.round(p.voltageV * 1000), Frequency: Math.round(p.freqMhz) }));
-          // Battlemage accepts the driver's simplified table as a native
-          // read-modify-write shape. A synthesized 9-point curve or a
-          // millivolt value off that table is rejected by the driver with the
-          // otherwise-unhelpful io-failed result. Validate the live shape
-          // before writing so stale profiles and old renderer bundles cannot
-          // send an invalid payload.
-          const native = this._readVfCurvePoints(dev.handle, 1, 0);
-          if (!native.ok) {
-            fail('vfCurve', igclErrorCode(native.result) ?? 'io-failed', native.message);
-          } else if (native.points.length !== points.length) {
-            fail('vfCurve', 'out-of-range', `Battlemage requires the driver's current ${native.points.length}-point simplified VF table; point count cannot be changed`);
-          } else if (native.points.some((point, index) => point.Voltage !== points[index].Voltage)) {
-            fail('vfCurve', 'out-of-range', 'Battlemage voltage positions are fixed by the driver; edit frequency values only');
-          } else if (native.points.some((point, index) => index > 0
-            && (point.Voltage <= native.points[index - 1].Voltage || point.Frequency < native.points[index - 1].Frequency))) {
-            fail('vfCurve', 'io-failed', 'The driver returned an invalid simplified VF curve shape; no change was written');
+          const preparedCurve = prepareVfCurveForDriver(curve, curveRange);
+          if (!preparedCurve) {
+            fail('vfCurve', 'out-of-range', 'VF curve cannot be represented as a strictly increasing driver curve within the supported frequency range');
           } else {
-            const pointsBuf = koffi.alloc('ctl_voltage_frequency_point_t', points.length);
-            const pointSize = koffi.sizeof('ctl_voltage_frequency_point_t');
-            points.forEach((point, index) => {
-              koffi.encode(pointsBuf, index * pointSize, 'ctl_voltage_frequency_point_t', point);
-            });
-            const setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, pointsBuf);
-            if (setResult !== CTL_RESULT.SUCCESS) {
-              fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+            const points = preparedCurve.map((p) => ({ Voltage: Math.round(p.voltageV * 1000), Frequency: Math.round(p.freqMhz) }));
+            // Battlemage accepts the driver's simplified table as a native
+            // read-modify-write shape. A synthesized 9-point curve or a
+            // millivolt value off that table is rejected by the driver with the
+            // otherwise-unhelpful io-failed result. Validate the stock shape
+            // before writing so stale profiles and old renderer bundles cannot
+            // send an invalid payload. A few driver builds expose only LIVE, so
+            // fall back to that read without changing the write payload shape.
+            const stock = this._readVfCurvePoints(dev.handle, 0, 0);
+            const native = stock.ok ? stock : this._readVfCurvePoints(dev.handle, 1, 0);
+            if (!native.ok) {
+              fail('vfCurve', igclErrorCode(native.result) ?? 'io-failed', native.message);
+            } else if (native.points.length !== points.length) {
+              fail('vfCurve', 'out-of-range', `Battlemage requires the driver's current ${native.points.length}-point simplified VF table; point count cannot be changed`);
+            } else if (native.points.some((point, index) => point.Voltage !== points[index].Voltage)) {
+              fail('vfCurve', 'out-of-range', 'Battlemage voltage positions are fixed by the driver; edit frequency values only');
+            } else if (native.points.some((point, index) => index > 0
+              && (point.Voltage <= native.points[index - 1].Voltage || point.Frequency < native.points[index - 1].Frequency))) {
+              fail('vfCurve', 'io-failed', 'The driver returned an invalid simplified VF curve shape; no change was written');
             } else {
-              // Read-back verification (plan §5): re-read the curve and compare
-              // point-by-point before reporting readBackEqual.
-              const readBack = this._readVfCurvePoints(dev.handle, 1, 0);
-              let v;
-              if (!readBack.ok) {
-                v = { ok: false, message: `VF curve write succeeded but read-back failed: ${readBack.message}` };
-              } else if (readBack.points.length !== points.length) {
-                v = { ok: false, message: `VF curve read-back ${readBack.points.length} points != requested ${points.length}` };
+              const pointsBuf = koffi.alloc('ctl_voltage_frequency_point_t', points.length);
+              const pointSize = koffi.sizeof('ctl_voltage_frequency_point_t');
+              points.forEach((point, index) => {
+                koffi.encode(pointsBuf, index * pointSize, 'ctl_voltage_frequency_point_t', point);
+              });
+              const setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, pointsBuf);
+              if (setResult !== CTL_RESULT.SUCCESS) {
+                fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
               } else {
-                v = { ok: true, previousVoltage: 0, previousFrequency: 0 };
-                for (let i = 0; i < readBack.points.length; i++) {
-                  const pt = readBack.points[i];
-                  if (i > 0 && (pt.Voltage <= v.previousVoltage || pt.Frequency < v.previousFrequency)) {
-                    v = { ok: false, message: `VF curve point ${i} read-back is not a valid ordered LIVE point` };
-                    break;
+                // Read-back verification (plan §5): re-read the curve and compare
+                // point-by-point before reporting readBackEqual.
+                const readBack = this._readVfCurvePoints(dev.handle, 1, 0);
+                let v;
+                if (!readBack.ok) {
+                  v = { ok: false, message: `VF curve write succeeded but read-back failed: ${readBack.message}` };
+                } else if (readBack.points.length !== points.length) {
+                  v = { ok: false, message: `VF curve read-back ${readBack.points.length} points != requested ${points.length}` };
+                } else {
+                  v = { ok: true, previousVoltage: 0, previousFrequency: 0 };
+                  for (let i = 0; i < readBack.points.length; i++) {
+                    const pt = readBack.points[i];
+                    if (i > 0 && (pt.Voltage <= v.previousVoltage || pt.Frequency < v.previousFrequency)) {
+                      v = { ok: false, message: `VF curve point ${i} read-back is not a valid ordered LIVE point` };
+                      break;
+                    }
+                    // The native fields are integer millivolts/MHz. Allow
+                    // one native unit of driver quantization, but do not
+                    // accept an unrelated ordered curve as applied.
+                    if (Math.abs(pt.Voltage - points[i].Voltage) > 1
+                      || Math.abs(pt.Frequency - points[i].Frequency) > 1) {
+                      v = { ok: false, message: `VF curve point ${i} read-back ${pt.Voltage} mV / ${pt.Frequency} MHz != requested ${points[i].Voltage} mV / ${points[i].Frequency} MHz` };
+                      break;
+                    }
+                    v.previousVoltage = pt.Voltage;
+                    v.previousFrequency = pt.Frequency;
                   }
-                  // The native fields are integer millivolts/MHz. Allow
-                  // one native unit of driver quantization, but do not
-                  // accept an unrelated ordered curve as applied.
-                  if (Math.abs(pt.Voltage - points[i].Voltage) > 1
-                    || Math.abs(pt.Frequency - points[i].Frequency) > 1) {
-                    v = { ok: false, message: `VF curve point ${i} read-back ${pt.Voltage} mV / ${pt.Frequency} MHz != requested ${points[i].Voltage} mV / ${points[i].Frequency} MHz` };
-                    break;
-                  }
-                  v.previousVoltage = pt.Voltage;
-                  v.previousFrequency = pt.Frequency;
                 }
+                result.perControl.vfCurve = {
+                  ok: v.ok,
+                  readBackEqual: v.ok,
+                  errorCode: v.ok ? undefined : 'io-failed',
+                  message: v.message,
+                  // F3 silent no-op: SUCCESS from the write with a mismatch on re-read.
+                  silentNoop: setResult === CTL_RESULT.SUCCESS && !v.ok,
+                };
+                if (!v.ok) result.ok = false;
               }
-              result.perControl.vfCurve = {
-                ok: v.ok,
-                readBackEqual: v.ok,
-                errorCode: v.ok ? undefined : 'io-failed',
-                message: v.message,
-                // F3 silent no-op: SUCCESS from the write with a mismatch on re-read.
-                silentNoop: setResult === CTL_RESULT.SUCCESS && !v.ok,
-              };
-              if (!v.ok) result.ok = false;
             }
           }
         }

@@ -81,6 +81,8 @@ test('portable handoff validates the target and supports cross-volume replacemen
   const script = createPortableHandoffScript();
   assert.match(script, /Get-Process -Id \$ParentPid/);
   assert.match(script, /Copy-Item -LiteralPath \$DownloadedPath -Destination \$stagedPath -Force/);
+  assert.match(script, /Get-FileHash -LiteralPath \$DownloadedPath -Algorithm SHA256/);
+  assert.match(script, /\$targetHash -eq \$sourceHash/);
   assert.match(script, /\[System\.IO\.File\]::Replace\(\$stagedPath, \$TargetPath/);
   assert.match(script, /Move-Item -LiteralPath \$stagedPath -Destination \$TargetPath -Force/);
   assert.match(script, /Test-Path -LiteralPath \$TargetPath -PathType Leaf/);
