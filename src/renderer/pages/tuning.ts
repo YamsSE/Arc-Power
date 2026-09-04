@@ -79,10 +79,8 @@ import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-ed
 import { isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import {
   VF_EDITOR_MAX_POINTS,
-  addVfPointAtMidGap,
-  moveVfPoint,
+  moveVfFrequencyPoint,
   normalizeVfCurvePoints,
-  removeVfPoint,
   vfCurvePointLabel,
   vfVoltageMv,
 } from '../pure/vf-curve.ts';
@@ -717,13 +715,14 @@ export const tuningPage: Page = {
         }
         const point = vfCurveDraft[index];
         if (!point) return;
-        vfCurveDraft = moveVfPoint(
-          vfCurveDraft,
-          index,
-          field === 'voltage' ? raw / 1000 : point.voltageV,
-          field === 'frequency' ? raw : point.freqMhz,
-          curveBounds,
-        );
+        // Battlemage's simplified VF table owns the voltage coordinates.
+        // Only frequencies are writable; changing the voltage grid makes
+        // ctlOverclockWriteCustomVFCurve reject an otherwise valid curve.
+        if (field !== 'frequency') {
+          showReadout(index, true);
+          return;
+        }
+        vfCurveDraft = moveVfFrequencyPoint(vfCurveDraft, index, raw, curveBounds);
         // Redraw both the line and the point together. Updating only the dot
         // left the SVG curve behind, which made a valid edit look broken.
         selectedIdx = index;
@@ -769,11 +768,9 @@ export const tuningPage: Page = {
             const onMove = (moveEvent: PointerEvent): void => {
               if (!dragMoved && (Math.abs(moveEvent.clientX - startX) > 4 || Math.abs(moveEvent.clientY - startY) > 4)) dragMoved = true;
               if (!dragMoved || !rect.width || !rect.height) return;
-              const xPct = Math.min(100, Math.max(0, ((moveEvent.clientX - rect.left) / rect.width) * 100));
               const yPct = Math.min(100, Math.max(0, ((moveEvent.clientY - rect.top) / rect.height) * 100));
-              const voltage = curveBounds.voltageMinV + (xPct / 100) * (curveBounds.voltageMaxV - curveBounds.voltageMinV);
               const frequency = curveBounds.freqMaxMhz - (yPct / 100) * (curveBounds.freqMaxMhz - curveBounds.freqMinMhz);
-              vfCurveDraft = moveVfPoint(vfCurveDraft, index, voltage, frequency, curveBounds);
+              vfCurveDraft = moveVfFrequencyPoint(vfCurveDraft, index, frequency, curveBounds);
               redraw();
               refreshChip('gpuFreqOffsetMhz');
               updateFloating();
@@ -806,7 +803,9 @@ export const tuningPage: Page = {
                 min: vfVoltageMv(curveBounds.voltageMinV),
                 max: vfVoltageMv(curveBounds.voltageMaxV),
                 step: 1,
-                onchange: (event: Event) => onEditPoint(Number(hoverReadout?.dataset['idx'] ?? 0), Number((event.target as HTMLInputElement).value), event.target as HTMLInputElement, 'voltage'),
+                readOnly: true,
+                title: 'Voltage positions are fixed by the Battlemage driver.',
+                'aria-label': 'Driver-defined voltage in millivolts',
               }),
             ]),
             el('label', { class: 'vf-curve-readout-field' }, [
@@ -839,45 +838,27 @@ export const tuningPage: Page = {
       const addPointButton = el('button', {
         class: 'btn btn-ghost btn-sm',
         text: 'Add point',
-        title: `Point limit: ${vfEditorMaxPoints}`,
-        onClick: () => {
-          resetReadout();
-          const next = addVfPointAtMidGap(vfCurveDraft, curveBounds, vfEditorMaxPoints);
-          if (!next) {
-            toast('warn', 'No room for another point', `The curve is at the ${vfEditorMaxPoints}-point limit or has no legal gap.`);
-            return;
-          }
-          vfCurveDraft = next;
-          selectedIdx = vfCurveDraft.length - 1;
-          readoutIdx = selectedIdx;
-          redraw();
-          refreshChip('gpuFreqOffsetMhz');
-          updateFloating();
-        },
+        title: 'Battlemage voltage points are fixed by the driver.',
+        disabled: true,
       });
       const removePointButton = el('button', {
         class: 'btn btn-ghost btn-sm',
         text: 'Remove point',
-        onClick: () => {
-          resetReadout();
-          vfCurveDraft = removeVfPoint(vfCurveDraft, selectedIdx);
-          selectedIdx = Math.min(selectedIdx, vfCurveDraft.length - 1);
-          readoutIdx = selectedIdx;
-          redraw();
-          refreshChip('gpuFreqOffsetMhz');
-          updateFloating();
-        },
+        title: 'Battlemage voltage points are fixed by the driver.',
+        disabled: true,
       });
       const redraw = (): void => {
         pointCountNode.textContent = `${vfCurveDraft.length}/${vfEditorMaxPoints} points`;
-        addPointButton.disabled = vfCurveDraft.length >= vfEditorMaxPoints;
-        removePointButton.disabled = vfCurveDraft.length <= 2;
+        // The simplified Battlemage table is a driver-owned native shape:
+        // changing its count creates a payload the write API refuses.
+        addPointButton.disabled = true;
+        removePointButton.disabled = true;
         drawVfCurve(svg);
         renderDots();
       };
       redraw();
       host.append(
-        el('p', { class: 'card-note', text: `Hover a point for values; click to edit. Voltage ${vfVoltageMv(curveBounds.voltageMinV)}–${vfVoltageMv(curveBounds.voltageMaxV)} mV · frequency ${Math.round(curveBounds.freqMinMhz)}–${Math.round(curveBounds.freqMaxMhz)} MHz.` }),
+        el('p', { class: 'card-note', text: `Hover a point for values; click to edit frequency. The driver-defined voltage positions and point count stay fixed. Voltage ${vfVoltageMv(curveBounds.voltageMinV)}–${vfVoltageMv(curveBounds.voltageMaxV)} mV · frequency ${Math.round(curveBounds.freqMinMhz)}–${Math.round(curveBounds.freqMaxMhz)} MHz.` }),
         el('div', { class: 'vf-curve-point-count' }, [pointCountNode]),
         stage,
         el('div', { class: 'vf-curve-axis' }, [

@@ -2,8 +2,10 @@
 //
 // The driver may expose a table larger than the compact editor should show.
 // Keep the UI at the same ten-point scale as Fan Curve while preserving the
-// end points and the driver's required strictly ascending voltage/frequency
-// order. The renderer owns the hover/click presentation; this module owns
+// end points and the driver's required ascending voltage/non-decreasing
+// frequency order. Battlemage's simplified table can end with a shared
+// maximum-frequency plateau. The renderer owns the hover/click presentation;
+// this module owns
 // the clamping and point-count rules so those rules are testable.
 
 import type { VfCurveRange } from '../types.ts';
@@ -45,8 +47,9 @@ function seedVfCurve(range: VfCurveRange): VfCurvePoint[] {
 /**
  * Normalize a driver/profile curve for the compact editor. Curves longer
  * than the editor limit are evenly downsampled, always retaining endpoints.
- * Invalid or non-ascending input degrades to the nearest legal curve rather
- * than allowing an apply payload the backend must reject.
+ * Invalid input degrades to the nearest legal curve rather than allowing an
+ * apply payload the backend must reject. Equal adjacent frequencies are
+ * retained because the native table can deliberately plateau at its maximum.
  */
 export function normalizeVfCurvePoints(
   points: VfCurvePoint[] | null | undefined,
@@ -61,7 +64,7 @@ export function normalizeVfCurvePoints(
   const legal: VfCurvePoint[] = [];
   for (const point of sorted) {
     const previous = legal[legal.length - 1];
-    if (!previous || (point.voltageV > previous.voltageV && point.freqMhz > previous.freqMhz)) {
+    if (!previous || (point.voltageV > previous.voltageV && point.freqMhz >= previous.freqMhz)) {
       legal.push(point);
     }
   }
@@ -72,7 +75,7 @@ export function normalizeVfCurvePoints(
   return Array.from({ length: maxPoints }, (_, index) => ({ ...legal[Math.round(index * stride)] }));
 }
 
-/** Move one point while keeping both dimensions strictly ascending. */
+/** Move one point while keeping voltage ascending and frequency non-decreasing. */
 export function moveVfPoint(
   points: VfCurvePoint[],
   index: number,
@@ -87,11 +90,33 @@ export function moveVfPoint(
   const following = next[index + 1];
   const voltageMin = Math.max(range.voltageMinV, previous ? previous.voltageV + 0.001 : range.voltageMinV);
   const voltageMax = Math.min(range.voltageMaxV, following ? following.voltageV - 0.001 : range.voltageMaxV);
-  const freqMin = Math.max(range.freqMinMhz, previous ? previous.freqMhz + 1 : range.freqMinMhz);
-  const freqMax = Math.min(range.freqMaxMhz, following ? following.freqMhz - 1 : range.freqMaxMhz);
+  const freqMin = Math.max(range.freqMinMhz, previous ? previous.freqMhz : range.freqMinMhz);
+  const freqMax = Math.min(range.freqMaxMhz, following ? following.freqMhz : range.freqMaxMhz);
   if (voltageMin > voltageMax || freqMin > freqMax) return next;
   next[index] = {
     voltageV: Number(clamp(Number.isFinite(voltageV) ? voltageV : current.voltageV, voltageMin, voltageMax).toFixed(3)),
+    freqMhz: Math.round(clamp(Number.isFinite(freqMhz) ? freqMhz : current.freqMhz, freqMin, freqMax)),
+  };
+  return next;
+}
+
+/** Move only a point's frequency, preserving the driver's voltage grid. */
+export function moveVfFrequencyPoint(
+  points: VfCurvePoint[],
+  index: number,
+  freqMhz: number,
+  range: VfCurveRange,
+): VfCurvePoint[] {
+  if (index < 0 || index >= points.length) return points.map((point) => ({ ...point }));
+  const next = points.map((point) => ({ ...point }));
+  const current = next[index];
+  const previous = next[index - 1];
+  const following = next[index + 1];
+  const freqMin = Math.max(range.freqMinMhz, previous ? previous.freqMhz : range.freqMinMhz);
+  const freqMax = Math.min(range.freqMaxMhz, following ? following.freqMhz : range.freqMaxMhz);
+  if (freqMin > freqMax) return next;
+  next[index] = {
+    ...current,
     freqMhz: Math.round(clamp(Number.isFinite(freqMhz) ? freqMhz : current.freqMhz, freqMin, freqMax)),
   };
   return next;
