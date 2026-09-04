@@ -103,7 +103,7 @@
 import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import koffi from 'koffi';
-import { dedicatedMemoryBytesOf } from './backend/units.js';
+import { isIntegratedStyleDevice } from './backend/units.js';
 
 const execFile = promisify(nodeExecFile);
 
@@ -238,29 +238,52 @@ export function instanceMatchesLuid(instanceName, luid) {
 /**
  * Aggregate GPUAdapterMemory usage for one selected adapter. All matching
  * phys_N rows contribute finite, non-negative values; no first-row or ordinal
- * choice is made. SharedUsage is selected only for an explicitly integrated
- * or mobile target whose dedicated capacity is unavailable.
+ * choice is made. Integrated/mobile targets prefer SharedUsage because
+ * built-in Arc adapters can expose only a small dedicated aperture (for
+ * example, B390 may report 128 MiB while using system-shared memory).
+ * DedicatedUsage remains a fallback when the OS omits SharedUsage.
  * @param {Array<{name: string|null, dedicatedUsage: number|null, sharedUsage: number|null}>} rows
  * @param {{high: number, low: number}|null} luid
  * @param {{integrated?: boolean, mobile?: boolean, dedicatedCapacityBytes?: number|null}} target
  * @returns {{bytes: number, source: 'dedicated'|'shared'}|null}
  */
 export function gpuMemoryUsageOf(rows, luid, target = {}) {
-  if (!luid) return null;
+  const allRows = Array.isArray(rows) ? rows : [];
   const integratedOrMobile = target?.integrated === true || target?.mobile === true;
-  const hasDedicatedCapacity = dedicatedMemoryBytesOf(target?.dedicatedCapacityBytes, integratedOrMobile) !== null;
-  const source = integratedOrMobile && !hasDedicatedCapacity ? 'shared' : 'dedicated';
-  const field = source === 'shared' ? 'sharedUsage' : 'dedicatedUsage';
+  // A missing LUID is normally an identity failure and must not become an
+  // ordinal GPU match. The one-row exception is safe for a built-in adapter:
+  // there is no competing GPUAdapterMemory row to confuse it with.
+  const matchingRows = luid
+    ? allRows.filter((row) => instanceMatchesLuid(row?.name, luid))
+    : (integratedOrMobile && allRows.length === 1 ? allRows : []);
+  if (matchingRows.length === 0) return null;
+  const validUsage = (value) => Number.isFinite(value) && value >= 0;
+  const hasSharedUsage = integratedOrMobile && matchingRows.some((row) => validUsage(row?.sharedUsage));
+  const preferredSource = hasSharedUsage ? 'shared' : 'dedicated';
+  const preferredField = preferredSource === 'shared' ? 'sharedUsage' : 'dedicatedUsage';
   let total = 0;
   let count = 0;
-  for (const row of Array.isArray(rows) ? rows : []) {
-    if (!instanceMatchesLuid(row?.name, luid)) continue;
-    const value = row?.[field];
-    if (!Number.isFinite(value) || value < 0) continue;
+  for (const row of matchingRows) {
+    const value = row?.[preferredField];
+    if (!validUsage(value)) continue;
     total += value;
     count += 1;
   }
-  return count > 0 ? { bytes: total, source } : null;
+  if (count > 0) return { bytes: total, source: preferredSource };
+  // Some older counter providers emit only DedicatedUsage for an integrated
+  // adapter. Preserve a useful reading without mixing the two counters.
+  if (preferredSource === 'shared') {
+    total = 0;
+    count = 0;
+    for (const row of matchingRows) {
+      const value = row?.dedicatedUsage;
+      if (!validUsage(value)) continue;
+      total += value;
+      count += 1;
+    }
+    if (count > 0) return { bytes: total, source: 'dedicated' };
+  }
+  return null;
 }
 
 /**
@@ -599,6 +622,9 @@ export function createSysStats(deps = {}) {
   });
   const targetSpecOf = (target = null) => {
     const controller = target?.osController ?? {};
+    const targetName = String(target?.name ?? controller.name ?? '');
+    const integratedByName = isIntegratedStyleDevice({ name: targetName });
+    const mobileByName = /\b(?:A|B)\d{3,4}M\b|\bB(?:370|390)\b|\bMobile\b/i.test(targetName);
     const pciVendorId = target?.pciVendorId ?? controller.pciVendorId ?? null;
     const pciDeviceId = typeof (target?.pciDeviceId ?? target?.deviceIdHex ?? controller.pciDeviceId) === 'string'
       ? (target.pciDeviceId ?? target.deviceIdHex ?? controller.pciDeviceId)
@@ -611,8 +637,8 @@ export function createSysStats(deps = {}) {
       bdf: target?.bdf ?? controller.bdf ?? null,
       deviceIdHex: pciDeviceId,
       osLuid: normalizeLuid(target?.osLuid ?? controller.luid ?? null),
-      integrated: target?.integrated === true,
-      mobile: target?.mobile === true,
+      integrated: target?.integrated === true || integratedByName,
+      mobile: target?.mobile === true || mobileByName,
       dedicatedCapacityBytes: target?.vramBytes ?? controller.vramBytes ?? null,
     };
   };
@@ -829,7 +855,8 @@ export function createSysStats(deps = {}) {
           let gpuBytes = null;
           let gpuMemorySource = null;
           let gpuUtil = null;
-          if (record.deviceIdHex || record.osLuid) {
+          const canUseUniqueBuiltInMemoryRow = (record.integrated || record.mobile) && raw.gpuMemRows.length === 1;
+          if (record.deviceIdHex || record.osLuid || canUseUniqueBuiltInMemoryRow) {
             try {
               const luid = normalizeLuid(record.osLuid) ?? normalizeLuid(await luidOf(record.deviceIdHex, record.bdf));
               const memory = gpuMemoryUsageOf(raw.gpuMemRows, luid, {

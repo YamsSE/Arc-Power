@@ -53,7 +53,7 @@
 // the Advanced section (Voltage + Frequency inputs + Apply/Reset, gated on
 // caps.controls.gpuLock - the backend apply paths already existed);
 // (4) expert-row texts are honest: gpuLock = "Editing available",
-// vfCurve/VRAM rows = "M5" (no apply path).
+// vfCurve/VRAM rows = "Editing available" when their native apply path exists.
 //
 // M4-D: the Advanced (expert) section renders ONLY rows whose
 // control is SUPPORTED on the device (caps.controls[row.control] === true -
@@ -79,7 +79,7 @@ import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-ed
 import { isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import {
   VF_EDITOR_MAX_POINTS,
-  moveVfFrequencyPoint,
+  moveVfPoint,
   normalizeVfCurvePoints,
   vfCurvePointLabel,
   vfVoltageMv,
@@ -278,8 +278,12 @@ function isPendingControl(key: string): boolean {
 
 function refreshPendingSummary(): void {
   if (!pendingSummaryNode) return;
-  const count = Object.keys(values).filter(isPendingControl).length
-    + (vfCurveSupported && vfCurveMode && JSON.stringify(vfCurveDraft) !== JSON.stringify(vfCurveApplied) ? 1 : 0);
+  const curveDirty = vfCurveSupported && vfCurveMode
+    && JSON.stringify(vfCurveDraft) !== JSON.stringify(vfCurveApplied);
+  const scalarCount = Object.keys(values)
+    .filter((key) => !(key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode))
+    .filter(isPendingControl).length;
+  const count = scalarCount + (curveDirty ? 1 : 0);
   pendingSummaryNode.textContent = count > 0
     ? `${count} pending ${count === 1 ? 'change' : 'changes'}`
     : 'No pending changes';
@@ -715,14 +719,9 @@ export const tuningPage: Page = {
         }
         const point = vfCurveDraft[index];
         if (!point) return;
-        // Battlemage's simplified VF table owns the voltage coordinates.
-        // Only frequencies are writable; changing the voltage grid makes
-        // ctlOverclockWriteCustomVFCurve reject an otherwise valid curve.
-        if (field !== 'frequency') {
-          showReadout(index, true);
-          return;
-        }
-        vfCurveDraft = moveVfFrequencyPoint(vfCurveDraft, index, raw, curveBounds);
+        const nextVoltage = field === 'voltage' ? raw / 1000 : point.voltageV;
+        const nextFrequency = field === 'frequency' ? raw : point.freqMhz;
+        vfCurveDraft = moveVfPoint(vfCurveDraft, index, nextVoltage, nextFrequency, curveBounds);
         // Redraw both the line and the point together. Updating only the dot
         // left the SVG curve behind, which made a valid edit look broken.
         selectedIdx = index;
@@ -768,9 +767,11 @@ export const tuningPage: Page = {
             const onMove = (moveEvent: PointerEvent): void => {
               if (!dragMoved && (Math.abs(moveEvent.clientX - startX) > 4 || Math.abs(moveEvent.clientY - startY) > 4)) dragMoved = true;
               if (!dragMoved || !rect.width || !rect.height) return;
+              const xPct = Math.min(100, Math.max(0, ((moveEvent.clientX - rect.left) / rect.width) * 100));
               const yPct = Math.min(100, Math.max(0, ((moveEvent.clientY - rect.top) / rect.height) * 100));
+              const voltage = curveBounds.voltageMinV + (xPct / 100) * (curveBounds.voltageMaxV - curveBounds.voltageMinV);
               const frequency = curveBounds.freqMaxMhz - (yPct / 100) * (curveBounds.freqMaxMhz - curveBounds.freqMinMhz);
-              vfCurveDraft = moveVfFrequencyPoint(vfCurveDraft, index, frequency, curveBounds);
+              vfCurveDraft = moveVfPoint(vfCurveDraft, index, voltage, frequency, curveBounds);
               redraw();
               refreshChip('gpuFreqOffsetMhz');
               updateFloating();
@@ -803,9 +804,8 @@ export const tuningPage: Page = {
                 min: vfVoltageMv(curveBounds.voltageMinV),
                 max: vfVoltageMv(curveBounds.voltageMaxV),
                 step: 1,
-                readOnly: true,
-                title: 'Voltage positions are fixed by the Battlemage driver.',
-                'aria-label': 'Driver-defined voltage in millivolts',
+                onchange: (event: Event) => onEditPoint(Number(hoverReadout?.dataset['idx'] ?? 0), Number((event.target as HTMLInputElement).value), event.target as HTMLInputElement, 'voltage'),
+                'aria-label': 'Voltage in millivolts',
               }),
             ]),
             el('label', { class: 'vf-curve-readout-field' }, [
@@ -838,13 +838,13 @@ export const tuningPage: Page = {
       const addPointButton = el('button', {
         class: 'btn btn-ghost btn-sm',
         text: 'Add point',
-        title: 'Battlemage voltage points are fixed by the driver.',
+        title: 'The driver requires the current number of voltage points.',
         disabled: true,
       });
       const removePointButton = el('button', {
         class: 'btn btn-ghost btn-sm',
         text: 'Remove point',
-        title: 'Battlemage voltage points are fixed by the driver.',
+        title: 'The driver requires the current number of voltage points.',
         disabled: true,
       });
       const redraw = (): void => {
@@ -858,7 +858,7 @@ export const tuningPage: Page = {
       };
       redraw();
       host.append(
-        el('p', { class: 'card-note', text: `Hover a point for values; click to edit frequency. The driver-defined voltage positions and point count stay fixed. Voltage ${vfVoltageMv(curveBounds.voltageMinV)}–${vfVoltageMv(curveBounds.voltageMaxV)} mV · frequency ${Math.round(curveBounds.freqMinMhz)}–${Math.round(curveBounds.freqMaxMhz)} MHz.` }),
+        el('p', { class: 'card-note', text: `Hover a point for values; click to edit voltage or frequency. The driver-defined point count stays fixed. Voltage ${vfVoltageMv(curveBounds.voltageMinV)}–${vfVoltageMv(curveBounds.voltageMaxV)} mV · frequency ${Math.round(curveBounds.freqMinMhz)}–${Math.round(curveBounds.freqMaxMhz)} MHz.` }),
         el('div', { class: 'vf-curve-point-count' }, [pointCountNode]),
         stage,
         el('div', { class: 'vf-curve-axis' }, [

@@ -3,9 +3,9 @@
 // The driver may expose a table larger than the compact editor should show.
 // Keep the UI at the same ten-point scale as Fan Curve while preserving the
 // end points and the driver's required ascending voltage/increasing frequency
-// order. Battlemage's read-only simplified table can end with a shared
-// maximum-frequency plateau, so the editor keeps the point but repairs the
-// plateau before a custom write. The renderer owns the hover/click
+// order. Battlemage's simplified table can end with a shared maximum-frequency
+// plateau, so the editor keeps the point but repairs the plateau before a
+// custom write. The renderer owns the hover/click
 // presentation; this module owns the clamping and point-count rules so those
 // rules are testable.
 
@@ -49,7 +49,7 @@ function seedVfCurve(range: VfCurveRange): VfCurvePoint[] {
  * Convert a valid curve into the integer-MHz shape accepted by the native
  * custom-curve writer. IGCL can expose equal adjacent frequencies in STOCK or
  * LIVE reads, but ctlOverclockWriteCustomVFCurve requires strictly increasing
- * frequencies. Keep the driver's voltage positions and point count intact;
+ * frequencies. Keep the requested voltage positions and point count intact;
  * only move frequencies by the smallest bounded amount needed to make the
  * payload writable.
  */
