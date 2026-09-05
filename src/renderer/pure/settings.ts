@@ -373,6 +373,24 @@ function sameValue(a: unknown, b: unknown): boolean {
 }
 
 /**
+ * M179: the Driver synchronization label has its own authority boundary.
+ * The applied reference controls the apply/chip UX, but it cannot prove that
+ * the driver still holds the requested value. A missing or invalid read-back
+ * is therefore distinct from an equal value and must stay visible as such.
+ */
+export type DriverSyncState = 'in-sync' | 'mismatch' | 'unavailable';
+
+export function driverSyncState(draft: unknown, driver: unknown): DriverSyncState {
+  if (draft === null || draft === undefined
+    || driver === null || driver === undefined
+    || (typeof draft === 'number' && !Number.isFinite(draft))
+    || (typeof driver === 'number' && !Number.isFinite(driver))) {
+    return 'unavailable';
+  }
+  return sameValue(draft, driver) ? 'in-sync' : 'mismatch';
+}
+
+/**
  * B5(a): is `control` dirty against the APPLIED reference (per-control
  * result.ok values from the last apply) falling back to the driver state?
  * A control in `applied` is judged against the applied value alone - the

@@ -68,7 +68,7 @@ import { api } from '../ipc.ts';
 import { snapToRange, normalizedPosition, formatControlValue, formatControlDriverValue, controlDisplay, controlDisplayRange, controlValueFromDisplay, controlValueToDisplay, isOffGrid } from '../pure/slider.ts';
 import { chipState } from '../pure/chip.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
-import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isControlDirtyVsApplied, isScalarDirtyVsApplied, ocStateChanged, ocCapsChanged, cardSliderRange, parseGpuLockInput, formatLockPair, gpuLockToastPair, clampGpuLock, formatLockRange, fanStateSignature, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
+import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isControlDirtyVsApplied, isScalarDirtyVsApplied, driverSyncState, ocStateChanged, ocCapsChanged, cardSliderRange, parseGpuLockInput, formatLockPair, gpuLockToastPair, clampGpuLock, formatLockRange, fanStateSignature, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
 import { formatPlReadout } from '../pure/pl-readout.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
@@ -407,6 +407,15 @@ async function refreshSysmanVoltageOffset(ctx: PageContext, deviceId: number | n
   }
   if (token !== sysmanVoltageRefreshToken || ctx.store.get().deviceId !== deviceId) return;
   if (result?.ok !== true || typeof result.offsetV !== 'number' || !Number.isFinite(result.offsetV) || !currentState) return;
+  // The helper owns the legacy negative Alchemist path only. A positive
+  // V-unit value already comes from the canonical IGCL state; overlaying a
+  // Sysman zero/negative read here makes a successful positive apply appear
+  // to have reverted (especially after page re-entry). Keep the IGCL value
+  // whenever it is a finite positive read-back and let the helper seed only
+  // an unknown/zero/negative state.
+  if (typeof currentState.gpuVoltOffsetV === 'number'
+    && Number.isFinite(currentState.gpuVoltOffsetV)
+    && currentState.gpuVoltOffsetV > 0.0005) return;
   const key = 'gpuVoltOffsetV';
   const sliderRange = cardSliderRange(renderCaps, key);
   if (!sliderRange) return;
@@ -496,11 +505,18 @@ function refreshCard(key: string) {
   }
   const diffNode = diffNodes.get(key);
   if (diffNode) {
-    const pending = isPendingControl(key);
-    diffNode.textContent = pending
-      ? `${driverText} → ${formatControlValue(value, key, sliderRange, caps.deviceName)}`
-      : 'In sync';
-    diffNode.className = `tuning-diff${pending ? ' is-pending' : ''}`;
+    // M179: `applied` deliberately remains the source for apply/chip dirty
+    // behavior, but it is not a driver read-back. This label compares the
+    // editable draft directly with the current authoritative read, so an
+    // external change or an unavailable extended-temperature getter cannot
+    // masquerade as "In sync" after a successful request.
+    const sync = driverSyncState(value, rawDriver);
+    diffNode.textContent = sync === 'in-sync'
+      ? 'In sync'
+      : sync === 'unavailable'
+        ? 'Driver unavailable'
+        : `${driverText} → ${formatControlValue(value, key, sliderRange, caps.deviceName)}`;
+    diffNode.className = `tuning-diff${sync === 'mismatch' ? ' is-pending' : ''}${sync === 'unavailable' ? ' is-unavailable' : ''}`;
   }
   refreshChip(key);
   updateFloating();

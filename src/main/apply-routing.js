@@ -1205,35 +1205,59 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       } else {
         per = { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG };
       }
-      // M168: the bundled V1 temperature getter can return 0 after a
-      // successful extended write. Verify the same physical adapter through
-      // the current runtime's legacy getter first; unlike the normal V2
-      // getter, it is not limited to the stock 90 °C read-back. Keep the V2
-      // fallback for driver packages where that explicit seam is unavailable.
-      // Hard native refusals and a still-mismatched value remain failures.
-      if (key === 'tempLimitC' && per?.ok === false && per.errorCode === 'io-failed') {
-        let verified = false;
+      // M168/M179: the bundled V1 temperature getter can return 0 after a
+      // successful extended write. The normal V2 snapshot is capped at the
+      // stock 90 °C and therefore cannot establish synchronization for an
+      // extended request. When the current backend exposes its identity-bound
+      // extended getter, it is the authoritative read-back for both the
+      // success and failure cases. A native setter SUCCESS by itself is not a
+      // synchronized apply: an unavailable or mismatched authoritative read
+      // remains an honest per-control failure. Keep the old V2 fallback only
+      // for injected legacy seams that do not expose the explicit getter.
+      if (key === 'tempLimitC' && (per?.ok === true || per?.errorCode === 'io-failed')) {
         if (typeof backend?.getExtendedTemperatureLimitC === 'function') {
+          let legacyReadBack = null;
           try {
-            const legacyReadBack = await backend.getExtendedTemperatureLimitC(deviceId);
-            verified = typeof legacyReadBack === 'number' && nearlyEqual(legacyReadBack, value);
+            legacyReadBack = await backend.getExtendedTemperatureLimitC(deviceId);
           } catch {
-            // Try the broader current-driver snapshot below.
+            legacyReadBack = null;
           }
-        }
-        if (!verified && typeof backend?.getCurrentSettings === 'function') {
-          try {
-            const driverState = await backend.getCurrentSettings(deviceId);
-            verified = typeof driverState?.tempLimitC === 'number'
-              && nearlyEqual(driverState.tempLimitC, value);
-          } catch {
-            // Keep the original V1 verification failure when both independent
-            // current-driver reads are unavailable.
+          if (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack)) {
+            if (nearlyEqual(legacyReadBack, value)) {
+              log(`[apply] extended temperature authoritative read-back matched ${value} °C on the requested adapter`);
+              per = { ok: true, readBackEqual: true };
+            } else {
+              per = {
+                ok: false,
+                errorCode: 'io-failed',
+                readBackEqual: false,
+                message: `extended temperature limit: authoritative read-back ${legacyReadBack} != requested ${value}`,
+              };
+            }
+          } else if (per?.ok === true) {
+            per = {
+              ok: false,
+              errorCode: 'unavailable',
+              readBackEqual: false,
+              message: 'extended temperature limit applied but authoritative driver read-back was unavailable',
+            };
           }
-        }
-        if (verified) {
-          log(`[apply] extended temperature V1 getter returned an invalid read-back; current driver read-back matched ${value} °C on the requested adapter`);
-          per = { ok: true, readBackEqual: true };
+        } else if (per?.ok === false) {
+          let verified = false;
+          if (typeof backend?.getCurrentSettings === 'function') {
+            try {
+              const driverState = await backend.getCurrentSettings(deviceId);
+              verified = typeof driverState?.tempLimitC === 'number'
+                && nearlyEqual(driverState.tempLimitC, value);
+            } catch {
+              // Keep the original V1 verification failure when the fallback
+              // current-state read is unavailable.
+            }
+          }
+          if (verified) {
+            log(`[apply] extended temperature V1 getter returned an invalid read-back; current driver read-back matched ${value} °C on the requested adapter`);
+            per = { ok: true, readBackEqual: true };
+          }
         }
       }
       perControl[key] = per;

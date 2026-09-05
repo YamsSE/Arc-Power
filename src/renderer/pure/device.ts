@@ -169,6 +169,29 @@ export function deviceSelectorOptions(
 }
 
 /**
+ * M179: preserve the current value in a renderer-owned menu even when its
+ * option is disabled. Disabled controls cannot be chosen, so keyboard focus
+ * starts on the first enabled option while the selected value stays intact.
+ * With an all-disabled inventory the selected and active indices remain on
+ * the first available option and no implicit switch is possible.
+ */
+export function selectorSelectionIndices(
+  options: readonly { value: string; disabled?: boolean }[],
+  currentValue: string,
+): { selectedIndex: number; activeIndex: number } {
+  const firstEnabled = options.findIndex((option) => option.disabled !== true);
+  const matching = options.findIndex((option) => option.value === currentValue);
+  if (matching >= 0) {
+    return {
+      selectedIndex: matching,
+      activeIndex: options[matching]?.disabled === true && firstEnabled >= 0 ? firstEnabled : matching,
+    };
+  }
+  const fallback = firstEnabled >= 0 ? firstEnabled : 0;
+  return { selectedIndex: fallback, activeIndex: fallback };
+}
+
+/**
  * M4I (final-review F1): strip the VRAM suffix the backend formats into
  * device.name at enumeration ("Name 8GB GDDR6" / "Name 8GB") so a name
  * comparison (the dashboard's matchedController controller lookup) sees

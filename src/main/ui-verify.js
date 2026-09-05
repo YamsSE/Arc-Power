@@ -2352,7 +2352,19 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M16: the 0.234 V max apply success toast missing');
   const maxVoltState = await js(`window.arcPower.getCurrentSettings(0)`);
   if (Math.abs(maxVoltState.gpuVoltOffsetV - 0.234) > 1e-6) fail(`M16: the 0.234 V max apply did not stick: ${maxVoltState.gpuVoltOffsetV} (the 0.001 step must NOT re-snap it to 0.230)`);
+  const maxVoltDriver = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] .oc-driver-value')?.textContent ?? ''`);
+  if (!maxVoltDriver.includes('0.234')) fail(`M179: the positive voltage Driver readout is '${maxVoltDriver}' after apply (expected 0.234 V)`);
   step('m16-volt-max', `M16: volt slider step '${voltStep}', max '${voltMax}' reachable -> readout '${voltMaxReadout.trim()}', apply -> read-back ${maxVoltState.gpuVoltOffsetV} V (the 0.234 ceiling survives the clamp)`);
+  // M179: leave and re-enter the page after a positive Alchemist voltage
+  // apply. The fresh settings authority must retain the IGCL value rather
+  // than letting a legacy Sysman zero overwrite the driver readout.
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `!!document.querySelector('.health-card')`, 8000))) fail('M179: Dashboard did not render during positive-voltage re-entry coverage');
+  await gotoOverclocking();
+  if (!(await waitFor(win, `!!document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] .oc-driver-value')`, 8000))) fail('M179: Tuning did not render after positive-voltage page re-entry');
+  const reenteredVoltDriver = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] .oc-driver-value')?.textContent ?? ''`);
+  if (!reenteredVoltDriver.includes('0.234')) fail(`M179: positive voltage was lost on page re-entry (Driver readout '${reenteredVoltDriver}', expected 0.234 V)`);
+  step('m179-positive-voltage-reentry', `M179: negative -0.200 V and positive 0.234 V both applied; after Dashboard -> Tuning re-entry the Driver readout remains '${reenteredVoltDriver.trim()}'`);
   await clearToasts();
   step('m16-m26-volt-range', `M16/M26: V-unit voltage slider is ${voltMin}..${voltMax} V with ${voltStep} step; -200 mV undervolting and the positive 0.234 V ceiling both remain usable`);
 
@@ -2871,6 +2883,34 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       fail(`M17f: the PL2 read-out did not refresh after the EXTENDED apply: '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}' (expected 'PL1 300 W / PL2 300 W')`);
     }
     step('extended-apply', `extended apply (300 W) applied with NO per-apply confirm, read-back ${extendedState.powerLimitW} W, driver readout '${extDriver.trim()}', PL2 read-out '${await js(`document.querySelector('.oc-card[data-control="powerLimitW"] .oc-sysman-limits')?.textContent ?? ''`)}'`);
+    await clearToasts();
+
+    // M179: the extended temperature setter must be proven by the
+    // authoritative Celsius read-back, not by the V2 stock-limit getter.
+    const setTempSlider = (value) => js(`(() => {
+      const card = document.querySelector('.oc-card[data-control="tempLimitC"]');
+      const input = card?.querySelector('input[type="range"]');
+      if (!input) return '';
+      input.value = '${value}';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return card.querySelector('.oc-value')?.textContent ?? '';
+    })()`);
+    const tempReadout = await setTempSlider(106);
+    if (tempReadout.trim() !== '106 °C') fail(`M179: the extended temperature slider readout is '${tempReadout}' (expected 106 °C)`);
+    await clearToasts();
+    await clickApply();
+    if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M179: extended temperature apply success toast missing');
+    const extendedTemperatureState = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (Math.abs(extendedTemperatureState.tempLimitC - 106) > 1e-6) fail(`M179: extended temperature authoritative state is ${extendedTemperatureState.tempLimitC} °C (expected 106 °C)`);
+    const extendedTempDriver = await js(`document.querySelector('.oc-card[data-control="tempLimitC"] .oc-driver-value')?.textContent ?? ''`);
+    if (!extendedTempDriver.includes('106')) fail(`M179: extended temperature Driver readout is '${extendedTempDriver}' after apply (expected 106 °C)`);
+    await js(`location.hash = '#/dashboard'`);
+    if (!(await waitFor(win, `!!document.querySelector('.health-card')`, 8000))) fail('M179: Dashboard did not render during extended-temperature re-entry coverage');
+    await gotoOverclocking();
+    if (!(await waitFor(win, `!!document.querySelector('.oc-card[data-control="tempLimitC"] .oc-driver-value')`, 8000))) fail('M179: Tuning did not render after extended-temperature page re-entry');
+    const reenteredTempDriver = await js(`document.querySelector('.oc-card[data-control="tempLimitC"] .oc-driver-value')?.textContent ?? ''`);
+    if (!reenteredTempDriver.includes('106')) fail(`M179: extended temperature was lost on page re-entry (Driver readout '${reenteredTempDriver}', expected 106 °C)`);
+    step('m179-extended-temperature-reentry', `M179: extended temperature 106 °C applied and read back by the authoritative path; after Dashboard -> Tuning re-entry Driver remains '${reenteredTempDriver.trim()}'`);
     await clearToasts();
 
     // Restore the standard baseline for the later steps.
@@ -9438,9 +9478,10 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
     }
     const selectorState = await ojs(`(() => {
       const node = document.querySelector('.adv-view-heading .device-select');
-      const options = node ? Array.from(node.options).map((o) => ({ value: o.value, text: o.textContent ?? '' })) : [];
+      node?.click();
+      const options = Array.from(document.querySelectorAll('.adv-accessible-select-menu [role="option"]')).map((o) => ({ value: o.dataset.value, text: o.textContent ?? '' }));
       return {
-        value: node?.value ?? null,
+        value: node?.dataset.value ?? null,
         options,
         heading: document.getElementById('adv-device')?.textContent ?? '',
       };
@@ -9451,28 +9492,28 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
     const alternate = selectorState.options.find((option) => option.value !== selectorState.value);
     if (!alternate) fail(`M31: the multi-device selector has no alternate value (${JSON.stringify(selectorState)})`);
     await ojs(`(() => {
-      const node = document.querySelector('.adv-view-heading .device-select');
-      node.value = ${JSON.stringify(alternate.value)};
-      node.dispatchEvent(new Event('change', { bubbles: true }));
+      const option = Array.from(document.querySelectorAll('.adv-accessible-select-menu [role="option"]')).find((candidate) => candidate.dataset.value === ${JSON.stringify(alternate.value)});
+      option?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     })()`);
     if (!(await waitFor(panelWin, `(() => {
       const heading = document.getElementById('adv-device')?.textContent ?? '';
       const node = document.querySelector('.adv-view-heading .device-select');
       return heading !== ${JSON.stringify(selectorState.heading)}
-        && node?.value === ${JSON.stringify(alternate.value)};
+        && node?.dataset.value === ${JSON.stringify(alternate.value)};
     })()`, 10000))) {
       fail(`M31: switching the Advanced Overlay selector to '${alternate.text}' did not update the panel device/caps surface`);
     }
     await ojs(`(() => {
       const node = document.querySelector('.adv-view-heading .device-select');
-      node.value = ${JSON.stringify(selectorState.value)};
-      node.dispatchEvent(new Event('change', { bubbles: true }));
+      node?.click();
+      const option = Array.from(document.querySelectorAll('.adv-accessible-select-menu [role="option"]')).find((candidate) => candidate.dataset.value === ${JSON.stringify(selectorState.value)});
+      option?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     })()`);
     if (!(await waitFor(panelWin, `(() => {
       const heading = document.getElementById('adv-device')?.textContent ?? '';
       const node = document.querySelector('.adv-view-heading .device-select');
       return heading === ${JSON.stringify(selectorState.heading)}
-        && node?.value === ${JSON.stringify(selectorState.value)};
+        && node?.dataset.value === ${JSON.stringify(selectorState.value)};
     })()`, 10000))) {
       fail('M31: switching the Advanced Overlay selector back did not restore the original device/caps surface');
     }
@@ -9707,6 +9748,68 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
       fail('M1.1.5: the Recording quick-settings checkboxes are missing ' + expected);
     }
   }
+  const recordingMenus = await ojs("Array.from(document.querySelectorAll('.adv-recording-select[role=\"combobox\"]')).length");
+  if (recordingMenus !== 5) {
+    fail(`M179: the Advanced Overlay recording controls must use five renderer-owned menus (got ${recordingMenus})`);
+  }
+  // M179: renderer-owned menus stay inside the already-topmost panel while
+  // the native window's reassert interval runs. Exercise mouse selection,
+  // keyboard selection, Escape, outside dismissal, and reopening through the
+  // same accessible surface used by the user.
+  await ojs(`(() => {
+    const control = document.querySelector('.adv-recording-select[aria-label="Frame rate"]');
+    control?.click();
+  })()`);
+  if (!(await waitFor(panelWin, "!!document.querySelector('.adv-recording-select-menu:not([hidden])')", 2000))) {
+    fail('M179: opening an Advanced Overlay recording menu did not render the renderer-owned listbox');
+  }
+  await sleep(3200);
+  if (!(await ojs("!!document.querySelector('.adv-recording-select-menu:not([hidden])')"))) {
+    fail('M179: the open recording menu disappeared during the topmost reassert interval');
+  }
+  await ojs(`(() => {
+    const option = Array.from(document.querySelectorAll('.adv-recording-select-menu [role="option"]')).find((node) => (node.textContent ?? '').includes('120 FPS'));
+    option?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  })()`);
+  if (!(await waitFor(panelWin, "(document.querySelector('.adv-recording-select[aria-label=\"Frame rate\"]')?.textContent ?? '').includes('120 FPS')", 2000))) {
+    fail('M179: mouse selection did not update the Frame rate recording control');
+  }
+  await ojs(`(() => {
+    const control = document.querySelector('.adv-recording-select[aria-label="Resolution"]');
+    control?.focus();
+    control?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    control?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  })()`);
+  if (!(await waitFor(panelWin, "!document.querySelector('.adv-recording-select-menu:not([hidden])')", 2000))) {
+    fail('M179: keyboard selection did not close the Resolution recording menu');
+  }
+  await ojs(`(() => {
+    const control = document.querySelector('.adv-recording-select[aria-label="Encoder"]');
+    control?.click();
+  })()`);
+  if (!(await waitFor(panelWin, "!!document.querySelector('.adv-recording-select-menu:not([hidden])')", 2000))) {
+    fail('M179: the Encoder recording menu did not reopen');
+  }
+  await ojs("document.querySelector('.adv-recording-select[aria-label=\"Encoder\"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
+  if (await ojs("!!document.querySelector('.adv-recording-select-menu:not([hidden])')")) {
+    fail('M179: Escape did not dismiss the open Encoder recording menu');
+  }
+  await ojs(`(() => {
+    const control = document.querySelector('.adv-recording-select[aria-label="Target"]');
+    control?.click();
+  })()`);
+  if (!(await waitFor(panelWin, "!!document.querySelector('.adv-recording-select-menu:not([hidden])')", 2000))) {
+    fail('M179: the Target recording menu did not open for outside-dismissal coverage');
+  }
+  await ojs("document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))");
+  if (await ojs("!!document.querySelector('.adv-recording-select-menu:not([hidden])')")) {
+    fail('M179: an outside pointer did not dismiss the Target recording menu');
+  }
+  await ojs("document.querySelector('.adv-recording-select[aria-label=\"Target\"]')?.click()");
+  if (!(await waitFor(panelWin, "!!document.querySelector('.adv-recording-select-menu:not([hidden])')", 2000))) {
+    fail('M179: the Target recording menu could not be reopened after dismissal');
+  }
+  await ojs("document.querySelector('.adv-recording-select[aria-label=\"Target\"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
   step('m1.1.5-recording-quick-controls', 'M1.1.5: Advanced Overlay Recording tab renders the quick settings and the Record, Replay Buffer, and Save Clip controls; capture actions remain main-owned');
 
   // (6) the Graphics tab: the four M8 cards render (mock supported) + a
@@ -9724,8 +9827,20 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (await ojs(`Array.from(document.querySelectorAll('.graphics-card')).some((c) => (c.textContent ?? '').includes('Not supported on this GPU.'))`)) {
     fail('M23: a panel Graphics card shows the unsupported state (the mock supports all four)');
   }
+  const advancedGraphicsMenus = await ojs(`document.querySelectorAll('.graphics-select[role="combobox"]').length`);
+  if (advancedGraphicsMenus !== 4) fail(`M179: every Advanced Overlay Graphics dropdown must be renderer-owned (got ${advancedGraphicsMenus})`);
   const graphicsSel = `document.querySelector('.graphics-select[data-graphics-select="flipMode"]')`;
-  await ojs(`(() => { const s = ${graphicsSel}; s.value = 'vsync-on'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await ojs(`(() => {
+    const s = ${graphicsSel};
+    s?.click();
+  })()`);
+  if (!(await waitFor(panelWin, `!!document.querySelector('.adv-accessible-select-menu:not([hidden])')`, 2000))) fail('M179: the Advanced Overlay Graphics dropdown did not open');
+  await sleep(3200);
+  if (!(await ojs(`!!document.querySelector('.adv-accessible-select-menu:not([hidden])')`))) fail('M179: the open Advanced Overlay Graphics dropdown disappeared during topmost reassertion');
+  await ojs(`(() => {
+    const option = Array.from(document.querySelectorAll('.adv-accessible-select-menu [role="option"]')).find((candidate) => candidate.dataset.value === 'vsync-on');
+    option?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  })()`);
   await clearPanelToasts();
   await ojs(`document.querySelector('.graphics-card[data-control="flipMode"] .oc-chip-apply').click()`);
   if (!(await waitFor(panelWin, `(() => { const c = document.querySelector('.graphics-card[data-control="flipMode"] .oc-chip-status'); return !!c && !c.hidden && (c.textContent ?? '').trim() === 'Applied'; })()`, 8000))) {

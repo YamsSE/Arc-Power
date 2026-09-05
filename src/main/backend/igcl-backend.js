@@ -2613,6 +2613,29 @@ export class IgclBackend {
     state.gpuVoltOffsetV = readV2('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset');
     state.gpuFreqOffsetMhz = readV2('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset');
     state.tempLimitC = readV2('tempLimit', 'tempLimitC', 'tempLimit');
+    // M179: when extended Celsius control is available, the V2 getter above
+    // is only the stock-limit surface and can stay at 90 °C after a valid V1
+    // extended apply. Reconcile from the same identity-bound legacy getter
+    // used by the routed verification. A zero/invalid sentinel is ignored so
+    // a broken legacy read never fabricates a temperature into the state.
+    if (caps.extendedControls?.tempLimitC === true
+      && caps.ranges?.tempLimitC?.units === 'C') {
+      // The V2 value is only the stock-limit surface. Once extended Celsius
+      // control is advertised, an unavailable authoritative getter must not
+      // leave that stock value looking like a verified extended read-back.
+      state.tempLimitC = null;
+      if (typeof this.getExtendedTemperatureLimitC === 'function') {
+        try {
+          const extendedTemperature = await this.getExtendedTemperatureLimitC(deviceId);
+          if (Number.isFinite(extendedTemperature) && extendedTemperature > 0) {
+            state.tempLimitC = extendedTemperature;
+          }
+        } catch {
+          // Leave the state unavailable when the authoritative getter cannot
+          // verify the extended value.
+        }
+      }
+    }
     state.vramFreqOffsetGts = readV2('vramFreqOffset', 'vramFreqOffsetGts', 'vramFreqOffset');
     state.vramVoltOffsetV = readV2('vramVoltOffset', 'vramVoltOffsetV', 'vramVoltOffset');
 
