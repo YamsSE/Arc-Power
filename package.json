@@ -80,6 +80,10 @@
                                         {
                                           "from":  "src/assets/app-icon.ico",
                                           "to":  "app-icon.ico"
+                                        },
+                                        {
+                                          "from":  "build/icon.ico",
+                                          "to":  "app-icon-fallback.ico"
                                         }
                                     ],
                   "win":  {

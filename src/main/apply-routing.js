@@ -1036,6 +1036,23 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
     ? Object.fromEntries(Object.entries(settings).filter(([key]) => key !== 'gpuVoltOffsetV'))
     : settings;
   const { driverstore: allDriverstore, extended } = splitByRuntime(runtimeSettings, ranges, mode, sysmanPowerLimits, limitsKey);
+  // M181: on Alchemist in Advanced mode, an exact 90 C request may still
+  // need the bundled owner. The DriverStore surface is the stock ceiling and
+  // can be stale/unavailable while the V1/current-runtime pair owns the
+  // boundary value. Route it only when the bundled temperature capability is
+  // actually present; an unavailable bundled runtime keeps 90 C on the
+  // ordinary DriverStore path.
+  if (mode === OC_MODE_ADVANCED
+    && ranges?.tempLimitC?.units === 'C'
+    && runtimeSettings.tempLimitC === STD_TL_MAX_C
+    && oldIgcl && typeof oldIgcl.isTempCapable === 'function') {
+    let tempCapable = false;
+    try { tempCapable = await oldIgcl.isTempCapable(deviceId); } catch { /* keep DriverStore ownership */ }
+    if (tempCapable && Object.prototype.hasOwnProperty.call(allDriverstore, 'tempLimitC')) {
+      extended.tempLimitC = allDriverstore.tempLimitC;
+      delete allDriverstore.tempLimitC;
+    }
+  }
   // M41: keep fan/VF writes after the extended W/C phase. The driver has
   // different ownership/order rules for those controls in Advanced mode.
   const hasExtendedControls = mode === OC_MODE_ADVANCED && Object.keys(extended).length > 0;
@@ -1205,15 +1222,23 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       } else {
         per = { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG };
       }
-      // M180: OldIgcl owns both the identity-bound setter and delayed getter.
-      // Never reclassify a bundled-runtime result with DriverStore's stock
-      // 90 C surface. Older injected seams have no readBackValue metadata;
-      // retain their legacy getter/current-state verification compatibility.
-      const bundledReadBack = per && (
-        per.readBackUnavailable === true
-        || Object.prototype.hasOwnProperty.call(per, 'readBackValue')
-      );
-      if (key === 'tempLimitC' && !bundledReadBack) {
+      // M180/M181: OldIgcl owns the bundled setter and its delayed getter,
+      // but the affected Alchemist driver can report SUCCESS with a zero or
+      // missing V1 read-back. Zero/null/non-finite temperature values are
+      // sentinels, never authoritative temperatures. Probe the separate
+      // current-runtime extended getter before accepting the result. A finite
+      // match is authoritative; a finite mismatch (including the stock 90 C
+      // V2 value for a >90 C request) remains an honest failure. An unavailable
+      // probe preserves OldIgcl's accepted-but-unavailable result when it
+      // supplied one, and otherwise reports an explicit unavailable failure.
+      const hasBundledReadBack = per && Object.prototype.hasOwnProperty.call(per, 'readBackValue');
+      const bundledReadBack = hasBundledReadBack
+        && typeof per.readBackValue === 'number'
+        && Number.isFinite(per.readBackValue)
+        && per.readBackValue > 0;
+      const bundledReadBackUnavailable = per?.readBackUnavailable === true
+        || (hasBundledReadBack && !bundledReadBack);
+      if (key === 'tempLimitC' && (bundledReadBackUnavailable || !bundledReadBack)) {
         if (typeof backend?.getExtendedTemperatureLimitC === 'function') {
           let legacyReadBack = null;
           try {
@@ -1221,18 +1246,27 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
           } catch {
             legacyReadBack = null;
           }
-          if (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack)) {
+          if (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack) && legacyReadBack > 0) {
             if (nearlyEqual(legacyReadBack, value)) {
               per = { ok: true, readBackEqual: true };
+              // Keep the compatibility result shape used by older callers
+              // while still carrying the authoritative value to executeApply
+              // for the immediate state snapshot.
+              Object.defineProperty(per, 'readBackValue', {
+                value: legacyReadBack,
+                enumerable: false,
+                configurable: true,
+              });
             } else {
               per = {
                 ok: false,
                 errorCode: 'io-failed',
                 readBackEqual: false,
+                readBackValue: legacyReadBack,
                 message: `extended temperature limit: authoritative read-back ${legacyReadBack} != requested ${value}`,
               };
             }
-          } else {
+          } else if (!per?.readBackUnavailable) {
             per = {
               ok: false,
               errorCode: 'unavailable',
@@ -1240,7 +1274,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
               message: 'extended temperature limit: authoritative driver read-back was unavailable',
             };
           }
-        } else if (per?.ok === false && typeof backend?.getCurrentSettings === 'function') {
+        } else if (!bundledReadBackUnavailable && per?.ok === false && typeof backend?.getCurrentSettings === 'function') {
           let verified = false;
           try {
             const driverState = await backend.getCurrentSettings(deviceId);

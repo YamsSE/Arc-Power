@@ -346,9 +346,27 @@ const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'app-icon.ico');
 const APP_ICON_PNG_PATH = path.join(__dirname, '..', 'assets', 'icon.png');
 const TRAY_ICON_PATH = path.join(__dirname, '..', 'assets', 'tray-icon.png');
 const PACKAGED_APP_ICON_PATH = path.join(process.resourcesPath, 'app-icon.ico');
-const WINDOWS_APP_ICON_PATH = app.isPackaged && fs.existsSync(PACKAGED_APP_ICON_PATH)
-  ? PACKAGED_APP_ICON_PATH
-  : APP_ICON_PATH;
+const PACKAGED_APP_ICON_FALLBACK_PATH = path.join(process.resourcesPath, 'app-icon-fallback.ico');
+const BUILD_APP_ICON_PATH = path.join(__dirname, '..', '..', 'build', 'icon.ico');
+function firstExistingIconPath(candidates) {
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || candidate.length === 0) continue;
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch { /* try the next source */ }
+  }
+  return null;
+}
+// Keep every shell-facing packaged path outside app.asar. The second packaged
+// copy is a build-time fallback for an incomplete release payload; only an
+// unpackaged development launch may use source/build paths.
+const WINDOWS_APP_ICON_PATH = firstExistingIconPath(app.isPackaged
+  ? [PACKAGED_APP_ICON_PATH, PACKAGED_APP_ICON_FALLBACK_PATH]
+  : [APP_ICON_PATH, BUILD_APP_ICON_PATH]);
+const APP_ICON_PNG_FALLBACK_PATH = firstExistingIconPath([
+  APP_ICON_PNG_PATH,
+  path.join(__dirname, '..', '..', 'build', 'icon.png'),
+]);
 const APP_ICON = (() => {
   // Electron's live Windows taskbar path is more reliable with the optimized
   // PNG than with a PNG-in-ICO. Read it through Electron's ASAR-aware fs
@@ -357,7 +375,13 @@ const APP_ICON = (() => {
   try {
     const icon = nativeImage.createFromBuffer(fs.readFileSync(APP_ICON_PNG_PATH));
     if (!icon.isEmpty()) return icon;
-  } catch { /* fall through to the external ICO */ }
+  } catch { /* try the packaged/build fallback */ }
+  if (APP_ICON_PNG_FALLBACK_PATH && APP_ICON_PNG_FALLBACK_PATH !== APP_ICON_PNG_PATH) {
+    try {
+      const icon = nativeImage.createFromBuffer(fs.readFileSync(APP_ICON_PNG_FALLBACK_PATH));
+      if (!icon.isEmpty()) return icon;
+    } catch { /* fall through to the external ICO */ }
+  }
   for (const iconPath of [WINDOWS_APP_ICON_PATH, APP_ICON_PATH]) {
     try {
       const icon = nativeImage.createFromPath(iconPath);
@@ -375,15 +399,19 @@ function applyWindowIdentity(win) {
   const taskbarExecutablePath = portableWrapperPath ?? process.execPath;
   const taskbarIconPath = WINDOWS_APP_ICON_PATH;
   try {
-    win.setAppDetails({
+    const details = {
       appId: APP_USER_MODEL_ID,
       // The Portable wrapper is only the relaunch target. It is not the live
       // taskbar icon source.
-      appIconPath: taskbarIconPath,
+      appIconPath: taskbarIconPath ?? undefined,
       appIconIndex: 0,
       relaunchCommand: taskbarExecutablePath,
       relaunchDisplayName: 'Arc Power',
-    });
+    };
+    // A missing external resource must never be handed to Windows as an
+    // invalid shell icon path. The stable AppUserModelId still groups the
+    // window; packaged builds normally take the first candidate above.
+    win.setAppDetails(details);
   } catch { /* best effort on platforms without taskbar details */ }
 }
 
@@ -406,7 +434,7 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
     // Give Chromium/Windows the real ICO at construction time. The native
     // PNG is still applied below for the live window handle, but the
     // constructor path prevents a generic icon during taskbar registration.
-    icon: WINDOWS_APP_ICON_PATH,
+    icon: WINDOWS_APP_ICON_PATH ?? undefined,
     // M2b UX: no visible Electron menu bar (an Alt-key shortcut can reveal
     // it later if ever needed).
     autoHideMenuBar: true,

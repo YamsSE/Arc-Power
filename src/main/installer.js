@@ -41,8 +41,19 @@ const execFileAsync = promisify(execFile);
 const INSTALLER_HTML = path.join(__dirname, '..', 'installer', 'installer.html');
 const INSTALLER_PRELOAD = path.join(__dirname, '..', 'installer', 'installer-preload.cjs');
 const INSTALLER_ELEVATION_RELAUNCHED = 'ARC_POWER_INSTALLER_ELEVATION_RELAUNCHED';
+const APP_USER_MODEL_ID = 'com.rid.arcpower.desktop';
+if (process.platform === 'win32') {
+  try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch { /* best effort */ }
+}
 const INSTALLER_ICON = resolveWindowIconPath();
 const INSTALLER_NATIVE_ICON = (() => {
+  try {
+    const icon = nativeImage.createFromPath(INSTALLER_ICON);
+    if (!icon.isEmpty()) return icon;
+  } catch {
+    // Fall through to a byte-backed decode for test/dev paths where the
+    // native path cannot be resolved through ASAR.
+  }
   try {
     return nativeImage.createFromBuffer(readFileSync(INSTALLER_ICON));
   } catch {
@@ -620,7 +631,7 @@ export async function runInstallerMode(mode = 'install') {
   mkdirSync(installerUserData, { recursive: true });
   app.setPath('userData', installerUserData);
   await app.whenReady();
-  app.setAppUserModelId?.('com.rid.arcpower.desktop');
+  app.setAppUserModelId?.(APP_USER_MODEL_ID);
   if (mode === 'update') {
     try {
       return await runInstalledUpdate(parseUpdateArguments(process.argv));
