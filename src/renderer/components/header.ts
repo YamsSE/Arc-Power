@@ -28,6 +28,7 @@ import { decodeDriverVersion, formatDriverDate } from '../pure/driver.ts';
 import { dashboardGpuOrder } from '../pure/dashboard.ts';
 import { chipLabelGpu } from '../pure/chip-label.ts';
 import type { DeviceInfo } from '../types.ts';
+import { buildDropdown } from './dropdown.ts';
 
 export { healthLevel as healthStatus } from '../pure/status.ts';
 export type { HealthLevel as StatusLevel } from '../pure/status.ts';
@@ -104,18 +105,15 @@ export class GpuHeader {
     // app.ts). The mock badge stays (it reports the honest backend kind).
     const mockBadge = health?.backend === 'mock' ? el('span', { class: 'badge badge-mock', text: 'Mock mode' }) : null;
     const fsSelect = health?.backend === 'mock' && !noIntelPresentation && s.featuresets.length > 0
-      ? el('select', {
-          class: 'featureset-select',
+      ? buildDropdown(s.featuresetId ?? '', s.featuresets.map((f) => ({
+          value: f.id,
+          label: `${f.id} · ${f.name}`,
+        })), {
+          className: 'featureset-select',
           title: 'Mock device featureset (dev only)',
-          onchange: (e: Event) => {
-            const id = (e.target as HTMLSelectElement).value;
-            void this.onFeaturesetSwap?.(id);
-          },
-        }, s.featuresets.map((f) => {
-          const opt = el('option', { value: f.id, text: `${f.id} · ${f.name}` });
-          if (f.id === s.featuresetId) opt.selected = true;
-          return opt;
-        }))
+          ariaLabel: 'Mock device featureset',
+          onChange: (id) => { void this.onFeaturesetSwap?.(id); },
+        })
       : null;
     // 1.0.1 no-Intel round: the header shows the OS GPU (sysinfo primary
     // controller) with 'Non supported GPU' REPLACING the version line (n10

@@ -6,6 +6,7 @@ import type { Page, PageContext } from '../router.ts';
 import type { DeviceInfo, RecordingAudioDevice, RecordingCaptureTarget, RecordingCaptureTargets, RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingStorageInfo, RecordingTab } from '../types.ts';
 import { toast } from '../components/toast.ts';
 import { showRecordingClipDeleteConfirm } from '../components/recording-delete-dialog.ts';
+import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { parseRecordingEncoderSelection, recordingAdapterTargetOf, recordingBitrateRange, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage } from '../pure/recording.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
@@ -129,24 +130,26 @@ function button(text: string, onClick: () => void, className = 'btn btn-secondar
   });
 }
 
-function select<T extends string>(value: T, options: Array<[T, string]>, onChange: (value: T) => void): HTMLSelectElement {
-  const control = el('select', {
-    class: 'recording-select',
-    value,
-  }, options.map(([id, label]) => el('option', { value: id, text: label }))) as HTMLSelectElement;
-  control.addEventListener('change', () => onChange(control.value as T));
-  return control;
+function select<T extends string>(value: T, options: Array<[T, string]>, ariaLabel: string, onChange: (value: T) => void): DropdownElement {
+  return buildDropdown(value, options.map(([id, label]) => ({ value: id, label })), {
+    className: 'recording-select',
+    ariaLabel,
+    onChange: (next) => onChange(next as T),
+  });
 }
 
 type SelectOptionGroup<T extends string> = [string, Array<[T, string]>];
 
-function groupedSelect<T extends string>(value: T, groups: SelectOptionGroup<T>[], onChange: (value: T) => void): HTMLSelectElement {
-  const control = el('select', {
-    class: 'recording-select',
-    value,
-  }, groups.map(([label, options]) => el('optgroup', { label }, options.map(([id, text]) => el('option', { value: id, text }))))) as HTMLSelectElement;
-  control.addEventListener('change', () => onChange(control.value as T));
-  return control;
+function groupedSelect<T extends string>(value: T, groups: SelectOptionGroup<T>[], ariaLabel: string, onChange: (value: T) => void): DropdownElement {
+  return buildDropdown(value, groups.flatMap(([group, options]) => options.map(([id, label]) => ({
+    value: id,
+    label,
+    group,
+  }))), {
+    className: 'recording-select',
+    ariaLabel,
+    onChange: (next) => onChange(next as T),
+  });
 }
 
 function field(label: string, control: HTMLElement, note?: string): HTMLElement {
@@ -558,13 +561,11 @@ async function refreshRecordingCaptureTargets(force = false): Promise<void> {
 function renderCaptureTargetSettings(): HTMLElement {
   const working = settingsForRender();
   const target = working?.captureTarget ?? { type: 'display' as const, displayId: 'primary', windowHandle: 0, processName: '', windowTitle: '' };
-  const targetSelect = groupedSelect(captureTargetControlKey(target), captureTargetOptionGroups(target), (value) => {
+  const targetSelect = groupedSelect(captureTargetControlKey(target), captureTargetOptionGroups(target), 'Capture target', (value) => {
     const next = captureTargetFromKey(value);
     if (next) stagePatch({ captureTarget: next });
   });
-  targetSelect.setAttribute('aria-label', 'Capture target');
-  const colorMode = select(working?.captureColorMode ?? 'auto', [['auto', 'Auto'], ['sdr', 'SDR'], ['hdr', 'HDR']], (value) => stagePatch({ captureColorMode: value }));
-  colorMode.setAttribute('aria-label', 'Capture color mode');
+  const colorMode = select(working?.captureColorMode ?? 'auto', [['auto', 'Auto'], ['sdr', 'SDR'], ['hdr', 'HDR']], 'Capture color mode', (value) => stagePatch({ captureColorMode: value }));
   const source = selectedCaptureSource(target);
   const sourceNote = source
     ? `${source.width}×${source.height} · ${captureAspectLabel(source.width, source.height)} detected`
@@ -604,7 +605,7 @@ function renderQualitySettings(): HTMLElement {
     ['60', '60 FPS'],
     ['120', '120 FPS'],
     ['custom', 'Custom'],
-  ], (value) => {
+  ], 'Frame rate', (value) => {
     if (value === 'custom') {
       fpsCustomEditing = true;
       stagePatch({ fps: currentFps }, true);
@@ -613,7 +614,6 @@ function renderQualitySettings(): HTMLElement {
     fpsCustomEditing = false;
     stagePatch({ fps: Number(value) });
   });
-  fpsSelect.setAttribute('aria-label', 'Frame rate');
   const customFps = el('input', {
     class: 'recording-number recording-fps-custom',
     type: 'number',
@@ -646,8 +646,8 @@ function renderQualitySettings(): HTMLElement {
     if (Number.isFinite(value) && value > 0) stagePatch({ bitrateKbps: value }, false);
   });
   const selectedEncoder = working?.encoderId ?? 'automatic';
-  const encoder = select(selectedEncoder, encoderOptions(selectedEncoder), (value) => stagePatch({ encoderId: value }));
-  const resolution = select(selectedResolution, RESOLUTIONS, (value) => stagePatch({ resolution: value }));
+  const encoder = select(selectedEncoder, encoderOptions(selectedEncoder), 'Encoder', (value) => stagePatch({ encoderId: value }));
+  const resolution = select(selectedResolution, RESOLUTIONS, 'Resolution', (value) => stagePatch({ resolution: value }));
   return el('section', { class: 'recording-panel' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Video profile' }), el('h2', { class: 'recording-panel-title', text: 'Quality' })]),
@@ -743,16 +743,16 @@ function renderAudioSettings(): HTMLElement {
   };
   const microphoneEnabled = el('input', { type: 'checkbox', checked: audio.microphone.enabled, 'aria-label': 'Enable microphone' }) as HTMLInputElement;
   microphoneEnabled.addEventListener('change', () => stagePatch({ audio: { microphone: { enabled: microphoneEnabled.checked } } }));
-  const microphoneDevice = select(audio.microphone.deviceId, deviceOptions(status.audioInputs, audio.microphone.deviceId), (value) => stagePatch({ audio: { microphone: { deviceId: value } } }));
+  const microphoneDevice = select(audio.microphone.deviceId, deviceOptions(status.audioInputs, audio.microphone.deviceId), 'Microphone device', (value) => stagePatch({ audio: { microphone: { deviceId: value } } }));
   const microphoneMono = el('input', { type: 'checkbox', checked: audio.microphone.mono, 'aria-label': 'Mono microphone' }) as HTMLInputElement;
   microphoneMono.addEventListener('change', () => stagePatch({ audio: { microphone: { mono: microphoneMono.checked } } }));
-  const sourceMode = select(audio.sourceMode, [['system', 'Full PC'], ['custom', 'Up to 3 processes']], (value) => stagePatch({ audio: { sourceMode: value } }));
+  const sourceMode = select(audio.sourceMode, [['system', 'Full PC'], ['custom', 'Up to 3 processes']], 'Capture source', (value) => stagePatch({ audio: { sourceMode: value } }));
   const systemEnabled = el('input', { type: 'checkbox', checked: audio.system.enabled, disabled: audio.sourceMode === 'custom', 'aria-label': 'Enable full PC audio' }) as HTMLInputElement;
   systemEnabled.addEventListener('change', () => stagePatch({ audio: { system: { enabled: systemEnabled.checked } } }));
-  const systemDevice = select(audio.system.deviceId, deviceOptions(status.audioOutputs, audio.system.deviceId), (value) => stagePatch({ audio: { system: { deviceId: value } } }));
+  const systemDevice = select(audio.system.deviceId, deviceOptions(status.audioOutputs, audio.system.deviceId), 'Output device', (value) => stagePatch({ audio: { system: { deviceId: value } } }));
   const processSelects = [0, 1, 2].map((index) => {
     const selected = audio.customProcesses[index] ?? '';
-    const processSelect = select(selected, recordingProcessOptions(selected), (value) => {
+    const processSelect = select(selected, recordingProcessOptions(selected), `Process ${index + 1}`, (value) => {
       const next = audio.customProcesses.slice(0, 3);
       next[index] = value;
       stagePatch({ audio: { customProcesses: next.filter(Boolean) } });
@@ -1025,12 +1025,10 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
 function renderClipList(): HTMLElement {
   const query = el('input', { class: 'recording-search', type: 'search', placeholder: 'Search clips…', 'aria-label': 'Search clips' }) as HTMLInputElement;
   const list = el('div', { class: 'recording-clip-list' });
-  const filter = select(clipLibraryFilter, [['all', 'All captures'], ['clips', 'Clips'], ['recordings', 'Recordings']], (value) => { clipLibraryFilter = value; draw(); });
+  const filter = select(clipLibraryFilter, [['all', 'All captures'], ['clips', 'Clips'], ['recordings', 'Recordings']], 'Filter captures', (value) => { clipLibraryFilter = value; draw(); });
   filter.classList.add('recording-library-filter');
-  filter.setAttribute('aria-label', 'Filter captures');
-  const sort = select(clipLibrarySort, [['newest', 'Newest first'], ['oldest', 'Oldest first']], (value) => { clipLibrarySort = value; draw(); });
+  const sort = select(clipLibrarySort, [['newest', 'Newest first'], ['oldest', 'Oldest first']], 'Sort captures', (value) => { clipLibrarySort = value; draw(); });
   sort.classList.add('recording-library-filter');
-  sort.setAttribute('aria-label', 'Sort captures');
   const count = el('span', { class: 'recording-library-count', text: `${clips.length} captures` });
   const draw = () => {
     clear(list);

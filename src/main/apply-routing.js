@@ -1205,16 +1205,15 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       } else {
         per = { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG };
       }
-      // M168/M179: the bundled V1 temperature getter can return 0 after a
-      // successful extended write. The normal V2 snapshot is capped at the
-      // stock 90 °C and therefore cannot establish synchronization for an
-      // extended request. When the current backend exposes its identity-bound
-      // extended getter, it is the authoritative read-back for both the
-      // success and failure cases. A native setter SUCCESS by itself is not a
-      // synchronized apply: an unavailable or mismatched authoritative read
-      // remains an honest per-control failure. Keep the old V2 fallback only
-      // for injected legacy seams that do not expose the explicit getter.
-      if (key === 'tempLimitC' && (per?.ok === true || per?.errorCode === 'io-failed')) {
+      // M180: OldIgcl owns both the identity-bound setter and delayed getter.
+      // Never reclassify a bundled-runtime result with DriverStore's stock
+      // 90 C surface. Older injected seams have no readBackValue metadata;
+      // retain their legacy getter/current-state verification compatibility.
+      const bundledReadBack = per && (
+        per.readBackUnavailable === true
+        || Object.prototype.hasOwnProperty.call(per, 'readBackValue')
+      );
+      if (key === 'tempLimitC' && !bundledReadBack) {
         if (typeof backend?.getExtendedTemperatureLimitC === 'function') {
           let legacyReadBack = null;
           try {
@@ -1224,7 +1223,6 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
           }
           if (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack)) {
             if (nearlyEqual(legacyReadBack, value)) {
-              log(`[apply] extended temperature authoritative read-back matched ${value} °C on the requested adapter`);
               per = { ok: true, readBackEqual: true };
             } else {
               per = {
@@ -1234,25 +1232,23 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
                 message: `extended temperature limit: authoritative read-back ${legacyReadBack} != requested ${value}`,
               };
             }
-          } else if (per?.ok === true) {
+          } else {
             per = {
               ok: false,
               errorCode: 'unavailable',
               readBackEqual: false,
-              message: 'extended temperature limit applied but authoritative driver read-back was unavailable',
+              message: 'extended temperature limit: authoritative driver read-back was unavailable',
             };
           }
-        } else if (per?.ok === false) {
+        } else if (per?.ok === false && typeof backend?.getCurrentSettings === 'function') {
           let verified = false;
-          if (typeof backend?.getCurrentSettings === 'function') {
-            try {
-              const driverState = await backend.getCurrentSettings(deviceId);
-              verified = typeof driverState?.tempLimitC === 'number'
-                && nearlyEqual(driverState.tempLimitC, value);
-            } catch {
-              // Keep the original V1 verification failure when the fallback
-              // current-state read is unavailable.
-            }
+          try {
+            const driverState = await backend.getCurrentSettings(deviceId);
+            verified = typeof driverState?.tempLimitC === 'number'
+              && nearlyEqual(driverState.tempLimitC, value);
+          } catch {
+            // Keep the original V1 verification failure when the fallback
+            // current-state read is unavailable.
           }
           if (verified) {
             log(`[apply] extended temperature V1 getter returned an invalid read-back; current driver read-back matched ${value} °C on the requested adapter`);
@@ -1599,6 +1595,19 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   const out = await applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: effectiveClampRanges, mode: routeMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+  // DriverStore exposes only the stock temperature surface. The extended
+  // transaction's result is authoritative for the selected adapter: retain a
+  // finite bundled read-back, and deliberately clear the state when the
+  // setter succeeded but that read-back was unavailable. This prevents page
+  // re-entry from displaying either a copied request or the unrelated 90 C.
+  const tempResult = out.result.perControl?.tempLimitC;
+  if (state && tempResult?.ok === true && Object.prototype.hasOwnProperty.call(clamped, 'tempLimitC')) {
+    state.tempLimitC = tempResult.readBackUnavailable === true
+      ? null
+      : (typeof tempResult.readBackValue === 'number' && Number.isFinite(tempResult.readBackValue)
+        ? tempResult.readBackValue
+        : state.tempLimitC);
+  }
   if (isNegativeAlchemistVoltage(clamped, effectiveClampRanges)
     && out.result.perControl.gpuVoltOffsetV?.ok === true
     && sysmanPowerLimits) {

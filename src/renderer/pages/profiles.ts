@@ -23,6 +23,7 @@ import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
+import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
@@ -656,13 +657,14 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const selectedTuningProfileId = gpuSettings.tuningProfileId && availableProfiles.some((profile) => profile.id === gpuSettings.tuningProfileId)
       ? gpuSettings.tuningProfileId
       : '';
-    const tuning = el('select', { class: 'profile-setting-control game-setting-control', value: selectedTuningProfileId }, [
-      el('option', { value: '', text: `Normal (${gameGpuLabel(targetDevice)} active profile)` }),
-      ...availableProfiles.map((profile) => el('option', { value: profile.id, text: `${profile.name} · ${profileOwnerLabel(profile).replace(/^GPU:\s*/, '')}` })),
-    ]) as HTMLSelectElement;
-    const endurance = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.enduranceGaming ?? 'off', disabled: !gameProfileCapabilities.enduranceGaming }, [
-      el('option', { value: 'off', text: 'Off' }), el('option', { value: 'on', text: 'On' }),
-    ]) as HTMLSelectElement;
+    const tuning = buildDropdown(selectedTuningProfileId, [
+      { value: '', label: `Normal (${gameGpuLabel(targetDevice)} active profile)` },
+      ...availableProfiles.map((profile) => ({ value: profile.id, label: `${profile.name} · ${profileOwnerLabel(profile).replace(/^GPU:\s*/, '')}` })),
+    ], { className: 'profile-setting-control game-setting-control', ariaLabel: 'Overclock preset' });
+    const endurance = buildDropdown(graphics.enduranceGaming ?? 'off', [
+      { value: 'off', label: 'Off' },
+      { value: 'on', label: 'On' },
+    ], { className: 'profile-setting-control game-setting-control', ariaLabel: 'Endurance Gaming', disabled: !gameProfileCapabilities.enduranceGaming });
     const xeFgOptions = gameProfileCapabilities.xeFgOptions.length > 0 ? gameProfileCapabilities.xeFgOptions : ['app-choice'];
     const xeFgLabels: Record<string, string> = {
       'app-choice': 'Application Default',
@@ -670,16 +672,25 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       '3x': '3x Frame Generation',
       '4x': '4x Frame Generation',
     };
-    const xeFg = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.frameGenOverride ?? 'app-choice' },
-      xeFgOptions.map((option) => el('option', { value: option, text: xeFgLabels[option] ?? option }))) as HTMLSelectElement;
-    const frame = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.flipMode ?? 'application-default' }, [
-      el('option', { value: 'application-default', text: 'Application Choice' }), el('option', { value: 'vsync-on', text: 'VSync On' }), el('option', { value: 'vsync-off', text: 'VSync Off' }), el('option', { value: 'smooth-sync', text: 'Smooth Sync' }), el('option', { value: 'speed-frame', text: 'Speed / Frame' }), el('option', { value: 'smart-vsync', text: 'Smart VSync' }),
-    ]) as HTMLSelectElement;
+    const xeFg = buildDropdown(graphics.frameGenOverride ?? 'app-choice', xeFgOptions.map((option) => ({
+      value: option,
+      label: xeFgLabels[option] ?? option,
+    })), { className: 'profile-setting-control game-setting-control', ariaLabel: 'XeFG multiplier' });
+    const frame = buildDropdown(graphics.flipMode ?? 'application-default', [
+      { value: 'application-default', label: 'Application Choice' },
+      { value: 'vsync-on', label: 'VSync On' },
+      { value: 'vsync-off', label: 'VSync Off' },
+      { value: 'smooth-sync', label: 'Smooth Sync' },
+      { value: 'speed-frame', label: 'Speed / Frame' },
+      { value: 'smart-vsync', label: 'Smart VSync' },
+    ], { className: 'profile-setting-control game-setting-control', ariaLabel: 'Frame Synchronization' });
     const fps = el('input', { class: 'profile-setting-check game-setting-control', type: 'checkbox', checked: graphics.frameLimit?.enabled === true }) as HTMLInputElement;
     const fpsValue = el('input', { class: 'profile-setting-number game-setting-control', type: 'number', min: 1, max: 1000, value: graphics.frameLimit?.value ?? 60 }) as HTMLInputElement;
-    const latency = el('select', { class: 'profile-setting-control game-setting-control', value: graphics.lowLatency ?? 'off' }, [
-      el('option', { value: 'off', text: 'Off' }), el('option', { value: 'on', text: 'On' }), el('option', { value: 'on-boost', text: 'On + Boost' }),
-    ]) as HTMLSelectElement;
+    const latency = buildDropdown(graphics.lowLatency ?? 'off', [
+      { value: 'off', label: 'Off' },
+      { value: 'on', label: 'On' },
+      { value: 'on-boost', label: 'On + Boost' },
+    ], { className: 'profile-setting-control game-setting-control', ariaLabel: 'Low Latency Mode' });
     const save = (patch: Partial<GameGpuProfile>): void => { void onGameSettingsSave(game, targetDevice, patch); };
     const gpuSwitch = el('div', { class: 'game-profile-gpu-switch', role: 'tablist', 'aria-label': 'Game Profile GPU' }, gameDevices().map((device) => el('button', {
       class: `btn btn-ghost btn-sm${(device.deviceKey ?? null) === targetKey ? ' active' : ''}`,
@@ -830,13 +841,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       el('div', { class: 'profile-browser-toolbar' }, [
         el('button', { class: 'btn btn-primary btn-sm profile-create', text: 'Add Profile +', onClick: () => void onCreate() }),
         el('label', { class: 'profile-filter-label', text: 'Show' }),
-        el('select', { class: 'profile-filter', onchange: (ev: Event) => { showFilter = (ev.target as HTMLSelectElement).value; renderList(); } }, [
-          el('option', { value: 'all', text: 'All Profiles' }), el('option', { value: 'active', text: 'Active' }),
-        ]),
+        buildDropdown(showFilter, [
+          { value: 'all', label: 'All Profiles' },
+          { value: 'active', label: 'Active' },
+        ], { className: 'profile-filter', ariaLabel: 'Show profiles', onChange: (value) => { showFilter = value as typeof showFilter; renderList(); } }),
         el('label', { class: 'profile-filter-label', text: 'Sort' }),
-        el('select', { class: 'profile-filter', onchange: (ev: Event) => { sortMode = (ev.target as HTMLSelectElement).value; renderList(); } }, [
-          el('option', { value: 'alphabetical', text: 'Alphabetically' }), el('option', { value: 'recent', text: 'Recently created' }),
-        ]),
+        buildDropdown(sortMode, [
+          { value: 'alphabetical', label: 'Alphabetically' },
+          { value: 'recent', label: 'Recently created' },
+        ], { className: 'profile-filter', ariaLabel: 'Sort profiles', onChange: (value) => { sortMode = value as typeof sortMode; renderList(); } }),
         el('div', { class: 'profile-view-toggle' }, [
           el('button', { class: `btn btn-ghost btn-sm${cardMode === 'grid' ? ' active' : ''}`, text: 'Grid', onclick: () => { cardMode = 'grid'; renderList(); } }),
           el('button', { class: `btn btn-ghost btn-sm${cardMode === 'list' ? ' active' : ''}`, text: 'List', onclick: () => { cardMode = 'list'; renderList(); } }),

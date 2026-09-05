@@ -739,6 +739,10 @@ export class MockBackend {
     const state = {
       gpuLock: fs.supportedControls.includes('gpuLock') ? { voltageV: 0, freqMhz: 0 } : null,
       vfCurve: Array.isArray(fs.vfCurve) ? fs.vfCurve.map((p) => ({ ...p })) : null,
+      // The fixture's curve is the driver's STOCK table. Keep it separate
+      // from the mutable LIVE table so reset never redefines its own default
+      // after a custom apply.
+      vfCurveDefault: Array.isArray(fs.vfCurve) ? fs.vfCurve.map((p) => ({ ...p })) : null,
       vfCurveUnits: null,
       fanMode: null,
       fanCurve: null,
@@ -994,6 +998,9 @@ export class MockBackend {
         if (typeof override.step === 'number' && Number.isFinite(override.step)) {
           next = { ...next, step: override.step };
         }
+        if (canonical === 'gpuVoltOffsetV' && typeof override.min === 'number' && Number.isFinite(override.min)) {
+          next = { ...next, min: override.min };
+        }
         if (next !== range) caps.ranges[canonical] = next;
       }
     }
@@ -1057,6 +1064,7 @@ export class MockBackend {
       vramVoltOffsetV: s.vramVoltOffsetV,
       gpuLock: s.gpuLock ? { ...s.gpuLock } : null,
       vfCurve: s.vfCurve ? s.vfCurve.map((p) => ({ ...p })) : null,
+      vfCurveDefault: s.vfCurveDefault ? s.vfCurveDefault.map((p) => ({ ...p })) : null,
       fanMode: flatCurve ? 'fixed' : s.fanMode,
       fanCurve: s.fanCurve ? s.fanCurve.map((p) => ({ ...p })) : null,
       fixedFanPct: flatCurve ? s.fanCurve[0].speedPct : s.fixedFanPct,

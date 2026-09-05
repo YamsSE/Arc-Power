@@ -2411,6 +2411,9 @@ export class IgclBackend {
         if (typeof override.step === 'number' && Number.isFinite(override.step)) {
           next = { ...next, step: override.step };
         }
+        if (canonical === 'gpuVoltOffsetV' && typeof override.min === 'number' && Number.isFinite(override.min)) {
+          next = { ...next, min: override.min };
+        }
         if (next !== range) caps.ranges[canonical] = next;
       }
     }
@@ -2593,7 +2596,7 @@ export class IgclBackend {
 
     const state = {
       powerLimitW: null, gpuVoltOffsetV: null, gpuFreqOffsetMhz: null, tempLimitC: null,
-      vramFreqOffsetGts: null, vramVoltOffsetV: null, gpuLock: null, vfCurve: null,
+      vramFreqOffsetGts: null, vramVoltOffsetV: null, gpuLock: null, vfCurve: null, vfCurveDefault: null,
       vfCurveUnits: null,
       fanMode: null, fanCurve: null, fixedFanPct: null,
     };
@@ -2613,28 +2616,14 @@ export class IgclBackend {
     state.gpuVoltOffsetV = readV2('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset');
     state.gpuFreqOffsetMhz = readV2('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset');
     state.tempLimitC = readV2('tempLimit', 'tempLimitC', 'tempLimit');
-    // M179: when extended Celsius control is available, the V2 getter above
-    // is only the stock-limit surface and can stay at 90 °C after a valid V1
-    // extended apply. Reconcile from the same identity-bound legacy getter
-    // used by the routed verification. A zero/invalid sentinel is ignored so
-    // a broken legacy read never fabricates a temperature into the state.
+    // M180: when extended Celsius control is available, the V2 getter above
+    // is only the stock-limit surface. The identity-bound bundled OldIgcl
+    // transaction owns the extended setter/read-back pair, so this backend
+    // snapshot must stay unavailable until that transaction supplies a
+    // verified finite value. Never copy DriverStore's 90 C into extended UI.
     if (caps.extendedControls?.tempLimitC === true
       && caps.ranges?.tempLimitC?.units === 'C') {
-      // The V2 value is only the stock-limit surface. Once extended Celsius
-      // control is advertised, an unavailable authoritative getter must not
-      // leave that stock value looking like a verified extended read-back.
       state.tempLimitC = null;
-      if (typeof this.getExtendedTemperatureLimitC === 'function') {
-        try {
-          const extendedTemperature = await this.getExtendedTemperatureLimitC(deviceId);
-          if (Number.isFinite(extendedTemperature) && extendedTemperature > 0) {
-            state.tempLimitC = extendedTemperature;
-          }
-        } catch {
-          // Leave the state unavailable when the authoritative getter cannot
-          // verify the extended value.
-        }
-      }
     }
     state.vramFreqOffsetGts = readV2('vramFreqOffset', 'vramFreqOffsetGts', 'vramFreqOffset');
     state.vramVoltOffsetV = readV2('vramVoltOffset', 'vramVoltOffsetV', 'vramVoltOffset');
@@ -2652,29 +2641,22 @@ export class IgclBackend {
       }
     }
 
-    // VF curve is the LIVE Battlemage simplified curve shown by the editor.
-    // The driver also exposes an elaborate 50-point table, but downsampling
-    // that table would synthesize voltage steps and can make a write invalid.
-    // Voltage is documented by IGCL as millivolts; the renderer/backend
-    // contract uses V.
+    // VF curves are the native Battlemage simplified tables. Keep LIVE and
+    // STOCK as separate per-device fields: Reset to default must never infer
+    // STOCK from LIVE, capability bounds, a renderer snapshot, or a synthetic
+    // point list. Native point count/order are retained exactly.
     if (caps.controls.vfCurve && !this._isUnavailable(lib.ctlOverclockReadVFCurve)) {
-      const numBuf = koffi.alloc('uint32', 1);
-      koffi.encode(numBuf, 'uint32', 0);
-      let result = lib.ctlOverclockReadVFCurve(dev.handle, 1, 0, numBuf, null);
-      const num = koffi.decode(numBuf, 'uint32');
-      if (result === CTL_RESULT.SUCCESS && num > 0 && num < 10000) {
-        const curveBuf = koffi.alloc('ctl_voltage_frequency_point_t', num);
-        result = lib.ctlOverclockReadVFCurve(dev.handle, 1, 0, numBuf, curveBuf);
-        if (result === CTL_RESULT.SUCCESS) {
-          const sz = koffi.sizeof('ctl_voltage_frequency_point_t');
-          state.vfCurve = [];
-          for (let i = 0; i < num; i++) {
-            const pt = koffi.decode(curveBuf, i * sz, 'ctl_voltage_frequency_point_t');
-            state.vfCurve.push({ voltageV: pt.Voltage / 1000, freqMhz: pt.Frequency });
-          }
-          state.vfCurveUnits = 'V';
-        }
-      }
+      const decodeCurve = (type) => {
+        const native = this._readVfCurvePoints(dev.handle, type, 0);
+        if (!native.ok || native.points.length < 2) return null;
+        return native.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }));
+      };
+      // Type 0 is the driver's STOCK simplified table. Failure is honest
+      // unavailability; do not fall back to LIVE because that would make a
+      // custom curve appear to be the reset target.
+      state.vfCurveDefault = decodeCurve(0);
+      state.vfCurve = decodeCurve(1);
+      if (state.vfCurve || state.vfCurveDefault) state.vfCurveUnits = 'V';
     }
 
     // Fan read-back (read-only here even when the EFFECTIVE canControl is
@@ -4920,6 +4902,16 @@ export class IgclBackend {
       const range = caps.ranges[canonicalName];
       if (!range) {
         fail(canonicalName, 'unsupported', 'no capability range reported for this control');
+        return;
+      }
+      // Negative Alchemist offsets are owned by the identity-safe Sysman
+      // route in apply-routing.js. Keep the raw IGCL V2 backend from ever
+      // sending a negative canonical value to the positive-only native
+      // setter, even though the capability surface exposes the range so the
+      // renderer can offer the routed undervolt control on every Alchemist
+      // adapter.
+      if (canonicalName === 'gpuVoltOffsetV' && range.units === 'V' && value < 0) {
+        fail(canonicalName, 'unsupported', 'negative Alchemist voltage offsets use the Sysman apply route');
         return;
       }
       const clamped = opts.snapToStep === false

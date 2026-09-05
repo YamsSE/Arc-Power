@@ -46,6 +46,7 @@ import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { applyFailureText, CONTROL_LABELS, errorMessage } from '../pure/errors.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
+import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { chipState } from '../pure/chip.ts';
 import { isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import {
@@ -257,8 +258,8 @@ const sliderNodes = new Map<string, HTMLInputElement>();
 // hides when the limiter is OFF (the "30 FPS" text bug: the value text
 // used to stay visible while only the slider hid).
 const sliderRowNodes = new Map<string, HTMLElement>();
-const toggleNodes = new Map<string, HTMLSelectElement>();
-const selectNodes = new Map<string, HTMLSelectElement>();
+const toggleNodes = new Map<string, DropdownElement>();
+const selectNodes = new Map<string, DropdownElement>();
 const GRAPHICS_REFRESH_KEYS = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency', 'prebuiltShaderDownload'];
 let viewContainer: HTMLElement | null = null;
 let displayPickerHost: HTMLElement | null = null;
@@ -789,38 +790,38 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     const current = (draft as Record<string, unknown>).enduranceGaming as string;
     const modes = optionsOf(state, 'enduranceGamingMode');
     const hasPreset = supportedOf(state, 'enduranceGamingMode') && modes.length > 0;
-    const toggle = el('select', {
-      class: 'graphics-select graphics-toggle',
+    const toggle = buildDropdown(current, options.map((o) => ({
+      value: o,
+      label: DROPDOWN_LABELS.enduranceGaming?.[o] ?? o,
+    })), {
+      className: 'graphics-select graphics-toggle',
       dataset: { graphicsToggle: 'enduranceGaming' },
-      onchange: (e: Event) => {
-        const value = (e.target as HTMLSelectElement).value as GraphicsSettings['enduranceGaming'];
-        if (!value) return;
-        draft.enduranceGaming = value;
+      ariaLabel: 'Endurance Gaming',
+      onChange: (value) => {
+        const next = value as GraphicsSettings['enduranceGaming'];
+        if (!next) return;
+        draft.enduranceGaming = next;
         const presetRow = card.querySelector<HTMLElement>('.graphics-endurance-preset-row');
-        if (presetRow) presetRow.hidden = value !== 'on';
+        if (presetRow) presetRow.hidden = next !== 'on';
         refreshEnduranceChip();
         updateFloating();
       },
-    }, options.map((o) => el('option', {
-      value: o,
-      text: DROPDOWN_LABELS.enduranceGaming?.[o] ?? o,
-      selected: o === current,
-    })));
+    });
     toggleNodes.set('enduranceGaming', toggle);
 
-    const preset = hasPreset ? el('select', {
-      class: 'graphics-select graphics-endurance-preset',
+    const preset = hasPreset ? buildDropdown(String(draft.enduranceGamingMode ?? modes[0] ?? ''), modes.map((o) => ({
+      value: o,
+      label: DROPDOWN_LABELS.enduranceGamingMode?.[o] ?? o,
+    })), {
+      className: 'graphics-select graphics-endurance-preset',
       dataset: { graphicsSelect: 'enduranceGamingMode' },
-      onchange: (e: Event) => {
-        draft.enduranceGamingMode = (e.target as HTMLSelectElement).value as GraphicsSettings['enduranceGamingMode'];
+      ariaLabel: 'Endurance Gaming preset',
+      onChange: (value) => {
+        draft.enduranceGamingMode = value as GraphicsSettings['enduranceGamingMode'];
         refreshEnduranceChip();
         updateFloating();
       },
-    }, modes.map((o) => el('option', {
-      value: o,
-      text: DROPDOWN_LABELS.enduranceGamingMode?.[o] ?? o,
-      selected: o === draft.enduranceGamingMode,
-    }))) as HTMLSelectElement : null;
+    }) : null;
     if (preset) selectNodes.set('enduranceGamingMode', preset);
     const presetRow = el('div', {
       class: 'graphics-endurance-preset-row',
@@ -895,19 +896,19 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
       ]);
     }
     const current = (draft as Record<string, unknown>)[key] as string;
-    const select = el('select', {
-      class: 'graphics-select',
+    const select = buildDropdown(current, options.map((o) => ({
+      value: o,
+      label: DROPDOWN_LABELS[key]?.[o] ?? o,
+    })), {
+      className: 'graphics-select',
       dataset: { graphicsSelect: key },
-      onchange: (e: Event) => {
-        (draft as Record<string, unknown>)[key] = (e.target as HTMLSelectElement).value;
+      ariaLabel: CARD_TITLES[key] ?? key,
+      onChange: (value) => {
+        (draft as Record<string, unknown>)[key] = value;
         refreshChip(key);
         updateFloating();
       },
-    }, options.map((o) => el('option', {
-      value: o,
-      text: DROPDOWN_LABELS[key]?.[o] ?? o,
-      selected: o === current,
-    })));
+    });
     selectNodes.set(key, select);
     const card = el('section', { class: 'card graphics-card', dataset: { control: key } }, [
       el('div', { class: 'graphics-card-heading' }, [
@@ -966,21 +967,22 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     // { enabled: true, value } + the slider-row appears. The
     // draft.frameLimit { enabled, value } shape is UNCHANGED (the
     // apply/verify/state paths untouched).
-    const toggle = el('select', {
-      class: 'graphics-select graphics-toggle graphics-fps-select',
+    const toggle = buildDropdown(fl.enabled ? 'on' : 'off', [
+      { value: 'off', label: 'FPS Limit Off' },
+      { value: 'on', label: 'FPS Limit On' },
+    ], {
+      className: 'graphics-select graphics-toggle graphics-fps-select',
       dataset: { graphicsToggle: 'frameLimit' },
-      onchange: (e: Event) => {
-        const on = (e.target as HTMLSelectElement).value === 'on';
+      ariaLabel: 'FPS Limit',
+      onChange: (value) => {
+        const on = value === 'on';
         draft.frameLimit = { enabled: on, value: on ? clampFrameLimitValue(fl.value, range) : fl.value };
         const row = sliderRowNodes.get('frameLimit');
         if (row) row.hidden = !on;
         refreshChip('frameLimit');
         updateFloating();
       },
-    }, [
-      el('option', { value: 'off', text: 'FPS Limit Off', selected: !fl.enabled }),
-      el('option', { value: 'on', text: 'FPS Limit On', selected: fl.enabled }),
-    ]);
+    });
     toggleNodes.set('frameLimit', toggle);
     const slider = el('input', {
       type: 'range',
@@ -1065,21 +1067,22 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
       const snapped = range.step > 0 ? Math.round(value / range.step) * range.step : value;
       return Math.min(range.max, Math.max(range.min, snapped));
     };
-    const toggle = el('select', {
-      class: 'graphics-select graphics-toggle',
+    const toggle = buildDropdown(current.enabled ? 'on' : 'off', [
+      { value: 'off', label: 'Off' },
+      { value: 'on', label: 'On' },
+    ], {
+      className: 'graphics-select graphics-toggle',
       dataset: { graphicsToggle: 'sharedMemoryOverride' },
-      onchange: (e: Event) => {
-        const enabled = (e.target as HTMLSelectElement).value === 'on';
+      ariaLabel: 'Shared memory override',
+      onChange: (value) => {
+        const enabled = value === 'on';
         draft.sharedMemoryOverride = { enabled, percentage: clamp(draft.sharedMemoryOverride?.percentage ?? range.default) };
         const row = sliderRowNodes.get('sharedMemoryOverride');
         if (row) row.hidden = !enabled;
         refreshChip('sharedMemoryOverride');
         updateFloating();
       },
-    }, [
-      el('option', { value: 'off', text: 'Off', selected: !current.enabled }),
-      el('option', { value: 'on', text: 'On', selected: current.enabled }),
-    ]);
+    });
     toggleNodes.set('sharedMemoryOverride', toggle);
     const slider = el('input', {
       type: 'range',
@@ -1146,18 +1149,19 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
   const buildPrebuiltShaderCard = (): HTMLElement => {
     if (!supportedOf(state, 'prebuiltShaderDownload')) return el('span', { hidden: true });
     const current = draft.prebuiltShaderDownload === true;
-    const toggle = el('select', {
-      class: 'graphics-select graphics-toggle',
+    const toggle = buildDropdown(current ? 'on' : 'off', [
+      { value: 'off', label: 'Off' },
+      { value: 'on', label: 'On' },
+    ], {
+      className: 'graphics-select graphics-toggle',
       dataset: { graphicsToggle: 'prebuiltShaderDownload' },
-      onchange: (e: Event) => {
-        draft.prebuiltShaderDownload = (e.target as HTMLSelectElement).value === 'on';
+      ariaLabel: 'Prebuilt shader download',
+      onChange: (value) => {
+        draft.prebuiltShaderDownload = value === 'on';
         refreshChip('prebuiltShaderDownload');
         updateFloating();
       },
-    }, [
-      el('option', { value: 'off', text: 'Off', selected: !current }),
-      el('option', { value: 'on', text: 'On', selected: current }),
-    ]);
+    });
     toggleNodes.set('prebuiltShaderDownload', toggle);
     const card = el('section', { class: 'card graphics-card', dataset: { control: 'prebuiltShaderDownload' } }, [
       el('div', { class: 'graphics-card-heading' }, [
@@ -1314,18 +1318,15 @@ function buildDisplayDropdownRow(
     ]);
   }
   const current = ((displayDraft as Record<string, unknown>)[key] as string | undefined) ?? options[0];
-  const select = el('select', {
-    class: 'graphics-select display-select',
+  const select = buildDropdown(current, options.map((o) => ({ value: o, label: labels[o] ?? o })), {
+    className: 'graphics-select display-select',
     dataset: { displaySelect: key },
-    onchange: (e: Event) => {
-      (displayDraft as Record<string, unknown>)[key] = (e.target as HTMLSelectElement).value;
+    ariaLabel: title,
+    onChange: (value) => {
+      (displayDraft as Record<string, unknown>)[key] = value;
       refreshDisplayChip(key);
     },
-  }, options.map((o) => el('option', {
-    value: o,
-    text: labels[o] ?? o,
-    selected: o === current,
-  })));
+  });
   selectNodes.set(key, select);
   const row = el('div', { class: 'display-control', dataset: { control: key } }, [
     el('div', { class: 'display-control-heading' }, [
@@ -1380,11 +1381,15 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
       el('p', { class: 'card-note', text: 'Not supported on this GPU.' }),
     ]);
   }
-  const select = el('select', {
-    class: 'graphics-select display-select',
+  const select = buildDropdown(displayScalingViewDraft, IGS_SCALING_MODE_OPTIONS.map((option) => ({
+    value: option,
+    label: IGS_SCALING_MODE_LABELS[option],
+  })), {
+    className: 'graphics-select display-select',
     dataset: { displaySelect: 'scalingMode' },
-    onchange: (e: Event) => {
-      displayScalingViewDraft = (e.target as HTMLSelectElement).value;
+    ariaLabel: 'Scaling Mode',
+    onChange: (value) => {
+      displayScalingViewDraft = value;
       displayScalingMethodDraft = scalingMethodOptionsForView(display!, displayScalingViewDraft)[0] ?? 'maintain-display-scaling';
       const raw = rawScalingForView(display!, displayScalingViewDraft);
       if (displayScalingViewDraft === 'gpu-scaling') {
@@ -1413,11 +1418,7 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
       // normal GPU/Display/Retro selection as draft-only state.
       setTimeout(() => requestDisplayApply(ctx, 'scalingMode'), 0);
     },
-  }, IGS_SCALING_MODE_OPTIONS.map((option) => el('option', {
-    value: option,
-    text: IGS_SCALING_MODE_LABELS[option],
-    selected: option === displayScalingViewDraft,
-  })));
+  });
   selectNodes.set('scalingMode', select);
   const row = el('div', { class: 'display-control', dataset: { control: 'scalingMode' } }, [
     el('div', { class: 'display-control-heading' }, [
@@ -1464,11 +1465,15 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
       el('p', { class: 'card-note', text: 'Not supported on this GPU.' }),
     ]);
   }
-  const methodSelect = el('select', {
-    class: 'graphics-select display-select',
+  const methodSelect = buildDropdown(displayScalingMethodDraft, methodOptions.map((option) => ({
+    value: option,
+    label: IGS_SCALING_METHOD_LABELS[option] ?? option,
+  })), {
+    className: 'graphics-select display-select',
     dataset: { displaySelect: 'displayScalingMethod' },
-    onchange: (e: Event) => {
-      displayScalingMethodDraft = (e.target as HTMLSelectElement).value;
+    ariaLabel: 'Scaling Method',
+    onChange: (value) => {
+      displayScalingMethodDraft = value;
       if (view === 'gpu-scaling') {
         displayDraft.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
         delete displayDraft.scalingCustom;
@@ -1494,7 +1499,7 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
         setTimeout(() => requestDisplayApply(ctx, 'displayScalingMethod'), 0);
       }
     },
-  }, methodOptions.map((option) => el('option', { value: option, text: IGS_SCALING_METHOD_LABELS[option] ?? option, selected: option === displayScalingMethodDraft })));
+  });
   selectNodes.set('displayScalingMethod', methodSelect);
   const custom = customScalingOf(display!);
   const customX = el('input', { class: 'display-number-input', type: 'number', min: 0, max: 100, step: 1, value: custom.x, hidden: view !== 'display-scaling' || displayScalingMethodDraft !== 'custom', 'aria-label': 'Custom horizontal scaling' }) as HTMLInputElement;
@@ -1564,30 +1569,32 @@ function buildWireFormatRow(ctx: PageContext): HTMLElement {
     ]);
   }
   const wf: NonNullable<DisplaySettings['wireFormat']> = displayDraft.wireFormat ?? displayWireFormatDefault(display!)!;
-  const modelSelect = el('select', {
-    class: 'graphics-select display-select',
-    dataset: { displaySelect: 'colorFormat' },
-    onchange: (e: Event) => {
-      displayDraft.wireFormat = { model: (e.target as HTMLSelectElement).value as NonNullable<DisplaySettings['wireFormat']>['model'], depth: wf.depth };
-      refreshDisplayChip('wireFormat');
-    },
-  }, display!.supportedOptions.wireFormats.filter((o) => IGS_WIRE_FORMATS.includes(o)).map((o) => el('option', {
+  const modelOptions = display!.supportedOptions.wireFormats.filter((o) => IGS_WIRE_FORMATS.includes(o));
+  const modelSelect = buildDropdown(wf.model, modelOptions.map((o) => ({
     value: o,
-    text: IGS_WIRE_FORMAT_LABELS[o] ?? o,
-    selected: o === wf.model,
-  })));
-  const depthSelect = el('select', {
-    class: 'graphics-select display-select',
-    dataset: { displaySelect: 'colorDepth' },
-    onchange: (e: Event) => {
-      displayDraft.wireFormat = { model: wf.model, depth: Number((e.target as HTMLSelectElement).value) };
+    label: IGS_WIRE_FORMAT_LABELS[o] ?? o,
+  })), {
+    className: 'graphics-select display-select',
+    dataset: { displaySelect: 'colorFormat' },
+    ariaLabel: 'Color Format',
+    onChange: (value) => {
+      displayDraft.wireFormat = { model: value as NonNullable<DisplaySettings['wireFormat']>['model'], depth: wf.depth };
       refreshDisplayChip('wireFormat');
     },
-  }, display!.supportedOptions.bpcDepths.map((d) => el('option', {
-    value: String(d),
-    text: `${d} bpc`,
-    selected: d === wf.depth,
-  })));
+  });
+  const depthOptions = display!.supportedOptions.bpcDepths.map((d) => String(d));
+  const depthSelect = buildDropdown(String(wf.depth), depthOptions.map((d) => ({
+    value: d,
+    label: `${d} bpc`,
+  })), {
+    className: 'graphics-select display-select',
+    dataset: { displaySelect: 'colorDepth' },
+    ariaLabel: 'Color Depth',
+    onChange: (value) => {
+      displayDraft.wireFormat = { model: wf.model, depth: Number(value) };
+      refreshDisplayChip('wireFormat');
+    },
+  });
   selectNodes.set('wireFormat', modelSelect);
   selectNodes.set('wireFormatDepth', depthSelect);
   const row = el('div', { class: 'display-control', dataset: { control: 'wireFormat' } }, [
@@ -1691,18 +1698,18 @@ function buildVariableRefreshRateRow(ctx: PageContext): HTMLElement {
   const supported = display !== null && isDisplayControlSupported(display, 'variableRefreshRate');
   if (!supported) return buildDisplayReadonlyRow('Variable Refresh Rate', display?.variableRefreshRate, DISPLAY_VRR_NOTE);
   const current = displayDraft.variableRefreshRate ?? display?.variableRefreshRate?.value ?? true;
-  const select = el('select', {
-    class: 'graphics-select display-select',
+  const select = buildDropdown(current ? 'enabled' : 'disabled', ['enabled', 'disabled'].map((value) => ({
+    value,
+    label: VARIABLE_REFRESH_RATE_LABELS[value],
+  })), {
+    className: 'graphics-select display-select',
     dataset: { displaySelect: 'variableRefreshRate' },
-    onchange: (e: Event) => {
-      displayDraft.variableRefreshRate = (e.target as HTMLSelectElement).value === 'enabled';
+    ariaLabel: 'Variable Refresh Rate',
+    onChange: (value) => {
+      displayDraft.variableRefreshRate = value === 'enabled';
       refreshDisplayChip('variableRefreshRate');
     },
-  }, ['enabled', 'disabled'].map((value) => el('option', {
-    value,
-    text: VARIABLE_REFRESH_RATE_LABELS[value],
-    selected: (value === 'enabled') === current,
-  })));
+  });
   selectNodes.set('variableRefreshRate', select);
   const row = el('div', { class: 'display-control', dataset: { control: 'variableRefreshRate' } }, [
     el('div', { class: 'display-control-heading' }, [
@@ -1852,11 +1859,15 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
   // The per-display selector (the IGS left-pane analogue) - the first
   // display is the default; a pick re-normalizes the draft + resets the
   // applied reference (the fresh display's state), then rebuilds the cards.
-  const picker = el('select', {
-    class: 'graphics-select display-picker',
+  const picker = buildDropdown(String(display.id), displayState.displays.map((d) => ({
+    value: String(d.id),
+    label: d.name ?? `Display ${d.id}`,
+  })), {
+    className: 'graphics-select display-picker',
     dataset: { displayPicker: '' },
-    onchange: (e: Event) => {
-      selectedDisplayId = Number((e.target as HTMLSelectElement).value);
+    ariaLabel: 'Select display',
+    onChange: (value) => {
+      selectedDisplayId = Number(value);
       selectedDisplayKey = displayState?.displays.find((d) => d.id === selectedDisplayId)?.displayKey ?? null;
       displayDraft = normalizeDisplaySettings(selectedDisplay());
       displayScalingViewDraft = scalingViewOf(selectedDisplay());
@@ -1864,11 +1875,7 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
       setDisplayAppliedScalingBaseline();
       renderDisplayCards(view, ctx);
     },
-  }, displayState.displays.map((d) => el('option', {
-    value: String(d.id),
-    text: d.name ?? `Display ${d.id}`,
-    selected: d.id === display.id,
-  })));
+  });
 
   const general = buildDisplayGroup('general', 'General', [
     buildDisplayDropdownRow(ctx, 'scalingMode', 'Scaling Mode', DISPLAY_SCALING_NOTE, display.supportedOptions.scalingModes, SCALING_MODE_LABELS),

@@ -83,6 +83,8 @@ export const A310_PCI_DEVICE_ID = '0x000056a6';
  *  may carry only a subset of the controls; `max` is present on the
  *  clamping overrides only. */
 export interface ControlLimit {
+  /** Exposed lower bound for V-unit Alchemist offsets. */
+  min?: number;
   max?: number;
   step?: number;
   /** M17c (A750): a DOCUMENTATION MARKER - NOT a consumer hook. It records
@@ -122,7 +124,7 @@ export interface DeviceLimits {
  *  - TL 90: oc-corner / SkatterBencher (the documented 90 C TL max). */
 const A770_ROW_STOCK: DeviceLimits = {
   listed: true,
-  gpuVoltOffsetV: { max: 0.234, step: 0.001 }, // M15 live probe (this box, 2026-08-11); the step 0.001 rides with the max - the driver's 0.005 step puts 0.234 OFF-GRID (a main-side clampSettings snap would turn 0.234 into 0.235 and get refused)
+  gpuVoltOffsetV: { min: -0.500, max: 0.234, step: 0.001 }, // M26 stock Alchemist floor + M15 live probe
   tempLimitC: { max: 90 }, // oc-corner / SkatterBencher
 };
 
@@ -137,7 +139,7 @@ const A770_ROW_STOCK: DeviceLimits = {
  *  the stock at 90). The volt pin rides both shapes (mode-independent). */
 const A770_ROW_ADVANCED: DeviceLimits = {
   listed: true,
-  gpuVoltOffsetV: { max: 0.234, step: 0.001 }, // M15 live probe (mode-independent)
+  gpuVoltOffsetV: { min: -0.800, max: 0.234, step: 0.001 }, // M26 advanced Alchemist floor + M15 live probe
   powerLimitW: { max: 375 }, // M21: the sysman-primary ceiling (live-verified 2026-08-15); the M3-C-D 315 probe (2026-08-06) pinned the V1 WRITE range
   tempLimitC: { max: 115 }, // docs/igcl-integration.md 8c (125->115 KMD clamp)
 };
@@ -173,7 +175,7 @@ const A750_ROW_STOCK: DeviceLimits = {
   // stays the pass-through (the unclamp flag stays a DOCUMENTATION
   // MARKER, no consumer - the pass-through works by the ABSENCE of a
   // volt max).
-  gpuVoltOffsetV: { unclamp: true, step: 0.001 },
+  gpuVoltOffsetV: { min: -0.500, unclamp: true, step: 0.001 },
   tempLimitC: { max: 90 }, // oc-corner
 };
 
@@ -190,7 +192,7 @@ const A750_ROW_ADVANCED: DeviceLimits = {
   listed: true,
   // M17g (the global 0.001 V step): the ADVANCED row rides the same step
   // pin as the STOCK row - the mode never changes the voltage grid.
-  gpuVoltOffsetV: { unclamp: true, step: 0.001 }, // A750: the driver's 0.288 passes through (the 2026-08-12 probe) - the unclamp flag is a DOCUMENTATION MARKER, no consumer (see ControlLimit)
+  gpuVoltOffsetV: { min: -0.800, unclamp: true, step: 0.001 }, // A750: the driver's 0.288 passes through (the 2026-08-12 probe) - the unclamp flag is a DOCUMENTATION MARKER, no consumer (see ControlLimit)
   powerLimitW: { max: 270 }, // the 2026-08-12 app-path probe (Acer A750): 270 W applied, 280+ refused
   tempLimitC: { max: 115 }, // the 2026-08-12 app-path probe: 100 AND 115 C applied (the A770's 115-class KMD ceiling)
 };
@@ -237,6 +239,7 @@ function a770PlMaxOf(input: DeviceLimitsInput): number | undefined {
  *  - TL 90: shared Alchemist TL ceiling (oc-corner). */
 const A380_ROW_STOCK: DeviceLimits = {
   listed: true,
+  gpuVoltOffsetV: { min: -0.500, step: 0.001 },
   powerLimitW: { max: 66 },
   tempLimitC: { max: 90 },
 };
@@ -246,6 +249,7 @@ const A380_ROW_STOCK: DeviceLimits = {
  *  of a higher KMD ceiling on the A380). */
 const A380_ROW_ADVANCED: DeviceLimits = {
   listed: true,
+  gpuVoltOffsetV: { min: -0.800, step: 0.001 },
   powerLimitW: { max: 225 },
   tempLimitC: { max: 90 },
 };
@@ -255,6 +259,7 @@ const A380_ROW_ADVANCED: DeviceLimits = {
  *  - TL 90: shared Alchemist TL ceiling. */
 const A310_ROW: DeviceLimits = {
   listed: true,
+  gpuVoltOffsetV: { min: -0.500, step: 0.001 },
   powerLimitW: { max: 75 },
   tempLimitC: { max: 90 },
 };
@@ -343,6 +348,6 @@ export function deviceLimitsOf(input: DeviceLimitsInput | null | undefined, opti
  */
 export function defaultLimitsOf(extended: boolean): DeviceLimits {
   return extended
-    ? { listed: false, powerLimitW: { max: 315 }, tempLimitC: { max: 115 }, gpuVoltOffsetV: { step: 0.001 } } // M3-C-D: the live-verified 315 W ceiling
-    : { listed: false, powerLimitW: { max: 252 }, tempLimitC: { max: 90 }, gpuVoltOffsetV: { step: 0.001 } };
+    ? { listed: false, powerLimitW: { max: 315 }, tempLimitC: { max: 115 }, gpuVoltOffsetV: { min: -0.800, step: 0.001 } } // M3-C-D: the live-verified 315 W ceiling
+    : { listed: false, powerLimitW: { max: 252 }, tempLimitC: { max: 90 }, gpuVoltOffsetV: { min: -0.500, step: 0.001 } };
 }

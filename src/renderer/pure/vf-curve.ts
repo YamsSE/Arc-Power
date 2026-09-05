@@ -133,6 +133,33 @@ export function normalizeVfCurvePoints(
   return prepareVfCurveForDriver(compact, range) ?? seedVfCurve(range);
 }
 
+/**
+ * Validate a driver-owned native STOCK/LIVE table without changing its
+ * representation. The renderer uses this for reset sources, where sorting,
+ * deduplicating, repairing, or compacting the points would change the native
+ * write shape and can make a reset fail on Battlemage.
+ */
+export function isValidNativeVfCurve(
+  points: VfCurvePoint[] | null | undefined,
+  range: VfCurveRange,
+): boolean {
+  if (!Number.isFinite(range.voltageMinV) || !Number.isFinite(range.voltageMaxV)
+    || !Number.isFinite(range.freqMinMhz) || !Number.isFinite(range.freqMaxMhz)
+    || range.voltageMinV > range.voltageMaxV || range.freqMinMhz > range.freqMaxMhz) return false;
+  const maxPoints = Number.isFinite(range.maxPoints) && range.maxPoints > 0
+    ? Math.floor(range.maxPoints)
+    : 32;
+  if (!Array.isArray(points) || points.length < VF_MIN_POINTS || points.length > maxPoints) return false;
+  return points.every((point, index) => {
+    if (!point || !Number.isFinite(point.voltageV) || !Number.isFinite(point.freqMhz)) return false;
+    if (point.voltageV < range.voltageMinV || point.voltageV > range.voltageMaxV
+      || point.freqMhz < range.freqMinMhz || point.freqMhz > range.freqMaxMhz) return false;
+    if (index === 0) return true;
+    const previous = points[index - 1];
+    return point.voltageV > previous.voltageV && point.freqMhz >= previous.freqMhz;
+  });
+}
+
 /** Move one point while keeping voltage ascending and frequency increasing. */
 export function moveVfPoint(
   points: VfCurvePoint[],

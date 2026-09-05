@@ -33,6 +33,7 @@ import { el, clear } from '../dom.ts';
 import type { PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
+import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import {
   OVERLAY_POSITIONS,
   OVERLAY_POSITION_LABELS,
@@ -421,11 +422,14 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // M9: the position select moves into the Appearance card (the
     // standalone Position card is REMOVED - the same row pattern as the
     // Size row; the .settings-position-select class survives).
-    const positionSelect = el('select', {
-      class: 'settings-position-select',
-      onchange: (ev: Event) => void onPositionChange((ev.target as HTMLSelectElement).value),
-    }, OVERLAY_POSITIONS.map((p) => el('option', { value: p, text: OVERLAY_POSITION_LABELS[p] })));
-    positionSelect.value = persisted.position;
+    const positionSelect = buildDropdown(persisted.position, OVERLAY_POSITIONS.map((p) => ({
+      value: p,
+      label: OVERLAY_POSITION_LABELS[p],
+    })), {
+      className: 'settings-position-select',
+      ariaLabel: 'Overlay position',
+      onChange: (value) => void onPositionChange(value),
+    });
     const appearanceCard = el('section', { class: 'card settings-card overlay-appearance-card' }, [
       el('h2', { class: 'card-title', text: 'Appearance' }),
       el('div', { class: 'settings-row overlay-theme-row' }, [
@@ -528,11 +532,14 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       },
       onchange: (ev: Event) => void onAdvancedHotkeyLetterChange((ev.target as HTMLInputElement).value),
     });
-    const advancedPositionSelect = el('select', {
-      class: 'settings-position-select settings-advanced-position-select',
-      onchange: (ev: Event) => void onAdvancedPositionChange((ev.target as HTMLSelectElement).value),
-    }, ADVANCED_OVERLAY_POSITIONS.map((p) => el('option', { value: p, text: ADVANCED_OVERLAY_POSITION_LABELS[p] })));
-    advancedPositionSelect.value = persisted.advPosition;
+    const advancedPositionSelect = buildDropdown(persisted.advPosition, ADVANCED_OVERLAY_POSITIONS.map((p) => ({
+      value: p,
+      label: ADVANCED_OVERLAY_POSITION_LABELS[p],
+    })), {
+      className: 'settings-position-select settings-advanced-position-select',
+      ariaLabel: 'Advanced overlay position',
+      onChange: (value) => void onAdvancedPositionChange(value),
+    });
     const hotkeyCard = el('section', { class: 'card settings-card overlay-hotkey-card' }, [
       el('h2', { class: 'card-title', text: 'Hotkey' }),
       el('div', { class: 'settings-row overlay-hotkey-row' }, [
@@ -803,7 +810,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
 
   const onPositionChange = async (position: string): Promise<void> => {
     if (!isValidOverlayPosition(position) || position === persisted.position) return;
-    const select = root.querySelector<HTMLSelectElement>('.settings-position-select');
+    const select = root.querySelector<DropdownElement>('.settings-position-select');
     try {
       await api.profilesSettingsSave({ overlayPosition: position });
       persisted.position = position;
@@ -859,7 +866,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
 
   const onAdvancedPositionChange = async (position: string): Promise<void> => {
     if (!isValidAdvancedOverlayPosition(position) || position === persisted.advPosition) return;
-    const select = root.querySelector<HTMLSelectElement>('.settings-advanced-position-select');
+    const select = root.querySelector<DropdownElement>('.settings-advanced-position-select');
     try {
       await api.profilesSettingsSave({ advancedOverlayPosition: position });
       persisted.advPosition = position;

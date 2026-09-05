@@ -79,6 +79,7 @@ import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-ed
 import { isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import {
   VF_EDITOR_MAX_POINTS,
+  isValidNativeVfCurve,
   moveVfPoint,
   normalizeVfCurvePoints,
   vfCurvePointLabel,
@@ -182,6 +183,12 @@ let vfCurveMode = false;
 let vfCurveSupported = false;
 let vfCurveDraft: Array<{ voltageV: number; freqMhz: number }> = [];
 let vfCurveApplied: Array<{ voltageV: number; freqMhz: number }> = [];
+// `vfCurveDraft` is the compact editor representation. A valid STOCK reset
+// can contain more points than the editor displays, so retain that native
+// payload separately until the user edits the display or applies it.
+let vfCurveNativeApplyDraft: Array<{ voltageV: number; freqMhz: number }> | null = null;
+let vfCurveDefaultDisplay: Array<{ voltageV: number; freqMhz: number }> | null = null;
+let vfCurveDefault: Array<{ voltageV: number; freqMhz: number }> | null = null;
 let vfCurveWasApplied = false;
 let activeVfEditingCleanup: (() => void) | null = null;
 // M17f: the power-limit card's sysman PL1/PL2 read-out line - the
@@ -256,6 +263,9 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   vfCurveSupported = false;
   vfCurveDraft = [];
   vfCurveApplied = [];
+  vfCurveNativeApplyDraft = null;
+  vfCurveDefaultDisplay = null;
+  vfCurveDefault = null;
   vfCurveWasApplied = false;
   activeVfEditingCleanup?.();
   activeVfEditingCleanup = null;
@@ -278,9 +288,14 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   viewContainer = null;
 }
 
+function vfCurveDirty(): boolean {
+  return vfCurveNativeApplyDraft !== null
+    || JSON.stringify(vfCurveDraft) !== JSON.stringify(vfCurveApplied);
+}
+
 function isPendingControl(key: string): boolean {
   if (key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode) {
-    return JSON.stringify(vfCurveDraft) !== JSON.stringify(vfCurveApplied);
+    return vfCurveDirty();
   }
   const rawDriverValue = currentState?.[key as keyof DeviceState];
   const driverValue = hiddenNegativeControls.has(key) && key === 'gpuVoltOffsetV'
@@ -290,8 +305,7 @@ function isPendingControl(key: string): boolean {
 
 function refreshPendingSummary(): void {
   if (!pendingSummaryNode) return;
-  const curveDirty = vfCurveSupported && vfCurveMode
-    && JSON.stringify(vfCurveDraft) !== JSON.stringify(vfCurveApplied);
+  const curveDirty = vfCurveSupported && vfCurveMode && vfCurveDirty();
   const scalarCount = Object.keys(values)
     .filter((key) => !(key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode))
     .filter(isPendingControl).length;
@@ -320,7 +334,7 @@ function refreshChip(key: string) {
   const chip = chipNodes.get(key);
   if (!chip) return;
   if (key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode) {
-    const dirty = JSON.stringify(vfCurveDraft) !== JSON.stringify(vfCurveApplied);
+    const dirty = vfCurveDirty();
     chip.hidden = !(!dirty && vfCurveWasApplied);
     chip.textContent = !dirty && vfCurveWasApplied ? 'Applied' : '';
     chip.className = !dirty && vfCurveWasApplied ? 'chip oc-chip-status chip-ok' : 'chip oc-chip-status';
@@ -371,7 +385,7 @@ function formatSysmanLimits(limits: PowerLimitsRead | null, set: { landed?: bool
  *  read). M17g: the '(set)' fallback rides the per-device session state
  *  (fed ONLY from the apply envelope's pl2Note). */
 async function refreshSysmanLimits(deviceId: number | null): Promise<void> {
-  if (!sysmanLimitsNode || deviceId === null) return;
+  if (!sysmanLimitsNode || deviceId === null || isBattlemageGpuName(renderCaps?.deviceName ?? '')) return;
   const token = ++sysmanRefreshToken;
   const targetNode = sysmanLimitsNode;
   let limits: PowerLimitsRead | null = null;
@@ -534,8 +548,7 @@ function updateFloating() {
     applyBtn.hidden = true;
     return;
   }
-  if (vfCurveSupported && vfCurveMode
-    && JSON.stringify(vfCurveDraft) !== JSON.stringify(vfCurveApplied)) {
+  if (vfCurveSupported && vfCurveMode && vfCurveDirty()) {
     applyBtn.hidden = false;
     return;
   }
@@ -585,6 +598,17 @@ export const tuningPage: Page = {
         ];
     vfCurveDraft = normalizeVfCurvePoints(initialCurve, curveBounds, vfEditorMaxPoints);
     vfCurveApplied = vfCurveDraft.map((p) => ({ ...p }));
+    // Keep the driver's STOCK table byte-for-shape in a separate slot. The
+    // compact editor may display a lossy ten-point projection, but Battlemage
+    // reset must send the native count/order/range unchanged.
+    vfCurveDefault = Array.isArray(state.vfCurveDefault)
+      && isValidNativeVfCurve(state.vfCurveDefault, curveBounds)
+      ? state.vfCurveDefault.map((point) => ({ ...point }))
+      : null;
+    vfCurveDefaultDisplay = vfCurveDefault
+      ? normalizeVfCurvePoints(vfCurveDefault, curveBounds, vfEditorMaxPoints)
+      : null;
+    vfCurveNativeApplyDraft = null;
 
     // M17e (Run B): the gpuLock-capable freq card's Lock-mode editor element
     // references - created inside buildCard (the freq-card branch), read by
@@ -779,6 +803,7 @@ export const tuningPage: Page = {
         if (!point) return;
         const nextVoltage = field === 'voltage' ? raw / 1000 : point.voltageV;
         const nextFrequency = field === 'frequency' ? raw : point.freqMhz;
+        vfCurveNativeApplyDraft = null;
         vfCurveDraft = moveVfPoint(vfCurveDraft, index, nextVoltage, nextFrequency, curveBounds);
         // Redraw both the line and the point together. Updating only the dot
         // left the SVG curve behind, which made a valid edit look broken.
@@ -829,6 +854,7 @@ export const tuningPage: Page = {
               const yPct = Math.min(100, Math.max(0, ((moveEvent.clientY - rect.top) / rect.height) * 100));
               const voltage = curveBounds.voltageMinV + (xPct / 100) * (curveBounds.voltageMaxV - curveBounds.voltageMinV);
               const frequency = curveBounds.freqMaxMhz - (yPct / 100) * (curveBounds.freqMaxMhz - curveBounds.freqMinMhz);
+              vfCurveNativeApplyDraft = null;
               vfCurveDraft = moveVfPoint(vfCurveDraft, index, voltage, frequency, curveBounds);
               redraw();
               refreshChip('gpuFreqOffsetMhz');
@@ -1342,7 +1368,7 @@ export const tuningPage: Page = {
           // Level Zero Sysman layer's limits when it answers, the honest
           // 'PL1 - / PL2 -' when absent (the burst/PL2 domain is invisible
           // to IGCL - the sysman layer is the read-out's source).
-          ...(key === 'powerLimitW'
+          ...(key === 'powerLimitW' && !isBattlemageGpuName(caps.deviceName)
             ? [el('span', {
                 class: 'oc-sysman-limits',
                 text: 'PL1 - / PL2 -',
@@ -1373,13 +1399,26 @@ export const tuningPage: Page = {
           el('button', {
             class: 'btn btn-ghost btn-sm',
             text: 'Reset to default',
+            disabled: key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveDefault === null,
+            title: key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveDefault === null
+              ? 'The driver stock VF curve is unavailable.'
+              : undefined,
             onClick: () => {
+              if (key === 'gpuFreqOffsetMhz' && vfCurveSupported && !vfCurveDefault) return;
               // M17e: the M4-B Clock-mode reset branch is REMOVED (the
               // mode died) - the default is the range default, always.
               values[key] = snapToRange(range.default, range);
               hiddenNegativeControls.delete(key);
               if (key === 'gpuFreqOffsetMhz' && vfCurveSupported) {
-                vfCurveDraft = vfCurveApplied.map((point) => ({ ...point }));
+                // Battlemage reset is a draft-only replacement from the
+                // selected adapter's immutable driver STOCK curve. LIVE is
+                // deliberately never used as a reset fallback.
+                const stockCurve = vfCurveDefault;
+                if (!stockCurve) return;
+                vfCurveNativeApplyDraft = stockCurve.map((point) => ({ ...point }));
+                vfCurveDraft = vfCurveDefaultDisplay
+                  ? vfCurveDefaultDisplay.map((point) => ({ ...point }))
+                  : normalizeVfCurvePoints(stockCurve, curveBounds, vfEditorMaxPoints);
                 if (vfCurveEditorEl) {
                   const replacement = buildVfCurveEditor();
                   vfCurveEditorEl.replaceWith(replacement);
@@ -1817,15 +1856,18 @@ export const tuningPage: Page = {
       // lock). The LOCK apply is composed by the lock editor itself (the
       // lock-mode branch - the floating apply is force-hidden in Lock mode).
       let settings: Settings;
+      const vfCurveApplyPayload = (): Array<{ voltageV: number; freqMhz: number }> => (
+        vfCurveNativeApplyDraft ?? vfCurveDraft
+      ).map((point) => ({ ...point }));
       if (only === 'vfCurve') {
-        settings = { vfCurve: vfCurveDraft.map((point) => ({ ...point })) };
+        settings = { vfCurve: vfCurveApplyPayload() };
       } else if (only !== undefined) {
         settings = buildScalarSettings({ [only]: values[only] }, { hiddenNegativeControls });
       } else {
         const scalarValues = { ...values };
         if (vfCurveSupported && vfCurveMode) delete scalarValues.gpuFreqOffsetMhz;
         settings = buildScalarSettings(scalarValues, { hiddenNegativeControls });
-        if (vfCurveSupported && vfCurveMode) settings.vfCurve = vfCurveDraft.map((point) => ({ ...point }));
+        if (vfCurveSupported && vfCurveMode) settings.vfCurve = vfCurveApplyPayload();
       }
       if (!validateSettingsPayload(settings)) {
         toast('error', 'Apply aborted', 'The settings payload failed validation - this is a bug.');
@@ -1926,8 +1968,13 @@ export const tuningPage: Page = {
             const wanted = settings[key as keyof typeof settings];
             if (typeof wanted === 'number') applied[key] = wanted;
             if (key === 'vfCurve' && Array.isArray(settings.vfCurve)) {
-              vfCurveApplied = settings.vfCurve.map((point) => ({ ...point }));
+              // The editor baseline is its compact display projection. A
+              // successful native STOCK reset therefore clears the native
+              // payload slot while keeping the visible draft comparable to
+              // the applied baseline.
+              vfCurveApplied = vfCurveDraft.map((point) => ({ ...point }));
               vfCurveDraft = vfCurveApplied.map((point) => ({ ...point }));
+              vfCurveNativeApplyDraft = null;
               vfCurveWasApplied = true;
             }
             // M17e/M22: the (0,0) unlock entries RODE the M17e-era offset
@@ -1976,7 +2023,7 @@ export const tuningPage: Page = {
         // the visible PL1/PL2 line from briefly (or permanently, when a
         // verifier samples immediately) showing the boot value after a new
         // power-limit apply.
-        await refreshSysmanLimits(deviceId);
+        if (!isBattlemageGpuName(caps.deviceName)) await refreshSysmanLimits(deviceId);
         if (!result.ok) {
           // The waiver may have been lost on the device (e.g. driver reset).
           const freshCaps = await api.getCapabilities(deviceId);
@@ -2082,6 +2129,17 @@ export const tuningPage: Page = {
     // current) - no full rebuild, no navigation.
     if (ocStateChanged(currentState, s.state)) {
       currentState = s.state;
+      if (vfCurveSupported && s.caps?.vfCurveRange) {
+        const nativeStock = Array.isArray(s.state?.vfCurveDefault)
+          && isValidNativeVfCurve(s.state.vfCurveDefault, s.caps.vfCurveRange)
+          ? s.state.vfCurveDefault.map((point) => ({ ...point }))
+          : null;
+        vfCurveDefault = nativeStock;
+        vfCurveDefaultDisplay = nativeStock
+          ? normalizeVfCurvePoints(nativeStock, s.caps.vfCurveRange, Math.min(VF_EDITOR_MAX_POINTS, s.caps.vfCurveRange.maxPoints))
+          : null;
+        if (!nativeStock) vfCurveNativeApplyDraft = null;
+      }
       if (vfCurveSupported && !vfCurveWasApplied && Array.isArray(s.state?.vfCurve) && s.state.vfCurve.length >= 2) {
         const bounds = s.caps?.vfCurveRange ?? { voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 400, freqMaxMhz: 4300, maxPoints: 32 };
         vfCurveDraft = normalizeVfCurvePoints(s.state.vfCurve, bounds, Math.min(VF_EDITOR_MAX_POINTS, bounds.maxPoints));

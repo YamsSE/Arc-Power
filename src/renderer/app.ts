@@ -25,6 +25,7 @@ import { deviceHardwareKey, resolveBootDevice, resolveFeaturesetSwapSelection } 
 import { isValidTheme } from './pure/theme.ts';
 import { primaryVideoController } from './pure/sysinfo.ts';
 import type { RecordingEngineState, TelemetrySample } from './types.ts';
+import { closeDropdownMenus } from './components/dropdown.ts';
 
 const PAGES: Record<PageId, Page> = {
   dashboard: dashboardPage,
@@ -362,6 +363,10 @@ function renderPage(id: PageId) {
   // M2b review F4: the page being left stops its timers/subscriptions
   // (e.g. Monitoring's FPS poll) before the next page renders.
   current?.leave?.();
+  // Shared dropdown menus are portaled to document.body. Close the active
+  // portal before replacing the page or device surface so stale options and
+  // focus state cannot survive a navigation/rerender.
+  closeDropdownMenus();
   current = PAGES[id] ?? dashboardPage;
   try {
     current.render(container, { store, selectDevice });

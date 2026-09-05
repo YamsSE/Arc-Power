@@ -585,22 +585,36 @@ export class OldIgcl {
     await this._sleep(this._delayedVerifyMs);
     const readBack = this._read(control, targetHandle);
     if (readBack !== null && nearlyEqual(readBack, target)) {
-      return { ok: true, readBackEqual: true };
+      return { ok: true, readBackEqual: true, readBackValue: readBack };
     }
-    // The Alchemist V1 temperature getter returns a zero sentinel after a
-    // successful extended write on the affected driver package. The setter
-    // has already returned SUCCESS and the delayed getter is not a usable
-    // verification value in this one case; reporting it as a failed write
-    // made valid 96-115 C applies appear broken in the UI. Keep all other
-    // mismatches strict, including a real zero-target request.
-    if (control === 'tempLimitC' && target > DRIVER_TEMP_LIMIT_MAX_C && readBack === 0) {
-      return { ok: true, readBackEqual: true };
+    // The bundled Alchemist getter owns this extended transaction. Some
+    // driver packages answer with the documented zero sentinel, while some
+    // expose no usable delayed getter at all. The native setter already
+    // returned SUCCESS, so accept either shape with explicit unavailable
+    // read-back metadata. Callers must keep the Driver line unavailable and
+    // must not convert this outcome into a false "in sync" state. A finite,
+    // non-zero mismatch remains a real failure.
+    if (control === 'tempLimitC' && target > DRIVER_TEMP_LIMIT_MAX_C
+      && (readBack === 0 || readBack === null)) {
+      return {
+        ok: true,
+        // Retain the historical true value for old callers that only use
+        // this flag as an apply-success gate; readBackUnavailable is the
+        // authoritative distinction for current UI/state consumers.
+        readBackEqual: true,
+        readBackUnavailable: true,
+        message: 'extended temperature limit accepted; bundled driver read-back unavailable',
+      };
     }
     const label = control === 'powerLimitW' ? 'power limit' : 'temperature limit';
     return {
       ok: false,
       errorCode: 'io-failed',
       readBackEqual: false,
+      // Presence of this field marks a bundled-runtime read-back attempt,
+      // including a finite mismatch. The routed layer must not replace that
+      // authoritative result with the unrelated DriverStore surface.
+      readBackValue: readBack,
       message: readBack === null
         ? `extended ${label}: set succeeded but read-back failed`
         : `extended ${label}: read-back ${readBack} != requested ${target}`,

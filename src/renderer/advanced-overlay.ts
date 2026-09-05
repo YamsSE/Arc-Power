@@ -39,6 +39,7 @@
 import { el, clear } from './dom.ts';
 import { api } from './ipc.ts';
 import { toast } from './components/toast.ts';
+import { buildDropdown, closeDropdownMenus, type DropdownElement } from './components/dropdown.ts';
 import { ensureWaiver } from './components/waiver-dialog.ts';
 import { Store } from './router.ts';
 import type { PageContext } from './router.ts';
@@ -66,7 +67,6 @@ import {
   resolveSelectionDevice,
   showDeviceSelector,
   deviceSelectorOptions,
-  selectorSelectionIndices,
   telemetryMatchesSelection,
 } from './pure/device.ts';
 import { chipState } from './pure/chip.ts';
@@ -347,6 +347,17 @@ function applyDeviceSelectionPush(payload: PanelSelection, devices: DeviceInfo[]
   stopTelemetryRetry();
   renderReadout(null);
   renderTab();
+  // A main-window selection push can arrive after the panel boot sequence has
+  // already finished. Pull the latest sample immediately for the exact
+  // identity, then keep the bounded retry path alive if the telemetry lane is
+  // still between device sessions. The generation/key checks in both helpers
+  // prevent a late old-device sample from entering the new panel state.
+  const generation = panelGeneration;
+  void syncLatestTelemetry(target.id, generation).finally(() => {
+    if (panelIdentityMatches(target.id, nextKey, generation) && !store.get().latestSample) {
+      scheduleTelemetryRetry(target.id, generation);
+    }
+  });
   return true;
 }
 
@@ -947,40 +958,8 @@ const RECORDING_QUICK_RESOLUTIONS: Array<[RecordingResolution, string]> = [
 ];
 const RECORDING_QUICK_FPS = [30, 60, 120];
 
-type RecordingQuickMenu = {
-  root: HTMLElement;
-  menu: HTMLElement;
-  close: (restoreFocus?: boolean) => void;
-};
-
-let openRecordingQuickMenu: RecordingQuickMenu | null = null;
-let recordingQuickMenuDismissBound = false;
-
-type AdvancedMenuOption<T extends string> = {
-  value: T;
-  label: string;
-  disabled?: boolean;
-};
-
-type AdvancedMenuSelectElement = HTMLElement & {
-  value: string;
-  setValue: (value: string) => void;
-};
-
 function closeOpenAdvancedMenu(restoreFocus = false): void {
-  openRecordingQuickMenu?.close(restoreFocus);
-}
-
-function bindRecordingQuickMenuDismiss(): void {
-  if (recordingQuickMenuDismissBound) return;
-  recordingQuickMenuDismissBound = true;
-  document.addEventListener('pointerdown', (event) => {
-    const active = openRecordingQuickMenu;
-    const target = event.target as Node | null;
-    if (active && target && !active.root.contains(target) && !active.menu.contains(target)) {
-      active.close(false);
-    }
-  });
+  closeDropdownMenus(restoreFocus);
 }
 
 function recordingQuickButton(text: string, onClick: () => void, className = 'btn btn-secondary', disabled = false): HTMLButtonElement {
@@ -993,201 +972,11 @@ function recordingQuickButton(text: string, onClick: () => void, className = 'bt
   }) as HTMLButtonElement;
 }
 
-function advancedMenuSelect<T extends string>(
-  value: T,
-  options: Array<AdvancedMenuOption<T>>,
-  onChange: (value: T) => void,
-  config: { className: string; ariaLabel: string; dataset?: Record<string, string> },
-): AdvancedMenuSelectElement {
-  // Native select popups are separate OS windows. On Windows they can fall
-  // below a screen-saver-level BrowserWindow while the Advanced Overlay's
-  // topmost timer is reasserting z-order. Keep every Advanced Overlay menu in
-  // this renderer so it remains part of the already-topmost panel.
-  bindRecordingQuickMenuDismiss();
-  const root = el('div', {
-    class: `adv-accessible-select ${config.className}`,
-    role: 'combobox',
-    tabindex: '0',
-    'aria-haspopup': 'listbox',
-    'aria-expanded': 'false',
-    'aria-label': config.ariaLabel,
-    dataset: config.dataset,
-  }) as unknown as AdvancedMenuSelectElement;
-  const valueNode = el('span', { class: 'adv-accessible-select-value' });
-  const menuId = `adv-recording-menu-${Math.random().toString(36).slice(2)}`;
-  const menu = el('div', {
-    class: 'adv-accessible-select-menu adv-recording-select-menu',
-    id: menuId,
-    role: 'listbox',
-    hidden: true,
-  });
-  const selection = selectorSelectionIndices(options, value);
-  let selected = selection.selectedIndex;
-  let active = selection.activeIndex;
-  const optionNodes: HTMLElement[] = [];
-
-  const updateValue = () => {
-    const selectedOption = options[selected];
-    valueNode.textContent = selectedOption?.label ?? '';
-    root.dataset.value = selectedOption?.value ?? '';
-    root.setAttribute('aria-activedescendant', `${menuId}-option-${active}`);
-    menu.querySelectorAll<HTMLElement>('[role="option"]').forEach((option, index) => {
-      option.setAttribute('aria-selected', index === selected ? 'true' : 'false');
-      option.classList.toggle('is-active', index === active);
-    });
-    optionNodes[active]?.scrollIntoView({ block: 'nearest' });
-  };
-  const close = (restoreFocus = false) => {
-    menu.hidden = true;
-    menu.remove();
-    root.setAttribute('aria-expanded', 'false');
-    root.removeAttribute('aria-activedescendant');
-    if (openRecordingQuickMenu?.root === root) openRecordingQuickMenu = null;
-    if (restoreFocus) root.focus();
-  };
-  const choose = (index: number) => {
-    const option = options[index];
-    if (!option || option.disabled) return;
-    selected = index;
-    active = index;
-    close(true);
-    updateValue();
-    onChange(option.value);
-  };
-  const open = () => {
-    if (openRecordingQuickMenu) openRecordingQuickMenu.close(false);
-    const rect = root.getBoundingClientRect();
-    const estimatedHeight = Math.min(320, options.length * 30 + 8);
-    const roomBelow = window.innerHeight - rect.bottom - 8;
-    const top = roomBelow >= estimatedHeight
-      ? rect.bottom + 4
-      : Math.max(8, rect.top - estimatedHeight - 4);
-    menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - Math.max(rect.width, 160) - 8))}px`;
-    menu.style.top = `${top}px`;
-    menu.style.minWidth = `${Math.max(rect.width, 160)}px`;
-    document.body.append(menu);
-    menu.hidden = false;
-    root.setAttribute('aria-expanded', 'true');
-    root.setAttribute('aria-controls', menuId);
-    const firstEnabled = options.findIndex((option) => option.disabled !== true);
-    active = options[selected]?.disabled === true && firstEnabled >= 0 ? firstEnabled : selected;
-    updateValue();
-    openRecordingQuickMenu = { root, menu, close };
-    root.focus();
-  };
-  const nextEnabled = (start: number, delta: number): number => {
-    if (!options.length) return 0;
-    let index = start;
-    for (let count = 0; count < options.length; count += 1) {
-      index = (index + delta + options.length) % options.length;
-      if (!options[index]?.disabled) return index;
-    }
-    return start;
-  };
-  const moveActive = (delta: number) => {
-    if (!options.length) return;
-    if (!openRecordingQuickMenu || openRecordingQuickMenu.root !== root) open();
-    active = nextEnabled(active, delta);
-    updateValue();
-  };
-  const setValue = (next: string): void => {
-    const index = options.findIndex((option) => option.value === next && !option.disabled);
-    if (index < 0) return;
-    selected = index;
-    active = index;
-    updateValue();
-  };
-  Object.defineProperty(root, 'value', {
-    configurable: true,
-    get: () => options[selected]?.value ?? '',
-    set: (next: string) => setValue(String(next)),
-  });
-  root.setValue = setValue;
-
-  root.append(valueNode);
-  options.forEach((optionData, index) => {
-    const option = el('div', {
-      class: `adv-accessible-select-option adv-recording-select-option${optionData.disabled ? ' is-disabled' : ''}`,
-      id: `${menuId}-option-${index}`,
-      role: 'option',
-      tabindex: '-1',
-      'aria-selected': index === selected ? 'true' : 'false',
-      'aria-disabled': optionData.disabled ? 'true' : 'false',
-      text: optionData.label,
-      dataset: { value: optionData.value },
-    });
-    optionNodes.push(option);
-    option.addEventListener('pointermove', () => {
-      if (!optionData.disabled) {
-        active = index;
-        updateValue();
-      }
-    });
-    option.addEventListener('click', (event) => {
-      event.preventDefault();
-      choose(index);
-    });
-    menu.append(option);
-  });
-  updateValue();
-  root.addEventListener('click', () => {
-    if (openRecordingQuickMenu?.root === root) close(true);
-    else open();
-  });
-  root.addEventListener('keydown', (event: KeyboardEvent) => {
-    if (event.key === 'Escape') {
-      if (openRecordingQuickMenu?.root === root) close(true);
-      event.preventDefault();
-      return;
-    }
-    if (event.key === 'ArrowDown') {
-      moveActive(1);
-      event.preventDefault();
-      return;
-    }
-    if (event.key === 'ArrowUp') {
-      moveActive(-1);
-      event.preventDefault();
-      return;
-    }
-    if (event.key === 'Home' && openRecordingQuickMenu?.root === root) {
-      const firstEnabled = options.findIndex((option) => option.disabled !== true);
-      active = firstEnabled >= 0 ? firstEnabled : selected;
-      updateValue();
-      event.preventDefault();
-      return;
-    }
-    if (event.key === 'End' && openRecordingQuickMenu?.root === root) {
-      active = Math.max(0, (() => {
-        for (let index = options.length - 1; index >= 0; index -= 1) {
-          if (!options[index]?.disabled) return index;
-        }
-        return 0;
-      })());
-      updateValue();
-      event.preventDefault();
-      return;
-    }
-    if (event.key === 'Enter' || event.key === ' ') {
-      if (openRecordingQuickMenu?.root === root) choose(active);
-      else open();
-      event.preventDefault();
-    }
-  });
-  root.addEventListener('focusout', (event: FocusEvent) => {
-    const related = event.relatedTarget as Node | null;
-    if (related && (root.contains(related) || menu.contains(related))) return;
-    window.setTimeout(() => {
-      if (openRecordingQuickMenu?.root === root && document.activeElement !== root) close(false);
-    }, 0);
-  });
-  return root;
-}
-
-function recordingQuickSelect<T extends string>(value: T, options: Array<[T, string]>, onChange: (value: T) => void, ariaLabel: string): AdvancedMenuSelectElement {
-  return advancedMenuSelect(value, options.map(([optionValue, label]) => ({ value: optionValue, label })), onChange, {
+function recordingQuickSelect<T extends string>(value: T, options: Array<[T, string]>, onChange: (value: T) => void, ariaLabel: string): DropdownElement {
+  return buildDropdown(value, options.map(([optionValue, label]) => ({ value: optionValue, label })), {
     className: 'adv-recording-select',
     ariaLabel,
+    onChange: (next) => onChange(next as T),
   });
 }
 
@@ -1201,16 +990,20 @@ function buildAdvancedDeviceSelect(onSwitch: (id: number) => void): HTMLElement 
       keyCounts.set(device.deviceKey, (keyCounts.get(device.deviceKey) ?? 0) + 1);
     }
   }
-  return advancedMenuSelect(String(s.deviceId ?? ''), options.map((option) => {
+  return buildDropdown(String(s.deviceId ?? ''), options.map((option) => {
     const device = s.devices.find((candidate) => candidate.id === option.id);
     const stable = typeof device?.deviceKey === 'string'
       && device.deviceKey.length > 0
       && keyCounts.get(device.deviceKey) === 1;
     return { value: String(option.id), label: option.label, disabled: !stable };
-  }), (value) => {
-    const id = Number(value);
-    if (Number.isInteger(id)) onSwitch(id);
-  }, { className: 'device-select', ariaLabel: 'Select GPU' });
+  }), {
+    className: 'device-select',
+    ariaLabel: 'Select GPU',
+    onChange: (value) => {
+      const id = Number(value);
+      if (Number.isInteger(id)) onSwitch(id);
+    },
+  });
 }
 
 function recordingQuickField(label: string, control: HTMLElement, note?: string): HTMLElement {
@@ -1690,18 +1483,19 @@ function renderGraphicsCards(view: HTMLElement): void {
       ]);
     }
     const current = (graphicsDraft as Record<string, unknown>)[key] as string;
-    const select = advancedMenuSelect(current, options.map((option) => ({
+    const select = buildDropdown(current, options.map((option) => ({
       value: option,
       label: DROPDOWN_LABELS[key]?.[option] ?? option,
-    })), (next) => {
+    })), {
+      className: 'graphics-select',
+      ariaLabel: CARD_TITLES[key] ?? key,
+      dataset: { graphicsSelect: key },
+      onChange: (next) => {
         (graphicsDraft as Record<string, unknown>)[key] = next;
         refreshChip(key);
         updateFloating();
-      }, {
-        className: 'graphics-select',
-        ariaLabel: CARD_TITLES[key] ?? key,
-        dataset: { graphicsSelect: key },
-      });
+      },
+    });
     const chipApplyBtn = el('button', {
       class: 'chip chip-btn oc-chip-apply',
       hidden: true,
@@ -1736,21 +1530,22 @@ function renderGraphicsCards(view: HTMLElement): void {
     }
     const range = frameLimitRange(state);
     const fl = graphicsDraft.frameLimit ?? { enabled: false, value: range.default };
-    const toggle = advancedMenuSelect(fl.enabled ? 'on' : 'off', [
+    const toggle = buildDropdown(fl.enabled ? 'on' : 'off', [
       { value: 'off', label: 'FPS Limit Off' },
       { value: 'on', label: 'FPS Limit On' },
-    ], (next) => {
+    ], {
+      className: 'graphics-select graphics-toggle',
+      ariaLabel: 'FPS limiter',
+      dataset: { graphicsToggle: 'frameLimit' },
+      onChange: (next) => {
         const on = next === 'on';
         graphicsDraft.frameLimit = { enabled: on, value: on ? clampFrameLimitValue(fl.value, range) : fl.value };
         const row = view.querySelector<HTMLElement>('.graphics-fps-slider-row');
         if (row) row.hidden = !on;
         refreshChip('frameLimit');
         updateFloating();
-      }, {
-        className: 'graphics-select graphics-toggle',
-        ariaLabel: 'FPS limiter',
-        dataset: { graphicsToggle: 'frameLimit' },
-      });
+      },
+    });
     const slider = el('input', {
       type: 'range',
       class: 'graphics-slider',
@@ -1811,13 +1606,13 @@ function renderGraphicsCards(view: HTMLElement): void {
         const defaultValue = documentedDefault && options.includes(documentedDefault) ? documentedDefault : options[0];
         if (defaultValue) {
           (graphicsDraft as Record<string, unknown>)[key] = defaultValue;
-          const select = view.querySelector<AdvancedMenuSelectElement>('[data-graphics-select="' + key + '"]');
+          const select = view.querySelector<DropdownElement>('[data-graphics-select="' + key + '"]');
           if (select) select.setValue(defaultValue);
         }
       }
       const range = frameLimitRange(state);
       graphicsDraft.frameLimit = { enabled: false, value: range.default };
-      const toggle = view.querySelector<AdvancedMenuSelectElement>('[data-graphics-toggle="frameLimit"]');
+      const toggle = view.querySelector<DropdownElement>('[data-graphics-toggle="frameLimit"]');
       if (toggle) toggle.setValue('off');
       const slider = view.querySelector<HTMLInputElement>('.graphics-fps-slider-row input[type="range"]');
       if (slider) slider.value = String(range.default);

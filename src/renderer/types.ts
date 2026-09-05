@@ -59,6 +59,8 @@ export interface DeviceState {
   vramVoltOffsetV: number | null;
   gpuLock: { voltageV: number; freqMhz: number } | null;
   vfCurve: Array<{ voltageV: number; freqMhz: number }> | null;
+  /** Driver-owned STOCK simplified curve used by Battlemage Reset to default. */
+  vfCurveDefault?: Array<{ voltageV: number; freqMhz: number }> | null;
   /** The VF-curve voltage unit used by the backend contract. IGCL exposes the
    *  native point field in millivolts; the app normalizes it to volts before
    *  handing it to the renderer and converts it back on write. */
