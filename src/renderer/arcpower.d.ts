@@ -31,6 +31,7 @@ import type {
   ProfilesEnvelope,
   ProfileSettingsState,
   PowerLimitsRead,
+  VoltageOffsetRead,
   RegistryCatalogResponse,
   RegistryApplyResponse,
   RecordingClip,
@@ -82,6 +83,8 @@ export interface ArcPowerApi {
    *  line; never throws). M17f (step-4 N2): DEVICE-SCOPED like every read
    *  channel - the domain is per-device. */
   powerLimitsRead(deviceId: number): Promise<PowerLimitsRead | null>;
+  /** Read the legacy Sysman voltage target/offset used by Alchemist tuning. */
+  voltageOffsetRead(deviceId: number): Promise<VoltageOffsetRead | null>;
   /** M8 (the Graphics tab): the 3D-feature read (never throws - the
    *  all-false/null state is the honest "not supported on this GPU" degrade).
    *  NEVER called with a null deviceId - the no-Intel page guard renders

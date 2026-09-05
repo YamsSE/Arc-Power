@@ -155,6 +155,14 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
   let previousRecordingState = recordingEngine?.getState?.() ?? null;
   const unsubscribeRecordingState = recordingEngine?.subscribe?.((state) => {
     pushRecordingState({ getWindow, state, getHotkeyState: getRecordingHotkeyState });
+    // The Advanced Overlay has its own renderer and therefore does not see
+    // the main window's recording-state push. Forward the same normalized
+    // envelope so its Record/Replay Buffer quick actions stay live when a
+    // global hotkey or the main Recording page changes the engine.
+    const advancedOverlayWin = getAdvancedOverlayWindow();
+    if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) {
+      advancedOverlayWin.webContents.send(RECORDING_STATE_CHANNEL, { ...state, hotkeys: getRecordingHotkeyState() });
+    }
     try { onRecordingState(state, previousRecordingState); } catch { /* desktop notifications are best effort */ }
     previousRecordingState = state;
   });

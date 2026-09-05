@@ -1171,6 +1171,158 @@ export function loadIgcl(dllPath) {
   return fn;
 }
 
+/**
+ * Create the small IGCL bridge needed by the legacy Sysman frequency
+ * overclock calls. Sysman owns the actual frequency/voltage write, but the
+ * driver still requires the per-process IGCL overclock waiver to have been
+ * established first. Keeping this bridge separate lets the electron-free
+ * Sysman helper establish that state without loading the full IGCL backend.
+ *
+ * The bridge never accepts a waiver on its own: callers must pass
+ * `accepted: true`, which is the parent application's already-persisted/user
+ * accepted consent. A missing or false flag is refused before any native
+ * call. Adapter selection is exact by the parent-provided PCI/BDF proof.
+ *
+ * @param {{ findDll?: () => string|null, log?: (s: string) => void }} [opts]
+ * @returns {{ setForTarget: (physicalTarget: object|null, accepted?: boolean) => { ok: boolean, errorCode?: string, message?: string }, close: () => void }}
+ */
+export function createIgclWaiverBridge({ findDll = findIgclDll, log = () => {} } = {}) {
+  let lib = null;
+  let apiHandle = null;
+  let devices = null;
+  let failure = null;
+
+  const normalizeBdf = (value) => {
+    if (typeof value === 'string') {
+      const match = value.trim().match(/^(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,2}):([0-9a-f]{1,2})\.([0-7])$/i);
+      if (!match) return null;
+      return `${Number.parseInt(match[1] ?? '0', 16).toString(16).padStart(4, '0')}:${Number.parseInt(match[2], 16).toString(16).padStart(2, '0')}:${Number.parseInt(match[3], 16).toString(16).padStart(2, '0')}.${match[4]}`;
+    }
+    if (!value || typeof value !== 'object') return null;
+    const domain = Number(value.domain ?? value.segment ?? 0);
+    const bus = Number(value.bus);
+    const device = Number(value.device);
+    const fn = Number(value.function ?? value.func ?? 0);
+    if (![domain, bus, device, fn].every(Number.isInteger)
+      || domain < 0 || bus < 0 || device < 0 || fn < 0) return null;
+    return `${domain.toString(16).padStart(4, '0')}:${bus.toString(16).padStart(2, '0')}:${device.toString(16).padStart(2, '0')}.${fn}`;
+  };
+
+  const targetBdf = (physicalTarget) => normalizeBdf(
+    typeof physicalTarget === 'string'
+      ? physicalTarget
+      : physicalTarget?.bdf ?? physicalTarget?.controllerBdf,
+  );
+
+  const fail = (errorCode, message) => ({ ok: false, errorCode, message });
+
+  const ensure = () => {
+    if (devices) return true;
+    if (failure) return false;
+    try {
+      const dllPath = findDll();
+      if (!dllPath) throw new Error('IGCL runtime DLL not found');
+      lib = loadIgcl(dllPath);
+      if (typeof lib.ctlInit !== 'function'
+        || typeof lib.ctlEnumerateDevices !== 'function'
+        || typeof lib.ctlGetDeviceProperties !== 'function'
+        || typeof lib.ctlOverclockWaiverSet !== 'function') {
+        throw new Error('the IGCL waiver symbols are unavailable in the runtime');
+      }
+
+      const initBuf = koffi.alloc('ctl_init_args_t', 1);
+      const apiBuf = koffi.alloc('void*', 1);
+      const init = (flags) => {
+        koffi.encode(initBuf, 'ctl_init_args_t', {
+          Size: koffi.sizeof('ctl_init_args_t'),
+          Version: 0,
+          AppVersion: makeVersion(1, 1),
+          flags,
+          SupportedVersion: 0,
+          ApplicationUID: { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] },
+        });
+        koffi.encode(apiBuf, 'void*', 0n);
+        return lib.ctlInit(initBuf, apiBuf);
+      };
+      let result = init(CTL_INIT_FLAG_USE_LEVEL_ZERO | CTL_INIT_FLAG_IGSC_FUL);
+      if ((result >>> 0) === CTL_RESULT.ERROR_IGSC_LOADER) {
+        const failedHandle = koffi.decode(apiBuf, 0, 'void*');
+        if (failedHandle && typeof lib.ctlClose === 'function') {
+          try { lib.ctlClose(failedHandle); } catch { /* best effort */ }
+        }
+        result = init(CTL_INIT_FLAG_USE_LEVEL_ZERO);
+      }
+      if (result !== CTL_RESULT.SUCCESS) throw new Error(`ctlInit failed: ${describeResult(result)}`);
+      apiHandle = koffi.decode(apiBuf, 0, 'void*');
+      if (!apiHandle) throw new Error('ctlInit returned a null API handle');
+
+      const countBuf = koffi.alloc('uint32', 1);
+      koffi.encode(countBuf, 'uint32', 0);
+      result = lib.ctlEnumerateDevices(apiHandle, countBuf, null);
+      if (result !== CTL_RESULT.SUCCESS) throw new Error(`ctlEnumerateDevices(count) failed: ${describeResult(result)}`);
+      const count = koffi.decode(countBuf, 'uint32');
+      if (count === 0) throw new Error('IGCL enumerated no adapters');
+      const handlesBuf = koffi.alloc('void*', count);
+      koffi.encode(countBuf, 'uint32', count);
+      result = lib.ctlEnumerateDevices(apiHandle, countBuf, handlesBuf);
+      if (result !== CTL_RESULT.SUCCESS) throw new Error(`ctlEnumerateDevices(fill) failed: ${describeResult(result)}`);
+
+      devices = [];
+      for (let i = 0; i < count; i++) {
+        const handle = koffi.decode(handlesBuf, i * 8, 'void*');
+        const propsBuf = koffi.alloc('ctl_device_adapter_properties_t', 1);
+        koffi.encode(propsBuf, 'ctl_device_adapter_properties_t', {
+          Size: koffi.sizeof('ctl_device_adapter_properties_t'), Version: 3,
+        });
+        result = lib.ctlGetDeviceProperties(handle, propsBuf);
+        if (result !== CTL_RESULT.SUCCESS) throw new Error(`ctlGetDeviceProperties(${i}) failed: ${describeResult(result)}`);
+        const props = koffi.decode(propsBuf, 'ctl_device_adapter_properties_t');
+        const bdf = normalizeBdf({
+          bus: props.adapter_bdf.bus,
+          device: props.adapter_bdf.device,
+          function: props.adapter_bdf.function,
+        });
+        devices.push({ handle, bdf });
+      }
+      return true;
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+      log(`IGCL Sysman waiver bridge unavailable: ${failure}`);
+      return false;
+    }
+  };
+
+  return {
+    /** Initialize and enumerate IGCL before the Sysman context is opened. */
+    warm() {
+      return ensure();
+    },
+    setForTarget(physicalTarget, accepted = false) {
+      if (accepted !== true) return fail('waiver-not-set', 'the Sysman voltage write requires an accepted overclock waiver');
+      if (!ensure()) return fail('unavailable', failure ?? 'the IGCL waiver bridge is unavailable');
+      const wanted = targetBdf(physicalTarget);
+      if (!wanted) return fail('stale-target', 'the Sysman voltage write requires an exact PCI/BDF target');
+      const matches = devices.filter((device) => device.bdf === wanted);
+      if (matches.length !== 1) return fail('stale-target', `the IGCL waiver bridge found ${matches.length} adapters for PCI/BDF ${wanted}`);
+      try {
+        const result = lib.ctlOverclockWaiverSet(matches[0].handle);
+        if (result === CTL_RESULT.SUCCESS) return { ok: true };
+        return fail('io-failed', `ctlOverclockWaiverSet failed: ${describeResult(result)}`);
+      } catch (error) {
+        return fail('io-failed', error instanceof Error ? error.message : String(error));
+      }
+    },
+    close() {
+      if (apiHandle && typeof lib?.ctlClose === 'function') {
+        try { lib.ctlClose(apiHandle); } catch { /* best effort */ }
+      }
+      apiHandle = null;
+      lib = null;
+      devices = null;
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

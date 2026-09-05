@@ -13,7 +13,7 @@
   <!-- M23 (Part B §Design): the AMD-Adrenaline-style interactive side
        panel. Header (the Arc logo + the "Arc Power" wordmark + the LIVE
        readout strip + the drag region + the close button), the segmented
-       Tuning | Fan | Graphics tabs, the tab content, and the compact
+       Tuning | Fan | Graphics | Recording tabs, the tab content, and the compact
        "driver state" footer (device name + the live lock readout). The
        panel is INTERACTIVE - no setIgnoreMouseEvents, the drag region is
        the only -webkit-app-region: drag surface. -->
@@ -50,6 +50,7 @@
         <button class="adv-tab adv-tab-active" data-tab="tuning" role="tab" aria-selected="true">Tuning</button>
         <button class="adv-tab" data-tab="fan" role="tab" aria-selected="false">Fan</button>
         <button class="adv-tab" data-tab="graphics" role="tab" aria-selected="false">Graphics</button>
+        <button class="adv-tab" data-tab="recording" role="tab" aria-selected="false">Recording</button>
       </nav>
     </header>
     <main class="adv-content" id="adv-content"></main>

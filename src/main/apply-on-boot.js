@@ -428,7 +428,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     // M17d (Run D): ocMode: OC_MODE_ADVANCED - the same mode ocModeRefusal
     // received above, threaded into the split (the V1-call pin: a profile's
     // W/C values route through the bundled 2023 runtime's V1 setters).
-    const out = withCapabilityRefusal(await executeApply({ backend, oldIgcl, deviceId: deviceId_, deviceKey: targetDeviceKey, physicalTarget: physicalTargetOf(resolvedTarget), settings: routedProfileSettings, log, opts: { profileApply: true }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits }));
+    const out = withCapabilityRefusal(await executeApply({ backend, oldIgcl, deviceId: deviceId_, deviceKey: targetDeviceKey, physicalTarget: physicalTargetOf(resolvedTarget), settings: routedProfileSettings, log, opts: { profileApply: true, waiverAccepted }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits }));
     if (out.extendedUnavailable !== true && out.extendedUnavailablePartial !== true) recordRefusals(out.result);
     return out;
   };

@@ -25,6 +25,56 @@ import { deviceLimitsOf } from '../renderer/pure/device-limits.ts';
 
 export const STD_PL_MAX_W = 252;
 export const STD_TL_MAX_C = 90;
+// Native Sysman voltage-offset support is intentionally limited to the
+// negative Alchemist path. Keep the product's maximum request at -200 mV;
+// Battlemage percent units remain on IGCL.
+export const ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V = -0.200;
+
+function isNegativeAlchemistVoltage(settings, ranges) {
+  return (ranges?.gpuVoltOffsetV?.units === 'V' || ranges?.gpuVoltOffsetV?.units === undefined)
+    && typeof settings?.gpuVoltOffsetV === 'number'
+    && Number.isFinite(settings.gpuVoltOffsetV)
+    && settings.gpuVoltOffsetV < 0;
+}
+
+function isNonNegativeAlchemistVoltage(settings, ranges) {
+  return ranges?.gpuVoltOffsetV?.units === 'V'
+    && typeof settings?.gpuVoltOffsetV === 'number'
+    && Number.isFinite(settings.gpuVoltOffsetV)
+    && settings.gpuVoltOffsetV >= 0;
+}
+
+async function readSysmanVoltageOffset(sysmanPowerLimits, deviceId, physicalTarget) {
+  if (!sysmanPowerLimits) return { ok: false, errorCode: 'unsupported', message: 'the sysman voltage offset setter is unavailable' };
+  try {
+    const result = typeof sysmanPowerLimits.readVoltageOffsetResult === 'function'
+      ? await sysmanPowerLimits.readVoltageOffsetResult(deviceId, physicalTarget)
+      : typeof sysmanPowerLimits.readVoltageOffset === 'function'
+        ? await sysmanPowerLimits.readVoltageOffset(deviceId, physicalTarget)
+        : null;
+    if (result?.ok === false) return result;
+    if (result && Number.isFinite(result.offsetV)) return { ok: true, ...result };
+    return { ok: false, errorCode: 'unavailable', message: 'the sysman voltage offset read returned no result (the consumer is unavailable)' };
+  } catch (err) {
+    return { ok: false, errorCode: 'unavailable', message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function setSysmanVoltageOffset(sysmanPowerLimits, offsetV, deviceId, physicalTarget, waiverAccepted = false) {
+  if (!sysmanPowerLimits || typeof sysmanPowerLimits.setVoltageOffset !== 'function') {
+    return { ok: false, errorCode: 'unsupported', message: 'the sysman voltage offset setter is unavailable' };
+  }
+  try {
+    return await sysmanPowerLimits.setVoltageOffset({ offsetV, ...(waiverAccepted === true ? { waiverAccepted: true } : {}) }, deviceId, physicalTarget);
+  } catch (err) {
+    return { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function verifiedVoltageResult(result, wantedOffsetV) {
+  return result?.ok === true && Number.isFinite(result.offsetV)
+    && Math.abs(result.offsetV - wantedOffsetV) <= 0.0005;
+}
 
 /**
  * M17c: resolve the DEVICE-SCOPED gate thresholds from the pure limits
@@ -384,6 +434,13 @@ export function extendedRangesFor(caps) {
     const learnedMax = caps?.learnedCeilings?.tempLimitC;
     const hasLearnedCeiling = isValidLearnedTempCeiling(learnedMax, tl);
     out.tempLimitC = { ...tl, max: hasLearnedCeiling ? learnedMax : EXTENDED_TL_MAX_C };
+  }
+  const volt = ranges.gpuVoltOffsetV;
+  if (volt && volt.units === 'V') {
+    // Profile/worker applies use the driver's true ranges rather than the
+    // stock UI ranges; keep the same Alchemist Sysman safety floor there so
+    // a hand-edited profile cannot request below -200 mV.
+    out.gpuVoltOffsetV = { ...volt, min: ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V };
   }
   return out;
 }
@@ -969,7 +1026,16 @@ export function isMomentaryLieCandidate(per) {
  * }>}
  */
 export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey = null, physicalTarget = null, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null }) {
-  const { driverstore: allDriverstore, extended } = splitByRuntime(settings, ranges, mode, sysmanPowerLimits, limitsKey);
+  const negativeAlchemistVoltage = isNegativeAlchemistVoltage(settings, ranges);
+  const nonNegativeAlchemistVoltage = isNonNegativeAlchemistVoltage(settings, ranges);
+  // The legacy Sysman target API is the only working negative-voltage path on
+  // Alchemist. Remove that one control before the IGCL apply so the V2 setter
+  // can never emit the old io-failed/unsupported write. Percent-unit
+  // Battlemage voltage is deliberately left in the normal DriverStore path.
+  const runtimeSettings = negativeAlchemistVoltage
+    ? Object.fromEntries(Object.entries(settings).filter(([key]) => key !== 'gpuVoltOffsetV'))
+    : settings;
+  const { driverstore: allDriverstore, extended } = splitByRuntime(runtimeSettings, ranges, mode, sysmanPowerLimits, limitsKey);
   // M41: keep fan/VF writes after the extended W/C phase. The driver has
   // different ownership/order rules for those controls in Advanced mode.
   const hasExtendedControls = mode === OC_MODE_ADVANCED && Object.keys(extended).length > 0;
@@ -1007,7 +1073,93 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
     }
   };
 
+  const activeLock = settings.gpuLock
+    && (settings.gpuLock.voltageV !== 0 || settings.gpuLock.freqMhz !== 0);
+  let lockPriorVoltage = null;
+  if (activeLock && !negativeAlchemistVoltage && !nonNegativeAlchemistVoltage && sysmanPowerLimits) {
+    // Establish the legacy Sysman state before touching the lock. This keeps
+    // a lock-only request from landing while an unknown Sysman undervolt may
+    // still be active underneath it.
+    lockPriorVoltage = await readSysmanVoltageOffset(sysmanPowerLimits, deviceId, physicalTarget);
+    if (lockPriorVoltage.ok !== true) {
+      return {
+        result: {
+          ok: false,
+          perControl: {
+            gpuLock: {
+              ok: false,
+              errorCode: lockPriorVoltage.errorCode ?? 'unavailable',
+              message: lockPriorVoltage.message ?? 'a readable Sysman voltage state is required before GPU lock can be applied',
+            },
+          },
+          pl2Note: null,
+        },
+        attempts: 1,
+      };
+    }
+  }
+
+  // A non-negative V-unit request is owned by the canonical IGCL writer.
+  // Clear a stale legacy Sysman undervolt BEFORE that write: on drivers (and
+  // in the mock's shared state mirror) a later Sysman zero-clear can otherwise
+  // overwrite the positive IGCL value that just applied.
+  if (nonNegativeAlchemistVoltage && sysmanPowerLimits && typeof sysmanPowerLimits.setVoltageOffset === 'function') {
+    const prior = await readSysmanVoltageOffset(sysmanPowerLimits, deviceId, physicalTarget);
+    const needsClear = prior.ok !== true || !Number.isFinite(prior.offsetV) || prior.offsetV < -0.0005;
+    if (needsClear) {
+      const clear = await setSysmanVoltageOffset(sysmanPowerLimits, 0, deviceId, physicalTarget, opts.waiverAccepted === true);
+      log(clear.ok === true
+        ? '[apply] cleared the stale Sysman negative voltage offset before the non-negative IGCL voltage request'
+        : `[apply] stale Sysman voltage cleanup did not verify (${clear.message ?? clear.errorCode ?? 'unknown'}) - the IGCL result remains canonical`);
+    }
+  }
+
   await applyDriverstore(driverstore);
+
+  if (activeLock && !negativeAlchemistVoltage && !nonNegativeAlchemistVoltage && sysmanPowerLimits) {
+    // Lock-only payloads also have to remove a legacy Sysman undervolt. Do
+    // not claim the lock is clean when the prior Sysman state cannot be read;
+    // that would leave an unknown voltage writer active underneath the lock.
+    if (lockPriorVoltage.offsetV < -0.0005) {
+      const clear = await setSysmanVoltageOffset(sysmanPowerLimits, 0, deviceId, physicalTarget, opts.waiverAccepted === true);
+      if (!verifiedVoltageResult(clear, 0)) {
+        perControl.gpuLock = { ok: false, errorCode: clear.errorCode ?? 'io-failed', message: clear.message ?? 'the Sysman voltage offset could not be cleared while GPU lock is active' };
+      }
+    }
+  } else if (negativeAlchemistVoltage) {
+    const wantedOffsetV = Math.max(ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V, settings.gpuVoltOffsetV);
+    const lock = settings.gpuLock;
+    const lockNonZero = lock && (lock.voltageV !== 0 || lock.freqMhz !== 0);
+    if (lockNonZero) {
+      // A non-zero GPU lock owns the frequency/voltage pair. Clear any stale
+      // Sysman undervolt instead of applying the negative request after the
+      // backend has normalized the lock payload to zero offsets.
+      const prior = await readSysmanVoltageOffset(sysmanPowerLimits, deviceId, physicalTarget);
+      const clear = await setSysmanVoltageOffset(sysmanPowerLimits, 0, deviceId, physicalTarget, opts.waiverAccepted === true);
+      if (clear.ok !== true || (clear.offsetV !== undefined && !verifiedVoltageResult(clear, 0))) {
+        perControl.gpuVoltOffsetV = { ok: false, errorCode: clear.errorCode ?? 'io-failed', message: clear.message ?? 'the Sysman voltage offset could not be cleared while GPU lock is active' };
+      } else {
+        perControl.gpuVoltOffsetV = { ok: true, readBackEqual: true };
+      }
+      if (prior.ok === false && clear.ok !== true) {
+        log(`[apply] negative Alchemist voltage skipped because GPU lock is active and the stale Sysman offset could not be cleared (${prior.message ?? prior.errorCode ?? 'unavailable'})`);
+      }
+    } else {
+      const result = await setSysmanVoltageOffset(sysmanPowerLimits, wantedOffsetV, deviceId, physicalTarget, opts.waiverAccepted === true);
+      if (verifiedVoltageResult(result, wantedOffsetV)) {
+        perControl.gpuVoltOffsetV = { ok: true, readBackEqual: true };
+        if (wantedOffsetV !== settings.gpuVoltOffsetV) {
+          log(`[apply] negative Alchemist voltage was capped at ${wantedOffsetV.toFixed(3)} V (the requested value was ${settings.gpuVoltOffsetV.toFixed(3)} V)`);
+        }
+      } else {
+        perControl.gpuVoltOffsetV = {
+          ok: false,
+          errorCode: result?.errorCode ?? 'io-failed',
+          message: result?.message ?? 'the Sysman voltage offset setter did not return an exact finite read-back',
+        };
+      }
+    }
+  }
 
   if (Object.keys(extended).length > 0) {
     log(`[apply] extended controls: [${Object.keys(extended).join(', ')}] via the bundled 2023 IGCL runtime`);
@@ -1333,6 +1485,20 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   const clampRanges = opts.profileApply === true || sysmanPrimaryRequest
     ? extendedRangesFor(caps)
     : caps.ranges;
+  // Real Alchemist drivers often report the IGCL voltage range with a
+  // non-negative floor even though the working legacy Sysman target API can
+  // accept negative offsets. Give the routed negative path its explicit
+  // canonical floor before clampAndSnap; Battlemage percent units do not
+  // enter this branch.
+  const effectiveClampRanges = caps.ranges?.gpuVoltOffsetV?.units === 'V'
+    ? {
+        ...clampRanges,
+        gpuVoltOffsetV: {
+          ...clampRanges.gpuVoltOffsetV,
+          min: ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V,
+        },
+      }
+    : clampRanges;
   const capabilityRefusal = tempCapabilityRefusal(settings, clampRanges);
   const capabilityControls = capabilityRefusal?.controls ?? [];
   const capabilityPerControl = capabilityRefusal
@@ -1387,7 +1553,7 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   const clamped = {};
   for (const [key, value] of Object.entries(routedSettings)) {
     if (value === null || value === undefined) continue;
-    const range = clampRanges[key];
+    const range = effectiveClampRanges[key];
     clamped[key] = range && typeof value === 'number'
       ? clampAndSnap(value, range)
       : value;
@@ -1406,9 +1572,15 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
     && oldIgcl.isAvailable() === true
     ? OC_MODE_STOCK
     : ocMode;
-  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: caps.ranges, mode: routeMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
+  const out = await applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: effectiveClampRanges, mode: routeMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+  if (isNegativeAlchemistVoltage(clamped, effectiveClampRanges)
+    && out.result.perControl.gpuVoltOffsetV?.ok === true
+    && sysmanPowerLimits) {
+    const readBack = await readSysmanVoltageOffset(sysmanPowerLimits, deviceId, physicalTarget);
+    if (readBack.ok === true && state && Number.isFinite(readBack.offsetV)) state.gpuVoltOffsetV = readBack.offsetV;
+  }
   if (partialUnavailable || partialCapability) {
     const perControl = {
       ...out.result.perControl,

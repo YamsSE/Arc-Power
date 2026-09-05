@@ -45,7 +45,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
-import { resolveArcPowerCachePath, shouldClearCache, filterRelaunchArgs, ensureCacheDirectorySync, resetCacheDirectorySync } from './cache-lifecycle.js';
+import { prepareArcPowerCacheSync, resolveArcPowerCachePath, shouldClearCache, filterRelaunchArgs, ensureCacheDirectorySync, resetCacheDirectorySync } from './cache-lifecycle.js';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
@@ -126,6 +126,7 @@ import { createUnifiedGpuBackend } from './gpu-inventory.js';
 // the MOCK seam (mock/ui-verify) answers the fixture limits through the
 // backend and never touches the DLL.
 import { createSysmanPowerLimits, createMockSysmanPowerLimits } from './sysman/power-limits.js';
+import { createIgclWaiverBridge } from './backend/igcl-bindings.js';
 // M17d (Run E): the --profile-boot stage-timing harness (env-gated; a no-op
 // in product runs - see profile-boot.js).
 import { markProfileBoot, bootProfilingEnabled, profileElapsedMs } from './profile-boot.js';
@@ -611,12 +612,21 @@ async function main() {
     } catch { /* best effort during shutdown */ }
     startupSplash = null;
   };
-  const startupSplashReady = app.isPackaged
+  const shouldPrepareStartupSplash = app.isPackaged
     && (startupBuildKind === 'installed' || startupBuildKind === 'portable')
     && !headless && !uiVerify && !profileBoot && !mock && !bootApply
     && !workerReqFile && !sysmanHelperReqFile && sysmanHelperPipeIdx < 0
-    && !applyProfileId
-    ? app.whenReady().then(async () => {
+    && !applyProfileId;
+  let startupSplashReady = null;
+
+  // Do not call app.whenReady() until the versioned cache gate has selected
+  // the current userData path. Electron initializes and can lock its default
+  // `%APPDATA%\\arc-power` path as soon as readiness is requested; doing that
+  // before the migration reset makes the normal window path fail while the
+  // headless path still appears healthy.
+  const prepareStartupSplash = () => {
+    if (!shouldPrepareStartupSplash) return;
+    startupSplashReady = app.whenReady().then(async () => {
       // Start independently of splash creation: a failed BrowserWindow must
       // not remove the titlebar's startup update check.
       const startupUpdatePromise = startupUpdate.start({ buildKind: startupBuildKind });
@@ -661,8 +671,8 @@ async function main() {
         startupUpdate.continueWithoutPrompt();
       }
       return startupUpdate.decision();
-    })
-    : null;
+    });
+  };
 
   // M52: acquire the UI lock while Electron still has its default
   // %APPDATA%\arc-power userData identity. Switching to ArcPowerCache first
@@ -694,22 +704,46 @@ async function main() {
     });
   }
 
-  // M52: the dedicated ArcPowerCache root is synchronously created and
-  // selected before any await, app.whenReady(), or window boot. This keeps
-  // Electron initialization out of the legacy userData path. --clear-cache
-  // synchronously removes and recreates only this disposable tree.
-  const cachePath = resolveArcPowerCachePath(app.getPath('appData'));
+  // The version-aware cache gate must run before Electron selects userData.
+  // It clears every known disposable Arc Power root only when this packaged
+  // build is newer than the last one opened (or when maintenance explicitly
+  // requests it). The durable ArcPower profile directory is not a target.
+  let cachePath;
+  let lockReleasedForCacheReset = false;
   try {
-    ensureCacheDirectorySync(cachePath);
-    app.setPath('userData', cachePath);
-    if (shouldClearCache(process.argv)) {
-      resetCacheDirectorySync(cachePath);
+    if (app.isPackaged) {
+      cachePath = prepareArcPowerCacheSync(app.getPath('appData'), app.getVersion(), {
+        forceReset: shouldClearCache(process.argv),
+        beforeReset: () => {
+          // Electron's legacy single-instance lock lives beside the old
+          // `%APPDATA%\\arc-power` cache. Release it only for a real reset so
+          // Windows can remove that directory, then reacquire it immediately
+          // below while the app is still on the legacy lock identity.
+          if (instanceLockAcquired) {
+            app.releaseSingleInstanceLock();
+            lockReleasedForCacheReset = true;
+          }
+        },
+      }).cachePath;
+    } else {
+      // Source/dev launches keep the existing isolated cache contract and do
+      // not migrate or delete legacy release data on the host machine.
+      cachePath = resolveArcPowerCachePath(app.getPath('appData'));
+      ensureCacheDirectorySync(cachePath);
+      if (shouldClearCache(process.argv)) resetCacheDirectorySync(cachePath);
     }
+    if (lockReleasedForCacheReset && !app.requestSingleInstanceLock()) {
+      console.error('[cache] unable to reacquire the Arc Power instance lock after reset');
+      app.exit(1);
+      return;
+    }
+    app.setPath('userData', cachePath);
   } catch (err) {
     console.error(`[cache] unable to prepare ${cachePath}: ${err.message}`);
     app.exit(1);
     return;
   }
+  prepareStartupSplash();
   // --- M2C-C apply-worker mode (`--apply-worker <req> <out>`): ------------
   // hidden (no window, no tray), never re-elevates, exits after writing the
   // result file. Runs the SAME routed instant-apply core as the UI path.
@@ -839,13 +873,18 @@ async function main() {
   // it anymore.
   if (sysmanHelperPipeIdx >= 0) {
     const helperLog = createSysmanHelperLogFileWriter();
+    const igclWaiver = createIgclWaiverBridge({ log: (s) => helperLog(`[igcl-waiver] ${s}`) });
+    igclWaiver.warm();
     const code = await runSysmanHelperPipeMode({
       // M17o2 THE SINGLE INIT ATTEMPT on a FRESH consumer (the real
       // createSysmanPowerLimits LATCHES its degrade - a failed ze init
       // stays unavailable on that instance forever; the in-process retry
       // is gone, the fresh-process retry is the proxy's HEAL respawn).
       // The consumer's log is pinned to the helper's OWN log file.
-      createConsumer: () => createSysmanPowerLimits({ log: (s) => helperLog(`[sysman] ${s}`) }),
+      createConsumer: () => createSysmanPowerLimits({
+        ensureVoltageWaiver: ({ physicalTarget, accepted }) => igclWaiver.setForTarget(physicalTarget, accepted),
+        log: (s) => helperLog(`[sysman] ${s}`),
+      }),
       log: (s) => helperLog(s),
     });
     app.exit(code);
@@ -869,10 +908,14 @@ async function main() {
       app.exit(1);
       return;
     }
+    const igclWaiver = createIgclWaiverBridge({ log: (s) => console.log(`[igcl-waiver] ${s}`) });
+    igclWaiver.warm();
     const code = await runSysmanHelperMode({
       reqPath: sysmanHelperReqFile,
       outPath: sysmanHelperOutFile,
-      consumer: createSysmanPowerLimits({}),
+      consumer: createSysmanPowerLimits({
+        ensureVoltageWaiver: ({ physicalTarget, accepted }) => igclWaiver.setForTarget(physicalTarget, accepted),
+      }),
       log: (s) => console.log(`[sysman-helper] ${s}`),
     });
     app.exit(code);
@@ -1443,7 +1486,7 @@ async function main() {
         // the safety-net capability refusal keys on the runtime probe.
         // M17d (Run D): forward the ocMode too - executeApply threads it
         // into splitByRuntime (the V1-call pin: the mode-based W/C routing).
-        apply: async ({ deviceId, deviceKey, physicalTarget, settings, ocMode, profileApply }) => { await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget); return executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply }, ocMode, sysmanPowerLimits }); },
+        apply: async ({ deviceId, deviceKey, physicalTarget, settings, waiverAccepted, ocMode, profileApply }) => { await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget); return executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply, waiverAccepted }, ocMode, sysmanPowerLimits }); },
         waiverAccept: async (deviceId, deviceKey, physicalTarget) => { await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget); await backend.setWaiverAccepted(deviceId); },
         reset: async (deviceId, deviceKey, physicalTarget) => {
           await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget);
@@ -1483,7 +1526,7 @@ async function main() {
       needsWorker: () => true,
       // M17f: the fake worker carries the sysman companion too (the real
       // elevated worker wires it - the mock mirrors the apply core).
-      apply: async ({ deviceId, deviceKey, physicalTarget, settings, ocMode, profileApply }) => { await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget); return executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply }, ocMode, sysmanPowerLimits }); },
+      apply: async ({ deviceId, deviceKey, physicalTarget, settings, waiverAccepted, ocMode, profileApply }) => { await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget); return executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply, waiverAccepted }, ocMode, sysmanPowerLimits }); },
       waiverAccept: async (deviceId, deviceKey, physicalTarget) => { await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget); await backend.setWaiverAccepted(deviceId); },
       reset: async (deviceId, deviceKey, physicalTarget) => {
         await backend.assertDeviceTarget?.(deviceId, deviceKey, physicalTarget);

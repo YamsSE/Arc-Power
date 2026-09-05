@@ -363,7 +363,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       deviceKey: req.deviceKey ?? null,
       physicalTarget: req.physicalTarget ?? null,
       settings: clamped,
-      opts: { profileApply: req.profileApply === true },
+      opts: { profileApply: req.profileApply === true, waiverAccepted: req.waiverAccepted === true },
       ocMode: applyMode,
       sysmanPowerLimits,
       log,

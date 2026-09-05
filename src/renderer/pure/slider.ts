@@ -40,6 +40,7 @@ export function controlValueFromDisplay(value: number, key: string, range: Range
  * canonical/raw settings payload. */
 export function controlDisplayRange(key: string, range: RangeInfo, deviceName = ''): RangeInfo {
   const display = controlDisplay(key, range, deviceName);
+  const transformedStep = Math.abs(display.toDisplay(range.min + range.step) - display.toDisplay(range.min)) || range.step;
   return {
     ...range,
     min: display.toDisplay(range.min),
@@ -49,7 +50,11 @@ export function controlDisplayRange(key: string, range: RangeInfo, deviceName = 
       ? 1
       : key === 'vramFreqOffsetGts' && range.units === 'MHz'
       ? 1
-      : Math.abs(display.toDisplay(range.min + range.step) - display.toDisplay(range.min)) || range.step,
+      // The visible-unit conversion can leave a binary-float tail
+      // (0.0010000000000000009) in the DOM attribute. Keep the transformed
+      // step numerically equivalent but stable for browser controls and
+      // verifier contracts.
+      : Number(transformedStep.toPrecision(12)),
     units: display.units,
   };
 }
@@ -144,11 +149,11 @@ export function formatValue(value: number, units: string, decimals?: number): st
 /**
  * Format the driver's current value for the card readout line. Off-grid
  * values (e.g. the A770's 48.3 MHz offset) get one extra decimal so they
- * are distinguishable from the snapped slider value.
+ * are distinguishable from the snapped slider value. Negative voltage
+ * offsets are valid Sysman read-backs on Alchemist and remain visible.
  */
 export function formatDriverValue(value: number | null | undefined, range: RangeInfo): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return 'unavailable';
-  if (range.units === 'V' && value < 0) return 'unavailable';
   const base = range.units === 'V' ? 3 : 0;
   return formatValue(value, range.units, base + (isOffGrid(value, range) ? 1 : 0));
 }

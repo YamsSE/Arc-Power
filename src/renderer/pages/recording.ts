@@ -27,6 +27,9 @@ const RECORDING_FPS_PRESETS = new Set([30, 60, 120]);
 const RECORDING_FPS_MIN = 1;
 const RECORDING_FPS_MAX = 360;
 const INTEL_QSV_ENCODERS = new Set(['obs_qsv11_v2', 'obs_qsv11_hevc', 'obs_qsv11_av1']);
+const PLAYBACK_SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+const PLAYBACK_SPEED_MIN = 0.1;
+const PLAYBACK_SPEED_MAX = 4;
 type ClipLibraryFilter = 'all' | 'clips' | 'recordings';
 type ClipLibrarySort = 'newest' | 'oldest';
 
@@ -406,10 +409,10 @@ function renderRecordingPillSetting(): HTMLElement {
         type: 'checkbox',
         class: 'settings-checkbox',
         dataset: { setting: 'overlayRecordingPill' },
+        'aria-label': 'Recording Pill overlay',
         checked: recordingPillEnabled,
         onchange: (ev: Event) => void onRecordingPillToggle((ev.target as HTMLInputElement).checked),
       }),
-      el('span', { text: 'Show while recording' }),
     ]),
   ]);
 }
@@ -909,6 +912,11 @@ function formatTime(seconds: number): string {
     : `${minutes}:${String(remainder).padStart(2, '0')}`;
 }
 
+function playbackSpeedLabel(rate: number): string {
+  if (Math.abs(rate - 1) < 0.001) return 'Normal';
+  return `${Number(rate.toFixed(2))}x`;
+}
+
 function playerIconButton(label: string, icon: string, onClick: () => void, className = ''): HTMLButtonElement {
   return el('button', {
     class: `recording-player-icon-button${className ? ` ${className}` : ''}`,
@@ -974,7 +982,10 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
       defaultMuted: true,
       loop: true,
       playsinline: true,
-      preload: 'metadata',
+      // The hover surface is the actual recording, not a generated low-res
+      // preview. Let Chromium fetch enough of the original file to render it
+      // cleanly at the tile's reduced size.
+      preload: 'auto',
       ...(clip.thumbnailUrl ? { poster: clip.thumbnailUrl } : {}),
     }) as HTMLVideoElement;
     preview.addEventListener('canplay', () => {
@@ -1057,7 +1068,6 @@ function renderClipList(): HTMLElement {
       media.append(
         previewVideo(clip, media, (seconds) => { duration.textContent = formatTime(seconds); }),
         duration,
-        el('span', { class: 'recording-clip-hover-action' }, [el('span', { class: 'recording-clip-play-icon', text: '▶' }), el('span', { text: 'Open player' })]),
       );
       tile.append(
         media,
@@ -1122,6 +1132,62 @@ function renderPlayerView(): HTMLElement {
     void api.recordingClipUrl(requestedId).then((url) => {
       if (!player.isConnected || playerClip?.id !== requestedId) return;
       const video = el('video', { class: 'recording-video', preload: 'metadata', playsinline: true, src: url }) as HTMLVideoElement;
+      let playbackRate = 1;
+      let speedButton: HTMLButtonElement | null = null;
+      const speedPopover = el('div', { class: 'recording-player-speed-popover', hidden: true, role: 'dialog', 'aria-label': 'Playback speed' }) as HTMLDivElement;
+      const speedCustomInput = el('input', {
+        class: 'recording-player-speed-input',
+        type: 'number',
+        min: PLAYBACK_SPEED_MIN,
+        max: PLAYBACK_SPEED_MAX,
+        step: 0.05,
+        value: '1.0',
+        'aria-label': 'Custom playback speed',
+      }) as HTMLInputElement;
+      const updateSpeedMenu = () => {
+        for (const option of speedPopover.querySelectorAll<HTMLButtonElement>('[data-playback-rate]')) {
+          const rate = Number(option.dataset.playbackRate);
+          const active = Math.abs(rate - playbackRate) < 0.001;
+          option.classList.toggle('active', active);
+          option.setAttribute('aria-pressed', String(active));
+          const check = option.querySelector('.recording-player-speed-check');
+          if (check) check.textContent = active ? '✓' : '';
+        }
+        speedCustomInput.value = playbackRate.toFixed(2).replace(/0+$/, '').replace(/\.$/, '.0');
+        if (speedButton) {
+          speedButton.title = `Playback speed: ${playbackSpeedLabel(playbackRate)}`;
+          speedButton.setAttribute('aria-label', `Playback speed: ${playbackSpeedLabel(playbackRate)}`);
+        }
+      };
+      const setPlaybackRate = (value: number, close = true) => {
+        if (!Number.isFinite(value)) return;
+        playbackRate = Math.min(PLAYBACK_SPEED_MAX, Math.max(PLAYBACK_SPEED_MIN, value));
+        video.playbackRate = playbackRate;
+        updateSpeedMenu();
+        if (close) speedPopover.hidden = true;
+      };
+      speedPopover.append(
+        el('div', { class: 'recording-player-speed-heading', text: 'PLAYBACK SPEED' }),
+        el('div', { class: 'recording-player-speed-divider' }),
+        ...PLAYBACK_SPEED_PRESETS.map((rate) => el('button', {
+          class: 'recording-player-speed-option',
+          type: 'button',
+          dataset: { playbackRate: String(rate) },
+          'aria-pressed': 'false',
+          onClick: () => setPlaybackRate(rate),
+        }, [el('span', { text: playbackSpeedLabel(rate) }), el('span', { class: 'recording-player-speed-check', 'aria-hidden': 'true' })])),
+        el('div', { class: 'recording-player-speed-divider' }),
+        el('div', { class: 'recording-player-speed-custom' }, [
+          el('span', { text: 'Custom:' }),
+          speedCustomInput,
+          el('button', {
+            class: 'recording-player-speed-apply',
+            type: 'button',
+            text: 'Apply',
+            onClick: () => setPlaybackRate(Number(speedCustomInput.value)),
+          }),
+        ]),
+      );
       const playButton = playerIconButton('Play', 'play', () => {
         if (video.paused) void video.play().catch(() => {});
         else video.pause();
@@ -1201,6 +1267,15 @@ function renderPlayerView(): HTMLElement {
         if (document.fullscreenElement === player) void document.exitFullscreen?.();
         else void fullscreenTarget.requestFullscreen?.();
       }, 'recording-player-fullscreen');
+      speedButton = playerIconButton('Playback speed: Normal', 'settings', () => {
+        speedPopover.hidden = !speedPopover.hidden;
+        if (!speedPopover.hidden) speedCustomInput.focus();
+      }, 'recording-player-speed-button');
+      const speedControl = el('div', { class: 'recording-player-speed-control' }, [speedButton, speedPopover]);
+      player.addEventListener('click', (event) => {
+        const target = event.target as Node | null;
+        if (target && !speedControl.contains(target)) speedPopover.hidden = true;
+      });
       const playerBrand = el('a', {
         class: 'recording-player-brand',
         href: 'https://github.com/YamsSE/Arc-Power',
@@ -1227,6 +1302,7 @@ function renderPlayerView(): HTMLElement {
             el('div', { class: 'recording-player-time-pair' }, [elapsed, el('span', { text: '/' }), duration]),
             el('span', { class: 'recording-player-controls-spacer' }),
             playerBrand,
+            speedControl,
             fullscreen,
           ]),
         ]),
@@ -1242,6 +1318,7 @@ function renderPlayerView(): HTMLElement {
       );
       updatePlayButton();
       updateMuteButton();
+      updateSpeedMenu();
       playerVideo = video;
     }).catch((err) => {
       if (!player.isConnected || playerClip?.id !== requestedId) return;

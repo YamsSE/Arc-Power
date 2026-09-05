@@ -53,6 +53,10 @@ export const STD_TL_MAX_C = 90;
 // ceiling.
 export const VOLT_OFFSET_MAX_V = 0.234;
 export const VOLT_OFFSET_STEP_V = 0.001;
+// M26: the working legacy Sysman Alchemist path is exposed only for negative
+// offsets and is capped at -200 mV. Battlemage percent-unit ranges bypass
+// this V-unit presentation pin entirely.
+export const VOLT_OFFSET_MIN_V = -0.200;
 
 
 /**
@@ -64,12 +68,9 @@ export const VOLT_OFFSET_STEP_V = 0.001;
  * M2D: the W/C pins apply ONLY to canonical-unit ranges - percent-unit
  * featuresets (Battlemage mock: volt/PL/TL as %) are not DriverStore W/C
  * limits and must pass through untouched.
- * M15 (F4): gpuVoltOffsetV gains the same treatment as a CEILING PIN - a
- * V-unit range is pinned to VOLT_OFFSET_MAX_V in BOTH directions (a driver
- * reporting the grid-aligned 0.230 is raised to the real 0.234 ceiling; one
- * drifting above 0.234 is clamped back). When the max is ALREADY 0.234 the
- * SAME object is returned (the pass-through identity pins stay green);
- * percent-unit ranges (Battlemage) pass through untouched.
+ * M15/M26: gpuVoltOffsetV gains the same treatment as a CEILING PIN and a
+ * bounded negative floor. V-unit ranges expose VOLT_OFFSET_MIN_V through
+ * VOLT_OFFSET_MAX_V; percent-unit ranges (Battlemage) pass through untouched.
  * M15 (F4-fix): the STEP is pinned to VOLT_OFFSET_STEP_V (0.001) with the
  * max - the driver's 0.005 step puts 0.234 OFF-GRID, so the slider would
  * max at 0.230; the finer step makes the real ceiling reachable + readable.
@@ -117,25 +118,26 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
       // M17c: the A770-scoped pin - max = min(degraded ceiling, 0.234),
       // NEVER a raise (a session-store degrade below 0.234 is preserved);
       // the step is pinned to 0.001 so the 0.234 ceiling is reachable.
-      if (range.max > VOLT_OFFSET_MAX_V || range.step !== VOLT_OFFSET_STEP_V || range.min < 0) {
+      if (range.max > VOLT_OFFSET_MAX_V || range.step !== VOLT_OFFSET_STEP_V || range.min !== VOLT_OFFSET_MIN_V) {
         return {
           ...range,
           max: Math.min(range.max, VOLT_OFFSET_MAX_V),
           step: VOLT_OFFSET_STEP_V,
-          ...(range.min < 0 ? { min: 0 } : {}),
+          min: VOLT_OFFSET_MIN_V,
         };
       }
       return range; // already legal - the pass-through identity pins stay green
     }
     if (deviceId === undefined || deviceId === null) {
       // Legacy M15 (no caps key / an old payload without pciDeviceId): retain
-      // the positive ceiling/step pin and hide the negative UI half-plane.
-      if (range.max !== VOLT_OFFSET_MAX_V || range.step !== VOLT_OFFSET_STEP_V || range.min < 0) {
+      // the positive ceiling/step pin while retaining the -200 mV floor used
+      // by the legacy Alchemist voltage-offset path.
+      if (range.max !== VOLT_OFFSET_MAX_V || range.step !== VOLT_OFFSET_STEP_V || range.min !== VOLT_OFFSET_MIN_V) {
         return {
           ...range,
           max: VOLT_OFFSET_MAX_V,
           step: VOLT_OFFSET_STEP_V,
-          ...(range.min < 0 ? { min: 0 } : {}),
+          min: VOLT_OFFSET_MIN_V,
         };
       }
       return range;
@@ -148,8 +150,8 @@ export function clampExposedRange(range: RangeInfo | undefined, key: string, cap
     // props max (the same hazard the A770 pin fixed). The 0.234 MAX stays
     // A770-scoped (the M15 probe evidence). A step already 0.001 passes
     // through untouched (the pass-through identity pins stay green).
-    if (range.step !== VOLT_OFFSET_STEP_V || range.min < 0) {
-      return { ...range, step: VOLT_OFFSET_STEP_V, ...(range.min < 0 ? { min: 0 } : {}) };
+    if (range.step !== VOLT_OFFSET_STEP_V || range.min !== VOLT_OFFSET_MIN_V) {
+      return { ...range, step: VOLT_OFFSET_STEP_V, min: VOLT_OFFSET_MIN_V };
     }
     return range;
   }
@@ -276,7 +278,7 @@ export function validateSettingsPayload(value: unknown): value is Settings {
  * controls are included). Values are assumed pre-snapped.
  */
 export interface ScalarSettingsOptions {
-  /** V-unit negative driver values are intentionally hidden from the UI. */
+  /** Compatibility hook for legacy callers; normal Alchemist rendering exposes the negative range. */
   hiddenNegativeControls?: ReadonlySet<string>;
 }
 

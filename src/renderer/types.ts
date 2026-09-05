@@ -265,6 +265,16 @@ export interface PowerLimitsRead {
   peakW: number;
 }
 
+/** Read-back of the legacy Sysman frequency voltage target/offset path. */
+export interface VoltageOffsetRead {
+  ok: boolean;
+  targetV?: number;
+  offsetV?: number;
+  frequencyTargetMhz?: number;
+  errorCode?: string;
+  message?: string;
+}
+
 /**
  * The last OC apply outcome (M3-A "OC working" health row). Recorded by the
  * overclocking/fan/profiles pages after every apply attempt - honest: the

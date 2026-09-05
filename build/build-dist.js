@@ -62,7 +62,7 @@ for (const artifact of [
   unpacked,
   path.join(dist, 'Arc-Power_Installer.exe.blockmap'),
   path.join(dist, 'latest.yml'),
-  path.join(dist, 'arc-power-1.1.1-x64.nsis.7z'),
+  path.join(dist, 'arc-power-1.1.5-x64.nsis.7z'),
 ]) rmSync(artifact, { force: true, recursive: artifact === unpacked });
 
 function runBuilder(target, extraArgs = []) {
@@ -109,12 +109,35 @@ function peImageEnd(buffer) {
   return end;
 }
 
+// electron-builder signs the portable wrapper immediately before this build
+// script patches its PE stub icon. Windows can keep the signed file open for a
+// short handoff window, so a single write is racy even though the builder has
+// already returned. Retry only transient sharing/permission locks; genuine
+// build errors still fail immediately and remain visible to the caller.
+const FILE_LOCK_RETRIES = 20;
+const FILE_LOCK_RETRY_MS = 250;
+const syncSleep = (milliseconds) => {
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(signal, 0, 0, milliseconds);
+};
+function withFileLockRetry(operation) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return operation();
+    } catch (error) {
+      const retryable = error?.code === 'EBUSY' || error?.code === 'EPERM' || error?.code === 'EACCES';
+      if (!retryable || attempt >= FILE_LOCK_RETRIES) throw error;
+      syncSleep(FILE_LOCK_RETRY_MS);
+    }
+  }
+}
+
 function patchPortableWrapperIcon(artifactPath) {
   // A portable EXE is an NSIS wrapper: its PE stub is followed by an
   // integrity-sensitive installer payload. rcedit must receive only the PE
   // stub; editing the complete wrapper destroys the NSIS payload and leaves
   // Windows with a broken or generic shell entry.
-  const original = readFileSync(artifactPath);
+  const original = withFileLockRetry(() => readFileSync(artifactPath));
   const imageEnd = peImageEnd(original);
   if (imageEnd <= 0 || imageEnd >= original.length) throw new Error(`portable wrapper has no NSIS payload: ${artifactPath}`);
   const stubPath = `${artifactPath}.icon-stub.tmp`;
@@ -129,11 +152,12 @@ function patchPortableWrapperIcon(artifactPath) {
     if (result.status !== 0) throw new Error(`rcedit failed for portable stub ${artifactPath} with exit code ${result.status}`);
     const brandedStub = readFileSync(stubPath);
     if (brandedStub.length > imageEnd) throw new Error(`branded portable stub grew into the NSIS payload: ${artifactPath}`);
-    writeFileSync(artifactPath, Buffer.concat([
+    const patchedWrapper = Buffer.concat([
       brandedStub,
       Buffer.alloc(imageEnd - brandedStub.length),
       original.subarray(imageEnd),
-    ]));
+    ]);
+    withFileLockRetry(() => writeFileSync(artifactPath, patchedWrapper));
   } finally {
     rmSync(stubPath, { force: true });
   }

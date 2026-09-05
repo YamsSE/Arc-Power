@@ -257,6 +257,58 @@ const zes_control_property_t = koffi.struct('zes_control_property_t', {
   DefaultValue: 'double',
 });
 
+// Legacy Sysman frequency-domain structs.  These are the structs used by
+// zesFrequencyOcGet/SetVoltageTarget on the Intel loader shipped with the
+// Alchemist driver.  The live driver exposes the voltage and offset fields as
+// native-looking millivolts (for example 1028 and -100), despite the public
+// header describing the arguments as doubles in volts; the consumer performs
+// the unit normalization at the call boundary.
+const zes_frequency_properties_t = koffi.struct('zes_frequency_properties_t', {
+  stype: 'uint32',
+  pNext: 'void*',
+  type: 'uint32',
+  onSubdevice: 'uint8',
+  subdeviceId: 'uint32',
+  canControl: 'uint8',
+  isThrottleEventSupported: 'uint8',
+  min: 'double',
+  max: 'double',
+});
+
+const zes_frequency_oc_capabilities_t = koffi.struct('zes_frequency_oc_capabilities_t', {
+  stype: 'uint32',
+  pNext: 'void*',
+  isOcSupported: 'uint8',
+  maxFactoryDefaultFrequency: 'double',
+  maxFactoryDefaultVoltage: 'double',
+  maxOcFrequency: 'double',
+  minOcVoltageOffset: 'double',
+  maxOcVoltageOffset: 'double',
+  maxOcVoltage: 'double',
+  isTjMaxSupported: 'uint8',
+  isIccMaxSupported: 'uint8',
+  isHighVoltModeCapable: 'uint8',
+  isHighVoltModeEnabled: 'uint8',
+  isExtendedModeSupported: 'uint8',
+  isFixedModeSupported: 'uint8',
+});
+
+const zes_frequency_state_t = koffi.struct('zes_frequency_state_t', {
+  stype: 'uint32',
+  pNext: 'void*',
+  currentVoltage: 'double',
+  request: 'double',
+  tdp: 'double',
+  efficient: 'double',
+  actual: 'double',
+  throttleReasons: 'uint32',
+});
+
+const zes_frequency_range_t = koffi.struct('zes_frequency_range_t', {
+  min: 'double',
+  max: 'double',
+});
+
 const EXPECTED_SIZES = {
   zes_power_sustained_limit_t: 12,
   zes_power_burst_limit_t: 8,
@@ -266,6 +318,10 @@ const EXPECTED_SIZES = {
   zes_pci_properties_t: 56,
   zes_overclock_properties_t: 32,
   zes_control_property_t: 40,
+  zes_frequency_properties_t: 48,
+  zes_frequency_oc_capabilities_t: 80,
+  zes_frequency_state_t: 64,
+  zes_frequency_range_t: 16,
 };
 
 for (const [name, expected] of Object.entries(EXPECTED_SIZES)) {
@@ -357,6 +413,21 @@ export function loadSysman(dllPath) {
   // available via Sysman directly on some drivers)
   bind('zesOverclockGetVFPointValues', 'uint32', ['void*', 'uint32*', 'void*']); // (device, count*, points)
   bind('zesOverclockSetVFPointValues', 'uint32', ['void*', 'uint32', 'void*']); // (device, count, points*)
+
+  // Legacy frequency-domain OC target APIs.  These are optional: loaders
+  // without this surface must keep power telemetry working and simply report
+  // voltage-offset control as unavailable.
+  bind('zesDeviceEnumFrequencyDomains', 'uint32', ['void*', 'uint32*', 'void**']);
+  bind('zesFrequencyGetProperties', 'uint32', ['void*', 'zes_frequency_properties_t*']);
+  bind('zesFrequencyGetState', 'uint32', ['void*', 'zes_frequency_state_t*']);
+  bind('zesFrequencyOcGetCapabilities', 'uint32', ['void*', 'zes_frequency_oc_capabilities_t*']);
+  bind('zesFrequencyOcGetMode', 'uint32', ['void*', 'uint32*']);
+  bind('zesFrequencyOcSetMode', 'uint32', ['void*', 'uint32']);
+  bind('zesFrequencyOcGetVoltageTarget', 'uint32', ['void*', 'double*', 'double*']);
+  bind('zesFrequencyOcSetVoltageTarget', 'uint32', ['void*', 'double', 'double']);
+  bind('zesFrequencyOcGetFrequencyTarget', 'uint32', ['void*', 'double*']);
+  bind('zesFrequencyOcSetFrequencyTarget', 'uint32', ['void*', 'double']);
+  bind('zesFrequencySetRange', 'uint32', ['void*', 'zes_frequency_range_t*']);
 
   // Power domains + limits
   bind('zesDeviceEnumPowerDomains', 'uint32', ['void*', 'uint32*', 'void**']);

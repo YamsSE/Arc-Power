@@ -429,8 +429,15 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (typeof probe.doubleClickHandler !== 'function') {
       fail('M17e: the tray probe did not record the double-click handler (setupTray must wire tray.on(\'double-click\') to the show-window action)');
     }
+    // `did-finish-load` can arrive just before Electron's native
+    // `ready-to-show` event. Give that event time to complete before this
+    // visibility probe; otherwise the late handler can immediately show the
+    // window again and make a correct `hide()` look like a product failure.
+    await sleep(750);
+    if (!win.isVisible()) win.show();
+    await sleep(150);
     win.hide();
-    await sleep(200);
+    await sleep(250);
     if (win.isVisible()) fail('M17e: the window did not hide before the double-click probe');
     probe.doubleClickHandler();
     await sleep(400);
@@ -784,9 +791,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // 'Arc Power Ver. 1.0.0'. M17e (round-2 N1): the 1.0.1 bump - the pinned
   // text is EXACTLY 'Arc Power Ver. 1.0.1 Beta' - the 1.0.1-beta.1 bump;
   // the suffix logic keeps the Beta line only for -beta.x versions).
-  // M176: the 1.1.1 release pins the titlebar version surface.
-  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.1.1'`))) {
-    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.1.1')`);
+  // M176: the 1.1.5 release pins the titlebar version surface.
+  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.1.5'`))) {
+    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.1.5')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -2309,9 +2316,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('m4b-negative', `M4-B: freq range ${freqMin}..${freqMax} MHz, slider -100 -> readout '${negReadout.trim()}', apply -> read-back ${negState.gpuFreqOffsetMhz} MHz`);
   await clearToasts();
 
-  // (1b) The negative V-unit half-plane is temporarily hidden until the
-  // Alchemist negative-voltage path is ready. The positive ceiling remains
-  // pinned below; negative frequency offsets remain covered above.
+  // (1b) Alchemist undervolting: the V-unit negative half-plane is exposed
+  // through the Sysman voltage path and bounded to -200 mV. The positive
+  // ceiling remains pinned below; negative frequency offsets remain covered
+  // above.
   const setVoltSlider = (value) => js(`(() => {
     const card = document.querySelector('.oc-card[data-control="gpuVoltOffsetV"]');
     const input = card.querySelector('input[type="range"]');
@@ -2321,13 +2329,22 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   })()`);
   const voltMin = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('min')`);
   const voltMax = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('max')`);
-  if (voltMin !== '0' || voltMax !== '0.234') fail(`M4-B: volt slider range is '${voltMin}'..'${voltMax}' (expected 0..0.234 - the negative-voltage half-plane is intentionally hidden)`);
+  if (voltMin !== '-0.2' || voltMax !== '0.234') fail(`M26: volt slider range is '${voltMin}'..'${voltMax}' (expected -0.2..0.234 - Alchemist undervolting is capped at -200 mV)`);
   // M15 F4-fix / M16 (nit 9a): the slider's step attribute is the pinned
   // 0.001 grid - the old driver-reported 0.005 put the 0.234 ceiling
   // OFF-GRID (the slider maxed at 0.230). The step + the reachability of
   // the REAL ceiling are the regression pins here.
   const voltStep = await js(`document.querySelector('.oc-card[data-control="gpuVoltOffsetV"] input[type="range"]')?.getAttribute('step')`);
   if (voltStep !== '0.001') fail(`M16: the volt slider step is '${voltStep}' (expected 0.001 - the M15 F4-fix grid for the 0.234 ceiling)`);
+  const negVoltReadout = await setVoltSlider(-0.2);
+  if (negVoltReadout.trim() !== '-0.200 V') fail(`M26: the negative voltage slider readout is '${negVoltReadout}' (expected '-0.200 V')`);
+  await clearToasts();
+  await clickApply();
+  if (!(await waitFor(win, `!!document.querySelector('.toast-success')`, 5000))) fail('M26: the -200 mV undervolt apply success toast missing');
+  const negVoltState = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (Math.abs(negVoltState.gpuVoltOffsetV + 0.2) > 1e-6) fail(`M26: the -200 mV undervolt did not stick: ${negVoltState.gpuVoltOffsetV}`);
+  step('m26-negative-volt', `M26: Alchemist undervolting range ${voltMin}..${voltMax} V, slider -0.200 -> readout '${negVoltReadout.trim()}', Sysman apply -> read-back ${negVoltState.gpuVoltOffsetV} V`);
+  await clearToasts();
   const voltMaxReadout = await setVoltSlider(0.234);
   if (voltMaxReadout.trim() !== '0.234 V') fail(`M16: the volt slider cannot reach/display the real ceiling: '${voltMaxReadout}' (expected '0.234 V' - the M15 F4-fix reachability pin)`);
   await clearToasts();
@@ -2337,7 +2354,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (Math.abs(maxVoltState.gpuVoltOffsetV - 0.234) > 1e-6) fail(`M16: the 0.234 V max apply did not stick: ${maxVoltState.gpuVoltOffsetV} (the 0.001 step must NOT re-snap it to 0.230)`);
   step('m16-volt-max', `M16: volt slider step '${voltStep}', max '${voltMax}' reachable -> readout '${voltMaxReadout.trim()}', apply -> read-back ${maxVoltState.gpuVoltOffsetV} V (the 0.234 ceiling survives the clamp)`);
   await clearToasts();
-  step('m4b-negative-volt-hidden', `M4-B: V-unit voltage slider is ${voltMin}..${voltMax} V; negative voltage input is temporarily hidden while the positive ceiling remains usable`);
+  step('m16-m26-volt-range', `M16/M26: V-unit voltage slider is ${voltMin}..${voltMax} V with ${voltStep} step; -200 mV undervolting and the positive 0.234 V ceiling both remain usable`);
 
   // (2) M17e (Run B): the Offset|Lock toggle round trip - the M4-B
   // Offset/Clock toggle DIED with the Clock mode (the pure/clock.ts
@@ -4772,9 +4789,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 // M11: the 1.0 Release - no suffix (the "Alpha" scheme is gone). M17e
 // (round-2 N1): the 1.0.1 bump joins the flips; M21: the 1.0.1-beta.1 bump
 // - the Settings row is the exact 'Arc Power Ver. 1.0.1 Beta' text (the
-// M176: the 1.1.1 stable bump - Settings displays 'Arc Power Ver. 1.1.1'.
-if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.1.1'`))) {
-fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.1.1')`);
+// M176: the 1.1.5 stable bump - Settings displays 'Arc Power Ver. 1.1.5'.
+if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.1.5'`))) {
+fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.1.5')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -4822,7 +4839,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
       fail('M4-D: Start minimized did not persist startMinimized=false');
     }
   }
-step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save; Log to file is intentionally absent here; version row 1.1.1');
+step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save; Log to file is intentionally absent here; version row 1.1.5');
   // Start with Windows round trip + the honest shared-value state. The
   // Settings checkbox shows ON whenever the Run value exists - the profile's
   // start-at-boot (ocOnBoot) can own it (F6: never a false mismatch).
@@ -9660,7 +9677,39 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   step('m23-fan', `M23: the Fan tab renders the reused fan editor (curve plot svg + the ${fanChips} mode chips); an Auto apply round trip landed (driver fanMode 'auto') and the Curve restore landed (fanMode 'curve')`);
   await clearPanelToasts();
 
-  // (5) the Graphics tab: the four M8 cards render (mock supported) + a
+  // (5) the Recording tab: the compact quick-settings surface mirrors the
+  // main Recording page's important profile controls and exposes the same
+  // main-owned Record / Replay Buffer / Save Clip actions. This pin checks
+  // the real panel DOM without starting a capture in the verifier (the
+  // recording runtime is intentionally not required for UI verification).
+  await ojs("document.querySelector('.adv-tab[data-tab=\"recording\"]').click()");
+  if (!(await waitFor(panelWin, "!!document.querySelector('.recording-view .adv-recording-capture-panel') && !!document.querySelector('.recording-view .adv-recording-settings-stack')", 10000))) {
+    fail('M1.1.5: the panel Recording tab did not render its quick-settings surface');
+  }
+  const recordingQuickActions = await ojs("JSON.stringify(Array.from(document.querySelectorAll('.adv-recording-capture-panel button')).map((b) => (b.textContent ?? '').trim()))");
+  const recordingQuickActionList = JSON.parse(recordingQuickActions);
+  for (const expected of ['Record', 'Replay Buffer', 'Save Clip']) {
+    if (!recordingQuickActionList.includes(expected)) {
+      fail('M1.1.5: the Recording quick-controls are missing ' + expected);
+    }
+  }
+  const recordingQuickFields = await ojs("JSON.stringify(Array.from(document.querySelectorAll('.adv-recording-settings-stack .adv-recording-field-label')).map((e) => (e.textContent ?? '').trim()))");
+  const recordingQuickFieldList = JSON.parse(recordingQuickFields);
+  for (const expected of ['Frame rate', 'Resolution', 'Encoder', 'Bitrate (Kbps)', 'Seconds to keep', 'Target', 'Color handling']) {
+    if (!recordingQuickFieldList.includes(expected)) {
+      fail('M1.1.5: the Recording quick-settings fields are missing ' + expected);
+    }
+  }
+  const recordingQuickOptions = await ojs("JSON.stringify(Array.from(document.querySelectorAll('.adv-recording-check input[type=\"checkbox\"]')).map((e) => e.getAttribute('aria-label')))");
+  const recordingQuickOptionList = JSON.parse(recordingQuickOptions);
+  for (const expected of ['Show cursor', 'Recording Pill', 'Microphone', 'Full PC audio']) {
+    if (!recordingQuickOptionList.includes(expected)) {
+      fail('M1.1.5: the Recording quick-settings checkboxes are missing ' + expected);
+    }
+  }
+  step('m1.1.5-recording-quick-controls', 'M1.1.5: Advanced Overlay Recording tab renders the quick settings and the Record, Replay Buffer, and Save Clip controls; capture actions remain main-owned');
+
+  // (6) the Graphics tab: the four M8 cards render (mock supported) + a
   // graphics apply round trip lands (the DEDICATED graphics path - no OC
   // waiver anywhere).
   await ojs(`document.querySelector('.adv-tab[data-tab="graphics"]').click()`);

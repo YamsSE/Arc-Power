@@ -24,6 +24,9 @@ contextBridge.exposeInMainWorld('arcPower', {
   // line). M17f (step-4 N2): DEVICE-SCOPED like every read channel (the
   // domain is per-device).
   powerLimitsRead: (deviceId) => ipcRenderer.invoke('power-limits:read', deviceId),
+  // The negative Alchemist voltage offset is exposed by Sysman, not by the
+  // IGCL-backed getCurrentSettings() state read.
+  voltageOffsetRead: (deviceId) => ipcRenderer.invoke('voltage-offset:read', deviceId),
   // M8 (the Graphics tab): the 3D-feature surface - the page's ONLY IPC
   // surface (the dedicated graphics apply path - NOT the OC apply-routing
   // machinery: 3D features have no OC waiver).

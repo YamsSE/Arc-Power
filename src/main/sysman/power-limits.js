@@ -27,6 +27,28 @@ const REQUIRED_EXPORTS = [
 
 const W = (powerMw) => Math.round((powerMw / 1000) * 10) / 10;
 
+// The legacy Alchemist Sysman frequency target surface is exposed by the
+// current Intel loader as millivolts, although the public Level Zero header
+// documents the doubles in volts. Keep the conversion in this adapter so
+// every caller deals only in canonical volts. Zero is accepted as the clear
+// operation; negative offsets are capped at -200 mV.
+export const ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V = -0.200;
+const VOLT_EPSILON = 0.0005;
+const finite = (value) => typeof value === 'number' && Number.isFinite(value);
+const voltageFromNative = (value) => finite(value) && Math.abs(value) > 10 ? value / 1000 : value;
+const voltageToNative = (value, scale) => scale === 1000 ? Math.round(value * 1000) : value;
+const nativeVoltageScale = (caps) => [
+  caps?.maxFactoryDefaultVoltage,
+  caps?.maxOcVoltage,
+  caps?.minOcVoltageOffset,
+  caps?.maxOcVoltageOffset,
+].some((value) => finite(value) && Math.abs(value) > 10) ? 1000 : 1;
+const resultFailure = (res) => ({
+  ok: false,
+  errorCode: describeZeResult(res).split(' ')[0],
+  message: describeZeResult(res),
+});
+
 /**
  * The real sysman power-limits adapter. Lazily resolves ze_loader.dll + the
  * card power domain on the FIRST call; a failure latches the honest
@@ -47,11 +69,12 @@ const W = (powerMw) => Math.round((powerMw / 1000) * 10) / 10;
  * @param {{
  *   findLoader?: () => string | null,
  *   load?: (dllPath: string) => object,
+ *   ensureVoltageWaiver?: (args: { physicalTarget: object|null, accepted: boolean }) => { ok: boolean, errorCode?: string, message?: string } | null,
  *   log?: (s: string) => void,
  * }} [opts]
  */
-export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = loadSysman, log = (s) => console.log(`[sysman] ${s}`) } = {}) {
-  /** @type {{ lib: object, devices: Array<{ pwrHandle: unknown, bdf: string|null }> } | null} */
+export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = loadSysman, ensureVoltageWaiver = null, log = (s) => console.log(`[sysman] ${s}`) } = {}) {
+  /** @type {{ lib: object, devices: Array<{ zesHandle: unknown, pwrHandle: unknown|null, freqHandle: unknown|null, freqProperties: object|null, bdf: string|null }> } | null} */
   let ready = null;
   /** @type {string | null} */
   let degradeReason = null;
@@ -177,6 +200,35 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
           }
         }
 
+        // Legacy frequency target APIs are optional. When present, keep the
+        // GPU frequency domain alongside the power domain so the voltage
+        // write can preserve the active core-clock target. Frequency domain
+        // type 0 is the GPU render/compute domain used by Alchemist.
+        let freqHandle = null;
+        let freqProperties = null;
+        if (typeof lib.zesDeviceEnumFrequencyDomains === 'function'
+          && typeof lib.zesFrequencyGetProperties === 'function') {
+          try {
+            const freq = enumerateHandles((countBuf, arr) => lib.zesDeviceEnumFrequencyDomains(zesDev, countBuf, arr));
+            if (zeOk(freq.result)) {
+              for (const candidate of freq.handles) {
+                const propsBuf = koffi.alloc('zes_frequency_properties_t', 1);
+                koffi.encode(propsBuf, 'zes_frequency_properties_t', { stype: 9, pNext: null });
+                const propsResult = lib.zesFrequencyGetProperties(candidate, propsBuf);
+                if (!zeOk(propsResult)) continue;
+                const props = koffi.decode(propsBuf, 'zes_frequency_properties_t');
+                if (Number(props.type) === 0) {
+                  freqHandle = candidate;
+                  freqProperties = props;
+                  break;
+                }
+              }
+            }
+          } catch (err) {
+            log(`Sysman GPU ${i + 1} frequency-domain discovery failed (${err.message})`);
+          }
+        }
+
         // Prefer the enumerated power domains, with the card-domain getter
         // as the compatibility fallback used by older Intel drivers.
         const en = enumerateHandles((countBuf, arr) => lib.zesDeviceEnumPowerDomains(zesDev, countBuf, arr));
@@ -206,9 +258,9 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
             log(`Sysman GPU ${i + 1} has no usable power domain (${enumVerdict}; fallback ${describeZeResult(r)})`);
           }
         }
-        if (pwrHandle !== null) devices.push({ pwrHandle, bdf });
+        if (pwrHandle !== null || freqHandle !== null) devices.push({ zesHandle: zesDev, pwrHandle, freqHandle, freqProperties, bdf });
       }
-      if (devices.length === 0) throw new Error('no usable power domain on any Sysman device');
+      if (devices.length === 0) throw new Error('no usable power or frequency domain on any Sysman device');
       ready = { lib, devices };
       return ready;
     } catch (err) {
@@ -223,6 +275,95 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
     log(degradeReason ?? 'the sysman layer is unavailable');
   };
 
+  const readFrequencyState = (r, device) => {
+    if (!device?.freqHandle || typeof r.lib.zesFrequencyGetState !== 'function') return null;
+    try {
+      const stateBuf = koffi.alloc('zes_frequency_state_t', 1);
+      koffi.encode(stateBuf, 'zes_frequency_state_t', { stype: 0x1b, pNext: null });
+      const stateResult = r.lib.zesFrequencyGetState(device.freqHandle, stateBuf);
+      if (!zeOk(stateResult)) return null;
+      const state = koffi.decode(stateBuf, 'zes_frequency_state_t');
+      for (const key of ['tdp', 'actual', 'request', 'efficient']) {
+        if (finite(state[key]) && state[key] > 0) return state[key];
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  const readFrequencyTarget = (r, device) => {
+    if (!device?.freqHandle) return null;
+    // The driver's OcGetFrequencyTarget can report the maximum OC target
+    // (4250 MHz on the live A770) even while the active workload is at the
+    // factory target (2400 MHz). Prefer the live state and domain property so
+    // the voltage write does not accidentally promote a stable FurMark run
+    // to a stale maximum-frequency request.
+    const live = readFrequencyState(r, device);
+    if (finite(live) && live > 0) return live;
+    const maximum = device.freqProperties?.max;
+    return finite(maximum) && maximum > 0 ? maximum : null;
+  };
+
+  const readVoltage = (r, device) => {
+    if (!device?.freqHandle || typeof r.lib.zesFrequencyOcGetVoltageTarget !== 'function') return null;
+    const targetBuf = koffi.alloc('double', 1);
+    const offsetBuf = koffi.alloc('double', 1);
+    const voltageResult = r.lib.zesFrequencyOcGetVoltageTarget(device.freqHandle, targetBuf, offsetBuf);
+    if (!zeOk(voltageResult)) return resultFailure(voltageResult);
+    const nativeTarget = koffi.decode(targetBuf, 'double');
+    const nativeOffset = koffi.decode(offsetBuf, 'double');
+    // Infer the unit once from the absolute target and apply it to the
+    // offset too. A magnitude-only conversion misreads native -1..-10 mV as
+    // -1..-10 V, because those small millivolt values are numerically inside
+    // the public-volts range. The target is the stable discriminator on the
+    // active Alchemist path (for example 883 mV), while cold 0/0 remains
+    // zero in either unit and is still rejected for non-zero writes below.
+    const scale = finite(nativeTarget) && Math.abs(nativeTarget) > 10 ? 1000 : 1;
+    const frequencyTargetMhz = readFrequencyTarget(r, device);
+    return {
+      ok: true,
+      targetV: finite(nativeTarget) ? nativeTarget / scale : nativeTarget,
+      offsetV: finite(nativeOffset) ? nativeOffset / scale : nativeOffset,
+      ...(frequencyTargetMhz !== null ? { frequencyTargetMhz } : {}),
+    };
+  };
+
+  const currentVoltageTarget = (r, device, current) => {
+    if (current?.ok === true && finite(current.targetV) && current.targetV > 0) return current.targetV;
+    // Prefer the driver's factory target over the instantaneous voltage
+    // sample. Under FurMark the sample is load-dependent and must not become
+    // the next target, otherwise a -100 mV write could accidentally stack an
+    // additional droop on top of the requested offset.
+    if (typeof r.lib.zesFrequencyOcGetCapabilities === 'function') {
+      try {
+        const capsBuf = koffi.alloc('zes_frequency_oc_capabilities_t', 1);
+        koffi.encode(capsBuf, 'zes_frequency_oc_capabilities_t', { stype: 0x1c, pNext: null });
+        const capsResult = r.lib.zesFrequencyOcGetCapabilities(device.freqHandle, capsBuf);
+        if (zeOk(capsResult)) {
+          const caps = koffi.decode(capsBuf, 'zes_frequency_oc_capabilities_t');
+          const factory = voltageFromNative(caps.maxFactoryDefaultVoltage);
+          if (finite(factory) && factory > 0) return factory;
+        }
+      } catch {
+        // Fall through to the live state.
+      }
+    }
+    try {
+      if (device?.freqHandle && typeof r.lib.zesFrequencyGetState === 'function') {
+        const stateBuf = koffi.alloc('zes_frequency_state_t', 1);
+        koffi.encode(stateBuf, 'zes_frequency_state_t', { stype: 0x1b, pNext: null });
+        if (zeOk(r.lib.zesFrequencyGetState(device.freqHandle, stateBuf))) {
+          const state = koffi.decode(stateBuf, 'zes_frequency_state_t');
+          if (finite(state.currentVoltage) && state.currentVoltage > 0) return voltageFromNative(state.currentVoltage);
+        }
+      }
+    } catch {
+      // Fall through to the factory capability.
+    }
+    return null;
+  };
+
   return {
     /** M163: resolve the requested Sysman power domain by physical BDF.
      *  A multi-GPU request without a matching proof is an honest null, never
@@ -234,7 +375,7 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       const r = ensure();
       if (!r) { noteDegrade(); return null; }
       const device = resolveDevice(r.devices, deviceId, physicalTarget, physicalTarget?.probe === true);
-      if (!device) {
+      if (!device || !device.pwrHandle) {
         log('Sysman read skipped: the requested GPU has no unique PCI/BDF power-domain match');
         return null;
       }
@@ -272,7 +413,7 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       const r = ensure();
       if (!r) { noteDegrade(); return { ok: false, errorCode: 'unavailable', message: 'the sysman layer is unavailable (ze_loader.dll or the card power domain absent)' }; }
       const device = resolveDevice(r.devices, deviceId, physicalTarget);
-      if (!device) {
+      if (!device || !device.pwrHandle) {
         return { ok: false, errorCode: 'unsupported', message: 'the requested GPU has no unique PCI/BDF Sysman power-domain match' };
       }
       try {
@@ -298,6 +439,135 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
         const msg = err instanceof Error ? err.message : String(err);
         noteDegrade();
         return { ok: false, errorCode: 'io-failed', message: msg };
+      }
+    },
+
+    /** Read the legacy Sysman voltage target/offset in canonical volts. */
+    readVoltageOffset(deviceId = 0, physicalTarget = null) {
+      const r = ensure();
+      if (!r) { noteDegrade(); return null; }
+      const device = resolveDevice(r.devices, deviceId, physicalTarget);
+      if (!device || !device.freqHandle) {
+        return { ok: false, errorCode: 'unsupported', message: 'the Sysman legacy GPU frequency voltage-target API is unavailable on this GPU' };
+      }
+      try {
+        return readVoltage(r, device);
+      } catch (err) {
+        return { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) };
+      }
+    },
+
+    /**
+     * Apply a canonical negative Alchemist voltage offset through the legacy
+     * Sysman frequency-domain target API. The current frequency target is
+     * retained (with live-state/property fallbacks), and the proven
+     * mode -> frequency -> voltage sequence is used.
+     */
+    setVoltageOffset({ offsetV, targetV: requestedTargetV, frequencyTargetMhz: requestedFrequencyMhz, waiverAccepted = false } = {}, deviceId = 0, physicalTarget = null) {
+      if (!finite(offsetV)) return { ok: false, errorCode: 'invalid-argument', message: 'offsetV must be a finite number' };
+      if (offsetV > 0) return { ok: false, errorCode: 'invalid-argument', message: 'the Sysman voltage offset path accepts only negative offsets or zero to clear' };
+      const clampedOffsetV = Math.max(ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V, offsetV);
+      // The legacy Sysman target setter is still guarded by the driver's
+      // IGCL overclock-waiver state. Establish that state in the helper
+      // process BEFORE zesInit: loading IGCL after Sysman has initialized is
+      // the poisoned ordering measured on this driver. The bridge never
+      // accepts consent; it only replays the parent-side accepted flag.
+      if (typeof ensureVoltageWaiver === 'function') {
+        const waiver = ensureVoltageWaiver({ physicalTarget, accepted: waiverAccepted === true });
+        if (!waiver || waiver.ok !== true) return waiver ?? { ok: false, errorCode: 'unavailable', message: 'the IGCL overclock-waiver bridge returned no result' };
+      } else if (waiverAccepted !== true) {
+        return { ok: false, errorCode: 'waiver-not-set', message: 'the Sysman voltage write requires an accepted overclock waiver' };
+      }
+      const r = ensure();
+      if (!r) { noteDegrade(); return { ok: false, errorCode: 'unavailable', message: 'the Sysman voltage offset setter is unavailable (ze_loader.dll or the legacy frequency domain is absent)' }; }
+      const device = resolveDevice(r.devices, deviceId, physicalTarget);
+      if (!device || !device.freqHandle) {
+        return { ok: false, errorCode: 'unsupported', message: 'the Sysman voltage offset setter is unavailable on the requested GPU' };
+      }
+      const required = ['zesFrequencyOcSetMode', 'zesFrequencyOcSetFrequencyTarget', 'zesFrequencyOcSetVoltageTarget'];
+      const missing = required.filter((name) => typeof r.lib[name] !== 'function');
+      if (missing.length > 0) return { ok: false, errorCode: 'unsupported', message: `the Sysman voltage offset setter is missing exports: ${missing.join(', ')}` };
+      try {
+        const current = readVoltage(r, device);
+        if (current?.ok === false) return current;
+        const targetV = finite(requestedTargetV) && requestedTargetV > 0
+          ? requestedTargetV
+          : currentVoltageTarget(r, device, current);
+        const frequencyTargetMhz = finite(requestedFrequencyMhz) && requestedFrequencyMhz > 0
+          ? requestedFrequencyMhz
+          : current?.frequencyTargetMhz ?? readFrequencyTarget(r, device);
+        if (!finite(targetV) || targetV <= 0) return { ok: false, errorCode: 'unavailable', message: 'the Sysman voltage offset setter could not establish the current/factory voltage target' };
+        if (!finite(frequencyTargetMhz) || frequencyTargetMhz <= 0) return { ok: false, errorCode: 'unavailable', message: 'the Sysman voltage offset setter could not establish the current core-frequency target' };
+
+        let caps = null;
+        if (typeof r.lib.zesFrequencyOcGetCapabilities === 'function') {
+          const capsBuf = koffi.alloc('zes_frequency_oc_capabilities_t', 1);
+          koffi.encode(capsBuf, 'zes_frequency_oc_capabilities_t', { stype: 0x1c, pNext: null });
+          const capsResult = r.lib.zesFrequencyOcGetCapabilities(device.freqHandle, capsBuf);
+          if (zeOk(capsResult)) caps = koffi.decode(capsBuf, 'zes_frequency_oc_capabilities_t');
+        }
+        // A caps failure is still writable on the live Alchemist driver; its
+        // proven ABI uses integer mV. Use that as the conservative fallback.
+        const scale = caps ? nativeVoltageScale(caps) : 1000;
+        // Some loader revisions expose the Sysman waiver entry point but
+        // return ERROR_UNSUPPORTED_FEATURE for this legacy target path. The
+        // actual per-process waiver was established through IGCL above; this
+        // optional Sysman call is therefore informational and never masks a
+        // working IGCL waiver.
+        if (typeof r.lib.zesDeviceSetOverclockWaiver === 'function') {
+          const waiver = r.lib.zesDeviceSetOverclockWaiver(device.zesHandle);
+          if (!zeOk(waiver)) log(`Sysman overclock-waiver replay returned ${describeZeResult(waiver)}; continuing with the IGCL waiver state`);
+        }
+        let res = r.lib.zesFrequencyOcSetMode(device.freqHandle, 2);
+        if (!zeOk(res)) {
+          log(`Sysman voltage write: zesFrequencyOcSetMode(2) returned ${describeZeResult(res)}`);
+          return resultFailure(res);
+        }
+        res = r.lib.zesFrequencyOcSetFrequencyTarget(device.freqHandle, frequencyTargetMhz);
+        if (!zeOk(res)) {
+          log(`Sysman voltage write: zesFrequencyOcSetFrequencyTarget(${frequencyTargetMhz}) returned ${describeZeResult(res)}`);
+          return resultFailure(res);
+        }
+        res = r.lib.zesFrequencyOcSetVoltageTarget(
+          device.freqHandle,
+          voltageToNative(targetV, scale),
+          voltageToNative(clampedOffsetV, scale),
+        );
+        if (!zeOk(res)) {
+          log(`Sysman voltage write: zesFrequencyOcSetVoltageTarget(${voltageToNative(targetV, scale)}, ${voltageToNative(clampedOffsetV, scale)}) returned ${describeZeResult(res)}`);
+          return resultFailure(res);
+        }
+        const after = readVoltage(r, device);
+        const offsetMatches = after?.ok === true && finite(after.offsetV)
+          && Math.abs(after.offsetV - clampedOffsetV) <= VOLT_EPSILON;
+        // The target is an absolute driver-selected VF target, not the
+        // requested offset. On Alchemist the driver can quantize/re-resolve
+        // it after the write (for example 886 -> 883 mV), so requiring an
+        // exact target match rejects a write whose offset really landed.
+        // A cold 0/0 getter remains a hard failure: it is the known silent
+        // no-op response from this legacy API.
+        const targetReadBackValid = after?.ok === true && finite(after.targetV)
+          && (clampedOffsetV === 0 ? after.targetV >= 0 : after.targetV > 0);
+        // The live state may report an actual/requested clock that moves by
+        // a step while the GPU is ramping. The setter was still given the
+        // preserved target above; only reject an explicitly reported invalid
+        // (zero/non-finite) read-back, never a normal live-clock adjustment.
+        const frequencyReadBackValid = after?.ok === true
+          && (after.frequencyTargetMhz === undefined
+            || (finite(after.frequencyTargetMhz) && after.frequencyTargetMhz > 0));
+        if (!offsetMatches || !targetReadBackValid || !frequencyReadBackValid) {
+          return {
+            ok: false,
+            errorCode: 'io-failed',
+            message: 'the Sysman voltage offset write did not persist (target, offset, or frequency read-back was invalid)',
+            ...(after?.targetV !== undefined ? { targetV: after.targetV } : {}),
+            ...(after?.offsetV !== undefined ? { offsetV: after.offsetV } : {}),
+            ...(after?.frequencyTargetMhz !== undefined ? { frequencyTargetMhz: after.frequencyTargetMhz } : {}),
+          };
+        }
+        return { ok: true, targetV: after.targetV, offsetV: after.offsetV, ...(after.frequencyTargetMhz !== undefined ? { frequencyTargetMhz: after.frequencyTargetMhz } : {}) };
+      } catch (err) {
+        return { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) };
       }
     },
   };
@@ -330,6 +600,7 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
  */
 export function createMockSysmanPowerLimits({ backend }) {
   const calls = [];
+  const voltageOffsets = new Map();
   const battlemagePowerReferenceW = (deviceName = '') => {
     if (/\bB570\b/i.test(deviceName)) return 150;
     if (/\bB50\b/i.test(deviceName)) return 70;
@@ -388,6 +659,24 @@ export function createMockSysmanPowerLimits({ backend }) {
         // answer stay unconditional
       }
       return { ok: true };
+    },
+    async readVoltageOffset(deviceId = 0, physicalTarget = null) {
+      const id = deviceId ?? 0;
+      const offsetV = voltageOffsets.get(id) ?? 0;
+      return { ok: true, targetV: 1.028, offsetV, frequencyTargetMhz: 2400 };
+    },
+    async setVoltageOffset({ offsetV } = {}, deviceId = 0, physicalTarget = null) {
+      if (!Number.isFinite(offsetV)) return { ok: false, errorCode: 'invalid-argument', message: 'offsetV must be a finite number' };
+      if (offsetV > 0) return { ok: false, errorCode: 'invalid-argument', message: 'the Sysman voltage offset path accepts only negative offsets or zero to clear' };
+      const applied = Math.max(ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V, offsetV);
+      voltageOffsets.set(deviceId ?? 0, applied);
+      try {
+        const entry = backend._entry?.(deviceId ?? 0);
+        if (entry?.state && entry.caps?.ranges?.gpuVoltOffsetV?.units === 'V') entry.state.gpuVoltOffsetV = applied;
+      } catch {
+        // The mock's call result remains deterministic for bare test seams.
+      }
+      return { ok: true, targetV: 1.028, offsetV: applied, frequencyTargetMhz: 2400 };
     },
   };
 }

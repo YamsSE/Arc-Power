@@ -88,7 +88,7 @@ import {
 // settingsFromState helper, reused by the "Save as Profile" card (the
 // profiles page's own create/save flows stay).
 import { activeProfileIdForGpu, newProfileId, profileGpuIdentity, promptModal, profileMatchesGpu, settingsFromState } from './profiles.ts';
-import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile, Settings, PowerLimitsRead } from '../types.ts';
+import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile, Settings, PowerLimitsRead, VoltageOffsetRead } from '../types.ts';
 
 // The pure refresh-signature helpers live in pure/settings.ts (unit-tested
 // there); this page re-exports them so the import surface stays local.
@@ -129,9 +129,8 @@ function supportedScalars(caps: Capabilities): string[] {
 let values: Record<string, number> = {};
 let currentState: DeviceState | null = null;
 let applied: Record<string, number> = {};
-// A negative V-unit read-back is a backend/profile-capable value, but it is
-// outside the exposed UI range. Keep that fact separate from the draft so a
-// pristine render does not manufacture an implicit zeroing write.
+// Compatibility state for legacy callers that temporarily suppress a negative
+// V-unit read-back. Normal Alchemist rendering exposes the supported range.
 let hiddenNegativeControls = new Set<string>();
 let lastRenderedCaps: Capabilities | null = null;
 let renderCaps: Capabilities | null = null;
@@ -195,6 +194,10 @@ let sysmanLimitsNode: HTMLElement | null = null;
 // requested a newer one. Without this guard, the boot read can finish after
 // an apply and overwrite the fresh PL1/PL2 line with the old value.
 let sysmanRefreshToken = 0;
+// The legacy Sysman voltage offset is a separate read-back source from the
+// IGCL-backed DeviceState. Ignore an older helper response after a device
+// switch or a full page reset.
+let sysmanVoltageRefreshToken = 0;
 // M17g: the PER-DEVICE SESSION-tracked last-applied PL2 - fed ONLY from
 // the apply envelope's pl2Note (the '(set)' fallback when the sysman layer
 // is absent; the boot one-shot + the profile/tray applies never feed it -
@@ -224,8 +227,16 @@ function editableNumber(value: number, range: RangeInfo, decimalsOverride?: numb
 function controlRangeText(key: string, range: RangeInfo, deviceName: string): string {
   const display = controlDisplay(key, range, deviceName);
   const visible = controlDisplayRange(key, range, deviceName);
-  const number = (value: number) => display.decimals === 0 ? String(Math.round(value)) : String(value);
-  return `${number(visible.min)} – ${number(visible.max)} ${display.units} · step ${visible.step}`;
+  const number = (value: number) => {
+    if (!Number.isFinite(value)) return '-';
+    if (display.decimals === 0) return String(Math.round(value));
+    // Range math can produce values such as 0.0010000000000000009. Keep
+    // enough precision for the visible control while removing binary-float
+    // noise from the caption.
+    const precision = Math.min(6, Math.max(3, display.decimals));
+    return value.toFixed(precision).replace(/\.?0+$/, '');
+  };
+  return `${number(visible.min)} – ${number(visible.max)} ${display.units} · step ${number(visible.step)}`;
 }
 
 function resetPageState(state: DeviceState, caps: Capabilities) {
@@ -260,6 +271,7 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   lockCurrentNode = null;
   lockApplyBtn = null;
   sysmanRefreshToken += 1;
+  sysmanVoltageRefreshToken += 1;
   sysmanLimitsNode = null;
   applyBtn = null;
   pendingSummaryNode = null;
@@ -376,6 +388,39 @@ async function refreshSysmanLimits(deviceId: number | null): Promise<void> {
       : (currentState.powerLimitW as number))
     : null;
   targetNode.textContent = formatSysmanLimits(limits, pl2SetByDevice.get(deviceId), enforced);
+}
+
+/** Refresh the Alchemist negative-voltage Driver read-out from Sysman. The
+ * normal IGCL state intentionally has no reliable negative-offset read-back,
+ * so using only getCurrentSettings() leaves a successful -mV apply looking
+ * like "Driver: unavailable". Battlemage percent-unit controls stay on their
+ * normal backend state and never call this legacy-voltage channel. */
+async function refreshSysmanVoltageOffset(ctx: PageContext, deviceId: number | null): Promise<void> {
+  const range = renderCaps?.ranges?.gpuVoltOffsetV;
+  if (deviceId === null || !range || range.units !== 'V') return;
+  const token = ++sysmanVoltageRefreshToken;
+  let result: VoltageOffsetRead | null = null;
+  try {
+    result = await api.voltageOffsetRead(deviceId);
+  } catch {
+    result = null;
+  }
+  if (token !== sysmanVoltageRefreshToken || ctx.store.get().deviceId !== deviceId) return;
+  if (result?.ok !== true || typeof result.offsetV !== 'number' || !Number.isFinite(result.offsetV) || !currentState) return;
+  const key = 'gpuVoltOffsetV';
+  const sliderRange = cardSliderRange(renderCaps, key);
+  if (!sliderRange) return;
+  // Do not overwrite a value the user started editing while the helper read
+  // was in flight. A null IGCL state is not a draft, so the first successful
+  // Sysman read is allowed to seed the slider from the actual driver value.
+  const preserveDraft = typeof currentState.gpuVoltOffsetV === 'number'
+    && Number.isFinite(currentState.gpuVoltOffsetV)
+    && isPendingControl(key);
+  currentState = { ...currentState, gpuVoltOffsetV: result.offsetV };
+  hiddenNegativeControls.delete(key);
+  if (!preserveDraft) values[key] = snapToRange(result.offsetV, sliderRange);
+  ctx.store.set({ state: currentState });
+  refreshCard(key);
 }
 
 /** M17d (Run D): refresh the gpuLock card's current-driver-lock read-out
@@ -543,9 +588,6 @@ export const tuningPage: Page = {
       // temporarily hidden negative V-unit driver value from becoming a
       // negative slider draft or readout.
       const exposedRange = cardSliderRange(caps, key) ?? caps.ranges[key];
-      if (key === 'gpuVoltOffsetV' && exposedRange.units === 'V' && typeof cur === 'number' && cur < 0) {
-        hiddenNegativeControls.add(key);
-      }
       values[key] = snapToRange(typeof cur === 'number' ? cur : exposedRange.default, exposedRange);
     }
 
@@ -1116,6 +1158,7 @@ export const tuningPage: Page = {
             refreshCard('gpuVoltOffsetV');
             updateFloating();
             void refreshSysmanLimits(deviceId);
+            void refreshSysmanVoltageOffset(ctx, deviceId);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: msg } });
@@ -1735,6 +1778,7 @@ export const tuningPage: Page = {
       refreshLockEditor();
       updateFloating();
       void refreshSysmanLimits(ctx.store.get().deviceId);
+      void refreshSysmanVoltageOffset(ctx, ctx.store.get().deviceId);
     };
 
     // M9: `only` - the per-card apply path: the SAME machinery (waiver
@@ -1882,6 +1926,10 @@ export const tuningPage: Page = {
             // per.ok && no-op -> silent (M2b-B): nothing changed, no toast.
           }
         }
+        // The IGCL fresh state cannot carry a negative Alchemist Sysman
+        // offset. Read it through the dedicated helper before the final card
+        // refresh so the Driver line reflects the actual applied value.
+        await refreshSysmanVoltageOffset(ctx, deviceId);
         for (const key of controls) refreshCard(key);
         refreshLockReadout();
         refreshLockEditor();
@@ -2035,8 +2083,7 @@ export const tuningPage: Page = {
         // exposed slider max and a subsequent apply would send it.
         const range = cardSliderRange(s.caps, key);
         if (typeof raw === 'number' && range) {
-          if (key === 'gpuVoltOffsetV' && range.units === 'V' && raw < 0) hiddenNegativeControls.add(key);
-          else if (key === 'gpuVoltOffsetV') hiddenNegativeControls.delete(key);
+          if (key === 'gpuVoltOffsetV') hiddenNegativeControls.delete(key);
           values[key] = snapToRange(raw, range);
         }
       }

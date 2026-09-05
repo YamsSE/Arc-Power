@@ -38,7 +38,7 @@ import { createMockStartup } from './startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
-import { executeApply, withCapabilityFlags, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, tempCapabilityRefusal, tempCapabilityPerControl, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED } from './apply-routing.js';
+import { executeApply, withCapabilityFlags, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, tempCapabilityRefusal, tempCapabilityPerControl, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED, ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
 import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT, normalizeMonitorLogMetrics, activeProfileEntries } from './store/profile-store.js';
 // M17c: the vendor-telemetry lane (non-Intel GPU readouts - NVML/ADL via
@@ -601,7 +601,15 @@ export function sanitizeSettings(payload) {
 export function clampSettings(settings, ranges) {
   const out = { ...settings };
   for (const key of Object.keys(out)) {
-    const range = ranges[key];
+    const rawRange = ranges[key];
+    // M26: the working Alchemist Sysman writer supports the negative
+    // half-plane even when the current IGCL capability snapshot reports a
+    // non-negative or narrower floor. Keep every pre-clamp boundary
+    // (interactive, worker, and profile/boot) aligned with the UI's -200 mV
+    // contract. Battlemage percent-unit voltage is intentionally untouched.
+    const range = key === 'gpuVoltOffsetV' && rawRange?.units === 'V'
+      ? { ...rawRange, min: ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V }
+      : rawRange;
     if (range && SCALAR_CONTROLS.has(key) && typeof out[key] === 'number') {
       out[key] = clampAndSnap(out[key], range);
     }
@@ -1868,7 +1876,7 @@ export function createIpcHandlers({
         recordRefusals(normalized.result);
         return normalized;
       }
-      const normalized = normalizeApply(await executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply }, ocMode, sysmanPowerLimits }));
+      const normalized = normalizeApply(await executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply, waiverAccepted }, ocMode, sysmanPowerLimits }));
       recordRefusals(normalized.result);
       return normalized;
     };
@@ -2100,6 +2108,34 @@ export function createIpcHandlers({
           return await sysmanPowerLimits.readLimits(deviceId, physicalTargetOf(target));
         } catch {
           return null;
+        }
+      },
+
+      // The negative Alchemist voltage offset is a separate Sysman read-back
+      // surface because the IGCL-backed getCurrentSettings() value may be
+      // unavailable while the offset is active. Keep explicit helper errors
+      // so the renderer can distinguish a real zero from unavailable data.
+      // M163: carry the same physical adapter proof used by the write path.
+      'voltage-offset:read': async (deviceId) => {
+        assertValidDeviceId(deviceId);
+        const target = await backend.getDeviceTarget?.(deviceId);
+        if (target?.synthetic || target?.backendKind === 'os') return null;
+        if (!sysmanPowerLimits) return null;
+        try {
+          if (typeof sysmanPowerLimits.readVoltageOffsetResult === 'function') {
+            return await sysmanPowerLimits.readVoltageOffsetResult(deviceId, physicalTargetOf(target));
+          }
+          if (typeof sysmanPowerLimits.readVoltageOffset === 'function') {
+            const result = await sysmanPowerLimits.readVoltageOffset(deviceId, physicalTargetOf(target));
+            if (result?.ok === false) return result;
+            if (result && Number.isFinite(result.targetV) && Number.isFinite(result.offsetV)) {
+              return { ok: true, ...result };
+            }
+            return { ok: false, errorCode: 'unavailable', message: 'the sysman voltage offset read returned no result' };
+          }
+          return { ok: false, errorCode: 'unsupported', message: 'the Sysman voltage offset read is unavailable' };
+        } catch (err) {
+          return { ok: false, errorCode: 'unavailable', message: err instanceof Error ? err.message : String(err) };
         }
       },
 
@@ -2385,14 +2421,55 @@ export function createIpcHandlers({
         // (0-value writes are refused even elevated - reset runs
         // ctlOverclockResetToDefault, which works elevated only). The
         // non-elevated app delegates to the elevated self-worker.
-        let state = null;
         const target = await backend.getDeviceTarget?.(deviceId);
+        // M26: the legacy Alchemist Sysman voltage target is independent of
+        // IGCL's reset-to-default operation. Clear a known negative Sysman
+        // offset first, and require its exact zero read-back, so Reset cannot
+        // report a clean state while an undervolt remains active underneath.
+        if (sysmanPowerLimits
+          && typeof sysmanPowerLimits.readVoltageOffset === 'function'
+          && typeof sysmanPowerLimits.setVoltageOffset === 'function') {
+          let prior = null;
+          try {
+            prior = await sysmanPowerLimits.readVoltageOffset(deviceId, physicalTargetOf(target));
+          } catch {
+            // An unreadable companion is not itself proof that an offset is
+            // active; continue with the normal reset and its backend verify.
+          }
+          if (Number.isFinite(prior?.offsetV) && prior.offsetV < -RESET_VERIFY_EPS) {
+            let clearPayload = { offsetV: 0 };
+            try {
+              const persisted = await store.loadSettings();
+              if (persisted?.waiverAccepted === true) clearPayload = { offsetV: 0, waiverAccepted: true };
+            } catch {
+              // Keep the minimal clear payload; test seams and already-open
+              // helper contexts can still perform the operation without it.
+            }
+            let clear = null;
+            try {
+              clear = await sysmanPowerLimits.setVoltageOffset(clearPayload, deviceId, physicalTargetOf(target));
+            } catch (err) {
+              clear = { ok: false, message: err instanceof Error ? err.message : String(err) };
+            }
+            if (clear?.ok !== true || !Number.isFinite(clear.offsetV) || Math.abs(clear.offsetV) > RESET_VERIFY_EPS) {
+              throw new Error(`reset-to-defaults could not clear the Sysman voltage offset: ${clear?.message ?? 'zero read-back was not verified'}`);
+            }
+          }
+        }
+        let state = null;
         if (applyRunner?.needsWorker?.()) {
           const out = await applyRunner.reset(deviceId, target?.deviceKey ?? null, physicalTargetOf(target));
           state = out.state;
         } else {
           await backend.resetToDefaults(deviceId);
-          state = await backend.getCurrentSettings(deviceId);
+          try {
+            state = await backend.getCurrentSettings(deviceId);
+          } catch (err) {
+            throw new Error(`reset-to-defaults backend state read-back unavailable: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        if (!state || typeof state !== 'object') {
+          throw new Error('reset-to-defaults backend state read-back unavailable');
         }
         // No success claims without verification (plan §5): confirm the
         // supported OC controls moved to their capability defaults

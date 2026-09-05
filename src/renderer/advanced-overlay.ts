@@ -1,5 +1,5 @@
 // Arc Power - M23 the ADVANCED overlay renderer (the interactive side panel
-// window: the AMD-Adrenaline-style control surface). Compact, three tabs:
+// window: the AMD-Adrenaline-style control surface). Compact, four tabs:
 //   - Tuning: the scalar OC slider cards (powerLimitW, gpuFreqOffsetMhz,
 //     gpuVoltOffsetV, tempLimitC, vramFreqOffsetGts, vramVoltOffsetV -
 //     gated by caps.controls; PL is EDITABLE like the main Tuning page - the
@@ -20,6 +20,8 @@
 //     (DROPDOWN_OPTIONS / DROPDOWN_LABELS / CARD_TITLES - export, never
 //     duplicate; CARD_NOTES is NOT imported - the panel shows no long notes,
 //     the user's directive); the supported-features caps gate each card.
+//   - Recording: a compact mirror of the main Recording page's capture
+//     profile settings plus Record, Replay Buffer, and Save Clip actions.
 //
 // The panel boots with the app.ts fetch sequence (deviceGet ->
 // getCapabilities -> getCurrentSettings -> render the active tab);
@@ -41,7 +43,7 @@ import { ensureWaiver } from './components/waiver-dialog.ts';
 import { Store } from './router.ts';
 import { buildDeviceSelect } from './components/device-select.ts';
 import type { PageContext } from './router.ts';
-import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, TelemetrySample } from './types.ts';
+import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, RecordingCaptureTarget, RecordingCaptureTargets, RecordingEngineState, RecordingResolution, RecordingSettings, RecordingSettingsPatch, TelemetrySample } from './types.ts';
 import {
   snapToRange,
   normalizedPosition,
@@ -86,13 +88,14 @@ import {
 import { isValidTheme } from './pure/theme.ts';
 import { formatGpuMemoryGb, gpuMemoryLabel } from './pure/gpu-memory.ts';
 import { normalizeOverlayStats } from './pure/overlay.ts';
+import { recordingBitrateRange, recordingGpuEncoderOptions } from './pure/recording.ts';
 
 // ---------------------------------------------------------------------------
 // The panel store + boot state
 // ---------------------------------------------------------------------------
 
 const store = new Store();
-let activeTab: 'tuning' | 'fan' | 'graphics' = 'tuning';
+let activeTab: 'tuning' | 'fan' | 'graphics' | 'recording' = 'tuning';
 
 // A selection push is the panel's ownership boundary. Every device identity
 // change advances this generation so async reads/applies from the old panel
@@ -124,6 +127,71 @@ const memoryEl = document.getElementById('adv-readout-memory') as HTMLElement;
 const closeBtn = document.getElementById('adv-close') as HTMLButtonElement;
 let monitoredStats = normalizeOverlayStats(undefined);
 let telemetryRetryTimer: number | null = null;
+
+const EMPTY_RECORDING_STATUS: RecordingEngineState = {
+  available: false,
+  running: false,
+  mode: null,
+  startedAt: null,
+  error: 'Loading recording engine…',
+  encoders: [],
+  audioInputs: [],
+  audioOutputs: [],
+  probeComplete: false,
+  activeModes: { video: false, replay: false },
+  hotkeys: { registered: {}, conflicts: {}, error: null },
+};
+let recordingQuickSettings: RecordingSettings | null = null;
+let recordingQuickDraft: RecordingSettings | null = null;
+let recordingQuickStatus: RecordingEngineState = EMPTY_RECORDING_STATUS;
+let recordingQuickTargets: RecordingCaptureTargets = { displays: [], windows: [] };
+let recordingQuickPillEnabled = false;
+let recordingQuickLoading = false;
+let recordingQuickActionBusy = false;
+let recordingQuickApplying = false;
+let recordingQuickDirty = false;
+let recordingQuickError: string | null = null;
+
+function cloneRecordingQuickSettings(value: RecordingSettings): RecordingSettings {
+  return {
+    ...value,
+    audio: {
+      ...value.audio,
+      microphone: { ...value.audio.microphone },
+      system: { ...value.audio.system },
+      customProcesses: [...value.audio.customProcesses],
+    },
+    hotkeys: { ...value.hotkeys },
+    captureTarget: { ...value.captureTarget },
+  };
+}
+
+function recordingQuickPatch(patch: RecordingSettingsPatch): void {
+  if (!recordingQuickDraft) return;
+  const audioPatch = patch.audio;
+  recordingQuickDraft = {
+    ...recordingQuickDraft,
+    ...patch,
+    audio: {
+      ...recordingQuickDraft.audio,
+      ...(audioPatch ?? {}),
+      microphone: { ...recordingQuickDraft.audio.microphone, ...(audioPatch?.microphone ?? {}) },
+      system: { ...recordingQuickDraft.audio.system, ...(audioPatch?.system ?? {}) },
+      customProcesses: audioPatch?.customProcesses
+        ? [...audioPatch.customProcesses]
+        : [...recordingQuickDraft.audio.customProcesses],
+    },
+    hotkeys: { ...recordingQuickDraft.hotkeys, ...(patch.hotkeys ?? {}) },
+    captureTarget: { ...recordingQuickDraft.captureTarget, ...(patch.captureTarget ?? {}) },
+  } as RecordingSettings;
+  recordingQuickDirty = JSON.stringify(recordingQuickDraft) !== JSON.stringify(recordingQuickSettings);
+}
+
+function recordingQuickActive(mode: 'video' | 'replay'): boolean {
+  const modes = recordingQuickStatus.activeModes;
+  if (modes) return mode === 'video' ? modes.video === true : modes.replay === true;
+  return recordingQuickStatus.running === true && recordingQuickStatus.mode === mode;
+}
 
 function stopTelemetryRetry(): void {
   if (telemetryRetryTimer === null) return;
@@ -228,6 +296,21 @@ api.onStateUpdated((payload) => {
   // another device overwrite the selected device's state.
   if (!payload || !payload.state || payload.deviceId !== live.deviceId) return;
   store.set({ state: payload.state });
+});
+
+// Recording actions are main-owned, but the Advanced Overlay is another
+// renderer consumer. Mirror the live engine state here so the quick-action
+// buttons never show a stale Record/Replay Buffer state after a hotkey or a
+// click in the main Recording page.
+api.onRecordingStateUpdated((next) => {
+  if (!next || typeof next !== 'object') return;
+  recordingQuickStatus = {
+    ...recordingQuickStatus,
+    ...next,
+    hotkeys: next.hotkeys ?? recordingQuickStatus.hotkeys,
+    activeModes: next.activeModes ?? recordingQuickStatus.activeModes,
+  };
+  if (activeTab === 'recording') renderRecording();
 });
 // M31: one atomic main-owned selection push updates the panel's current
 // inventory, durable selection, and matching caps/state pair. The panel
@@ -445,13 +528,14 @@ function renderTab(): void {
     void renderTuning();
   }
   else if (activeTab === 'fan') renderFan();
-  else void renderGraphics();
+  else if (activeTab === 'graphics') void renderGraphics();
+  else renderRecording();
 }
 
 document.querySelectorAll<HTMLButtonElement>('.adv-tab').forEach((t) => {
   t.addEventListener('click', () => {
     const tab = t.dataset.tab;
-    if (tab === 'tuning' || tab === 'fan' || tab === 'graphics') {
+    if (tab === 'tuning' || tab === 'fan' || tab === 'graphics' || tab === 'recording') {
       activeTab = tab;
       renderTab();
     }
@@ -528,7 +612,6 @@ async function renderTuning(): Promise<void> {
     const cur = currentState[key as keyof DeviceState];
     const range = cardSliderRange(caps, key);
     if (!range) continue;
-    if (key === 'gpuVoltOffsetV' && range.units === 'V' && typeof cur === 'number' && cur < 0) hiddenNegativeControls.add(key);
     values[key] = snapToRange(typeof cur === 'number' ? cur : range.default, range);
   }
 
@@ -842,6 +925,410 @@ function renderFan(): void {
   // state/latestSample and applies through api.applySettings itself).
   const ctx: PageContext = { store };
   renderFanEditor(editorHost, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// Recording tab - the compact quick-settings mirror of the main Recording
+// page. The panel intentionally uses the same main-owned IPC surface: no
+// recorder process, file path, or hotkey is managed by this renderer.
+// ---------------------------------------------------------------------------
+
+const RECORDING_QUICK_RESOLUTIONS: Array<[RecordingResolution, string]> = [
+  ['default', 'Auto (source)'],
+  ['480p', '480p'],
+  ['720p', '720p'],
+  ['900p', '900p'],
+  ['1080p', '1080p'],
+  ['1440p', '1440p'],
+  ['4k', '4K'],
+];
+const RECORDING_QUICK_FPS = [30, 60, 120];
+
+function recordingQuickButton(text: string, onClick: () => void, className = 'btn btn-secondary', disabled = false): HTMLButtonElement {
+  return el('button', {
+    class: className,
+    type: 'button',
+    text,
+    disabled,
+    onClick: (event: Event) => { event.preventDefault(); onClick(); },
+  }) as HTMLButtonElement;
+}
+
+function recordingQuickSelect<T extends string>(value: T, options: Array<[T, string]>, onChange: (value: T) => void): HTMLSelectElement {
+  const control = el('select', { class: 'adv-recording-select', value }, options.map(([id, label]) => el('option', { value: id, text: label }))) as HTMLSelectElement;
+  control.value = value;
+  control.addEventListener('change', () => onChange(control.value as T));
+  return control;
+}
+
+function recordingQuickField(label: string, control: HTMLElement, note?: string): HTMLElement {
+  return el('label', { class: 'adv-recording-field' }, [
+    el('span', { class: 'adv-recording-field-label', text: label }),
+    control,
+    note ? el('span', { class: 'adv-recording-field-note', text: note }) : null,
+  ]);
+}
+
+function recordingQuickStatusState(): string {
+  const video = recordingQuickActive('video');
+  const replay = recordingQuickActive('replay');
+  if (video && replay) return 'Recording + replay buffer active';
+  if (video) return 'Recording active';
+  if (replay) return 'Replay buffer active';
+  if (recordingQuickStatus.available) return 'Ready to capture';
+  return 'Recording runtime unavailable';
+}
+
+function recordingQuickTargetKey(target: RecordingCaptureTarget): string {
+  return target.type === 'window' ? `window:${target.windowHandle}` : `display:${target.displayId}`;
+}
+
+function recordingQuickTargetOptions(selected: RecordingCaptureTarget): Array<[string, string]> {
+  const displays: Array<[string, string]> = recordingQuickTargets.displays
+    .slice()
+    .sort((a, b) => Number(b.primary) - Number(a.primary) || a.label.localeCompare(b.label))
+    .map((display) => [
+      `display:${display.id}`,
+      `${display.primary ? 'Primary display' : display.label}${display.hdr ? ' · HDR' : ''}`,
+    ]);
+  if (!displays.length) displays.push(['display:primary', 'Primary display']);
+  const windows: Array<[string, string]> = recordingQuickTargets.windows
+    .slice()
+    .sort((a, b) => a.title.localeCompare(b.title) || a.processName.localeCompare(b.processName))
+    .map((window) => [`window:${window.handle}`, `${window.title || 'Untitled window'} · ${window.processName || 'Window'}`]);
+  const selectedKey = recordingQuickTargetKey(selected);
+  const selectedOptions = selected.type === 'window' ? windows : displays;
+  if (!selectedOptions.some(([key]) => key === selectedKey)) {
+    selectedOptions.push([selectedKey, selected.type === 'window'
+      ? `${selected.windowTitle || 'Selected window'} (saved)`
+      : `${selected.displayId} (saved)`]);
+  }
+  const groups: Array<[string, Array<[string, string]>]> = [['Displays', displays]];
+  if (windows.length) groups.push(['Programs', windows]);
+  // A grouped <select> is assembled by the caller; the string prefix keeps
+  // the compact helper typed while preserving the main page's target labels.
+  return groups.flatMap(([group, options]) => options.map(([id, label]) => [`${group}:${id}`, label] as [string, string]));
+}
+
+function recordingQuickTargetValue(target: RecordingCaptureTarget): string {
+  return `${target.type === 'window' ? 'Programs' : 'Displays'}:${recordingQuickTargetKey(target)}`;
+}
+
+function recordingQuickTargetFromValue(value: string): RecordingCaptureTarget | null {
+  const raw = value.replace(/^(Displays|Programs):/, '');
+  if (raw.startsWith('display:')) {
+    const displayId = raw.slice('display:'.length);
+    return displayId ? { type: 'display', displayId, windowHandle: 0, processName: '', windowTitle: '' } : null;
+  }
+  if (raw.startsWith('window:')) {
+    const windowHandle = Number(raw.slice('window:'.length));
+    const target = recordingQuickTargets.windows.find((item) => item.handle === windowHandle);
+    return windowHandle && target
+      ? { type: 'window', displayId: 'primary', windowHandle, processName: target.processName, windowTitle: target.title }
+      : null;
+  }
+  return null;
+}
+
+function recordingQuickEncoderOptions(selected: string): Array<[string, string]> {
+  const options: Array<[string, string]> = [['automatic', 'Automatic']];
+  options.push(...recordingGpuEncoderOptions(store.get().devices, recordingQuickStatus.encoders));
+  if (selected && !options.some(([id]) => id === selected)) options.push([selected, `${selected} (saved)`]);
+  return options;
+}
+
+function normalizeRecordingQuickStatus(value: RecordingEngineState | null | undefined): RecordingEngineState {
+  return {
+    ...EMPTY_RECORDING_STATUS,
+    ...(value ?? {}),
+    hotkeys: value?.hotkeys ?? EMPTY_RECORDING_STATUS.hotkeys,
+    activeModes: value?.activeModes ?? EMPTY_RECORDING_STATUS.activeModes,
+  };
+}
+
+async function loadRecordingQuick(): Promise<void> {
+  if (recordingQuickLoading || recordingQuickSettings) return;
+  recordingQuickLoading = true;
+  recordingQuickError = null;
+  renderRecording();
+  try {
+    const [loadedSettings, loadedStatus] = await Promise.all([
+      api.recordingSettingsGet(),
+      api.recordingStatus(),
+    ]);
+    recordingQuickSettings = loadedSettings;
+    recordingQuickDraft = cloneRecordingQuickSettings(loadedSettings);
+    recordingQuickStatus = normalizeRecordingQuickStatus(loadedStatus);
+    recordingQuickDirty = false;
+    const [targets, profileEnvelope] = await Promise.all([
+      api.recordingCaptureTargets().catch(() => ({ displays: [], windows: [] })),
+      api.profilesList().catch(() => null),
+    ]);
+    recordingQuickTargets = targets;
+    recordingQuickPillEnabled = profileEnvelope?.settings?.overlayRecordingPill === true;
+  } catch (err) {
+    recordingQuickError = err instanceof Error ? err.message : String(err);
+  } finally {
+    recordingQuickLoading = false;
+    if (activeTab === 'recording') renderRecording();
+  }
+}
+
+function recordingQuickPatchFrom(value: RecordingSettings): RecordingSettingsPatch {
+  return {
+    location: value.location,
+    mode: value.mode,
+    fps: value.fps,
+    resolution: value.resolution,
+    encoderId: value.encoderId,
+    bitrateKbps: value.bitrateKbps,
+    captureTarget: { ...value.captureTarget },
+    captureColorMode: value.captureColorMode,
+    showCursor: value.showCursor,
+    replayLengthSec: value.replayLengthSec,
+    audio: {
+      microphone: { ...value.audio.microphone },
+      system: { ...value.audio.system },
+      sourceMode: value.audio.sourceMode,
+      customProcesses: [...value.audio.customProcesses],
+    },
+  };
+}
+
+async function applyRecordingQuickSettings(): Promise<void> {
+  if (recordingQuickApplying || !recordingQuickDirty || !recordingQuickDraft) return;
+  recordingQuickApplying = true;
+  renderRecording();
+  try {
+    const result = await api.recordingSettingsSave(recordingQuickPatchFrom(recordingQuickDraft));
+    recordingQuickSettings = result.settings;
+    recordingQuickDraft = cloneRecordingQuickSettings(result.settings);
+    recordingQuickStatus = { ...recordingQuickStatus, hotkeys: result.hotkeys };
+    recordingQuickDirty = false;
+    toast('success', 'Recording settings', 'Your recording profile was applied.');
+  } catch (err) {
+    toast('error', 'Recording settings', err instanceof Error ? err.message : String(err));
+  } finally {
+    recordingQuickApplying = false;
+    if (activeTab === 'recording') renderRecording();
+  }
+}
+
+async function runRecordingQuickAction(action: 'record' | 'replay' | 'stop-video' | 'stop-replay' | 'save-clip'): Promise<void> {
+  if (recordingQuickActionBusy || !recordingQuickSettings || !recordingQuickStatus.available) return;
+  if (recordingQuickDirty || recordingQuickApplying) {
+    toast('info', 'Apply settings first', 'Apply your recording changes before starting a capture.');
+    return;
+  }
+  recordingQuickActionBusy = true;
+  renderRecording();
+  try {
+    if (action === 'record') {
+      const result = await api.recordingStart();
+      recordingQuickStatus = normalizeRecordingQuickStatus(result.state);
+    } else if (action === 'replay') {
+      const result = await api.recordingReplayStart();
+      recordingQuickStatus = normalizeRecordingQuickStatus(result.state);
+    } else if (action === 'stop-video') {
+      recordingQuickStatus = normalizeRecordingQuickStatus(await api.recordingStop('video'));
+    } else if (action === 'stop-replay') {
+      recordingQuickStatus = normalizeRecordingQuickStatus(await api.recordingStop('replay'));
+    } else {
+      await api.recordingClipSave({ headDurationMs: (recordingQuickSettings.replayLengthSec || 30) * 1000 });
+      toast('success', 'Clip saved', 'The replay buffer was saved to your recording folder.');
+    }
+  } catch (err) {
+    toast('error', 'Recording action failed', err instanceof Error ? err.message : String(err));
+  } finally {
+    recordingQuickActionBusy = false;
+    if (activeTab === 'recording') renderRecording();
+  }
+}
+
+async function toggleRecordingQuickPill(checked: boolean): Promise<void> {
+  const previous = recordingQuickPillEnabled;
+  recordingQuickPillEnabled = checked;
+  renderRecording();
+  try {
+    const result = await api.profilesSettingsSave({ overlayRecordingPill: checked });
+    recordingQuickPillEnabled = result.overlayRecordingPill === true;
+  } catch (err) {
+    recordingQuickPillEnabled = previous;
+    toast('error', 'Recording Pill', err instanceof Error ? err.message : String(err));
+  }
+  if (activeTab === 'recording') renderRecording();
+}
+
+function renderRecordingQuickActions(): HTMLElement {
+  const video = recordingQuickActive('video');
+  const replay = recordingQuickActive('replay');
+  const disabled = recordingQuickActionBusy || recordingQuickDirty || recordingQuickApplying;
+  return el('section', { class: 'adv-recording-panel adv-recording-capture-panel' }, [
+    el('div', { class: 'adv-recording-panel-heading' }, [
+      el('div', {}, [
+        el('span', { class: 'adv-recording-eyebrow', text: 'Capture controls' }),
+        el('h2', { class: 'adv-recording-panel-title', text: recordingQuickStatusState() }),
+      ]),
+      el('span', { class: `adv-recording-status-dot${video || replay ? ' is-live' : ''}`, 'aria-hidden': 'true' }),
+    ]),
+    el('p', { class: 'adv-recording-panel-note', text: recordingQuickSettings
+      ? `${recordingQuickSettings.replayLengthSec}-second replay window · ${recordingQuickStatus.available ? 'ready' : 'runtime unavailable'}`
+      : 'Loading recording profile…' }),
+    el('div', { class: 'adv-recording-actions' }, [
+      recordingQuickButton(video ? 'Stop Recording' : 'Record', () => void runRecordingQuickAction(video ? 'stop-video' : 'record'), `btn ${video ? 'btn-recording-stop' : 'btn-primary'}`, !recordingQuickStatus.available || recordingQuickActionBusy || (!video && disabled)),
+      recordingQuickButton(replay ? 'Stop Replay Buffer' : 'Replay Buffer', () => void runRecordingQuickAction(replay ? 'stop-replay' : 'replay'), `btn ${replay ? 'btn-recording-stop' : 'btn-secondary'}`, !recordingQuickStatus.available || recordingQuickActionBusy || (!replay && disabled)),
+      recordingQuickButton('Save Clip', () => void runRecordingQuickAction('save-clip'), 'btn btn-secondary', !recordingQuickStatus.available || recordingQuickActionBusy || !replay),
+    ]),
+    recordingQuickStatus.error && recordingQuickStatus.available
+      ? el('p', { class: 'adv-recording-error', text: recordingQuickStatus.error })
+      : null,
+    recordingQuickDirty
+      ? el('p', { class: 'adv-recording-warning', text: 'Apply settings before capture.' })
+      : null,
+  ]);
+}
+
+function renderRecordingQuickSettings(): HTMLElement {
+  const working = recordingQuickDraft ?? recordingQuickSettings;
+  if (!working) return el('p', { class: 'adv-recording-loading', text: recordingQuickError ?? 'Loading recording settings…' });
+  const bitrateRange = recordingBitrateRange(working.resolution);
+  const fpsOptions: Array<[string, string]> = RECORDING_QUICK_FPS.map((fps) => [String(fps), `${fps} FPS`]);
+  if (!RECORDING_QUICK_FPS.includes(working.fps)) fpsOptions.push([String(working.fps), `${working.fps} FPS (custom)`]);
+  const fps = recordingQuickSelect(String(working.fps), fpsOptions, (value) => {
+    recordingQuickPatch({ fps: Math.min(360, Math.max(1, Math.round(Number(value)))) });
+    renderRecording();
+  });
+  fps.setAttribute('aria-label', 'Frame rate');
+  const resolution = recordingQuickSelect(working.resolution, RECORDING_QUICK_RESOLUTIONS, (value) => {
+    recordingQuickPatch({ resolution: value });
+    renderRecording();
+  });
+  resolution.setAttribute('aria-label', 'Resolution');
+  const encoder = recordingQuickSelect(working.encoderId, recordingQuickEncoderOptions(working.encoderId), (value) => {
+    recordingQuickPatch({ encoderId: value });
+    renderRecording();
+  });
+  encoder.setAttribute('aria-label', 'Encoder');
+  const bitrate = el('input', {
+    class: 'adv-recording-number',
+    type: 'number',
+    min: bitrateRange.min,
+    max: bitrateRange.max,
+    step: bitrateRange.step,
+    value: working.bitrateKbps,
+    'aria-label': 'Bitrate in Kbps',
+    onchange: (event: Event) => {
+      const value = Number((event.target as HTMLInputElement).value);
+      if (Number.isFinite(value) && value > 0) {
+        recordingQuickPatch({ bitrateKbps: Math.min(bitrateRange.max, Math.max(bitrateRange.min, Math.round(value / bitrateRange.step) * bitrateRange.step)) });
+        renderRecording();
+      }
+    },
+  });
+  const replayLength = el('input', {
+    class: 'adv-recording-number',
+    type: 'number',
+    min: 5,
+    max: 3600,
+    step: 5,
+    value: working.replayLengthSec,
+    'aria-label': 'Replay buffer length in seconds',
+    onchange: (event: Event) => {
+      const value = Number((event.target as HTMLInputElement).value);
+      if (Number.isFinite(value)) {
+        recordingQuickPatch({ replayLengthSec: Math.min(3600, Math.max(5, Math.round(value / 5) * 5)) });
+        renderRecording();
+      }
+    },
+  });
+  const targetOptions = recordingQuickTargetOptions(working.captureTarget);
+  const target = recordingQuickSelect(recordingQuickTargetValue(working.captureTarget), targetOptions, (value) => {
+    const next = recordingQuickTargetFromValue(value);
+    if (next) {
+      recordingQuickPatch({ captureTarget: next });
+      renderRecording();
+    }
+  });
+  target.setAttribute('aria-label', 'Capture target');
+  const color = recordingQuickSelect(working.captureColorMode, [['auto', 'Auto'], ['sdr', 'SDR'], ['hdr', 'HDR']], (value) => {
+    recordingQuickPatch({ captureColorMode: value });
+    renderRecording();
+  });
+  color.setAttribute('aria-label', 'Capture color handling');
+  const locationText = working.location || 'Choose a recording folder';
+  const location = el('div', { class: 'adv-recording-location' }, [
+    el('span', { class: 'adv-recording-location-text', title: locationText, text: locationText }),
+    recordingQuickButton('Browse', () => {
+      void api.recordingChooseFolder().then((result) => {
+        if (!result.canceled && result.location) {
+          recordingQuickPatch({ location: result.location });
+          renderRecording();
+        }
+      }).catch((err) => toast('error', 'Recording folder', err instanceof Error ? err.message : String(err)));
+    }, 'btn btn-secondary btn-sm'),
+    recordingQuickButton('Open', () => { void api.recordingOpenFolder().catch((err) => toast('error', 'Recording folder', err instanceof Error ? err.message : String(err))); }, 'btn btn-secondary btn-sm', !working.location),
+  ]);
+  const checkbox = (label: string, checked: boolean, onChange: (checked: boolean) => void): HTMLElement => {
+    const input = el('input', { type: 'checkbox', checked, 'aria-label': label }) as HTMLInputElement;
+    input.addEventListener('change', () => onChange(input.checked));
+    return el('label', { class: 'adv-recording-check' }, [input, el('span', { text: label })]);
+  };
+  const saveButton = recordingQuickButton(recordingQuickApplying ? 'Applying…' : 'Apply settings', () => void applyRecordingQuickSettings(), 'btn btn-primary btn-sm', recordingQuickApplying || !recordingQuickDirty);
+  saveButton.hidden = !recordingQuickDirty && !recordingQuickApplying;
+  return el('div', { class: 'adv-recording-settings-stack' }, [
+    el('section', { class: 'adv-recording-panel' }, [
+      el('div', { class: 'adv-recording-panel-heading adv-recording-panel-heading-compact' }, [
+        el('div', {}, [el('span', { class: 'adv-recording-eyebrow', text: 'Recording profile' }), el('h2', { class: 'adv-recording-panel-title', text: 'Quality' })]),
+        saveButton,
+      ]),
+      el('div', { class: 'adv-recording-grid' }, [
+        recordingQuickField('Frame rate', fps),
+        recordingQuickField('Resolution', resolution),
+        recordingQuickField('Encoder', encoder),
+        recordingQuickField('Bitrate (Kbps)', bitrate),
+      ]),
+      el('p', { class: 'adv-recording-panel-note', text: `Recommended ${bitrateRange.label}` }),
+    ]),
+    el('section', { class: 'adv-recording-panel' }, [
+      el('div', { class: 'adv-recording-panel-heading adv-recording-panel-heading-compact' }, [
+        el('div', {}, [el('span', { class: 'adv-recording-eyebrow', text: 'Replay buffer' }), el('h2', { class: 'adv-recording-panel-title', text: 'Clip window' })]),
+      ]),
+      recordingQuickField('Seconds to keep', replayLength, 'Used when Save Clip is pressed.'),
+    ]),
+    el('section', { class: 'adv-recording-panel' }, [
+      el('div', { class: 'adv-recording-panel-heading adv-recording-panel-heading-compact' }, [
+        el('div', {}, [el('span', { class: 'adv-recording-eyebrow', text: 'Capture source' }), el('h2', { class: 'adv-recording-panel-title', text: 'Source and options' })]),
+      ]),
+      recordingQuickField('Target', target),
+      recordingQuickField('Color handling', color),
+      el('div', { class: 'adv-recording-check-grid' }, [
+        checkbox('Show cursor', working.showCursor, (checked) => { recordingQuickPatch({ showCursor: checked }); renderRecording(); }),
+        checkbox('Recording Pill', recordingQuickPillEnabled, (checked) => { void toggleRecordingQuickPill(checked); }),
+        checkbox('Microphone', working.audio.microphone.enabled, (checked) => { recordingQuickPatch({ audio: { microphone: { enabled: checked } } }); renderRecording(); }),
+        checkbox('Full PC audio', working.audio.system.enabled, (checked) => { recordingQuickPatch({ audio: { system: { enabled: checked } } }); renderRecording(); }),
+      ]),
+    ]),
+    el('section', { class: 'adv-recording-panel adv-recording-location-panel' }, [
+      el('div', { class: 'adv-recording-panel-heading adv-recording-panel-heading-compact' }, [
+        el('div', {}, [el('span', { class: 'adv-recording-eyebrow', text: 'Files' }), el('h2', { class: 'adv-recording-panel-title', text: 'Save location' })]),
+      ]),
+      location,
+    ]),
+  ]);
+}
+
+function renderRecording(): void {
+  clear(contentEl);
+  const view = el('div', { class: 'adv-view recording-view' });
+  view.append(el('div', { class: 'adv-view-heading' }, [el('p', { class: 'adv-view-title', text: 'Recording' })]));
+  if (recordingQuickLoading || !recordingQuickSettings) {
+    view.append(el('p', { class: 'page-subtitle', text: recordingQuickError ?? 'Loading recording settings…' }));
+    contentEl.append(view);
+    if (!recordingQuickLoading && !recordingQuickSettings) void loadRecordingQuick();
+    return;
+  }
+  view.append(renderRecordingQuickActions(), renderRecordingQuickSettings());
+  contentEl.append(view);
 }
 
 // ---------------------------------------------------------------------------

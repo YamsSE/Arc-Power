@@ -15,6 +15,10 @@ Capability-gated and hidden when the GPU does not expose them:
 
 These controls only appear on hardware that reports support for them.
 
+Alchemist also supports a driver-backed negative voltage offset for
+undervolting. Arc Power bounds that control to **-200 mV** and verifies the
+driver read-back after every apply.
+
 ## Extended range
 
 On Alchemist (A770-class), power limits up to **375 W** and temperature

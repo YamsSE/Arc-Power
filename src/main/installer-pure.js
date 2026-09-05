@@ -1,6 +1,7 @@
 // Electron-free installer decisions. Keeping these helpers independent from
 // Electron makes the Windows path contract easy to test without launching UI.
 import path from 'node:path';
+import { ARC_POWER_CACHE_DIR_NAMES, ARC_POWER_PROFILE_CACHE_FILE_NAMES } from './cache-lifecycle.js';
 
 export const PRODUCT_NAME = 'Arc Power';
 export const INSTALLER_ARTIFACT_NAME = 'Arc-Power_Installer.exe';
@@ -11,7 +12,7 @@ export const UNINSTALL_REGISTRY_KEY = 'HKCU\\Software\\Microsoft\\Windows\\Curre
 export const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 export const RUN_KEY_POWERSHELL = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 export const PROFILE_DIR_NAME = 'ArcPower';
-export const CACHE_DIR_NAME = 'ArcPowerCache';
+export const CACHE_DIR_NAME = ARC_POWER_CACHE_DIR_NAMES[0];
 export const CURRENT_BOOT_TASK_NAME = 'ArcPowerBootApply';
 export const LEGACY_TASK_NAMES = Object.freeze(['ArcPowerAppOnBoot', 'ArcPowerApplyOnBoot']);
 export const CLEANUP_TASK_NAMES = Object.freeze([CURRENT_BOOT_TASK_NAME, ...LEGACY_TASK_NAMES]);
@@ -77,7 +78,8 @@ export function resolveDesktopShortcutPath(desktop) {
 
 /**
  * Build the complete install/uninstall contract. The profile path is exposed
- * only as documentation/state; cleanup intentionally targets cachePath.
+ * only as documentation/state; cleanup targets disposable cache roots and
+ * cache files, never the profile directory itself.
  */
 export function createInstallationPlan({
   localAppData,
@@ -90,6 +92,8 @@ export function createInstallationPlan({
 } = {}) {
   const normalizedAppData = requireAbsolute(appData, 'appData');
   const normalizedProfilePath = path.join(normalizedAppData, PROFILE_DIR_NAME);
+  const normalizedCachePaths = ARC_POWER_CACHE_DIR_NAMES.map((name) => path.join(normalizedAppData, name));
+  const normalizedProfileCachePaths = ARC_POWER_PROFILE_CACHE_FILE_NAMES.map((name) => path.join(normalizedProfilePath, name));
   const normalizedInstallDir = requireNonRoot(installDir, 'installDir');
   if (pathsOverlap(normalizedInstallDir, normalizedProfilePath)) {
     throw new TypeError('installDir must not equal, contain, or be contained by the durable ArcPower profile path');
@@ -105,7 +109,9 @@ export function createInstallationPlan({
     startMenuShortcutPath: resolveStartMenuShortcutPath(normalizedAppData),
     desktopShortcutPath: resolveDesktopShortcutPath(normalizedDesktop),
     profilePath: normalizedProfilePath,
-    cachePath: path.join(normalizedAppData, CACHE_DIR_NAME),
+    cachePath: normalizedCachePaths[0],
+    cachePaths: Object.freeze(normalizedCachePaths),
+    profileCachePaths: Object.freeze(normalizedProfileCachePaths),
     uninstallRegistryKey: UNINSTALL_REGISTRY_KEY,
     runKey: RUN_KEY,
     runKeyPowerShell: RUN_KEY_POWERSHELL,
@@ -114,7 +120,8 @@ export function createInstallationPlan({
     cleanupPaths: Object.freeze([
       resolveStartMenuShortcutPath(normalizedAppData),
       resolveDesktopShortcutPath(normalizedDesktop),
-      path.join(normalizedAppData, CACHE_DIR_NAME),
+      ...normalizedCachePaths,
+      ...normalizedProfileCachePaths,
       path.join(normalizedInstallDir, INSTALLED_EXECUTABLE_NAME),
       normalizedInstallDir,
     ]),

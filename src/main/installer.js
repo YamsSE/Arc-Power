@@ -11,11 +11,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs';
 import { mkdir, cp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { removeUserDataTree } from './cache-lifecycle.js';
+import { prepareArcPowerCacheSync } from './cache-lifecycle.js';
+import { isElevated } from './elevation.js';
 import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.js';
 import {
   PRODUCT_NAME,
@@ -39,6 +40,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
 const INSTALLER_HTML = path.join(__dirname, '..', 'installer', 'installer.html');
 const INSTALLER_PRELOAD = path.join(__dirname, '..', 'installer', 'installer-preload.cjs');
+const INSTALLER_ELEVATION_RELAUNCHED = 'ARC_POWER_INSTALLER_ELEVATION_RELAUNCHED';
 const INSTALLER_ICON = resolveWindowIconPath();
 const INSTALLER_NATIVE_ICON = (() => {
   try {
@@ -56,6 +58,45 @@ function powershellPath() {
 
 function encodedPowerShell(script) {
   return Buffer.from(script, 'utf16le').toString('base64');
+}
+
+function packagedInstallerLaunchTarget() {
+  const portableWrapper = process.env.PORTABLE_EXECUTABLE_FILE;
+  if (process.platform === 'win32' && typeof portableWrapper === 'string' && path.isAbsolute(portableWrapper) && existsSync(portableWrapper)) {
+    return portableWrapper;
+  }
+  return process.execPath;
+}
+
+function packagedInstallerLaunchArguments() {
+  const executable = path.resolve(process.execPath).toLowerCase();
+  return process.argv.slice(1).filter((argument) => {
+    if (!path.isAbsolute(argument)) return true;
+    return path.resolve(argument).toLowerCase() !== executable;
+  });
+}
+
+async function relaunchInstallerElevated() {
+  const target = packagedInstallerLaunchTarget();
+  const argumentsLiteral = packagedInstallerLaunchArguments().map((argument) => powershellLiteral(argument)).join(', ');
+  const script = [
+    '$ErrorActionPreference = \'Stop\'',
+    `$env:${INSTALLER_ELEVATION_RELAUNCHED} = '1'`,
+    `Start-Process -FilePath ${powershellLiteral(target)} -ArgumentList @(${argumentsLiteral}) -Verb RunAs | Out-Null`,
+  ].join('\n');
+  await runPowerShell(script);
+}
+
+async function ensurePackagedInstallerElevation() {
+  if (process.platform !== 'win32' || !app.isPackaged || process.env[INSTALLER_ELEVATION_RELAUNCHED] === '1' || isElevated()) return true;
+  try {
+    await relaunchInstallerElevated();
+    app.exit(0);
+    return false;
+  } catch (error) {
+    console.error(`[installer] elevation handoff failed: ${error instanceof Error ? error.message : String(error)}`);
+    return true;
+  }
 }
 
 async function runPowerShell(script) {
@@ -271,9 +312,10 @@ async function installArcPower(win, options = {}) {
   }
   sendProgress(win, 88, 'Registering Arc Power with Windows');
   await writeUninstallRegistration(plan, app.getVersion());
-  // Cache is disposable; profiles in plan.profilePath are deliberately never
-  // touched, so updates and reinstalls retain the user's durable settings.
-  await removeUserDataTree(plan.cachePath);
+  // The same version gate used by the launched application also runs here.
+  // This makes installer completion sufficient to clear an older release's
+  // caches, while a same-version reinstall leaves those caches alone.
+  prepareArcPowerCacheSync(paths.appData, app.getVersion());
   sendProgress(win, 100, 'Arc Power is ready');
   if (plan.launchAfterInstall) {
     await launchInstalledApp(plan.executablePath, plan.installDir);
@@ -569,6 +611,14 @@ function registerInstallerIpc(win, mode) {
 }
 
 export async function runInstallerMode(mode = 'install') {
+  if (!(await ensurePackagedInstallerElevation())) return;
+  // Installer/uninstaller UI must not open the legacy `%APPDATA%\arc-power`
+  // user-data root. That root is one of the disposable historical caches and
+  // would otherwise remain locked while the detached uninstaller tries to
+  // remove it after this process exits.
+  const installerUserData = path.join(app.getPath('temp'), `ArcPowerInstaller-${process.pid}`);
+  mkdirSync(installerUserData, { recursive: true });
+  app.setPath('userData', installerUserData);
   await app.whenReady();
   app.setAppUserModelId?.('com.rid.arcpower.desktop');
   if (mode === 'update') {

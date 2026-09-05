@@ -360,6 +360,175 @@ html, body {
   margin: 4px 0 10px;
 }
 
+/* --------------------------------------------------------- recording quick */
+
+.adv-recording-settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.adv-recording-panel {
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 84%, var(--accent) 16%);
+  border-radius: var(--radius);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), var(--bg-elev));
+  box-shadow: var(--shadow);
+}
+
+.adv-recording-capture-panel {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: linear-gradient(120deg, color-mix(in srgb, var(--accent-soft) 75%, var(--bg-elev)), var(--bg-elev) 62%);
+}
+
+.adv-recording-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.adv-recording-panel-heading-compact { align-items: center; }
+
+.adv-recording-eyebrow {
+  display: block;
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+
+.adv-recording-panel-title {
+  margin: 3px 0 0;
+  font: 650 14px var(--font-display);
+}
+
+.adv-recording-panel-note,
+.adv-recording-field-note {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.adv-recording-panel-note { margin: 6px 0 0; }
+
+.adv-recording-status-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  margin: 3px 3px 0 0;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+
+.adv-recording-status-dot.is-live {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 15%, transparent);
+}
+
+.adv-recording-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.adv-recording-actions .btn { min-width: 0; padding: 7px 8px; font-size: 11.5px; }
+.adv-recording-actions .btn:last-child { grid-column: 1 / -1; }
+
+.btn-recording-stop { background: color-mix(in srgb, var(--danger) 86%, #6b1020); border-color: var(--danger); color: #fff; font-weight: 650; }
+.btn-recording-stop:hover:not(:disabled) { background: var(--danger); border-color: var(--danger); }
+
+.adv-recording-warning,
+.adv-recording-error {
+  margin: 8px 0 0;
+  color: var(--warn);
+  font-size: 10.5px;
+}
+
+.adv-recording-error { color: var(--error); }
+
+.adv-recording-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 10px;
+}
+
+.adv-recording-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.adv-recording-field-label {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.adv-recording-select,
+.adv-recording-number {
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 5px 7px;
+}
+
+.adv-recording-select { cursor: pointer; }
+.adv-recording-select:focus,
+.adv-recording-number:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .16); }
+.adv-recording-select option { background: var(--bg-panel); color: var(--text); }
+.adv-recording-number { font-family: var(--mono); }
+
+.adv-recording-check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 10px;
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.adv-recording-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.adv-recording-check input { accent-color: var(--accent); }
+
+.adv-recording-location {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.adv-recording-location-text {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font: 10.5px var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adv-recording-location .btn { padding: 5px 8px; font-size: 10.5px; }
+.adv-recording-loading { color: var(--text-muted); font-size: 12px; }
+
 /* ----------------------------------------------------------------- footer */
 
 .adv-footer {

@@ -958,6 +958,37 @@ export function createSysmanHelperProxy({
       return null;
     },
     /**
+     * Read the Sysman legacy frequency voltage target/offset result without
+     * discarding an explicit helper error. The convenience readVoltageOffset
+     * below returns only the finite voltage payload for telemetry callers.
+     * @param {number} [deviceId]
+     * @param {object|null} [physicalTarget]
+     * @returns {Promise<{ ok: boolean, targetV?: number, offsetV?: number, frequencyTargetMhz?: number, errorCode?: string, message?: string }>}
+     */
+    async readVoltageOffsetResult(deviceId, physicalTarget = null) {
+      if (!(await readyGate())) return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
+      const payload = {};
+      if (Number.isInteger(deviceId) && deviceId >= 0) payload.deviceId = deviceId;
+      if (physicalTarget && typeof physicalTarget === 'object' && !Array.isArray(physicalTarget)) payload.physicalTarget = physicalTarget;
+      const { out, reason } = await enqueue({ op: 'read-voltage', payload });
+      if (!out) return { ok: false, errorCode: 'helper-failed', message: reason ?? 'the sysman helper produced no voltage result' };
+      if (out.ok === true && Number.isFinite(out.targetV) && Number.isFinite(out.offsetV)) {
+        return {
+          ok: true,
+          targetV: out.targetV,
+          offsetV: out.offsetV,
+          ...(Number.isFinite(out.frequencyTargetMhz) ? { frequencyTargetMhz: out.frequencyTargetMhz } : {}),
+        };
+      }
+      return { ok: false, errorCode: out.errorCode ?? 'unavailable', message: out.message ?? 'the sysman voltage offset read returned no result (the consumer is unavailable)' };
+    },
+    /** @returns {Promise<{ targetV: number, offsetV: number, frequencyTargetMhz?: number } | null>} */
+    async readVoltageOffset(deviceId, physicalTarget = null) {
+      const out = await this.readVoltageOffsetResult(deviceId, physicalTarget);
+      if (out.ok !== true || !Number.isFinite(out.targetV) || !Number.isFinite(out.offsetV)) return null;
+      return { targetV: out.targetV, offsetV: out.offsetV, ...(Number.isFinite(out.frequencyTargetMhz) ? { frequencyTargetMhz: out.frequencyTargetMhz } : {}) };
+    },
+    /**
      * Write the sustained + burst pair through the detached helper. The
      * helper's errorCode/message ride VERBATIM (round-1 N2 - no remap, or
      * the refused-class taxonomy at apply-routing.js silently degrades to
@@ -993,6 +1024,28 @@ export function createSysmanHelperProxy({
       const result = { ok: out.ok === true };
       if (out.errorCode !== undefined) result.errorCode = out.errorCode;
       if (out.message !== undefined) result.message = out.message;
+      return result;
+    },
+    /**
+     * Write a canonical Sysman voltage offset. Only finite offsets are
+     * accepted before readiness/enqueue; the native consumer enforces the
+     * negative-only policy and -200 mV ceiling.
+     */
+    async setVoltageOffset({ offsetV, targetV, frequencyTargetMhz, waiverAccepted = false }, deviceId, physicalTarget = null) {
+      if (!Number.isFinite(offsetV)) return { ok: false, errorCode: 'invalid-argument', message: 'offsetV must be a finite number' };
+      if (!(await readyGate())) return { ok: false, errorCode: NOT_READY_ERROR_CODE, message: NOT_READY_MESSAGE };
+      const payload = { offsetV };
+      if (Number.isFinite(targetV)) payload.targetV = targetV;
+      if (Number.isFinite(frequencyTargetMhz)) payload.frequencyTargetMhz = frequencyTargetMhz;
+      if (waiverAccepted === true) payload.waiverAccepted = true;
+      if (Number.isInteger(deviceId) && deviceId >= 0) payload.deviceId = deviceId;
+      if (physicalTarget && typeof physicalTarget === 'object' && !Array.isArray(physicalTarget)) payload.physicalTarget = physicalTarget;
+      const { out, reason } = await enqueue({ op: 'set-voltage', payload });
+      if (!out) return { ok: false, errorCode: 'helper-failed', message: reason ?? 'the sysman helper produced no voltage result' };
+      const result = { ok: out.ok === true };
+      for (const key of ['targetV', 'offsetV', 'frequencyTargetMhz', 'errorCode', 'message']) {
+        if (out[key] !== undefined) result[key] = out[key];
+      }
       return result;
     },
   };

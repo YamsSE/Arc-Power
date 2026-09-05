@@ -9,7 +9,7 @@
 
 <h1 align="center">Arc Power</h1>
 
-<p align="center"><b>1.1.1</b> - Arc Power: Windows tuning, monitoring, overlay, and profile management for Intel Arc GPUs.</p>
+<p align="center"><b>1.1.5</b> - Arc Power: Windows tuning, monitoring, overlay, and profile management for Intel Arc GPUs.</p>
 
 Arc Power provides driver-backed controls for Intel Arc graphics cards, including overclocking, fan control, live telemetry, graphics settings, profiles, and an in-game overlay. Controls are shown only when the selected GPU and driver expose them; unsupported controls remain unavailable or read-only.
 
@@ -17,12 +17,18 @@ Arc Power provides driver-backed controls for Intel Arc graphics cards, includin
 
 | GPU | Support |
 |---|---|
-| Arc A3 / A5 / A7 series (Alchemist) | Verified tuning and monitoring |
+| Arc A3 / A5 / A7 series (Alchemist) | Verified tuning, monitoring, and undervolting |
 | Arc B580 / B570 (Battlemage) | Verified tuning and monitoring |
 | Arc Pro Series | Verified tweaks and telemetry; overclocking is driver-locked |
 | Arc integrated graphics | Verified tweaks and telemetry; controls depend on the driver |
 
 AMD and NVIDIA adapters remain visible for telemetry when their vendor libraries are available, but Arc tuning requires an Intel Arc GPU.
+
+## Key features
+
+- **Alchemist undervolting** - apply a driver-backed negative voltage offset, bounded to **-200 mV**.
+- **Arc tuning and monitoring** - adjust supported clocks, power, temperature, fan behavior, and telemetry with device-reported limits and read-back verification.
+- **Profiles and overlay** - save per-GPU settings, apply them at startup, and monitor the selected adapters in-game.
 
 ## Install and start
 

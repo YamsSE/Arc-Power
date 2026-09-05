@@ -212,10 +212,12 @@ function idleMsFromEnv() {
  * result mapping. The one-shot form writes the payload to the out file;
  * the pipe form writes it as a JSON line on the connection - the payload
  * shape is IDENTICAL so the proxy's consumer contract never diverges.
- * @param {{ id?: string, op?: string, sustainedW?: unknown, burstW?: unknown, deviceId?: number, physicalTarget?: object|null }} req
+ * @param {{ id?: string, op?: string, sustainedW?: unknown, burstW?: unknown, offsetV?: unknown, targetV?: unknown, frequencyTargetMhz?: unknown, waiverAccepted?: boolean, deviceId?: number, physicalTarget?: object|null }} req
  * @param {{
  *   readLimits: (deviceId?: number, physicalTarget?: object|null) => object | null | Promise<object | null>,
  *   setLimits: ({ sustainedW: number, burstW: number }, deviceId?: number, physicalTarget?: object|null) => object | Promise<object>,
+ *   readVoltageOffset?: (deviceId?: number, physicalTarget?: object|null) => object | null | Promise<object | null>,
+ *   setVoltageOffset?: ({ offsetV: number, targetV?: number, frequencyTargetMhz?: number, waiverAccepted?: boolean }, deviceId?: number, physicalTarget?: object|null) => object | Promise<object>,
  * }} consumer
  * @param {(s: string) => void} log
  * @returns {Promise<{ payload: object, exitCode: number }>}
@@ -260,6 +262,52 @@ async function dispatchRequest(req, consumer, log) {
     if (!result || typeof result !== 'object') {
       result = { ok: false, errorCode: 'io-failed', message: 'the setLimits call returned no result' };
     }
+    return { payload: result, exitCode: 0 };
+  }
+
+  if (op === 'read-voltage') {
+    let result = null;
+    try {
+      result = typeof consumer.readVoltageOffset === 'function'
+        ? await consumer.readVoltageOffset(req?.deviceId, req?.physicalTarget ?? null)
+        : null;
+    } catch (err) {
+      log(`readVoltageOffset failed: ${err.message}`);
+      result = null;
+    }
+    if (result?.ok === false) return { payload: result, exitCode: 0 };
+    if (result && typeof result === 'object'
+      && Number.isFinite(result.targetV)
+      && Number.isFinite(result.offsetV)) {
+      return { payload: { ok: true, ...result }, exitCode: 0 };
+    }
+    return { payload: { ok: false, errorCode: 'unavailable', message: 'the sysman voltage offset read returned no result (the consumer is unavailable)' }, exitCode: 0 };
+  }
+
+  if (op === 'set-voltage') {
+    const offsetV = req?.offsetV;
+    const targetV = req?.targetV;
+    const frequencyTargetMhz = req?.frequencyTargetMhz;
+    if (!Number.isFinite(offsetV)
+      || (targetV !== undefined && !Number.isFinite(targetV))
+      || (frequencyTargetMhz !== undefined && !Number.isFinite(frequencyTargetMhz))) {
+      return { payload: { ok: false, errorCode: 'invalid-argument', message: 'offsetV, targetV, and frequencyTargetMhz must be finite numbers when supplied' }, exitCode: 1 };
+    }
+    let result = null;
+    try {
+      result = typeof consumer.setVoltageOffset === 'function'
+        ? await consumer.setVoltageOffset({
+          offsetV,
+          ...(targetV !== undefined ? { targetV } : {}),
+          ...(frequencyTargetMhz !== undefined ? { frequencyTargetMhz } : {}),
+          ...(req?.waiverAccepted === true ? { waiverAccepted: true } : {}),
+        }, req?.deviceId, req?.physicalTarget ?? null)
+        : { ok: false, errorCode: 'unsupported', message: 'the sysman voltage offset setter is unavailable' };
+    } catch (err) {
+      log(`setVoltageOffset failed: ${err.message}`);
+      result = { ok: false, errorCode: 'io-failed', message: err.message };
+    }
+    if (!result || typeof result !== 'object') result = { ok: false, errorCode: 'io-failed', message: 'the setVoltageOffset call returned no result' };
     return { payload: result, exitCode: 0 };
   }
 

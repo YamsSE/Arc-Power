@@ -86,6 +86,8 @@ interface FpsBinding {
 
 let mon: MonState | null = null;
 let fpsTimer: number | null = null;
+let graphRedrawFrame: number | null = null;
+const miniCanvasLayouts = new WeakMap<HTMLCanvasElement, { width: number; height: number; dpr: number }>();
 
 // M9: the Monitoring page's sub-view - 'monitoring' = the readout grid +
 // canvas graphs, 'overlay' = the overlay settings content. Module-level
@@ -300,12 +302,27 @@ function refreshFpsMetrics(sample: FpsSample | null): void {
 
 /** AMD-style compact history strip for each readout row. */
 function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[]): void {
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  if (w === 0 || h === 0) return;
-  canvas.width = Math.round(w * dpr);
-  canvas.height = Math.round(h * dpr);
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const w = Math.round(canvas.clientWidth);
+  const h = Math.round(canvas.clientHeight);
+  if (w <= 0 || h <= 0) return;
+  const previousLayout = miniCanvasLayouts.get(canvas);
+  const pixelWidth = Math.max(1, Math.round(w * dpr));
+  const pixelHeight = Math.max(1, Math.round(h * dpr));
+  // Resizing a canvas clears its backing store and reallocates the bitmap.
+  // The telemetry tick used to do that for every graph on every update,
+  // which could visibly flash or tear when two adapter lanes arrived close
+  // together. Resize only when layout or display density actually changed.
+  if (!previousLayout
+    || previousLayout.width !== w
+    || previousLayout.height !== h
+    || previousLayout.dpr !== dpr
+    || canvas.width !== pixelWidth
+    || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+    miniCanvasLayouts.set(canvas, { width: w, height: h, dpr });
+  }
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -463,6 +480,10 @@ export const monitoringPage: Page = {
     if (fpsTimer !== null) {
       window.clearInterval(fpsTimer);
       fpsTimer = null;
+    }
+    if (graphRedrawFrame !== null) {
+      window.cancelAnimationFrame(graphRedrawFrame);
+      graphRedrawFrame = null;
     }
     mon = null;
   },
@@ -730,10 +751,17 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
 }
 
 function redrawAll(): void {
-  if (!mon) return;
-  for (const [id, canvas] of mon.metricCanvases) {
-    drawMiniSeries(canvas, mon.series[id] ?? []);
-  }
+  if (!mon || graphRedrawFrame !== null) return;
+  // A telemetry push is emitted once per adapter, so a multi-GPU machine can
+  // deliver multiple store updates in one paint interval. Coalesce those
+  // updates into one frame so graphs never render an intermediate snapshot.
+  graphRedrawFrame = window.requestAnimationFrame(() => {
+    graphRedrawFrame = null;
+    if (!mon) return;
+    for (const [id, canvas] of mon.metricCanvases) {
+      drawMiniSeries(canvas, mon.series[id] ?? []);
+    }
+  });
 }
 
 /**
