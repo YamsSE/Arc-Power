@@ -1,6 +1,6 @@
 // Arc Power recording page. The renderer only uses the typed preload bridge;
 // capture processes, files, and media authorization remain main-owned.
-import { el, clear } from '../dom.ts';
+import { el, clear, svgEl } from '../dom.ts';
 import { api } from '../ipc.ts';
 import type { Page, PageContext } from '../router.ts';
 import type { DeviceInfo, RecordingAudioDevice, RecordingCaptureTarget, RecordingCaptureTargets, RecordingClip, RecordingClipDeleteResult, RecordingEditorJob, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingStorageInfo, RecordingTab } from '../types.ts';
@@ -950,6 +950,27 @@ function formatTime(seconds: number): string {
     : `${minutes}:${String(remainder).padStart(2, '0')}`;
 }
 
+function formatPreciseTime(milliseconds: number): string {
+  const safe = Math.max(0, Math.round(Number.isFinite(milliseconds) ? milliseconds : 0));
+  const minutes = Math.floor(safe / 60_000);
+  const seconds = Math.floor((safe % 60_000) / 1000);
+  const remainder = safe % 1000;
+  return `${minutes}:${String(seconds).padStart(2, '0')}.${String(remainder).padStart(3, '0')}`;
+}
+
+function parseTimeInput(value: string): number {
+  const text = value.trim();
+  if (!text) return 0;
+  if (text.includes(':')) {
+    const parts = text.split(':');
+    const minutes = Number(parts.at(-2));
+    const seconds = Number(parts.at(-1));
+    return Number.isFinite(minutes) && Number.isFinite(seconds) ? Math.max(0, Math.round((minutes * 60 + seconds) * 1000)) : 0;
+  }
+  const seconds = Number(text);
+  return Number.isFinite(seconds) ? Math.max(0, Math.round(seconds * 1000)) : 0;
+}
+
 function playbackSpeedLabel(rate: number): string {
   if (Math.abs(rate - 1) < 0.001) return 'Normal';
   return `${Number(rate.toFixed(2))}x`;
@@ -1160,14 +1181,63 @@ type RecordingEditorElement = HTMLElement & {
   updateDuration?: (durationMs: number) => void;
 };
 
+function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = ''): HTMLElement {
+  const samples = Array.isArray(clip.apmSamples) ? clip.apmSamples.filter((sample) => Number.isFinite(sample.atMs) && Number.isFinite(sample.apm)) : [];
+  const markers = clip.markerSummaries ?? [];
+  const span = Math.max(1000, durationMs, ...samples.map((sample) => sample.atMs), ...markers.map((marker) => marker.atMs));
+  const chart = el('div', { class: `recording-apm-chart recording-apm-chart-live${extraClass ? ` ${extraClass}` : ''}`, 'aria-label': samples.length ? 'APM timeline' : 'APM telemetry unavailable for this clip' });
+  const tooltip = el('div', { class: 'recording-apm-tooltip', hidden: true });
+  const markerRail = el('div', { class: 'recording-apm-marker-rail', 'aria-label': 'Clip marker positions' }, markers.map((marker) => el('span', {
+    class: 'recording-apm-marker',
+    title: `${marker.label} · ${formatTime(marker.atMs / 1000)}`,
+    style: `--marker:${Math.min(100, Math.max(0, (marker.atMs / span) * 100))}%`,
+    text: marker.label.trim().slice(0, 1).toUpperCase() || '•',
+  })));
+  if (samples.length > 0) {
+    const maxApm = Math.max(60, ...samples.map((sample) => sample.apm));
+    const points = samples.map((sample) => {
+      const x = Math.min(100, Math.max(0, (sample.atMs / span) * 100));
+      const y = 38 - (Math.min(maxApm, Math.max(0, sample.apm)) / maxApm) * 32;
+      return `${x.toFixed(3)},${y.toFixed(3)}`;
+    }).join(' ');
+    const svg = svgEl('svg', { class: 'recording-apm-trace', viewBox: '0 0 100 40', preserveAspectRatio: 'none', role: 'img', 'aria-label': 'APM activity wave' });
+    svg.append(svgEl('polyline', { points }));
+    chart.append(svg);
+    const nearest = (ratio: number) => samples.reduce((best, sample) => Math.abs(sample.atMs / span - ratio) < Math.abs(best.atMs / span - ratio) ? sample : best, samples[0]);
+    const showTooltip = (event: MouseEvent) => {
+      const rect = chart.getBoundingClientRect();
+      const ratio = rect.width > 0 ? Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)) : 0;
+      const sample = nearest(ratio);
+      tooltip.textContent = `APM: ${sample.apm} · ${formatTime(sample.atMs / 1000)}`;
+      tooltip.hidden = false;
+      tooltip.style.left = `${Math.min(Math.max(6, event.clientX - rect.left), Math.max(6, rect.width - 110))}px`;
+    };
+    chart.addEventListener('mousemove', showTooltip);
+    chart.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+    chart.addEventListener('focusout', () => { tooltip.hidden = true; });
+    chart.tabIndex = 0;
+    chart.addEventListener('keydown', (event) => {
+      if ((event as KeyboardEvent).key !== 'ArrowLeft' && (event as KeyboardEvent).key !== 'ArrowRight') return;
+      const index = (event as KeyboardEvent).key === 'ArrowRight' ? samples.length - 1 : 0;
+      const sample = samples[index];
+      tooltip.textContent = `APM: ${sample.apm} · ${formatTime(sample.atMs / 1000)}`;
+      tooltip.hidden = false;
+    });
+  } else {
+    chart.append(el('div', { class: 'recording-apm-empty-trace', 'aria-hidden': 'true' }));
+  }
+  chart.append(markerRail, tooltip);
+  return chart;
+}
+
 function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoElement | null, getTracker?: () => HTMLElement | null, onCancel?: () => void): HTMLElement {
   // A file's byte length is not a playback duration. Start with a safe one
   // second range and replace it from the video's authoritative metadata.
   let durationMs = 1000;
   let job: RecordingEditorJob | null = null;
   const clipName = el('input', { class: 'recording-editor-clip-name', type: 'text', value: clip.fileName.replace(/\.[^.]+$/, ''), maxlength: 96, 'aria-label': 'Clip name' }) as HTMLInputElement;
-  const startTime = el('input', { class: 'recording-editor-time-input', type: 'number', min: 0, step: 0.1, value: '0', 'aria-label': 'Clip start time in seconds' }) as HTMLInputElement;
-  const endTime = el('input', { class: 'recording-editor-time-input', type: 'number', min: 0, step: 0.1, value: '0', 'aria-label': 'Clip end time in seconds' }) as HTMLInputElement;
+  const startTime = el('input', { class: 'recording-editor-time-input', type: 'text', inputmode: 'decimal', value: '0:00.000', 'aria-label': 'Clip start time' }) as HTMLInputElement;
+  const endTime = el('input', { class: 'recording-editor-time-input', type: 'text', inputmode: 'decimal', value: '0:00.000', 'aria-label': 'Clip end time' }) as HTMLInputElement;
   const durationReadout = el('span', { class: 'recording-editor-duration', text: 'Duration 0:00' });
   const audioMenu = select('original', [['original', 'Original audio'], ['mute', 'Mute audio'], ['system', 'System audio (source)']], 'Audio', () => {});
   audioMenu.classList.add('recording-editor-audio-menu');
@@ -1199,16 +1269,12 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
   const editor = el('section', { class: 'recording-editor-drawer recording-editor-ascent', 'aria-label': 'Clip editor' }) as RecordingEditorElement;
   let segmentBoundary: 'start' | 'end' = 'start';
   const selectionFill = el('div', { class: 'recording-editor-selection-fill', 'aria-hidden': 'true' });
-  const apmTrace = el('div', { class: 'recording-editor-apm-trace', 'aria-label': 'APM telemetry unavailable for this clip' }, [
-    el('span', { text: 'APM' }),
-    el('span', { text: 'Telemetry unavailable for this clip' }),
-  ]);
   const setRangeLabels = () => {
     const max = Math.max(1000, durationMs);
     const start = Math.min(max - 1, Math.round((Number(startRange.value) / 1000) * max));
     const end = Math.max(start + 1, Math.round((Number(endRange.value) / 1000) * max));
-    if (document.activeElement !== startTime) startTime.value = (start / 1000).toFixed(1);
-    if (document.activeElement !== endTime) endTime.value = (end / 1000).toFixed(1);
+    if (document.activeElement !== startTime) startTime.value = formatPreciseTime(start);
+    if (document.activeElement !== endTime) endTime.value = formatPreciseTime(end);
     startLabel.textContent = formatTime(start / 1000);
     endLabel.textContent = formatTime(end / 1000);
     durationReadout.textContent = `Duration ${formatTime(Math.max(0, end - start) / 1000)}`;
@@ -1219,10 +1285,10 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
   };
   const syncTimeFields = () => {
     const max = Math.max(1000, durationMs);
-    const start = Math.min(max - 1, Math.max(0, Math.round(Number(startTime.value) * 1000)));
-    const end = Math.min(max, Math.max(start + 1, Math.round(Number(endTime.value) * 1000)));
-    startTime.value = (start / 1000).toFixed(1);
-    endTime.value = (end / 1000).toFixed(1);
+    const start = Math.min(max - 1, Math.max(0, parseTimeInput(startTime.value)));
+    const end = Math.min(max, Math.max(start + 1, parseTimeInput(endTime.value)));
+    startTime.value = formatPreciseTime(start);
+    endTime.value = formatPreciseTime(end);
     startRange.value = String(Math.round((start / max) * 1000));
     endRange.value = String(Math.round((end / max) * 1000));
     setRangeLabels();
@@ -1256,10 +1322,10 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
   async function startJob(operation: 'trim' | 'gif'): Promise<void> {
     const video = getVideo();
     if (video && Number.isFinite(video.duration) && video.duration > 0) durationMs = Math.round(video.duration * 1000);
-    const range = clampRecordingEditorRange(Number(startTime.value) * 1000, Number(endTime.value) * 1000, durationMs);
+    const range = clampRecordingEditorRange(parseTimeInput(startTime.value), parseTimeInput(endTime.value), durationMs);
     durationMs = range.durationMs;
-    startTime.value = (range.startMs / 1000).toFixed(1);
-    endTime.value = (range.endMs / 1000).toFixed(1);
+    startTime.value = formatPreciseTime(range.startMs);
+    endTime.value = formatPreciseTime(range.endMs);
     syncTimeFields();
     const { startMs, endMs } = range;
     if (!video || !Number.isFinite(video.duration) || startMs >= endMs) {
@@ -1287,12 +1353,12 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
     if (!video || !Number.isFinite(video.duration)) return;
     const current = Math.max(0, Math.min(durationMs, Math.round(video.currentTime * 1000)));
     if (current > 0 && current < durationMs && segmentBoundary === 'start') {
-      startTime.value = (current / 1000).toFixed(1);
+      startTime.value = formatPreciseTime(current);
       syncTimeFields();
       segmentBoundary = 'end';
       statusLabel.textContent = 'Segment start set. Move the playhead and press Segment again for the end.';
     } else if (current > 0 && current < durationMs) {
-      endTime.value = (current / 1000).toFixed(1);
+      endTime.value = formatPreciseTime(current);
       syncTimeFields();
       segmentBoundary = 'start';
       statusLabel.textContent = 'Segment range updated from the playhead.';
@@ -1304,15 +1370,14 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
     const mode = apmMenu.value;
     const visible = apmToggle.checked && mode !== 'off';
     if (tracker) tracker.hidden = !visible;
-    apmTrace.hidden = !visible;
     const liveLabel = tracker?.querySelector('.recording-apm-live');
     if (liveLabel) liveLabel.textContent = mode === 'minimal'
-      ? 'Minimal view · telemetry unavailable'
+      ? 'Minimal view'
       : mode === 'off' || !apmToggle.checked
         ? 'APM hidden'
-        : 'Telemetry unavailable for this clip';
+        : clip.apmSamples?.length ? `Average APM ${clip.apmAverage ?? '—'}` : 'Telemetry unavailable for this clip';
     if (statusLabel && !job) statusLabel.textContent = visible
-      ? mode === 'minimal' ? 'APM tracker set to minimal view.' : 'APM tracker enabled; telemetry is unavailable for this clip.'
+      ? mode === 'minimal' ? 'APM tracker set to minimal view.' : clip.apmSamples?.length ? 'APM tracker ready.' : 'APM telemetry unavailable for this clip.'
       : 'APM tracker hidden.';
   };
   apmToggle.addEventListener('change', () => syncApmState());
@@ -1344,7 +1409,7 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
       creationTimelineActions,
     ]),
     el('div', { class: 'recording-editor-selected-timeline' }, [
-      el('div', { class: 'recording-editor-range-track' }, [apmTrace, selectionFill, markerRail, startRange, endRange]),
+      el('div', { class: 'recording-editor-range-track' }, [selectionFill, markerRail, startRange, endRange]),
       el('div', { class: 'recording-editor-range-labels' }, [startLabel, endLabel]),
     ]),
     el('div', { class: 'recording-editor-gif-options' }, [el('span', { class: 'recording-editor-secondary-label', text: 'GIF export' }), el('label', {}, [el('span', { text: 'FPS' }), fps]), el('label', {}, [el('span', { text: 'Width' }), width]), gifButton]),
@@ -1368,22 +1433,18 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
   return editor;
 }
 
-function renderPlayerTracker(markers: RecordingClip['markerSummaries'] = [], actions: HTMLElement[] = []): HTMLElement {
-  const markerSpan = Math.max(1, ...(markers ?? []).map((marker) => Number.isFinite(marker.atMs) ? marker.atMs : 0));
-  const markerRail = el('div', { class: 'recording-apm-marker-rail', 'aria-label': 'Clip marker positions' }, (markers ?? []).map((marker) => el('span', {
-    class: 'recording-apm-marker',
-    title: `${marker.label} · ${formatTime(marker.atMs / 1000)}`,
-    style: `--marker:${Math.min(100, Math.max(0, (marker.atMs / markerSpan) * 100))}%`,
-    text: marker.label.trim().slice(0, 1).toUpperCase() || '•',
-  })));
+function renderPlayerTracker(clip: RecordingClip, actions: HTMLElement[] = []): HTMLElement {
+  const samples = clip.apmSamples ?? [];
+  const average = Number.isFinite(clip.apmAverage) ? clip.apmAverage : samples.length ? Math.round(samples.reduce((sum, sample) => sum + sample.apm, 0) / samples.length) : null;
+  const hasTelemetry = samples.length > 0;
   return el('section', { class: 'recording-apm-tracker', 'aria-label': 'APM performance tracker' }, [
     el('div', { class: 'recording-apm-heading' }, [
-      el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'APM' }), el('strong', { text: 'Performance timeline' })]),
+      el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'APM' }), el('strong', { text: 'Performance tracker' })]),
       el('div', { class: 'recording-apm-heading-actions' }, actions),
     ]),
-    el('div', { class: 'recording-apm-average' }, [el('span', { text: 'Average APM' }), el('strong', { text: '—' }), el('span', { class: 'recording-apm-live', text: 'Telemetry unavailable for this clip' })]),
-    el('div', { class: 'recording-apm-chart' }, [el('div', { class: 'recording-apm-empty-trace', 'aria-hidden': 'true' }), markerRail]),
-    el('div', { class: 'recording-apm-ruler' }, [el('span', { text: '0:00' }), el('span', { text: 'Telemetry unavailable' }), el('span', { text: 'Clip end' })]),
+    el('div', { class: 'recording-apm-average' }, [el('span', { text: 'Average' }), el('strong', { text: average === null ? '—' : String(average) }), el('span', { class: 'recording-apm-unit', text: 'APM' }), el('span', { class: 'recording-apm-live', text: hasTelemetry ? 'Live capture telemetry' : 'Telemetry unavailable for this clip' })]),
+    renderApmGraph(clip, 1000),
+    el('div', { class: 'recording-apm-ruler' }, [el('span', { text: '0:00' }), el('span', { text: hasTelemetry ? formatTime((samples[Math.floor(samples.length / 2)]?.atMs ?? 0) / 1000) : '—' }), el('span', { text: hasTelemetry ? formatTime((samples.at(-1)?.atMs ?? 0) / 1000) : 'Clip end' })]),
   ]);
 }
 
@@ -1598,7 +1659,7 @@ function renderPlayerView(): HTMLElement {
       player.append(el('p', { class: 'text-error', text: messageOf(err) }));
     });
   }
-  trackerPanel = renderPlayerTracker(playerClip?.markerSummaries ?? [], [highlightButton, clipButton, apmButton]);
+  trackerPanel = renderPlayerTracker(playerClip ?? { id: '', fileName: '', relativePath: '', createdAt: '' }, [highlightButton, clipButton, apmButton]);
   editorPanel = playerClip ? renderRecordingEditor(playerClip, () => playerVideo, () => creationMode ? null : trackerPanel, () => setCreationMode(false)) : null;
   if (editorPanel) editorPanel.hidden = true;
   timelineSurface = el('div', { class: 'recording-player-timeline-surface' }, [trackerPanel, editorPanel]);

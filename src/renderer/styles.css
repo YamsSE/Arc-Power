@@ -3361,6 +3361,10 @@ input[type="number"] {
 .recording-apm-average { display: flex; align-items: baseline; gap: 8px; color: var(--text-dim); font-size: 10px; }
 .recording-apm-average strong { color: var(--accent); font: 650 13px var(--mono); }
 .recording-apm-chart { position: relative; height: 60px; padding: 5px 1px 8px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); overflow: hidden; }
+.recording-apm-chart-live { outline: none; cursor: crosshair; }
+.recording-apm-chart-live:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, #c084ff 55%, transparent); }
+.recording-apm-tooltip { position: absolute; top: 6px; z-index: 6; transform: translateX(-50%); padding: 5px 8px; border: 1px solid color-mix(in srgb, #c084ff 55%, var(--border)); border-radius: 6px; background: #191629; color: #f7edff; box-shadow: 0 7px 20px rgba(0,0,0,.36); font: 650 10px var(--mono); white-space: nowrap; pointer-events: none; }
+.recording-apm-tooltip[hidden] { display: none; }
 .recording-apm-trace { position: absolute; inset: 6px 0 8px; width: 100%; height: calc(100% - 14px); overflow: visible; }
 .recording-apm-trace polyline { fill: none; stroke: #38e7ff; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 64%, transparent)); }
 .recording-apm-marker-ticks { position: absolute; inset: 0; }
@@ -3380,6 +3384,7 @@ input[type="number"] {
 .recording-apm-heading-actions .btn-secondary { border-color: color-mix(in srgb, #9b4dff 38%, var(--border-strong)); }
 .recording-apm-average { gap: 7px; color: var(--text-dim); }
 .recording-apm-average strong { color: #c084ff; font-size: 14px; }
+.recording-apm-unit { color: #c084ff; font: 650 10px var(--mono); }
 .recording-apm-average .recording-apm-live { margin-left: auto; color: var(--text-dim); }
 .recording-apm-chart { height: 72px; padding: 7px 0 11px; border-top-color: color-mix(in srgb, #9b4dff 22%, var(--border)); border-bottom-color: color-mix(in srgb, #9b4dff 22%, var(--border)); }
 .recording-apm-empty-trace { position: absolute; right: 0; bottom: 18px; left: 0; height: 2px; background: repeating-linear-gradient(90deg, color-mix(in srgb, #9b4dff 72%, transparent) 0 8px, transparent 8px 14px); opacity: .7; }
@@ -3408,8 +3413,10 @@ input[type="number"] {
 .recording-editor-selected-timeline { gap: 6px; padding: 1px 0 2px; }
 .recording-editor-range-track { min-height: 68px; padding-top: 27px; }
 .recording-editor-range-track::before { top: 39px; height: 8px; background: #4e5665; }
-.recording-editor-apm-trace { position: absolute; right: 0; bottom: 48px; left: 0; z-index: 1; display: flex; align-items: center; gap: 8px; min-height: 20px; padding: 0 8px; border-bottom: 1px solid color-mix(in srgb, #9b4dff 30%, var(--border)); color: var(--text-dim); font: 10px var(--mono); }
-.recording-editor-apm-trace span:first-child { color: #c084ff; font-weight: 700; letter-spacing: .08em; }
+.recording-editor-apm-trace { position: absolute; right: 0; bottom: 43px; left: 0; z-index: 1; height: 53px; min-height: 53px; padding: 0; border-bottom: 1px solid color-mix(in srgb, #9b4dff 30%, var(--border)); }
+.recording-editor-apm-trace .recording-apm-marker-rail { display: none; }
+.recording-editor-apm-trace .recording-apm-tooltip { top: 2px; }
+.recording-editor-apm-trace .recording-apm-empty-trace { bottom: 17px; }
 .recording-editor-apm-trace[hidden] { display: none; }
 .recording-editor-selection-fill { position: absolute; top: 39px; z-index: 1; height: 8px; min-width: 2px; border-radius: 999px; background: linear-gradient(90deg, #6e42bf, #a85bff 58%, #c47eff); box-shadow: 0 0 14px rgba(155, 77, 255, .26); }
 .recording-editor-range-track .recording-editor-range { position: absolute; top: 30px; right: 0; left: 0; z-index: 3; height: 26px; margin: 0; }

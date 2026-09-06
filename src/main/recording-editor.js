@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn as spawnProcess } from 'node:child_process';
-import { isPathWithinRoot, safeVideoExtension } from './recording-pure.js';
+import { isPathWithinRoot, mapRecordingApmSamplesToClip, safeVideoExtension } from './recording-pure.js';
 import { isOpaqueClipId, resolveSafeRecordingPath } from './recording-media.js';
 
 export const RECORDING_EDITOR_STATES = Object.freeze(['queued', 'running', 'ready', 'cancelled', 'error']);
@@ -345,7 +345,17 @@ export function createRecordingEditorService({
           .filter((marker) => Number.isFinite(marker?.atMs) && marker.atMs >= job.request.startMs && marker.atMs <= job.request.endMs)
           .slice(0, 500)
           .map((marker) => ({ ...marker, atMs: Math.max(0, Math.round(marker.atMs - job.request.startMs)) }));
-        const clip = await recordingStore.recordClip({ relativePath: outputRelative, fileName: path.basename(outputPath), editorVersion: RECORDING_EDITOR_VERSION, markerSummaries });
+        const apmSamples = mapRecordingApmSamplesToClip(sourceClip.apmSamples, { sourceStartMs: job.request.startMs, sourceEndMs: job.request.endMs });
+        const apmValues = apmSamples.map((sample) => sample.apm);
+        const clip = await recordingStore.recordClip({
+          relativePath: outputRelative,
+          fileName: path.basename(outputPath),
+          editorVersion: RECORDING_EDITOR_VERSION,
+          markerSummaries,
+          apmSamples,
+          apmAverage: apmValues.length ? Math.round(apmValues.reduce((sum, value) => sum + value, 0) / apmValues.length) : null,
+          apmPeak: apmValues.length ? Math.max(...apmValues) : null,
+        });
         update(job, { state: 'ready', progress: 100, child: null, clip });
       } else {
         update(job, { state: 'ready', progress: 100, child: null, artifact: { kind: 'gif', fileName: path.basename(outputPath), relativePath: outputRelative, extension: '.gif', durationMs: job.request.durationMs, fps: job.request.fps, width: job.request.width } });

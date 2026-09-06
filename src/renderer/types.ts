@@ -1225,6 +1225,10 @@ export interface RecordingNotification {
   message: string;
   durationMs?: number;
 }
+export interface RecordingApmSample {
+  atMs: number;
+  apm: number;
+}
 export interface RecordingClip {
   id: string;
   fileName: string;
@@ -1234,6 +1238,9 @@ export interface RecordingClip {
   byteLength?: number;
   thumbnailUrl?: string;
   markerSummaries?: RecordingMarker[];
+  apmSamples?: RecordingApmSample[];
+  apmAverage?: number;
+  apmPeak?: number;
   editorVersion?: number;
 }
 export interface RecordingStorageInfo {

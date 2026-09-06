@@ -61,7 +61,13 @@ export function recordingSessionIdOf(state) {
 export async function persistReplayClipMetadata({ recordingStore, recordingRoot, outputPath, readyPayload } = {}) {
   if (!recordingStore?.recordClip || typeof recordingRoot !== 'string' || typeof outputPath !== 'string') return { clip: null, markerMapping: { mapped: false, reason: 'metadata-unavailable' } };
   const relativePath = path.relative(recordingRoot, outputPath);
-  const clip = await recordingStore.recordClip({ relativePath, fileName: path.basename(outputPath) });
+  const clip = await recordingStore.recordClip({
+    relativePath,
+    fileName: path.basename(outputPath),
+    apmSamples: readyPayload?.apmSamples,
+    apmAverage: readyPayload?.apmAverage,
+    apmPeak: readyPayload?.apmPeak,
+  });
   const sourceSessionId = readyPayload?.sourceSessionId ?? readyPayload?.sessionId ?? null;
   const mapping = typeof recordingStore.attachMarkersToClip === 'function'
     ? await recordingStore.attachMarkersToClip({

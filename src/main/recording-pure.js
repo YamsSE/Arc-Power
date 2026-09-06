@@ -381,6 +381,26 @@ function normalizeRecordingMarkerSummary(raw = {}) {
   return id && atMs !== null && label ? { id, atMs, label, createdAt } : null;
 }
 
+export function normalizeRecordingApmSamples(value) {
+  if (!Array.isArray(value)) return [];
+  const samples = value.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const atMs = Number.isFinite(item.atMs) ? Math.min(86_400_000, Math.max(0, Math.round(item.atMs))) : null;
+    const apm = Number.isFinite(item.apm) ? Math.min(6000, Math.max(0, Math.round(item.apm))) : null;
+    return atMs === null || apm === null ? null : { atMs, apm };
+  }).filter(Boolean);
+  samples.sort((left, right) => left.atMs - right.atMs);
+  return samples.slice(0, 86_400);
+}
+
+export function mapRecordingApmSamplesToClip(samples, { sourceStartMs = 0, sourceEndMs = 86_400_000 } = {}) {
+  const start = Number.isFinite(sourceStartMs) ? Math.max(0, Math.round(sourceStartMs)) : 0;
+  const end = Number.isFinite(sourceEndMs) ? Math.max(start, Math.round(sourceEndMs)) : 86_400_000;
+  return normalizeRecordingApmSamples(samples)
+    .filter((sample) => sample.atMs >= start && sample.atMs <= end)
+    .map((sample) => ({ atMs: sample.atMs - start, apm: sample.apm }));
+}
+
 /**
  * Map session-relative markers into one saved replay interval. The returned
  * retained list is the complete marker sidecar after consuming only markers
@@ -433,6 +453,9 @@ export function normalizeRecordingClip(clip = {}) {
     .map(normalizeRecordingMarkerSummary)
     .filter((marker) => marker && !seenSummaryIds.has(marker.id) && seenSummaryIds.add(marker.id))
     .slice(0, 100);
+  const apmSamples = normalizeRecordingApmSamples(clip.apmSamples);
+  const apmAverage = Number.isFinite(clip.apmAverage) ? Math.min(6000, Math.max(0, Math.round(clip.apmAverage))) : null;
+  const apmPeak = Number.isFinite(clip.apmPeak) ? Math.min(6000, Math.max(0, Math.round(clip.apmPeak))) : null;
   return {
     ...clip,
     id,
@@ -440,6 +463,9 @@ export function normalizeRecordingClip(clip = {}) {
     fileName: typeof clip.fileName === 'string' && clip.fileName.length <= 512 ? clip.fileName : path.basename(relativePath),
     createdAt: typeof clip.createdAt === 'string' ? clip.createdAt : new Date(0).toISOString(),
     ...(markerSummaries.length ? { markerSummaries } : {}),
+    ...(apmSamples.length ? { apmSamples } : {}),
+    ...(apmAverage !== null ? { apmAverage } : {}),
+    ...(apmPeak !== null ? { apmPeak } : {}),
     ...(Number.isInteger(clip.editorVersion) && clip.editorVersion > 0 ? { editorVersion: clip.editorVersion } : {}),
   };
 }

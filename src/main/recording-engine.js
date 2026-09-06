@@ -4,6 +4,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { spawn as spawnProcess } from 'node:child_process';
 import { consumeAscentJsonObjects, ASCENT_MAX_MESSAGE_BYTES, recordingOutputDimensions, resolveRecordingRuntimeCandidates, normalizeRecordingAudioSettings, recordingRuntimeEncoderIdForTarget } from './recording-pure.js';
 import { createInstantReplaySaveState, INSTANT_REPLAY_SAVE_STATUS } from './recording-lifecycle.js';
+import { createApmCapture } from './apm-capture.js';
 
 export const ASCENT_COMMANDS = Object.freeze({ SHUTDOWN: 1, QUERY_MACHINE_INFO: 2, START: 3, STOP: 4, START_REPLAY_CAPTURE: 8, STOP_REPLAY_CAPTURE: 9, SPLIT_VIDEO: 12 });
 export const ASCENT_RECORDER_TYPES = Object.freeze({ VIDEO: 1, REPLAY: 2, STREAMING: 3 });
@@ -451,7 +452,7 @@ function isEncoderStartRejection(error) {
   return Number.isInteger(error?.code) && ASCENT_ENCODER_START_ERROR_CODES.includes(error.code);
 }
 
-export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, getCaptureDimensions = () => null, resolveEncoderTarget = async (target) => target, trimReplayClip = null, shutdownMs = DEFAULT_SHUTDOWN_MS, startTimeoutMs = 15000 } = {}) {
+export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, getCaptureDimensions = () => null, resolveEncoderTarget = async (target) => target, trimReplayClip = null, apmCapture = createApmCapture({ clock }), shutdownMs = DEFAULT_SHUTDOWN_MS, startTimeoutMs = 15000 } = {}) {
   let child = null;
   let output = '';
   let decoder = new StringDecoder('utf8');
@@ -589,6 +590,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     if (started && recorderForEvent) {
       const active = { ...recorderForEvent, startedAt: recorderForEvent.startedAt ?? clock() };
       activeRecorders.set(recorderForEvent.mode, active);
+      try { apmCapture?.start?.(active.sessionId, active.startedAt); } catch { /* APM degrades without affecting capture */ }
       if (recorderForEvent.cancelRequested) {
         recorderForEvent.startedAfterCancel = true;
         if (!recorderForEvent.stopInFlight) {
@@ -606,6 +608,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     if (event === ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY && replayCapture?.bufferIdentifier === identifier) replayCapture = null;
     if (event === ASCENT_EVENTS.REPLAY_STOPPED) replayCapture = null;
     if (stopped && recorderForEvent) {
+      try { apmCapture?.stop?.(recorderForEvent.sessionId); } catch { /* best effort */ }
       const stoppedActive = activeRecorders.get(recorderForEvent.mode);
       if (identifier === null || stoppedActive?.identifier === identifier) activeRecorders.delete(recorderForEvent.mode);
       const starting = startingRecorders.get(recorderForEvent.mode);
@@ -1110,6 +1113,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const end = nativeEnd ?? Math.max(0, Math.round(clock() - Number(activeReplay?.startedAt ?? clock())));
     const duration = nativeDuration ?? Math.max(0, Math.round(requestedDurationMs));
     const start = nativeStart ?? Math.max(0, end - duration);
+    const apm = apmCapture?.getInterval?.(activeReplay?.sessionId, start, end) ?? null;
     return {
       ...response,
       event: 'replay_ready',
@@ -1125,6 +1129,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       sourceStartMs: start,
       sourceEndMs: end,
       thumbnailFolder: response?.thumbnailFolder ?? thumbnailFolder ?? null,
+      ...(apm?.samples?.length ? { apmSamples: apm.samples, apmAverage: apm.averageApm, apmPeak: apm.peakApm } : {}),
     };
   }
 
@@ -1226,6 +1231,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     freshChildRequired = false;
     activeRecorders.clear();
     startingRecorders.clear();
+    try { apmCapture?.dispose?.(); } catch { /* best effort */ }
     rejectPending(new Error('Ascent engine shut down'));
     rejectQueued(new Error('Ascent engine shut down'));
     return state;
