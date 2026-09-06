@@ -56,7 +56,8 @@ export interface DeviceState {
   gpuFreqOffsetMhz: number | null;
   tempLimitC: number | null;
   /** Advanced Alchemist writes can be accepted while the driver exposes only
-   * the stock 90 C getter. This marks that immediate apply state explicitly. */
+   * no finite native temperature getter was available. A finite stock 90 C
+   * result remains visible as the driver's actual current read-back. */
   tempLimitCReadBackUnavailable?: boolean;
   vramFreqOffsetGts: number | null;
   vramVoltOffsetV: number | null;

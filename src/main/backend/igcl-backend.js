@@ -106,8 +106,28 @@ const RETRYABLE_VF_WRITE_RESULTS = new Set([
   CTL_RESULT.ERROR_OS_CALL,
   CTL_RESULT.ERROR_KMD_CALL,
   CTL_RESULT.ERROR_NOT_AVAILABLE,
+  // The first B580 apply can surface the device-unavailable form while the
+  // newly initialized overclock service is attaching. It is transient only
+  // when the single immediate replay succeeds; a persistent result remains
+  // the driver's refusal.
+  CTL_RESULT.ERROR_DEVICE_UNAVAILABLE,
   CTL_RESULT.ERROR_RETRY_OPERATION,
 ]);
+
+// A successful B-series custom-curve write can become visible in LIVE only
+// after the KMD's asynchronous table update completes. Keep this poll small
+// and explicit: it is entered only when LIVE is still exactly the before
+// image, and a changed mismatch remains a refusal. Five reads give the first
+// apply a 200 ms settle window without turning a real read-back failure into
+// success.
+const VF_READBACK_MAX_ATTEMPTS = 5;
+const VF_READBACK_SETTLE_MS = 50;
+// The B-series grid can quantize a requested point by a few native steps
+// (the observed 20 MHz example is the reason this is separate from the exact
+// read-back tolerance). A normalized result must stay near the requested
+// payload on every point; an arbitrary changed curve is still a refusal.
+const VF_NORMALIZED_VOLTAGE_TOLERANCE_MV = 10;
+const VF_NORMALIZED_FREQUENCY_TOLERANCE_MHZ = 50;
 
 function isPowerTelemetryV2CompatibilityError(result) {
   return POWER_TELEMETRY_V2_COMPATIBILITY_ERRORS.has(result);
@@ -2574,10 +2594,10 @@ export class IgclBackend {
    * The bundled 2023 writer and the current DriverStore runtime expose
    * separate temperature surfaces. On the affected Alchemist driver, the
    * bundled writer's getter can return 0, while the current runtime's legacy
-   * getter may carry the real extended value or the stock 90 °C sentinel.
+   * getter may carry the current finite value or the stock 90 °C ceiling.
    * Keep this as an explicit, identity-bound diagnostic seam. apply-routing
-   * must never treat a stock 90 °C result as authoritative for a >90 °C
-   * extended write.
+   * compares the finite result with the requested value before reporting an
+   * extended write as verified.
    *
    * @param {number} deviceId
    * @returns {Promise<number|null>}
@@ -2631,9 +2651,9 @@ export class IgclBackend {
     // The V2 Celsius getter is the stock-limit surface on Alchemist. When
     // the selected adapter exposes the extended C control, probe the same
     // identity-bound legacy getter used by the extended apply path. Promote
-    // any positive finite value except the known stock-90 sentinel; keep
-    // stock 90/zero/unavailable explicitly marked instead of presenting it
-    // as an extended read-back. This is deliberately best-effort: a native
+    // any positive finite value, including the stock 90 C ceiling, and keep
+    // only a zero/null result explicitly marked unavailable. This is
+    // deliberately best-effort: a native
     // setter refusal remains a refusal in apply-routing and is never
     // converted here.
     if (caps.extendedControls?.tempLimitC === true
@@ -2644,17 +2664,19 @@ export class IgclBackend {
       } catch {
         extendedTemperature = null;
       }
-      const finiteExtended = typeof extendedTemperature === 'number'
+      // A finite legacy getter is still an authoritative native value even
+      // when it is the stock 90 C ceiling.  The old code discarded exactly
+      // that finite value and set the unavailable marker, which made the UI
+      // hide a real current-driver read-back.  The routed apply path decides
+      // whether 90 C is a mismatch for an extended request; the read side
+      // must preserve the value it actually got from the driver.
+      const finiteLegacy = typeof extendedTemperature === 'number'
         && Number.isFinite(extendedTemperature)
-        && extendedTemperature > 0
-        && extendedTemperature !== TEMP_LIMIT_MAX_C;
-      if (finiteExtended) {
+        && extendedTemperature > 0;
+      if (finiteLegacy) {
         state.tempLimitC = extendedTemperature;
         state.tempLimitCReadBackUnavailable = false;
-      } else if ((state.tempLimitC === null || state.tempLimitC === TEMP_LIMIT_MAX_C)
-        && (extendedTemperature === 0
-          || extendedTemperature === TEMP_LIMIT_MAX_C
-          || extendedTemperature === null)) {
+      } else if (state.tempLimitC === null) {
         state.tempLimitCReadBackUnavailable = true;
       }
     }
@@ -5475,7 +5497,11 @@ export class IgclBackend {
                       && Math.abs(pt.Frequency - points[index].Frequency) <= 1)) {
                       return { ok: true, normalized: false };
                     }
-                    if (liveBefore.ok && pointsChanged(points, liveBefore.points) && pointsChanged(readBack.points, liveBefore.points)) {
+                    const closeEnoughToRequestedGrid = readBack.points.every((pt, index) =>
+                      Math.abs(pt.Voltage - points[index].Voltage) <= VF_NORMALIZED_VOLTAGE_TOLERANCE_MV
+                      && Math.abs(pt.Frequency - points[index].Frequency) <= VF_NORMALIZED_FREQUENCY_TOLERANCE_MHZ);
+                    if (liveBefore.ok && closeEnoughToRequestedGrid
+                      && pointsChanged(points, liveBefore.points) && pointsChanged(readBack.points, liveBefore.points)) {
                       return {
                         ok: true,
                         normalized: true,
@@ -5492,17 +5518,17 @@ export class IgclBackend {
                     };
                   };
                   let v;
-                  for (let readAttempt = 0; readAttempt < 3; readAttempt += 1) {
+                  for (let readAttempt = 0; readAttempt < VF_READBACK_MAX_ATTEMPTS; readAttempt += 1) {
                     const readBack = this._readVfCurvePoints(dev.handle, 1, 0);
                     v = validateVfReadBack(readBack);
-                    if (v.ok || readAttempt === 2
+                    if (v.ok || readAttempt === VF_READBACK_MAX_ATTEMPTS - 1
                       || !readBack.ok || !liveBefore.ok
                       || !pointsEqual(readBack.points, liveBefore.points)) break;
                     // Some B-series driver builds return SUCCESS before their
                     // asynchronous LIVE table update is visible. Retry only
                     // that unchanged-before-image case; a changed mismatch or
                     // an invalid read remains a real verification failure.
-                    await new Promise((resolve) => setTimeout(resolve, 25));
+                    await new Promise((resolve) => setTimeout(resolve, VF_READBACK_SETTLE_MS));
                   }
                   result.perControl.vfCurve = {
                     ok: v.ok,

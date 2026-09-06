@@ -1241,13 +1241,13 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       } else {
         per = { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG };
       }
-      // M180/M181/M182: OldIgcl owns the bundled setter. Its V1 temperature
-      // getter is not an authoritative extended surface: the active driver
-      // can return the stock 90 C ceiling after a successful 100/115 C write.
-      // A native setter refusal remains an honest failure; a post-success
-      // mismatch or unavailable getter is accepted with an explicit
-      // readBackUnavailable marker so the UI never turns stock 90 C into a
-      // false extended write failure.
+      // M180/M181/M182/M185: OldIgcl owns the bundled setter. Its V1
+      // temperature getter is not authoritative when it reports the stock
+      // sentinel, so the active identity-routed getter is probed below. A
+      // finite native result is authoritative, including stock 90 C: a
+      // persistent finite mismatch means the requested value was not
+      // verified and must remain an honest failure. Only zero/null remains
+      // explicitly unavailable after the bounded retry.
       const hasBundledReadBack = per && Object.prototype.hasOwnProperty.call(per, 'readBackValue');
       const bundledReadBack = hasBundledReadBack
         && typeof per.readBackValue === 'number'
@@ -1324,8 +1324,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
               configurable: true,
             });
           } else if (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack)
-            && legacyReadBack > 0 && legacyReadBack !== DRIVER_TEMP_LIMIT_MAX_C
-            && value >= DRIVER_TEMP_LIMIT_MAX_C
+            && legacyReadBack > 0
             && (per?.ok === true || per?.errorCode === 'io-failed')) {
             per = {
               ok: false,
@@ -1690,19 +1689,22 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
   // DriverStore exposes the stock temperature surface. The extended
-  // transaction can provide a more specific finite read-back; use it when
-  // present, otherwise keep the finite stock value so the page never turns a
-  // normal Celsius read into a generic unavailable line.
+  // transaction can provide a more specific finite read-back; use it for
+  // both a verified success and a finite mismatch so the page shows the
+  // actual driver value when a requested extended write cannot be verified.
   const tempResult = out.result.perControl?.tempLimitC;
-  if (state && tempResult?.ok === true && Object.prototype.hasOwnProperty.call(clamped, 'tempLimitC')) {
-    if (typeof tempResult.readBackValue === 'number' && Number.isFinite(tempResult.readBackValue)) {
+  if (state && tempResult && Object.prototype.hasOwnProperty.call(clamped, 'tempLimitC')) {
+    const finiteReadBack = typeof tempResult.readBackValue === 'number'
+      && Number.isFinite(tempResult.readBackValue);
+    if (finiteReadBack) {
       state.tempLimitC = tempResult.readBackValue;
+      state.tempLimitCReadBackUnavailable = false;
+    } else if (tempResult.ok === true) {
+      // Keep an explicit unavailable marker only when no finite native
+      // source was exposed. The renderer can then distinguish this case
+      // from an actual finite current-driver value such as 90 C.
+      state.tempLimitCReadBackUnavailable = tempResult.readBackUnavailable === true;
     }
-    // Keep a stock V2 value (normally 90 C) in the state object for callers
-    // that need a finite fallback, but preserve the explicit marker so the
-    // renderer says "accepted · driver read-back unavailable" instead of
-    // presenting that stock value as the advanced target.
-    state.tempLimitCReadBackUnavailable = tempResult.readBackUnavailable === true;
   }
   if (isNegativeAlchemistVoltage(clamped, effectiveClampRanges)
     && out.result.perControl.gpuVoltOffsetV?.ok === true
