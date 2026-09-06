@@ -1133,6 +1133,25 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
 
   await applyDriverstore(driverstore);
 
+  // Some Alchemist driver packages expose the Celsius control in the V2
+  // capability table but refuse the actual V2 write. Give that failed
+  // Celsius transaction one identity-bound fallback through the bundled
+  // runtime before surfacing the refusal. Successful V2 writes and every
+  // other control keep their original single-attempt path.
+  if (Object.prototype.hasOwnProperty.call(driverstore, 'tempLimitC')
+    && perControl.tempLimitC?.ok !== true
+    && perControl.tempLimitC?.errorCode === 'io-failed'
+    && oldIgcl
+    && typeof oldIgcl.isTempCapable === 'function'
+    && typeof oldIgcl.setTempLimitC === 'function') {
+    let tempCapable = false;
+    try { tempCapable = await oldIgcl.isTempCapable(deviceId); } catch { /* keep the V2 refusal */ }
+    if (tempCapable) {
+      const legacy = await oldIgcl.setTempLimitC(driverstore.tempLimitC, deviceId, deviceKey, physicalTarget);
+      if (legacy?.ok === true) perControl.tempLimitC = legacy;
+    }
+  }
+
   if (activeLock && !negativeAlchemistVoltage && !nonNegativeAlchemistVoltage && sysmanPowerLimits) {
     // Lock-only payloads also have to remove a legacy Sysman undervolt. Do
     // not claim the lock is clean when the prior Sysman state cannot be read;
@@ -1635,18 +1654,19 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
   const out = await applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings: clamped, opts, log, delayedVerifyMs, sleep, ranges: effectiveClampRanges, mode: routeMode, sysmanPowerLimits, limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null } });
   let state = null;
   try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
-  // DriverStore exposes only the stock temperature surface. The extended
-  // transaction's result is authoritative for the selected adapter: retain a
-  // finite bundled read-back, and deliberately clear the state when the
-  // setter succeeded but that read-back was unavailable. This prevents page
-  // re-entry from displaying either a copied request or the unrelated 90 C.
+  // DriverStore exposes the stock temperature surface. The extended
+  // transaction can provide a more specific finite read-back; use it when
+  // present, otherwise keep the finite stock value so the page never turns a
+  // normal Celsius read into a generic unavailable line.
   const tempResult = out.result.perControl?.tempLimitC;
   if (state && tempResult?.ok === true && Object.prototype.hasOwnProperty.call(clamped, 'tempLimitC')) {
-    state.tempLimitC = tempResult.readBackUnavailable === true
-      ? null
-      : (typeof tempResult.readBackValue === 'number' && Number.isFinite(tempResult.readBackValue)
-        ? tempResult.readBackValue
-        : state.tempLimitC);
+    if (typeof tempResult.readBackValue === 'number' && Number.isFinite(tempResult.readBackValue)) {
+      state.tempLimitC = tempResult.readBackValue;
+    }
+    // Keep a stock V2 value (normally 90 C) in the state object for callers
+    // that need a finite fallback, but preserve the explicit marker so the
+    // renderer says "accepted · driver read-back unavailable" instead of
+    // presenting that stock value as the advanced target.
     state.tempLimitCReadBackUnavailable = tempResult.readBackUnavailable === true;
   }
   if (isNegativeAlchemistVoltage(clamped, effectiveClampRanges)

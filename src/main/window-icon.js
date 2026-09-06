@@ -11,13 +11,14 @@ import { nativeImage } from 'electron';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEV_ICON_PATH = path.join(__dirname, '..', 'assets', 'app-icon.ico');
+const PACKAGED_TASKBAR_ICON_PATH = path.join(process.resourcesPath ?? '', 'ArcPowerTaskbar.ico');
 const PACKAGED_ICON_PATH = path.join(process.resourcesPath ?? '', 'app-icon.ico');
 const PACKAGED_FALLBACK_ICON_PATH = path.join(process.resourcesPath ?? '', 'app-icon-fallback.ico');
 const BUILD_ICON_PATH = path.join(__dirname, '..', '..', 'build', 'icon.ico');
 
 export function resolveWindowIconPath() {
   const candidates = process.resourcesPath
-    ? [PACKAGED_ICON_PATH, PACKAGED_FALLBACK_ICON_PATH]
+    ? [PACKAGED_TASKBAR_ICON_PATH, PACKAGED_ICON_PATH, PACKAGED_FALLBACK_ICON_PATH]
     : [DEV_ICON_PATH, BUILD_ICON_PATH];
   return candidates.find((candidate) => {
     try { return fs.existsSync(candidate); } catch { return false; }

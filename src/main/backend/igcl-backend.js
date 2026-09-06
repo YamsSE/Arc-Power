@@ -2628,15 +2628,11 @@ export class IgclBackend {
     state.gpuVoltOffsetV = readV2('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset');
     state.gpuFreqOffsetMhz = readV2('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset');
     state.tempLimitC = readV2('tempLimit', 'tempLimitC', 'tempLimit');
-    // The V2 getter is the stock-limit surface. In Advanced mode it can
-    // report the stock 90 C ceiling after an extended write, so do not expose
-    // that value as the current extended state. The routed apply owns the
-    // accepted-request/read-back-unavailable distinction for the immediate
-    // result.
-    if (caps.extendedControls?.tempLimitC === true
-      && caps.ranges?.tempLimitC?.units === 'C') {
-      state.tempLimitC = null;
-    }
+    // Keep the driver's stock Celsius readback visible. On an extended
+    // Alchemist request the V2 surface may still report its stock 90 C
+    // ceiling, but returning null here made even an ordinary 88/90 C value
+    // render as "Driver unavailable" and made the V2 verification path lose
+    // the only current-driver value it had.
     state.vramFreqOffsetGts = readV2('vramFreqOffset', 'vramFreqOffsetGts', 'vramFreqOffset');
     state.vramVoltOffsetV = readV2('vramVoltOffset', 'vramVoltOffsetV', 'vramVoltOffset');
 
@@ -5421,13 +5417,13 @@ export class IgclBackend {
                   // false failure. Accept an ordered, in-range LIVE table when
                   // it demonstrably changed from the LIVE before-image; keep
                   // the silent-no-op refusal for an unchanged table.
-                  const readBack = this._readVfCurvePoints(dev.handle, 1, 0);
-                  let v;
-                  if (!readBack.ok) {
-                    v = { ok: false, message: `VF curve write succeeded but read-back failed: ${readBack.message}` };
-                  } else if (readBack.points.length !== points.length) {
-                    v = { ok: false, message: `VF curve read-back ${readBack.points.length} points != requested ${points.length}` };
-                  } else {
+                  const validateVfReadBack = (readBack) => {
+                    if (!readBack.ok) {
+                      return { ok: false, message: `VF curve write succeeded but read-back failed: ${readBack.message}` };
+                    }
+                    if (readBack.points.length !== points.length) {
+                      return { ok: false, message: `VF curve read-back ${readBack.points.length} points != requested ${points.length}` };
+                    }
                     let previousVoltage = 0;
                     let previousFrequency = 0;
                     let validLive = true;
@@ -5447,27 +5443,41 @@ export class IgclBackend {
                       previousFrequency = pt.Frequency;
                     }
                     if (!validLive) {
-                      v = { ok: false, message: 'VF curve read-back is not a valid ordered LIVE curve within the driver range' };
-                    } else if (readBack.points.every((pt, index) =>
+                      return { ok: false, message: 'VF curve read-back is not a valid ordered LIVE curve within the driver range' };
+                    }
+                    if (readBack.points.every((pt, index) =>
                       Math.abs(pt.Voltage - points[index].Voltage) <= 1
                       && Math.abs(pt.Frequency - points[index].Frequency) <= 1)) {
-                      v = { ok: true, normalized: false };
-                    } else if (liveBefore.ok && pointsChanged(points, liveBefore.points) && pointsChanged(readBack.points, liveBefore.points)) {
-                      v = {
+                      return { ok: true, normalized: false };
+                    }
+                    if (liveBefore.ok && pointsChanged(points, liveBefore.points) && pointsChanged(readBack.points, liveBefore.points)) {
+                      return {
                         ok: true,
                         normalized: true,
                         message: 'The driver normalized the requested VF values; the changed LIVE curve is active.',
                       };
-                    } else {
-                      const mismatch = readBack.points.findIndex((pt, index) =>
-                        Math.abs(pt.Voltage - points[index].Voltage) > 1
-                        || Math.abs(pt.Frequency - points[index].Frequency) > 1);
-                      const index = mismatch < 0 ? 0 : mismatch;
-                      v = {
-                        ok: false,
-                        message: `VF curve point ${index} read-back ${readBack.points[index].Voltage} mV / ${readBack.points[index].Frequency} MHz != requested ${points[index].Voltage} mV / ${points[index].Frequency} MHz`,
-                      };
                     }
+                    const mismatch = readBack.points.findIndex((pt, index) =>
+                      Math.abs(pt.Voltage - points[index].Voltage) > 1
+                      || Math.abs(pt.Frequency - points[index].Frequency) > 1);
+                    const index = mismatch < 0 ? 0 : mismatch;
+                    return {
+                      ok: false,
+                      message: `VF curve point ${index} read-back ${readBack.points[index].Voltage} mV / ${readBack.points[index].Frequency} MHz != requested ${points[index].Voltage} mV / ${points[index].Frequency} MHz`,
+                    };
+                  };
+                  let v;
+                  for (let readAttempt = 0; readAttempt < 3; readAttempt += 1) {
+                    const readBack = this._readVfCurvePoints(dev.handle, 1, 0);
+                    v = validateVfReadBack(readBack);
+                    if (v.ok || readAttempt === 2
+                      || !readBack.ok || !liveBefore.ok
+                      || !pointsEqual(readBack.points, liveBefore.points)) break;
+                    // Some B-series driver builds return SUCCESS before their
+                    // asynchronous LIVE table update is visible. Retry only
+                    // that unchanged-before-image case; a changed mismatch or
+                    // an invalid read remains a real verification failure.
+                    await new Promise((resolve) => setTimeout(resolve, 25));
                   }
                   result.perControl.vfCurve = {
                     ok: v.ok,

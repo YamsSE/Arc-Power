@@ -345,6 +345,7 @@ if (process.platform === 'win32') {
 const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'app-icon.ico');
 const APP_ICON_PNG_PATH = path.join(__dirname, '..', 'assets', 'icon.png');
 const TRAY_ICON_PATH = path.join(__dirname, '..', 'assets', 'tray-icon.png');
+const PACKAGED_TASKBAR_ICON_PATH = path.join(process.resourcesPath, 'ArcPowerTaskbar.ico');
 const PACKAGED_APP_ICON_PATH = path.join(process.resourcesPath, 'app-icon.ico');
 const PACKAGED_APP_ICON_FALLBACK_PATH = path.join(process.resourcesPath, 'app-icon-fallback.ico');
 const BUILD_APP_ICON_PATH = path.join(__dirname, '..', '..', 'build', 'icon.ico');
@@ -361,7 +362,7 @@ function firstExistingIconPath(candidates) {
 // copy is a build-time fallback for an incomplete release payload; only an
 // unpackaged development launch may use source/build paths.
 const WINDOWS_APP_ICON_PATH = firstExistingIconPath(app.isPackaged
-  ? [PACKAGED_APP_ICON_PATH, PACKAGED_APP_ICON_FALLBACK_PATH]
+  ? [PACKAGED_TASKBAR_ICON_PATH, PACKAGED_APP_ICON_PATH, PACKAGED_APP_ICON_FALLBACK_PATH]
   : [APP_ICON_PATH, BUILD_APP_ICON_PATH]);
 const APP_ICON_PNG_FALLBACK_PATH = firstExistingIconPath([
   APP_ICON_PNG_PATH,

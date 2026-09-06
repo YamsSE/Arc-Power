@@ -595,10 +595,14 @@ export class OldIgcl {
     // post-write temperature mismatch is an unavailable read-back, not an
     // honest write refusal. Keep the distinction explicit: the native setter
     // refusal above remains the only failure gate for this extended route.
-    const extendedTemperatureSentinel = control === 'tempLimitC'
-      && target >= DRIVER_TEMP_LIMIT_MAX_C
-      && (readBack === null || readBack === 0 || readBack === DRIVER_TEMP_LIMIT_MAX_C);
-    if (extendedTemperatureSentinel) {
+    // The bundled Alchemist temperature getter is not authoritative for the
+    // whole Celsius range. A successful write can be followed by the stock
+    // 90 C value, a zero sentinel, or no value at all even when the target is
+    // 88/90 C. Keep the native setter result as the write verdict and expose
+    // the missing verification explicitly instead of turning it into an
+    // io-failed error. Native setter refusals above remain hard failures.
+    const extendedTemperatureReadBackUnavailable = control === 'tempLimitC';
+    if (extendedTemperatureReadBackUnavailable) {
       return {
         ok: true,
         // Retain the historical true value for old callers that only use

@@ -7,6 +7,7 @@ export const PRODUCT_NAME = 'Arc Power';
 export const INSTALLER_ARTIFACT_NAME = 'Arc-Power_Installer.exe';
 export const PORTABLE_ARTIFACT_NAME = 'Arc-Power_Portable.exe';
 export const INSTALLED_EXECUTABLE_NAME = 'Arc Power.exe';
+export const INSTALLED_ICON_RELATIVE_PATH = path.join('resources', 'ArcPowerTaskbar.ico');
 export const START_MENU_RELATIVE = path.join('Microsoft', 'Windows', 'Start Menu', 'Programs');
 export const UNINSTALL_REGISTRY_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Arc Power';
 export const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
@@ -106,6 +107,7 @@ export function createInstallationPlan({
   return Object.freeze({
     installDir: normalizedInstallDir,
     executablePath: path.join(normalizedInstallDir, INSTALLED_EXECUTABLE_NAME),
+    iconPath: path.join(normalizedInstallDir, INSTALLED_ICON_RELATIVE_PATH),
     startMenuShortcutPath: resolveStartMenuShortcutPath(normalizedAppData),
     desktopShortcutPath: resolveDesktopShortcutPath(normalizedDesktop),
     profilePath: normalizedProfilePath,
@@ -368,10 +370,17 @@ export function validateInstalledUpdateTarget({
   }
 
   const expectedExecutablePath = path.join(normalizedInstallDir, INSTALLED_EXECUTABLE_NAME);
+  const expectedIconPath = path.join(normalizedInstallDir, INSTALLED_ICON_RELATIVE_PATH);
   if (executableExists !== true) {
     throw new Error(`The registered Arc Power executable is missing: ${expectedExecutablePath}`);
   }
-  for (const field of ['DisplayIcon', 'UninstallString']) {
+  const registeredDisplayIcon = registrationExecutable(registration.DisplayIcon, 'DisplayIcon');
+  if (!registeredDisplayIcon
+    || (comparablePath(registeredDisplayIcon) !== comparablePath(expectedIconPath)
+      && comparablePath(registeredDisplayIcon) !== comparablePath(expectedExecutablePath))) {
+    throw new Error('Arc Power update registration DisplayIcon does not identify the installed icon');
+  }
+  for (const field of ['UninstallString']) {
     const registeredExecutable = registrationExecutable(registration[field], field);
     if (!registeredExecutable || comparablePath(registeredExecutable) !== comparablePath(expectedExecutablePath)) {
       throw new Error(`Arc Power update registration ${field} does not identify the installed executable`);

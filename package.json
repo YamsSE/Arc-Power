@@ -82,6 +82,10 @@
                                           "to":  "app-icon.ico"
                                         },
                                         {
+                                          "from":  "src/assets/app-icon.ico",
+                                          "to":  "ArcPowerTaskbar.ico"
+                                        },
+                                        {
                                           "from":  "build/icon.ico",
                                           "to":  "app-icon-fallback.ico"
                                         }

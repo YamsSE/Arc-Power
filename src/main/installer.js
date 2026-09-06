@@ -117,7 +117,7 @@ async function runPowerShell(script) {
   ], { windowsHide: true, maxBuffer: 1024 * 1024 });
 }
 
-async function createShortcut({ shortcutPath, targetPath, workingDirectory }) {
+async function createShortcut({ shortcutPath, targetPath, workingDirectory, iconPath = targetPath }) {
   const script = [
     "$ErrorActionPreference = 'Stop'",
     `New-Item -ItemType Directory -Force -Path ${powershellLiteral(path.dirname(shortcutPath))} | Out-Null`,
@@ -126,7 +126,7 @@ async function createShortcut({ shortcutPath, targetPath, workingDirectory }) {
     `$shortcut.TargetPath = ${powershellLiteral(targetPath)}`,
     `$shortcut.WorkingDirectory = ${powershellLiteral(workingDirectory)}`,
     `$shortcut.Description = ${powershellLiteral(PRODUCT_NAME)}`,
-    `$shortcut.IconLocation = ${powershellLiteral(`${targetPath},0`)}`,
+    `$shortcut.IconLocation = ${powershellLiteral(`${iconPath},0`)}`,
     '$shortcut.Save()',
   ].join('\n');
   await runPowerShell(script);
@@ -245,6 +245,8 @@ function verifyCopiedPayload(sourceRoot, installDir) {
   const requiredFiles = [
     INSTALLED_EXECUTABLE_NAME,
     path.join('resources', 'app.asar'),
+    path.join('resources', 'app-icon.ico'),
+    path.join('resources', 'ArcPowerTaskbar.ico'),
   ];
   for (const relativePath of requiredFiles) {
     const sourcePath = path.join(sourceRoot, relativePath);
@@ -310,6 +312,7 @@ async function installArcPower(win, options = {}) {
     shortcutPath: plan.startMenuShortcutPath,
     targetPath: plan.executablePath,
     workingDirectory: plan.installDir,
+    iconPath: plan.iconPath,
   });
   if (plan.createDesktopShortcut) {
     sendProgress(win, 78, 'Creating your desktop shortcut');
@@ -317,12 +320,13 @@ async function installArcPower(win, options = {}) {
       shortcutPath: plan.desktopShortcutPath,
       targetPath: plan.executablePath,
       workingDirectory: plan.installDir,
+      iconPath: plan.iconPath,
     });
   } else {
     await rm(plan.desktopShortcutPath, { force: true });
   }
   sendProgress(win, 88, 'Registering Arc Power with Windows');
-  await writeUninstallRegistration(plan, app.getVersion());
+  await writeUninstallRegistration(plan, app.getVersion(), { displayIcon: `${plan.iconPath},0` });
   // The same version gate used by the launched application also runs here.
   // This makes installer completion sufficient to clear an older release's
   // caches, while a same-version reinstall leaves those caches alone.
