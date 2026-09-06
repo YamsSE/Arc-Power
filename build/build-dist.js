@@ -85,6 +85,22 @@ function patchUnpackedExecutable() {
   });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`rcedit failed for ${target} with exit code ${result.status}`);
+  validateWindowsExecutable(target);
+}
+
+function validateWindowsExecutable(target) {
+  const image = readFileSync(target);
+  const text = image.toString('utf8');
+  if (!text.includes('requestedExecutionLevel') || !text.includes('requireAdministrator')) {
+    throw new Error(`packaged executable is not administrator-elevated: ${target}`);
+  }
+  // rcedit writes a five-image RT_GROUP_ICON resource from build/icon.ico.
+  // This catches a generic Electron/document resource before it reaches the
+  // release folder while remaining independent of Windows' icon cache.
+  const groupIconHeader = Buffer.from([0x00, 0x00, 0x01, 0x00, 0x05, 0x00]);
+  if (image.indexOf(groupIconHeader) < 0) {
+    throw new Error(`packaged executable has no branded five-size icon resource: ${target}`);
+  }
 }
 
 function peImageEnd(buffer) {
@@ -158,6 +174,7 @@ function patchPortableWrapperIcon(artifactPath) {
       original.subarray(imageEnd),
     ]);
     withFileLockRetry(() => writeFileSync(artifactPath, patchedWrapper));
+    validateWindowsExecutable(artifactPath);
   } finally {
     rmSync(stubPath, { force: true });
   }

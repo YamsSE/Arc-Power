@@ -792,6 +792,14 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
       return { ...caps, deviceKey: d.deviceKey, deviceKeys: d.deviceKeys ?? null };
     },
     async getCurrentSettings(id) { const d = await route(id); return d.synthetic ? nullDeviceState() : backend.getCurrentSettings(d.backendId); },
+    // The extended Alchemist temperature getter belongs to the selected
+    // physical adapter. Do not let the Proxy fallback pass the renderer's
+    // stable session id to a backend that expects its local backend id.
+    async getExtendedTemperatureLimitC(id) {
+      const d = await route(id);
+      if (d.synthetic || typeof backend.getExtendedTemperatureLimitC !== 'function') return null;
+      return backend.getExtendedTemperatureLimitC(d.backendId);
+    },
     async getGraphicsSettings(id) { const d = await route(id); return d.synthetic ? { supported: { frameGen: false, flipModes: false, frameLimit: false, lowLatency: false }, supportedOptions: { frameGen: [], flipModes: [], lowLatency: [] }, frameLimitRange: null, values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null } } : backend.getGraphicsSettings(d.backendId); },
     async setGraphicsSettings(id, settings) { const d = await route(id); return d.synthetic ? unsupportedResult(settings) : backend.setGraphicsSettings((await writeTarget(id)).backendId, settings); },
     async getGameProfileCapabilities(id, exePath) {

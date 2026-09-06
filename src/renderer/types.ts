@@ -55,6 +55,9 @@ export interface DeviceState {
   gpuVoltOffsetV: number | null;
   gpuFreqOffsetMhz: number | null;
   tempLimitC: number | null;
+  /** Advanced Alchemist writes can be accepted while the driver exposes only
+   * the stock 90 C getter. This marks that immediate apply state explicitly. */
+  tempLimitCReadBackUnavailable?: boolean;
   vramFreqOffsetGts: number | null;
   vramVoltOffsetV: number | null;
   gpuLock: { voltageV: number; freqMhz: number } | null;

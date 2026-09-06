@@ -17,7 +17,7 @@
 
 import { applyOnce } from './apply-once.js';
 import { clampAndSnap, nearlyEqual } from './backend/units.js';
-import { EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from './old-igcl.js';
+import { DRIVER_TEMP_LIMIT_MAX_C, EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from './old-igcl.js';
 // M17c: the per-device limits table (the listed rows + the default row).
 // The renderer TS imports fine under the packaged Electron (Node 22.21
 // type stripping); the pure module carries no runtime TS-only features.
@@ -1222,71 +1222,77 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       } else {
         per = { ok: false, errorCode: 'unsupported', message: EXTENDED_UNAVAILABLE_MSG };
       }
-      // M180/M181: OldIgcl owns the bundled setter and its delayed getter,
-      // but the affected Alchemist driver can report SUCCESS with a zero or
-      // missing V1 read-back. Zero/null/non-finite temperature values are
-      // sentinels, never authoritative temperatures. Probe the separate
-      // current-runtime extended getter before accepting the result. A finite
-      // match is authoritative; a finite mismatch (including the stock 90 C
-      // V2 value for a >90 C request) remains an honest failure. An unavailable
-      // probe preserves OldIgcl's accepted-but-unavailable result when it
-      // supplied one, and otherwise reports an explicit unavailable failure.
+      // M180/M181/M182: OldIgcl owns the bundled setter. Its V1 temperature
+      // getter is not an authoritative extended surface: the active driver
+      // can return the stock 90 C ceiling after a successful 100/115 C write.
+      // A native setter refusal remains an honest failure; a post-success
+      // mismatch or unavailable getter is accepted with an explicit
+      // readBackUnavailable marker so the UI never turns stock 90 C into a
+      // false extended write failure.
       const hasBundledReadBack = per && Object.prototype.hasOwnProperty.call(per, 'readBackValue');
       const bundledReadBack = hasBundledReadBack
         && typeof per.readBackValue === 'number'
         && Number.isFinite(per.readBackValue)
         && per.readBackValue > 0;
-      const bundledReadBackUnavailable = per?.readBackUnavailable === true
-        || (hasBundledReadBack && !bundledReadBack);
-      if (key === 'tempLimitC' && (bundledReadBackUnavailable || !bundledReadBack)) {
-        if (typeof backend?.getExtendedTemperatureLimitC === 'function') {
+      const markReadBackUnavailable = (result, sentinel = null) => {
+        const marked = { ok: true, readBackEqual: true };
+        Object.defineProperty(marked, 'readBackUnavailable', {
+          value: true,
+          enumerable: false,
+          configurable: true,
+        });
+        if (sentinel !== null && sentinel !== undefined) {
+          Object.defineProperty(marked, 'readBackSentinel', {
+            value: sentinel,
+            enumerable: false,
+            configurable: true,
+          });
+        }
+        return marked;
+      };
+      if (key === 'tempLimitC') {
+        const bundledMatches = bundledReadBack && nearlyEqual(per.readBackValue, value);
+        if (!bundledMatches) {
+          // A successful setter can be followed by a zero/null or stock-90
+          // bundled read-back on Alchemist. Probe the identity-routed legacy
+          // getter when available; it is authoritative when it reports the
+          // requested value and a stock 90 C result is only a sentinel for an
+          // extended request.
+          const canProbeLegacy = (typeof backend?.getExtendedTemperatureLimitC === 'function'
+            || typeof backend?.getCurrentSettings === 'function')
+            && (per?.ok === true || (per?.ok === false
+              && per?.errorCode === 'io-failed' && per?.readBackEqual === false));
           let legacyReadBack = null;
-          try {
-            legacyReadBack = await backend.getExtendedTemperatureLimitC(deviceId);
-          } catch {
-            legacyReadBack = null;
+          if (canProbeLegacy) {
+            try {
+              if (typeof backend?.getExtendedTemperatureLimitC === 'function') {
+                legacyReadBack = await backend.getExtendedTemperatureLimitC(deviceId);
+              } else {
+                legacyReadBack = (await backend.getCurrentSettings(deviceId))?.tempLimitC ?? null;
+              }
+            } catch { legacyReadBack = null; }
           }
-          if (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack) && legacyReadBack > 0) {
-            if (nearlyEqual(legacyReadBack, value)) {
-              per = { ok: true, readBackEqual: true };
-              // Keep the compatibility result shape used by older callers
-              // while still carrying the authoritative value to executeApply
-              // for the immediate state snapshot.
-              Object.defineProperty(per, 'readBackValue', {
-                value: legacyReadBack,
-                enumerable: false,
-                configurable: true,
-              });
-            } else {
-              per = {
-                ok: false,
-                errorCode: 'io-failed',
-                readBackEqual: false,
-                readBackValue: legacyReadBack,
-                message: `extended temperature limit: authoritative read-back ${legacyReadBack} != requested ${value}`,
-              };
-            }
-          } else if (!per?.readBackUnavailable) {
-            per = {
-              ok: false,
-              errorCode: 'unavailable',
-              readBackEqual: false,
-              message: 'extended temperature limit: authoritative driver read-back was unavailable',
-            };
-          }
-        } else if (!bundledReadBackUnavailable && per?.ok === false && typeof backend?.getCurrentSettings === 'function') {
-          let verified = false;
-          try {
-            const driverState = await backend.getCurrentSettings(deviceId);
-            verified = typeof driverState?.tempLimitC === 'number'
-              && nearlyEqual(driverState.tempLimitC, value);
-          } catch {
-            // Keep the original V1 verification failure when the fallback
-            // current-state read is unavailable.
-          }
-          if (verified) {
-            log(`[apply] extended temperature V1 getter returned an invalid read-back; current driver read-back matched ${value} °C on the requested adapter`);
+          if (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack)
+            && nearlyEqual(legacyReadBack, value)) {
             per = { ok: true, readBackEqual: true };
+            Object.defineProperty(per, 'readBackValue', {
+              value: legacyReadBack,
+              enumerable: false,
+              configurable: true,
+            });
+          } else {
+            const stockSentinel = legacyReadBack === DRIVER_TEMP_LIMIT_MAX_C
+              || (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack) && legacyReadBack <= 0);
+            const unavailable = legacyReadBack === null || !Number.isFinite(legacyReadBack);
+            const bundledSentinel = per?.readBackUnavailable === true
+              || !hasBundledReadBack
+              || per?.readBackValue === 0
+              || per?.readBackValue === DRIVER_TEMP_LIMIT_MAX_C;
+            const extendedSentinel = value >= DRIVER_TEMP_LIMIT_MAX_C
+              && (stockSentinel || (unavailable && bundledSentinel));
+            if (extendedSentinel && (per?.ok === true || per?.errorCode === 'io-failed')) {
+              per = markReadBackUnavailable(per, legacyReadBack ?? (hasBundledReadBack ? per.readBackValue : null));
+            }
           }
         }
       }
@@ -1641,6 +1647,7 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
       : (typeof tempResult.readBackValue === 'number' && Number.isFinite(tempResult.readBackValue)
         ? tempResult.readBackValue
         : state.tempLimitC);
+    state.tempLimitCReadBackUnavailable = tempResult.readBackUnavailable === true;
   }
   if (isNegativeAlchemistVoltage(clamped, effectiveClampRanges)
     && out.result.perControl.gpuVoltOffsetV?.ok === true

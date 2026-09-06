@@ -493,7 +493,10 @@ function refreshCard(key: string) {
   const rangeNode = rangeNodes.get(key);
   const valueInput = valueInputs.get(key);
   const rawDriver = currentState?.[key as keyof DeviceState];
-  const driverText = formatControlDriverValue(typeof rawDriver === 'number' ? rawDriver : null, key, sliderRange, caps.deviceName);
+  const tempReadBackUnavailable = key === 'tempLimitC' && currentState?.tempLimitCReadBackUnavailable === true;
+  const driverText = tempReadBackUnavailable
+    ? 'accepted · driver read-back unavailable'
+    : formatControlDriverValue(typeof rawDriver === 'number' ? rawDriver : null, key, sliderRange, caps.deviceName);
   const display = controlDisplay(key, sliderRange, caps.deviceName);
   if (input) {
     input.min = String(displayRange.min);
@@ -524,11 +527,11 @@ function refreshCard(key: string) {
     // editable draft directly with the current authoritative read, so an
     // external change or an unavailable extended-temperature getter cannot
     // masquerade as "In sync" after a successful request.
-    const sync = driverSyncState(value, rawDriver);
+    const sync = tempReadBackUnavailable ? 'unavailable' : driverSyncState(value, rawDriver);
     diffNode.textContent = sync === 'in-sync'
       ? 'In sync'
       : sync === 'unavailable'
-        ? 'Driver unavailable'
+        ? (tempReadBackUnavailable ? 'Applied · driver read-back unavailable' : 'Driver unavailable')
         : `${driverText} → ${formatControlValue(value, key, sliderRange, caps.deviceName)}`;
     diffNode.className = `tuning-diff${sync === 'mismatch' ? ' is-pending' : ''}${sync === 'unavailable' ? ' is-unavailable' : ''}`;
   }
@@ -988,7 +991,9 @@ export const tuningPage: Page = {
       const rawDriver = state[key as keyof DeviceState];
       const driverRaw = typeof rawDriver === 'number' ? rawDriver : null;
       const driverValue = driverRaw;
-      const driverText = formatControlDriverValue(driverValue, key, sliderRange, caps.deviceName);
+      const driverText = key === 'tempLimitC' && state.tempLimitCReadBackUnavailable === true
+        ? 'accepted · driver read-back unavailable'
+        : formatControlDriverValue(driverValue, key, sliderRange, caps.deviceName);
       const offGrid = isOffGrid(driverValue, sliderRange);
 
       // M17e (Run B): the LOCK-MODE editor - rendered INSIDE the freq card

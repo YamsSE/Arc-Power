@@ -97,6 +97,18 @@ const POWER_TELEMETRY_V2_COMPATIBILITY_ERRORS = new Set([
   CTL_RESULT.ERROR_NOT_AVAILABLE,
 ]);
 
+// A freshly initialized B-series driver can reject the first custom VF write
+// while its overclock service is becoming ready. One bounded replay handles
+// only transient native results; persistent or capability errors still reach
+// the caller unchanged.
+const RETRYABLE_VF_WRITE_RESULTS = new Set([
+  CTL_RESULT.ERROR_DATA_WRITE,
+  CTL_RESULT.ERROR_OS_CALL,
+  CTL_RESULT.ERROR_KMD_CALL,
+  CTL_RESULT.ERROR_NOT_AVAILABLE,
+  CTL_RESULT.ERROR_RETRY_OPERATION,
+]);
+
 function isPowerTelemetryV2CompatibilityError(result) {
   return POWER_TELEMETRY_V2_COMPATIBILITY_ERRORS.has(result);
 }
@@ -2561,11 +2573,11 @@ export class IgclBackend {
    *
    * The bundled 2023 writer and the current DriverStore runtime expose
    * separate temperature surfaces. On the affected Alchemist driver, the
-   * bundled writer's getter returns 0 after a successful extended write while
-   * the current runtime's legacy getter carries the real extended value.
-   * Keep this as an explicit, identity-bound verification seam instead of
-   * weakening the normal V2 read-back (which is correctly limited to the
-   * stock 90 °C range).
+   * bundled writer's getter can return 0, while the current runtime's legacy
+   * getter may carry the real extended value or the stock 90 °C sentinel.
+   * Keep this as an explicit, identity-bound diagnostic seam. apply-routing
+   * must never treat a stock 90 °C result as authoritative for a >90 °C
+   * extended write.
    *
    * @param {number} deviceId
    * @returns {Promise<number|null>}
@@ -2616,11 +2628,11 @@ export class IgclBackend {
     state.gpuVoltOffsetV = readV2('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset');
     state.gpuFreqOffsetMhz = readV2('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset');
     state.tempLimitC = readV2('tempLimit', 'tempLimitC', 'tempLimit');
-    // M180: when extended Celsius control is available, the V2 getter above
-    // is only the stock-limit surface. The identity-bound bundled OldIgcl
-    // transaction owns the extended setter/read-back pair, so this backend
-    // snapshot must stay unavailable until that transaction supplies a
-    // verified finite value. Never copy DriverStore's 90 C into extended UI.
+    // The V2 getter is the stock-limit surface. In Advanced mode it can
+    // report the stock 90 C ceiling after an extended write, so do not expose
+    // that value as the current extended state. The routed apply owns the
+    // accepted-request/read-back-unavailable distinction for the immediate
+    // result.
     if (caps.extendedControls?.tempLimitC === true
       && caps.ranges?.tempLimitC?.units === 'C') {
       state.tempLimitC = null;
@@ -5391,7 +5403,14 @@ export class IgclBackend {
                 points.forEach((point, index) => {
                   koffi.encode(pointsBuf, index * pointSize, 'ctl_voltage_frequency_point_t', point);
                 });
-                const setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, pointsBuf);
+                let setResult = CTL_RESULT.ERROR_UNKNOWN;
+                for (let attempt = 0; attempt < 2; attempt += 1) {
+                  setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, pointsBuf);
+                  if (setResult === CTL_RESULT.SUCCESS || !RETRYABLE_VF_WRITE_RESULTS.has(setResult) || attempt === 1) break;
+                  // Let the driver's overclock service finish the transient
+                  // initialization before the single bounded replay.
+                  await new Promise((resolve) => setTimeout(resolve, 25));
+                }
                 if (setResult !== CTL_RESULT.SUCCESS) {
                   fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
                 } else {

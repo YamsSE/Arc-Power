@@ -587,15 +587,18 @@ export class OldIgcl {
     if (readBack !== null && nearlyEqual(readBack, target)) {
       return { ok: true, readBackEqual: true, readBackValue: readBack };
     }
-    // The bundled Alchemist getter owns this extended transaction. Some
-    // driver packages answer with the documented zero sentinel, while some
-    // expose no usable delayed getter at all. The native setter already
-    // returned SUCCESS, so accept either shape with explicit unavailable
-    // read-back metadata. Callers must keep the Driver line unavailable and
-    // must not convert this outcome into a false "in sync" state. A finite,
-    // non-zero mismatch remains a real failure.
-    if (control === 'tempLimitC' && target > DRIVER_TEMP_LIMIT_MAX_C
-      && (readBack === 0 || readBack === null)) {
+    // The bundled Alchemist getter is not an authoritative extended
+    // temperature surface. On affected driver packages it can return the
+    // stock 90 C ceiling after a successful 100/115 C write (and other
+    // packages return the documented zero sentinel or no value at all).
+    // ctlOverclockTemperatureLimitSet already returned SUCCESS, so a
+    // post-write temperature mismatch is an unavailable read-back, not an
+    // honest write refusal. Keep the distinction explicit: the native setter
+    // refusal above remains the only failure gate for this extended route.
+    const extendedTemperatureSentinel = control === 'tempLimitC'
+      && target >= DRIVER_TEMP_LIMIT_MAX_C
+      && (readBack === null || readBack === 0 || readBack === DRIVER_TEMP_LIMIT_MAX_C);
+    if (extendedTemperatureSentinel) {
       return {
         ok: true,
         // Retain the historical true value for old callers that only use
@@ -603,6 +606,7 @@ export class OldIgcl {
         // authoritative distinction for current UI/state consumers.
         readBackEqual: true,
         readBackUnavailable: true,
+        readBackSentinel: readBack,
         message: 'extended temperature limit accepted; bundled driver read-back unavailable',
       };
     }
