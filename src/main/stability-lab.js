@@ -98,7 +98,10 @@ export function createStabilityLabService({
     } catch (error) { data = { readError: error.message }; }
     if (active !== run || run.finished) return;
     const probe = data.foregroundProcess === undefined ? await workloadProbe(run.target).catch(() => null) : data.foregroundProcess;
-    const normalized = normalizeStabilitySample({ ...data, foregroundProcess: probe ?? data.foregroundProcess }, clock());
+    // Freshness is measured at the main-process receipt boundary. Driver
+    // counters may be seconds since boot or another relative clock; retain
+    // that source timestamp without comparing it to Date.now().
+    const normalized = normalizeStabilitySample({ ...data, receivedAtMs: data.receivedAtMs ?? data.sampledAtMs, foregroundProcess: probe ?? data.foregroundProcess }, clock());
     run.sampleCount += 1;
     const age = Math.max(0, clock() - normalized.sampledAtMs);
     const fresh = !normalized.readError && age <= Math.max(1000, run.cadenceMs * 2.5);

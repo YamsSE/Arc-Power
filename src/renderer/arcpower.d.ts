@@ -251,7 +251,7 @@ export interface ArcPowerApi {
   recordingOpenFolder(): Promise<{ ok: boolean }>;
   recordingClipUrl(id: string): Promise<string>;
   recordingClipDelete(id: string): Promise<RecordingClipDeleteResult>;
-  recordingEditorStart(payload: { sourceId: string; operation: 'trim' | 'gif'; startMs: number; endMs: number; maxDurationMs?: number; fps?: number; width?: number; outputName?: string }): Promise<RecordingEditorJob>;
+  recordingEditorStart(payload: { sourceId: string; operation: 'trim' | 'gif'; startMs: number; endMs: number; maxDurationMs?: number; fps?: number; width?: number; outputName?: string; audio?: 'original' | 'mute' | 'system' }): Promise<RecordingEditorJob>;
   recordingEditorStatus(jobId: string): Promise<RecordingEditorJob>;
   recordingEditorCancel(jobId: string): Promise<RecordingEditorJob>;
   recordingEditorOpen(jobId: string): Promise<{ ok: boolean }>;

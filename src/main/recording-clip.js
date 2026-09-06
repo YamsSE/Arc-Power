@@ -4,6 +4,27 @@ import { randomUUID } from 'node:crypto';
 import { spawn as spawnProcess } from 'node:child_process';
 
 const TRIM_TIMEOUT_MS = 30000;
+const TRIM_LOCK_RETRY_MS = 3000;
+const TRIM_LOCK_RETRY_DELAY_MS = 50;
+
+function retryableFileError(error) {
+  return ['EBUSY', 'EPERM', 'EACCES'].includes(error?.code);
+}
+
+async function retryFileOperation(operation, {
+  timeoutMs = TRIM_LOCK_RETRY_MS,
+  delayMs = TRIM_LOCK_RETRY_DELAY_MS,
+} = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    try {
+      return operation();
+    } catch (error) {
+      if (!retryableFileError(error) || Date.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
 
 function validDurationSeconds(durationMs) {
   const value = Number(durationMs);
@@ -85,6 +106,8 @@ export async function trimRecordingClipToDuration(filePath, durationMs, {
   spawn = spawnProcess,
   fsImpl = fs,
   tempSuffix = `${process.pid}-${randomUUID()}`,
+  lockRetryMs = TRIM_LOCK_RETRY_MS,
+  lockRetryDelayMs = TRIM_LOCK_RETRY_DELAY_MS,
 } = {}) {
   if (typeof filePath !== 'string' || !filePath || typeof ffmpegPath !== 'string' || !ffmpegPath || !validDurationSeconds(durationMs)) return false;
   if (!hasUsableFile(fsImpl, filePath)) return false;
@@ -93,18 +116,30 @@ export async function trimRecordingClipToDuration(filePath, durationMs, {
   try {
     if (!await runTrim(spawn, ffmpegPath, filePath, temporaryPath, durationMs) || !hasUsableFile(fsImpl, temporaryPath)) return false;
     const backupPath = `${filePath}.arc-original-${tempSuffix}.tmp`;
-    fsImpl.renameSync(filePath, backupPath);
+    await retryFileOperation(() => fsImpl.renameSync(filePath, backupPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
     try {
-      fsImpl.renameSync(temporaryPath, filePath);
+      await retryFileOperation(() => fsImpl.renameSync(temporaryPath, filePath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
     } catch (error) {
-      try { fsImpl.renameSync(backupPath, filePath); } catch { /* preserve the recoverable backup */ }
+      try {
+        await retryFileOperation(() => fsImpl.renameSync(backupPath, filePath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
+      } catch { /* preserve the recoverable backup */ }
       throw error;
     }
-    try { fsImpl.unlinkSync(backupPath); } catch { /* the replacement is already authoritative */ }
+    try {
+      await retryFileOperation(() => fsImpl.unlinkSync(backupPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
+    } catch {
+      // The replacement is already authoritative. Keep the backup as a
+      // recoverable copy when Windows still has a transient handle open.
+    }
     return true;
   } catch {
     return false;
   } finally {
-    try { fsImpl.unlinkSync(temporaryPath); } catch { /* absent or already renamed */ }
+    try {
+      await retryFileOperation(() => fsImpl.unlinkSync(temporaryPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
+    } catch {
+      // A failed replacement never removes the original. The temp remains
+      // recoverable if a third-party handle outlives this bounded cleanup.
+    }
   }
 }

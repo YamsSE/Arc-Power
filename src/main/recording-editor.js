@@ -51,6 +51,8 @@ export function normalizeRecordingEditorRequest(payload = {}) {
   const endMs = numberInRange(payload.endMs, 0, RECORDING_EDITOR_TRIM_MAX_MS, true);
   if (startMs === null || endMs === null || startMs >= endMs) throw new Error('recording-editor-start: invalid time range');
   const durationMs = endMs - startMs;
+  const audio = payload.audio === undefined ? 'original' : payload.audio;
+  if (!['original', 'mute', 'system'].includes(audio)) throw new Error('recording-editor-start: audio must be original, mute, or system');
   const maxDurationMs = payload.maxDurationMs === undefined ? null : numberInRange(payload.maxDurationMs, 1, RECORDING_EDITOR_TRIM_MAX_MS, true);
   if (payload.maxDurationMs !== undefined && maxDurationMs === null) throw new Error('recording-editor-start: invalid maximum duration');
   if (maxDurationMs !== null && durationMs > maxDurationMs) throw new Error('recording-editor-start: selected range exceeds maximum duration');
@@ -73,6 +75,7 @@ export function normalizeRecordingEditorRequest(payload = {}) {
     startMs,
     endMs,
     durationMs,
+    audio,
     maxDurationMs,
     fps,
     width,
@@ -84,17 +87,18 @@ function seconds(ms) {
   return (ms / 1000).toFixed(3);
 }
 
-export function recordingEditorTrimArguments(inputPath, outputPath, startMs, endMs) {
+export function recordingEditorTrimArguments(inputPath, outputPath, startMs, endMs, audio = 'original') {
   const start = numberInRange(startMs, 0, RECORDING_EDITOR_TRIM_MAX_MS, true);
   const end = numberInRange(endMs, 1, RECORDING_EDITOR_TRIM_MAX_MS, true);
   if (start === null || end === null || start >= end || typeof inputPath !== 'string' || typeof outputPath !== 'string') return null;
-  return [
+  const args = [
     '-hide_banner', '-loglevel', 'error', '-nostdin',
     '-ss', seconds(start), '-i', inputPath, '-t', seconds(end - start),
     '-map', '0', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
-    '-c:a', 'aac', '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart',
+    ...(audio === 'mute' ? ['-an'] : ['-c:a', 'aac']), '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart',
     '-f', 'mp4', '-y', outputPath,
   ];
+  return args;
 }
 
 export function recordingEditorGifArguments(inputPath, outputPath, startMs, endMs, fps = 15, width = 640) {
@@ -306,7 +310,7 @@ export function createRecordingEditorService({
       if (!executable) throw new Error('Bundled FFmpeg is unavailable');
       const args = job.request.operation === 'gif'
         ? recordingEditorGifArguments(sourcePath, temp, job.request.startMs, job.request.endMs, job.request.fps, job.request.width)
-        : recordingEditorTrimArguments(sourcePath, temp, job.request.startMs, job.request.endMs);
+        : recordingEditorTrimArguments(sourcePath, temp, job.request.startMs, job.request.endMs, job.request.audio);
       if (!args) throw new Error('Invalid editor bounds');
       const result = await spawnOnce(spawn, executable, args, timeoutMs, {
         cancelled: () => job.cancelRequested,

@@ -1081,7 +1081,11 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   async function enforceReplayClipDuration(clipPath, headDuration, fileReady = false) {
     if (typeof trimReplayClip !== 'function') return;
     if (await boundReplayClip(clipPath, headDuration, fileReady)) return;
-    const cleanupError = discardReplayClip(clipPath);
+    // Ascent can still hold the finalized replay output briefly after its
+    // ready/error response. Use the same bounded cleanup retry as the outer
+    // failure path so a transient Windows EBUSY does not turn a recoverable
+    // trim failure into a misleading cleanup error.
+    const cleanupError = await discardReplayClipAfterFailure(clipPath);
     const error = new Error('Replay clip could not be limited to the requested duration');
     error.code = 'REPLAY_CLIP_DURATION_FAILED';
     if (cleanupError) {

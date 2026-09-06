@@ -44,10 +44,17 @@ export function normalizeTimestampMs(value, fallbackMs = Date.now()) {
   return value > 0 && value < 1e12 ? Math.round(value * 1000) : Math.round(value);
 }
 
+/** Receipt clocks are local values. Small injected clocks must not be treated
+ * as driver seconds; source timestamps use normalizeTimestampMs below. */
+export function normalizeReceiptTimestampMs(value, fallbackMs = Date.now()) {
+  return finite(value) ? Math.round(value) : (finite(fallbackMs) ? Math.round(fallbackMs) : Date.now());
+}
+
 export function normalizeStabilitySample(input, nowMs = Date.now()) {
   const raw = input && typeof input === 'object' ? input : {};
   const sample = raw.sample && typeof raw.sample === 'object' ? raw.sample : raw;
-  const sampledAtMs = normalizeTimestampMs(raw.sampledAtMs ?? sample.tMs ?? sample.t ?? sample.timestamp, nowMs);
+  const sourceTimestampMs = normalizeTimestampMs(sample.tMs ?? sample.t ?? sample.timestamp, nowMs);
+  const receivedAtMs = normalizeReceiptTimestampMs(raw.receivedAtMs ?? raw.sampledAtMs, nowMs);
   const utilPct = finite(sample.utilPct) ? sample.utilPct : finite(sample.gpuUtilPct) ? sample.gpuUtilPct : null;
   const temperatureC = finite(sample.tempC) ? sample.tempC : finite(sample.temperatureC) ? sample.temperatureC : finite(sample.temperature) ? sample.temperature : null;
   const powerW = finite(sample.powerW) ? sample.powerW : finite(sample.power) ? sample.power : null;
@@ -56,7 +63,9 @@ export function normalizeStabilitySample(input, nowMs = Date.now()) {
   const readError = typeof raw.readError === 'string' && raw.readError ? raw.readError.slice(0, 240) : null;
   const driverError = raw.driverError === true || sample.driverError === true;
   return {
-    sampledAtMs,
+    sampledAtMs: receivedAtMs,
+    receivedAtMs,
+    sourceTimestampMs,
     sample: { ...sample, utilPct, temperatureC, powerW },
     utilPct,
     temperatureC,

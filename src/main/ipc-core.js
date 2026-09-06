@@ -1986,9 +1986,11 @@ export function createIpcHandlers({
       },
       sampleTarget: async (target) => {
         if (!Number.isInteger(target?.id)) return { readError: 'selected device is unavailable' };
-        await startTelemetry(target.id, false);
+        // Refresh the main-owned lane so a run never reuses the renderer's
+        // last snapshot as the current tick's sample.
+        await startTelemetry(target.id, true);
         const sample = latestTelemetry.get(target.id) ?? null;
-        const sampledAtMs = sample?.tMs ?? sample?.timestampMs ?? sample?.t ?? sample?.timestamp ?? null;
+        const receivedAtMs = Date.now();
         let fpsSample = null;
         try {
           const laneSample = presentMonLane ? await presentMonLane.poll(target.id) : null;
@@ -1996,7 +1998,7 @@ export function createIpcHandlers({
         } catch { fpsSample = null; }
         let foregroundProcess = null;
         try { foregroundProcess = await foregroundApi.detectProcess?.() ?? null; } catch { foregroundProcess = null; }
-        return { sample, sampledAtMs, fpsSample, foregroundProcess, readError: sample && sampledAtMs !== null ? null : 'telemetry sample unavailable' };
+        return { sample, receivedAtMs, fpsSample, foregroundProcess, readError: sample ? null : 'telemetry sample unavailable' };
       },
       settingsSnapshot: async (target) => backend.getCurrentSettings?.(target.id) ?? {},
       onStatus: (status) => emit('stability:status', status),
