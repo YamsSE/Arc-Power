@@ -3292,11 +3292,11 @@ async function main() {
     const replay = result.requestedMode === 'replay' || result.preActionMode === 'replay';
     if (!result.ok) {
       const title = action === 'saveClip'
-        ? 'Save clip failed'
+        ? 'Save Instant Replay failed'
         : action === 'screenshot'
           ? 'Screenshot failed'
         : action === 'start'
-          ? replay ? 'Replay buffer failed' : 'Recording failed'
+          ? replay ? 'Instant Replay failed' : 'Recording failed'
           : 'Recording action failed';
       recordingToastHandle?.show({
         variant: 'error',
@@ -3311,8 +3311,8 @@ async function main() {
     if (action === 'saveClip') {
       recordingToastHandle?.show({
         variant: 'success',
-        title: 'Clip saved',
-        message: 'The replay clip was added to the clip library.',
+        title: 'Instant Replay saved',
+        message: 'The latest moments were added to the clip library.',
       });
     } else if (action === 'screenshot') {
       recordingToastHandle?.show({
@@ -3337,10 +3337,10 @@ async function main() {
       const replay = mode === 'replay';
       recordingToastHandle?.show({
         variant: 'success',
-        title: isActive ? replay ? 'Replay buffer started' : 'Recording started' : replay ? 'Replay buffer stopped' : 'Recording stopped',
+        title: isActive ? replay ? 'Instant Replay started' : 'Recording started' : replay ? 'Instant Replay stopped' : 'Recording stopped',
         message: isActive
-          ? replay ? 'Recent gameplay is now being kept for clips.' : 'Video capture is now active.'
-          : replay ? 'The replay buffer is no longer active.' : 'Video capture has finished.',
+          ? replay ? 'Recent gameplay is now being kept for Instant Replay.' : 'Video capture is now active.'
+          : replay ? 'Instant Replay is no longer active.' : 'Video capture has finished.',
       });
     }
   };
@@ -3463,8 +3463,8 @@ async function main() {
     getRecordingHotkeyState: () => recordingHotkeys.getState(),
     onRecordingActionResult: showRecordingActionToast,
     // M143: keep the pill on the same authoritative engine subscription as
-    // the main renderer and desktop notifications. Save Clip does not change
-    // state, so no action-result path is used for visibility.
+    // the main renderer and desktop notifications. Instant Replay save
+    // progress is carried by the engine state envelope.
     onRecordingState: showRecordingStateToast,
     rebuildTray: async () => {
       try { await trayRef?.rebuildMenu?.(); } catch { /* tray unavailable */ }

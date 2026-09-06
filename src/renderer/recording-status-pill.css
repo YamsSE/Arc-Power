@@ -53,6 +53,16 @@ body {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2), 0 0 7px rgba(77, 185, 255, 0.95);
 }
 
+#recording-status-pill.saving .status-dot {
+  background: #f5a623;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2), 0 0 7px rgba(245, 166, 35, 0.95);
+}
+
+#recording-status-pill.error .status-dot {
+  background: #ff6572;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2), 0 0 7px rgba(255, 91, 105, 0.95);
+}
+
 @keyframes status-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.62; transform: scale(0.86); }

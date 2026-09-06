@@ -3004,7 +3004,11 @@ export function createIpcHandlers({
         fs.mkdirSync(location, { recursive: true });
         const outputPath = collisionSafeRecordingPath(location, 'clip', { exists: (candidate) => fs.existsSync(candidate) });
         const response = await recordingEngine.saveReplayClip({ path: outputPath, headDuration: headDurationMs, thumbnailFolder: location });
-        return { response, outputPath: path.basename(outputPath) };
+        return {
+          response,
+          outputPath: path.basename(outputPath),
+          instantReplaySave: recordingEngine.getState?.().instantReplaySave ?? null,
+        };
       },
       'recording-clips-list': async (...args) => {
         assertNoPayload(args, 'recording-clips-list');

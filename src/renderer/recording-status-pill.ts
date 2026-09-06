@@ -12,6 +12,8 @@ function render(): void {
   root.hidden = !view.visible;
   root.classList.toggle('recording', view.visible && view.kind === 'recording');
   root.classList.toggle('replay', view.visible && view.kind === 'replay');
+  root.classList.toggle('saving', view.visible && view.kind === 'saving');
+  root.classList.toggle('error', view.visible && view.kind === 'error');
 }
 
 // M143: capture transitions come from the main-owned engine event, not an

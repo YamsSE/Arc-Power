@@ -11,7 +11,7 @@ import { parseRecordingEncoderSelection, recordingAdapterTargetOf, recordingBitr
 
 const TABS: Array<[RecordingTab, string, string]> = [
   ['manual', 'Manual Recording', 'Capture a full video when you choose.'],
-  ['clips', 'Clips', 'Keep a replay buffer and save the last moments.'],
+  ['clips', 'Instant Replay', 'Keep a rolling buffer and save the last moments.'],
   ['audio', 'Audio', 'Configure microphone and sound capture.'],
 ];
 const RESOLUTIONS: Array<[RecordingResolution, string]> = [
@@ -390,13 +390,18 @@ function renderTabs(): HTMLElement {
 function renderCaptureActions(): HTMLElement {
   const recordingRunning = status.activeModes?.video === true || (!status.activeModes && status.running && status.mode === 'video');
   const replayRunning = status.activeModes?.replay === true || (!status.activeModes && status.running && status.mode === 'replay');
+  const instantReplaySaving = status.instantReplaySave?.status === 'saving';
+  const instantReplaySaveLabel = instantReplaySaving ? 'Saving Instant Replay…' : 'Save Instant Replay';
+  const instantReplaySaveError = status.instantReplaySave?.status === 'error';
   const captureNeedsApply = settingsDirty || applyingSettings;
   return el('div', { class: 'recording-capture-actions' }, [
     button(recordingRunning ? 'Stop Recording' : 'Start Recording', () => void (recordingRunning ? stopCapture('video') : startRecording()), `btn ${recordingRunning ? 'btn-recording-stop' : 'btn-primary'}`, !status.available || actionBusy || (!recordingRunning && captureNeedsApply)),
-    button(replayRunning ? 'Stop Replay Buffer' : 'Start Replay Buffer', () => void (replayRunning ? stopCapture('replay') : startReplay()), `btn ${replayRunning ? 'btn-recording-stop' : 'btn-secondary'}`, !status.available || actionBusy || (!replayRunning && captureNeedsApply)),
-    button('Save Clip', () => void saveClip(), 'btn btn-secondary', !status.available || !replayRunning || actionBusy),
+    button(replayRunning ? 'Stop Instant Replay' : 'Start Instant Replay', () => void (replayRunning ? stopCapture('replay') : startReplay()), `btn ${replayRunning ? 'btn-recording-stop' : 'btn-secondary'}`, !status.available || actionBusy || (!replayRunning && captureNeedsApply)),
+    button(instantReplaySaveLabel, () => void saveClip(), 'btn btn-secondary', !status.available || !replayRunning || actionBusy || instantReplaySaving),
     settingsDirty ? el('span', { class: 'recording-inline-note recording-unsaved-note', text: 'Apply changes before capture.' }) : null,
-    recordingRunning && replayRunning ? el('span', { class: 'recording-inline-note recording-live-note', text: 'Recording and replay buffer are both active.' }) : null,
+    instantReplaySaving ? el('span', { class: 'recording-inline-note recording-live-note', text: 'Instant Replay is being saved…' }) : null,
+    instantReplaySaveError ? el('span', { class: 'recording-inline-error', text: status.instantReplaySave?.error ?? 'Instant Replay could not be saved. Try again.' }) : null,
+    recordingRunning && replayRunning ? el('span', { class: 'recording-inline-note recording-live-note', text: 'Recording and Instant Replay are both active.' }) : null,
   ]);
 }
 
@@ -430,7 +435,7 @@ function renderCapturePanel(): HTMLElement {
         el('h2', { class: 'recording-panel-title', text: 'Record or save a moment' }),
       ]),
     ]),
-    el('p', { class: 'recording-panel-note', text: `Full recording or ${replayLength}-second replay buffer.` }),
+    el('p', { class: 'recording-panel-note', text: `Full recording or ${replayLength}-second Instant Replay window.` }),
     working ? el('div', { class: 'recording-profile-strip' }, [
       el('div', { class: 'recording-profile-copy' }, [
         el('span', { class: 'recording-field-label', text: 'Capture profile' }),
@@ -683,10 +688,10 @@ function renderReplaySettings(): HTMLElement {
   replay.addEventListener('change', () => stagePatch({ replayLengthSec: Number(replay.value) }));
   return el('section', { class: 'recording-panel recording-replay-settings' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
-      el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Clip window' }), el('h2', { class: 'recording-panel-title', text: 'Replay length' })]),
+      el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Instant Replay window' }), el('h2', { class: 'recording-panel-title', text: 'Replay length' })]),
       el('span', { class: 'recording-panel-badge', text: '5–3600 seconds' }),
     ]),
-    field('Seconds to keep available', replay, 'Saved when you press Save Clip.'),
+    field('Seconds to keep available', replay, 'Saved when you press Save Instant Replay.'),
   ]);
 }
 
@@ -822,8 +827,8 @@ function renderHotkeys(): HTMLElement {
     ]),
     el('p', { class: 'recording-panel-note', text: 'Works from any window.' }),
     make('start', 'Start recording', 'Begin a full video capture.'),
-    make('stop', 'Stop capture', 'Finish the active video or replay buffer.'),
-    make('saveClip', 'Save clip', 'Export the configured replay window.'),
+    make('stop', 'Stop capture', 'Finish the active video or Instant Replay buffer.'),
+    make('saveClip', 'Save Instant Replay', 'Export the configured Instant Replay window.'),
     make('screenshot', 'Screenshot', 'Save the selected display or window as a PNG.'),
   ]);
 }
@@ -1457,7 +1462,7 @@ async function startRecording(): Promise<void> {
 
 async function startReplay(): Promise<void> {
   if (actionBusy || settingsDirty || applyingSettings) {
-    if (settingsDirty) toast('info', 'Apply settings first', 'Apply your recording changes before starting the replay buffer.');
+    if (settingsDirty) toast('info', 'Apply settings first', 'Apply your recording changes before starting Instant Replay.');
     return;
   }
   actionBusy = true;
@@ -1490,7 +1495,7 @@ async function stopCapture(mode: 'video' | 'replay' | null = null): Promise<void
 
 async function saveClip(): Promise<void> {
   const replayRunning = status.activeModes?.replay === true || (!status.activeModes && status.running && status.mode === 'replay');
-  if (actionBusy || !replayRunning) return;
+  if (actionBusy || !replayRunning || status.instantReplaySave?.status === 'saving') return;
   actionBusy = true;
   render();
   try {

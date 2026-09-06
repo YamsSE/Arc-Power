@@ -370,8 +370,8 @@ function dashboardCaptureActionCopy(kind: DashboardCaptureActionKind, running: b
       : { label: 'Start Recording', description: 'Start a full recording' };
   }
   return running
-    ? { label: 'Stop Replay Buffer', description: 'Stop the replay buffer' }
-    : { label: 'Start Replay Buffer', description: 'Keep the rolling buffer running' };
+    ? { label: 'Stop Instant Replay', description: 'Stop Instant Replay' }
+    : { label: 'Start Instant Replay', description: 'Keep the rolling buffer running' };
 }
 
 function dashboardAction(label: string, hash: string, description: string, kind: DashboardActionKind, primary = false): HTMLElement {
@@ -458,7 +458,7 @@ async function toggleDashboardCapture(mode: DashboardCaptureActionKind): Promise
         : (await api.recordingReplayStart()).state;
     ctx.store.set({ recordingStatus: nextState });
   } catch (err) {
-    toast('error', mode === 'recording' ? 'Recording failed' : 'Replay buffer failed', err instanceof Error ? err.message : String(err));
+    toast('error', mode === 'recording' ? 'Recording failed' : 'Instant Replay failed', err instanceof Error ? err.message : String(err));
   } finally {
     dashboardCaptureActionBusy = false;
     if (controlCenterContext === ctx) updateDashboardControlCenter(ctx);
@@ -600,12 +600,14 @@ function dashboardHealthRows(ctx: PageContext, device: AppState['devices'][numbe
 
 function snapshotCaptureState(status: AppState['recordingStatus']): { value: string; note: string } {
   if (!status) return { value: 'Starting', note: 'Arc Capture is initializing' };
+  if (status.instantReplaySave?.status === 'saving') return { value: 'Saving Instant Replay', note: 'Writing the latest moments to disk' };
+  if (status.instantReplaySave?.status === 'error') return { value: 'Instant Replay failed', note: status.instantReplaySave.error ?? 'Try saving again' };
   if (status.running) {
     if (status.activeModes?.video === true && status.activeModes?.replay === true) {
-      return { value: 'Recording + replay', note: 'Both capture modes are active' };
+      return { value: 'Recording + Instant Replay', note: 'Both capture modes are active' };
     }
     return status.mode === 'replay'
-      ? { value: 'Replay buffer', note: 'Capturing the rolling clip window' }
+      ? { value: 'Instant Replay', note: 'Capturing the rolling clip window' }
       : { value: 'Recording', note: 'Arc Capture is active' };
   }
   if (status.available) return { value: 'Ready', note: 'Ready when you are' };
@@ -669,8 +671,8 @@ function dashboardControlCenterState(ctx: PageContext): { values: Record<Dashboa
         ? { value: dashboardStorageText(storage.freeBytes), note: compactDashboardText(storage.location, 'Recording folder') }
         : { value: 'Loading…', note: 'Recording folder space' },
       replay: recordingSettings && Number.isFinite(recordingSettings.replayLengthSec)
-        ? { value: `${recordingSettings.replayLengthSec} sec`, note: 'Saved clip duration' }
-        : { value: 'Loading…', note: 'Replay buffer length' },
+        ? { value: `${recordingSettings.replayLengthSec} sec`, note: 'Instant Replay duration' }
+        : { value: 'Loading…', note: 'Instant Replay length' },
     },
   };
 }
@@ -722,14 +724,14 @@ function dashboardControlCenter(ctx: PageContext): HTMLElement {
         ]),
         el('div', { class: 'dashboard-hub-actions' }, [
           dashboardAction('Start Recording', '', 'Start a full recording', 'recording', true),
-          dashboardAction('Start Replay Buffer', '', 'Keep the rolling buffer running', 'replay'),
+          dashboardAction('Start Instant Replay', '', 'Keep the rolling buffer running', 'replay'),
           dashboardAction('Open tuning', '#/tuning', 'GPU & fan controls', 'tuning'),
         ]),
       ]),
       el('div', { class: 'dashboard-hub-details' }, [
         detail('last', 'Last capture', 'dashboard-hub-detail-wide'),
         detail('profile', 'Active profile'),
-        detail('replay', 'Replay window'),
+        detail('replay', 'Instant Replay window'),
         detail('storage', 'Storage'),
       ]),
     ]),

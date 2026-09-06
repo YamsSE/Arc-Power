@@ -210,7 +210,7 @@ export function clampOverlayPollMs(v: unknown): number {
  * gets its own blue dot. The state is deliberately derived from
  * activeModes when present and falls back to the historical mode field for
  * older/mock engine envelopes. */
-export type RecordingPillKind = 'recording' | 'replay';
+export type RecordingPillKind = 'recording' | 'replay' | 'saving' | 'error';
 export interface RecordingPillView {
   visible: boolean;
   kind: RecordingPillKind | null;
@@ -224,6 +224,7 @@ export function recordingPillView(state: unknown): RecordingPillView {
     running?: unknown;
     mode?: unknown;
     activeModes?: { video?: unknown; replay?: unknown } | null;
+    instantReplaySave?: { status?: unknown } | null;
   };
   const modes = value.activeModes;
   const video = modes && typeof modes === 'object'
@@ -232,8 +233,15 @@ export function recordingPillView(state: unknown): RecordingPillView {
   const replay = modes && typeof modes === 'object'
     ? modes.replay === true
     : value.running === true && value.mode === 'replay';
-  if (!video && !replay) return { visible: false, kind: null };
-  const kind: RecordingPillKind = video ? 'recording' : 'replay';
+  // A full recording remains the strongest live state. Instant Replay save
+  // progress/error then takes precedence over the ordinary replay dot, and
+  // remains visible briefly even if the replay recorder has already stopped.
+  const saveStatus = value.instantReplaySave?.status;
+  if (video) return { visible: true, kind: 'recording' };
+  if (saveStatus === 'saving') return { visible: true, kind: 'saving' };
+  if (saveStatus === 'error') return { visible: true, kind: 'error' };
+  if (!replay) return { visible: false, kind: null };
+  const kind: RecordingPillKind = 'replay';
   return { visible: true, kind };
 }
 

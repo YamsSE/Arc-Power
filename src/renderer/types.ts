@@ -1138,6 +1138,14 @@ export interface RecordingEngineState {
   probeComplete?: boolean;
   hotkeys: { registered: Record<string, string>; conflicts: Record<string, string>; error: string | null };
   lastEvent?: Record<string, unknown> | null;
+  instantReplaySave?: InstantReplaySaveState;
+}
+export type InstantReplaySaveStatus = 'idle' | 'saving' | 'ready' | 'error';
+export interface InstantReplaySaveState {
+  status: InstantReplaySaveStatus;
+  error: string | null;
+  outputPath: string | null;
+  updatedAt: number | null;
 }
 export type RecordingAction = 'start' | 'stop' | 'saveClip' | 'screenshot';
 /** Raw main-process engine state; the renderer-only hotkeys envelope is added by IPC state pushes. */
@@ -1151,6 +1159,7 @@ export interface RecordingActionResult {
   requestedMode?: RecordingEngineState['mode'];
   didStop?: boolean;
   state?: RecordingActionState | null;
+  instantReplaySave?: InstantReplaySaveState;
 }
 export interface RecordingNotification {
   variant: 'success' | 'error' | 'info';

@@ -9720,7 +9720,7 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
 
   // (5) the Recording tab: the compact quick-settings surface mirrors the
   // main Recording page's important profile controls and exposes the same
-  // main-owned Record / Replay Buffer / Save Clip actions. This pin checks
+  // main-owned Record / Instant Replay / Save Instant Replay actions. This pin checks
   // the real panel DOM without starting a capture in the verifier (the
   // recording runtime is intentionally not required for UI verification).
   await ojs("document.querySelector('.adv-tab[data-tab=\"recording\"]').click()");
@@ -9729,7 +9729,7 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   }
   const recordingQuickActions = await ojs("JSON.stringify(Array.from(document.querySelectorAll('.adv-recording-capture-panel button')).map((b) => (b.textContent ?? '').trim()))");
   const recordingQuickActionList = JSON.parse(recordingQuickActions);
-  for (const expected of ['Record', 'Replay Buffer', 'Save Clip']) {
+  for (const expected of ['Record', 'Start Instant Replay', 'Save Instant Replay']) {
     if (!recordingQuickActionList.includes(expected)) {
       fail('M1.1.5: the Recording quick-controls are missing ' + expected);
     }
@@ -9810,7 +9810,7 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
     fail('M179: the Target recording menu could not be reopened after dismissal');
   }
   await ojs("document.querySelector('.adv-recording-select[aria-label=\"Target\"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
-  step('m1.1.5-recording-quick-controls', 'M1.1.5: Advanced Overlay Recording tab renders the quick settings and the Record, Replay Buffer, and Save Clip controls; capture actions remain main-owned');
+  step('m1.1.5-recording-quick-controls', 'M1.1.5: Advanced Overlay Recording tab renders the quick settings and the Record, Instant Replay, and Save Instant Replay controls; capture actions remain main-owned');
 
   // (6) the Graphics tab: the four M8 cards render (mock supported) + a
   // graphics apply round trip lands (the DEDICATED graphics path - no OC

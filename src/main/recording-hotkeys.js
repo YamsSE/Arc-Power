@@ -82,7 +82,8 @@ export function createRecordingActionHandler({ getSettings, recordingEngine, cap
       log(`[recording] shortcut ${action} failed: ${error}`);
     } finally {
       try {
-        await onActionResult({ action, ok: error === null, error, preActionMode, ...(action === 'stop' ? { didStop } : {}), ...(outputPath ? { outputPath: pathModule.basename(outputPath) } : {}), state: recordingEngine.getState?.() ?? null });
+        const state = recordingEngine.getState?.() ?? null;
+        await onActionResult({ action, ok: error === null, error, preActionMode, ...(action === 'stop' ? { didStop } : {}), ...(outputPath ? { outputPath: pathModule.basename(outputPath) } : {}), state, ...(state?.instantReplaySave ? { instantReplaySave: state.instantReplaySave } : {}) });
       } catch {
         // Notification delivery must never affect the hotkey action itself.
       }

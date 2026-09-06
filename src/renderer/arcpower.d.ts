@@ -207,7 +207,7 @@ export interface ArcPowerApi {
   recordingStart(): Promise<{ state: RecordingEngineState; outputPath: string }>;
   recordingStop(mode?: 'video' | 'replay' | null): Promise<RecordingEngineState>;
   recordingReplayStart(): Promise<{ state: RecordingEngineState; outputPath: null }>;
-  recordingClipSave(payload?: { headDurationMs?: number }): Promise<{ response: unknown; outputPath: string }>;
+  recordingClipSave(payload?: { headDurationMs?: number }): Promise<{ response: unknown; outputPath: string; instantReplaySave?: RecordingActionResult['instantReplaySave'] }>;
   recordingClipsList(): Promise<RecordingClip[]>;
   recordingStorageInfo(): Promise<RecordingStorageInfo>;
   recordingCaptureTargets(refresh?: boolean): Promise<RecordingCaptureTargets>;

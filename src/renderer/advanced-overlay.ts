@@ -21,7 +21,7 @@
 //     duplicate; CARD_NOTES is NOT imported - the panel shows no long notes,
 //     the user's directive); the supported-features caps gate each card.
 //   - Recording: a compact mirror of the main Recording page's capture
-//     profile settings plus Record, Replay Buffer, and Save Clip actions.
+//     profile settings plus Record, Instant Replay, and Save Instant Replay actions.
 //
 // The panel boots with the app.ts fetch sequence (deviceGet ->
 // getCapabilities -> getCurrentSettings -> render the active tab);
@@ -302,7 +302,7 @@ api.onStateUpdated((payload) => {
 
 // Recording actions are main-owned, but the Advanced Overlay is another
 // renderer consumer. Mirror the live engine state here so the quick-action
-// buttons never show a stale Record/Replay Buffer state after a hotkey or a
+// buttons never show a stale Record/Instant Replay state after a hotkey or a
 // click in the main Recording page.
 api.onRecordingStateUpdated((next) => {
   if (!next || typeof next !== 'object') return;
@@ -1018,9 +1018,12 @@ function recordingQuickField(label: string, control: HTMLElement, note?: string)
 function recordingQuickStatusState(): string {
   const video = recordingQuickActive('video');
   const replay = recordingQuickActive('replay');
-  if (video && replay) return 'Recording + replay buffer active';
+  const saveStatus = recordingQuickStatus.instantReplaySave?.status;
+  if (saveStatus === 'saving') return 'Saving Instant Replay';
+  if (saveStatus === 'error') return 'Instant Replay failed';
+  if (video && replay) return 'Recording + Instant Replay active';
   if (video) return 'Recording active';
-  if (replay) return 'Replay buffer active';
+  if (replay) return 'Instant Replay active';
   if (recordingQuickStatus.available) return 'Ready to capture';
   return 'Recording runtime unavailable';
 }
@@ -1160,8 +1163,9 @@ async function applyRecordingQuickSettings(): Promise<void> {
   }
 }
 
-async function runRecordingQuickAction(action: 'record' | 'replay' | 'stop-video' | 'stop-replay' | 'save-clip'): Promise<void> {
+async function runRecordingQuickAction(action: 'record' | 'replay' | 'stop-video' | 'stop-replay' | 'save-instant-replay'): Promise<void> {
   if (recordingQuickActionBusy || !recordingQuickSettings || !recordingQuickStatus.available) return;
+  if (action === 'save-instant-replay' && recordingQuickStatus.instantReplaySave?.status === 'saving') return;
   if (recordingQuickDirty || recordingQuickApplying) {
     toast('info', 'Apply settings first', 'Apply your recording changes before starting a capture.');
     return;
@@ -1181,7 +1185,7 @@ async function runRecordingQuickAction(action: 'record' | 'replay' | 'stop-video
       recordingQuickStatus = normalizeRecordingQuickStatus(await api.recordingStop('replay'));
     } else {
       await api.recordingClipSave({ headDurationMs: (recordingQuickSettings.replayLengthSec || 30) * 1000 });
-      toast('success', 'Clip saved', 'The replay buffer was saved to your recording folder.');
+      toast('success', 'Instant Replay saved', 'The latest moments were saved to your recording folder.');
     }
   } catch (err) {
     toast('error', 'Recording action failed', err instanceof Error ? err.message : String(err));
@@ -1208,6 +1212,7 @@ async function toggleRecordingQuickPill(checked: boolean): Promise<void> {
 function renderRecordingQuickActions(): HTMLElement {
   const video = recordingQuickActive('video');
   const replay = recordingQuickActive('replay');
+  const instantReplaySaving = recordingQuickStatus.instantReplaySave?.status === 'saving';
   const disabled = recordingQuickActionBusy || recordingQuickDirty || recordingQuickApplying;
   return el('section', { class: 'adv-recording-panel adv-recording-capture-panel' }, [
     el('div', { class: 'adv-recording-panel-heading' }, [
@@ -1218,13 +1223,14 @@ function renderRecordingQuickActions(): HTMLElement {
       el('span', { class: `adv-recording-status-dot${video || replay ? ' is-live' : ''}`, 'aria-hidden': 'true' }),
     ]),
     el('p', { class: 'adv-recording-panel-note', text: recordingQuickSettings
-      ? `${recordingQuickSettings.replayLengthSec}-second replay window · ${recordingQuickStatus.available ? 'ready' : 'runtime unavailable'}`
+      ? `${recordingQuickSettings.replayLengthSec}-second Instant Replay window · ${recordingQuickStatus.available ? 'ready' : 'runtime unavailable'}`
       : 'Loading recording profile…' }),
     el('div', { class: 'adv-recording-actions' }, [
       recordingQuickButton(video ? 'Stop Recording' : 'Record', () => void runRecordingQuickAction(video ? 'stop-video' : 'record'), `btn ${video ? 'btn-recording-stop' : 'btn-primary'}`, !recordingQuickStatus.available || recordingQuickActionBusy || (!video && disabled)),
-      recordingQuickButton(replay ? 'Stop Replay Buffer' : 'Replay Buffer', () => void runRecordingQuickAction(replay ? 'stop-replay' : 'replay'), `btn ${replay ? 'btn-recording-stop' : 'btn-secondary'}`, !recordingQuickStatus.available || recordingQuickActionBusy || (!replay && disabled)),
-      recordingQuickButton('Save Clip', () => void runRecordingQuickAction('save-clip'), 'btn btn-secondary', !recordingQuickStatus.available || recordingQuickActionBusy || !replay),
+      recordingQuickButton(replay ? 'Stop Instant Replay' : 'Start Instant Replay', () => void runRecordingQuickAction(replay ? 'stop-replay' : 'replay'), `btn ${replay ? 'btn-recording-stop' : 'btn-secondary'}`, !recordingQuickStatus.available || recordingQuickActionBusy || (!replay && disabled)),
+      recordingQuickButton(instantReplaySaving ? 'Saving Instant Replay…' : 'Save Instant Replay', () => void runRecordingQuickAction('save-instant-replay'), 'btn btn-secondary', !recordingQuickStatus.available || recordingQuickActionBusy || !replay || instantReplaySaving),
     ]),
+    instantReplaySaving ? el('p', { class: 'adv-recording-warning', text: 'Instant Replay is being saved…' }) : null,
     recordingQuickStatus.error && recordingQuickStatus.available
       ? el('p', { class: 'adv-recording-error', text: recordingQuickStatus.error })
       : null,
@@ -1275,7 +1281,7 @@ function renderRecordingQuickSettings(): HTMLElement {
     max: 3600,
     step: 5,
     value: working.replayLengthSec,
-    'aria-label': 'Replay buffer length in seconds',
+    'aria-label': 'Instant Replay length in seconds',
     onchange: (event: Event) => {
       const value = Number((event.target as HTMLInputElement).value);
       if (Number.isFinite(value)) {
@@ -1332,9 +1338,9 @@ function renderRecordingQuickSettings(): HTMLElement {
     ]),
     el('section', { class: 'adv-recording-panel' }, [
       el('div', { class: 'adv-recording-panel-heading adv-recording-panel-heading-compact' }, [
-        el('div', {}, [el('span', { class: 'adv-recording-eyebrow', text: 'Replay buffer' }), el('h2', { class: 'adv-recording-panel-title', text: 'Clip window' })]),
+        el('div', {}, [el('span', { class: 'adv-recording-eyebrow', text: 'Instant Replay window' }), el('h2', { class: 'adv-recording-panel-title', text: 'Clip window' })]),
       ]),
-      recordingQuickField('Seconds to keep', replayLength, 'Used when Save Clip is pressed.'),
+      recordingQuickField('Seconds to keep', replayLength, 'Used when Save Instant Replay is pressed.'),
     ]),
     el('section', { class: 'adv-recording-panel' }, [
       el('div', { class: 'adv-recording-panel-heading adv-recording-panel-heading-compact' }, [

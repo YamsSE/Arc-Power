@@ -52,6 +52,7 @@ const INITIAL_RECORDING_STATUS: RecordingEngineState = {
   audioInputs: [],
   audioOutputs: [],
   hotkeys: { registered: {}, conflicts: {}, error: null },
+  instantReplaySave: { status: 'idle', error: null, outputPath: null, updatedAt: null },
 };
 let globalRecordingStatus: RecordingEngineState = INITIAL_RECORDING_STATUS;
 let globalRecordingTimer: number | null = null;
@@ -72,12 +73,15 @@ function updateGlobalRecordingWidget(target?: HTMLElement): void {
   const running = globalRecordingStatus.running === true;
   const state = running ? 'live' : globalRecordingStatus.available ? 'ready' : 'offline';
   const mode = globalRecordingStatus.mode;
+  const replaySaveStatus = globalRecordingStatus.instantReplaySave?.status;
+  const replaySaving = replaySaveStatus === 'saving';
+  const replayFailed = replaySaveStatus === 'error';
   const title = root.querySelector<HTMLElement>('[data-recording-status-title]');
   const detail = root.querySelector<HTMLElement>('[data-recording-status-detail]');
   const timer = root.querySelector<HTMLElement>('[data-recording-timer]');
   const dot = root.querySelector<HTMLElement>('[data-recording-status-dot]');
-  if (title) title.textContent = running ? mode === 'replay' ? 'Replay buffer' : 'Recording' : globalRecordingStatus.available ? 'Ready to capture' : 'Capture offline';
-  if (detail) detail.textContent = running ? 'Arc Capture is running' : globalRecordingStatus.available ? 'Ready when you are' : 'Capture engine unavailable';
+  if (title) title.textContent = replaySaving ? 'Saving Instant Replay' : replayFailed ? 'Instant Replay failed' : running ? mode === 'replay' ? 'Instant Replay' : 'Recording' : globalRecordingStatus.available ? 'Ready to capture' : 'Capture offline';
+  if (detail) detail.textContent = replaySaving ? 'Writing the latest moments to disk' : replayFailed ? (globalRecordingStatus.instantReplaySave?.error ?? 'Try saving again') : running ? 'Arc Capture is running' : globalRecordingStatus.available ? 'Ready when you are' : 'Capture engine unavailable';
   if (timer) {
     timer.textContent = running ? recordingElapsed(globalRecordingStatus.startedAt) : '';
     timer.hidden = !running;

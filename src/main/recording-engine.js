@@ -3,6 +3,7 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn as spawnProcess } from 'node:child_process';
 import { consumeAscentJsonObjects, ASCENT_MAX_MESSAGE_BYTES, recordingOutputDimensions, resolveRecordingRuntimeCandidates, normalizeRecordingAudioSettings, recordingRuntimeEncoderIdForTarget } from './recording-pure.js';
+import { createInstantReplaySaveState, INSTANT_REPLAY_SAVE_STATUS } from './recording-lifecycle.js';
 
 export const ASCENT_COMMANDS = Object.freeze({ SHUTDOWN: 1, QUERY_MACHINE_INFO: 2, START: 3, STOP: 4, START_REPLAY_CAPTURE: 8, STOP_REPLAY_CAPTURE: 9, SPLIT_VIDEO: 12 });
 export const ASCENT_RECORDER_TYPES = Object.freeze({ VIDEO: 1, REPLAY: 2, STREAMING: 3 });
@@ -13,6 +14,7 @@ export const RECORDING_GPU_ENCODER_SELECTION_PREFIX = 'arc-gpu-encoder:v1:';
 const DEFAULT_SHUTDOWN_MS = 1500;
 const DEFAULT_PROBE_MS = 15000;
 const REPLAY_FILE_WAIT_MS = 30000;
+const REPLAY_FILE_CLEANUP_WAIT_MS = 1000;
 
 /**
  * FFmpeg writes these two informational lines while a normal output closes.
@@ -469,7 +471,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   // next capture so every applied profile reaches a fresh OBS output.
   let freshChildRequired = false;
   const demotedEncoders = new Set();
-  let state = { available: false, running: false, mode: null, activeModes: { video: false, replay: false }, startedAt: null, error: null, encoders: [], audioInputs: [], audioOutputs: [], probeComplete: false, lastEvent: null };
+  let state = { available: false, running: false, mode: null, activeModes: { video: false, replay: false }, startedAt: null, error: null, encoders: [], audioInputs: [], audioOutputs: [], probeComplete: false, lastEvent: null, instantReplaySave: createInstantReplaySaveState() };
   const listeners = new Set();
   const pending = new Map();
   const writeQueue = [];
@@ -477,6 +479,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   let closingChild = null;
   let writing = false;
   let lifecycle = Promise.resolve();
+  // Every Save Clip entry point calls this shared method. Claim the slot
+  // before queueing the serialized operation so renderer IPC and global
+  // hotkeys cannot enqueue two native captures at once.
+  let replayClipSaveInFlight = false;
   let machineInfoReady = false;
 
   function recorderForMode(mode, { starting = false } = {}) {
@@ -522,6 +528,12 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     onState(state);
     for (const cb of listeners) cb(state);
   };
+
+  function publishInstantReplaySave(status, details = {}) {
+    const next = createInstantReplaySaveState(status, details);
+    publish({ instantReplaySave: next });
+    return next;
+  }
 
   const rejectPending = (err) => {
     for (const item of pending.values()) { clearTimeout(item.timer); item.reject(err); }
@@ -841,7 +853,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   }
 
   async function startInternal(settings, mode = 'video') {
-    if (activeRecorders.has(mode) || startingRecorders.has(mode)) throw new Error(`${mode === 'replay' ? 'Replay buffer' : 'Recording'} is already active or a previous start is still pending`);
+    if (activeRecorders.has(mode) || startingRecorders.has(mode)) throw new Error(`${mode === 'replay' ? 'Instant Replay' : 'Recording'} is already active or a previous start is still pending`);
     await prepareFreshChild();
     // The startup probe already validates the bundled runtime and publishes
     // its encoder/audio inventory. Re-querying machine info before every
@@ -938,6 +950,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     publish({ error: null, encoders: state.encoders.map((item) => item.type === payload.video_settings.video_encoder.id && encoderTargetMatchesSelection(item, successfulTarget)
       ? { ...item, startTested: true, startSupported: true, status: 'started' }
       : item) });
+    if (mode === 'replay') publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.READY, { updatedAt: clock() });
     return state;
   }
 
@@ -962,6 +975,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       if (starting?.identifier === recorder.identifier && (stoppedActive || starting.startedAfterCancel)) startingRecorders.delete(recorder.mode);
       if (stoppedActive) freshChildRequired = true;
       publish(captureStatePatch());
+      if (recorder.mode === 'replay') publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.IDLE, { updatedAt: clock() });
       return state;
     } finally {
       recorder.stopInFlight = false;
@@ -969,7 +983,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   }
 
   async function stopReplayClipInternal(identifier = activeRecorders.get('replay')?.identifier) {
-    if (!Number.isSafeInteger(identifier)) throw new Error('Replay buffer is not active');
+    if (!Number.isSafeInteger(identifier)) throw new Error('Instant Replay is not active');
     return request(ASCENT_COMMANDS.STOP_REPLAY_CAPTURE, ASCENT_RECORDER_TYPES.REPLAY, {}, [ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY], 10000, identifier);
   }
 
@@ -1010,7 +1024,46 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   }
 
   function discardReplayClip(filePath) {
-    try { fs.rmSync(filePath, { force: true }); } catch { /* best effort; the save still reports failure */ }
+    if (typeof filePath !== 'string' || !filePath) return null;
+    try {
+      fs.rmSync(filePath, { force: true });
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  async function discardReplayClipAfterFailure(filePath) {
+    if (typeof filePath !== 'string' || !filePath) return null;
+    const deadline = Date.now() + REPLAY_FILE_CLEANUP_WAIT_MS;
+    let lastError = null;
+    // Recovery STOP can release a partial file after its response has already
+    // rejected. Keep retrying through that short window so a late-created
+    // output cannot survive a failed save.
+    while (Date.now() <= deadline) {
+      const removeError = discardReplayClip(filePath);
+      if (removeError) lastError = removeError;
+      try {
+        if (fs.existsSync(filePath)) {
+          // A successful rmSync should make this false; keep retrying when a
+          // native handle temporarily prevents deletion.
+          if (!removeError) lastError = new Error('Replay clip still exists after cleanup');
+        } else if (!removeError) lastError = null;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+      }
+      if (Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const finalError = discardReplayClip(filePath);
+    if (finalError) lastError = finalError;
+    try {
+      if (fs.existsSync(filePath)) lastError = lastError ?? new Error('Replay clip still exists after cleanup');
+      else if (!finalError) lastError = null;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+    return lastError;
   }
 
   async function boundReplayClip(clipPath, headDuration, fileReady = false) {
@@ -1026,21 +1079,40 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   async function enforceReplayClipDuration(clipPath, headDuration, fileReady = false) {
     if (typeof trimReplayClip !== 'function') return;
     if (await boundReplayClip(clipPath, headDuration, fileReady)) return;
-    discardReplayClip(clipPath);
+    const cleanupError = discardReplayClip(clipPath);
     const error = new Error('Replay clip could not be limited to the requested duration');
     error.code = 'REPLAY_CLIP_DURATION_FAILED';
+    if (cleanupError) {
+      error.message += `; replay clip cleanup failed: ${cleanupError.message}`;
+      error.code = 'REPLAY_CLIP_CLEANUP_FAILED';
+      error.cleanupError = cleanupError;
+    }
     throw error;
   }
 
   async function saveReplayClipInternal({ path: clipPath, headDuration, thumbnailFolder }) {
     const activeReplay = activeRecorders.get('replay');
-    if (!activeReplay || activeReplay.type !== ASCENT_RECORDER_TYPES.REPLAY) throw new Error('Start the replay buffer before saving a clip');
+    const publishSaveError = (error) => {
+      publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.ERROR, {
+        error: error instanceof Error ? error.message : String(error),
+        updatedAt: clock(),
+      });
+      return error;
+    };
+    if (!activeReplay || activeReplay.type !== ASCENT_RECORDER_TYPES.REPLAY) {
+      throw publishSaveError(new Error('Start Instant Replay before saving a moment'));
+    }
     const durationMs = Number(headDuration);
-    if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error('Replay clip duration must be greater than zero');
-    if (replayCapture && !(await recoverReplayCapture())) throw new Error('A replay clip is still being finalized; stop and restart the replay buffer before trying again');
+    if (!Number.isFinite(durationMs) || durationMs <= 0) {
+      throw publishSaveError(new Error('Instant Replay duration must be greater than zero'));
+    }
+    if (replayCapture && !(await recoverReplayCapture())) {
+      throw publishSaveError(new Error('An Instant Replay save is still being finalized; stop and restart Instant Replay before trying again'));
+    }
     const bufferIdentifier = activeReplay.identifier;
     const captureIdentifier = nextIdentifier++;
     replayCapture = { bufferIdentifier, captureIdentifier, phase: 'starting' };
+    publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.SAVING, { updatedAt: clock() });
     try {
       await request(ASCENT_COMMANDS.START_REPLAY_CAPTURE, ASCENT_RECORDER_TYPES.REPLAY, { path: clipPath, head_duration: Math.round(durationMs), thumbnail_folder: thumbnailFolder }, [ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_STARTED], 10000, captureIdentifier);
       // Ascent acknowledges START_REPLAY_CAPTURE before writing the file. The
@@ -1052,6 +1124,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // even when the requested head duration is shorter. Bound the completed
       // file to the requested tail after the runtime has released it.
       await enforceReplayClipDuration(clipPath, durationMs);
+      publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.READY, { outputPath: clipPath, updatedAt: clock() });
       return response;
     } catch (error) {
       // Some runtime builds finalize the file and then emit a second
@@ -1066,9 +1139,17 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
         // Some runtime builds write the clip and then report a secondary
         // "not capturing" error. That file is still authoritative, but it
         // must go through the same duration bound as the normal success path.
-        await enforceReplayClipDuration(clipPath, durationMs, true);
-        publish({ error: null });
-        return { event: ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY, identifier: bufferIdentifier, path: clipPath };
+        try {
+          await enforceReplayClipDuration(clipPath, durationMs, true);
+          publish({ error: null });
+          publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.READY, { outputPath: clipPath, updatedAt: clock() });
+          return { event: ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY, identifier: bufferIdentifier, path: clipPath };
+        } catch (authoritativeError) {
+          // Duration bounding failed, so this is a terminal failure after
+          // the authoritative branch was attempted. Let the common cleanup
+          // path remove any remaining output and preserve the failure state.
+          error = authoritativeError;
+        }
       }
       // Once START_REPLAY_CAPTURE was accepted, always attempt one bounded
       // STOP_REPLAY_CAPTURE recovery. A stale backend capture is otherwise
@@ -1080,6 +1161,18 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       } else {
         replayCapture = null;
       }
+      const cleanupError = await discardReplayClipAfterFailure(clipPath);
+      if (cleanupError) {
+        const originalError = error instanceof Error ? error : new Error(String(error));
+        const reportedError = new Error(`${originalError.message}; replay clip cleanup failed: ${cleanupError.message}`);
+        reportedError.code = 'REPLAY_CLIP_CLEANUP_FAILED';
+        reportedError.cause = originalError;
+        error = reportedError;
+      }
+      publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.ERROR, {
+        error: error instanceof Error ? error.message : String(error),
+        updatedAt: clock(),
+      });
       throw error;
     }
   }
@@ -1105,7 +1198,16 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     startRecording: (settings) => serialize(() => startInternal(settings, 'video')),
     startReplay: (settings) => serialize(() => startInternal(settings, 'replay')),
     stop: (mode = null) => serialize(() => stopInternal(mode)),
-    saveReplayClip: (settings) => serialize(() => saveReplayClipInternal(settings)),
+    saveReplayClip: (settings) => {
+      if (replayClipSaveInFlight) {
+        const error = new Error('Instant Replay is already being saved');
+        error.code = 'INSTANT_REPLAY_SAVE_IN_PROGRESS';
+        return Promise.reject(error);
+      }
+      replayClipSaveInFlight = true;
+      const operation = serialize(() => saveReplayClipInternal(settings));
+      return operation.finally(() => { replayClipSaveInFlight = false; });
+    },
     stopReplayClip: (identifier) => serialize(() => stopReplayClipInternal(identifier)),
     shutdown: () => serialize(shutdownInternal),
     subscribe: (cb) => { listeners.add(cb); return () => listeners.delete(cb); },

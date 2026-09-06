@@ -18,11 +18,13 @@ export const TRAY_LABEL_TOGGLE = 'Show / Hide window';
 export const TRAY_LABEL_APPLY_PROFILE = 'Apply active profile';
 export const TRAY_LABEL_QUIT = 'Quit';
 export const TRAY_BALLOON_TITLE = 'Arc Power';
-export const TRAY_STATUS = Object.freeze({ RECORDING: 'recording', REPLAY: 'replay', READY: 'ready' });
+export const TRAY_STATUS = Object.freeze({ RECORDING: 'recording', REPLAY: 'replay', READY: 'ready', SAVING: 'saving', ERROR: 'error' });
 const TRAY_STATUS_COLOR = Object.freeze({
   [TRAY_STATUS.RECORDING]: [239, 68, 68],
   [TRAY_STATUS.REPLAY]: [59, 130, 246],
   [TRAY_STATUS.READY]: [34, 197, 94],
+  [TRAY_STATUS.SAVING]: [245, 158, 11],
+  [TRAY_STATUS.ERROR]: [220, 38, 38],
 });
 export function trayBalloonProfileFailed(name) {
   return `Arc Power: profile '${name}' failed to apply - defaults restored`;
@@ -43,6 +45,9 @@ export function trayToggleAction({ isMinimized, isVisible }) {
 }
 
 export function trayStatusFromRecordingState(state = {}) {
+  const saveStatus = state.instantReplaySave?.status;
+  if (saveStatus === 'saving') return TRAY_STATUS.SAVING;
+  if (saveStatus === 'error') return TRAY_STATUS.ERROR;
   const modes = state.activeModes && typeof state.activeModes === 'object' ? state.activeModes : {};
   const video = modes.video === true || (Object.keys(modes).length === 0 && state.running === true && state.mode === 'video');
   const replay = modes.replay === true || (Object.keys(modes).length === 0 && state.running === true && state.mode === 'replay');
@@ -53,7 +58,9 @@ export function trayStatusFromRecordingState(state = {}) {
 
 export function trayStatusLabel(status) {
   if (status === TRAY_STATUS.RECORDING) return 'Recording';
-  if (status === TRAY_STATUS.REPLAY) return 'Replay buffer';
+  if (status === TRAY_STATUS.REPLAY) return 'Instant Replay';
+  if (status === TRAY_STATUS.SAVING) return 'Saving Instant Replay';
+  if (status === TRAY_STATUS.ERROR) return 'Instant Replay failed';
   return 'Ready';
 }
 

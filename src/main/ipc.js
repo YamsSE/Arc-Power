@@ -157,7 +157,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     pushRecordingState({ getWindow, state, getHotkeyState: getRecordingHotkeyState });
     // The Advanced Overlay has its own renderer and therefore does not see
     // the main window's recording-state push. Forward the same normalized
-    // envelope so its Record/Replay Buffer quick actions stay live when a
+    // envelope so its Record/Instant Replay quick actions stay live when a
     // global hotkey or the main Recording page changes the engine.
     const advancedOverlayWin = getAdvancedOverlayWindow();
     if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) {
@@ -187,9 +187,20 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     'recording-stop': { action: 'stop' },
     'recording-clip-save': { action: 'saveClip' },
   };
+  const recordingSaveLifecycle = (result) => {
+    if (!result || typeof result !== 'object') return result;
+    const state = result.state ?? recordingEngine?.getState?.() ?? null;
+    return {
+      ...result,
+      ...(result.instantReplaySave || state?.instantReplaySave
+        ? { instantReplaySave: result.instantReplaySave ?? state.instantReplaySave }
+        : {}),
+    };
+  };
   const publishRecordingActionResult = (result) => {
-    pushRecordingActionResult({ getWindow, result });
-    try { onRecordingActionResult(result); } catch { /* desktop notifications are best effort */ }
+    const enriched = recordingSaveLifecycle(result);
+    pushRecordingActionResult({ getWindow, result: enriched });
+    try { onRecordingActionResult(enriched); } catch { /* desktop notifications are best effort */ }
   };
   for (const [channel, fn] of Object.entries(handlers)) {
     ipcMain.handle(channel, async (event, ...args) => {
@@ -217,7 +228,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         }
         throw error;
       }
-      // Save Clip has no engine state transition, so publish its successful
+      // Save Instant Replay has no engine state transition, so publish its successful
       // result here. Start/stop success toasts are driven by the global state
       // stream, which covers both buttons and registered hotkeys exactly once.
       if (recordingAction?.action === 'saveClip') {
