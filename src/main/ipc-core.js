@@ -51,6 +51,8 @@ import { createGameScanAdapter, normalizeScannedApps } from './game-scan.js';
 import { validateSafeGameCandidate } from './game-candidate.js';
 import { collisionSafeRecordingPath, normalizeRecordingSettings, recordingAbsolutePath, RECORDING_AUDIO_SOURCE_MODES, RECORDING_CAPTURE_COLOR_MODES, RECORDING_CAPTURE_TARGET_TYPES, RECORDING_FPS_MAX, RECORDING_FPS_MIN, RECORDING_MODES, RECORDING_RESOLUTIONS, safeVideoExtension, validateRecordingProcessNames } from './recording-pure.js';
 import { closeSafeRecordingFile, isOpaqueClipId, mediaClipUrl, mediaThumbnailUrl, openSafeRecordingFile, resolveSafeRecordingPath, unlinkSafeRecordingFile } from './recording-media.js';
+import { createProfileTransferEnvelope, planProfileTransferImport } from './profile-transfer.js';
+import { persistReplayClipMetadata, recordingSessionIdOf } from './recording-lifecycle.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
@@ -58,7 +60,7 @@ const require = createRequire(import.meta.url);
 // when no electron app exists (tests).
 const PKG_VERSION = require('../../package.json').version ?? '0.0.0';
 
-const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'bitrateKbps', 'captureTarget', 'captureColorMode', 'showCursor', 'replayLengthSec', 'hotkeys', 'audio']);
+const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'bitrateKbps', 'captureTarget', 'captureColorMode', 'showCursor', 'replayLengthSec', 'instantReplayAutoStart', 'replayMarkersEnabled', 'hotkeys', 'audio']);
 export { recordingAbsolutePath };
 
 const execFileAsync = promisify(execFile);
@@ -130,6 +132,8 @@ function recordingPatch(patch) {
   if (patch.bitrateKbps !== undefined && (typeof patch.bitrateKbps !== 'number' || !Number.isFinite(patch.bitrateKbps) || patch.bitrateKbps <= 0)) throw new Error('recording-settings-save: bitrate must be a positive number');
   if (patch.captureColorMode !== undefined && !RECORDING_CAPTURE_COLOR_MODES.includes(patch.captureColorMode)) throw new Error('recording-settings-save: invalid capture color mode');
   if (patch.showCursor !== undefined && typeof patch.showCursor !== 'boolean') throw new Error('recording-settings-save: show cursor must be a boolean');
+  if (patch.instantReplayAutoStart !== undefined && typeof patch.instantReplayAutoStart !== 'boolean') throw new Error('recording-settings-save: auto-start must be a boolean');
+  if (patch.replayMarkersEnabled !== undefined && typeof patch.replayMarkersEnabled !== 'boolean') throw new Error('recording-settings-save: replay markers must be a boolean');
   if (patch.captureTarget !== undefined) {
     const target = patch.captureTarget;
     if (!target || typeof target !== 'object' || Array.isArray(target)) throw new Error('recording-settings-save: capture target must be an object');
@@ -1041,6 +1045,7 @@ export function createIpcHandlers({
   emit,
   startup = createMockStartup(),
   driverInfo = createMockDriverInfo(),
+  driverMonitor = null,
   // M4-D: the sysinfo adapter. The DEFAULT is the MOCK fixture (never
   // spawns PowerShell); main.js injects the cached CIM result in the
   // product path.
@@ -1179,6 +1184,7 @@ export function createIpcHandlers({
   gameArtwork = async () => null,
   recordingStore = null,
   recordingEngine = null,
+  recordingLifecycle = null,
   chooseRecordingDirectory = async () => null,
   openRecordingFolder = async () => {},
   refreshRecordingHotkeys = async () => null,
@@ -2991,6 +2997,11 @@ export function createIpcHandlers({
         const state = await recordingEngine.startReplay({ ...settings });
         return { state, outputPath: null };
       },
+      'recording-auto-start': async (...args) => {
+        assertNoPayload(args, 'recording-auto-start');
+        if (!recordingLifecycle?.autoStartInstantReplay) return { started: false, reason: 'unavailable', state: recordingEngine?.getState?.() ?? null };
+        return recordingLifecycle.autoStartInstantReplay();
+      },
       'recording-clip-save': async (payload = {}) => {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('recording-clip-save: payload must be an object');
         if (!recordingEngine?.saveReplayClip || !recordingStore) throw new Error('Recording engine is not available');
@@ -3004,11 +3015,36 @@ export function createIpcHandlers({
         fs.mkdirSync(location, { recursive: true });
         const outputPath = collisionSafeRecordingPath(location, 'clip', { exists: (candidate) => fs.existsSync(candidate) });
         const response = await recordingEngine.saveReplayClip({ path: outputPath, headDuration: headDurationMs, thumbnailFolder: location });
+        const metadata = await persistReplayClipMetadata({
+          recordingStore,
+          recordingRoot: location,
+          outputPath,
+          readyPayload: response,
+        });
         return {
           response,
           outputPath: path.basename(outputPath),
+          clip: metadata.clip,
+          markerMapping: metadata.markerMapping,
           instantReplaySave: recordingEngine.getState?.().instantReplaySave ?? null,
         };
+      },
+      'recording-marker-add': async (payload = {}) => {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('recording-marker-add: payload must be an object');
+        if (!recordingStore?.addMarker || !recordingEngine?.getState) throw new Error('Recording markers are unavailable');
+        const state = recordingEngine.getState();
+        const active = state?.activeModes?.replay === true || state?.activeModes?.video === true || state?.running === true;
+        if (!active) throw new Error('Start recording or Instant Replay before adding a marker');
+        const sessionId = recordingSessionIdOf(state);
+        if (!sessionId) throw new Error('The active recording session has no stable identity');
+        const settings = await recordingStore.settings();
+        if (settings.replayMarkersEnabled === false) throw new Error('Replay markers are disabled');
+        const atMs = Number.isFinite(payload.atMs) ? payload.atMs : Math.max(0, Date.now() - Number(state.startedAt ?? Date.now()));
+        return recordingStore.addMarker({ sessionId, atMs, label: payload.label });
+      },
+      'recording-markers-list': async (payload) => {
+        if (payload !== undefined && (!payload || typeof payload !== 'object' || Array.isArray(payload))) throw new Error('recording-markers-list: payload must be an object');
+        return recordingStore?.listMarkers?.({ sessionId: typeof payload?.sessionId === 'string' ? payload.sessionId : null }) ?? [];
       },
       'recording-clips-list': async (...args) => {
         assertNoPayload(args, 'recording-clips-list');
@@ -3094,6 +3130,61 @@ export function createIpcHandlers({
       'profiles-list': async (...args) => {
         assertNoPayload(args, 'profiles-list');
         return { profiles: await store.loadProfiles(), settings: await store.loadSettings() };
+      },
+
+      'profiles-export': async (...args) => {
+        assertNoPayload(args, 'profiles-export');
+        const [profiles, settings, recordingSettings, devices] = await Promise.all([
+          store.loadProfiles(),
+          store.loadSettings(),
+          recordingStore?.settings?.() ?? {},
+          backend.listDevices(),
+        ]);
+        return createProfileTransferEnvelope({ appVersion: PKG_VERSION, profiles, settings, recordingSettings, devices });
+      },
+
+      'profiles-import': async (payload) => {
+        const existing = await store.loadProfiles();
+        const currentSettings = await store.loadSettings();
+        const devices = await backend.listDevices();
+        const plan = planProfileTransferImport({ incoming: payload, existing, devices, currentSettings });
+        const recordingSettings = recordingStore?.settings ? await recordingStore.settings() : null;
+        try {
+          await store.saveProfiles(plan.profiles);
+          await store.saveSettings({ ...plan.settings, deviceId: currentSettings.deviceId, deviceKey: currentSettings.deviceKey });
+          if (recordingStore?.saveSettings && Object.keys(plan.envelope.recording).length > 0) await recordingStore.saveSettings({ ...recordingSettings, ...plan.envelope.recording });
+        } catch (error) {
+          // Profile/settings/recording are separate sidecars. Roll back every
+          // write if a later sidecar rejects so a failed import is atomic from
+          // the renderer's perspective.
+          try { await store.saveProfiles(existing); } catch { /* best effort */ }
+          try { await store.saveSettings(currentSettings); } catch { /* best effort */ }
+          if (recordingStore?.saveSettings && recordingSettings) {
+            try { await recordingStore.saveSettings(recordingSettings); } catch { /* best effort */ }
+          }
+          throw error;
+        }
+        return {
+          profiles: await store.loadProfiles(),
+          settings: await store.loadSettings(),
+          applied: plan.applied,
+          skipped: plan.skipped,
+          orphaned: plan.orphaned,
+          identityWarnings: plan.identityWarnings,
+          imported: plan.applied.length,
+        };
+      },
+
+      'driver-monitor-status': async (...args) => {
+        assertNoPayload(args, 'driver-monitor-status');
+        return driverMonitor?.status?.() ?? { schemaVersion: 1, observations: {}, transitions: {} };
+      },
+
+      'driver-monitor-check': async (...args) => {
+        assertNoPayload(args, 'driver-monitor-check');
+        if (!driverMonitor?.observe) return { schemaVersion: 1, observations: {}, transitions: {}, changes: [] };
+        const [devices, info] = await Promise.all([backend.listDevices(), driverInfo.get()]);
+        return driverMonitor.observe(devices, { driverDate: info?.driverDate ?? null });
       },
 
       // M55a: scan is read-only. The adapter combines installed metadata and

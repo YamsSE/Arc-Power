@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { DEFAULT_RECORDING_SETTINGS, RECORDING_SCHEMA_VERSION, normalizeRecordingSettings, safeVideoExtension, sortRecordingClips } from '../recording-pure.js';
+import { DEFAULT_RECORDING_SETTINGS, RECORDING_EDITOR_VERSION, RECORDING_SCHEMA_VERSION, mapRecordingMarkersToClip, normalizeRecordingClip, normalizeRecordingMarker, normalizeRecordingMarkers, normalizeRecordingSettings, safeVideoExtension, sortRecordingClips } from '../recording-pure.js';
 
 function defaultDataDir() {
   return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
@@ -125,9 +125,10 @@ export class RecordingStore {
     const settings = normalizeRecordingSettings(raw?.settings ?? raw ?? {});
     if (!settings.location) settings.location = this.defaultLocation;
     const clips = Array.isArray(raw?.clips)
-      ? raw.clips.filter((clip) => clip && safeId(clip.id) && typeof clip.relativePath === 'string' && safeVideoExtension(clip.relativePath))
+      ? raw.clips.map((clip) => normalizeRecordingClip(clip)).filter(Boolean)
       : [];
-    return { schemaVersion: RECORDING_SCHEMA_VERSION, settings, clips: sortRecordingClips(clips) };
+    const markers = normalizeRecordingMarkers(raw?.markers);
+    return { schemaVersion: RECORDING_SCHEMA_VERSION, settings, clips: sortRecordingClips(clips), markers };
   }
 
   _readData() {
@@ -274,6 +275,89 @@ export class RecordingStore {
       const sorted = sortRecordingClips(next);
       this._write({ ...current, schemaVersion: RECORDING_SCHEMA_VERSION, clips: sorted });
       return sorted;
+    });
+  }
+
+  async addMarker(marker) {
+    return this._enqueueMutation(() => {
+      const { data: current } = this._readData();
+      const normalized = normalizeRecordingMarker({
+        ...marker,
+        id: marker?.id ?? crypto.randomUUID(),
+      });
+      if (!normalized) throw new Error('Invalid recording marker');
+      const markers = normalizeRecordingMarkers([...current.markers, normalized]);
+      this._write({ ...current, schemaVersion: RECORDING_SCHEMA_VERSION, markers });
+      return normalized;
+    });
+  }
+
+  async listMarkers({ sessionId = null, clipId = null } = {}) {
+    const markers = (await this.load()).markers;
+    return markers.filter((marker) => (sessionId ? marker.sourceSessionId === sessionId : true) && (clipId ? marker.clipId === clipId : true));
+  }
+
+  async recordClip({ relativePath, fileName, createdAt = new Date().toISOString(), markerSummaries = [], editorVersion = RECORDING_EDITOR_VERSION } = {}) {
+    return this._enqueueMutation(() => {
+      const { data: current } = this._readData();
+      const normalizedPath = typeof relativePath === 'string' ? relativePath : '';
+      if (!normalizedPath || !safeVideoExtension(normalizedPath)) throw new Error('Invalid recording clip path');
+      const existing = current.clips.find((clip) => clip.relativePath === normalizedPath);
+      const clip = normalizeRecordingClip({
+        ...(existing ?? {}),
+        id: existing?.id ?? crypto.randomUUID(),
+        relativePath: normalizedPath,
+        fileName: fileName ?? path.basename(normalizedPath),
+        createdAt: existing?.createdAt ?? createdAt,
+        markerSummaries,
+        editorVersion,
+      });
+      if (!clip) throw new Error('Invalid recording clip metadata');
+      const clips = sortRecordingClips([...current.clips.filter((item) => item.relativePath !== normalizedPath), clip]);
+      this._write({ ...current, schemaVersion: RECORDING_SCHEMA_VERSION, clips });
+      return clip;
+    });
+  }
+
+  async attachMarkersToClip({ relativePath, sessionId, sourceSessionId, sourceStartMs, sourceEndMs } = {}) {
+    return this._enqueueMutation(() => {
+      const { data: current } = this._readData();
+      const clip = current.clips.find((item) => item.relativePath === relativePath);
+      if (!clip) return null;
+      // Keep the original { sessionId } helper useful to older callers: it
+      // predates replay-ready interval data and therefore consumes every
+      // marker in that session.  A caller using the new sourceSessionId
+      // field must provide an interval; without one its markers remain in
+      // the sidecar for a later, authoritative replay-ready event.
+      const legacyUnboundedSession = sourceSessionId === undefined && typeof sessionId === 'string' && sessionId.trim().length > 0;
+      const mapping = mapRecordingMarkersToClip(current.markers, {
+        sourceSessionId: sourceSessionId ?? sessionId,
+        sourceStartMs: legacyUnboundedSession ? 0 : sourceStartMs,
+        sourceEndMs: legacyUnboundedSession ? 86_400_000 : sourceEndMs,
+      });
+      const clips = current.clips.map((item) => item.id === clip.id && mapping.mapped
+        ? normalizeRecordingClip({ ...item, markerSummaries: mapping.attached, editorVersion: RECORDING_EDITOR_VERSION })
+        : item);
+      const markers = mapping.retained;
+      this._write({ ...current, schemaVersion: RECORDING_SCHEMA_VERSION, clips: sortRecordingClips(clips), markers });
+      const mappedClip = clips.find((item) => item.id === clip.id) ?? null;
+      return {
+        // Return the clip fields at the top level for callers of the legacy
+        // helper, while also exposing the explicit nested clip and mapping
+        // metadata to newer lifecycle consumers.
+        ...(mappedClip ?? {}),
+        clip: mappedClip,
+        mapped: mapping.mapped,
+        reason: mapping.reason,
+        retainedMarkerCount: markers.length,
+        attachedMarkerCount: mapping.attached.length,
+        markerMapping: {
+          mapped: mapping.mapped,
+          reason: mapping.reason,
+          retainedMarkerCount: markers.length,
+          attachedMarkerCount: mapping.attached.length,
+        },
+      };
     });
   }
 

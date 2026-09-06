@@ -471,7 +471,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   // next capture so every applied profile reaches a fresh OBS output.
   let freshChildRequired = false;
   const demotedEncoders = new Set();
-  let state = { available: false, running: false, mode: null, activeModes: { video: false, replay: false }, startedAt: null, error: null, encoders: [], audioInputs: [], audioOutputs: [], probeComplete: false, lastEvent: null, instantReplaySave: createInstantReplaySaveState() };
+  let state = { available: false, running: false, mode: null, activeModes: { video: false, replay: false }, startedAt: null, sessionId: null, error: null, encoders: [], audioInputs: [], audioOutputs: [], probeComplete: false, lastEvent: null, instantReplaySave: createInstantReplaySaveState() };
   const listeners = new Set();
   const pending = new Map();
   const writeQueue = [];
@@ -507,6 +507,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const startedAt = active.length
       ? Math.min(...active.map((recorder) => Number.isFinite(recorder.startedAt) ? recorder.startedAt : clock()))
       : null;
+    const sessionRecorder = activeRecorders.get('replay') ?? activeRecorders.get('video');
     return {
       running: active.length > 0,
       // Keep the historical single mode field for consumers that only show
@@ -514,6 +515,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       mode: activeModes.video ? 'video' : activeModes.replay ? 'replay' : null,
       activeModes,
       startedAt,
+      sessionId: sessionRecorder ? `${sessionRecorder.mode}:${sessionRecorder.identifier}` : null,
     };
   }
 
@@ -902,7 +904,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }, outputPath, type);
     const identifier = nextIdentifier++;
     const fields = Object.fromEntries(Object.entries(payload).filter(([key]) => !['cmd', 'identifier', 'recorder_type'].includes(key)));
-    startingRecorders.set(mode, { identifier, type, mode, ready: false });
+    startingRecorders.set(mode, { identifier, type, mode, ready: false, sessionId: `${mode}:${identifier}` });
     try {
       await request(payload.cmd, type, fields, [mode === 'replay' ? ASCENT_EVENTS.REPLAY_STARTED : ASCENT_EVENTS.RECORDING_STARTED], startTimeoutMs, identifier);
     } catch (error) {
@@ -1090,6 +1092,32 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     throw error;
   }
 
+  function replayReadyPayload(response, activeReplay, clipPath, thumbnailFolder, requestedDurationMs) {
+    const sourceSessionId = typeof response?.sourceSessionId === 'string' && response.sourceSessionId.trim()
+      ? response.sourceSessionId.trim()
+      : activeReplay?.sessionId ?? null;
+    const nativeDuration = Number.isFinite(response?.durationMs) ? Math.max(0, Math.round(response.durationMs)) : null;
+    const nativeStart = Number.isFinite(response?.sourceStartMs) ? Math.max(0, Math.round(response.sourceStartMs)) : null;
+    const nativeEnd = Number.isFinite(response?.sourceEndMs) ? Math.max(0, Math.round(response.sourceEndMs)) : null;
+    const end = nativeEnd ?? Math.max(0, Math.round(clock() - Number(activeReplay?.startedAt ?? clock())));
+    const duration = nativeDuration ?? Math.max(0, Math.round(requestedDurationMs));
+    const start = nativeStart ?? Math.max(0, end - duration);
+    return {
+      ...response,
+      event: 'replay_ready',
+      type: 'replay_ready',
+      nativeEvent: response?.event ?? ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY,
+      sessionId: sourceSessionId,
+      sourceSessionId,
+      identifier: response?.identifier ?? activeReplay?.identifier ?? null,
+      path: response?.path ?? clipPath,
+      durationMs: Math.max(0, end - start),
+      sourceStartMs: start,
+      sourceEndMs: end,
+      thumbnailFolder: response?.thumbnailFolder ?? thumbnailFolder ?? null,
+    };
+  }
+
   async function saveReplayClipInternal({ path: clipPath, headDuration, thumbnailFolder }) {
     const activeReplay = activeRecorders.get('replay');
     const publishSaveError = (error) => {
@@ -1125,7 +1153,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // file to the requested tail after the runtime has released it.
       await enforceReplayClipDuration(clipPath, durationMs);
       publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.READY, { outputPath: clipPath, updatedAt: clock() });
-      return response;
+      return replayReadyPayload(response, activeReplay, clipPath, thumbnailFolder, durationMs);
     } catch (error) {
       // Some runtime builds finalize the file and then emit a second
       // "not capturing" response while the replay output is closing. A
@@ -1143,7 +1171,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
           await enforceReplayClipDuration(clipPath, durationMs, true);
           publish({ error: null });
           publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.READY, { outputPath: clipPath, updatedAt: clock() });
-          return { event: ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY, identifier: bufferIdentifier, path: clipPath };
+          return replayReadyPayload({ event: ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY, identifier: bufferIdentifier, path: clipPath }, activeReplay, clipPath, thumbnailFolder, durationMs);
         } catch (authoritativeError) {
           // Duration bounding failed, so this is a terminal failure after
           // the authoritative branch was attempted. Let the common cleanup

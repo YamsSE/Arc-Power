@@ -63,6 +63,8 @@ import { listRecordingCaptureTargets, mergeRecordingDisplayMetadata, recordingCa
 import { trimRecordingClipToDuration } from './recording-clip.js';
 import { captureRecordingScreenshot } from './recording-screenshot.js';
 import { createRecordingHotkeys, createRecordingActionHandler } from './recording-hotkeys.js';
+import { createRecordingLifecycleService, persistReplayClipMetadata } from './recording-lifecycle.js';
+import { createDriverMonitor } from './driver-monitor.js';
 import { createRecordingMediaResponse, mediaRequestPath, mediaThumbnailRequestPath, resolveSafeRecordingPath } from './recording-media.js';
 import { createRecordingThumbnailService } from './recording-thumbnails.js';
 import { createGameScanAdapter, findGamePosterArtwork } from './game-scan.js';
@@ -1609,6 +1611,7 @@ async function main() {
     dir: store.dir,
     defaultLocation: path.join(app.getPath('videos'), 'Arc Power'),
   });
+  const driverMonitor = createDriverMonitor({ dir: store.dir });
   let recordingCaptureTargetsCache = null;
   let recordingCaptureTargetsPromise = null;
   const readRecordingCaptureTargets = (refresh = false) => {
@@ -1750,6 +1753,7 @@ async function main() {
       });
     },
   });
+  const recordingLifecycle = createRecordingLifecycleService({ recordingStore, recordingEngine });
   const mockGameDir = mock && process.env.RID_MOCK_GAME_SCAN === '1'
     ? path.join(os.tmpdir(), 'arcpower-mock-games')
     : null;
@@ -3391,6 +3395,7 @@ async function main() {
     onOverlaySettings,
     startup,
     driverInfo,
+    driverMonitor,
     sysinfo,
     windowOps,
     openExternal,
@@ -3450,6 +3455,7 @@ async function main() {
     },
     recordingStore,
     recordingEngine,
+    recordingLifecycle,
     chooseRecordingDirectory: async () => {
       const result = await dialog.showOpenDialog(win, {
         title: 'Choose recording location',
@@ -3473,9 +3479,23 @@ async function main() {
       if (uiVerify) trayRebuilds += 1;
     },
   });
+  const saveReplayClipForAction = async (request) => {
+    const response = await recordingEngine.saveReplayClip(request);
+    const settings = await recordingStore.settings();
+    const location = recordingAbsolutePath(settings.location, 'location');
+    const metadata = await persistReplayClipMetadata({
+      recordingStore,
+      recordingRoot: location,
+      outputPath: request.path,
+      readyPayload: response,
+    });
+    return { response, ...metadata };
+  };
   recordingActionHandler = createRecordingActionHandler({
     getSettings: () => recordingStore.settings(),
     recordingEngine,
+    addMarker: (payload) => recordingLifecycle.addReplayMarker(payload),
+    saveReplayClip: saveReplayClipForAction,
     captureScreenshot,
     onActionResult: (result) => {
       pushRecordingActionResult({ getWindow: () => win, result });
@@ -3490,9 +3510,14 @@ async function main() {
   // instead of being lost before their subscriptions exist.
   // The engine owns the child and reuses it for later probes/actions.
   if (!mock && !uiVerify) {
-    void recordingEngine.probe().catch((error) => {
+    void recordingEngine.probe().then(() => recordingLifecycle.autoStartInstantReplay()).catch((error) => {
       console.log(`[recording] startup probe unavailable: ${error?.message ?? String(error)}`);
     });
+  }
+  if (!uiVerify) {
+    void Promise.all([backend.listDevices(), driverInfo.get()])
+      .then(([devices, info]) => driverMonitor.observe(devices, { driverDate: info?.driverDate ?? null }))
+      .catch((error) => console.log(`[driver-monitor] startup observation skipped: ${error?.message ?? String(error)}`));
   }
   // Warm the optional native display/window geometry in parallel with the
   // engine probe. Capture actions can then start without launching

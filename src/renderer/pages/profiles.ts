@@ -506,6 +506,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let selectedGameExePath: string | null = null;
   let selectedGameDeviceKey: string | null = profileGpuIdentity(s).key;
   let startupWarning: string | null = null;
+  let driverWarning: string | null = null;
   let showFilter = 'all';
   let sortMode = 'alphabetical';
   let cardMode: 'grid' | 'list' = 'grid';
@@ -530,6 +531,41 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const gpuIdentity = profileGpuIdentity(s);
   try { bootState = await api.startupGet(); }
   catch (err) { startupWarning = `Start-at-boot state unavailable: ${err instanceof Error ? err.message : String(err)}`; }
+  try {
+    const monitor = await api.driverMonitorCheck();
+    if (monitor.changes.length > 0) driverWarning = `${monitor.changes.length} physical GPU driver change${monitor.changes.length === 1 ? '' : 's'} detected.`;
+  } catch { /* driver monitoring is best effort and must not gate profiles */ }
+
+  const exportProfiles = async (): Promise<void> => {
+    try {
+      const payload = await api.profilesExport();
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'Arc-Power-Profile.json';
+      link.click();
+      URL.revokeObjectURL(url);
+      toast('success', 'Profiles exported', 'The export contains no credentials or machine paths.');
+    } catch (err) { toast('error', 'Profile export failed', err instanceof Error ? err.message : String(err)); }
+  };
+
+  const importProfiles = (): void => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      void file.text().then(async (text) => {
+        const result = await api.profilesImport(JSON.parse(text));
+        envelope = result;
+        toast('success', 'Profiles imported', `${result.imported} profile${result.imported === 1 ? '' : 's'} merged.`);
+        renderList();
+      }).catch((err) => toast('error', 'Profile import failed', err instanceof Error ? err.message : String(err)));
+    };
+    input.click();
+  };
 
   const modeToggle = (): HTMLElement => el('div', { class: 'profiles-mode-toggle', role: 'group', 'aria-label': 'Profiles view' }, [
     el('button', { class: `btn btn-ghost btn-sm${viewMode === 'oc' ? ' active' : ''}`, text: 'Tuning Profile', onclick: () => { viewMode = 'oc'; selectedGameExePath = null; updateProfileCopy(); renderList(); } }),
@@ -840,6 +876,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ]),
       el('div', { class: 'profile-browser-toolbar' }, [
         el('button', { class: 'btn btn-primary btn-sm profile-create', text: 'Add Profile +', onClick: () => void onCreate() }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Export', onClick: () => void exportProfiles() }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Import', onClick: importProfiles }),
         el('label', { class: 'profile-filter-label', text: 'Show' }),
         buildDropdown(showFilter, [
           { value: 'all', label: 'All Profiles' },
@@ -866,6 +904,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
 
     clear(root);
     if (startupWarning) root.append(el('p', { class: 'card-note profile-sidecar-warning', role: 'status', text: startupWarning }));
+    if (driverWarning) root.append(el('p', { class: 'card-note profile-sidecar-warning', role: 'status', text: driverWarning }));
     root.append(modeToggle(), bootCard, listCard);
   };
 

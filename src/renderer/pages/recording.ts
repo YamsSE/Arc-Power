@@ -398,11 +398,27 @@ function renderCaptureActions(): HTMLElement {
     button(recordingRunning ? 'Stop Recording' : 'Start Recording', () => void (recordingRunning ? stopCapture('video') : startRecording()), `btn ${recordingRunning ? 'btn-recording-stop' : 'btn-primary'}`, !status.available || actionBusy || (!recordingRunning && captureNeedsApply)),
     button(replayRunning ? 'Stop Instant Replay' : 'Start Instant Replay', () => void (replayRunning ? stopCapture('replay') : startReplay()), `btn ${replayRunning ? 'btn-recording-stop' : 'btn-secondary'}`, !status.available || actionBusy || (!replayRunning && captureNeedsApply)),
     button(instantReplaySaveLabel, () => void saveClip(), 'btn btn-secondary', !status.available || !replayRunning || actionBusy || instantReplaySaving),
+    button('Mark moment', () => void addReplayMarker(), 'btn btn-secondary', !status.available || (!recordingRunning && !replayRunning) || actionBusy),
     settingsDirty ? el('span', { class: 'recording-inline-note recording-unsaved-note', text: 'Apply changes before capture.' }) : null,
     instantReplaySaving ? el('span', { class: 'recording-inline-note recording-live-note', text: 'Instant Replay is being saved…' }) : null,
     instantReplaySaveError ? el('span', { class: 'recording-inline-error', text: status.instantReplaySave?.error ?? 'Instant Replay could not be saved. Try again.' }) : null,
     recordingRunning && replayRunning ? el('span', { class: 'recording-inline-note recording-live-note', text: 'Recording and Instant Replay are both active.' }) : null,
   ]);
+}
+
+async function addReplayMarker(): Promise<void> {
+  if (actionBusy) return;
+  actionBusy = true;
+  render();
+  try {
+    await api.recordingMarkerAdd({});
+    toast('success', 'Replay marker added', 'The marker will appear with the next saved clip.');
+  } catch (err) {
+    toast('error', 'Replay marker failed', messageOf(err));
+  } finally {
+    actionBusy = false;
+    render();
+  }
 }
 
 function renderRecordingPillSetting(): HTMLElement {
@@ -686,12 +702,18 @@ function renderReplaySettings(): HTMLElement {
     value: working?.replayLengthSec ?? DEFAULT_REPLAY_LENGTH_SEC,
   }) as HTMLInputElement;
   replay.addEventListener('change', () => stagePatch({ replayLengthSec: Number(replay.value) }));
+  const autoStart = el('input', { type: 'checkbox', class: 'settings-checkbox', checked: working?.instantReplayAutoStart === true, 'aria-label': 'Auto-start Instant Replay' }) as HTMLInputElement;
+  autoStart.addEventListener('change', () => stagePatch({ instantReplayAutoStart: autoStart.checked }));
+  const markers = el('input', { type: 'checkbox', class: 'settings-checkbox', checked: working?.replayMarkersEnabled !== false, 'aria-label': 'Enable replay markers' }) as HTMLInputElement;
+  markers.addEventListener('change', () => stagePatch({ replayMarkersEnabled: markers.checked }));
   return el('section', { class: 'recording-panel recording-replay-settings' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Instant Replay window' }), el('h2', { class: 'recording-panel-title', text: 'Replay length' })]),
       el('span', { class: 'recording-panel-badge', text: '5–3600 seconds' }),
     ]),
     field('Seconds to keep available', replay, 'Saved when you press Save Instant Replay.'),
+    el('label', { class: 'recording-check-row' }, [el('span', { text: 'Auto-start Instant Replay after launch' }), autoStart]),
+    el('label', { class: 'recording-check-row' }, [el('span', { text: 'Enable replay markers' }), markers]),
   ]);
 }
 
@@ -804,7 +826,7 @@ function renderAudioSettings(): HTMLElement {
 
 function renderHotkeys(): HTMLElement {
   const working = settingsForRender();
-  const make = (key: 'start' | 'stop' | 'saveClip' | 'screenshot', label: string, description: string): HTMLElement => {
+  const make = (key: 'start' | 'stop' | 'saveClip' | 'marker' | 'screenshot', label: string, description: string): HTMLElement => {
     const input = el('input', {
       class: 'recording-hotkey',
       type: 'text',
@@ -829,6 +851,7 @@ function renderHotkeys(): HTMLElement {
     make('start', 'Start recording', 'Begin a full video capture.'),
     make('stop', 'Stop capture', 'Finish the active video or Instant Replay buffer.'),
     make('saveClip', 'Save Instant Replay', 'Export the configured Instant Replay window.'),
+    make('marker', 'Mark moment', 'Add a marker to the active recording or replay session.'),
     make('screenshot', 'Screenshot', 'Save the selected display or window as a PNG.'),
   ]);
 }

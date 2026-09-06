@@ -1,7 +1,7 @@
 // Pure contracts shared by the Recording main-process seams and tests.
 import path from 'node:path';
 
-export const RECORDING_SCHEMA_VERSION = 1;
+export const RECORDING_SCHEMA_VERSION = 2;
 export const RECORDING_MODES = ['manual', 'clips'];
 export const RECORDING_RUNTIME_DIRECTORY = 'recording-runtime';
 export const RECORDING_AUDIO_SOURCE_MODES = Object.freeze(['system', 'custom']);
@@ -72,14 +72,19 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
   captureColorMode: 'auto',
   showCursor: false,
   replayLengthSec: 30,
+  instantReplayAutoStart: false,
+  replayMarkersEnabled: true,
   audio: {
     microphone: { enabled: false, deviceId: '', volume: 1, mono: false },
     system: { enabled: true, deviceId: '', volume: 1 },
     sourceMode: 'system',
     customProcesses: [],
   },
-  hotkeys: { start: 'F9', stop: 'F10', saveClip: 'F8', screenshot: 'F7' },
+  hotkeys: { start: 'F9', stop: 'F10', saveClip: 'F8', screenshot: 'F7', marker: 'F6' },
 });
+export const RECORDING_MARKER_MAX_COUNT = 500;
+export const RECORDING_MARKER_LABEL_MAX_LENGTH = 80;
+export const RECORDING_EDITOR_VERSION = 1;
 export const SAFE_VIDEO_EXTENSIONS = Object.freeze(['.mp4', '.mkv', '.mov', '.webm', '.m4v']);
 export const ASCENT_MAX_MESSAGE_BYTES = 8096;
 
@@ -330,7 +335,112 @@ export function normalizeRecordingSettings(raw = {}) {
       stop: normalizeHotkey(hotkeys.stop, DEFAULT_RECORDING_SETTINGS.hotkeys.stop),
       saveClip: normalizeHotkey(hotkeys.saveClip, DEFAULT_RECORDING_SETTINGS.hotkeys.saveClip),
       screenshot: normalizeHotkey(hotkeys.screenshot, DEFAULT_RECORDING_SETTINGS.hotkeys.screenshot),
+      marker: normalizeHotkey(hotkeys.marker, DEFAULT_RECORDING_SETTINGS.hotkeys.marker),
     },
+    instantReplayAutoStart: source.instantReplayAutoStart === true,
+    replayMarkersEnabled: source.replayMarkersEnabled !== false,
+  };
+}
+
+function markerText(value, fallback = '') {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return normalized.slice(0, RECORDING_MARKER_LABEL_MAX_LENGTH);
+}
+
+export function normalizeRecordingMarker(raw = {}, { now = new Date().toISOString() } = {}) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const id = typeof source.id === 'string' && /^[a-zA-Z0-9_-]{8,128}$/.test(source.id) ? source.id : null;
+  const sourceSessionIdValue = source.sourceSessionId ?? source.sessionId;
+  const sourceSessionId = typeof sourceSessionIdValue === 'string' && sourceSessionIdValue.trim().length <= 128 ? sourceSessionIdValue.trim() : null;
+  const clipId = typeof source.clipId === 'string' && /^[a-zA-Z0-9_-]{8,128}$/.test(source.clipId) ? source.clipId : null;
+  const sourceAtMsValue = source.sourceAtMs ?? source.atMs;
+  const sourceAtMs = Number.isFinite(sourceAtMsValue) ? Math.min(86_400_000, Math.max(0, Math.round(sourceAtMsValue))) : null;
+  const label = markerText(source.label, 'Marker');
+  const createdAt = typeof source.createdAt === 'string' && source.createdAt.length <= 64 ? source.createdAt : now;
+  if (!id || (!sourceSessionId && !clipId) || sourceAtMs === null || !label) return null;
+  return { id, ...(clipId ? { clipId } : {}), ...(sourceSessionId ? { sourceSessionId } : {}), sourceAtMs, label, createdAt };
+}
+
+export function normalizeRecordingMarkers(value, options = {}) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  return value.map((item) => normalizeRecordingMarker(item, options)).filter((item) => {
+    if (!item || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  }).slice(-RECORDING_MARKER_MAX_COUNT);
+}
+
+function normalizeRecordingMarkerSummary(raw = {}) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const id = typeof source.id === 'string' && /^[a-zA-Z0-9_-]{8,128}$/.test(source.id) ? source.id : null;
+  const atMs = Number.isFinite(source.atMs) ? Math.min(86_400_000, Math.max(0, Math.round(source.atMs))) : null;
+  const label = markerText(source.label, 'Marker');
+  const createdAt = typeof source.createdAt === 'string' && source.createdAt.length <= 64 ? source.createdAt : new Date(0).toISOString();
+  return id && atMs !== null && label ? { id, atMs, label, createdAt } : null;
+}
+
+/**
+ * Map session-relative markers into one saved replay interval. The returned
+ * retained list is the complete marker sidecar after consuming only markers
+ * that overlap the supplied interval; markers from other sessions and other
+ * clips remain available for later saves.
+ */
+export function mapRecordingMarkersToClip(markers, {
+  sourceSessionId = null,
+  sourceStartMs = null,
+  sourceEndMs = null,
+} = {}) {
+  const normalized = normalizeRecordingMarkers(markers);
+  const session = typeof sourceSessionId === 'string' && sourceSessionId.trim() ? sourceSessionId.trim() : null;
+  const start = Number.isFinite(sourceStartMs) ? Math.max(0, Math.round(sourceStartMs)) : null;
+  const end = Number.isFinite(sourceEndMs) ? Math.max(0, Math.round(sourceEndMs)) : null;
+  if (!session || start === null || end === null || end < start) {
+    return {
+      mapped: false,
+      reason: 'interval-unavailable',
+      attached: [],
+      retained: normalized,
+    };
+  }
+  const attached = [];
+  const retained = [];
+  for (const marker of normalized) {
+    const overlaps = marker.sourceSessionId === session && marker.sourceAtMs >= start && marker.sourceAtMs <= end;
+    if (overlaps) {
+      attached.push({
+        id: marker.id,
+        atMs: marker.sourceAtMs - start,
+        label: marker.label,
+        createdAt: marker.createdAt,
+      });
+    } else {
+      retained.push(marker);
+    }
+  }
+  attached.sort((a, b) => a.atMs - b.atMs || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  return { mapped: true, reason: null, attached, retained };
+}
+
+export function normalizeRecordingClip(clip = {}) {
+  if (!clip || typeof clip !== 'object') return null;
+  const id = typeof clip.id === 'string' && /^[a-zA-Z0-9_-]{8,128}$/.test(clip.id) ? clip.id : null;
+  const relativePath = typeof clip.relativePath === 'string' && clip.relativePath.length <= 4096 ? clip.relativePath : null;
+  if (!id || !relativePath || !safeVideoExtension(relativePath)) return null;
+  const seenSummaryIds = new Set();
+  const markerSummaries = (Array.isArray(clip.markerSummaries ?? clip.markers) ? (clip.markerSummaries ?? clip.markers) : [])
+    .map(normalizeRecordingMarkerSummary)
+    .filter((marker) => marker && !seenSummaryIds.has(marker.id) && seenSummaryIds.add(marker.id))
+    .slice(0, 100);
+  return {
+    ...clip,
+    id,
+    relativePath,
+    fileName: typeof clip.fileName === 'string' && clip.fileName.length <= 512 ? clip.fileName : path.basename(relativePath),
+    createdAt: typeof clip.createdAt === 'string' ? clip.createdAt : new Date(0).toISOString(),
+    ...(markerSummaries.length ? { markerSummaries } : {}),
+    ...(Number.isInteger(clip.editorVersion) && clip.editorVersion > 0 ? { editorVersion: clip.editorVersion } : {}),
   };
 }
 

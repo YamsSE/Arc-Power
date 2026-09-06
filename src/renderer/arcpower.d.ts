@@ -35,6 +35,7 @@ import type {
   RegistryCatalogResponse,
   RegistryApplyResponse,
   RecordingClip,
+  RecordingMarker,
   RecordingClipDeleteResult,
   RecordingCaptureTargets,
   RecordingEngineState,
@@ -189,6 +190,10 @@ export interface ArcPowerApi {
   profilesDelete(id: string): Promise<ProfilesEnvelope>;
   profilesRename(id: string, name: string): Promise<ProfilesEnvelope>;
   profilesSettingsSave(patch: Partial<ProfileSettingsState>): Promise<ProfileSettingsState>;
+  profilesExport(): Promise<Record<string, unknown>>;
+  profilesImport(payload: Record<string, unknown>): Promise<ProfilesEnvelope & { imported: number }>;
+  driverMonitorStatus(): Promise<{ schemaVersion: number; observations: Record<string, unknown> }>;
+  driverMonitorCheck(): Promise<{ schemaVersion: number; observations: Record<string, unknown>; changes: unknown[] }>;
   gamesScan(): Promise<{ apps: GameApplication[]; error?: string; sidecarError?: string }>;
   gameCatalogList(): Promise<GameCatalogEnvelope>;
   gameCatalogAdd(): Promise<GameCatalogEnvelope & { canceled: boolean }>;
@@ -207,7 +212,10 @@ export interface ArcPowerApi {
   recordingStart(): Promise<{ state: RecordingEngineState; outputPath: string }>;
   recordingStop(mode?: 'video' | 'replay' | null): Promise<RecordingEngineState>;
   recordingReplayStart(): Promise<{ state: RecordingEngineState; outputPath: null }>;
+  recordingAutoStart(): Promise<{ started: boolean; reason: string | null; state: RecordingEngineState | null }>;
   recordingClipSave(payload?: { headDurationMs?: number }): Promise<{ response: unknown; outputPath: string; instantReplaySave?: RecordingActionResult['instantReplaySave'] }>;
+  recordingMarkerAdd(payload?: { label?: string; atMs?: number }): Promise<RecordingMarker>;
+  recordingMarkersList(payload?: { sessionId?: string }): Promise<RecordingMarker[]>;
   recordingClipsList(): Promise<RecordingClip[]>;
   recordingStorageInfo(): Promise<RecordingStorageInfo>;
   recordingCaptureTargets(refresh?: boolean): Promise<RecordingCaptureTargets>;

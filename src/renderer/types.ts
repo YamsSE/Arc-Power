@@ -1042,7 +1042,7 @@ export interface DisplayApplyResponse {
 export type RecordingMode = 'manual' | 'clips';
 export type RecordingTab = 'manual' | 'clips' | 'audio';
 export type RecordingResolution = 'default' | '480p' | '720p' | '900p' | '1080p' | '1440p' | '4k';
-export interface RecordingHotkeys { start: string; stop: string; saveClip: string; screenshot: string; }
+export interface RecordingHotkeys { start: string; stop: string; saveClip: string; screenshot: string; marker: string; }
 export type RecordingAudioSourceMode = 'system' | 'custom';
 export type RecordingCaptureTargetType = 'display' | 'window';
 export type RecordingCaptureColorMode = 'auto' | 'sdr' | 'hdr';
@@ -1104,9 +1104,12 @@ export interface RecordingSettings {
   captureColorMode: RecordingCaptureColorMode;
   showCursor: boolean;
   replayLengthSec: number;
+  instantReplayAutoStart: boolean;
+  replayMarkersEnabled: boolean;
   audio: RecordingAudioSettings;
   hotkeys: RecordingHotkeys;
 }
+export interface RecordingMarker { id: string; sessionId?: string; clipId?: string; atMs: number; label: string; createdAt: string; }
 export interface RecordingAudioDevice { id: string; deviceId: string; name: string; }
 export interface RecordingEncoderState {
   type: string;
@@ -1130,6 +1133,7 @@ export interface RecordingEngineState {
   /** Both capture modes may be active at the same time. */
   activeModes?: { video: boolean; replay: boolean };
   startedAt: number | null;
+  sessionId?: string | null;
   error: string | null;
   encoders: RecordingEncoderState[];
   audioInputs: RecordingAudioDevice[];
@@ -1175,6 +1179,8 @@ export interface RecordingClip {
   modifiedAt?: string;
   byteLength?: number;
   thumbnailUrl?: string;
+  markerSummaries?: RecordingMarker[];
+  editorVersion?: number;
 }
 export interface RecordingStorageInfo {
   location: string;
