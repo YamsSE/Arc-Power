@@ -1277,19 +1277,43 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
           // getter when available; it is authoritative when it reports the
           // requested value and a stock 90 C result is only a sentinel for an
           // extended request.
+          const looksLikeReadBackFailure = per?.readBackUnavailable === true
+            || Object.prototype.hasOwnProperty.call(per ?? {}, 'readBackSentinel')
+            || Object.prototype.hasOwnProperty.call(per ?? {}, 'readBackValue')
+            || /read-back/i.test(String(per?.message ?? ''));
           const canProbeLegacy = (typeof backend?.getExtendedTemperatureLimitC === 'function'
             || typeof backend?.getCurrentSettings === 'function')
             && (per?.ok === true || (per?.ok === false
-              && per?.errorCode === 'io-failed' && per?.readBackEqual === false));
+              && per?.errorCode === 'io-failed' && per?.readBackEqual === false
+              && looksLikeReadBackFailure));
           let legacyReadBack = null;
           if (canProbeLegacy) {
-            try {
-              if (typeof backend?.getExtendedTemperatureLimitC === 'function') {
-                legacyReadBack = await backend.getExtendedTemperatureLimitC(deviceId);
-              } else {
-                legacyReadBack = (await backend.getCurrentSettings(deviceId))?.tempLimitC ?? null;
+            const readLegacy = async () => {
+              try {
+                if (typeof backend?.getExtendedTemperatureLimitC === 'function') {
+                  return await backend.getExtendedTemperatureLimitC(deviceId);
+                }
+                return (await backend.getCurrentSettings(deviceId))?.tempLimitC ?? null;
+              } catch { return null; }
+            };
+            legacyReadBack = await readLegacy();
+            // The legacy getter can briefly expose the stock/zero sentinel
+            // while the accepted V1 write settles. Retry once after the same
+            // bounded verification delay used by the native writer. A second
+            // sentinel remains explicitly unavailable; it never becomes a
+            // guessed success.
+            const legacySentinel = legacyReadBack === null
+              || (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack)
+                && (legacyReadBack <= 0 || legacyReadBack === DRIVER_TEMP_LIMIT_MAX_C));
+            if (legacySentinel) {
+              await sleep(delayedVerifyMs);
+              const delayedLegacyReadBack = await readLegacy();
+              if (!(delayedLegacyReadBack === null
+                || (typeof delayedLegacyReadBack === 'number' && Number.isFinite(delayedLegacyReadBack)
+                  && (delayedLegacyReadBack <= 0 || delayedLegacyReadBack === DRIVER_TEMP_LIMIT_MAX_C)))) {
+                legacyReadBack = delayedLegacyReadBack;
               }
-            } catch { legacyReadBack = null; }
+            }
           }
           if (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack)
             && nearlyEqual(legacyReadBack, value)) {
@@ -1299,6 +1323,17 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
               enumerable: false,
               configurable: true,
             });
+          } else if (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack)
+            && legacyReadBack > 0 && legacyReadBack !== DRIVER_TEMP_LIMIT_MAX_C
+            && value >= DRIVER_TEMP_LIMIT_MAX_C
+            && (per?.ok === true || per?.errorCode === 'io-failed')) {
+            per = {
+              ok: false,
+              errorCode: 'io-failed',
+              readBackEqual: false,
+              readBackValue: legacyReadBack,
+              message: `extended temperature limit: authoritative read-back ${legacyReadBack} != requested ${value}`,
+            };
           } else {
             const stockSentinel = legacyReadBack === DRIVER_TEMP_LIMIT_MAX_C
               || (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack) && legacyReadBack <= 0);

@@ -2628,11 +2628,36 @@ export class IgclBackend {
     state.gpuVoltOffsetV = readV2('gpuVoltOffset', 'gpuVoltOffsetV', 'gpuVoltOffset');
     state.gpuFreqOffsetMhz = readV2('gpuFreqOffset', 'gpuFreqOffsetMhz', 'gpuFreqOffset');
     state.tempLimitC = readV2('tempLimit', 'tempLimitC', 'tempLimit');
-    // Keep the driver's stock Celsius readback visible. On an extended
-    // Alchemist request the V2 surface may still report its stock 90 C
-    // ceiling, but returning null here made even an ordinary 88/90 C value
-    // render as "Driver unavailable" and made the V2 verification path lose
-    // the only current-driver value it had.
+    // The V2 Celsius getter is the stock-limit surface on Alchemist. When
+    // the selected adapter exposes the extended C control, probe the same
+    // identity-bound legacy getter used by the extended apply path. Promote
+    // any positive finite value except the known stock-90 sentinel; keep
+    // stock 90/zero/unavailable explicitly marked instead of presenting it
+    // as an extended read-back. This is deliberately best-effort: a native
+    // setter refusal remains a refusal in apply-routing and is never
+    // converted here.
+    if (caps.extendedControls?.tempLimitC === true
+      && caps.ranges?.tempLimitC?.units === 'C') {
+      let extendedTemperature = null;
+      try {
+        extendedTemperature = await this.getExtendedTemperatureLimitC(deviceId);
+      } catch {
+        extendedTemperature = null;
+      }
+      const finiteExtended = typeof extendedTemperature === 'number'
+        && Number.isFinite(extendedTemperature)
+        && extendedTemperature > 0
+        && extendedTemperature !== TEMP_LIMIT_MAX_C;
+      if (finiteExtended) {
+        state.tempLimitC = extendedTemperature;
+        state.tempLimitCReadBackUnavailable = false;
+      } else if ((state.tempLimitC === null || state.tempLimitC === TEMP_LIMIT_MAX_C)
+        && (extendedTemperature === 0
+          || extendedTemperature === TEMP_LIMIT_MAX_C
+          || extendedTemperature === null)) {
+        state.tempLimitCReadBackUnavailable = true;
+      }
+    }
     state.vramFreqOffsetGts = readV2('vramFreqOffset', 'vramFreqOffsetGts', 'vramFreqOffset');
     state.vramVoltOffsetV = readV2('vramVoltOffset', 'vramVoltOffsetV', 'vramVoltOffset');
 
@@ -5365,7 +5390,7 @@ export class IgclBackend {
           } else {
             const preparedCurve = prepareVfCurveForDriver(curve, curveRange);
             if (!preparedCurve) {
-              fail('vfCurve', 'out-of-range', 'VF curve cannot be represented as a strictly increasing driver curve within the supported frequency range');
+              fail('vfCurve', 'out-of-range', 'VF curve cannot be represented as an ascending driver curve within the supported frequency range');
             } else {
               const points = preparedCurve.map((p) => ({ Voltage: Math.round(p.voltageV * 1000), Frequency: Math.round(p.freqMhz) }));
               // Battlemage accepts the simplified table as a native

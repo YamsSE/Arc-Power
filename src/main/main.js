@@ -330,7 +330,10 @@ let bootWindowTheme = 'dark';
 // Keep one stable Windows identity for installed and Portable launches. This
 // fresh desktop identity also avoids reusing the generic-document taskbar
 // cache created under the earlier identity.
-const APP_USER_MODEL_ID = 'com.rid.arcpower.desktop';
+// Bump the shell identity after the earlier desktop identity was observed
+// cached with Windows' generic document icon. Keeping this value stable for
+// the repaired release lets the shell reuse the branded resource thereafter.
+const APP_USER_MODEL_ID = 'com.rid.arcpower.desktop.v2';
 // Set the Windows identity while this module is loading, before Electron can
 // create the startup splash or the main window. Keeping this at the earliest
 // possible point prevents the shell from briefly assigning the default

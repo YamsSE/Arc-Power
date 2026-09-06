@@ -22,7 +22,7 @@
                     "dist":  "npm run build:renderer \u0026\u0026 node build/build-dist.js"
                 },
     "build":  {
-                  "appId":  "com.rid.arcpower.desktop",
+                  "appId":  "com.rid.arcpower.desktop.v2",
                   "productName":  "Arc Power",
                   "icon":  "build/icon.ico",
                   "files":  [

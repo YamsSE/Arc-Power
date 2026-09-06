@@ -76,7 +76,7 @@ import { toast } from '../components/toast.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
 import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-editor.ts';
-import { isBattlemageGpuName } from '../pure/hardware-icons.ts';
+import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import {
   VF_EDITOR_MAX_POINTS,
   isValidNativeVfCurve,
@@ -1366,6 +1366,13 @@ export const tuningPage: Page = {
         // only (single line; the freed space makes the tab more compact).
         el('div', { class: 'oc-meta' }, [
           el('span', { class: 'oc-range', text: controlRangeText(key, sliderRange, caps.deviceName) }),
+          ...(key === 'gpuVoltOffsetV' && caps.ranges?.gpuVoltOffsetV?.units === 'V'
+            && isAlchemistGpuName(caps.deviceName, caps)
+            ? [el('p', {
+                class: 'card-note voltage-offset-warning',
+                text: 'Warning: Negative Voltage may introduce unwanted behavior.',
+              })]
+            : []),
           ...(key === 'gpuFreqOffsetMhz' && lockSupported && caps.controlStatus?.gpuLock?.reason
             ? [el('span', { class: 'oc-control-status', text: caps.controlStatus.gpuLock.reason })]
             : []),

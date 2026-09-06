@@ -2,10 +2,9 @@
 //
 // The driver may expose a table larger than the compact editor should show.
 // Keep the UI at the same ten-point scale as Fan Curve while preserving the
-// end points and the driver's required ascending voltage/increasing frequency
-// order. Battlemage's simplified table can end with a shared maximum-frequency
-// plateau, so the editor keeps the point but repairs the plateau before a
-// custom write. The renderer owns the hover/click
+// end points and the driver's required ascending voltage/non-decreasing
+// frequency order. Battlemage's native simplified table can end with a shared
+// maximum-frequency plateau, so the editor keeps that native shape. The renderer owns the hover/click
 // presentation; this module owns the clamping and point-count rules so those
 // rules are testable.
 
@@ -47,11 +46,11 @@ function seedVfCurve(range: VfCurveRange): VfCurvePoint[] {
 
 /**
  * Convert a valid curve into the integer-MHz shape accepted by the native
- * custom-curve writer. IGCL can expose equal adjacent frequencies in STOCK or
- * LIVE reads, but ctlOverclockWriteCustomVFCurve requires strictly increasing
- * frequencies. Keep the requested voltage positions and point count intact;
- * only move frequencies by the smallest bounded amount needed to make the
- * payload writable.
+ * custom-curve writer. IGCL exposes equal adjacent frequencies in STOCK and
+ * LIVE reads (the B580's final points are a native maximum-frequency
+ * plateau), and the writer accepts that non-decreasing shape. Keep the
+ * requested voltage positions and point count intact; only repair descending
+ * frequency steps while staying inside the reported bounds.
  */
 export function prepareVfCurveForDriver(
   points: VfCurvePoint[],
@@ -70,27 +69,21 @@ export function prepareVfCurveForDriver(
     freqMhz: Math.round(clamp(point.freqMhz, minFrequency, maxFrequency)),
   }));
 
-  // Forward repair preserves the requested curve everywhere except flat or
-  // descending steps. A backward pass keeps the tail inside the driver's max
-  // when a plateau already sits at the upper boundary.
+  // Forward repair preserves the requested curve everywhere except descending
+  // steps. Equal frequencies are intentional native plateaus and must not be
+  // incremented to an off-grid value (for example 3211 MHz on a B580).
   for (let index = 1; index < prepared.length; index += 1) {
-    prepared[index].freqMhz = Math.max(prepared[index].freqMhz, prepared[index - 1].freqMhz + 1);
-  }
-  if (prepared.at(-1)!.freqMhz > maxFrequency) {
-    prepared[prepared.length - 1].freqMhz = maxFrequency;
-    for (let index = prepared.length - 2; index >= 0; index -= 1) {
-      prepared[index].freqMhz = Math.min(prepared[index].freqMhz, prepared[index + 1].freqMhz - 1);
-    }
+    prepared[index].freqMhz = Math.max(prepared[index].freqMhz, prepared[index - 1].freqMhz);
   }
   if (prepared[0].freqMhz < minFrequency) {
     prepared[0].freqMhz = minFrequency;
     for (let index = 1; index < prepared.length; index += 1) {
-      prepared[index].freqMhz = Math.max(prepared[index].freqMhz, prepared[index - 1].freqMhz + 1);
+      prepared[index].freqMhz = Math.max(prepared[index].freqMhz, prepared[index - 1].freqMhz);
     }
   }
   if (prepared.at(-1)!.freqMhz > maxFrequency
     || prepared[0].freqMhz < minFrequency
-    || prepared.some((point, index) => index > 0 && point.freqMhz <= prepared[index - 1].freqMhz)) {
+    || prepared.some((point, index) => index > 0 && point.freqMhz < prepared[index - 1].freqMhz)) {
     return null;
   }
   return prepared;
@@ -101,8 +94,8 @@ export function prepareVfCurveForDriver(
  * than the editor limit are evenly downsampled, always retaining endpoints.
  * Invalid input degrades to the nearest legal curve rather than allowing an
  * apply payload the backend must reject. Equal adjacent frequencies from the
- * driver's read-only table are repaired to the strictly increasing shape the
- * custom write API accepts.
+ * driver's read-only table remain intact because they are a valid native
+ * maximum-frequency plateau.
  */
 export function normalizeVfCurvePoints(
   points: VfCurvePoint[] | null | undefined,
@@ -160,7 +153,7 @@ export function isValidNativeVfCurve(
   });
 }
 
-/** Move one point while keeping voltage ascending and frequency increasing. */
+/** Move one point while keeping voltage ascending and frequency non-decreasing. */
 export function moveVfPoint(
   points: VfCurvePoint[],
   index: number,
@@ -175,8 +168,8 @@ export function moveVfPoint(
   const following = next[index + 1];
   const voltageMin = Math.max(range.voltageMinV, previous ? previous.voltageV + 0.001 : range.voltageMinV);
   const voltageMax = Math.min(range.voltageMaxV, following ? following.voltageV - 0.001 : range.voltageMaxV);
-  const freqMin = Math.max(range.freqMinMhz, previous ? previous.freqMhz + 1 : range.freqMinMhz);
-  const freqMax = Math.min(range.freqMaxMhz, following ? following.freqMhz - 1 : range.freqMaxMhz);
+  const freqMin = Math.max(range.freqMinMhz, previous ? previous.freqMhz : range.freqMinMhz);
+  const freqMax = Math.min(range.freqMaxMhz, following ? following.freqMhz : range.freqMaxMhz);
   if (voltageMin > voltageMax || freqMin > freqMax) return next;
   next[index] = {
     voltageV: Number(clamp(Number.isFinite(voltageV) ? voltageV : current.voltageV, voltageMin, voltageMax).toFixed(3)),
@@ -185,7 +178,8 @@ export function moveVfPoint(
   return next;
 }
 
-/** Move only a point's frequency, preserving the driver's voltage grid. */
+/** Move only a point's frequency, preserving the driver's voltage grid and
+ * allowing the native non-decreasing maximum-frequency plateau. */
 export function moveVfFrequencyPoint(
   points: VfCurvePoint[],
   index: number,
@@ -197,8 +191,8 @@ export function moveVfFrequencyPoint(
   const current = next[index];
   const previous = next[index - 1];
   const following = next[index + 1];
-  const freqMin = Math.max(range.freqMinMhz, previous ? previous.freqMhz + 1 : range.freqMinMhz);
-  const freqMax = Math.min(range.freqMaxMhz, following ? following.freqMhz - 1 : range.freqMaxMhz);
+  const freqMin = Math.max(range.freqMinMhz, previous ? previous.freqMhz : range.freqMinMhz);
+  const freqMax = Math.min(range.freqMaxMhz, following ? following.freqMhz : range.freqMaxMhz);
   if (freqMin > freqMax) return next;
   next[index] = {
     ...current,

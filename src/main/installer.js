@@ -41,7 +41,10 @@ const execFileAsync = promisify(execFile);
 const INSTALLER_HTML = path.join(__dirname, '..', 'installer', 'installer.html');
 const INSTALLER_PRELOAD = path.join(__dirname, '..', 'installer', 'installer-preload.cjs');
 const INSTALLER_ELEVATION_RELAUNCHED = 'ARC_POWER_INSTALLER_ELEVATION_RELAUNCHED';
-const APP_USER_MODEL_ID = 'com.rid.arcpower.desktop';
+// The previous desktop identity was cached by Windows with the generic
+// document icon on some installations. Keep the new identity stable for
+// this release so a repaired shortcut cannot inherit that stale shell entry.
+const APP_USER_MODEL_ID = 'com.rid.arcpower.desktop.v2';
 if (process.platform === 'win32') {
   try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch { /* best effort */ }
 }
@@ -115,6 +118,24 @@ async function runPowerShell(script) {
     '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-EncodedCommand', encodedPowerShell(script),
   ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+}
+
+/**
+ * Tell Explorer to invalidate shortcut/icon associations after an install.
+ * Windows caches .lnk icons by path and index, so rewriting a shortcut alone
+ * can leave the old generic-document image visible until Explorer refreshes.
+ */
+async function refreshWindowsShellIcons() {
+  if (process.platform !== 'win32') return;
+  const ie4uinit = process.env.SystemRoot
+    ? path.join(process.env.SystemRoot, 'System32', 'ie4uinit.exe')
+    : 'ie4uinit.exe';
+  try {
+    await execFileAsync(ie4uinit, ['-show'], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  } catch {
+    // Icon refresh is best-effort; a future Explorer refresh will pick up the
+    // explicit external ICO written into the shortcut.
+  }
 }
 
 async function createShortcut({ shortcutPath, targetPath, workingDirectory, iconPath = targetPath }) {
@@ -327,6 +348,7 @@ async function installArcPower(win, options = {}) {
   }
   sendProgress(win, 88, 'Registering Arc Power with Windows');
   await writeUninstallRegistration(plan, app.getVersion(), { displayIcon: `${plan.iconPath},0` });
+  await refreshWindowsShellIcons();
   // The same version gate used by the launched application also runs here.
   // This makes installer completion sufficient to clear an older release's
   // caches, while a same-version reinstall leaves those caches alone.
