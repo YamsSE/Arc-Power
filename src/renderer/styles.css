@@ -3267,6 +3267,7 @@ input[type="number"] {
 .recording-player-back:hover, .recording-player-back:focus-visible { border-color: var(--accent); color: var(--text); outline: none; }
 .recording-player-back-icon { width: 13px; height: 13px; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='m14.7 5.3-1.4-1.4L5.2 12l8.1 8.1 1.4-1.4L9.4 13H20v-2H9.4l5.3-5.7Z'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='m14.7 5.3-1.4-1.4L5.2 12l8.1 8.1 1.4-1.4L9.4 13H20v-2H9.4l5.3-5.7Z'/%3E%3C/svg%3E") center / contain no-repeat; }
 .recording-player-stage { position: relative; display: flex; align-items: center; justify-content: center; min-height: min(62vh, 620px); overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: #030509; }
+.recording-player-stage[hidden] { display: none; }
 .recording-player-stage:fullscreen { width: 100vw; height: 100vh; min-height: 0; border: 0; border-radius: 0; }
 .recording-player-stage:fullscreen::backdrop { background: #030509; }
 .recording-player-stage:fullscreen .recording-video { max-height: none; }
@@ -3367,6 +3368,9 @@ input[type="number"] {
 .recording-apm-ruler { display: flex; justify-content: space-between; color: var(--text-dim); font: 10px var(--mono); }
 .recording-player-marker-badges { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .recording-player-marker-badge { display: inline-flex; padding: 4px 7px; border: 1px solid color-mix(in srgb, var(--accent) 46%, var(--border)); border-radius: 999px; background: color-mix(in srgb, var(--accent) 9%, var(--bg-elev)); color: var(--accent); font: 10px var(--mono); }
+.recording-player-timeline-surface { display: flex; flex-direction: column; gap: 12px; width: 100%; }
+.recording-player-timeline-surface > [hidden] { display: none; }
+.recording-player-timeline-surface.is-editing { gap: 0; }
 .recording-apm-tracker { gap: 12px; padding: 14px 15px 11px; border-color: color-mix(in srgb, #9b4dff 30%, var(--border)); background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 90%, #101d31), #111521); }
 .recording-apm-heading { align-items: flex-start; }
 .recording-apm-heading strong { margin-top: 4px; color: var(--text); font-size: 14px; }
@@ -3388,6 +3392,7 @@ input[type="number"] {
 .recording-apm-tracker.is-apm-collapsed { gap: 0; }
 .recording-editor-drawer[hidden] { display: none; }
 .recording-editor-ascent { gap: 0; padding: 15px 16px 13px; border-color: color-mix(in srgb, #9b4dff 42%, var(--border)); background: linear-gradient(145deg, #162235, #101521 72%); }
+.recording-editor-ascent:not([hidden]) { width: 100%; min-height: 184px; box-sizing: border-box; }
 .recording-editor-ascent .recording-editor-header { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto minmax(108px, auto) auto auto; align-items: end; gap: 8px; }
 .recording-editor-ascent .recording-editor-clip-name { width: 100%; min-width: 0; flex: none; min-height: 33px; border-color: color-mix(in srgb, #7894be 46%, var(--border-strong)); background: #080d17; }
 .recording-editor-time-field, .recording-editor-audio-field { display: flex; flex-direction: column; gap: 4px; color: var(--text-dim); font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
@@ -3403,6 +3408,9 @@ input[type="number"] {
 .recording-editor-selected-timeline { gap: 6px; padding: 1px 0 2px; }
 .recording-editor-range-track { min-height: 68px; padding-top: 27px; }
 .recording-editor-range-track::before { top: 39px; height: 8px; background: #4e5665; }
+.recording-editor-apm-trace { position: absolute; right: 0; bottom: 48px; left: 0; z-index: 1; display: flex; align-items: center; gap: 8px; min-height: 20px; padding: 0 8px; border-bottom: 1px solid color-mix(in srgb, #9b4dff 30%, var(--border)); color: var(--text-dim); font: 10px var(--mono); }
+.recording-editor-apm-trace span:first-child { color: #c084ff; font-weight: 700; letter-spacing: .08em; }
+.recording-editor-apm-trace[hidden] { display: none; }
 .recording-editor-selection-fill { position: absolute; top: 39px; z-index: 1; height: 8px; min-width: 2px; border-radius: 999px; background: linear-gradient(90deg, #6e42bf, #a85bff 58%, #c47eff); box-shadow: 0 0 14px rgba(155, 77, 255, .26); }
 .recording-editor-range-track .recording-editor-range { position: absolute; top: 30px; right: 0; left: 0; z-index: 3; height: 26px; margin: 0; }
 .recording-editor-range-track .recording-editor-range::-webkit-slider-thumb { width: 15px; height: 15px; margin-top: -4px; border: 2px solid #38c5ff; border-radius: 50%; background: #162235; box-shadow: 0 0 0 2px rgba(56, 197, 255, .16); }

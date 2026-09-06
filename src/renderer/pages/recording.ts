@@ -1199,6 +1199,10 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
   const editor = el('section', { class: 'recording-editor-drawer recording-editor-ascent', 'aria-label': 'Clip editor' }) as RecordingEditorElement;
   let segmentBoundary: 'start' | 'end' = 'start';
   const selectionFill = el('div', { class: 'recording-editor-selection-fill', 'aria-hidden': 'true' });
+  const apmTrace = el('div', { class: 'recording-editor-apm-trace', 'aria-label': 'APM telemetry unavailable for this clip' }, [
+    el('span', { text: 'APM' }),
+    el('span', { text: 'Telemetry unavailable for this clip' }),
+  ]);
   const setRangeLabels = () => {
     const max = Math.max(1000, durationMs);
     const start = Math.min(max - 1, Math.round((Number(startRange.value) / 1000) * max));
@@ -1300,6 +1304,7 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
     const mode = apmMenu.value;
     const visible = apmToggle.checked && mode !== 'off';
     if (tracker) tracker.hidden = !visible;
+    apmTrace.hidden = !visible;
     const liveLabel = tracker?.querySelector('.recording-apm-live');
     if (liveLabel) liveLabel.textContent = mode === 'minimal'
       ? 'Minimal view · telemetry unavailable'
@@ -1339,7 +1344,7 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
       creationTimelineActions,
     ]),
     el('div', { class: 'recording-editor-selected-timeline' }, [
-      el('div', { class: 'recording-editor-range-track' }, [selectionFill, markerRail, startRange, endRange]),
+      el('div', { class: 'recording-editor-range-track' }, [apmTrace, selectionFill, markerRail, startRange, endRange]),
       el('div', { class: 'recording-editor-range-labels' }, [startLabel, endLabel]),
     ]),
     el('div', { class: 'recording-editor-gif-options' }, [el('span', { class: 'recording-editor-secondary-label', text: 'GIF export' }), el('label', {}, [el('span', { text: 'FPS' }), fps]), el('label', {}, [el('span', { text: 'Width' }), width]), gifButton]),
@@ -1394,8 +1399,15 @@ function renderPlayerView(): HTMLElement {
   let creationMode = false;
   let editorPanel: HTMLElement | null = null;
   let trackerPanel: HTMLElement | null = null;
+  let timelineSurface: HTMLElement | null = null;
   const setCreationMode = (enabled: boolean): void => {
     creationMode = enabled;
+    // The editor owns the timeline while a range is being created. Keep the
+    // player transport out of this state so there is one continuous Ascent
+    // style timeline to edit rather than a player seek bar plus an editor
+    // seek bar competing for the same clip.
+    player.hidden = enabled;
+    timelineSurface?.classList.toggle('is-editing', enabled);
     if (editorPanel) editorPanel.hidden = !enabled;
     if (trackerPanel) trackerPanel.hidden = enabled;
     markerBadges.hidden = enabled;
@@ -1587,8 +1599,9 @@ function renderPlayerView(): HTMLElement {
     });
   }
   trackerPanel = renderPlayerTracker(playerClip?.markerSummaries ?? [], [highlightButton, clipButton, apmButton]);
-  editorPanel = playerClip ? renderRecordingEditor(playerClip, () => playerVideo, () => trackerPanel, () => setCreationMode(false)) : null;
+  editorPanel = playerClip ? renderRecordingEditor(playerClip, () => playerVideo, () => creationMode ? null : trackerPanel, () => setCreationMode(false)) : null;
   if (editorPanel) editorPanel.hidden = true;
+  timelineSurface = el('div', { class: 'recording-player-timeline-surface' }, [trackerPanel, editorPanel]);
   const back = el('button', {
     class: 'recording-player-back',
     type: 'button',
@@ -1603,8 +1616,7 @@ function renderPlayerView(): HTMLElement {
       el('div', { class: 'recording-player-heading-actions' }, [button('Open Folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Clip folder', messageOf(err))), 'btn btn-secondary recording-player-folder')]),
     ]),
     player,
-    trackerPanel,
-    editorPanel,
+    timelineSurface,
     markerBadges,
   ]);
 }
