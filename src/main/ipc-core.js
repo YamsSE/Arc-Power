@@ -53,6 +53,8 @@ import { collisionSafeRecordingPath, normalizeRecordingSettings, recordingAbsolu
 import { closeSafeRecordingFile, isOpaqueClipId, mediaClipUrl, mediaThumbnailUrl, openSafeRecordingFile, resolveSafeRecordingPath, unlinkSafeRecordingFile } from './recording-media.js';
 import { createProfileTransferEnvelope, planProfileTransferImport } from './profile-transfer.js';
 import { persistReplayClipMetadata, recordingSessionIdOf } from './recording-lifecycle.js';
+import { createStabilityLabService } from './stability-lab.js';
+import { StabilityStore } from './store/stability-store.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
@@ -1185,12 +1187,15 @@ export function createIpcHandlers({
   recordingStore = null,
   recordingEngine = null,
   recordingLifecycle = null,
+  recordingEditor = null,
   chooseRecordingDirectory = async () => null,
   openRecordingFolder = async () => {},
   refreshRecordingHotkeys = async () => null,
   getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }),
   recordingProcessList = null,
   recordingCaptureTargets = null,
+  stabilityLab = null,
+  stabilityStore = null,
 }) {
   // D2: the real app injects its sidecar store, while tests can provide an
   // in-memory adapter. The fallback is isolated to the ProfileStore data
@@ -1285,6 +1290,8 @@ export function createIpcHandlers({
    * The advanced overlay can open between timer ticks, so it needs a
    * read-on-demand snapshot in addition to the push stream. */
   const latestTelemetry = new Map();
+  const labStore = stabilityStore ?? new StabilityStore({ dir: store?.dir });
+  let stabilityService = stabilityLab;
   // Settings patches are read-modify-write operations. Serialize them so a
   // Monitoring log toggle cannot be overwritten by an unrelated Settings,
   // Profiles, or Overlay save that started from the previous snapshot.
@@ -1770,6 +1777,7 @@ export function createIpcHandlers({
   };
 
   const stopAllTelemetry = async () => {
+    try { await stabilityService?.stop?.(); } catch { /* close the run honestly on teardown */ }
     telemetryGeneration += 1;
     overlayTelemetryGeneration += 1;
     // A startup can still be waiting on inventory/sysinfo when teardown
@@ -1956,6 +1964,41 @@ export function createIpcHandlers({
     }
     return null;
   };
+
+  // M188c: the Stability Lab consumes the same main-owned telemetry lane as
+  // Monitoring. It captures the durable key at start and never routes by a
+  // renderer numeric id. Tests may inject a complete service; the default
+  // adapter keeps the production path Electron-free and deterministic.
+  if (!stabilityService) {
+    stabilityService = createStabilityLabService({
+      reportStore: labStore,
+      resolveTarget: async (deviceKey) => {
+        const devices = await backend.listDevices();
+        const matches = devices.filter((device) => device?.deviceKey === deviceKey
+          || (Array.isArray(device?.deviceKeys) && device.deviceKeys.includes(deviceKey)));
+        if (matches.length !== 1) return null;
+        const device = matches[0];
+        const target = await backend.getDeviceTarget?.(device.id);
+        return { ...(target ?? device), id: device.id, deviceKey: target?.deviceKey ?? device.deviceKey, name: device.name };
+      },
+      sampleTarget: async (target) => {
+        if (!Number.isInteger(target?.id)) return { readError: 'selected device is unavailable' };
+        await startTelemetry(target.id, false);
+        const sample = latestTelemetry.get(target.id) ?? null;
+        const sampledAtMs = sample?.tMs ?? sample?.timestampMs ?? sample?.t ?? sample?.timestamp ?? null;
+        let fpsSample = null;
+        try {
+          const laneSample = presentMonLane ? await presentMonLane.poll(target.id) : null;
+          fpsSample = laneSample !== null ? laneSample : await fpsAdapter.poll(target.id);
+        } catch { fpsSample = null; }
+        let foregroundProcess = null;
+        try { foregroundProcess = await foregroundApi.detectProcess?.() ?? null; } catch { foregroundProcess = null; }
+        return { sample, sampledAtMs, fpsSample, foregroundProcess, readError: sample && sampledAtMs !== null ? null : 'telemetry sample unavailable' };
+      },
+      settingsSnapshot: async (target) => backend.getCurrentSettings?.(target.id) ?? {},
+      onStatus: (status) => emit('stability:status', status),
+    });
+  }
 
   const handlers = {
     'health': async () => collectHealth(backend),
@@ -2583,6 +2626,30 @@ export function createIpcHandlers({
         }
       },
 
+      // M188c: Stability Lab owns one cancellable telemetry run. The stable
+      // device key is the only target authority; numeric ids stay internal
+      // to the current telemetry session.
+      'stability-run-start': async (payload) => {
+        if (!stabilityService?.start) throw new Error('Stability Lab is unavailable');
+        return stabilityService.start(payload);
+      },
+      'stability-run-status': async (runId) => {
+        if (runId !== undefined && runId !== null && typeof runId !== 'string') throw new Error('stability-run-status: run id must be a string');
+        return stabilityService?.status?.(runId) ?? null;
+      },
+      'stability-run-cancel': async (runId) => {
+        if (runId !== undefined && runId !== null && typeof runId !== 'string') throw new Error('stability-run-cancel: run id must be a string');
+        return stabilityService?.cancel?.(runId) ?? null;
+      },
+      'stability-reports-list': async (...args) => {
+        if (args.length) throw new Error('stability-reports-list takes no arguments');
+        return labStore.list?.() ?? [];
+      },
+      'stability-report-latest': async (...args) => {
+        if (args.length) throw new Error('stability-report-latest takes no arguments');
+        return labStore.latest?.() ?? null;
+      },
+
       // M17d (round-1 S2): the vendor-lane STATIC-INFO read - the no-Intel
       // dashboard VRAM/Compute rows' source ({ vramBytes, computeCores } -
       // the NVML total + core count; honest nulls when the lane has no
@@ -3041,6 +3108,26 @@ export function createIpcHandlers({
         if (settings.replayMarkersEnabled === false) throw new Error('Replay markers are disabled');
         const atMs = Number.isFinite(payload.atMs) ? payload.atMs : Math.max(0, Date.now() - Number(state.startedAt ?? Date.now()));
         return recordingStore.addMarker({ sessionId, atMs, label: payload.label });
+      },
+      'recording-editor-start': async (payload = {}) => {
+        if (!recordingEditor?.start) throw new Error('Recording editor is unavailable');
+        return recordingEditor.start(payload);
+      },
+      'recording-editor-status': async (jobId) => {
+        if (!recordingEditor?.status) throw new Error('Recording editor is unavailable');
+        return recordingEditor.status(jobId);
+      },
+      'recording-editor-cancel': async (jobId) => {
+        if (!recordingEditor?.cancel) throw new Error('Recording editor is unavailable');
+        return recordingEditor.cancel(jobId);
+      },
+      'recording-editor-open': async (jobId) => {
+        if (!recordingEditor?.open) throw new Error('Recording editor is unavailable');
+        return recordingEditor.open(jobId);
+      },
+      'recording-editor-share': async (jobId) => {
+        if (!recordingEditor?.share) throw new Error('Recording editor is unavailable');
+        return recordingEditor.share(jobId);
       },
       'recording-markers-list': async (payload) => {
         if (payload !== undefined && (!payload || typeof payload !== 'object' || Array.isArray(payload))) throw new Error('recording-markers-list: payload must be an object');

@@ -9,6 +9,8 @@ import type {
   LastApply,
   RegistryCatalogResponse,
   RecordingEngineState,
+  StabilityReport,
+  StabilityRunStatus,
   SysInfo,
   TelemetrySample,
   VendorDeviceInfo,
@@ -181,6 +183,8 @@ export interface AppState {
   vendorInfo: VendorDeviceInfo | null;
   /** App-global Arc Capture state, shared with the sidebar and Dashboard. */
   recordingStatus: RecordingEngineState | null;
+  stabilityRun: StabilityRunStatus | null;
+  stabilityReports: StabilityReport[];
 }
 
 const INITIAL: AppState = {
@@ -207,6 +211,8 @@ const INITIAL: AppState = {
   osGpu: null,
   vendorInfo: null,
   recordingStatus: null,
+  stabilityRun: null,
+  stabilityReports: [],
 };
 
 export class Store {

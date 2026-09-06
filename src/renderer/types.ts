@@ -542,6 +542,44 @@ export interface TelemetrySample {
   memoryUsedBytes?: number | null;
 }
 
+export type StabilityOutcome = 'passed' | 'warning' | 'no-workload' | 'unavailable' | 'cancelled';
+export type StabilityRunState = 'running' | 'completed';
+export interface StabilityRunStatus {
+  runId: string;
+  state: StabilityRunState;
+  target: { id: number | null; deviceKey: string; name: string | null } | null;
+  effectiveCadenceMs: number;
+  effectiveDurationSec: number;
+  sampleCount: number;
+  freshSampleCount: number;
+  missingMetrics: string[];
+  workloadEvidence: boolean;
+  foregroundCount?: number;
+  presentEvidenceCount?: number;
+  utilEvidenceCount?: number;
+  outcome: StabilityOutcome | null;
+  reason: string | null;
+  startedAt: string;
+  endedAt: string | null;
+}
+export interface StabilityReport {
+  runId: string;
+  target: { id: number | null; deviceKey: string; name: string | null };
+  settingsSnapshot: Record<string, unknown>;
+  sampleCount: number;
+  freshSampleCount: number;
+  missingMetrics: string[];
+  workloadEvidence: boolean;
+  outcome: StabilityOutcome;
+  effectiveCadenceMs: number;
+  effectiveDurationSec: number;
+  startedAt: string;
+  endedAt: string;
+  reason: string | null;
+  thresholdBreaches?: number;
+  driverErrorCount?: number;
+}
+
 /** A saved profile (mirrors the main-process Profile typedef). */
 export interface Profile {
   id: string;
@@ -1192,6 +1230,24 @@ export interface RecordingClipDeleteResult {
   id: string;
   removed: boolean;
   reason: 'unavailable' | 'not-found' | 'unsafe-path' | 'delete-failed' | 'unsupported-platform' | null;
+}
+export type RecordingEditorState = 'queued' | 'running' | 'ready' | 'cancelled' | 'error';
+export interface RecordingEditorArtifact {
+  kind: 'gif';
+  fileName: string;
+  relativePath: string;
+  extension: '.gif';
+  durationMs: number;
+  fps: number;
+  width: number;
+}
+export interface RecordingEditorJob {
+  jobId: string;
+  state: RecordingEditorState;
+  progress: number;
+  clip?: RecordingClip;
+  artifact?: RecordingEditorArtifact;
+  error?: string;
 }
 export interface RecordingSettingsSaveResult {
   settings: RecordingSettings;

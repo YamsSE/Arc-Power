@@ -40,7 +40,7 @@
 // changes). The normal app path never auto-accepts a waiver; the renderer
 // asks the user and calls waiver-accept over IPC.
 
-import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, globalShortcut, ipcMain, protocol, screen, desktopCapturer } from 'electron';
+import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, clipboard, globalShortcut, ipcMain, protocol, screen, desktopCapturer } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -56,6 +56,7 @@ import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, res
 import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT } from './store/profile-store.js';
 import { GameProfileStore } from './store/game-profile-store.js';
 import { RecordingStore } from './store/recording-store.js';
+import { StabilityStore } from './store/stability-store.js';
 import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js';
 import { formatDxgiLuid, recordingRuntimeEncoderIdForTarget } from './recording-pure.js';
 import { normalizeDxgiLuid } from './recording-pure.js';
@@ -67,6 +68,7 @@ import { createRecordingLifecycleService, persistReplayClipMetadata } from './re
 import { createDriverMonitor } from './driver-monitor.js';
 import { createRecordingMediaResponse, mediaRequestPath, mediaThumbnailRequestPath, resolveSafeRecordingPath } from './recording-media.js';
 import { createRecordingThumbnailService } from './recording-thumbnails.js';
+import { createRecordingEditorService } from './recording-editor.js';
 import { createGameScanAdapter, findGamePosterArtwork } from './game-scan.js';
 import { normalizeTheme, themeBackground } from './theme.js';
 import { createOverlayWindow } from './overlay.js';
@@ -1611,6 +1613,7 @@ async function main() {
     dir: store.dir,
     defaultLocation: path.join(app.getPath('videos'), 'Arc Power'),
   });
+  const stabilityStore = new StabilityStore({ dir: store.dir });
   const driverMonitor = createDriverMonitor({ dir: store.dir });
   let recordingCaptureTargetsCache = null;
   let recordingCaptureTargetsPromise = null;
@@ -1643,6 +1646,26 @@ async function main() {
     const executable = runtime?.root ? path.join(runtime.root, 'bin', '64bit', 'ffmpeg.exe') : null;
     try { return executable && fs.statSync(executable).isFile() ? executable : null; } catch { return null; }
   };
+  const resolveRecordingFfprobePath = () => {
+    const ffmpegPath = resolveRecordingFfmpegPath();
+    if (!ffmpegPath) return null;
+    const candidate = path.join(path.dirname(ffmpegPath), 'ffprobe.exe');
+    try { return fs.statSync(candidate).isFile() ? candidate : null; } catch { return null; }
+  };
+  const recordingEditor = createRecordingEditorService({
+    recordingStore,
+    resolveFfmpegPath: resolveRecordingFfmpegPath,
+    resolveFfprobePath: resolveRecordingFfprobePath,
+    openFile: async (filePath) => {
+      const error = await shell.openPath(filePath);
+      return !error;
+    },
+    shareFile: async (filePath, parentPath) => {
+      clipboard.writeText(filePath);
+      const error = await shell.openPath(parentPath);
+      return !error;
+    },
+  });
   recordingThumbnailService = createRecordingThumbnailService({
     cacheDir: path.join(app.getPath('userData'), 'recording-thumbnails'),
     resolveFfmpegPath: resolveRecordingFfmpegPath,
@@ -2249,6 +2272,7 @@ async function main() {
   let quitTeardownStarted = false;
   app.on('before-quit', (event) => {
     isQuitting = true;
+    try { recordingEditor.shutdown(); } catch { /* editor child cleanup is best effort */ }
     // M99: Electron otherwise proceeds while the async Ascent SHUTDOWN is
     // still queued. Hold the first quit event, await the bounded teardown,
     // then re-enter app.quit once so the child has a chance to finalize.
@@ -3456,6 +3480,8 @@ async function main() {
     recordingStore,
     recordingEngine,
     recordingLifecycle,
+    recordingEditor,
+    stabilityStore,
     chooseRecordingDirectory: async () => {
       const result = await dialog.showOpenDialog(win, {
         title: 'Choose recording location',

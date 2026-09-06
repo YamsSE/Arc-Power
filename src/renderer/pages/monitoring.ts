@@ -503,6 +503,8 @@ export const monitoringPage: Page = {
   onUpdate(container: HTMLElement, ctx: PageContext) {
     if (!mon) return;
     const state = ctx.store.get();
+    const stabilityPanel = container.querySelector<HTMLElement>('[data-stability-lab]');
+    if (stabilityPanel) updateStabilityLabPanel(stabilityPanel, state);
     const telemetryDevices: Array<DeviceInfo | null> = state.devices.length > 0 ? state.devices : [null];
     for (const device of telemetryDevices) {
       const sample = device ? sampleForDevice(state, device) : systemSample(state);
@@ -701,6 +703,73 @@ function renderTrackingPanel(state: AppState): HTMLElement {
   ]);
 }
 
+function stabilityOutcomeLabel(outcome: string | null | undefined): string {
+  if (outcome === 'passed') return 'Passed';
+  if (outcome === 'warning') return 'Warning';
+  if (outcome === 'no-workload') return 'No workload detected';
+  if (outcome === 'unavailable') return 'Unavailable';
+  if (outcome === 'cancelled') return 'Cancelled';
+  return 'Ready';
+}
+
+function updateStabilityLabPanel(root: HTMLElement, state: AppState): void {
+  const run = state.stabilityRun;
+  const report = state.stabilityReports.at(-1) ?? null;
+  const status = root.querySelector<HTMLElement>('[data-stability-status]');
+  const counters = root.querySelector<HTMLElement>('[data-stability-counters]');
+  const note = root.querySelector<HTMLElement>('[data-stability-note]');
+  const start = root.querySelector<HTMLButtonElement>('[data-stability-start]');
+  const cancel = root.querySelector<HTMLButtonElement>('[data-stability-cancel]');
+  const active = run?.state === 'running';
+  if (status) {
+    status.textContent = active ? 'Running' : stabilityOutcomeLabel(run?.outcome ?? report?.outcome ?? null);
+    status.dataset.outcome = run?.outcome ?? report?.outcome ?? 'ready';
+  }
+  if (counters) counters.textContent = run ? `${run.sampleCount} samples · ${run.freshSampleCount} fresh · ${run.workloadEvidence ? 'workload evidence' : 'awaiting workload evidence'}` : report ? `${report.sampleCount} samples · ${report.workloadEvidence ? 'workload evidence' : 'no workload evidence'}` : 'No run yet';
+  if (note) note.textContent = run?.reason ?? report?.reason ?? 'Runs stay tied to the selected physical GPU.';
+  if (start) start.disabled = active;
+  if (cancel) cancel.disabled = !active;
+}
+
+function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement {
+  const selected = state.devices.find((device) => device.id === state.deviceId) ?? state.devices[0] ?? null;
+  const select = el('select', { class: 'stability-lab-device', 'aria-label': 'Stability Lab GPU' }, state.devices.map((device) => el('option', { value: device.deviceKey ?? deviceHardwareKey(device), text: shortGpuName(device) })));
+  if (selected) select.value = selected.deviceKey ?? deviceHardwareKey(selected);
+  const cadence = el('input', { class: 'stability-lab-cadence', type: 'number', min: '250', max: '2000', step: '50', value: '500', 'aria-label': 'Sampling interval in milliseconds' }) as HTMLInputElement;
+  const duration = el('input', { class: 'stability-lab-duration', type: 'number', min: '10', max: '900', step: '10', value: '30', 'aria-label': 'Run duration in seconds' }) as HTMLInputElement;
+  const start = el('button', { class: 'btn btn-primary', type: 'button', text: 'Start run', dataset: { stabilityStart: 'true' } }) as HTMLButtonElement;
+  const cancel = el('button', { class: 'btn btn-secondary', type: 'button', text: 'Cancel', dataset: { stabilityCancel: 'true' } }) as HTMLButtonElement;
+  const root = el('section', { class: 'card stability-lab-panel', dataset: { stabilityLab: 'true' } }, [
+    el('div', { class: 'telemetry-section-heading' }, [
+      el('div', {}, [el('h2', { class: 'card-title', text: 'Stability Lab' }), el('p', { class: 'card-note', text: 'Repeatable telemetry with honest workload evidence.' })]),
+      el('span', { class: 'telemetry-live-badge', dataset: { stabilityStatus: 'true' }, text: 'Ready' }),
+    ]),
+    el('div', { class: 'stability-lab-controls' }, [
+      el('label', { text: 'GPU' }, [select]),
+      el('label', { text: 'Interval (ms)' }, [cadence]),
+      el('label', { text: 'Duration (s)' }, [duration]),
+      el('div', { class: 'stability-lab-actions' }, [start, cancel]),
+    ]),
+    el('p', { class: 'card-note', dataset: { stabilityCounters: 'true' }, text: 'No run yet' }),
+    el('p', { class: 'card-note', dataset: { stabilityNote: 'true' }, text: 'Runs stay tied to the selected physical GPU.' }),
+  ]);
+  start.addEventListener('click', async () => {
+    start.disabled = true;
+    try { ctx.store.set({ stabilityRun: await api.stabilityRunStart({ deviceKey: select.value, cadenceMs: Number(cadence.value), durationSec: Number(duration.value) }) }); }
+    catch (error) { const node = root.querySelector<HTMLElement>('[data-stability-note]'); if (node) node.textContent = error instanceof Error ? error.message : String(error); }
+    finally { updateStabilityLabPanel(root, ctx.store.get()); }
+  });
+  cancel.addEventListener('click', async () => {
+    const runId = ctx.store.get().stabilityRun?.runId;
+    if (!runId) return;
+    cancel.disabled = true;
+    try { await api.stabilityRunCancel(runId); }
+    catch (error) { const node = root.querySelector<HTMLElement>('[data-stability-note]'); if (node) node.textContent = error instanceof Error ? error.message : String(error); }
+  });
+  updateStabilityLabPanel(root, state);
+  return root;
+}
+
 function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
   const m = mon;
   if (!m) return;
@@ -755,7 +824,7 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
   ]);
 
   const workspace = el('div', { class: 'monitoring-workspace' }, [
-    el('main', { class: 'monitoring-metrics-column' }, [monitoringSummary, readout]),
+    el('main', { class: 'monitoring-metrics-column' }, [monitoringSummary, renderStabilityLabPanel(s, ctx), readout]),
     renderTrackingPanel(s),
   ]);
   container.append(workspace);

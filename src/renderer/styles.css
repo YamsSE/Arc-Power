@@ -2280,6 +2280,15 @@ input[type="number"] {
 .monitoring-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(238px, 276px); gap: 12px; align-items: start; }
 .monitoring-metrics-column { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .telemetry-metrics-card { padding: 11px; }
+.stability-lab-panel { margin-bottom: 10px; padding: 11px; }
+.stability-lab-controls { display: grid; grid-template-columns: minmax(120px, 1.5fr) repeat(2, minmax(85px, .7fr)) auto; gap: 8px; align-items: end; }
+.stability-lab-controls label { display: grid; gap: 4px; color: var(--text-muted); font-size: 10px; }
+.stability-lab-controls input, .stability-lab-controls select { min-width: 0; height: 31px; padding: 5px 7px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); color: var(--text); background: var(--control-bg); font: 600 11px var(--mono); }
+.stability-lab-actions { display: flex; gap: 6px; }
+.stability-lab-actions .btn { white-space: nowrap; }
+.stability-lab-panel [data-stability-status][data-outcome="passed"] { color: var(--success); }
+.stability-lab-panel [data-stability-status][data-outcome="warning"], .stability-lab-panel [data-stability-status][data-outcome="no-workload"] { color: var(--warning); }
+@media (max-width: 760px) { .stability-lab-controls { grid-template-columns: 1fr 1fr; } .stability-lab-actions { grid-column: 1 / -1; } }
 .telemetry-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .telemetry-panel { min-width: 0; padding: 0; overflow: hidden; border-color: color-mix(in srgb, var(--accent) 24%, var(--border)); background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 8%), var(--bg-elev)); }
 .telemetry-panel[data-telemetry-panel="fps"] { grid-column: 1 / -1; }
@@ -3299,6 +3308,24 @@ input[type="number"] {
 .recording-player-timeline-row .recording-player-seek::-webkit-slider-runnable-track, .recording-player-timeline-row .recording-player-seek::-moz-range-track, .recording-player-timeline-row .recording-player-seek::-moz-range-progress { height: 3px; }
 .recording-player-timeline-ruler { display: flex; justify-content: space-between; padding: 5px 43px 0; color: var(--text-dim); font: 10px var(--mono); }
 .recording-empty { margin: 0; padding: 16px; color: var(--text-dim); text-align: center; font-size: 12px; }
+.recording-clip-edit { position: absolute; top: 9px; right: 47px; z-index: 2; padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: rgba(5, 7, 12, .84); color: var(--text-muted); font: 650 10px var(--font); cursor: pointer; opacity: 0; }
+.recording-clip-card:hover .recording-clip-edit, .recording-clip-card:focus-within .recording-clip-edit { opacity: 1; }
+.recording-clip-edit:hover, .recording-clip-edit:focus-visible { border-color: var(--accent); color: var(--accent); outline: none; }
+.recording-editor-drawer { display: flex; flex-direction: column; gap: 11px; padding: 14px 15px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 8px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, var(--bg-elev)), var(--bg-elev)); }
+.recording-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-dim); font-size: 11px; }
+.recording-editor-heading strong { display: block; margin-top: 3px; color: var(--text); font: 650 13px var(--font-display); }
+.recording-editor-status { overflow: hidden; color: var(--text-dim); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.recording-editor-ranges { display: grid; gap: 8px; }
+.recording-editor-range-row { display: grid; grid-template-columns: 42px minmax(0, 1fr) 44px; align-items: center; gap: 9px; color: var(--text-dim); font-size: 11px; }
+.recording-editor-range { width: 100%; accent-color: var(--accent); }
+.recording-editor-range-row span:last-child { color: var(--text); font: 11px var(--mono); text-align: right; }
+.recording-editor-gif-options { display: flex; gap: 10px; }
+.recording-editor-gif-options label { display: flex; align-items: center; gap: 7px; color: var(--text-dim); font-size: 11px; }
+.recording-editor-number { width: 68px; min-height: 27px; padding: 4px 6px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--control-bg); color: var(--text); font: 11px var(--mono); }
+.recording-editor-progress { width: 100%; height: 5px; accent-color: var(--accent); }
+.recording-editor-progress[hidden] { display: none; }
+.recording-editor-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.recording-editor-actions .recording-editor-status { flex: 1; }
 @media (max-width: 1050px) { .recording-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .recording-heading, .recording-library-toolbar, .recording-player-view-heading { flex-direction: column; align-items: stretch; } .recording-tabs, .recording-search { width: 100%; } .recording-tab { flex: 1; } .recording-settings-grid, .recording-storage-panel, .recording-audio-sections, .recording-quickstart-grid, .recording-capture-target-row { grid-template-columns: 1fr; } .recording-storage-panel .recording-panel-heading { grid-column: auto; } .recording-panel-heading { flex-direction: column; } .recording-storage-heading-meta { width: 100%; justify-content: space-between; } .recording-hotkey-row { grid-template-columns: 1fr 150px; } .recording-hotkey-warning, .recording-hotkey-registered { grid-column: 1 / -1; } .recording-library-actions { flex-wrap: wrap; } .recording-library-actions .recording-search { flex-basis: 100%; } .recording-player-controls { flex-wrap: wrap; } .recording-player-volume { flex: 1; } .recording-player-brand { display: none; } .recording-player-timeline-ruler { padding-inline: 43px; } .recording-target-refresh { width: max-content; } }
 .recording-delete-modal { width: min(460px, calc(100vw - 32px)); }

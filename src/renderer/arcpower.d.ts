@@ -45,11 +45,14 @@ import type {
   RecordingSettings,
   RecordingSettingsPatch,
   RecordingStorageInfo,
+  RecordingEditorJob,
   ResetResponse,
   Settings,
   StartupGetState,
   SysInfo,
   TelemetrySample,
+  StabilityReport,
+  StabilityRunStatus,
   VendorDeviceInfo,
 } from './types.ts';
 
@@ -124,6 +127,11 @@ export interface ArcPowerApi {
   /** 1.0.1 no-Intel round: telemetryStop(null) is the symmetric stop for
    *  the no-device mode. */
   telemetryStop(deviceId: number | null): Promise<void>;
+  stabilityRunStart(payload: { deviceKey: string; cadenceMs?: number; durationSec?: number }): Promise<StabilityRunStatus>;
+  stabilityRunStatus(runId?: string): Promise<StabilityRunStatus | null>;
+  stabilityRunCancel(runId?: string): Promise<StabilityReport | StabilityRunStatus | null>;
+  stabilityReportsList(): Promise<StabilityReport[]>;
+  stabilityReportLatest(): Promise<StabilityReport | null>;
   /** M3-A (read-side only): the registry-hacks catalog + live states. */
   registryCatalog(): Promise<RegistryCatalogResponse>;
   /** M3-B: apply one catalog action ELEVATED (Enable/Disable/Revert per the
@@ -224,6 +232,11 @@ export interface ArcPowerApi {
   recordingOpenFolder(): Promise<{ ok: boolean }>;
   recordingClipUrl(id: string): Promise<string>;
   recordingClipDelete(id: string): Promise<RecordingClipDeleteResult>;
+  recordingEditorStart(payload: { sourceId: string; operation: 'trim' | 'gif'; startMs: number; endMs: number; maxDurationMs?: number; fps?: number; width?: number; outputName?: string }): Promise<RecordingEditorJob>;
+  recordingEditorStatus(jobId: string): Promise<RecordingEditorJob>;
+  recordingEditorCancel(jobId: string): Promise<RecordingEditorJob>;
+  recordingEditorOpen(jobId: string): Promise<{ ok: boolean }>;
+  recordingEditorShare(jobId: string): Promise<{ ok: boolean }>;
   onRecordingStateUpdated(cb: (state: RecordingEngineState) => void): () => void;
   onRecordingActionResult(cb: (result: RecordingActionResult) => void): () => void;
   onRecordingNotification(cb: (notification: RecordingNotification) => void): () => void;
@@ -245,6 +258,7 @@ export interface ArcPowerApi {
    *  REAL boot-apply flow recorded). */
   mockBootApplyLog(): Promise<Array<{ profileId: string; applied: boolean; reason: string | null; at: number }>>;
   onTelemetrySample(cb: (sample: TelemetrySample) => void): () => void;
+  onStabilityStatus(cb: (status: StabilityRunStatus) => void): () => void;
   /** M4-D: pushed window-maximize state ({ maximized: boolean } on
    *  maximize/unmaximize - the title-bar max button follows it). */
   onWindowMaximizedChanged(cb: (state: { maximized: boolean }) => void): () => void;

@@ -812,6 +812,16 @@ async function boot() {
     }
   };
   api.onTelemetrySample(acceptTelemetrySample);
+  api.onStabilityStatus((status) => {
+    if (!status) return;
+    store.set({ stabilityRun: status });
+    if (status.state === 'completed') {
+      void api.stabilityReportsList().then((reports) => store.set({ stabilityReports: reports ?? [] })).catch(() => {});
+    }
+  });
+  void api.stabilityReportLatest().then((report) => {
+    if (report) store.set({ stabilityReports: [report] });
+  }).catch(() => {});
 
   // M16-F1 (D2): the tray "Apply active profile" runs ENTIRELY in main -
   // this subscription receives the pushed post-apply read-back

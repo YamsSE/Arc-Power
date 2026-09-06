@@ -68,10 +68,13 @@ import { createGameTuningController } from './game-tuning.js';
  *   getRecordingHotkeyState?: () => object,
  *   onRecordingActionResult?: (result: object) => void,
  *   onRecordingState?: (state: object, previous: object | null) => void,
+ *   recordingEditor?: object,
+ *   stabilityLab?: object,
+ *   stabilityStore?: object,
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), driverMonitor = null, sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), presentMonLane = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null, recordingStore = null, recordingEngine = null, recordingLifecycle = null, chooseRecordingDirectory = async () => null, openRecordingFolder = async () => {}, refreshRecordingHotkeys = async () => null, getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }), recordingCaptureTargets = null, onRecordingActionResult = () => {}, onRecordingState = () => {} }) {
+ export function registerIpc({ backend, store, getWindow, startup = createStartup(), driverInfo = createDriverInfo(), driverMonitor = null, sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), presentMonLane = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null, recordingStore = null, recordingEngine = null, recordingLifecycle = null, recordingEditor = null, stabilityLab = null, stabilityStore = null, chooseRecordingDirectory = async () => null, openRecordingFolder = async () => {}, refreshRecordingHotkeys = async () => null, getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }), recordingCaptureTargets = null, onRecordingActionResult = () => {}, onRecordingState = () => {} }) {
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -113,6 +116,9 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     recordingStore,
     recordingEngine,
     recordingLifecycle,
+    recordingEditor,
+    stabilityLab,
+    stabilityStore,
     chooseRecordingDirectory,
     openRecordingFolder,
     refreshRecordingHotkeys,
@@ -138,6 +144,11 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       }
       // Only push-style channels cross the window boundary; request/response
       // channels return their payload via the invoke promise.
+      if (channel === 'stability:status') {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+        return;
+      }
       if (channel !== 'telemetry:sample') return;
       const win = getWindow();
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload);

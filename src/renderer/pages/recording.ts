@@ -3,7 +3,7 @@
 import { el, clear } from '../dom.ts';
 import { api } from '../ipc.ts';
 import type { Page, PageContext } from '../router.ts';
-import type { DeviceInfo, RecordingAudioDevice, RecordingCaptureTarget, RecordingCaptureTargets, RecordingClip, RecordingClipDeleteResult, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingStorageInfo, RecordingTab } from '../types.ts';
+import type { DeviceInfo, RecordingAudioDevice, RecordingCaptureTarget, RecordingCaptureTargets, RecordingClip, RecordingClipDeleteResult, RecordingEditorJob, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingStorageInfo, RecordingTab } from '../types.ts';
 import { toast } from '../components/toast.ts';
 import { showRecordingClipDeleteConfirm } from '../components/recording-delete-dialog.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
@@ -71,6 +71,7 @@ let clipLibraryFilter: ClipLibraryFilter = 'all';
 let clipLibrarySort: ClipLibrarySort = 'newest';
 let recordingPillEnabled = false;
 let recordingDevices: DeviceInfo[] = [];
+let editorPollTimer: number | null = null;
 
 function recordingClipKind(clip: RecordingClip): 'recording' | 'clip' {
   return /^Arc Recording \d+\.mp4$/i.test(clip.fileName) ? 'recording' : 'clip';
@@ -93,6 +94,10 @@ function setStatus(next: RecordingEngineState): void {
 const messageOf = recordingMessage;
 
 function disposePlayerVideo(): void {
+  if (editorPollTimer !== null) {
+    window.clearInterval(editorPollTimer);
+    editorPollTimer = null;
+  }
   if (!playerVideo) return;
   try {
     playerVideo.pause();
@@ -1116,7 +1121,9 @@ function renderClipList(): HTMLElement {
           void deleteClip(clip);
         },
       }, [el('span', { class: 'recording-trash-icon', 'aria-hidden': 'true' })]) as HTMLButtonElement;
-      list.append(el('article', { class: 'recording-clip-card' }, [tile, deleteButton]));
+      const editButton = button('Edit', () => openPlayer(clip), 'recording-clip-edit');
+      editButton.setAttribute('aria-label', `Edit ${clip.fileName}`);
+      list.append(el('article', { class: 'recording-clip-card' }, [tile, editButton, deleteButton]));
     }
   };
   query.addEventListener('input', draw);
@@ -1142,6 +1149,97 @@ function renderClipList(): HTMLElement {
 
 function renderClipsView(): HTMLElement {
   return el('div', { class: 'recording-content recording-clips-content' }, [renderClipList()]);
+}
+
+function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoElement | null): HTMLElement {
+  let durationMs = Math.max(1000, Number(clip.byteLength) || 0);
+  let job: RecordingEditorJob | null = null;
+  const startRange = el('input', { class: 'recording-editor-range', type: 'range', min: 0, max: 1000, step: 1, value: 0, 'aria-label': 'Edit start' }) as HTMLInputElement;
+  const endRange = el('input', { class: 'recording-editor-range', type: 'range', min: 0, max: 1000, step: 1, value: 1000, 'aria-label': 'Edit end' }) as HTMLInputElement;
+  const startLabel = el('span', { text: '0:00' });
+  const endLabel = el('span', { text: '0:00' });
+  const statusLabel = el('span', { class: 'recording-editor-status', text: 'Choose a range to create a new clip or GIF.' });
+  const progress = el('progress', { class: 'recording-editor-progress', max: 100, value: 0, hidden: true, 'aria-label': 'Editor progress' }) as HTMLProgressElement;
+  const cancelButton = button('Cancel', () => { if (job) void api.recordingEditorCancel(job.jobId).then(updateJob).catch((err) => { statusLabel.textContent = messageOf(err); }); }, 'btn btn-secondary', true);
+  const openButton = button('Open', () => { if (job) void api.recordingEditorOpen(job.jobId).catch((err) => toast('error', 'Open export', messageOf(err))); }, 'btn btn-secondary', true);
+  const shareButton = button('Share', () => { if (job) void api.recordingEditorShare(job.jobId).catch((err) => toast('error', 'Share export', messageOf(err))); }, 'btn btn-secondary', true);
+  const trimButton = button('Trim clip', () => void startJob('trim'), 'btn btn-primary');
+  const gifButton = button('Export GIF', () => void startJob('gif'), 'btn btn-secondary');
+  const fps = el('input', { class: 'recording-editor-number', type: 'number', min: 5, max: 30, step: 1, value: 15, 'aria-label': 'GIF frames per second' }) as HTMLInputElement;
+  const width = el('input', { class: 'recording-editor-number', type: 'number', min: 2, max: 1920, step: 2, value: 640, 'aria-label': 'GIF width' }) as HTMLInputElement;
+  const editor = el('section', { class: 'recording-editor-drawer', 'aria-label': 'Clip editor' });
+  const setRangeLabels = () => {
+    const max = Math.max(1000, durationMs);
+    const start = Math.min(max - 1, Math.round((Number(startRange.value) / 1000) * max));
+    const end = Math.max(start + 1, Math.round((Number(endRange.value) / 1000) * max));
+    startLabel.textContent = formatTime(start / 1000);
+    endLabel.textContent = formatTime(end / 1000);
+    startRange.setAttribute('aria-valuetext', formatTime(start / 1000));
+    endRange.setAttribute('aria-valuetext', formatTime(end / 1000));
+  };
+  const setBusy = (busy: boolean) => {
+    trimButton.disabled = busy;
+    gifButton.disabled = busy;
+    startRange.disabled = busy;
+    endRange.disabled = busy;
+    fps.disabled = busy;
+    width.disabled = busy;
+    cancelButton.disabled = !busy;
+  };
+  const updateJob = (next: RecordingEditorJob) => {
+    job = next;
+    progress.hidden = next.state !== 'running' && next.state !== 'queued';
+    progress.value = Math.max(0, Math.min(100, next.progress));
+    if (next.state === 'error') statusLabel.textContent = next.error ?? 'The editor could not complete this export.';
+    else if (next.state === 'cancelled') statusLabel.textContent = 'Export cancelled.';
+    else if (next.state === 'ready') statusLabel.textContent = next.clip ? `Created ${next.clip.fileName}.` : `Created ${next.artifact?.fileName ?? 'GIF export'}.`;
+    else statusLabel.textContent = next.state === 'queued' ? 'Queued…' : `Rendering ${Math.round(next.progress)}%`;
+    const ready = next.state === 'ready';
+    openButton.disabled = !ready;
+    shareButton.disabled = !ready;
+    setBusy(next.state === 'queued' || next.state === 'running');
+    if (ready && next.clip) clips = [...clips.filter((item) => item.id !== next.clip?.id), next.clip];
+    if (next.state === 'ready' || next.state === 'cancelled' || next.state === 'error') {
+      if (editorPollTimer !== null) { window.clearInterval(editorPollTimer); editorPollTimer = null; }
+    }
+  };
+  async function startJob(operation: 'trim' | 'gif'): Promise<void> {
+    const video = getVideo();
+    if (video && Number.isFinite(video.duration) && video.duration > 0) durationMs = Math.round(video.duration * 1000);
+    const max = Math.max(1000, durationMs);
+    const startMs = Math.round((Number(startRange.value) / 1000) * max);
+    const endMs = Math.round((Number(endRange.value) / 1000) * max);
+    if (!video || !Number.isFinite(video.duration) || startMs >= endMs) {
+      statusLabel.textContent = 'Choose a valid start and end range.';
+      return;
+    }
+    try {
+      const next = await api.recordingEditorStart({ sourceId: clip.id, operation, startMs, endMs, ...(operation === 'gif' ? { fps: Number(fps.value), width: Number(width.value) } : {}) });
+      updateJob(next);
+      if (next.state === 'queued' || next.state === 'running') {
+        if (editorPollTimer !== null) window.clearInterval(editorPollTimer);
+        editorPollTimer = window.setInterval(() => {
+          void api.recordingEditorStatus(next.jobId).then(updateJob).catch((err) => { statusLabel.textContent = messageOf(err); });
+        }, 300);
+      }
+    } catch (err) { statusLabel.textContent = messageOf(err); }
+  }
+  startRange.addEventListener('input', setRangeLabels);
+  endRange.addEventListener('input', setRangeLabels);
+  editor.append(
+    el('div', { class: 'recording-editor-heading' }, [el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Arc editor' }), el('strong', { text: 'Shape your clip' })]), statusLabel]),
+    el('div', { class: 'recording-editor-ranges' }, [
+      el('label', { class: 'recording-editor-range-row' }, [el('span', { text: 'Start' }), startRange, startLabel]),
+      el('label', { class: 'recording-editor-range-row' }, [el('span', { text: 'End' }), endRange, endLabel]),
+    ]),
+    el('div', { class: 'recording-editor-gif-options' }, [el('label', {}, [el('span', { text: 'GIF FPS' }), fps]), el('label', {}, [el('span', { text: 'Width' }), width])]),
+    progress,
+    el('div', { class: 'recording-editor-actions' }, [trimButton, gifButton, cancelButton, openButton, shareButton]),
+  );
+  const video = getVideo();
+  video?.addEventListener('loadedmetadata', () => { durationMs = Math.max(1000, Math.round(video.duration * 1000)); setRangeLabels(); });
+  setRangeLabels();
+  return editor;
 }
 
 function renderPlayerView(): HTMLElement {
@@ -1352,6 +1450,7 @@ function renderPlayerView(): HTMLElement {
       player.append(el('p', { class: 'text-error', text: messageOf(err) }));
     });
   }
+  const editorPanel = playerClip ? renderRecordingEditor(playerClip, () => playerVideo) : null;
   const back = el('button', {
     class: 'recording-player-back',
     type: 'button',
@@ -1367,6 +1466,7 @@ function renderPlayerView(): HTMLElement {
     ]),
     player,
     timelinePanel,
+    editorPanel,
   ]);
 }
 

@@ -53,6 +53,11 @@ contextBridge.exposeInMainWorld('arcPower', {
   overlayTelemetryStart: (deviceIds) => ipcRenderer.invoke('overlay-telemetry-start', deviceIds),
   overlayResize: (deviceCount) => ipcRenderer.invoke('overlay-resize', deviceCount),
   telemetryStop: (deviceId) => ipcRenderer.invoke('telemetry-stop', deviceId),
+  stabilityRunStart: (payload) => ipcRenderer.invoke('stability-run-start', payload),
+  stabilityRunStatus: (runId) => ipcRenderer.invoke('stability-run-status', runId),
+  stabilityRunCancel: (runId) => ipcRenderer.invoke('stability-run-cancel', runId),
+  stabilityReportsList: () => ipcRenderer.invoke('stability-reports-list'),
+  stabilityReportLatest: () => ipcRenderer.invoke('stability-report-latest'),
   registryCatalog: () => ipcRenderer.invoke('registry-catalog'),
   registryApply: (entryId, action) => ipcRenderer.invoke('registry-apply', entryId, action),
   startupGet: () => ipcRenderer.invoke('startup-get'),
@@ -132,6 +137,11 @@ contextBridge.exposeInMainWorld('arcPower', {
   recordingOpenFolder: () => ipcRenderer.invoke('recording-open-folder'),
   recordingClipUrl: (id) => ipcRenderer.invoke('recording-clip-url', id),
   recordingClipDelete: (id) => ipcRenderer.invoke('recording-clip-delete', id),
+  recordingEditorStart: (payload) => ipcRenderer.invoke('recording-editor-start', payload),
+  recordingEditorStatus: (jobId) => ipcRenderer.invoke('recording-editor-status', jobId),
+  recordingEditorCancel: (jobId) => ipcRenderer.invoke('recording-editor-cancel', jobId),
+  recordingEditorOpen: (jobId) => ipcRenderer.invoke('recording-editor-open', jobId),
+  recordingEditorShare: (jobId) => ipcRenderer.invoke('recording-editor-share', jobId),
   // M2D: mock-only featureset control. The channels exist ONLY in mock mode
   // (real mode rejects with "No handler registered" - the renderer never
   // calls them there: the dropdown renders only when health.backend === 'mock').
@@ -164,6 +174,11 @@ contextBridge.exposeInMainWorld('arcPower', {
     const listener = (_event, state) => cb(state);
     ipcRenderer.on('window:maximized-changed', listener);
     return () => ipcRenderer.removeListener('window:maximized-changed', listener);
+  },
+  onStabilityStatus: (cb) => {
+    const listener = (_event, status) => cb(status);
+    ipcRenderer.on('stability:status', listener);
+    return () => ipcRenderer.removeListener('stability:status', listener);
   },
   onRecordingStateUpdated: (cb) => {
     const listener = (_event, state) => cb(state);
