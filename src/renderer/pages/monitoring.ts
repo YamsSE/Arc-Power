@@ -219,7 +219,10 @@ function systemMetricNodes(state: AppState): HTMLElement[] {
 function gpuMetricNodes(device: DeviceInfo | null, state: AppState): HTMLElement[] {
   const readSample = (s: AppState): TelemetrySample | null => device ? sampleForDevice(s, device) : systemSample(s);
   const sample = readSample(state);
-  const fanCount = Math.max(1, sample?.fanRpm?.length ?? 1);
+  const sharedMemoryGpu = device?.integrated === true || device?.mobile === true;
+  // Built-in/mobile adapters do not expose a physical board fan through the
+  // Intel telemetry surface. Do not render an empty Fan 1 tile for them.
+  const fanCount = sharedMemoryGpu ? 0 : Math.max(1, sample?.fanRpm?.length ?? 1);
   const category = device ? `gpu-${device.id}` : 'gpu-vendor';
   const series = (segmentId: string): string | undefined => graphKey(device?.id ?? 0, segmentId);
   const nodes = [
@@ -241,6 +244,15 @@ function gpuMetricNodes(device: DeviceInfo | null, state: AppState): HTMLElement
 function gpuMemoryMetricNodes(device: DeviceInfo | null, state: AppState): HTMLElement[] {
   const readSample = (s: AppState): TelemetrySample | null => device ? sampleForDevice(s, device) : systemSample(s);
   const category = device ? `gpu-memory-${device.id}` : 'gpu-memory-vendor';
+  const sharedMemoryGpu = device?.integrated === true || device?.mobile === true;
+  if (sharedMemoryGpu) {
+    return [
+      metricNode('Shared memory in use', (s) => {
+        const v = readSample(s);
+        return { value: formatGpuMemoryGb(v?.gpuMemUsedBytes), unit: 'GB shared' };
+      }, state, '', category, graphKey(device?.id ?? 0, 'vram'), 'gpu-shared-memory'),
+    ];
+  }
   return [
     metricNode('VRAM in use', (s) => {
       const v = readSample(s);

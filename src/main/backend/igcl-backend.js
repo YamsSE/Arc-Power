@@ -5615,6 +5615,32 @@ export class IgclBackend {
   // Telemetry (raw, 1:1 from IGCL)
   // -------------------------------------------------------------------------
 
+  /**
+   * Keep built-in/mobile telemetry useful when the driver's power-telemetry
+   * call is unavailable for a tick. The adapter properties already expose a
+   * static graphics frequency, and the IGCL temperature-sensor surface is
+   * the same source used when the power sample omits gpuCurrentTemperature.
+   * Do not manufacture values for discrete adapters: they still report the
+   * native failure to the caller.
+   * @param {object} dev the cached device payload
+   * @param {number} deviceId
+   * @param {boolean} integratedOrMobile
+   * @returns {object}
+   */
+  _unavailablePowerTelemetrySample(dev, deviceId, integratedOrMobile) {
+    const sample = { t: Date.now() / 1000, throttle: {} };
+    const clock = Number(dev.graphicsClockMHz);
+    if (Number.isFinite(clock) && clock > 0) sample.gpuClockMhz = clock;
+    if (integratedOrMobile) {
+      const sensorTemp = this._tempSensorNoSensor.has(deviceId)
+        ? undefined
+        : this._temperatureSensorTempC(dev, deviceId);
+      if (sensorTemp !== undefined) sample.tempC = sensorTemp;
+    }
+    this._emitTelemetry(deviceId, sample);
+    return sample;
+  }
+
   async sampleRawTelemetry(deviceId) {
     await this._device(deviceId);
     const lib = this._libOrThrow();
@@ -5622,7 +5648,10 @@ export class IgclBackend {
     const integratedOrMobile = dev.integrated === true || dev.mobile === true;
     const hasV2 = !this._isUnavailable(lib.ctlPowerTelemetryGetV2);
     const hasV1 = !this._isUnavailable(lib.ctlPowerTelemetryGet);
-    if (!hasV2 && !hasV1) throw new Error('no IGCL power telemetry API is available in the runtime');
+    if (!hasV2 && !hasV1) {
+      if (integratedOrMobile) return this._unavailablePowerTelemetrySample(dev, deviceId, integratedOrMobile);
+      throw new Error('no IGCL power telemetry API is available in the runtime');
+    }
 
     let telemetryType;
     let telBuf;
@@ -5646,6 +5675,7 @@ export class IgclBackend {
     }
     if (result !== CTL_RESULT.SUCCESS) {
       const api = telemetryType === 'ctl_power_telemetry_v2_t' ? 'ctlPowerTelemetryGetV2' : 'ctlPowerTelemetryGet';
+      if (integratedOrMobile) return this._unavailablePowerTelemetrySample(dev, deviceId, integratedOrMobile);
       throw new Error(`${api} failed: ${describeResult(result)}`);
     }
 
@@ -5687,6 +5717,16 @@ export class IgclBackend {
       },
     };
     if (integratedOrMobile) sample.powerEnergyJ = totalEnergyJ ?? gpuEnergyJ;
+
+    // Some built-in/mobile driver builds return a valid telemetry structure
+    // but leave gpuCurrentClockFrequency unsupported. Keep the core-clock
+    // tile useful from the adapter's reported graphics frequency; this is a
+    // last-resort native value and is never used for write verification.
+    if (integratedOrMobile && sample.gpuClockMhz === undefined) {
+      const adapterClock = Number(dev.graphicsClockMHz);
+      if (Number.isFinite(adapterClock) && adapterClock > 0) sample.gpuClockMhz = adapterClock;
+    }
+
     try {
       const off = koffi.offsetof(telemetryType, 'fanSpeed');
       const sz = koffi.sizeof('ctl_oc_telemetry_item_t');

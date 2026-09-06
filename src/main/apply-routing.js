@@ -1324,6 +1324,25 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
               configurable: true,
             });
           } else if (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack)
+            && legacyReadBack === DRIVER_TEMP_LIMIT_MAX_C
+            && value > DRIVER_TEMP_LIMIT_MAX_C
+            && (per?.ok === true || per?.errorCode === 'io-failed')) {
+            // The current IGCL V1 and V2 temperature getters both report the
+            // driver's stock ceiling on the affected Alchemist package. The
+            // bundled V1 setter can nevertheless return SUCCESS for an
+            // extended request, leaving the control unchanged at 90 C. This
+            // is a native capability refusal (confirmed by the direct V2
+            // ERROR_CORE_OVERCLOCK_TEMPERATURE_OUTSIDE_RANGE probe), not an
+            // unavailable getter and never a successful 104 C apply.
+            per = {
+              ok: false,
+              errorCode: 'out-of-range',
+              readBackEqual: false,
+              capabilityCeiling: DRIVER_TEMP_LIMIT_MAX_C,
+              readBackValue: legacyReadBack,
+              message: `Intel graphics driver/runtime kept the temperature limit at ${legacyReadBack} °C; requested ${value} °C is refused by the active driver. Nothing was changed.`,
+            };
+          } else if (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack)
             && legacyReadBack > 0
             && (per?.ok === true || per?.errorCode === 'io-failed')) {
             per = {

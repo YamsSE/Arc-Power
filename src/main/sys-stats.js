@@ -620,6 +620,20 @@ export function createSysStats(deps = {}) {
     cpuPowerW: null,
     gpuUtilPct: null,
   });
+  // IGCL can expose an all-zero BDF for built-in/mobile adapters. Treat that
+  // sentinel as missing so luidOf() can use the unique PCI device id and let
+  // the OS GPUAdapterMemory row provide shared-memory usage. A fake
+  // 0000:00:00.0 constraint otherwise prevents the LUID match and leaves the
+  // B390 shared-memory row blank.
+  const isZeroBdf = (value) => {
+    if (typeof value === 'string') return /^(?:0{1,4}:)?0{1,2}:0{1,2}\.0$/i.test(value.trim());
+    if (!value || typeof value !== 'object') return false;
+    const domain = Number(value.domain ?? value.segment ?? 0);
+    const bus = Number(value.bus);
+    const device = Number(value.device);
+    const fn = Number(value.function ?? value.func ?? 0);
+    return [domain, bus, device, fn].every((part) => Number.isInteger(part) && part === 0);
+  };
   const targetSpecOf = (target = null) => {
     const controller = target?.osController ?? {};
     const targetName = String(target?.name ?? controller.name ?? '');
@@ -629,12 +643,13 @@ export function createSysStats(deps = {}) {
     const pciDeviceId = typeof (target?.pciDeviceId ?? target?.deviceIdHex ?? controller.pciDeviceId) === 'string'
       ? (target.pciDeviceId ?? target.deviceIdHex ?? controller.pciDeviceId)
       : null;
+    const rawBdf = target?.bdf ?? controller.bdf ?? null;
     return {
       deviceKey: typeof target?.deviceKey === 'string' && target.deviceKey.trim() ? target.deviceKey.trim() : null,
       pnpDeviceId: target?.pnpDeviceId ?? controller.pnpDeviceId ?? null,
       pciVendorId,
       pciDeviceId,
-      bdf: target?.bdf ?? controller.bdf ?? null,
+      bdf: isZeroBdf(rawBdf) ? null : rawBdf,
       deviceIdHex: pciDeviceId,
       osLuid: normalizeLuid(target?.osLuid ?? controller.luid ?? null),
       integrated: target?.integrated === true || integratedByName,
