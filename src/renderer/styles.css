@@ -2289,6 +2289,11 @@ input[type="number"] {
 .stability-lab-panel [data-stability-status][data-outcome="passed"] { color: var(--success); }
 .stability-lab-panel [data-stability-status][data-outcome="warning"], .stability-lab-panel [data-stability-status][data-outcome="no-workload"] { color: var(--warning); }
 @media (max-width: 760px) { .stability-lab-controls { grid-template-columns: 1fr 1fr; } .stability-lab-actions { grid-column: 1 / -1; } }
+.overlay-layout-card .settings-card-heading { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
+.overlay-layout-card .settings-row { gap:8px; }
+.overlay-layout-select { min-width: 180px; }
+.overlay-layout-actions { display:flex; flex-wrap:wrap; align-items:center; }
+.overlay-layout-name { flex:1 1 180px; min-width:140px; }
 .telemetry-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .telemetry-panel { min-width: 0; padding: 0; overflow: hidden; border-color: color-mix(in srgb, var(--accent) 24%, var(--border)); background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 8%), var(--bg-elev)); }
 .telemetry-panel[data-telemetry-panel="fps"] { grid-column: 1 / -1; }

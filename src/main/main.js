@@ -40,7 +40,7 @@
 // changes). The normal app path never auto-accepts a waiver; the renderer
 // asks the user and calls waiver-accept over IPC.
 
-import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, clipboard, globalShortcut, ipcMain, protocol, screen, desktopCapturer } from 'electron';
+import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, clipboard, safeStorage, globalShortcut, ipcMain, protocol, screen, desktopCapturer } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -57,6 +57,8 @@ import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS
 import { GameProfileStore } from './store/game-profile-store.js';
 import { RecordingStore } from './store/recording-store.js';
 import { StabilityStore } from './store/stability-store.js';
+import { OverlayLayoutStore } from './overlay-layout-store.js';
+import { createObsStreamService } from './obs-stream.js';
 import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js';
 import { formatDxgiLuid, recordingRuntimeEncoderIdForTarget } from './recording-pure.js';
 import { normalizeDxgiLuid } from './recording-pure.js';
@@ -1614,6 +1616,26 @@ async function main() {
     defaultLocation: path.join(app.getPath('videos'), 'Arc Power'),
   });
   const stabilityStore = new StabilityStore({ dir: store.dir });
+  const overlayLayoutStore = new OverlayLayoutStore({ dir: store.dir, defaults: () => {
+    const current = store.loadSettingsSync() ?? {};
+    return {
+      position: current.overlayPosition ?? 'top-left', scale: current.overlayScale ?? 1,
+      theme: current.overlayTheme ?? 'arc', stats: current.overlayStats ?? [],
+      deviceKeys: current.overlayDeviceKeys ?? null,
+      background: { enabled: current.overlayBgEnabled === true, color: current.overlayBgColor ?? '#000000', opacity: current.overlayBgOpacity ?? .5 },
+      advancedPosition: current.advancedOverlayPosition ?? 'right',
+    };
+  } });
+  const streamCredentialKey = 'obs-stream-password';
+  const streamCredentials = {
+    get: () => {
+      try { return safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(fs.readFileSync(path.join(store.dir, `${streamCredentialKey}.bin`)))) : null; } catch { return null; }
+    },
+    set: (password) => {
+      try { if (safeStorage.isEncryptionAvailable() && typeof password === 'string' && password.length <= 512) { fs.mkdirSync(store.dir, { recursive: true }); fs.writeFileSync(path.join(store.dir, `${streamCredentialKey}.bin`), safeStorage.encryptString(password)); } } catch { /* credentials remain session-only */ }
+    },
+  };
+  const obsStream = createObsStreamService({ passwordProvider: async () => streamCredentials.get(), passwordSink: streamCredentials.set });
   const driverMonitor = createDriverMonitor({ dir: store.dir });
   let recordingCaptureTargetsCache = null;
   let recordingCaptureTargetsPromise = null;
@@ -3482,6 +3504,25 @@ async function main() {
     recordingLifecycle,
     recordingEditor,
     stabilityStore,
+    overlayLayoutStore,
+    obsStream,
+    applyOverlayLayout: async (layout) => {
+      const current = await store.loadSettings();
+      await store.saveSettings({
+        ...current,
+        overlayPosition: layout.position,
+        overlayScale: layout.scale,
+        overlayTheme: layout.theme,
+        overlayStats: layout.stats,
+        overlayDeviceKeys: layout.deviceKeys,
+        overlayBgEnabled: layout.background?.enabled === true,
+        overlayBgColor: layout.background?.color,
+        overlayBgOpacity: layout.background?.opacity,
+        advancedOverlayPosition: layout.advancedPosition,
+      });
+      applyOverlaySettings();
+      applyAdvancedOverlaySettings();
+    },
     chooseRecordingDirectory: async () => {
       const result = await dialog.showOpenDialog(win, {
         title: 'Choose recording location',

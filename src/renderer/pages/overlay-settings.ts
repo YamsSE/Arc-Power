@@ -58,7 +58,7 @@ import {
   ADVANCED_OVERLAY_POSITION_LABELS,
   isValidAdvancedOverlayPosition,
 } from '../pure/overlay.ts';
-import type { OverlayPosition, OverlayState, AdvancedOverlayState } from '../types.ts';
+import type { OverlayLayout, OverlayPosition, OverlayState, AdvancedOverlayState } from '../types.ts';
 
 // M9: the Overlay Settings content renderer - the old page module's export
 // (the fan-editor.ts precedent: the old page shell moved into the
@@ -186,6 +186,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   try {
     advancedOverlayState = await api.advancedOverlayGetState();
   } catch { /* the card degrades to the persisted state */ }
+  let layoutEnvelope: { activeId: string; layouts: OverlayLayout[] } = { activeId: 'default', layouts: [] };
+  try { layoutEnvelope = await api.overlayLayoutsList(); } catch { /* optional on older profiles */ }
 
   const refresh = async (): Promise<void> => {
     try {
@@ -571,8 +573,28 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         : null,
     ]);
 
+    const activeLayout = layoutEnvelope.layouts.find((item) => item.id === layoutEnvelope.activeId) ?? layoutEnvelope.layouts[0];
+    const layoutName = el('input', { class: 'settings-text-input overlay-layout-name', value: activeLayout?.name ?? 'Default', maxlength: 64, 'aria-label': 'Overlay layout name' }) as HTMLInputElement;
+    const layoutSelect = buildDropdown(activeLayout?.id ?? 'default', layoutEnvelope.layouts.map((item) => ({ value: item.id, label: item.name })), {
+      className: 'overlay-layout-select', ariaLabel: 'Overlay layout',
+      onChange: (id) => void api.overlayLayoutSelect(id).then((next) => { layoutEnvelope = next; render(); }).catch((err) => toast('error', 'Overlay layout', err instanceof Error ? err.message : String(err))),
+    });
+    const layoutCard = el('section', { class: 'card settings-card overlay-layout-card' }, [
+      el('div', { class: 'settings-card-heading' }, [el('h2', { class: 'card-title', text: 'Layout profiles' }), el('span', { class: 'card-note', text: 'Save compact overlay arrangements.' })]),
+      el('div', { class: 'settings-row' }, [el('span', { class: 'settings-row-label', text: 'Active layout' }), layoutSelect]),
+      el('div', { class: 'settings-row overlay-layout-actions' }, [
+        layoutName,
+        el('button', { class: 'btn btn-secondary btn-sm', text: 'Save as new', onClick: () => {
+          const newId = `layout-${Date.now()}`;
+          void api.overlayLayoutSave({ id: newId, name: layoutName.value, position: persisted.position, scale: persisted.scale, theme: persisted.theme, stats: persisted.stats, deviceKeys: persisted.monitoredDeviceKeys, background: { enabled: persisted.bgEnabled, color: persisted.bgColor, opacity: persisted.bgOpacity }, advancedPosition: persisted.advPosition }).then((next) => { layoutEnvelope = next; return api.overlayLayoutSelect(newId); }).then((next) => { layoutEnvelope = next; render(); }).catch((err) => toast('error', 'Overlay layout', err instanceof Error ? err.message : String(err)));
+        } }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Rename', onClick: () => { if (activeLayout) void api.overlayLayoutRename({ id: activeLayout.id, name: layoutName.value }).then((next) => { layoutEnvelope = next; render(); }).catch((err) => toast('error', 'Overlay layout', err instanceof Error ? err.message : String(err))); } }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Delete', disabled: !activeLayout || layoutEnvelope.layouts.length <= 1, onClick: () => { if (activeLayout) void api.overlayLayoutDelete(activeLayout.id).then((next) => { layoutEnvelope = next; render(); }).catch((err) => toast('error', 'Overlay layout', err instanceof Error ? err.message : String(err))); } }),
+      ]),
+    ]);
+
     clear(root);
-    root.append(generalCard, statsCard, appearanceCard, hotkeyCard);
+    root.append(generalCard, layoutCard, statsCard, appearanceCard, hotkeyCard);
   };
 
   // --- M6 handlers (every save goes through profiles-settings-save;

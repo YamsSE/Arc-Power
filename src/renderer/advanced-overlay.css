@@ -609,6 +609,11 @@ html, body {
 }
 
 .adv-recording-location .btn { padding: 5px 8px; font-size: 10.5px; }
+.adv-stream-panel { border-color: rgba(72, 188, 255, .34); }
+.adv-stream-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; align-items: center; }
+.adv-stream-controls .adv-recording-select { min-width: 0; }
+.adv-stream-controls .btn:first-child { grid-column: 1 / -1; }
+@media (max-width: 420px) { .adv-stream-controls { grid-template-columns: 1fr; } .adv-stream-controls .btn:first-child { grid-column: auto; } }
 .adv-recording-loading { color: var(--text-muted); font-size: 12px; }
 
 /* ----------------------------------------------------------------- footer */

@@ -1196,6 +1196,9 @@ export function createIpcHandlers({
   recordingCaptureTargets = null,
   stabilityLab = null,
   stabilityStore = null,
+  overlayLayoutStore = null,
+  obsStream = null,
+  applyOverlayLayout = async () => {},
 }) {
   // D2: the real app injects its sidecar store, while tests can provide an
   // in-memory adapter. The fallback is isolated to the ProfileStore data
@@ -2649,6 +2652,44 @@ export function createIpcHandlers({
         if (args.length) throw new Error('stability-report-latest takes no arguments');
         return labStore.latest?.() ?? null;
       },
+
+      'overlay-layouts-list': async (...args) => {
+        if (args.length) throw new Error('overlay-layouts-list takes no arguments');
+        return overlayLayoutStore?.load?.() ?? { activeId: null, layouts: [] };
+      },
+      'overlay-layout-save': async (layout) => {
+        if (!overlayLayoutStore?.save) throw new Error('Overlay layouts are unavailable');
+        const data = overlayLayoutStore.save(layout);
+        const selected = data.layouts.find((item) => item.id === data.activeId) ?? data.layouts[0];
+        if (selected) await applyOverlayLayout(selected);
+        return data;
+      },
+      'overlay-layout-rename': async ({ id, name } = {}) => {
+        const data = overlayLayoutStore.rename(id, name);
+        return data;
+      },
+      'overlay-layout-select': async (id) => {
+        const data = overlayLayoutStore.select(id);
+        const selected = data.layouts.find((item) => item.id === data.activeId);
+        if (selected) await applyOverlayLayout(selected);
+        return data;
+      },
+      'overlay-layout-delete': async (id) => {
+        const data = overlayLayoutStore.delete(id);
+        const selected = data.layouts.find((item) => item.id === data.activeId);
+        if (selected) await applyOverlayLayout(selected);
+        return data;
+      },
+      'stream-status': async () => obsStream?.status?.() ?? { state: 'disconnected', connected: false },
+      'stream-connect': async (payload = {}) => obsStream?.connect?.(payload) ?? { state: 'error', connected: false },
+      'stream-disconnect': async () => obsStream?.disconnect?.() ?? { state: 'disconnected', connected: false },
+      'stream-scenes': async () => obsStream?.scenes?.() ?? [],
+      'stream-scene-set': async ({ sceneId, sceneName } = {}) => obsStream?.setScene?.(sceneId, sceneName),
+      'stream-start': async () => obsStream?.startStream?.(),
+      'stream-stop': async () => obsStream?.stopStream?.(),
+      'stream-microphone-mute': async ({ inputId, muted } = {}) => obsStream?.setMicrophoneMute?.(inputId, muted),
+      'stream-duck': async () => obsStream?.duck?.(),
+      'stream-duck-restore': async () => obsStream?.restoreDucking?.(),
 
       // M17d (round-1 S2): the vendor-lane STATIC-INFO read - the no-Intel
       // dashboard VRAM/Compute rows' source ({ vramBytes, computeCores } -

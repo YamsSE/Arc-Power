@@ -43,7 +43,7 @@ import { buildDropdown, closeDropdownMenus, type DropdownElement } from './compo
 import { ensureWaiver } from './components/waiver-dialog.ts';
 import { Store } from './router.ts';
 import type { PageContext } from './router.ts';
-import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, RecordingCaptureTarget, RecordingCaptureTargets, RecordingEngineState, RecordingResolution, RecordingSettings, RecordingSettingsPatch, TelemetrySample } from './types.ts';
+import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, RecordingCaptureTarget, RecordingCaptureTargets, RecordingEngineState, RecordingResolution, RecordingSettings, RecordingSettingsPatch, StreamScene, StreamStatus, TelemetrySample } from './types.ts';
 import {
   snapToRange,
   normalizedPosition,
@@ -153,6 +153,10 @@ let recordingQuickActionBusy = false;
 let recordingQuickApplying = false;
 let recordingQuickDirty = false;
 let recordingQuickError: string | null = null;
+let streamQuickStatus: StreamStatus = { state: 'disconnected', connected: false };
+let streamQuickScenes: StreamScene[] = [];
+let streamQuickSceneId: string | null = null;
+let streamQuickBusy = false;
 
 function cloneRecordingQuickSettings(value: RecordingSettings): RecordingSettings {
   return {
@@ -1364,6 +1368,45 @@ function renderRecordingQuickSettings(): HTMLElement {
   ]);
 }
 
+async function loadStreamQuick(): Promise<void> {
+  try {
+    streamQuickStatus = await api.streamStatus();
+    if (streamQuickStatus.connected) streamQuickScenes = await api.streamScenes();
+    streamQuickSceneId = streamQuickStatus.sceneId ?? streamQuickScenes[0]?.id ?? null;
+  } catch (error) { streamQuickStatus = { state: 'error', connected: false, error: error instanceof Error ? error.message : String(error) }; }
+}
+
+function renderStreamMode(): HTMLElement {
+  const connected = streamQuickStatus.connected;
+  const streaming = streamQuickStatus.state === 'streaming';
+  const host = el('input', { class: 'adv-recording-number adv-stream-text', value: '127.0.0.1', placeholder: 'OBS host', 'aria-label': 'OBS host' }) as HTMLInputElement;
+  const port = el('input', { class: 'adv-recording-number', type: 'number', min: 1, max: 65535, value: 4455, 'aria-label': 'OBS WebSocket port' }) as HTMLInputElement;
+  const password = el('input', { class: 'adv-recording-number adv-stream-text', type: 'password', placeholder: 'OBS password (optional)', 'aria-label': 'OBS password' }) as HTMLInputElement;
+  const scene = recordingQuickSelect(streamQuickSceneId ?? '', streamQuickScenes.map((item) => [item.id, item.name]), (value) => {
+    streamQuickSceneId = value;
+    void api.streamSceneSet({ sceneId: value }).then((next) => { streamQuickStatus = next; renderRecording(); }).catch((err) => toast('error', 'OBS scene', err instanceof Error ? err.message : String(err)));
+  }, 'OBS scene');
+  const connect = recordingQuickButton(connected ? 'Disconnect OBS' : 'Connect OBS', () => {
+    streamQuickBusy = true; renderRecording();
+    const task = connected ? api.streamDisconnect() : api.streamConnect({ host: host.value || '127.0.0.1', port: Number(port.value) || 4455, password: password.value || undefined });
+    void task.then((next) => { streamQuickStatus = next; return next.connected ? api.streamScenes() : []; }).then((scenes) => { streamQuickScenes = scenes; streamQuickBusy = false; renderRecording(); }).catch((err) => { streamQuickStatus = { state: 'error', connected: false, error: err instanceof Error ? err.message : String(err) }; streamQuickBusy = false; renderRecording(); });
+  }, 'btn btn-secondary', streamQuickBusy);
+  const stream = recordingQuickButton(streaming ? 'Stop stream' : 'Start stream', () => {
+    streamQuickBusy = true; renderRecording();
+    void (streaming ? api.streamStop() : api.streamStart()).then((next) => { streamQuickStatus = next; }).catch((err) => { streamQuickStatus = { ...streamQuickStatus, state: 'error', error: err instanceof Error ? err.message : String(err) }; }).finally(() => { streamQuickBusy = false; renderRecording(); });
+  }, `btn ${streaming ? 'btn-recording-stop' : 'btn-primary'}`, !connected || streamQuickBusy);
+  const mute = recordingQuickButton('Mute microphone', () => void api.streamMicrophoneMute({ muted: true }).catch((err) => toast('error', 'OBS microphone', err instanceof Error ? err.message : String(err))), 'btn btn-secondary', !connected || streamQuickBusy);
+  const duck = recordingQuickButton('Duck desktop audio', () => void api.streamDuck().catch((err) => toast('error', 'OBS ducking', err instanceof Error ? err.message : String(err))), 'btn btn-secondary', !connected || streamQuickBusy);
+  return el('section', { class: 'adv-recording-panel adv-stream-panel' }, [
+    el('div', { class: 'adv-recording-panel-heading adv-recording-panel-heading-compact' }, [
+      el('div', {}, [el('span', { class: 'adv-recording-eyebrow', text: 'Stream mode' }), el('h2', { class: 'adv-recording-panel-title', text: connected ? (streaming ? 'Streaming' : 'OBS connected') : 'OBS disconnected' })]),
+      el('span', { class: `adv-recording-status-dot${streaming ? ' is-live' : ''}`, 'aria-hidden': 'true' }),
+    ]),
+    el('div', { class: 'adv-stream-controls' }, [host, port, password, connect, scene, stream, mute, duck]),
+    streamQuickStatus.error ? el('p', { class: 'adv-recording-error', text: streamQuickStatus.error }) : el('p', { class: 'adv-recording-panel-note', text: 'OBS WebSocket is optional; Arc Power stays honest when OBS is unavailable.' }),
+  ]);
+}
+
 function renderRecording(): void {
   closeOpenAdvancedMenu();
   clear(contentEl);
@@ -1375,8 +1418,9 @@ function renderRecording(): void {
     if (!recordingQuickLoading && !recordingQuickSettings) void loadRecordingQuick();
     return;
   }
-  view.append(renderRecordingQuickActions(), renderRecordingQuickSettings());
+  view.append(renderRecordingQuickActions(), renderRecordingQuickSettings(), renderStreamMode());
   contentEl.append(view);
+  if (!streamQuickStatus.connected && streamQuickStatus.state === 'disconnected') void loadStreamQuick();
 }
 
 // ---------------------------------------------------------------------------

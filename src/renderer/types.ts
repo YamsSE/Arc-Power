@@ -580,6 +580,22 @@ export interface StabilityReport {
   driverErrorCount?: number;
 }
 
+export interface OverlayLayout {
+  id: string;
+  name: string;
+  position: OverlayPosition;
+  scale: number;
+  theme: 'classic' | 'arc';
+  stats: string[];
+  deviceKeys: string[] | null;
+  background: { enabled: boolean; color: string; opacity: number };
+  advancedPosition: 'left' | 'right';
+}
+export interface OverlayLayoutsEnvelope { activeId: string; layouts: OverlayLayout[]; }
+export type StreamState = 'disconnected' | 'connecting' | 'connected' | 'streaming' | 'error';
+export interface StreamStatus { state: StreamState; connected: boolean; sceneName?: string | null; sceneId?: string | null; microphoneMuted?: boolean | null; error?: string | null; }
+export interface StreamScene { id: string; name: string; }
+
 /** A saved profile (mirrors the main-process Profile typedef). */
 export interface Profile {
   id: string;

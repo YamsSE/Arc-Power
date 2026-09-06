@@ -53,6 +53,10 @@ import type {
   TelemetrySample,
   StabilityReport,
   StabilityRunStatus,
+  OverlayLayout,
+  OverlayLayoutsEnvelope,
+  StreamScene,
+  StreamStatus,
   VendorDeviceInfo,
 } from './types.ts';
 
@@ -132,6 +136,21 @@ export interface ArcPowerApi {
   stabilityRunCancel(runId?: string): Promise<StabilityReport | StabilityRunStatus | null>;
   stabilityReportsList(): Promise<StabilityReport[]>;
   stabilityReportLatest(): Promise<StabilityReport | null>;
+  overlayLayoutsList(): Promise<OverlayLayoutsEnvelope>;
+  overlayLayoutSave(layout: Partial<OverlayLayout> & { id: string; name: string }): Promise<OverlayLayoutsEnvelope>;
+  overlayLayoutRename(payload: { id: string; name: string }): Promise<OverlayLayoutsEnvelope>;
+  overlayLayoutSelect(id: string): Promise<OverlayLayoutsEnvelope>;
+  overlayLayoutDelete(id: string): Promise<OverlayLayoutsEnvelope>;
+  streamStatus(): Promise<StreamStatus>;
+  streamConnect(payload?: { host?: string; port?: number; password?: string; sceneId?: string | null; sceneName?: string | null; microphoneInputId?: string | null; ducking?: Record<string, unknown> }): Promise<StreamStatus>;
+  streamDisconnect(): Promise<StreamStatus>;
+  streamScenes(): Promise<StreamScene[]>;
+  streamSceneSet(payload: { sceneId?: string | null; sceneName?: string | null }): Promise<StreamStatus>;
+  streamStart(): Promise<StreamStatus>;
+  streamStop(): Promise<StreamStatus>;
+  streamMicrophoneMute(payload: { inputId?: string | null; muted: boolean }): Promise<{ muted: boolean }>;
+  streamDuck(): Promise<{ applied: boolean }>;
+  streamDuckRestore(): Promise<{ restored: boolean }>;
   /** M3-A (read-side only): the registry-hacks catalog + live states. */
   registryCatalog(): Promise<RegistryCatalogResponse>;
   /** M3-B: apply one catalog action ELEVATED (Enable/Disable/Revert per the
