@@ -3367,6 +3367,54 @@ input[type="number"] {
 .recording-apm-ruler { display: flex; justify-content: space-between; color: var(--text-dim); font: 10px var(--mono); }
 .recording-player-marker-badges { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .recording-player-marker-badge { display: inline-flex; padding: 4px 7px; border: 1px solid color-mix(in srgb, var(--accent) 46%, var(--border)); border-radius: 999px; background: color-mix(in srgb, var(--accent) 9%, var(--bg-elev)); color: var(--accent); font: 10px var(--mono); }
+.recording-apm-tracker { gap: 12px; padding: 14px 15px 11px; border-color: color-mix(in srgb, #9b4dff 30%, var(--border)); background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 90%, #101d31), #111521); }
+.recording-apm-heading { align-items: flex-start; }
+.recording-apm-heading strong { margin-top: 4px; color: var(--text); font-size: 14px; }
+.recording-apm-heading-actions { display: flex; align-items: center; gap: 7px; }
+.recording-apm-heading-actions .btn { min-height: 29px; padding: 5px 11px; }
+.recording-apm-heading-actions .btn-primary { background: #1e9fe0; border-color: #39c6ff; color: #03131f; }
+.recording-apm-heading-actions .btn-secondary { border-color: color-mix(in srgb, #9b4dff 38%, var(--border-strong)); }
+.recording-apm-average { gap: 7px; color: var(--text-dim); }
+.recording-apm-average strong { color: #c084ff; font-size: 14px; }
+.recording-apm-average .recording-apm-live { margin-left: auto; color: var(--text-dim); }
+.recording-apm-chart { height: 72px; padding: 7px 0 11px; border-top-color: color-mix(in srgb, #9b4dff 22%, var(--border)); border-bottom-color: color-mix(in srgb, #9b4dff 22%, var(--border)); }
+.recording-apm-empty-trace { position: absolute; right: 0; bottom: 18px; left: 0; height: 2px; background: repeating-linear-gradient(90deg, color-mix(in srgb, #9b4dff 72%, transparent) 0 8px, transparent 8px 14px); opacity: .7; }
+.recording-apm-chart::after { position: absolute; right: 0; bottom: 8px; left: 0; height: 1px; background: color-mix(in srgb, var(--border) 88%, transparent); content: ''; }
+.recording-apm-marker-rail { position: absolute; inset: 2px 0 22px; z-index: 2; }
+.recording-apm-marker, .recording-editor-marker { position: absolute; left: var(--marker); display: grid; place-items: center; width: 22px; height: 22px; padding: 0; transform: translateX(-50%); border: 1px solid color-mix(in srgb, #d6b5ff 35%, #4a5368); border-radius: 50%; background: #3b3f4e; color: #f3eaff; font: 650 9px var(--mono); box-shadow: 0 2px 8px rgba(0, 0, 0, .3); }
+.recording-apm-marker:hover, .recording-apm-marker:focus-visible, .recording-editor-marker:hover, .recording-editor-marker:focus-visible { border-color: #c084ff; color: #fff; outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, #9b4dff 34%, transparent); }
+.recording-apm-ruler { font-size: 10px; }
+.recording-apm-tracker.is-apm-collapsed .recording-apm-average, .recording-apm-tracker.is-apm-collapsed .recording-apm-chart, .recording-apm-tracker.is-apm-collapsed .recording-apm-ruler { display: none; }
+.recording-apm-tracker.is-apm-collapsed { gap: 0; }
+.recording-editor-drawer[hidden] { display: none; }
+.recording-editor-ascent { gap: 0; padding: 15px 16px 13px; border-color: color-mix(in srgb, #9b4dff 42%, var(--border)); background: linear-gradient(145deg, #162235, #101521 72%); }
+.recording-editor-ascent .recording-editor-header { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto minmax(108px, auto) auto auto; align-items: end; gap: 8px; }
+.recording-editor-ascent .recording-editor-clip-name { width: 100%; min-width: 0; flex: none; min-height: 33px; border-color: color-mix(in srgb, #7894be 46%, var(--border-strong)); background: #080d17; }
+.recording-editor-time-field, .recording-editor-audio-field { display: flex; flex-direction: column; gap: 4px; color: var(--text-dim); font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.recording-editor-time-field .recording-editor-time-input { width: 76px; min-height: 33px; background: #080d17; }
+.recording-editor-audio-field .recording-editor-audio-menu { min-width: 112px; min-height: 33px; }
+.recording-editor-ascent .recording-editor-header > .btn { min-height: 33px; white-space: nowrap; }
+.recording-editor-ascent .recording-editor-header > .btn.btn-primary { border-color: #38c5ff; background: #1e9fe0; color: #03131f; box-shadow: 0 0 14px rgba(56, 197, 255, .15); }
+.recording-editor-selection-toolbar { display: flex; align-items: center; gap: 7px; min-height: 38px; margin-top: 13px; color: var(--text-dim); font-size: 11px; }
+.recording-editor-clip-duration { color: var(--text); font-weight: 650; }
+.recording-editor-selection-toolbar .recording-editor-duration { color: #c084ff; }
+.recording-editor-timeline-actions { display: flex; align-items: center; gap: 7px; margin-left: auto; }
+.recording-editor-timeline-actions .btn { min-height: 29px; }
+.recording-editor-selected-timeline { gap: 6px; padding: 1px 0 2px; }
+.recording-editor-range-track { min-height: 68px; padding-top: 27px; }
+.recording-editor-range-track::before { top: 39px; height: 8px; background: #4e5665; }
+.recording-editor-selection-fill { position: absolute; top: 39px; z-index: 1; height: 8px; min-width: 2px; border-radius: 999px; background: linear-gradient(90deg, #6e42bf, #a85bff 58%, #c47eff); box-shadow: 0 0 14px rgba(155, 77, 255, .26); }
+.recording-editor-range-track .recording-editor-range { position: absolute; top: 30px; right: 0; left: 0; z-index: 3; height: 26px; margin: 0; }
+.recording-editor-range-track .recording-editor-range::-webkit-slider-thumb { width: 15px; height: 15px; margin-top: -4px; border: 2px solid #38c5ff; border-radius: 50%; background: #162235; box-shadow: 0 0 0 2px rgba(56, 197, 255, .16); }
+.recording-editor-range-track .recording-editor-range::-moz-range-thumb { width: 11px; height: 11px; border: 2px solid #38c5ff; border-radius: 50%; background: #162235; box-shadow: 0 0 0 2px rgba(56, 197, 255, .16); }
+.recording-editor-marker-rail { position: absolute; top: 0; right: 0; left: 0; z-index: 4; height: 28px; }
+.recording-editor-marker { top: 0; width: 21px; height: 21px; cursor: pointer; }
+.recording-editor-range-labels { display: flex; justify-content: space-between; padding: 0 2px; color: var(--text-dim); font: 10px var(--mono); }
+.recording-editor-gif-options { align-items: center; min-height: 38px; margin-top: 5px; padding-top: 8px; border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent); }
+.recording-editor-footer { min-height: 29px; margin-top: 5px; }
+.recording-editor-footer .recording-editor-status { color: var(--text-dim); }
+@media (max-width: 900px) { .recording-editor-ascent .recording-editor-header { grid-template-columns: minmax(150px, 1fr) auto auto; } .recording-editor-ascent .recording-editor-audio-field { grid-column: span 1; } }
+@media (max-width: 620px) { .recording-editor-ascent .recording-editor-header { grid-template-columns: 1fr 1fr; } .recording-editor-ascent .recording-editor-clip-name, .recording-editor-ascent .recording-editor-audio-field { grid-column: 1 / -1; } .recording-editor-timeline-actions { margin-left: 0; } .recording-apm-heading { flex-direction: column; } .recording-apm-heading-actions { width: 100%; } }
 @media (max-width: 1050px) { .recording-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .recording-heading, .recording-library-toolbar, .recording-player-view-heading { flex-direction: column; align-items: stretch; } .recording-player-heading-actions { margin-left: 0; } .recording-tabs, .recording-search { width: 100%; } .recording-tab { flex: 1; } .recording-settings-grid, .recording-storage-panel, .recording-audio-sections, .recording-quickstart-grid, .recording-capture-target-row { grid-template-columns: 1fr; } .recording-storage-panel .recording-panel-heading { grid-column: auto; } .recording-panel-heading { flex-direction: column; } .recording-storage-heading-meta { width: 100%; justify-content: space-between; } .recording-hotkey-row { grid-template-columns: 1fr 150px; } .recording-hotkey-warning, .recording-hotkey-registered { grid-column: 1 / -1; } .recording-library-actions { flex-wrap: wrap; } .recording-library-actions .recording-search { flex-basis: 100%; } .recording-player-controls { flex-wrap: wrap; } .recording-player-volume { flex: 1; } .recording-player-brand { display: none; } .recording-player-timeline-ruler { padding-inline: 43px; } .recording-target-refresh { width: max-content; } }
 .recording-delete-modal { width: min(460px, calc(100vw - 32px)); }

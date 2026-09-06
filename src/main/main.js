@@ -3550,10 +3550,13 @@ async function main() {
     const response = await recordingEngine.saveReplayClip(request);
     const settings = await recordingStore.settings();
     const location = recordingAbsolutePath(settings.location, 'location');
+    const responsePath = typeof response?.path === 'string' && path.dirname(path.resolve(response.path)) === path.resolve(location)
+      ? response.path
+      : request.path;
     const metadata = await persistReplayClipMetadata({
       recordingStore,
       recordingRoot: location,
-      outputPath: request.path,
+      outputPath: responsePath,
       readyPayload: response,
     });
     return { response, ...metadata };

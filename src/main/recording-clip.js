@@ -95,6 +95,18 @@ function hasUsableFile(fsImpl, filePath) {
   } catch { return false; }
 }
 
+function availableFallbackPath(filePath, fsImpl) {
+  const parsed = path.parse(filePath);
+  for (let index = 1; index <= 100; index += 1) {
+    const suffix = index === 1 ? ' (trimmed)' : ` (trimmed ${index})`;
+    const candidate = path.join(parsed.dir, `${parsed.name}${suffix}${parsed.ext || '.mp4'}`);
+    try { fsImpl.lstatSync(candidate); } catch (error) {
+      if (error?.code === 'ENOENT') return candidate;
+    }
+  }
+  return null;
+}
+
 /**
  * Bound a replay clip to the requested tail duration without touching the
  * original until the replacement file has completed successfully. If the
@@ -113,16 +125,39 @@ export async function trimRecordingClipToDuration(filePath, durationMs, {
   if (!hasUsableFile(fsImpl, filePath)) return false;
   const temporaryPath = `${filePath}.arc-trim-${tempSuffix}.tmp`;
   if (path.resolve(temporaryPath) === path.resolve(filePath)) return false;
+  let publishedFallbackPath = null;
   try {
     if (!await runTrim(spawn, ffmpegPath, filePath, temporaryPath, durationMs) || !hasUsableFile(fsImpl, temporaryPath)) return false;
     const backupPath = `${filePath}.arc-original-${tempSuffix}.tmp`;
-    await retryFileOperation(() => fsImpl.renameSync(filePath, backupPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
+    try {
+      await retryFileOperation(() => fsImpl.renameSync(filePath, backupPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
+    } catch (originalError) {
+      // Ascent can keep the native output handle open after it has emitted
+      // replay-ready. Do not delete the valid native clip just because its
+      // requested filename cannot be replaced yet. Publish the bounded copy
+      // beside it and let the caller persist that actual path.
+      const fallbackPath = availableFallbackPath(filePath, fsImpl);
+      if (!fallbackPath) throw originalError;
+      await retryFileOperation(() => fsImpl.renameSync(temporaryPath, fallbackPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
+      publishedFallbackPath = fallbackPath;
+      return { ok: true, path: fallbackPath, bounded: true, fallback: true };
+    }
     try {
       await retryFileOperation(() => fsImpl.renameSync(temporaryPath, filePath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
     } catch (error) {
       try {
         await retryFileOperation(() => fsImpl.renameSync(backupPath, filePath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
-      } catch { /* preserve the recoverable backup */ }
+      } catch {
+        // If the original handle is still held, preserve both recoverable
+        // files by publishing the completed bounded output under a sibling
+        // path instead of turning a valid capture into a failed save.
+        const fallbackPath = availableFallbackPath(filePath, fsImpl);
+        if (fallbackPath) {
+          await retryFileOperation(() => fsImpl.renameSync(temporaryPath, fallbackPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
+          publishedFallbackPath = fallbackPath;
+          return { ok: true, path: fallbackPath, bounded: true, fallback: true };
+        }
+      }
       throw error;
     }
     try {
@@ -135,11 +170,13 @@ export async function trimRecordingClipToDuration(filePath, durationMs, {
   } catch {
     return false;
   } finally {
-    try {
-      await retryFileOperation(() => fsImpl.unlinkSync(temporaryPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
-    } catch {
-      // A failed replacement never removes the original. The temp remains
-      // recoverable if a third-party handle outlives this bounded cleanup.
+    if (!publishedFallbackPath) {
+      try {
+        await retryFileOperation(() => fsImpl.unlinkSync(temporaryPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
+      } catch {
+        // A failed replacement never removes the original. The temp remains
+        // recoverable if a third-party handle outlives this bounded cleanup.
+      }
     }
   }
 }

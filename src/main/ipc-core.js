@@ -1990,6 +1990,17 @@ export function createIpcHandlers({
         // last snapshot as the current tick's sample.
         await startTelemetry(target.id, true);
         const sample = latestTelemetry.get(target.id) ?? null;
+        const targetKeys = new Set([
+          target.deviceKey,
+          ...(Array.isArray(target.deviceKeys) ? target.deviceKeys : []),
+        ].filter((key) => typeof key === 'string' && key.length > 0));
+        const sampleKey = typeof sample?.deviceKey === 'string' ? sample.deviceKey : null;
+        // latestTelemetry is internally indexed by a session id, but that id
+        // can be reused after an inventory refresh. Require the sample's own
+        // durable identity to agree with the run target before exposing it
+        // as evidence; an ordinal match alone is unsafe and degrades to an
+        // honest unavailable sample.
+        const identityMatches = sampleKey !== null && targetKeys.has(sampleKey);
         const receivedAtMs = Date.now();
         let fpsSample = null;
         try {
@@ -1998,7 +2009,13 @@ export function createIpcHandlers({
         } catch { fpsSample = null; }
         let foregroundProcess = null;
         try { foregroundProcess = await foregroundApi.detectProcess?.() ?? null; } catch { foregroundProcess = null; }
-        return { sample, receivedAtMs, fpsSample, foregroundProcess, readError: sample ? null : 'telemetry sample unavailable' };
+        return {
+          sample: identityMatches ? sample : null,
+          receivedAtMs,
+          fpsSample,
+          foregroundProcess,
+          readError: identityMatches ? null : sample ? 'telemetry sample identity mismatch' : 'telemetry sample unavailable',
+        };
       },
       settingsSnapshot: async (target) => backend.getCurrentSettings?.(target.id) ?? {},
       onStatus: (status) => emit('stability:status', status),
@@ -3125,15 +3142,18 @@ export function createIpcHandlers({
         fs.mkdirSync(location, { recursive: true });
         const outputPath = collisionSafeRecordingPath(location, 'clip', { exists: (candidate) => fs.existsSync(candidate) });
         const response = await recordingEngine.saveReplayClip({ path: outputPath, headDuration: headDurationMs, thumbnailFolder: location });
+        const responsePath = typeof response?.path === 'string' && path.dirname(path.resolve(response.path)) === path.resolve(location)
+          ? response.path
+          : outputPath;
         const metadata = await persistReplayClipMetadata({
           recordingStore,
           recordingRoot: location,
-          outputPath,
+          outputPath: responsePath,
           readyPayload: response,
         });
         return {
           response,
-          outputPath: path.basename(outputPath),
+          outputPath: path.basename(responsePath),
           clip: metadata.clip,
           markerMapping: metadata.markerMapping,
           instantReplaySave: recordingEngine.getState?.().instantReplaySave ?? null,

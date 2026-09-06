@@ -1072,7 +1072,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     if (typeof trimReplayClip !== 'function') return false;
     if (!fileReady && !await waitForReplayFile(clipPath)) return false;
     try {
-      return await trimReplayClip({ path: clipPath, durationMs: headDuration }) === true;
+      const result = await trimReplayClip({ path: clipPath, durationMs: headDuration });
+      if (result === true) return clipPath;
+      if (result && typeof result.path === 'string' && result.path.trim()) return result.path;
+      return false;
     } catch {
       return false;
     }
@@ -1080,7 +1083,8 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
 
   async function enforceReplayClipDuration(clipPath, headDuration, fileReady = false) {
     if (typeof trimReplayClip !== 'function') return;
-    if (await boundReplayClip(clipPath, headDuration, fileReady)) return;
+    const boundedPath = await boundReplayClip(clipPath, headDuration, fileReady);
+    if (boundedPath) return boundedPath;
     // Ascent can still hold the finalized replay output briefly after its
     // ready/error response. Use the same bounded cleanup retry as the outer
     // failure path so a transient Windows EBUSY does not turn a recoverable
@@ -1114,7 +1118,9 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       sessionId: sourceSessionId,
       sourceSessionId,
       identifier: response?.identifier ?? activeReplay?.identifier ?? null,
-      path: response?.path ?? clipPath,
+      // The bounded path is authoritative when the original native output
+      // was still locked and the trim helper published a sibling fallback.
+      path: clipPath,
       durationMs: Math.max(0, end - start),
       sourceStartMs: start,
       sourceEndMs: end,
@@ -1122,7 +1128,8 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     };
   }
 
-  async function saveReplayClipInternal({ path: clipPath, headDuration, thumbnailFolder }) {
+  async function saveReplayClipInternal({ path: initialClipPath, headDuration, thumbnailFolder }) {
+    let clipPath = initialClipPath;
     const activeReplay = activeRecorders.get('replay');
     const publishSaveError = (error) => {
       publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.ERROR, {
@@ -1155,7 +1162,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // The native replay output can include the previous keyframe/PTS lead-in
       // even when the requested head duration is shorter. Bound the completed
       // file to the requested tail after the runtime has released it.
-      await enforceReplayClipDuration(clipPath, durationMs);
+      clipPath = await enforceReplayClipDuration(clipPath, durationMs) ?? clipPath;
       publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.READY, { outputPath: clipPath, updatedAt: clock() });
       return replayReadyPayload(response, activeReplay, clipPath, thumbnailFolder, durationMs);
     } catch (error) {
@@ -1172,7 +1179,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
         // "not capturing" error. That file is still authoritative, but it
         // must go through the same duration bound as the normal success path.
         try {
-          await enforceReplayClipDuration(clipPath, durationMs, true);
+          clipPath = await enforceReplayClipDuration(clipPath, durationMs, true) ?? clipPath;
           publish({ error: null });
           publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.READY, { outputPath: clipPath, updatedAt: clock() });
           return replayReadyPayload({ event: ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY, identifier: bufferIdentifier, path: clipPath }, activeReplay, clipPath, thumbnailFolder, durationMs);

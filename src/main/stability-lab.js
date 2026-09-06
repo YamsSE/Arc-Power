@@ -91,13 +91,25 @@ export function createStabilityLabService({
       await finish(run, 'unavailable', 'selected device changed or is no longer available');
       return;
     }
+    // The durable key is the run's authority. The numeric session id can be
+    // rebuilt when the inventory refreshes, so sample the freshly resolved
+    // target instead of the id captured at start. Keeping this handoff
+    // identity keyed also prevents a reordered inventory from redirecting a
+    // run to another physical adapter.
+    const sampledTarget = {
+      ...run.target,
+      id: Number.isInteger(liveTarget.id) ? liveTarget.id : null,
+      name: liveTarget.name ?? run.target.name ?? null,
+      deviceKey: run.target.deviceKey,
+    };
+    run.target = sampledTarget;
     let data;
     try {
-      data = await sampleTarget(run.target);
+      data = await sampleTarget(sampledTarget);
       if (!data) data = {};
     } catch (error) { data = { readError: error.message }; }
     if (active !== run || run.finished) return;
-    const probe = data.foregroundProcess === undefined ? await workloadProbe(run.target).catch(() => null) : data.foregroundProcess;
+    const probe = data.foregroundProcess === undefined ? await workloadProbe(sampledTarget).catch(() => null) : data.foregroundProcess;
     // Freshness is measured at the main-process receipt boundary. Driver
     // counters may be seconds since boot or another relative clock; retain
     // that source timestamp without comparing it to Date.now().
