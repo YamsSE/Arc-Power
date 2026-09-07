@@ -1168,6 +1168,54 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }
   }
 
+  // A few Ascent builds can leave the private clip capture in an unknown
+  // state after a mux/trim failure.  Clearing only the JavaScript marker is
+  // insufficient: the next START_REPLAY_CAPTURE is then rejected as already
+  // active.  Recycle the replay buffer itself so the next Save Clip starts
+  // from a clean native capture session.  A manual recording keeps the
+  // shared child alive; when replay is the only active mode, a failed buffer
+  // stop is recovered by retiring that child and starting a fresh one.
+  async function restartReplayBufferAfterCaptureFailure() {
+    const replayRecorder = activeRecorders.get('replay');
+    const settings = replayRecorder?.settings;
+    if (!replayRecorder || !settings) return false;
+    try {
+      await stopInternal('replay');
+    } catch (stopError) {
+      if (activeRecorders.has('video') || startingRecorders.has('video')) {
+        publish({ error: `Replay capture recovery could not stop the shared runtime: ${stopError?.message ?? String(stopError)}` });
+        return false;
+      }
+      const target = child;
+      if (target) {
+        retiredChildren.add(target);
+        try { target.kill(); } catch { /* best effort */ }
+        if (child === target) child = null;
+      }
+      activeRecorders.delete('replay');
+      startingRecorders.delete('replay');
+      stopApmSession(replayRecorder);
+      replayCapture = null;
+      replayCaptureReadyAt = 0;
+      freshChildRequired = false;
+      closingChild = null;
+      terminationStarted = false;
+      machineInfoReady = false;
+      const restartError = new Error(`Ascent replay buffer restarted after capture recovery failed: ${stopError?.message ?? String(stopError)}`);
+      rejectPending(restartError);
+      rejectQueued(restartError);
+    }
+    replayCapture = null;
+    replayCaptureReadyAt = 0;
+    try {
+      await startInternal(settings, 'replay', false);
+      return true;
+    } catch (error) {
+      publish({ error: `Instant Replay could not restart after capture finalization failed: ${error?.message ?? String(error)}` });
+      return false;
+    }
+  }
+
   async function waitForReplayFile(filePath, timeoutMs = REPLAY_FILE_WAIT_MS, stableMs = REPLAY_FILE_STABLE_MS) {
     const fileState = () => {
       try {
@@ -1387,7 +1435,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     let nativeClipPath = initialClipPath;
     let replaySourcePath = initialClipPath;
     const initialClipExisted = usableReplayFile(initialClipPath);
-    const activeReplay = activeRecorders.get('replay');
+    let activeReplay = activeRecorders.get('replay');
     const publishSaveError = (error) => {
       publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.ERROR, {
         error: error instanceof Error ? error.message : String(error),
@@ -1403,7 +1451,13 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       throw publishSaveError(new Error('Instant Replay duration must be greater than zero'));
     }
     if (replayCapture && !(await recoverReplayCapture())) {
-      throw publishSaveError(new Error('An Instant Replay save is still being finalized; stop and restart Instant Replay before trying again'));
+      if (!(await restartReplayBufferAfterCaptureFailure())) {
+        throw publishSaveError(new Error('An Instant Replay save is still being finalized; stop and restart Instant Replay before trying again'));
+      }
+      activeReplay = activeRecorders.get('replay');
+      if (!activeReplay || activeReplay.type !== ASCENT_RECORDER_TYPES.REPLAY) {
+        throw publishSaveError(new Error('Instant Replay restarted, but its buffer is not active yet'));
+      }
     }
     const bufferIdentifier = activeReplay.identifier;
     const captureIdentifier = nextIdentifier++;
@@ -1476,7 +1530,8 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // already reached replay_ready is cleared locally instead, because a
       // duplicate STOP can hang older Ascent builds.
       if (replayCapture?.bufferIdentifier === bufferIdentifier && (replayCapture.phase !== 'starting' || replayCaptureAlreadyActive(error))) {
-        await recoverReplayCapture();
+        const recovered = await recoverReplayCapture();
+        if (!recovered) await restartReplayBufferAfterCaptureFailure();
       } else {
         replayCapture = null;
       }
