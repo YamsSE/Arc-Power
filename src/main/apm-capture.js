@@ -3,7 +3,10 @@ import koffi from 'koffi';
 // APM is deliberately reduced to counts and timestamps.  We never retain the
 // key/button identity or its value, so the capture can answer "how active was
 // the session?" without becoming an input logger.
-const DEFAULT_POLL_MS = 100;
+// A 100 ms poll made ordinary short taps disappear entirely. Keep the
+// sampler responsive enough for keyboard/mouse transitions while retaining a
+// single shared timer for every active recording session.
+const DEFAULT_POLL_MS = 20;
 const SAMPLE_MS = 1000;
 const MAX_EVENTS = 120_000;
 const MAX_SAMPLES = 86_400;
@@ -30,8 +33,22 @@ function apmFromEvents(events, nowMs, windowMs = 60_000) {
   return Math.max(0, Math.min(6000, Math.round((count * 60_000) / span)));
 }
 
-function safeReadPressed(readKey, vk) {
-  try { return (Number(readKey(vk)) & 0x8000) !== 0; } catch { return false; }
+function readKeyState(readKey, vk) {
+  try {
+    const value = Number(readKey(vk));
+    if (!Number.isFinite(value)) return { ok: false, pressed: false, transitioned: false };
+    const state = value & 0xffff;
+    return {
+      ok: true,
+      // The high bit is the current state. The low bit is the Win32
+      // "pressed since the previous call" transition latch and catches a
+      // press/release that began and ended between two sampler ticks.
+      pressed: (state & 0x8000) !== 0,
+      transitioned: (state & 0x0001) !== 0,
+    };
+  } catch {
+    return { ok: false, pressed: false, transitioned: false };
+  }
 }
 
 /**
@@ -87,12 +104,21 @@ export function createApmCapture({
       session.sourceReady = Boolean(reader);
       const elapsed = finiteMs(now - session.startedAt);
       if (reader) {
+        let readerHealthy = true;
         for (const vk of VK_CODES) {
-          const pressed = safeReadPressed(reader, vk);
-          if (pressed && !session.pressed.has(vk)) session.events.push(elapsed);
+          const state = readKeyState(reader, vk);
+          if (!state.ok) {
+            readerHealthy = false;
+            continue;
+          }
+          const pressed = state.pressed;
+          // Rising edges are counted once. The transition latch additionally
+          // captures quick taps that are no longer held when this tick runs.
+          if ((pressed && !session.pressed.has(vk)) || (state.transitioned && !session.pressed.has(vk))) session.events.push(elapsed);
           if (pressed) session.pressed.add(vk);
           else session.pressed.delete(vk);
         }
+        session.sourceReady = readerHealthy;
       }
       sample(session, now);
     }
@@ -146,13 +172,31 @@ export function createApmCapture({
       const samples = session.samples
         .filter((item) => item.atMs >= start && item.atMs <= end)
         .map((item) => ({ atMs: item.atMs - start, apm: item.apm }));
-      if (!samples.length) return { sessionId: session.sessionId, samples: [], averageApm: null, peakApm: null };
+      if (!samples.length) return { sessionId: session.sessionId, samples: [], averageApm: null, peakApm: null, available: session.sourceReady === true };
       const values = samples.map((item) => item.apm);
       return {
         sessionId: session.sessionId,
         samples,
         averageApm: Math.round(values.reduce((sum, value) => sum + value, 0) / values.length),
         peakApm: Math.max(...values),
+        available: session.sourceReady === true,
+      };
+    },
+    /**
+     * Return the capture's current source status without exposing the input
+     * events themselves.  The recording engine uses this to distinguish a
+     * real, empty (zero-action) capture from a native reader that could not be
+     * loaded.
+     */
+    status(sessionId = null) {
+      const session = sessionId ? sessions.get(sessionId) : [...sessions.values()][0];
+      if (!session) return null;
+      sample(session, clock());
+      return {
+        sessionId: session.sessionId,
+        available: session.sourceReady === true,
+        sampleCount: session.samples.length,
+        startedAt: session.startedAt,
       };
     },
     dispose() { stopTimer(); sessions.clear(); },

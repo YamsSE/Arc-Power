@@ -6,6 +6,7 @@ import { spawn as spawnProcess } from 'node:child_process';
 const TRIM_TIMEOUT_MS = 30000;
 const TRIM_LOCK_RETRY_MS = 3000;
 const TRIM_LOCK_RETRY_DELAY_MS = 50;
+const DURATION_TOLERANCE_MS = 250;
 
 function retryableFileError(error) {
   return ['EBUSY', 'EPERM', 'EACCES'].includes(error?.code);
@@ -59,8 +60,27 @@ export function recordingClipTrimArguments(inputPath, outputPath, durationMs) {
   ];
 }
 
-function runTrim(spawn, executable, inputPath, outputPath, durationMs) {
-  const args = recordingClipTrimArguments(inputPath, outputPath, durationMs);
+export function recordingClipCopyArguments(inputPath, outputPath, durationMs) {
+  const seconds = validDurationSeconds(durationMs);
+  if (!seconds || typeof inputPath !== 'string' || typeof outputPath !== 'string') return null;
+  const duration = seconds.toFixed(3);
+  return [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-nostdin',
+    '-sseof', `-${duration}`,
+    '-i', inputPath,
+    '-map', '0',
+    '-t', duration,
+    '-c', 'copy',
+    '-avoid_negative_ts', 'make_zero',
+    '-movflags', '+faststart',
+    '-f', 'mp4',
+    '-y', outputPath,
+  ];
+}
+
+function runTrim(spawn, executable, args) {
   if (!args) return Promise.resolve(false);
   return new Promise((resolve) => {
     let settled = false;
@@ -88,6 +108,47 @@ function runTrim(spawn, executable, inputPath, outputPath, durationMs) {
   });
 }
 
+function probeDuration(spawn, executable, filePath) {
+  if (typeof executable !== 'string' || !executable || typeof filePath !== 'string' || !filePath) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let settled = false;
+    let child = null;
+    let stdout = '';
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try { child?.kill(); } catch { /* best effort */ }
+      finish(null);
+    }, TRIM_TIMEOUT_MS);
+    try {
+      child = spawn(executable, [
+        '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        '--', filePath,
+      ], {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      child.stdout?.on('data', (chunk) => {
+        stdout = `${stdout}${String(chunk)}`.slice(0, 128);
+      });
+      child.once('error', () => finish(null));
+      child.once('close', (code) => {
+        if (code !== 0) return finish(null);
+        const duration = Number.parseFloat(stdout.trim());
+        finish(Number.isFinite(duration) && duration > 0 ? duration * 1000 : null);
+      });
+    } catch {
+      finish(null);
+    }
+  });
+}
+
 function hasUsableFile(fsImpl, filePath) {
   try {
     const stat = fsImpl.statSync(filePath);
@@ -110,11 +171,12 @@ function availableFallbackPath(filePath, fsImpl) {
 /**
  * Bound a replay clip to the requested tail duration without touching the
  * original until the replacement file has completed successfully. If the
- * optional ffmpeg step is unavailable or fails, the runtime's original clip
- * remains intact and the caller can still report a successful capture.
+ * trim cannot be verified, return false so the caller can fail the save rather
+ * than publish the rolling source as a successful clip.
  */
 export async function trimRecordingClipToDuration(filePath, durationMs, {
   ffmpegPath,
+  ffprobePath,
   spawn = spawnProcess,
   fsImpl = fs,
   tempSuffix = `${process.pid}-${randomUUID()}`,
@@ -124,10 +186,51 @@ export async function trimRecordingClipToDuration(filePath, durationMs, {
   if (typeof filePath !== 'string' || !filePath || typeof ffmpegPath !== 'string' || !ffmpegPath || !validDurationSeconds(durationMs)) return false;
   if (!hasUsableFile(fsImpl, filePath)) return false;
   const temporaryPath = `${filePath}.arc-trim-${tempSuffix}.tmp`;
+  const sourceSnapshotPath = `${filePath}.arc-source-${tempSuffix}.mp4`;
   if (path.resolve(temporaryPath) === path.resolve(filePath)) return false;
   let publishedFallbackPath = null;
+  let sourceForTrim = filePath;
   try {
-    if (!await runTrim(spawn, ffmpegPath, filePath, temporaryPath, durationMs) || !hasUsableFile(fsImpl, temporaryPath)) return false;
+    const outputMatchesDuration = async () => {
+      if (!ffprobePath) return true;
+      const actualDurationMs = await probeDuration(spawn, ffprobePath, temporaryPath);
+      return Number.isFinite(actualDurationMs)
+        && actualDurationMs > 0
+        && actualDurationMs >= Number(durationMs) - DURATION_TOLERANCE_MS
+        && actualDurationMs <= Number(durationMs) + DURATION_TOLERANCE_MS;
+    };
+    const removeTemporary = () => {
+      try { fsImpl.unlinkSync(temporaryPath); } catch { /* no output or a transient lock */ }
+    };
+    const renderBoundedOutput = async (sourcePath) => {
+      // Stream-copy first. Replay clips are already encoded, so this avoids
+      // re-encoding several minutes of video just to keep a ten-second tail.
+      // If a keyframe/PTS lead-in makes the copy too long, use the exact
+      // re-encode below and verify that result before publishing it.
+      if (await runTrim(spawn, ffmpegPath, recordingClipCopyArguments(sourcePath, temporaryPath, durationMs))
+        && hasUsableFile(fsImpl, temporaryPath)
+        && await outputMatchesDuration()) return true;
+      removeTemporary();
+      if (await runTrim(spawn, ffmpegPath, recordingClipTrimArguments(sourcePath, temporaryPath, durationMs))
+        && hasUsableFile(fsImpl, temporaryPath)
+        && await outputMatchesDuration()) return true;
+      removeTemporary();
+      return false;
+    };
+
+    // Read the native output directly first. This is the fast path and avoids
+    // copying a potentially large rolling file before every save. If the
+    // muxer still denies reads, fall back to a snapshot and retry once.
+    if (!await renderBoundedOutput(filePath)) {
+      if (typeof fsImpl.copyFileSync !== 'function') return false;
+      try {
+        await retryFileOperation(() => fsImpl.copyFileSync(filePath, sourceSnapshotPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
+        sourceForTrim = sourceSnapshotPath;
+      } catch {
+        sourceForTrim = filePath;
+      }
+      if (!await renderBoundedOutput(sourceForTrim)) return false;
+    }
     const backupPath = `${filePath}.arc-original-${tempSuffix}.tmp`;
     try {
       await retryFileOperation(() => fsImpl.renameSync(filePath, backupPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
@@ -170,6 +273,12 @@ export async function trimRecordingClipToDuration(filePath, durationMs, {
   } catch {
     return false;
   } finally {
+    try {
+      await retryFileOperation(() => fsImpl.unlinkSync(sourceSnapshotPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
+    } catch {
+      // A source snapshot is only an optimization for a locked native file;
+      // leave it recoverable if a third-party handle outlives this operation.
+    }
     if (!publishedFallbackPath) {
       try {
         await retryFileOperation(() => fsImpl.unlinkSync(temporaryPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });

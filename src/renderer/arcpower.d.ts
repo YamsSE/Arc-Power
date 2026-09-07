@@ -250,12 +250,16 @@ export interface ArcPowerApi {
   recordingChooseFolder(): Promise<{ canceled: boolean; location?: string; settings: RecordingSettings }>;
   recordingOpenFolder(): Promise<{ ok: boolean }>;
   recordingClipUrl(id: string): Promise<string>;
+  recordingClipCopy(id: string): Promise<{ ok: boolean }>;
   recordingClipDelete(id: string): Promise<RecordingClipDeleteResult>;
-  recordingEditorStart(payload: { sourceId: string; operation: 'trim' | 'gif'; startMs: number; endMs: number; maxDurationMs?: number; fps?: number; width?: number; outputName?: string; audio?: 'original' | 'mute' | 'system' }): Promise<RecordingEditorJob>;
+  recordingEditorStart(payload: { sourceId: string; operation: 'trim' | 'gif'; startMs: number; endMs: number; maxDurationMs?: number; fps?: number; width?: number; outputName?: string; audio?: 'original' | 'mute' | 'system' | 'microphone' }): Promise<RecordingEditorJob>;
+  recordingEditorAudio(sourceId: string): Promise<{ system: boolean; microphone: boolean; mixed: boolean }>;
   recordingEditorStatus(jobId: string): Promise<RecordingEditorJob>;
   recordingEditorCancel(jobId: string): Promise<RecordingEditorJob>;
   recordingEditorOpen(jobId: string): Promise<{ ok: boolean }>;
   recordingEditorShare(jobId: string): Promise<{ ok: boolean }>;
+  recordingEditorCopy(jobId: string): Promise<{ ok: boolean }>;
+  recordingEditorFolder(jobId: string): Promise<{ ok: boolean }>;
   onRecordingStateUpdated(cb: (state: RecordingEngineState) => void): () => void;
   onRecordingActionResult(cb: (result: RecordingActionResult) => void): () => void;
   onRecordingNotification(cb: (notification: RecordingNotification) => void): () => void;

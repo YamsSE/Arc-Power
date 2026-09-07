@@ -67,6 +67,7 @@ export async function persistReplayClipMetadata({ recordingStore, recordingRoot,
     apmSamples: readyPayload?.apmSamples,
     apmAverage: readyPayload?.apmAverage,
     apmPeak: readyPayload?.apmPeak,
+    apmAvailable: readyPayload?.apmAvailable,
   });
   const sourceSessionId = readyPayload?.sourceSessionId ?? readyPayload?.sessionId ?? null;
   const mapping = typeof recordingStore.attachMarkersToClip === 'function'

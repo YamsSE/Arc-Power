@@ -151,12 +151,16 @@ contextBridge.exposeInMainWorld('arcPower', {
   recordingChooseFolder: () => ipcRenderer.invoke('recording-choose-folder'),
   recordingOpenFolder: () => ipcRenderer.invoke('recording-open-folder'),
   recordingClipUrl: (id) => ipcRenderer.invoke('recording-clip-url', id),
+  recordingClipCopy: (id) => ipcRenderer.invoke('recording-clip-copy', id),
   recordingClipDelete: (id) => ipcRenderer.invoke('recording-clip-delete', id),
   recordingEditorStart: (payload) => ipcRenderer.invoke('recording-editor-start', payload),
+  recordingEditorAudio: (sourceId) => ipcRenderer.invoke('recording-editor-audio', sourceId),
   recordingEditorStatus: (jobId) => ipcRenderer.invoke('recording-editor-status', jobId),
   recordingEditorCancel: (jobId) => ipcRenderer.invoke('recording-editor-cancel', jobId),
   recordingEditorOpen: (jobId) => ipcRenderer.invoke('recording-editor-open', jobId),
   recordingEditorShare: (jobId) => ipcRenderer.invoke('recording-editor-share', jobId),
+  recordingEditorCopy: (jobId) => ipcRenderer.invoke('recording-editor-copy', jobId),
+  recordingEditorFolder: (jobId) => ipcRenderer.invoke('recording-editor-folder', jobId),
   // M2D: mock-only featureset control. The channels exist ONLY in mock mode
   // (real mode rejects with "No handler registered" - the renderer never
   // calls them there: the dropdown renders only when health.backend === 'mock').

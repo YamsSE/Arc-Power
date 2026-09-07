@@ -557,6 +557,9 @@ export interface StabilityRunStatus {
   foregroundCount?: number;
   presentEvidenceCount?: number;
   utilEvidenceCount?: number;
+  workloadActive?: boolean;
+  workloadStatus?: 'starting' | 'running' | 'unavailable' | 'monitor-only';
+  workloadReason?: string | null;
   outcome: StabilityOutcome | null;
   reason: string | null;
   startedAt: string;
@@ -1241,6 +1244,7 @@ export interface RecordingClip {
   apmSamples?: RecordingApmSample[];
   apmAverage?: number;
   apmPeak?: number;
+  apmAvailable?: boolean;
   editorVersion?: number;
 }
 export interface RecordingStorageInfo {

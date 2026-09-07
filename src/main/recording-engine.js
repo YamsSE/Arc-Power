@@ -14,8 +14,19 @@ export const ASCENT_QSV_ENCODER_PREFERENCE = Object.freeze(['obs_qsv11_av1', 'ob
 export const RECORDING_GPU_ENCODER_SELECTION_PREFIX = 'arc-gpu-encoder:v1:';
 const DEFAULT_SHUTDOWN_MS = 1500;
 const DEFAULT_PROBE_MS = 15000;
-const REPLAY_FILE_WAIT_MS = 30000;
+// The native replay muxer can signal replay_ready before Windows releases the
+// source handle. Keep the save operation in its finalizing state long enough
+// for that handle to drain; publishing the rolling source during this window
+// is what previously produced 40-second "10-second" clips.
+const REPLAY_FILE_WAIT_MS = 15000;
+const REPLAY_FILE_STABLE_MS = 200;
+// Keep retries bounded. A save must either publish a verified bounded file or
+// fail cleanly; waiting a full minute only to publish the rolling source is
+// worse than surfacing a retryable error.
+const REPLAY_TRIM_RETRY_MS = 10000;
 const REPLAY_FILE_CLEANUP_WAIT_MS = 1000;
+const REPLAY_CAPTURE_RETRY_DELAY_MS = 500;
+const REPLAY_CAPTURE_RETRY_MS = 30000;
 
 /**
  * FFmpeg writes these two informational lines while a normal output closes.
@@ -452,7 +463,7 @@ function isEncoderStartRejection(error) {
   return Number.isInteger(error?.code) && ASCENT_ENCODER_START_ERROR_CODES.includes(error.code);
 }
 
-export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, getCaptureDimensions = () => null, resolveEncoderTarget = async (target) => target, trimReplayClip = null, apmCapture = createApmCapture({ clock }), shutdownMs = DEFAULT_SHUTDOWN_MS, startTimeoutMs = 15000 } = {}) {
+export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, getCaptureDimensions = () => null, resolveEncoderTarget = async (target) => target, trimReplayClip = null, apmCapture = createApmCapture({ clock }), shutdownMs = DEFAULT_SHUTDOWN_MS, startTimeoutMs = 15000, replayTrimRetryMs = REPLAY_TRIM_RETRY_MS } = {}) {
   let child = null;
   let output = '';
   let decoder = new StringDecoder('utf8');
@@ -465,6 +476,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   // accidentally tear down the other capture.
   const activeRecorders = new Map();
   const startingRecorders = new Map();
+  const completedCaptures = [];
   let replayCapture = null;
   // Ascent keeps the OBS output object alive after STOP. A later START in
   // that same child can therefore retain the previous encoder/bitrate even
@@ -476,6 +488,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   const listeners = new Set();
   const pending = new Map();
   const writeQueue = [];
+  // Start the APM sampler when a capture is accepted locally, rather than
+  // waiting for a best-effort STARTED event from older runtimes. The event
+  // still confirms the recorder, but it must not reset the sampler timeline.
+  const apmSessionsStarted = new Set();
   const retiredChildren = new WeakSet();
   let closingChild = null;
   let writing = false;
@@ -485,6 +501,22 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   // hotkeys cannot enqueue two native captures at once.
   let replayClipSaveInFlight = false;
   let machineInfoReady = false;
+
+  function startApmSession(recorder) {
+    const sessionId = recorder?.sessionId;
+    if (typeof sessionId !== 'string' || !sessionId || apmSessionsStarted.has(sessionId)) return;
+    try {
+      apmCapture?.start?.(sessionId, recorder.startedAt ?? clock());
+      apmSessionsStarted.add(sessionId);
+    } catch { /* APM remains optional and must never block capture */ }
+  }
+
+  function stopApmSession(recorder) {
+    const sessionId = recorder?.sessionId;
+    if (typeof sessionId !== 'string' || !sessionId || !apmSessionsStarted.has(sessionId)) return null;
+    apmSessionsStarted.delete(sessionId);
+    try { return apmCapture?.stop?.(sessionId) ?? null; } catch { return null; }
+  }
 
   function recorderForMode(mode, { starting = false } = {}) {
     return (starting ? startingRecorders : activeRecorders).get(mode) ?? null;
@@ -563,6 +595,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     decoder = new StringDecoder('utf8');
     activeRecorders.clear();
     startingRecorders.clear();
+    for (const sessionId of apmSessionsStarted) {
+      try { apmCapture?.stop?.(sessionId); } catch { /* best effort */ }
+    }
+    apmSessionsStarted.clear();
     machineInfoReady = false;
     publish({ available: false, ...captureStatePatch(), error: `Ascent protocol error: ${failure.message}` });
     rejectPending(failure);
@@ -590,7 +626,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     if (started && recorderForEvent) {
       const active = { ...recorderForEvent, startedAt: recorderForEvent.startedAt ?? clock() };
       activeRecorders.set(recorderForEvent.mode, active);
-      try { apmCapture?.start?.(active.sessionId, active.startedAt); } catch { /* APM degrades without affecting capture */ }
+      startApmSession(active);
       if (recorderForEvent.cancelRequested) {
         recorderForEvent.startedAfterCancel = true;
         if (!recorderForEvent.stopInFlight) {
@@ -605,10 +641,33 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
         startingRecorders.delete(recorderForEvent.mode);
       }
     }
-    if (event === ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY && replayCapture?.bufferIdentifier === identifier) replayCapture = null;
+    if (event === ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY
+      && replayCapture
+      && (replayCapture.captureIdentifier === identifier || replayCapture.bufferIdentifier === identifier)) replayCapture = null;
     if (event === ASCENT_EVENTS.REPLAY_STOPPED) replayCapture = null;
     if (stopped && recorderForEvent) {
-      try { apmCapture?.stop?.(recorderForEvent.sessionId); } catch { /* best effort */ }
+      const apmSession = stopApmSession(recorderForEvent);
+      // Keep one bounded, identity-safe completion envelope so the IPC layer
+      // can attach APM samples to ordinary recordings as well as replay clips.
+      // Replay-buffer captures have no output path and are handled by the
+      // replay-ready save path instead.
+      if (recorderForEvent.mode === 'video' && typeof recorderForEvent.outputPath === 'string' && recorderForEvent.outputPath.trim()) {
+        const samples = Array.isArray(apmSession?.samples) ? apmSession.samples.map((item) => ({ atMs: item.atMs, apm: item.apm })) : [];
+        completedCaptures.push({
+          mode: recorderForEvent.mode,
+          sessionId: recorderForEvent.sessionId,
+          outputPath: recorderForEvent.outputPath,
+          sourceStartMs: 0,
+          sourceEndMs: Math.max(0, Math.round(clock() - Number(recorderForEvent.startedAt ?? clock()))),
+          ...(samples.length ? {
+            apmSamples: samples,
+            apmAverage: Math.round(samples.reduce((sum, item) => sum + item.apm, 0) / samples.length),
+            apmPeak: Math.max(...samples.map((item) => item.apm)),
+          } : {}),
+          apmAvailable: apmSession?.sourceReady === true,
+        });
+        if (completedCaptures.length > 8) completedCaptures.splice(0, completedCaptures.length - 8);
+      }
       const stoppedActive = activeRecorders.get(recorderForEvent.mode);
       if (identifier === null || stoppedActive?.identifier === identifier) activeRecorders.delete(recorderForEvent.mode);
       const starting = startingRecorders.get(recorderForEvent.mode);
@@ -907,7 +966,9 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }, outputPath, type);
     const identifier = nextIdentifier++;
     const fields = Object.fromEntries(Object.entries(payload).filter(([key]) => !['cmd', 'identifier', 'recorder_type'].includes(key)));
-    startingRecorders.set(mode, { identifier, type, mode, ready: false, sessionId: `${mode}:${identifier}` });
+    const startingRecorder = { identifier, type, mode, ready: false, sessionId: `${mode}:${identifier}`, startedAt: clock(), outputPath: typeof outputPath === 'string' ? outputPath : null };
+    startingRecorders.set(mode, startingRecorder);
+    startApmSession(startingRecorder);
     try {
       await request(payload.cmd, type, fields, [mode === 'replay' ? ASCENT_EVENTS.REPLAY_STARTED : ASCENT_EVENTS.RECORDING_STARTED], startTimeoutMs, identifier);
     } catch (error) {
@@ -920,6 +981,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
         startingRecorder.timedOut = true;
         publish({ error: 'Recording start is still pending; stop to cancel it.' });
       } else if (startingRecorder?.identifier === identifier) {
+        stopApmSession(startingRecorder);
         startingRecorders.delete(mode);
       }
       // Keep failure/demotion state keyed by the canonical codec and physical
@@ -987,8 +1049,8 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }
   }
 
-  async function stopReplayClipInternal(identifier = activeRecorders.get('replay')?.identifier) {
-    if (!Number.isSafeInteger(identifier)) throw new Error('Instant Replay is not active');
+  async function stopReplayClipInternal(identifier = replayCapture?.captureIdentifier) {
+    if (!Number.isSafeInteger(identifier)) throw new Error('Instant Replay capture is not active');
     return request(ASCENT_COMMANDS.STOP_REPLAY_CAPTURE, ASCENT_RECORDER_TYPES.REPLAY, {}, [ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY], 10000, identifier);
   }
 
@@ -996,11 +1058,19 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     return /already\s+(?:capturing|started|active)|capture(?:d|)\s+is\s+already\s+active/i.test(String(error?.message ?? ''));
   }
 
+  function replayCaptureNotReady(error) {
+    return /not\s+capturing|replay(?:s)?\s+(?:is\s+)?offline|replay\s+buffer.*(?:not|isn't)\s+(?:active|ready)|not\s+active/i.test(String(error?.message ?? ''));
+  }
+
+  function waitMs(milliseconds) {
+    return new Promise((resolve) => setTimeout(resolve, Math.max(0, milliseconds)));
+  }
+
   async function recoverReplayCapture() {
     const capture = replayCapture;
     if (!capture) return true;
     try {
-      await stopReplayClipInternal(capture.bufferIdentifier);
+      await stopReplayClipInternal(capture.captureIdentifier);
       replayCapture = null;
       return true;
     } catch (error) {
@@ -1011,18 +1081,33 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }
   }
 
-  async function waitForReplayFile(filePath, timeoutMs = REPLAY_FILE_WAIT_MS) {
-    const isReady = () => {
+  async function waitForReplayFile(filePath, timeoutMs = REPLAY_FILE_WAIT_MS, stableMs = REPLAY_FILE_STABLE_MS) {
+    const fileState = () => {
       try {
         const stat = fs.statSync(filePath);
-        return stat.isFile() && stat.size > 0;
-      } catch { return false; }
+        return stat.isFile() && stat.size > 0 ? { size: stat.size, modifiedMs: stat.mtimeMs } : null;
+      } catch { return null; }
     };
-    if (isReady()) return true;
+    let previous = fileState();
+    if (previous && stableMs <= 0) return true;
     if (timeoutMs <= 0) return false;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() <= deadline) {
-      if (isReady()) return true;
+      const current = fileState();
+      if (current && previous && current.size === previous.size && current.modifiedMs === previous.modifiedMs) {
+        const stableUntil = Date.now() + Math.max(0, stableMs);
+        while (Date.now() < stableUntil) {
+          await new Promise((resolve) => setTimeout(resolve, Math.min(50, stableUntil - Date.now())));
+          const check = fileState();
+          if (!check || check.size !== current.size || check.modifiedMs !== current.modifiedMs) {
+            previous = check;
+            break;
+          }
+          if (Date.now() >= stableUntil) return true;
+        }
+      } else {
+        previous = current;
+      }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     return false;
@@ -1073,7 +1158,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
 
   async function boundReplayClip(clipPath, headDuration, fileReady = false) {
     if (typeof trimReplayClip !== 'function') return false;
-    if (!fileReady && !await waitForReplayFile(clipPath)) return false;
+    // Re-check stability on every attempt. `replay_ready` can arrive while
+    // the native muxer is still extending the file, and trimming that moving
+    // source is how an entire rolling buffer escaped as a short clip.
+    if (!await waitForReplayFile(clipPath, fileReady ? REPLAY_FILE_STABLE_MS * 3 : REPLAY_FILE_WAIT_MS)) return false;
     try {
       const result = await trimReplayClip({ path: clipPath, durationMs: headDuration });
       if (result === true) return clipPath;
@@ -1086,21 +1174,51 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
 
   async function enforceReplayClipDuration(clipPath, headDuration, fileReady = false) {
     if (typeof trimReplayClip !== 'function') return;
-    const boundedPath = await boundReplayClip(clipPath, headDuration, fileReady);
-    if (boundedPath) return boundedPath;
-    // Ascent can still hold the finalized replay output briefly after its
-    // ready/error response. Use the same bounded cleanup retry as the outer
-    // failure path so a transient Windows EBUSY does not turn a recoverable
-    // trim failure into a misleading cleanup error.
-    const cleanupError = await discardReplayClipAfterFailure(clipPath);
+    // The runtime can keep the native output handle open well after the
+    // replay-ready event. Retry the bounded copy while that handle drains;
+    // never publish the original rolling file as if it were bounded.
+    const deadline = Date.now() + Math.max(0, Number(replayTrimRetryMs) || 0);
+    let firstAttempt = true;
+    while (Date.now() <= deadline) {
+      const attempt = await boundReplayClip(clipPath, headDuration, fileReady || !firstAttempt);
+      firstAttempt = false;
+      if (attempt) return attempt;
+      if (Date.now() >= deadline) break;
+      await waitMs(REPLAY_CAPTURE_RETRY_DELAY_MS);
+    }
     const error = new Error('Replay clip could not be limited to the requested duration');
     error.code = 'REPLAY_CLIP_DURATION_FAILED';
-    if (cleanupError) {
-      error.message += `; replay clip cleanup failed: ${cleanupError.message}`;
-      error.code = 'REPLAY_CLIP_CLEANUP_FAILED';
-      error.cleanupError = cleanupError;
-    }
     throw error;
+  }
+
+  async function startReplayCaptureWithRetry({ clipPath, durationMs, thumbnailFolder, bufferIdentifier, captureIdentifier }) {
+    const deadline = Date.now() + REPLAY_CAPTURE_RETRY_MS;
+    let lastError = null;
+    while (Date.now() <= deadline) {
+      replayCapture = { bufferIdentifier, captureIdentifier, phase: 'starting' };
+      try {
+        await request(ASCENT_COMMANDS.START_REPLAY_CAPTURE, ASCENT_RECORDER_TYPES.REPLAY, {
+          path: clipPath,
+          head_duration: Math.round(durationMs),
+          thumbnail_folder: thumbnailFolder,
+        }, [ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_STARTED], 10000, captureIdentifier);
+        replayCapture.phase = 'capturing';
+        return;
+      } catch (error) {
+        lastError = error;
+        const transient = replayCaptureAlreadyActive(error) || replayCaptureNotReady(error);
+        if (!transient || Date.now() >= deadline) throw error;
+        // If an earlier save left the native muxer in its capture state, one
+        // recovery STOP clears that state. A not-ready buffer simply gets a
+        // short retry while its first keyframe/armed signal arrives.
+        if (replayCaptureAlreadyActive(error)) {
+          try { await stopReplayClipInternal(replayCapture?.captureIdentifier); } catch { /* retry below */ }
+        }
+        replayCapture = null;
+        await waitMs(REPLAY_CAPTURE_RETRY_DELAY_MS);
+      }
+    }
+    throw lastError ?? new Error('Instant Replay capture did not become ready');
   }
 
   function replayReadyPayload(response, activeReplay, clipPath, thumbnailFolder, requestedDurationMs) {
@@ -1110,9 +1228,23 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const nativeDuration = Number.isFinite(response?.durationMs) ? Math.max(0, Math.round(response.durationMs)) : null;
     const nativeStart = Number.isFinite(response?.sourceStartMs) ? Math.max(0, Math.round(response.sourceStartMs)) : null;
     const nativeEnd = Number.isFinite(response?.sourceEndMs) ? Math.max(0, Math.round(response.sourceEndMs)) : null;
-    const end = nativeEnd ?? Math.max(0, Math.round(clock() - Number(activeReplay?.startedAt ?? clock())));
-    const duration = nativeDuration ?? Math.max(0, Math.round(requestedDurationMs));
-    const start = nativeStart ?? Math.max(0, end - duration);
+    const elapsedNow = Math.max(0, Math.round(clock() - Number(activeReplay?.startedAt ?? clock())));
+    const requested = Math.max(1, Math.round(requestedDurationMs ?? nativeDuration ?? 1));
+    // Older runtime builds have returned wall-clock timestamps (or a stale
+    // zero interval) in sourceStartMs/sourceEndMs.  Those values cannot be
+    // matched to the session-local APM timeline. Treat them as absent when
+    // they fall outside the active replay's elapsed range and use the same
+    // session-relative interval as markers.
+    const nativeIntervalValid = nativeStart !== null && nativeEnd !== null
+      && nativeEnd >= nativeStart
+      && nativeStart <= elapsedNow + 5000
+      && nativeEnd <= elapsedNow + 5000
+      && (nativeEnd > nativeStart || elapsedNow < 1000)
+      && (nativeEnd - nativeStart) <= requested + 5000
+      && (nativeDuration === null || Math.abs((nativeEnd - nativeStart) - nativeDuration) <= 5000);
+    const duration = nativeIntervalValid ? Math.max(1, nativeEnd - nativeStart) : Math.min(requested, Math.max(1, elapsedNow || requested));
+    const end = nativeIntervalValid ? nativeEnd : Math.max(duration, elapsedNow);
+    const start = nativeIntervalValid ? nativeStart : Math.max(0, end - duration);
     const apm = apmCapture?.getInterval?.(activeReplay?.sessionId, start, end) ?? null;
     return {
       ...response,
@@ -1130,6 +1262,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       sourceEndMs: end,
       thumbnailFolder: response?.thumbnailFolder ?? thumbnailFolder ?? null,
       ...(apm?.samples?.length ? { apmSamples: apm.samples, apmAverage: apm.averageApm, apmPeak: apm.peakApm } : {}),
+      ...(typeof apm?.available === 'boolean' ? { apmAvailable: apm.available } : {}),
     };
   }
 
@@ -1155,14 +1288,12 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }
     const bufferIdentifier = activeReplay.identifier;
     const captureIdentifier = nextIdentifier++;
-    replayCapture = { bufferIdentifier, captureIdentifier, phase: 'starting' };
     publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.SAVING, { updatedAt: clock() });
     try {
-      await request(ASCENT_COMMANDS.START_REPLAY_CAPTURE, ASCENT_RECORDER_TYPES.REPLAY, { path: clipPath, head_duration: Math.round(durationMs), thumbnail_folder: thumbnailFolder }, [ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_STARTED], 10000, captureIdentifier);
+      await startReplayCaptureWithRetry({ clipPath, durationMs, thumbnailFolder, bufferIdentifier, captureIdentifier });
       // Ascent acknowledges START_REPLAY_CAPTURE before writing the file. The
       // file is only usable after STOP_REPLAY_CAPTURE causes replay_ready.
-      replayCapture.phase = 'capturing';
-      const response = await stopReplayClipInternal(bufferIdentifier);
+      const response = await stopReplayClipInternal(captureIdentifier);
       replayCapture = null;
       // The native replay output can include the previous keyframe/PTS lead-in
       // even when the requested head duration is shorter. Bound the completed
@@ -1176,9 +1307,14 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // completed file is authoritative: do not issue another STOP, which
       // would only create another misleading error and could disturb the
       // still-running replay buffer.
+      const completedReplayFile = typeof trimReplayClip === 'function'
+        ? await waitForReplayFile(clipPath, REPLAY_FILE_WAIT_MS)
+        : (() => {
+          try { return fs.statSync(clipPath).isFile() && fs.statSync(clipPath).size > 0; } catch { return false; }
+        })();
       if (replayCapture?.bufferIdentifier === bufferIdentifier
         && replayCapture.phase === 'capturing'
-        && await waitForReplayFile(clipPath, typeof trimReplayClip === 'function' ? REPLAY_FILE_WAIT_MS : 0)) {
+        && completedReplayFile) {
         replayCapture = null;
         // Some runtime builds write the clip and then report a secondary
         // "not capturing" error. That file is still authoritative, but it
@@ -1243,6 +1379,11 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     startRecording: (settings) => serialize(() => startInternal(settings, 'video')),
     startReplay: (settings) => serialize(() => startInternal(settings, 'replay')),
     stop: (mode = null) => serialize(() => stopInternal(mode)),
+    takeCompletedCapture: (mode = 'video') => {
+      const index = completedCaptures.findIndex((item) => !mode || item.mode === mode);
+      if (index < 0) return null;
+      return completedCaptures.splice(index, 1)[0] ?? null;
+    },
     saveReplayClip: (settings) => {
       if (replayClipSaveInFlight) {
         const error = new Error('Instant Replay is already being saved');

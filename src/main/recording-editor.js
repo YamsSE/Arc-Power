@@ -52,7 +52,7 @@ export function normalizeRecordingEditorRequest(payload = {}) {
   if (startMs === null || endMs === null || startMs >= endMs) throw new Error('recording-editor-start: invalid time range');
   const durationMs = endMs - startMs;
   const audio = payload.audio === undefined ? 'original' : payload.audio;
-  if (!['original', 'mute', 'system'].includes(audio)) throw new Error('recording-editor-start: audio must be original, mute, or system');
+  if (!['original', 'mute', 'system', 'microphone'].includes(audio)) throw new Error('recording-editor-start: invalid audio selection');
   const maxDurationMs = payload.maxDurationMs === undefined ? null : numberInRange(payload.maxDurationMs, 1, RECORDING_EDITOR_TRIM_MAX_MS, true);
   if (payload.maxDurationMs !== undefined && maxDurationMs === null) throw new Error('recording-editor-start: invalid maximum duration');
   if (maxDurationMs !== null && durationMs > maxDurationMs) throw new Error('recording-editor-start: selected range exceeds maximum duration');
@@ -87,18 +87,36 @@ function seconds(ms) {
   return (ms / 1000).toFixed(3);
 }
 
-export function recordingEditorTrimArguments(inputPath, outputPath, startMs, endMs, audio = 'original') {
+export function recordingEditorTrimArguments(inputPath, outputPath, startMs, endMs, audio = 'original', audioStreamIndex = null) {
   const start = numberInRange(startMs, 0, RECORDING_EDITOR_TRIM_MAX_MS, true);
   const end = numberInRange(endMs, 1, RECORDING_EDITOR_TRIM_MAX_MS, true);
   if (start === null || end === null || start >= end || typeof inputPath !== 'string' || typeof outputPath !== 'string') return null;
   const args = [
     '-hide_banner', '-loglevel', 'error', '-nostdin',
     '-ss', seconds(start), '-i', inputPath, '-t', seconds(end - start),
-    '-map', '0', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
-    ...(audio === 'mute' ? ['-an'] : ['-c:a', 'aac']), '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart',
+    ...(Array.isArray(audioStreamIndex) && audioStreamIndex.length === 2 && audioStreamIndex.every(Number.isInteger)
+      ? ['-filter_complex', `[0:${audioStreamIndex[0]}][0:${audioStreamIndex[1]}]amix=inputs=2:duration=longest:normalize=0[clip_audio]`, '-map', '0:v:0', '-map', '[clip_audio]']
+      : Number.isInteger(audioStreamIndex) && audioStreamIndex >= 0 ? ['-map', '0:v:0', '-map', `0:${audioStreamIndex}`] : ['-map', '0']),
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
+    ...(audio === 'mute' ? ['-an'] : ['-c:a', 'aac']),
+    ...(audioStreamIndex !== null ? ['-metadata:s:a:0', `handler_name=${audio === 'system' ? 'System Audio' : audio === 'microphone' ? 'Microphone' : 'Combined Audio'}`] : []),
+    '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart',
     '-f', 'mp4', '-y', outputPath,
   ];
   return args;
+}
+
+export function recordingEditorCopyArguments(inputPath, outputPath, startMs, endMs) {
+  const start = numberInRange(startMs, 0, RECORDING_EDITOR_TRIM_MAX_MS, true);
+  const end = numberInRange(endMs, 1, RECORDING_EDITOR_TRIM_MAX_MS, true);
+  if (start === null || end === null || start >= end || typeof inputPath !== 'string' || typeof outputPath !== 'string') return null;
+  return [
+    '-hide_banner', '-loglevel', 'error', '-nostdin',
+    '-ss', seconds(start), '-i', inputPath, '-t', seconds(end - start),
+    '-map', '0', '-c', 'copy',
+    '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart',
+    '-f', 'mp4', '-y', outputPath,
+  ];
 }
 
 export function recordingEditorGifArguments(inputPath, outputPath, startMs, endMs, fps = 15, width = 640) {
@@ -246,7 +264,7 @@ function spawnOnce(spawn, executable, args, timeoutMs, { onProgress, cancelled, 
   });
 }
 
-async function probeFile({ fsImpl, spawn, executable, filePath }) {
+async function probeFile({ fsImpl, spawn, executable, filePath, expectedDurationMs }) {
   if (!hasUsableFile(fsImpl, filePath)) return false;
   if (!executable) return true;
   const result = await spawnOnce(spawn, executable, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', '-i', filePath], PROBE_TIMEOUT_MS);
@@ -254,9 +272,22 @@ async function probeFile({ fsImpl, spawn, executable, filePath }) {
   try {
     const parsed = JSON.parse(String(result.stdout ?? ''));
     const duration = Number(parsed?.format?.duration);
-    if (Number.isFinite(duration)) return duration > 0;
-  } catch { /* equivalent non-empty-file validation below */ }
-  return hasUsableFile(fsImpl, filePath);
+    // A nonempty file is not proof that the selected range was exported.
+    // Allow one low-frame-rate frame plus AAC padding, never extra seconds.
+    return Number.isFinite(duration) && duration > 0
+      && Math.abs(duration * 1000 - expectedDurationMs) <= 250;
+  } catch { return false; }
+}
+
+export function recordingAudioStreams(streams) {
+  const audio = (Array.isArray(streams) ? streams : []).filter((stream) => stream.codec_type === 'audio' && Number.isInteger(stream.index));
+  const named = (pattern) => {
+    const matches = audio.filter((stream) => pattern.test(`${stream.tags?.title ?? ''} ${stream.tags?.handler_name ?? ''}`));
+    return matches.length === 1 ? matches[0].index : null;
+  };
+  // Never guess that the first audio track is system-only: older files have
+  // one combined track and cannot be separated after recording.
+  return { system: named(/\b(system|desktop|game|output_game)\b/i), microphone: named(/\b(microphone|mic|input_mic)\b/i), mixed: audio.length > 0 };
 }
 
 export function createRecordingEditorService({
@@ -270,11 +301,22 @@ export function createRecordingEditorService({
   maxConcurrent = 1,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   openFile = async () => false,
+  copyFile = async () => false,
+  openFolder = async () => false,
   shareFile = async () => false,
 } = {}) {
   const jobs = new Map();
   const queue = [];
   let running = 0;
+
+  async function audioStreamsForPath(filePath) {
+    const executable = resolveFfprobePath();
+    if (!executable) return { system: null, microphone: null, mixed: false };
+    const result = await spawnOnce(spawn, executable, ['-v', 'error', '-show_streams', '-of', 'json', '-i', filePath], PROBE_TIMEOUT_MS);
+    if (!result.ok) throw new Error('Could not inspect recording audio');
+    try { return recordingAudioStreams(JSON.parse(result.stdout).streams); }
+    catch { throw new Error('Could not inspect recording audio'); }
+  }
 
   const update = (job, patch) => Object.assign(job, patch, { progress: Math.min(100, Math.max(0, Number(patch.progress ?? job.progress) || 0)) });
   const fail = (job, message) => update(job, { state: 'error', progress: 0, error: String(message || 'Recording editor failed').slice(0, 256), child: null });
@@ -308,18 +350,48 @@ export function createRecordingEditorService({
       if (!safeArtifactPath(root, path.relative(root, temp), fsImpl, { allowMissing: true, allowedExtensions: ['.tmp'] })) throw new Error('Temporary output path is unsafe');
       const executable = resolveFfmpegPath();
       if (!executable) throw new Error('Bundled FFmpeg is unavailable');
-      const args = job.request.operation === 'gif'
-        ? recordingEditorGifArguments(sourcePath, temp, job.request.startMs, job.request.endMs, job.request.fps, job.request.width)
-        : recordingEditorTrimArguments(sourcePath, temp, job.request.startMs, job.request.endMs, job.request.audio);
-      if (!args) throw new Error('Invalid editor bounds');
-      const result = await spawnOnce(spawn, executable, args, timeoutMs, {
+      let audioStreamIndex = null;
+      let outputDurationVerified = false;
+      if (job.request.audio === 'system' || job.request.audio === 'microphone') {
+        const tracks = await audioStreamsForPath(sourcePath);
+        audioStreamIndex = tracks[job.request.audio];
+        if (audioStreamIndex === null) throw new Error(`This recording has no separate ${job.request.audio} audio track`);
+      } else if (job.request.audio === 'original' && resolveFfprobePath()) {
+        const tracks = await audioStreamsForPath(sourcePath);
+        if (tracks.system !== null && tracks.microphone !== null && tracks.system !== tracks.microphone) audioStreamIndex = [tracks.system, tracks.microphone];
+      }
+      const progressOptions = {
         cancelled: () => job.cancelRequested,
         onProgress: (elapsedSec) => {
           const selectedSec = Math.max(0.001, job.request.durationMs / 1000);
           update(job, { progress: Math.min(95, Math.max(job.progress, Math.round((elapsedSec / selectedSec) * 95))) });
         },
         onChild: (child) => { job.child = child; },
-      });
+      };
+      let result = null;
+      // Existing encoded video with the original audio can be clipped by
+      // copying packets. This makes Create Clip feel immediate; the exact
+      // encoder path remains the fallback when a keyframe makes the copy
+      // exceed the selected range or when audio needs mixing/removal.
+      if (job.request.operation === 'trim' && job.request.audio === 'original' && audioStreamIndex === null) {
+        const copyArgs = recordingEditorCopyArguments(sourcePath, temp, job.request.startMs, job.request.endMs);
+        if (copyArgs) {
+          result = await spawnOnce(spawn, executable, copyArgs, timeoutMs, progressOptions);
+          const copyValid = result.ok && hasUsableFile(fsImpl, temp)
+            && await probeFile({ fsImpl, spawn, executable: resolveFfprobePath(), filePath: temp, expectedDurationMs: job.request.durationMs });
+          if (!copyValid) {
+            try { fsImpl.unlinkSync(temp); } catch { /* next attempt replaces it */ }
+            result = null;
+          } else outputDurationVerified = true;
+        }
+      }
+      if (!result) {
+        const args = job.request.operation === 'gif'
+          ? recordingEditorGifArguments(sourcePath, temp, job.request.startMs, job.request.endMs, job.request.fps, job.request.width)
+          : recordingEditorTrimArguments(sourcePath, temp, job.request.startMs, job.request.endMs, job.request.audio, audioStreamIndex);
+        if (!args) throw new Error('Invalid editor bounds');
+        result = await spawnOnce(spawn, executable, args, timeoutMs, progressOptions);
+      }
       if (job.cancelRequested || result.signal === 'SIGTERM' || result.signal === 'SIGKILL') {
         update(job, { state: 'cancelled', progress: 0, child: null });
         return;
@@ -328,7 +400,8 @@ export function createRecordingEditorService({
       if (!hasUsableFile(fsImpl, temp)) throw new Error('FFmpeg produced an invalid output');
       const currentSource = fsImpl.statSync(sourcePath);
       if (!sameIdentity(sourceStat, currentSource)) throw new Error('Source clip changed during editing');
-      if (!await probeFile({ fsImpl, spawn, executable: resolveFfprobePath(), filePath: temp })) throw new Error('Output validation failed');
+      if (!outputDurationVerified
+        && !await probeFile({ fsImpl, spawn, executable: resolveFfprobePath(), filePath: temp, expectedDurationMs: job.request.durationMs })) throw new Error('Output duration does not match the selected range');
       if (job.cancelRequested) {
         update(job, { state: 'cancelled', progress: 0, child: null });
         return;
@@ -355,6 +428,7 @@ export function createRecordingEditorService({
           apmSamples,
           apmAverage: apmValues.length ? Math.round(apmValues.reduce((sum, value) => sum + value, 0) / apmValues.length) : null,
           apmPeak: apmValues.length ? Math.max(...apmValues) : null,
+          ...(typeof sourceClip.apmAvailable === 'boolean' ? { apmAvailable: sourceClip.apmAvailable } : {}),
         });
         update(job, { state: 'ready', progress: 100, child: null, clip });
       } else {
@@ -371,6 +445,15 @@ export function createRecordingEditorService({
   }
 
   return {
+    async audio(sourceId) {
+      if (!isOpaqueClipId(sourceId)) throw new Error('Invalid source clip');
+      const settings = await recordingStore?.settings?.();
+      const clip = await recordingStore?.clipById?.(sourceId);
+      const sourcePath = settings?.location && clip ? resolveSafeRecordingPath(path.resolve(settings.location), clip.relativePath, fsImpl) : null;
+      if (!sourcePath) throw new Error('Source clip is unavailable');
+      const tracks = await audioStreamsForPath(sourcePath);
+      return { system: tracks.system !== null, microphone: tracks.microphone !== null, mixed: tracks.mixed };
+    },
     async start(payload) {
       const request = normalizeRecordingEditorRequest(payload);
       const jobId = randomId();
@@ -421,6 +504,32 @@ export function createRecordingEditorService({
       const filePath = resolveSafeRecordingEditorPath(root, artifact.relativePath, fsImpl);
       if (!filePath) throw new Error('recording-editor-share: artifact path is unsafe');
       if (!(await shareFile(filePath, path.dirname(filePath)))) throw new Error('recording-editor-share: could not share artifact');
+      return { ok: true };
+    },
+    async copy(jobId) {
+      if (!EDITOR_ID.test(jobId) || !jobs.has(jobId)) throw new Error('recording-editor-copy: job not found');
+      const job = jobs.get(jobId);
+      if (job.state !== 'ready') throw new Error('recording-editor-copy: job is not ready');
+      const artifact = job.artifact ?? (job.clip ? { kind: 'clip', fileName: job.clip.fileName, relativePath: job.clip.relativePath } : null);
+      if (!artifact || typeof artifact.relativePath !== 'string') throw new Error('recording-editor-copy: artifact is unavailable');
+      const settings = await recordingStore?.settings?.();
+      const root = path.resolve(settings?.location ?? '');
+      const filePath = resolveSafeRecordingEditorPath(root, artifact.relativePath, fsImpl);
+      if (!filePath) throw new Error('recording-editor-copy: artifact path is unsafe');
+      if (!(await copyFile(filePath))) throw new Error('recording-editor-copy: could not copy artifact');
+      return { ok: true };
+    },
+    async folder(jobId) {
+      if (!EDITOR_ID.test(jobId) || !jobs.has(jobId)) throw new Error('recording-editor-folder: job not found');
+      const job = jobs.get(jobId);
+      if (job.state !== 'ready') throw new Error('recording-editor-folder: job is not ready');
+      const artifact = job.artifact ?? (job.clip ? { kind: 'clip', fileName: job.clip.fileName, relativePath: job.clip.relativePath } : null);
+      if (!artifact || typeof artifact.relativePath !== 'string') throw new Error('recording-editor-folder: artifact is unavailable');
+      const settings = await recordingStore?.settings?.();
+      const root = path.resolve(settings?.location ?? '');
+      const filePath = resolveSafeRecordingEditorPath(root, artifact.relativePath, fsImpl);
+      if (!filePath) throw new Error('recording-editor-folder: artifact path is unsafe');
+      if (!(await openFolder(path.dirname(filePath)))) throw new Error('recording-editor-folder: could not open artifact folder');
       return { ok: true };
     },
     shutdown() {

@@ -11,6 +11,7 @@ export function createStabilityLabService({
   resolveTarget = async () => null,
   sampleTarget = async () => null,
   workloadProbe = async () => null,
+  workloadController = null,
   settingsSnapshot = async () => ({}),
   reportStore = null,
   clock = () => Date.now(),
@@ -38,6 +39,9 @@ export function createStabilityLabService({
     foregroundCount: run.foregroundCount,
     presentEvidenceCount: run.presentEvidenceCount,
     utilEvidenceCount: run.utilEvidenceCount,
+    workloadActive: run.workloadActive,
+    workloadStatus: run.workloadStatus,
+    workloadReason: run.workloadReason ?? null,
     outcome: run.outcome ?? null,
     reason: run.reason ?? null,
     startedAt: run.startedAt,
@@ -76,6 +80,9 @@ export function createStabilityLabService({
       driverErrorCount: run.driverErrorCount,
     });
     run.report = report;
+    try { await workloadController?.stop?.(run.runId); } catch (error) {
+      run.workloadReason = `${run.workloadReason ? `${run.workloadReason}; ` : ''}GPU workload cleanup failed: ${error.message}`;
+    }
     try { await reportStore?.append?.(report); } catch (error) { run.reason = `${reason ? `${reason}; ` : ''}report persistence failed: ${error.message}`; }
     publish(run);
     if (active === run) active = null;
@@ -140,15 +147,41 @@ export function createStabilityLabService({
       const request = normalizeStabilityRequest(payload);
       const target = await resolveTarget(request.deviceKey);
       const resolvedKey = stableKeyOf(target);
+      // Keep the resolved physical identity on the run. The renderer only
+      // sends the durable key, but the native workload needs the matching
+      // DXGI LUID/PCI pair to open the same adapter. Reducing this object to
+      // { id, deviceKey, name } silently turned every real run into a
+      // monitor-only session.
+      const targetSnapshot = target ? {
+        ...target,
+        id: Number.isInteger(target.id) ? target.id : null,
+        deviceKey: resolvedKey ?? request.deviceKey,
+        name: target.name ?? null,
+      } : { id: null, deviceKey: request.deviceKey, name: null };
       const run = {
-        runId: crypto.randomUUID(), state: 'running', target: target ? { id: Number.isInteger(target.id) ? target.id : null, deviceKey: resolvedKey ?? request.deviceKey, name: target.name ?? null } : { id: null, deviceKey: request.deviceKey, name: null },
+        runId: crypto.randomUUID(), state: 'running', target: targetSnapshot,
         cadenceMs: request.cadenceMs, durationSec: request.durationSec, startedMs: clock(), startedAt: new Date(clock()).toISOString(), endedAt: null,
         settingsSnapshot: {}, sampleCount: 0, freshSampleCount: 0, foregroundCount: 0, presentEvidenceCount: 0, utilEvidenceCount: 0,
-        missingMetrics: new Set(), thresholdBreaches: 0, driverErrorCount: 0, timer: null, finished: false, outcome: null, reason: null, report: null,
+        missingMetrics: new Set(), thresholdBreaches: 0, driverErrorCount: 0, workloadActive: false, workloadStatus: workloadController ? 'starting' : 'monitor-only', workloadReason: null, timer: null, finished: false, outcome: null, reason: null, report: null,
       };
       active = run;
       if (!target || (resolvedKey && resolvedKey !== request.deviceKey)) return finish(run, 'unavailable', 'selected device is unavailable or changed');
       try { run.settingsSnapshot = { ...(await settingsSnapshot(target) ?? {}) }; } catch { run.settingsSnapshot = {}; }
+      if (workloadController?.start) {
+        try {
+          const workload = await workloadController.start({ ...target, deviceKey: request.deviceKey });
+          if (workload?.started === true) {
+            run.workloadActive = true;
+            run.workloadStatus = 'running';
+          } else {
+            run.workloadStatus = 'unavailable';
+            run.workloadReason = workload?.reason ?? 'the selected GPU workload could not be started';
+          }
+        } catch (error) {
+          run.workloadStatus = 'unavailable';
+          run.workloadReason = error instanceof Error ? error.message : String(error);
+        }
+      }
       publish(run);
       run.timer = setTimer(() => { void tick(run); }, 0);
       return statusOf(run);

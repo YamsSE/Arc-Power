@@ -68,7 +68,12 @@ public static class ArcPowerCaptureNative {
   [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr hwnd);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int maxCount);
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+  [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
+  [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct POINT { public int X; public int Y; }
 
   static string WindowTitle(IntPtr hwnd) {
     int length = GetWindowTextLength(hwnd);
@@ -107,16 +112,25 @@ public static class ArcPowerCaptureNative {
     EnumWindows((hwnd, data) => {
       if (!IsWindow(hwnd) || !IsWindowVisible(hwnd)) return true;
       string title = WindowTitle(hwnd);
-      if (string.IsNullOrWhiteSpace(title)) return true;
       RECT rect;
-      if (!GetWindowRect(hwnd, out rect)) return true;
+      if (!GetWindowRect(hwnd, out rect)) {
+        // Borderless and exclusive-fullscreen game windows can reject
+        // GetWindowRect while still exposing a usable client surface.
+        RECT client;
+        var origin = new POINT();
+        if (!GetClientRect(hwnd, out client) || !ClientToScreen(hwnd, ref origin)) return true;
+        rect = new RECT { Left = origin.X, Top = origin.Y, Right = origin.X + (client.Right - client.Left), Bottom = origin.Y + (client.Bottom - client.Top) };
+      }
       int width = rect.Right - rect.Left;
       int height = rect.Bottom - rect.Top;
-      if (width <= 1 || height <= 1) return true;
       uint processId;
       GetWindowThreadProcessId(hwnd, out processId);
       string processName = string.Empty;
       try { processName = Process.GetProcessById((int)processId).ProcessName + ".exe"; } catch { }
+      // Some games do not expose a caption at all. The executable name is a
+      // stable, user-readable target label in that case.
+      if (string.IsNullOrWhiteSpace(title)) title = processName;
+      if (width <= 1 || height <= 1 || string.IsNullOrWhiteSpace(title)) return true;
       result.windows.Add(new WindowTarget {
         handle = unchecked((uint)hwnd.ToInt64()),
         // PowerShell 5's ConvertTo-Json can emit a quote in a reflected
@@ -178,11 +192,13 @@ function normalizeWindowTarget(value) {
   }
   const width = Number.isFinite(item.width) && item.width > 1 ? Math.round(item.width) : 0;
   const height = Number.isFinite(item.height) && item.height > 1 ? Math.round(item.height) : 0;
+  const processName = boundedString(item.processName, '', 256);
+  if (!title) title = processName;
   if (!handle || !title || !width || !height) return null;
   return {
     handle,
     title,
-    processName: boundedString(item.processName, '', 256),
+    processName,
     x: Number.isFinite(item.x) ? Math.round(item.x) : 0,
     y: Number.isFinite(item.y) ? Math.round(item.y) : 0,
     width,

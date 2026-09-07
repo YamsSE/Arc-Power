@@ -1315,7 +1315,24 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
               }
             }
           }
-          if (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack)
+          const setterReadBackUnavailable = per?.ok === true
+            && (per?.readBackUnavailable === true
+              || Object.prototype.hasOwnProperty.call(per ?? {}, 'readBackSentinel'));
+          if (setterReadBackUnavailable
+            && typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack)
+            && nearlyEqual(legacyReadBack, value)) {
+            // A successful native write plus an identity-routed getter that
+            // agrees is the strongest available verification. Preserve the
+            // value while clearing the unavailable marker.
+            per = { ok: true, readBackEqual: true, readBackValue: legacyReadBack };
+          } else if (setterReadBackUnavailable) {
+            // Old IGCL's setter is authoritative for Alchemist temperature
+            // writes. Its bundled getter can return 88/90 or another stale
+            // sentinel even after a successful 90–115 C write. Do not turn
+            // that known non-authoritative surface into an artificial
+            // out-of-range failure.
+            per = markReadBackUnavailable(per, legacyReadBack ?? per?.readBackSentinel ?? null);
+          } else if (typeof legacyReadBack === 'number' && Number.isFinite(legacyReadBack)
             && nearlyEqual(legacyReadBack, value)) {
             per = { ok: true, readBackEqual: true };
             Object.defineProperty(per, 'readBackValue', {

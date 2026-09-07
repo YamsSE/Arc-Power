@@ -239,6 +239,11 @@ export class RecordingStore {
             const relativePath = path.relative(root, full);
             const old = known.get(relativePath);
             found.push({
+              // A scan refreshes file facts, but it must retain metadata that
+              // was derived when the clip was created. In particular, APM
+              // samples and availability were previously dropped here, so a
+              // restart or library refresh made the tracker disappear.
+              ...(old ?? {}),
               id: old?.id ?? crypto.randomUUID(),
               fileName: path.basename(full),
               relativePath,
@@ -297,7 +302,7 @@ export class RecordingStore {
     return markers.filter((marker) => (sessionId ? marker.sourceSessionId === sessionId : true) && (clipId ? marker.clipId === clipId : true));
   }
 
-  async recordClip({ relativePath, fileName, createdAt = new Date().toISOString(), markerSummaries = [], apmSamples = [], apmAverage = null, apmPeak = null, editorVersion = RECORDING_EDITOR_VERSION } = {}) {
+  async recordClip({ relativePath, fileName, createdAt = new Date().toISOString(), markerSummaries = [], apmSamples, apmAverage, apmPeak, apmAvailable, editorVersion = RECORDING_EDITOR_VERSION } = {}) {
     return this._enqueueMutation(() => {
       const { data: current } = this._readData();
       const normalizedPath = typeof relativePath === 'string' ? relativePath : '';
@@ -310,9 +315,10 @@ export class RecordingStore {
         fileName: fileName ?? path.basename(normalizedPath),
         createdAt: existing?.createdAt ?? createdAt,
         markerSummaries,
-        apmSamples,
+        ...(apmSamples !== undefined ? { apmSamples } : {}),
         ...(Number.isFinite(apmAverage) ? { apmAverage } : {}),
         ...(Number.isFinite(apmPeak) ? { apmPeak } : {}),
+        ...(typeof apmAvailable === 'boolean' ? { apmAvailable } : {}),
         editorVersion,
       });
       if (!clip) throw new Error('Invalid recording clip metadata');

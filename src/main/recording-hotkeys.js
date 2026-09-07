@@ -19,10 +19,11 @@ export function createRecordingHotkeys({ shortcut, getSettings, onAction, reserv
     const settings = await getSettings();
     const reservedAccelerators = reservedSet();
     const next = { registered: {}, conflicts: {}, error: null };
+    // Highlight/marker no longer has a global shortcut. Keep the persisted
+    // legacy value readable, but never register or invoke it.
     const actions = [['start', 'start'], ['stop', 'stop'], ['saveClip', 'saveClip'], ['screenshot', 'screenshot']];
-    if (settings.hotkeys && Object.prototype.hasOwnProperty.call(settings.hotkeys, 'marker')) actions.splice(3, 0, ['marker', 'marker']);
     for (const [key, action] of actions) {
-      const accelerator = normalizeRecordingAccelerator(settings.hotkeys?.[key], key === 'start' ? 'F9' : key === 'stop' ? 'F10' : key === 'saveClip' ? 'F8' : key === 'marker' ? 'F6' : 'F7');
+      const accelerator = normalizeRecordingAccelerator(settings.hotkeys?.[key], key === 'start' ? 'F9' : key === 'stop' ? 'F10' : key === 'saveClip' ? 'F8' : 'F7');
       if (reservedAccelerators.has(accelerator) || Object.values(next.registered).includes(accelerator)) {
         next.conflicts[key] = accelerator;
         continue;
@@ -41,7 +42,7 @@ export function createRecordingHotkeys({ shortcut, getSettings, onAction, reserv
   return { register, unregister, getState: () => ({ ...state, registered: { ...state.registered }, conflicts: { ...state.conflicts } }) };
 }
 
-export function createRecordingActionHandler({ getSettings, recordingEngine, captureScreenshot = null, addMarker = null, saveReplayClip = null, fsModule = fs, pathModule = path, now = () => new Date(), log = (message) => console.log(message), onActionResult = async () => {} } = {}) {
+export function createRecordingActionHandler({ getSettings, recordingEngine, captureScreenshot = null, addMarker = null, saveReplayClip = null, onCaptureStopped = null, fsModule = fs, pathModule = path, now = () => new Date(), log = (message) => console.log(message), onActionResult = async () => {} } = {}) {
   return async (action) => {
     let error = null;
     let preActionMode = null;
@@ -60,6 +61,7 @@ export function createRecordingActionHandler({ getSettings, recordingEngine, cap
           ? 'video'
           : activeModes?.replay === true || before?.mode === 'replay' ? 'replay' : null;
         await recordingEngine.stop(stopMode);
+        await onCaptureStopped?.(stopMode);
         return;
       }
       if (action === 'marker') {

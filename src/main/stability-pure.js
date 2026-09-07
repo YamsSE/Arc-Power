@@ -80,6 +80,11 @@ export function normalizeStabilitySample(input, nowMs = Date.now()) {
 
 export function workloadEvidenceOf(counters = {}) {
   const sampleCount = Math.max(0, Number(counters.sampleCount) || 0);
+  // Starting the native controller is not proof that the selected adapter is
+  // doing work. Require at least one real utilization sample before the run
+  // can claim workload evidence; this keeps a misleading "GPU workload
+  // active" label from passing a run whose GPU stayed idle.
+  if (counters.workloadActive === true && sampleCount > 0 && (Number(counters.utilEvidenceCount) || 0) > 0) return true;
   if (!sampleCount) return false;
   const required = Math.ceil(sampleCount * 0.8);
   return (Number(counters.foregroundCount) || 0) > 0

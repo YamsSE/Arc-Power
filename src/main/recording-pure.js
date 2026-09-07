@@ -456,6 +456,7 @@ export function normalizeRecordingClip(clip = {}) {
   const apmSamples = normalizeRecordingApmSamples(clip.apmSamples);
   const apmAverage = Number.isFinite(clip.apmAverage) ? Math.min(6000, Math.max(0, Math.round(clip.apmAverage))) : null;
   const apmPeak = Number.isFinite(clip.apmPeak) ? Math.min(6000, Math.max(0, Math.round(clip.apmPeak))) : null;
+  const apmAvailable = typeof clip.apmAvailable === 'boolean' ? clip.apmAvailable : null;
   return {
     ...clip,
     id,
@@ -466,6 +467,7 @@ export function normalizeRecordingClip(clip = {}) {
     ...(apmSamples.length ? { apmSamples } : {}),
     ...(apmAverage !== null ? { apmAverage } : {}),
     ...(apmPeak !== null ? { apmPeak } : {}),
+    ...(apmAvailable !== null ? { apmAvailable } : {}),
     ...(Number.isInteger(clip.editorVersion) && clip.editorVersion > 0 ? { editorVersion: clip.editorVersion } : {}),
   };
 }

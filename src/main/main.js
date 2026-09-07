@@ -57,10 +57,11 @@ import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS
 import { GameProfileStore } from './store/game-profile-store.js';
 import { RecordingStore } from './store/recording-store.js';
 import { StabilityStore } from './store/stability-store.js';
+import { createGpuWorkloadController } from './gpu-workload.js';
 import { OverlayLayoutStore } from './overlay-layout-store.js';
 import { createObsStreamService } from './obs-stream.js';
 import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js';
-import { formatDxgiLuid, recordingRuntimeEncoderIdForTarget } from './recording-pure.js';
+import { formatDxgiLuid, recordingRuntimeEncoderIdForTarget, resolveRecordingRuntimeCandidates } from './recording-pure.js';
 import { normalizeDxgiLuid } from './recording-pure.js';
 import { listRecordingCaptureTargets, mergeRecordingDisplayMetadata, recordingCaptureSelection } from './recording-capture.js';
 import { trimRecordingClipToDuration } from './recording-clip.js';
@@ -136,6 +137,31 @@ import { createIgclWaiverBridge } from './backend/igcl-bindings.js';
 // M17d (Run E): the --profile-boot stage-timing harness (env-gated; a no-op
 // in product runs - see profile-boot.js).
 import { markProfileBoot, bootProfilingEnabled, profileElapsedMs } from './profile-boot.js';
+
+function copyFileToWindowsClipboard(filePath) {
+  if (process.platform !== 'win32' || typeof filePath !== 'string' || !filePath) return false;
+  // Explorer consumes CF_HDROP's DROPFILES header followed by a UTF-16 file
+  // list. A bare FileNameW payload looks plausible but is not pasteable as a
+  // file on Windows, which made the popup action appear to do nothing.
+  const fileList = Buffer.from(`${filePath}\0\0`, 'utf16le');
+  const dropFiles = Buffer.alloc(20 + fileList.length);
+  dropFiles.writeUInt32LE(20, 0); // pFiles: byte offset to the file list
+  dropFiles.writeInt32LE(0, 4); // pt.x
+  dropFiles.writeInt32LE(0, 8); // pt.y
+  dropFiles.writeUInt32LE(0, 12); // fNC
+  dropFiles.writeUInt32LE(1, 16); // fWide: UTF-16 list
+  fileList.copy(dropFiles, 20);
+  const dropEffect = Buffer.alloc(4);
+  dropEffect.writeUInt32LE(5, 0);
+  try {
+    clipboard.clear();
+    clipboard.writeBuffer('CF_HDROP', dropFiles);
+    clipboard.writeBuffer('Preferred DropEffect', dropEffect);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // M99: the renderer never receives file:// URLs. This privileged scheme is
@@ -1616,6 +1642,7 @@ async function main() {
     defaultLocation: path.join(app.getPath('videos'), 'Arc Power'),
   });
   const stabilityStore = new StabilityStore({ dir: store.dir });
+  const stabilityWorkload = mock ? null : createGpuWorkloadController();
   const overlayLayoutStore = new OverlayLayoutStore({ dir: store.dir, defaults: () => {
     const current = store.loadSettingsSync() ?? {};
     return {
@@ -1659,14 +1686,19 @@ async function main() {
   const resolveRecordingFfmpegPath = () => {
     let configuredPath = null;
     try { configuredPath = recordingStore.loadSync().settings.runtimePath || null; } catch { /* candidate paths still work */ }
-    const runtime = resolveAscentRuntime({
+    const runtimeOptions = {
       configuredPath,
       portableWrapperPath,
       resourcesPath: app.isPackaged ? process.resourcesPath : null,
       devPath: app.isPackaged ? null : path.join(__dirname, '..', '..'),
-    });
-    const executable = runtime?.root ? path.join(runtime.root, 'bin', '64bit', 'ffmpeg.exe') : null;
-    try { return executable && fs.statSync(executable).isFile() ? executable : null; } catch { return null; }
+    };
+    for (const root of resolveRecordingRuntimeCandidates(runtimeOptions)) {
+      const executable = path.join(root, 'bin', '64bit', 'ffmpeg.exe');
+      try {
+        if (fs.statSync(executable).isFile()) return executable;
+      } catch { /* try the next bundled/runtime candidate */ }
+    }
+    return null;
   };
   const resolveRecordingFfprobePath = () => {
     const ffmpegPath = resolveRecordingFfmpegPath();
@@ -1680,6 +1712,11 @@ async function main() {
     resolveFfprobePath: resolveRecordingFfprobePath,
     openFile: async (filePath) => {
       const error = await shell.openPath(filePath);
+      return !error;
+    },
+    copyFile: async (filePath) => copyFileToWindowsClipboard(filePath),
+    openFolder: async (parentPath) => {
+      const error = await shell.openPath(parentPath);
       return !error;
     },
     shareFile: async (filePath, parentPath) => {
@@ -1781,9 +1818,19 @@ async function main() {
       if (needsNativeGeometry && !recordingCaptureTargetsCache) {
         try { targets = await readRecordingCaptureTargets(); } catch { /* use the primary-display fallback below */ }
       }
+      // Game windows can appear after the initial inventory warm-up (and
+      // fullscreen titles often change when the renderer switches modes).
+      // Refresh once when a selected window is missing instead of silently
+      // falling back to the primary display.
+      if (target?.type === 'window' && !targets.windows.some((item) => item.handle === target.windowHandle)) {
+        try { targets = await readRecordingCaptureTargets(true); } catch { /* preserve the honest display fallback */ }
+      }
       return recordingCaptureSelection(settings?.captureTarget, targets, screen.getPrimaryDisplay());
     },
-    trimReplayClip: ({ path: clipPath, durationMs }) => trimRecordingClipToDuration(clipPath, durationMs, { ffmpegPath: resolveRecordingFfmpegPath() }),
+    trimReplayClip: ({ path: clipPath, durationMs }) => trimRecordingClipToDuration(clipPath, durationMs, {
+      ffmpegPath: resolveRecordingFfmpegPath(),
+      ffprobePath: resolveRecordingFfprobePath(),
+    }),
     runtimeResolver: () => {
       let configuredPath = null;
       try { configuredPath = recordingStore.loadSync().settings.runtimePath || null; } catch { /* unavailable store -> candidate paths only */ }
@@ -3500,10 +3547,12 @@ async function main() {
       } catch { return { banner, artwork: null }; }
     },
     recordingStore,
+    recordingCopyFile: async (filePath) => copyFileToWindowsClipboard(filePath),
     recordingEngine,
     recordingLifecycle,
     recordingEditor,
     stabilityStore,
+    stabilityWorkload,
     overlayLayoutStore,
     obsStream,
     applyOverlayLayout: async (layout) => {
@@ -3561,11 +3610,33 @@ async function main() {
     });
     return { response, ...metadata };
   };
+  const persistCompletedVideoCapture = async (mode = null) => {
+    if (mode !== 'video') return null;
+    const completed = recordingEngine.takeCompletedCapture?.('video');
+    if (!completed || !recordingStore?.recordClip) return null;
+    try {
+      const settings = await recordingStore.settings();
+      const location = recordingAbsolutePath(settings.location, 'location');
+      const outputPath = path.resolve(completed.outputPath);
+      if (path.dirname(outputPath) !== path.resolve(location)) return null;
+      const metadata = await persistReplayClipMetadata({
+        recordingStore,
+        recordingRoot: location,
+        outputPath,
+        readyPayload: completed,
+      });
+      return metadata.clip ?? null;
+    } catch (error) {
+      console.log(`[recording] completed capture metadata skipped: ${error?.message ?? String(error)}`);
+      return null;
+    }
+  };
   recordingActionHandler = createRecordingActionHandler({
     getSettings: () => recordingStore.settings(),
     recordingEngine,
     addMarker: (payload) => recordingLifecycle.addReplayMarker(payload),
     saveReplayClip: saveReplayClipForAction,
+    onCaptureStopped: persistCompletedVideoCapture,
     captureScreenshot,
     onActionResult: (result) => {
       pushRecordingActionResult({ getWindow: () => win, result });
@@ -3580,8 +3651,26 @@ async function main() {
   // instead of being lost before their subscriptions exist.
   // The engine owns the child and reuses it for later probes/actions.
   if (!mock && !uiVerify) {
-    void recordingEngine.probe().then(() => recordingLifecycle.autoStartInstantReplay()).catch((error) => {
-      console.log(`[recording] startup probe unavailable: ${error?.message ?? String(error)}`);
+    const probeWithRetry = async () => {
+      let lastError = null;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try { return await recordingEngine.probe(); } catch (error) {
+          lastError = error;
+          console.log(`[recording] startup probe attempt ${attempt}/3 unavailable: ${error?.message ?? String(error)}`);
+          if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 750 * attempt));
+        }
+      }
+      throw lastError ?? new Error('Recording runtime probe failed');
+    };
+    void probeWithRetry().catch((error) => {
+      console.log(`[recording] startup probe unavailable after retries: ${error?.message ?? String(error)}`);
+      return null;
+    }).then((probeState) => {
+      if (!probeState) return null;
+      return recordingLifecycle.autoStartInstantReplay().catch((error) => {
+        console.log(`[recording] Instant Replay auto-start unavailable: ${error?.message ?? String(error)}`);
+        return null;
+      });
     });
   }
   if (!uiVerify) {

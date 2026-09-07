@@ -725,8 +725,14 @@ function updateStabilityLabPanel(root: HTMLElement, state: AppState): void {
     status.textContent = active ? 'Running' : stabilityOutcomeLabel(run?.outcome ?? report?.outcome ?? null);
     status.dataset.outcome = run?.outcome ?? report?.outcome ?? 'ready';
   }
-  if (counters) counters.textContent = run ? `${run.sampleCount} samples · ${run.freshSampleCount} fresh · ${run.workloadEvidence ? 'workload evidence' : 'awaiting workload evidence'}` : report ? `${report.sampleCount} samples · ${report.workloadEvidence ? 'workload evidence' : 'no workload evidence'}` : 'No run yet';
-  if (note) note.textContent = run?.reason ?? report?.reason ?? 'Runs stay tied to the selected physical GPU.';
+  if (counters) counters.textContent = run ? `${run.sampleCount} samples · ${run.freshSampleCount} fresh · ${run.workloadEvidence ? 'GPU workload active' : run.workloadStatus === 'unavailable' ? 'workload unavailable' : run.workloadStatus === 'monitor-only' ? 'monitoring only' : run.workloadStatus === 'running' ? 'workload started · waiting for GPU utilization' : 'starting GPU workload'}` : report ? `${report.sampleCount} samples · ${report.workloadEvidence ? 'workload evidence' : 'no workload evidence'}` : 'No run yet';
+  if (note) {
+    note.textContent = run?.reason
+      ?? (run?.workloadStatus === 'unavailable' ? `GPU workload unavailable: ${run.workloadReason ?? 'the selected adapter could not be opened'}`
+        : run?.workloadStatus === 'monitor-only' ? 'Monitoring the selected GPU without a built-in workload.'
+          : run?.workloadStatus === 'running' ? (run.workloadEvidence ? `GPU workload active on ${run.target?.name ?? 'the selected GPU'}.` : `Workload started on ${run.target?.name ?? 'the selected GPU'}; waiting for utilization telemetry.`)
+            : report?.reason ?? 'Runs stay tied to the selected physical GPU.');
+  }
   if (start) start.disabled = active;
   if (cancel) cancel.disabled = !active;
 }
@@ -741,7 +747,7 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
   const cancel = el('button', { class: 'btn btn-secondary', type: 'button', text: 'Cancel', dataset: { stabilityCancel: 'true' } }) as HTMLButtonElement;
   const root = el('section', { class: 'card stability-lab-panel', dataset: { stabilityLab: 'true' } }, [
     el('div', { class: 'telemetry-section-heading' }, [
-      el('div', {}, [el('h2', { class: 'card-title', text: 'Stability Lab' }), el('p', { class: 'card-note', text: 'Repeatable telemetry with honest workload evidence.' })]),
+      el('div', {}, [el('h2', { class: 'card-title', text: 'Stability Lab' }), el('p', { class: 'card-note', text: 'Runs a bounded workload on the selected GPU while sampling telemetry.' })]),
       el('span', { class: 'telemetry-live-badge', dataset: { stabilityStatus: 'true' }, text: 'Ready' }),
     ]),
     el('div', { class: 'stability-lab-controls' }, [

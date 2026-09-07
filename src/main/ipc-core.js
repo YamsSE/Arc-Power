@@ -1185,6 +1185,7 @@ export function createIpcHandlers({
   chooseGameExecutable = async () => null,
   gameArtwork = async () => null,
   recordingStore = null,
+  recordingCopyFile = async () => false,
   recordingEngine = null,
   recordingLifecycle = null,
   recordingEditor = null,
@@ -1196,6 +1197,7 @@ export function createIpcHandlers({
   recordingCaptureTargets = null,
   stabilityLab = null,
   stabilityStore = null,
+  stabilityWorkload = null,
   overlayLayoutStore = null,
   obsStream = null,
   applyOverlayLayout = async () => {},
@@ -1975,6 +1977,7 @@ export function createIpcHandlers({
   if (!stabilityService) {
     stabilityService = createStabilityLabService({
       reportStore: labStore,
+      workloadController: stabilityWorkload,
       resolveTarget: async (deviceKey) => {
         const devices = await backend.listDevices();
         const matches = devices.filter((device) => device?.deviceKey === deviceKey
@@ -2000,7 +2003,11 @@ export function createIpcHandlers({
         // durable identity to agree with the run target before exposing it
         // as evidence; an ordinal match alone is unsafe and degrades to an
         // honest unavailable sample.
-        const identityMatches = sampleKey !== null && targetKeys.has(sampleKey);
+        // The selected lane is already bound to `target.id`; some driver
+        // paths omit a deviceKey on the composed sample. An omitted key is
+        // therefore safe to inherit from that lane, while an explicit key
+        // from another adapter remains a hard mismatch.
+        const identityMatches = sample !== null && (sampleKey === null || targetKeys.has(sampleKey));
         const receivedAtMs = Date.now();
         let fpsSample = null;
         try {
@@ -2010,7 +2017,7 @@ export function createIpcHandlers({
         let foregroundProcess = null;
         try { foregroundProcess = await foregroundApi.detectProcess?.() ?? null; } catch { foregroundProcess = null; }
         return {
-          sample: identityMatches ? sample : null,
+          sample: identityMatches ? { ...sample, deviceKey: sample?.deviceKey ?? target.deviceKey, deviceKeys: sample?.deviceKeys ?? target.deviceKeys } : null,
           receivedAtMs,
           fpsSample,
           foregroundProcess,
@@ -3110,7 +3117,30 @@ export function createIpcHandlers({
       'recording-stop': async (...args) => {
         if (args.length > 1 || (args.length === 1 && args[0] !== undefined && args[0] !== null && args[0] !== 'video' && args[0] !== 'replay')) throw new Error('recording-stop: mode must be video or replay');
         if (!recordingEngine?.stop) throw new Error('Recording engine is not available');
-        return recordingEngine.stop(args[0] ?? null);
+        const state = await recordingEngine.stop(args[0] ?? null);
+        if (args[0] === 'replay') return state;
+        // Ordinary recordings finish through STOP rather than the replay-save
+        // channel. Consume the bounded APM completion envelope here so those
+        // clips get the same editor telemetry as Instant Replay clips.
+        const completed = recordingEngine.takeCompletedCapture?.('video');
+        if (!completed || !recordingStore?.recordClip) return state;
+        try {
+          const settings = await recordingStore.settings();
+          const location = recordingAbsolutePath(settings.location, 'location');
+          const outputPath = path.resolve(completed.outputPath);
+          if (path.dirname(outputPath) !== path.resolve(location)) return state;
+          const metadata = await persistReplayClipMetadata({
+            recordingStore,
+            recordingRoot: location,
+            outputPath,
+            readyPayload: completed,
+          });
+          return { ...state, completedClip: metadata.clip ?? null };
+        } catch {
+          // Stopping a recording remains successful even when the optional
+          // metadata write is unavailable; the file is still in the library.
+          return state;
+        }
       },
       'recording-replay-start': async (...args) => {
         assertNoPayload(args, 'recording-replay-start');
@@ -3176,6 +3206,10 @@ export function createIpcHandlers({
         if (!recordingEditor?.start) throw new Error('Recording editor is unavailable');
         return recordingEditor.start(payload);
       },
+      'recording-editor-audio': async (sourceId) => {
+        if (!recordingEditor?.audio) throw new Error('Recording editor is unavailable');
+        return recordingEditor.audio(sourceId);
+      },
       'recording-editor-status': async (jobId) => {
         if (!recordingEditor?.status) throw new Error('Recording editor is unavailable');
         return recordingEditor.status(jobId);
@@ -3191,6 +3225,14 @@ export function createIpcHandlers({
       'recording-editor-share': async (jobId) => {
         if (!recordingEditor?.share) throw new Error('Recording editor is unavailable');
         return recordingEditor.share(jobId);
+      },
+      'recording-editor-copy': async (jobId) => {
+        if (!recordingEditor?.copy) throw new Error('Recording editor is unavailable');
+        return recordingEditor.copy(jobId);
+      },
+      'recording-editor-folder': async (jobId) => {
+        if (!recordingEditor?.folder) throw new Error('Recording editor is unavailable');
+        return recordingEditor.folder(jobId);
       },
       'recording-markers-list': async (payload) => {
         if (payload !== undefined && (!payload || typeof payload !== 'object' || Array.isArray(payload))) throw new Error('recording-markers-list: payload must be an object');
@@ -3245,6 +3287,18 @@ export function createIpcHandlers({
         const url = mediaClipUrl(id);
         if (!url) throw new Error('recording-clip-url: invalid clip id');
         return url;
+      },
+      'recording-clip-copy': async (id) => {
+        if (!isOpaqueClipId(id)) throw new Error('recording-clip-copy: invalid clip id');
+        if (!recordingStore) throw new Error('Recording storage is unavailable');
+        const clip = await recordingStore.clipById(id);
+        if (!clip) throw new Error('recording-clip-copy: clip not found');
+        const settings = await recordingStore.settings();
+        const location = recordingAbsolutePath(settings.location, 'location');
+        const filePath = resolveSafeRecordingPath(location, clip.relativePath);
+        if (!filePath) throw new Error('recording-clip-copy: clip path is unsafe');
+        if (!(await recordingCopyFile(filePath))) throw new Error('recording-clip-copy: could not copy clip');
+        return { ok: true };
       },
       'recording-clip-delete': async (id) => {
         if (!isOpaqueClipId(id)) throw new Error('recording-clip-delete: invalid clip id');

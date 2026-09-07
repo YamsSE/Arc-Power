@@ -6,9 +6,10 @@ import type { Page, PageContext } from '../router.ts';
 import type { DeviceInfo, RecordingAudioDevice, RecordingCaptureTarget, RecordingCaptureTargets, RecordingClip, RecordingClipDeleteResult, RecordingEditorJob, RecordingEngineState, RecordingMode, RecordingResolution, RecordingSettings, RecordingSettingsPatch, RecordingStorageInfo, RecordingTab } from '../types.ts';
 import { toast } from '../components/toast.ts';
 import { showRecordingClipDeleteConfirm } from '../components/recording-delete-dialog.ts';
+import { showRecordingShareDialog, type RecordingShareDialogHandle } from '../components/recording-share-dialog.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { parseRecordingEncoderSelection, recordingAdapterTargetOf, recordingBitrateRange, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage } from '../pure/recording.ts';
-import { clampRecordingEditorRange, normalizeRecordingEditorClipName, recordingEditorMarkerPercent } from '../pure/recording-editor.ts';
+import { clampRecordingEditorRange, normalizeRecordingEditorClipName, recordingEditorResumePosition, recordingEditorSelectionFromRatios, recordingEditorSeekTargetMs, recordingEditorTimelineMsFromRatio } from '../pure/recording-editor.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
   ['manual', 'Manual Recording', 'Capture a full video when you choose.'],
@@ -404,27 +405,12 @@ function renderCaptureActions(): HTMLElement {
     button(recordingRunning ? 'Stop Recording' : 'Start Recording', () => void (recordingRunning ? stopCapture('video') : startRecording()), `btn ${recordingRunning ? 'btn-recording-stop' : 'btn-primary'}`, !status.available || actionBusy || (!recordingRunning && captureNeedsApply)),
     button(replayRunning ? 'Stop Instant Replay' : 'Start Instant Replay', () => void (replayRunning ? stopCapture('replay') : startReplay()), `btn ${replayRunning ? 'btn-recording-stop' : 'btn-secondary'}`, !status.available || actionBusy || (!replayRunning && captureNeedsApply)),
     button(instantReplaySaveLabel, () => void saveClip(), 'btn btn-secondary', !status.available || !replayRunning || actionBusy || instantReplaySaving),
-    button('Mark moment', () => void addReplayMarker(), 'btn btn-secondary', !status.available || (!recordingRunning && !replayRunning) || actionBusy),
     settingsDirty ? el('span', { class: 'recording-inline-note recording-unsaved-note', text: 'Apply changes before capture.' }) : null,
     instantReplaySaving ? el('span', { class: 'recording-inline-note recording-live-note', text: 'Instant Replay is being saved…' }) : null,
     instantReplaySaveError ? el('span', { class: 'recording-inline-error', text: status.instantReplaySave?.error ?? 'Instant Replay could not be saved. Try again.' }) : null,
     recordingRunning && replayRunning ? el('span', { class: 'recording-inline-note recording-live-note', text: 'Recording and Instant Replay are both active.' }) : null,
+    recordingRunning || replayRunning ? el('span', { class: 'recording-inline-note recording-live-note', text: 'APM capture active · saved clips include the activity wave.' }) : null,
   ]);
-}
-
-async function addReplayMarker(): Promise<void> {
-  if (actionBusy) return;
-  actionBusy = true;
-  render();
-  try {
-    await api.recordingMarkerAdd({});
-    toast('success', 'Replay marker added', 'The marker will appear with the next saved clip.');
-  } catch (err) {
-    toast('error', 'Replay marker failed', messageOf(err));
-  } finally {
-    actionBusy = false;
-    render();
-  }
 }
 
 function renderRecordingPillSetting(): HTMLElement {
@@ -710,8 +696,6 @@ function renderReplaySettings(): HTMLElement {
   replay.addEventListener('change', () => stagePatch({ replayLengthSec: Number(replay.value) }));
   const autoStart = el('input', { type: 'checkbox', class: 'settings-checkbox', checked: working?.instantReplayAutoStart === true, 'aria-label': 'Auto-start Instant Replay' }) as HTMLInputElement;
   autoStart.addEventListener('change', () => stagePatch({ instantReplayAutoStart: autoStart.checked }));
-  const markers = el('input', { type: 'checkbox', class: 'settings-checkbox', checked: working?.replayMarkersEnabled !== false, 'aria-label': 'Enable replay markers' }) as HTMLInputElement;
-  markers.addEventListener('change', () => stagePatch({ replayMarkersEnabled: markers.checked }));
   const toggleCard = (title: string, note: string, input: HTMLInputElement): HTMLElement => el('div', { class: 'recording-replay-toggle-card' }, [
     el('div', { class: 'recording-replay-toggle-copy' }, [el('strong', { text: title }), el('span', { class: 'recording-field-note', text: note })]),
     el('label', { class: 'recording-check-row' }, [input]),
@@ -723,7 +707,6 @@ function renderReplaySettings(): HTMLElement {
     ]),
     field('Seconds to keep available', replay, 'Saved when you press Save Instant Replay.'),
     toggleCard('Auto-start Instant Replay after launch', 'Start the rolling buffer once Arc Power finishes launching.', autoStart),
-    toggleCard('Enable replay markers', 'Keep Highlight markers with the next saved clip.', markers),
   ]);
 }
 
@@ -836,7 +819,7 @@ function renderAudioSettings(): HTMLElement {
 
 function renderHotkeys(): HTMLElement {
   const working = settingsForRender();
-  const make = (key: 'start' | 'stop' | 'saveClip' | 'marker' | 'screenshot', label: string, description: string): HTMLElement => {
+  const make = (key: 'start' | 'stop' | 'saveClip' | 'screenshot', label: string, description: string): HTMLElement => {
     const input = el('input', {
       class: 'recording-hotkey',
       type: 'text',
@@ -861,7 +844,6 @@ function renderHotkeys(): HTMLElement {
     make('start', 'Start recording', 'Begin a full video capture.'),
     make('stop', 'Stop capture', 'Finish the active video or Instant Replay buffer.'),
     make('saveClip', 'Save Instant Replay', 'Export the configured Instant Replay window.'),
-    make('marker', 'Mark moment', 'Add a marker to the active recording or replay session.'),
     make('screenshot', 'Screenshot', 'Save the selected display or window as a PNG.'),
   ]);
 }
@@ -1179,29 +1161,73 @@ function renderClipsView(): HTMLElement {
 
 type RecordingEditorElement = HTMLElement & {
   updateDuration?: (durationMs: number) => void;
+  updatePlayback?: (playbackMs: number) => void;
+  getSelection?: () => { startMs: number; endMs: number };
+  onSelectionChanged?: (range: { startMs: number; endMs: number }) => void;
 };
 
-function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = ''): HTMLElement {
+type RecordingApmChartElement = HTMLElement & {
+  updateDuration?: (durationMs: number) => void;
+  updatePlayback?: (playbackMs: number) => void;
+};
+
+type RecordingTrackerElement = HTMLElement & {
+  updateDuration?: (durationMs: number) => void;
+  updatePlayback?: (playbackMs: number) => void;
+};
+
+function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = '', onSeek?: (atMs: number) => void): RecordingApmChartElement {
   const samples = Array.isArray(clip.apmSamples) ? clip.apmSamples.filter((sample) => Number.isFinite(sample.atMs) && Number.isFinite(sample.apm)) : [];
-  const markers = clip.markerSummaries ?? [];
-  const span = Math.max(1000, durationMs, ...samples.map((sample) => sample.atMs), ...markers.map((marker) => marker.atMs));
-  const chart = el('div', { class: `recording-apm-chart recording-apm-chart-live${extraClass ? ` ${extraClass}` : ''}`, 'aria-label': samples.length ? 'APM timeline' : 'APM telemetry unavailable for this clip' });
+  let span = Math.max(1000, durationMs, ...samples.map((sample) => sample.atMs));
+  const chart = el('div', { class: `recording-apm-chart recording-apm-chart-live${extraClass ? ` ${extraClass}` : ''}`, 'aria-label': samples.length || clip.apmAvailable === true ? 'APM timeline' : 'APM telemetry unavailable for this clip' }) as RecordingApmChartElement;
+  let playbackMs = 0;
+  const playhead = el('div', { class: 'recording-apm-playhead', 'aria-hidden': 'true' });
   const tooltip = el('div', { class: 'recording-apm-tooltip', hidden: true });
-  const markerRail = el('div', { class: 'recording-apm-marker-rail', 'aria-label': 'Clip marker positions' }, markers.map((marker) => el('span', {
-    class: 'recording-apm-marker',
-    title: `${marker.label} · ${formatTime(marker.atMs / 1000)}`,
-    style: `--marker:${Math.min(100, Math.max(0, (marker.atMs / span) * 100))}%`,
-    text: marker.label.trim().slice(0, 1).toUpperCase() || '•',
-  })));
+  const trace = samples.length > 0 ? svgEl('polyline', { points: '' }) : null;
+  const updateTrace = () => {
+    if (trace) {
+      const maxApm = Math.max(60, ...samples.map((sample) => sample.apm));
+      trace.setAttribute('points', samples.map((sample) => {
+        const x = Math.min(100, Math.max(0, (sample.atMs / span) * 100));
+        const y = 38 - (Math.min(maxApm, Math.max(0, sample.apm)) / maxApm) * 32;
+        return `${x.toFixed(3)},${y.toFixed(3)}`;
+      }).join(' '));
+    }
+  };
+  const timelineMsAtEvent = (event: MouseEvent): number => {
+    const rect = chart.getBoundingClientRect();
+    if (rect.width <= 0) return 0;
+    return recordingEditorTimelineMsFromRatio((event.clientX - rect.left) / rect.width, span);
+  };
+  const seekFromEvent = (event: MouseEvent): void => {
+    const atMs = timelineMsAtEvent(event);
+    playbackMs = atMs;
+    onSeek?.(atMs);
+    chart.updatePlayback?.(atMs);
+  };
+  chart.addEventListener('click', (event) => {
+    seekFromEvent(event as MouseEvent);
+  });
+  chart.tabIndex = 0;
+  chart.addEventListener('keydown', (event) => {
+    const keyboardEvent = event as KeyboardEvent;
+    if (keyboardEvent.key !== 'ArrowLeft' && keyboardEvent.key !== 'ArrowRight') return;
+    keyboardEvent.preventDefault();
+    const step = keyboardEvent.shiftKey ? 1000 : 100;
+    const atMs = Math.min(span, Math.max(0, playbackMs + (keyboardEvent.key === 'ArrowRight' ? step : -step)));
+    playbackMs = atMs;
+    onSeek?.(atMs);
+    chart.updatePlayback?.(atMs);
+    if (samples.length > 0) {
+      const sample = samples.reduce((best, candidate) => Math.abs(candidate.atMs - atMs) < Math.abs(best.atMs - atMs) ? candidate : best, samples[0]);
+      tooltip.textContent = `APM: ${sample.apm} · ${formatTime(sample.atMs / 1000)}`;
+      tooltip.hidden = false;
+      tooltip.style.left = `${Math.min(Math.max(6, (sample.atMs / span) * (chart.clientWidth || 0)), Math.max(6, (chart.clientWidth || 0) - 110))}px`;
+    }
+  });
   if (samples.length > 0) {
-    const maxApm = Math.max(60, ...samples.map((sample) => sample.apm));
-    const points = samples.map((sample) => {
-      const x = Math.min(100, Math.max(0, (sample.atMs / span) * 100));
-      const y = 38 - (Math.min(maxApm, Math.max(0, sample.apm)) / maxApm) * 32;
-      return `${x.toFixed(3)},${y.toFixed(3)}`;
-    }).join(' ');
     const svg = svgEl('svg', { class: 'recording-apm-trace', viewBox: '0 0 100 40', preserveAspectRatio: 'none', role: 'img', 'aria-label': 'APM activity wave' });
-    svg.append(svgEl('polyline', { points }));
+    if (trace) svg.append(trace);
     chart.append(svg);
     const nearest = (ratio: number) => samples.reduce((best, sample) => Math.abs(sample.atMs / span - ratio) < Math.abs(best.atMs / span - ratio) ? sample : best, samples[0]);
     const showTooltip = (event: MouseEvent) => {
@@ -1215,40 +1241,87 @@ function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = ''
     chart.addEventListener('mousemove', showTooltip);
     chart.addEventListener('mouseleave', () => { tooltip.hidden = true; });
     chart.addEventListener('focusout', () => { tooltip.hidden = true; });
-    chart.tabIndex = 0;
-    chart.addEventListener('keydown', (event) => {
-      if ((event as KeyboardEvent).key !== 'ArrowLeft' && (event as KeyboardEvent).key !== 'ArrowRight') return;
-      const index = (event as KeyboardEvent).key === 'ArrowRight' ? samples.length - 1 : 0;
-      const sample = samples[index];
-      tooltip.textContent = `APM: ${sample.apm} · ${formatTime(sample.atMs / 1000)}`;
-      tooltip.hidden = false;
-    });
   } else {
     chart.append(el('div', { class: 'recording-apm-empty-trace', 'aria-hidden': 'true' }));
   }
-  chart.append(markerRail, tooltip);
+  chart.append(playhead, tooltip);
+  chart.updateDuration = (nextDurationMs: number) => {
+    if (!Number.isFinite(nextDurationMs) || nextDurationMs <= 0) return;
+    span = Math.max(1000, Math.round(nextDurationMs), ...samples.map((sample) => sample.atMs));
+    updateTrace();
+  };
+  chart.updatePlayback = (nextPlaybackMs: number) => {
+    playbackMs = Math.min(span, Math.max(0, Number.isFinite(nextPlaybackMs) ? Math.round(nextPlaybackMs) : 0));
+    playhead.style.left = `${Math.min(100, Math.max(0, (playbackMs / span) * 100))}%`;
+    playhead.setAttribute('aria-label', `Playback position ${formatTime(playbackMs / 1000)}`);
+  };
+  updateTrace();
+  chart.updatePlayback(0);
   return chart;
 }
 
-function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoElement | null, getTracker?: () => HTMLElement | null, onCancel?: () => void): HTMLElement {
+function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoElement | null, onCancel?: () => void): HTMLElement {
   // A file's byte length is not a playback duration. Start with a safe one
   // second range and replace it from the video's authoritative metadata.
   let durationMs = 1000;
   let job: RecordingEditorJob | null = null;
+  let shareDialogHandle: RecordingShareDialogHandle | null = null;
+  let shareDialogJobId: string | null = null;
   const clipName = el('input', { class: 'recording-editor-clip-name', type: 'text', value: clip.fileName.replace(/\.[^.]+$/, ''), maxlength: 96, 'aria-label': 'Clip name' }) as HTMLInputElement;
   const startTime = el('input', { class: 'recording-editor-time-input', type: 'text', inputmode: 'decimal', value: '0:00.000', 'aria-label': 'Clip start time' }) as HTMLInputElement;
   const endTime = el('input', { class: 'recording-editor-time-input', type: 'text', inputmode: 'decimal', value: '0:00.000', 'aria-label': 'Clip end time' }) as HTMLInputElement;
-  const durationReadout = el('span', { class: 'recording-editor-duration', text: 'Duration 0:00' });
-  const audioMenu = select('original', [['original', 'Original audio'], ['mute', 'Mute audio'], ['system', 'System audio (source)']], 'Audio', () => {});
-  audioMenu.classList.add('recording-editor-audio-menu');
-  const apmToggle = el('input', { type: 'checkbox', checked: true, 'aria-label': 'Show APM tracker' }) as HTMLInputElement;
-  let syncApmState = (): void => {};
-  const apmMenu = select('performance', [['performance', 'Performance'], ['minimal', 'Minimal'], ['off', 'Off']], 'APM menu', () => syncApmState());
-  apmMenu.classList.add('recording-editor-apm-menu');
+  const durationReadout = el('span', { class: 'recording-editor-duration', text: '0:00' });
+  type RecordingAudioSelection = 'original' | 'mute' | 'system' | 'microphone';
+  let audioSelection: RecordingAudioSelection = 'original';
+  let audioCapabilities: { system: boolean; microphone: boolean; mixed: boolean } = { system: false, microphone: false, mixed: true };
+  const audioToggle = el('button', { class: 'recording-editor-audio-toggle', type: 'button', 'aria-haspopup': 'true', 'aria-expanded': 'false', text: 'Original audio' }) as HTMLButtonElement;
+  const audioMenu = el('div', { class: 'recording-editor-audio-menu', role: 'group', 'aria-label': 'Audio source choices', hidden: true });
+  const audioHint = el('span', { class: 'recording-editor-audio-hint', hidden: true });
+  const audioControl = el('div', { class: 'recording-editor-audio-control' }, [audioToggle, audioMenu]);
+  const audioField = el('div', { class: 'recording-editor-audio-field' }, [el('span', { text: 'Audio' }), audioControl, audioHint]);
+  const audioLabels: Record<RecordingAudioSelection, string> = {
+    original: 'Original audio',
+    system: 'System Audio',
+    microphone: 'Microphone',
+    mute: 'Mute audio',
+  };
+  const audioEnabled = (selection: RecordingAudioSelection): boolean => selection === 'mute' || (selection === 'original' ? audioCapabilities.mixed : audioCapabilities[selection]);
+  const renderAudioMenu = (): void => {
+    clear(audioMenu);
+    (Object.keys(audioLabels) as RecordingAudioSelection[]).forEach((selection) => {
+      const enabled = audioEnabled(selection);
+      const checkbox = el('input', { type: 'checkbox', checked: audioSelection === selection, disabled: !enabled, 'aria-label': audioLabels[selection] }) as HTMLInputElement;
+      const option = el('label', { class: `recording-editor-audio-option${enabled ? '' : ' is-disabled'}` }, [checkbox, el('span', { text: audioLabels[selection] })]);
+      checkbox.addEventListener('change', () => {
+        if (!enabled || !checkbox.checked) return;
+        audioSelection = selection;
+        audioToggle.textContent = audioLabels[selection];
+        audioMenu.hidden = true;
+        audioToggle.setAttribute('aria-expanded', 'false');
+        renderAudioMenu();
+      });
+      audioMenu.append(option);
+    });
+    const separateUnavailable = !audioCapabilities.system && !audioCapabilities.microphone;
+    audioHint.hidden = !separateUnavailable;
+    audioHint.textContent = separateUnavailable ? 'This recording has a single mixed audio track' : '';
+    audioToggle.textContent = audioLabels[audioSelection];
+  };
+  audioToggle.addEventListener('click', (event) => {
+    event.preventDefault();
+    audioMenu.hidden = !audioMenu.hidden;
+    audioToggle.setAttribute('aria-expanded', String(!audioMenu.hidden));
+  });
+  renderAudioMenu();
   const startRange = el('input', { class: 'recording-editor-range', type: 'range', min: 0, max: 1000, step: 1, value: 0, 'aria-label': 'Edit start' }) as HTMLInputElement;
   const endRange = el('input', { class: 'recording-editor-range', type: 'range', min: 0, max: 1000, step: 1, value: 1000, 'aria-label': 'Edit end' }) as HTMLInputElement;
-  const startLabel = el('span', { text: '0:00' });
-  const endLabel = el('span', { text: '0:00' });
+  const startLabel = el('span', { text: 'START 0:00' });
+  const endLabel = el('span', { text: 'END 0:00' });
+  const rangeRuler = el('div', { class: 'recording-editor-range-ruler' }, [
+    el('span', { text: '0:00' }),
+    el('span', { class: 'recording-editor-range-ruler-middle', text: '0:00' }),
+    el('span', { class: 'recording-editor-range-ruler-end', text: '0:00' }),
+  ]);
   const statusLabel = el('span', { class: 'recording-editor-status', text: 'Choose a range to create a new clip or GIF.' });
   const progress = el('progress', { class: 'recording-editor-progress', max: 100, value: 0, hidden: true, 'aria-label': 'Editor progress' }) as HTMLProgressElement;
   const cancelButton = button('Cancel', () => {
@@ -1261,37 +1334,96 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
     }
     onCancel?.();
   }, 'btn btn-secondary');
-  const openButton = button('Open', () => { if (job) void api.recordingEditorOpen(job.jobId).catch((err) => toast('error', 'Open export', messageOf(err))); }, 'btn btn-secondary', true);
-  const shareButton = button('Share', () => { if (job) void api.recordingEditorShare(job.jobId).catch((err) => toast('error', 'Share export', messageOf(err))); }, 'btn btn-secondary', true);
   const gifButton = button('Export GIF', () => void startJob('gif'), 'btn btn-secondary');
   const fps = el('input', { class: 'recording-editor-number', type: 'number', min: 5, max: 30, step: 1, value: 15, 'aria-label': 'GIF frames per second' }) as HTMLInputElement;
   const width = el('input', { class: 'recording-editor-number', type: 'number', min: 2, max: 1920, step: 2, value: 640, 'aria-label': 'GIF width' }) as HTMLInputElement;
   const editor = el('section', { class: 'recording-editor-drawer recording-editor-ascent', 'aria-label': 'Clip editor' }) as RecordingEditorElement;
-  let segmentBoundary: 'start' | 'end' = 'start';
   const selectionFill = el('div', { class: 'recording-editor-selection-fill', 'aria-hidden': 'true' });
-  const setRangeLabels = () => {
-    const max = Math.max(1000, durationMs);
-    const start = Math.min(max - 1, Math.round((Number(startRange.value) / 1000) * max));
-    const end = Math.max(start + 1, Math.round((Number(endRange.value) / 1000) * max));
-    if (document.activeElement !== startTime) startTime.value = formatPreciseTime(start);
-    if (document.activeElement !== endTime) endTime.value = formatPreciseTime(end);
-    startLabel.textContent = formatTime(start / 1000);
-    endLabel.textContent = formatTime(end / 1000);
-    durationReadout.textContent = `Duration ${formatTime(Math.max(0, end - start) / 1000)}`;
-    startRange.setAttribute('aria-valuetext', formatTime(start / 1000));
-    endRange.setAttribute('aria-valuetext', formatTime(end / 1000));
-    selectionFill.style.left = `${Math.min(100, Math.max(0, (start / max) * 100))}%`;
-    selectionFill.style.right = `${Math.min(100, Math.max(0, 100 - (end / max) * 100))}%`;
+  let selectionStartMs = 0;
+  let selectionEndMs = durationMs;
+  let playbackMs = 0;
+  let hasVideoDuration = false;
+  editor.addEventListener('click', (event) => {
+    if (!audioControl.contains(event.target as Node)) {
+      audioMenu.hidden = true;
+      audioToggle.setAttribute('aria-expanded', 'false');
+    }
+  });
+  const playbackMarker = el('div', {
+    class: 'recording-editor-playback-marker',
+    role: 'slider',
+    tabindex: '0',
+    'aria-label': 'Playback position',
+    'aria-valuemin': '0',
+    'aria-valuemax': String(durationMs),
+    'aria-valuenow': '0',
+  });
+  const playbackLabel = el('span', { class: 'recording-editor-playback-label', text: 'PLAYBACK 0:00' });
+  playbackMarker.append(playbackLabel);
+  const syncPlaybackMarker = (nextPlaybackMs: number): void => {
+    playbackMs = Math.min(durationMs, Math.max(0, Number.isFinite(nextPlaybackMs) ? Math.round(nextPlaybackMs) : 0));
+    const percent = durationMs > 0 ? (playbackMs / durationMs) * 100 : 0;
+    playbackMarker.style.left = `${Math.min(100, Math.max(0, percent))}%`;
+    playbackLabel.textContent = `PLAYBACK ${formatTime(playbackMs / 1000)}`;
+    playbackLabel.style.transform = percent > 88 ? 'translateX(-100%)' : 'none';
+    playbackLabel.style.marginLeft = percent > 88 ? '-6px' : '6px';
+    playbackMarker.setAttribute('aria-valuemax', String(durationMs));
+    playbackMarker.setAttribute('aria-valuenow', String(playbackMs));
+    playbackMarker.setAttribute('aria-valuetext', formatTime(playbackMs / 1000));
   };
-  const syncTimeFields = () => {
-    const max = Math.max(1000, durationMs);
-    const start = Math.min(max - 1, Math.max(0, parseTimeInput(startTime.value)));
-    const end = Math.min(max, Math.max(start + 1, parseTimeInput(endTime.value)));
-    startTime.value = formatPreciseTime(start);
-    endTime.value = formatPreciseTime(end);
-    startRange.value = String(Math.round((start / max) * 1000));
-    endRange.value = String(Math.round((end / max) * 1000));
-    setRangeLabels();
+  playbackMarker.addEventListener('keydown', (event) => {
+    const keyboardEvent = event as KeyboardEvent;
+    if (keyboardEvent.key !== 'ArrowLeft' && keyboardEvent.key !== 'ArrowRight') return;
+    keyboardEvent.preventDefault();
+    const step = keyboardEvent.shiftKey ? 1000 : 100;
+    const next = playbackMs + (keyboardEvent.key === 'ArrowRight' ? step : -step);
+    seekVideoTo(next);
+  });
+  const syncRangeControls = (startMs: number, endMs: number) => {
+    const range = clampRecordingEditorRange(startMs, endMs, durationMs);
+    selectionStartMs = range.startMs;
+    selectionEndMs = range.endMs;
+    startRange.value = String(Math.round((range.startMs / range.durationMs) * 1000));
+    endRange.value = String(Math.round((range.endMs / range.durationMs) * 1000));
+    startTime.value = formatPreciseTime(range.startMs);
+    endTime.value = formatPreciseTime(range.endMs);
+    startLabel.textContent = `START ${formatTime(range.startMs / 1000)}`;
+    endLabel.textContent = `END ${formatTime(range.endMs / 1000)}`;
+    durationReadout.textContent = formatTime((range.endMs - range.startMs) / 1000);
+    const startPercent = Math.min(100, Math.max(0, (range.startMs / range.durationMs) * 100));
+    const endPercent = Math.min(100, Math.max(0, (range.endMs / range.durationMs) * 100));
+    selectionFill.style.left = `${startPercent}%`;
+    selectionFill.style.right = `${100 - endPercent}%`;
+    startLabel.style.left = `${startPercent}%`;
+    endLabel.style.left = `${endPercent}%`;
+    startLabel.style.transform = startPercent < 8 ? 'translateX(0)' : 'translateX(-50%)';
+    endLabel.style.transform = endPercent > 92 ? 'translateX(-100%)' : 'translateX(-50%)';
+    startRange.setAttribute('aria-valuetext', formatTime(range.startMs / 1000));
+    endRange.setAttribute('aria-valuetext', formatTime(range.endMs / 1000));
+    const middle = rangeRuler.querySelector<HTMLElement>('.recording-editor-range-ruler-middle');
+    const rulerEnd = rangeRuler.querySelector<HTMLElement>('.recording-editor-range-ruler-end');
+    if (middle) middle.textContent = formatTime((range.durationMs / 2) / 1000);
+    if (rulerEnd) rulerEnd.textContent = formatTime(range.durationMs / 1000);
+    editor.onSelectionChanged?.({ startMs: range.startMs, endMs: range.endMs });
+  };
+  const seekVideoTo = (nextMs: number): void => {
+    const video = getVideo();
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return;
+    const targetMs = Math.min(durationMs, Math.max(0, Math.round(Number.isFinite(nextMs) ? nextMs : 0)));
+    video.currentTime = Math.min(video.duration, targetMs / 1000);
+    // Keep the player transport and editor divider visually locked together
+    // before the browser emits its asynchronous media timeupdate event.
+    video.dispatchEvent(new Event('timeupdate'));
+    syncPlaybackMarker(targetMs);
+  };
+  const setRangeFromSliders = () => {
+    const range = recordingEditorSelectionFromRatios(Number(startRange.value), Number(endRange.value), durationMs);
+    syncRangeControls(range.startMs, range.endMs);
+  };
+  const syncTimeFields = (field: 'start' | 'end') => {
+    const range = clampRecordingEditorRange(parseTimeInput(startTime.value), parseTimeInput(endTime.value), durationMs);
+    syncRangeControls(range.startMs, range.endMs);
+    seekVideoTo(field === 'start' ? range.startMs : range.endMs);
   };
   const setBusy = (busy: boolean) => {
     createClipButton.disabled = busy;
@@ -1311,10 +1443,22 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
     else if (next.state === 'ready') statusLabel.textContent = next.clip ? `Created ${next.clip.fileName}.` : `Created ${next.artifact?.fileName ?? 'GIF export'}.`;
     else statusLabel.textContent = next.state === 'queued' ? 'Queued…' : `Rendering ${Math.round(next.progress)}%`;
     const ready = next.state === 'ready';
-    openButton.disabled = !ready;
-    shareButton.disabled = !ready;
     setBusy(next.state === 'queued' || next.state === 'running');
-    if (ready && next.clip) clips = [...clips.filter((item) => item.id !== next.clip?.id), next.clip];
+    if (ready && next.clip) {
+      clips = [...clips.filter((item) => item.id !== next.clip?.id), next.clip];
+      const dialog = shareDialogHandle;
+      shareDialogHandle = null;
+      shareDialogJobId = next.jobId;
+      if (dialog) {
+        void api.recordingClipUrl(next.clip.id)
+          .then((previewUrl) => dialog.setReady(previewUrl, next.clip?.fileName))
+          .catch((err) => dialog.setError(messageOf(err)));
+      }
+    } else if (next.state === 'cancelled' || next.state === 'error') {
+      shareDialogHandle?.setError(next.state === 'cancelled' ? 'Clip creation was cancelled.' : (next.error ?? 'The editor could not complete this clip.'));
+      shareDialogHandle = null;
+      shareDialogJobId = null;
+    }
     if (next.state === 'ready' || next.state === 'cancelled' || next.state === 'error') {
       if (editorPollTimer !== null) { window.clearInterval(editorPollTimer); editorPollTimer = null; }
     }
@@ -1322,11 +1466,8 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
   async function startJob(operation: 'trim' | 'gif'): Promise<void> {
     const video = getVideo();
     if (video && Number.isFinite(video.duration) && video.duration > 0) durationMs = Math.round(video.duration * 1000);
-    const range = clampRecordingEditorRange(parseTimeInput(startTime.value), parseTimeInput(endTime.value), durationMs);
-    durationMs = range.durationMs;
-    startTime.value = formatPreciseTime(range.startMs);
-    endTime.value = formatPreciseTime(range.endMs);
-    syncTimeFields();
+    const range = clampRecordingEditorRange(selectionStartMs, selectionEndMs, durationMs);
+    syncRangeControls(range.startMs, range.endMs);
     const { startMs, endMs } = range;
     if (!video || !Number.isFinite(video.duration) || startMs >= endMs) {
       statusLabel.textContent = 'Choose a valid start and end range.';
@@ -1334,153 +1475,207 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
     }
     try {
       const requestedName = normalizeRecordingEditorClipName(clipName.value);
-      const next = await api.recordingEditorStart({ sourceId: clip.id, operation, startMs, endMs, outputName: requestedName, audio: audioMenu.value as 'original' | 'mute' | 'system', ...(operation === 'gif' ? { fps: Number(fps.value), width: Number(width.value) } : {}) });
+      if (operation === 'trim') {
+        shareDialogJobId = null;
+        shareDialogHandle?.setError('A newer clip is being created.');
+        shareDialogHandle = showRecordingShareDialog({
+          fileName: requestedName,
+          loading: true,
+          onCopy: () => shareDialogJobId ? api.recordingEditorCopy(shareDialogJobId) : Promise.reject(new Error('Clip is still being created')),
+          onOpenFolder: () => shareDialogJobId ? api.recordingEditorFolder(shareDialogJobId) : Promise.reject(new Error('Clip is still being created')),
+        });
+      }
+      const next = await api.recordingEditorStart({ sourceId: clip.id, operation, startMs, endMs, outputName: requestedName, audio: audioSelection, ...(operation === 'gif' ? { fps: Number(fps.value), width: Number(width.value) } : {}) });
       updateJob(next);
       if (next.state === 'queued' || next.state === 'running') {
         if (editorPollTimer !== null) window.clearInterval(editorPollTimer);
         editorPollTimer = window.setInterval(() => {
-          void api.recordingEditorStatus(next.jobId).then(updateJob).catch((err) => { statusLabel.textContent = messageOf(err); });
+          void api.recordingEditorStatus(next.jobId).then(updateJob).catch((err) => {
+            statusLabel.textContent = messageOf(err);
+            toast('error', 'Clip export', messageOf(err));
+          });
         }, 300);
       }
-    } catch (err) { statusLabel.textContent = messageOf(err); }
-  }
-  startRange.addEventListener('input', setRangeLabels);
-  endRange.addEventListener('input', setRangeLabels);
-  startTime.addEventListener('change', syncTimeFields);
-  endTime.addEventListener('change', syncTimeFields);
-  const segmentButton = button('Segment', () => {
-    const video = getVideo();
-    if (!video || !Number.isFinite(video.duration)) return;
-    const current = Math.max(0, Math.min(durationMs, Math.round(video.currentTime * 1000)));
-    if (current > 0 && current < durationMs && segmentBoundary === 'start') {
-      startTime.value = formatPreciseTime(current);
-      syncTimeFields();
-      segmentBoundary = 'end';
-      statusLabel.textContent = 'Segment start set. Move the playhead and press Segment again for the end.';
-    } else if (current > 0 && current < durationMs) {
-      endTime.value = formatPreciseTime(current);
-      syncTimeFields();
-      segmentBoundary = 'start';
-      statusLabel.textContent = 'Segment range updated from the playhead.';
+    } catch (err) {
+      statusLabel.textContent = messageOf(err);
+      shareDialogHandle?.setError(messageOf(err));
+      shareDialogHandle = null;
+      shareDialogJobId = null;
+      toast('error', 'Clip export', messageOf(err));
     }
-  }, 'btn btn-secondary');
+  }
+  startRange.addEventListener('input', () => {
+    setRangeFromSliders();
+    seekVideoTo(selectionStartMs);
+  });
+  endRange.addEventListener('input', () => {
+    setRangeFromSliders();
+    seekVideoTo(selectionEndMs);
+  });
+  startTime.addEventListener('change', () => syncTimeFields('start'));
+  endTime.addEventListener('change', () => syncTimeFields('end'));
   const createClipButton = button('Create clip', () => void startJob('trim'), 'btn btn-primary');
-  syncApmState = () => {
-    const tracker = getTracker?.();
-    const mode = apmMenu.value;
-    const visible = apmToggle.checked && mode !== 'off';
-    if (tracker) tracker.hidden = !visible;
-    const liveLabel = tracker?.querySelector('.recording-apm-live');
-    if (liveLabel) liveLabel.textContent = mode === 'minimal'
-      ? 'Minimal view'
-      : mode === 'off' || !apmToggle.checked
-        ? 'APM hidden'
-        : clip.apmSamples?.length ? `Average APM ${clip.apmAverage ?? '—'}` : 'Telemetry unavailable for this clip';
-    if (statusLabel && !job) statusLabel.textContent = visible
-      ? mode === 'minimal' ? 'APM tracker set to minimal view.' : clip.apmSamples?.length ? 'APM tracker ready.' : 'APM telemetry unavailable for this clip.'
-      : 'APM tracker hidden.';
+  // The editor strip is reserved for the three interactive points:
+  // START, END, and PLAYBACK. APM is rendered only in the viewing timeline.
+  const rangeTrack = el('div', { class: 'recording-editor-range-track' }, [selectionFill, playbackMarker, startRange, endRange]);
+  let dragMode: 'start' | 'end' | 'playback' | null = null;
+  let dragPointerId: number | null = null;
+  const timelineMsAtEvent = (event: PointerEvent): number => {
+    const rect = rangeTrack.getBoundingClientRect();
+    if (rect.width <= 0 || durationMs <= 0) return 0;
+    const ratio = Math.min(1000, Math.max(0, ((event.clientX - rect.left) / rect.width) * 1000));
+    return recordingEditorSelectionFromRatios(ratio, ratio, durationMs).startMs;
   };
-  apmToggle.addEventListener('change', () => syncApmState());
-  const markerRail = el('div', { class: 'recording-editor-marker-rail', 'aria-label': 'Clip markers' }, (clip.markerSummaries ?? []).map((marker) => el('button', {
-    class: 'recording-editor-marker',
-    type: 'button',
-    title: `${marker.label} · ${formatTime(marker.atMs / 1000)}`,
-    'aria-label': `Jump to ${marker.label} at ${formatTime(marker.atMs / 1000)}`,
-    style: `--marker:${recordingEditorMarkerPercent(marker.atMs, durationMs)}%`,
-    text: marker.label.trim().slice(0, 1).toUpperCase() || '•',
-    onClick: () => {
-      const video = getVideo();
-      if (video && Number.isFinite(video.duration)) video.currentTime = Math.min(video.duration, Math.max(0, marker.atMs / 1000));
-    },
-  })));
+  const closestTimelinePoint = (candidateMs: number): 'start' | 'end' | 'playback' => {
+    const points: Array<{ key: 'start' | 'end' | 'playback'; distance: number }> = [
+      { key: 'start', distance: Math.abs(candidateMs - selectionStartMs) },
+      { key: 'end', distance: Math.abs(candidateMs - selectionEndMs) },
+      { key: 'playback', distance: Math.abs(candidateMs - playbackMs) },
+    ];
+    points.sort((left, right) => left.distance - right.distance);
+    // Only the small visible handle hit-box selects START or END. A broad
+    // time-based threshold made ordinary timeline clicks snap the playback
+    // position to whichever boundary happened to be closer.
+    const width = rangeTrack.getBoundingClientRect().width;
+    const thresholdMs = width > 0 ? Math.max(80, (durationMs * 14) / width) : 80;
+    return points[0].distance <= thresholdMs ? points[0].key : 'playback';
+  };
+  const applyTimelineDrag = (event: PointerEvent): void => {
+    if (!dragMode) return;
+    const candidate = timelineMsAtEvent(event);
+    if (dragMode === 'start') {
+      syncRangeControls(candidate, selectionEndMs);
+      seekVideoTo(selectionStartMs);
+    } else if (dragMode === 'end') {
+      syncRangeControls(selectionStartMs, candidate);
+      seekVideoTo(selectionEndMs);
+    } else {
+      syncPlaybackMarker(candidate);
+      seekVideoTo(candidate);
+    }
+  };
+  rangeTrack.addEventListener('pointerdown', (event) => {
+    const pointerEvent = event as PointerEvent;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button')) return;
+    dragMode = closestTimelinePoint(timelineMsAtEvent(pointerEvent));
+    dragPointerId = pointerEvent.pointerId;
+    rangeTrack.setPointerCapture?.(pointerEvent.pointerId);
+    applyTimelineDrag(pointerEvent);
+    pointerEvent.preventDefault();
+  });
+  rangeTrack.addEventListener('pointermove', (event) => {
+    const pointerEvent = event as PointerEvent;
+    if (dragPointerId !== pointerEvent.pointerId) return;
+    applyTimelineDrag(pointerEvent);
+  });
+  const finishTimelineDrag = (event: Event): void => {
+    const pointerEvent = event as PointerEvent;
+    if (dragPointerId !== pointerEvent.pointerId) return;
+    rangeTrack.releasePointerCapture?.(pointerEvent.pointerId);
+    dragPointerId = null;
+    dragMode = null;
+  };
+  rangeTrack.addEventListener('pointerup', finishTimelineDrag);
+  rangeTrack.addEventListener('pointercancel', finishTimelineDrag);
   const startField = el('label', { class: 'recording-editor-time-field' }, [el('span', { text: 'START' }), startTime]);
   const endField = el('label', { class: 'recording-editor-time-field' }, [el('span', { text: 'END' }), endTime]);
-  const audioField = el('label', { class: 'recording-editor-audio-field' }, [el('span', { text: 'Audio' }), audioMenu]);
-  const creationTimelineActions = el('div', { class: 'recording-editor-timeline-actions' }, [
-    cancelButton,
-    el('label', { class: 'recording-editor-apm-toggle' }, [apmToggle, el('span', { text: 'APM' })]),
-    apmMenu,
-  ]);
+  const creationTimelineActions = el('div', { class: 'recording-editor-timeline-actions' }, [cancelButton]);
   editor.append(
-    el('div', { class: 'recording-editor-header' }, [clipName, startField, endField, audioField, createClipButton, segmentButton]),
+    el('div', { class: 'recording-editor-header' }, [clipName, startField, endField, audioField, createClipButton]),
     el('div', { class: 'recording-editor-selection-toolbar' }, [
-      el('span', { class: 'recording-editor-clip-duration', text: 'Clip duration: ' }),
+      el('span', { class: 'recording-editor-clip-duration', text: 'Clip duration:' }),
       durationReadout,
       creationTimelineActions,
     ]),
-    el('div', { class: 'recording-editor-selected-timeline' }, [
-      el('div', { class: 'recording-editor-range-track' }, [selectionFill, markerRail, startRange, endRange]),
+      el('div', { class: 'recording-editor-selected-timeline' }, [
+      rangeTrack,
       el('div', { class: 'recording-editor-range-labels' }, [startLabel, endLabel]),
+      rangeRuler,
     ]),
     el('div', { class: 'recording-editor-gif-options' }, [el('span', { class: 'recording-editor-secondary-label', text: 'GIF export' }), el('label', {}, [el('span', { text: 'FPS' }), fps]), el('label', {}, [el('span', { text: 'Width' }), width]), gifButton]),
     progress,
-    el('div', { class: 'recording-editor-footer' }, [statusLabel, openButton, shareButton]),
   );
   editor.updateDuration = (nextDurationMs: number) => {
     if (!Number.isFinite(nextDurationMs) || nextDurationMs <= 0) return;
+    const previousDurationMs = durationMs;
     durationMs = Math.max(1000, Math.round(nextDurationMs));
-    setRangeLabels();
-    for (const marker of markerRail.querySelectorAll<HTMLElement>('.recording-editor-marker')) {
-      const index = [...markerRail.children].indexOf(marker);
-      const source = clip.markerSummaries?.[index];
-      if (source) marker.style.setProperty('--marker', `${recordingEditorMarkerPercent(source.atMs, durationMs)}%`);
+    syncPlaybackMarker(playbackMs);
+    if (!hasVideoDuration || (selectionStartMs === 0 && selectionEndMs === previousDurationMs)) {
+      hasVideoDuration = true;
+      syncRangeControls(0, durationMs);
+    } else {
+      syncRangeControls(selectionStartMs, selectionEndMs);
     }
   };
-  syncApmState();
+  editor.updatePlayback = (nextPlaybackMs: number) => syncPlaybackMarker(nextPlaybackMs);
+  editor.getSelection = () => ({ startMs: selectionStartMs, endMs: selectionEndMs });
   const video = getVideo();
   if (video?.duration && Number.isFinite(video.duration)) editor.updateDuration(video.duration * 1000);
-  setRangeLabels();
+  if (video && Number.isFinite(video.currentTime)) syncPlaybackMarker(video.currentTime * 1000);
+  syncRangeControls(0, durationMs);
+  void api.recordingEditorAudio(clip.id).then((capabilities) => {
+    audioCapabilities = {
+      system: capabilities?.system === true,
+      microphone: capabilities?.microphone === true,
+      mixed: capabilities?.mixed === true,
+    };
+    if (!audioEnabled(audioSelection)) audioSelection = audioCapabilities.mixed ? 'original' : 'mute';
+    renderAudioMenu();
+  }).catch(() => {
+    // Keep the safe original/mute choices when an older backend has no probe.
+    renderAudioMenu();
+  });
   return editor;
 }
 
-function renderPlayerTracker(clip: RecordingClip, actions: HTMLElement[] = []): HTMLElement {
+function renderPlayerTracker(clip: RecordingClip, actions: HTMLElement[] = []): RecordingTrackerElement {
   const samples = clip.apmSamples ?? [];
   const average = Number.isFinite(clip.apmAverage) ? clip.apmAverage : samples.length ? Math.round(samples.reduce((sum, sample) => sum + sample.apm, 0) / samples.length) : null;
   const hasTelemetry = samples.length > 0;
-  return el('section', { class: 'recording-apm-tracker', 'aria-label': 'APM performance tracker' }, [
+  const sourceAvailable = clip.apmAvailable === true || hasTelemetry;
+  const tracker = el('section', { class: 'recording-apm-tracker', 'aria-label': 'APM performance tracker' }, [
     el('div', { class: 'recording-apm-heading' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'APM' }), el('strong', { text: 'Performance tracker' })]),
       el('div', { class: 'recording-apm-heading-actions' }, actions),
     ]),
-    el('div', { class: 'recording-apm-average' }, [el('span', { text: 'Average' }), el('strong', { text: average === null ? '—' : String(average) }), el('span', { class: 'recording-apm-unit', text: 'APM' }), el('span', { class: 'recording-apm-live', text: hasTelemetry ? 'Live capture telemetry' : 'Telemetry unavailable for this clip' })]),
-    renderApmGraph(clip, 1000),
-    el('div', { class: 'recording-apm-ruler' }, [el('span', { text: '0:00' }), el('span', { text: hasTelemetry ? formatTime((samples[Math.floor(samples.length / 2)]?.atMs ?? 0) / 1000) : '—' }), el('span', { text: hasTelemetry ? formatTime((samples.at(-1)?.atMs ?? 0) / 1000) : 'Clip end' })]),
-  ]);
+    el('div', { class: 'recording-apm-average' }, [el('span', { text: 'Average' }), el('strong', { text: average === null ? sourceAvailable ? '0' : '—' : String(average) }), el('span', { class: 'recording-apm-unit', text: 'APM' }), el('span', { class: 'recording-apm-live', text: hasTelemetry ? 'Live capture telemetry' : sourceAvailable ? 'Capture telemetry · no actions detected' : 'Telemetry unavailable for this clip' })]),
+  ]) as RecordingTrackerElement;
+  const chart = renderApmGraph(clip, 1000);
+  const ruler = el('div', { class: 'recording-apm-ruler' }, [el('span', { text: '0:00' }), el('span', { text: '0:00' }), el('span', { text: 'Clip end' })]);
+  tracker.append(chart, ruler);
+  tracker.updateDuration = (durationMs: number) => {
+    if (!Number.isFinite(durationMs) || durationMs <= 0) return;
+    const bounded = Math.max(1000, Math.round(durationMs));
+    chart.updateDuration?.(bounded);
+    const middle = ruler.children[1];
+    const end = ruler.children[2];
+    if (middle) middle.textContent = formatTime((bounded / 2) / 1000);
+    if (end) end.textContent = formatTime(bounded / 1000);
+  };
+  tracker.updatePlayback = (playbackMs: number) => chart.updatePlayback?.(playbackMs);
+  return tracker;
 }
 
 function renderPlayerView(): HTMLElement {
   const player = el('div', { class: 'recording-player-stage' }, [el('p', { class: 'recording-player-placeholder', text: 'Loading clip…' })]);
-  const markerBadges = el('div', { class: 'recording-player-marker-badges' }, (playerClip?.markerSummaries ?? []).map((marker) => el('span', { class: 'recording-player-marker-badge', text: `${formatTime(marker.atMs / 1000)} · ${marker.label}` })));
-  const highlightButton = button('Highlight', () => {
-    const video = playerVideo;
-    if (!video) return;
-    const atMs = Math.max(0, Math.round(video.currentTime * 1000));
-    markerBadges.append(el('span', { class: 'recording-player-marker-badge recording-player-marker-local', text: `${formatTime(atMs / 1000)} · Highlight` }));
-  }, 'btn btn-secondary');
   let creationMode = false;
-  let editorPanel: HTMLElement | null = null;
-  let trackerPanel: HTMLElement | null = null;
+  let constrainedPlaybackEndMs: number | null = null;
+  let playbackEndedAtSelection = false;
+  let editorPanel: RecordingEditorElement | null = null;
+  let trackerPanel: RecordingTrackerElement | null = null;
   let timelineSurface: HTMLElement | null = null;
   const setCreationMode = (enabled: boolean): void => {
     creationMode = enabled;
-    // The editor owns the timeline while a range is being created. Keep the
-    // player transport out of this state so there is one continuous Ascent
-    // style timeline to edit rather than a player seek bar plus an editor
-    // seek bar competing for the same clip.
-    player.hidden = enabled;
+    // Keep the player visible while the editor opens beneath it. The player
+    // transport is the clip preview; the editor below owns the single range.
+    player.hidden = false;
     timelineSurface?.classList.toggle('is-editing', enabled);
     if (editorPanel) editorPanel.hidden = !enabled;
     if (trackerPanel) trackerPanel.hidden = enabled;
-    markerBadges.hidden = enabled;
     player.dataset.creationMode = enabled ? 'true' : 'false';
-    if (enabled) editorPanel?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
   };
   const clipButton = button('Clip', () => setCreationMode(true), 'btn btn-primary');
-  const apmButton = button('APM', () => {
-    if (!trackerPanel) return;
-    const collapsed = trackerPanel.classList.toggle('is-apm-collapsed');
-    apmButton.setAttribute('aria-pressed', String(!collapsed));
-  }, 'btn btn-secondary');
   if (playerClip) {
     const requestedId = playerClip.id;
     void api.recordingClipUrl(requestedId).then((url) => {
@@ -1555,7 +1750,16 @@ function renderPlayerView(): HTMLElement {
         const icon = playButton.querySelector('.recording-player-icon');
         if (icon) icon.className = `recording-player-icon recording-player-icon-${video.paused ? 'play' : 'pause'}`;
       };
+      const applyPlaybackBoundary = () => {
+        if (constrainedPlaybackEndMs === null || video.currentTime * 1000 < constrainedPlaybackEndMs - 8) return;
+        const endMs = constrainedPlaybackEndMs;
+        constrainedPlaybackEndMs = null;
+        playbackEndedAtSelection = true;
+        video.currentTime = endMs / 1000;
+        video.pause();
+      };
       const updateTimeline = () => {
+        applyPlaybackBoundary();
         elapsed.textContent = formatTime(video.currentTime);
         duration.textContent = formatTime(video.duration);
         const progress = video.duration > 0 ? Math.min(100, Math.max(0, (video.currentTime / video.duration) * 100)) : 0;
@@ -1563,8 +1767,35 @@ function renderPlayerView(): HTMLElement {
         inlineSeek.value = value;
         inlineSeek.style.setProperty('--progress', `${progress}%`);
         (editorPanel as RecordingEditorElement | null)?.updateDuration?.(video.duration * 1000);
+        (editorPanel as RecordingEditorElement | null)?.updatePlayback?.(video.currentTime * 1000);
+        trackerPanel?.updateDuration?.(video.duration * 1000);
+        trackerPanel?.updatePlayback?.(video.currentTime * 1000);
       };
-      video.addEventListener('play', updatePlayButton);
+      video.addEventListener('play', () => {
+        // The editor owns a bounded playback pass. If the player was parked
+        // outside the selected range, resume at whichever boundary is nearest
+        // to that parked position, then stop at END. This keeps a timeline
+        // click useful without letting an accidental outside click play the
+        // whole source clip.
+        if (creationMode) {
+          const range = editorPanel?.getSelection?.();
+          const currentMs = Math.round(video.currentTime * 1000);
+          if (range) {
+            const restartFromEnd = playbackEndedAtSelection && currentMs >= range.endMs - 8;
+            const resume = restartFromEnd
+              ? { positionMs: range.startMs, constrainedEndMs: range.endMs }
+              : recordingEditorResumePosition(currentMs, range.startMs, range.endMs);
+            if (resume.positionMs !== currentMs) video.currentTime = resume.positionMs / 1000;
+            playbackEndedAtSelection = false;
+            constrainedPlaybackEndMs = resume.constrainedEndMs;
+          } else {
+            constrainedPlaybackEndMs = null;
+          }
+        } else {
+          constrainedPlaybackEndMs = null;
+        }
+        updatePlayButton();
+      });
       video.addEventListener('pause', updatePlayButton);
       video.addEventListener('loadedmetadata', updateTimeline);
       video.addEventListener('timeupdate', updateTimeline);
@@ -1582,7 +1813,11 @@ function renderPlayerView(): HTMLElement {
       });
       const seekTo = (control: HTMLInputElement) => {
         if (video.duration > 0) {
-          video.currentTime = (Number(control.value) / 1000) * video.duration;
+          const targetMs = recordingEditorSeekTargetMs(Number(control.value), video.duration * 1000);
+          const range = creationMode ? editorPanel?.getSelection?.() : null;
+          playbackEndedAtSelection = false;
+          if (!range || (targetMs >= range.startMs && targetMs <= range.endMs)) constrainedPlaybackEndMs = null;
+          video.currentTime = targetMs / 1000;
           updateTimeline();
         }
       };
@@ -1659,8 +1894,8 @@ function renderPlayerView(): HTMLElement {
       player.append(el('p', { class: 'text-error', text: messageOf(err) }));
     });
   }
-  trackerPanel = renderPlayerTracker(playerClip ?? { id: '', fileName: '', relativePath: '', createdAt: '' }, [highlightButton, clipButton, apmButton]);
-  editorPanel = playerClip ? renderRecordingEditor(playerClip, () => playerVideo, () => creationMode ? null : trackerPanel, () => setCreationMode(false)) : null;
+  trackerPanel = renderPlayerTracker(playerClip ?? { id: '', fileName: '', relativePath: '', createdAt: '' }, [clipButton]);
+  editorPanel = playerClip ? renderRecordingEditor(playerClip, () => playerVideo, () => setCreationMode(false)) : null;
   if (editorPanel) editorPanel.hidden = true;
   timelineSurface = el('div', { class: 'recording-player-timeline-surface' }, [trackerPanel, editorPanel]);
   const back = el('button', {
@@ -1670,15 +1905,24 @@ function renderPlayerView(): HTMLElement {
     title: 'Back to clips',
     onClick: () => closePlayer(),
   }, [el('span', { class: 'recording-player-back-icon', 'aria-hidden': 'true' }), el('span', { text: 'Back to Clips' })]);
+  const shareClip = playerClip ? button('Share clip', () => {
+    const source = playerClip;
+    if (!source) return;
+    void api.recordingClipUrl(source.id).then((previewUrl) => showRecordingShareDialog({
+      fileName: source.fileName,
+      previewUrl,
+      onCopy: () => api.recordingClipCopy(source.id),
+      onOpenFolder: () => api.recordingOpenFolder(),
+    })).catch((err) => toast('error', 'Clip actions', messageOf(err)));
+  }, 'btn btn-primary') : null;
   return el('section', { class: 'recording-player-view' }, [
     el('header', { class: 'recording-player-view-heading' }, [
       back,
       el('div', { class: 'recording-player-heading-copy' }, [el('span', { class: 'recording-eyebrow', text: 'Clip player' }), el('h2', { class: 'recording-panel-title', text: playerClip?.fileName ?? 'Clip' }), el('span', { class: 'recording-player-meta', text: playerClip ? `Saved ${new Date(playerClip.createdAt).toLocaleString()}` : '' })]),
-      el('div', { class: 'recording-player-heading-actions' }, [button('Open Folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Clip folder', messageOf(err))), 'btn btn-secondary recording-player-folder')]),
+      el('div', { class: 'recording-player-heading-actions' }, [shareClip, button('Open Folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Clip folder', messageOf(err))), 'btn btn-secondary recording-player-folder')]),
     ]),
     player,
     timelineSurface,
-    markerBadges,
   ]);
 }
 
@@ -1687,6 +1931,10 @@ function render(): void {
   disposePlayerVideo();
   applySettingsButton = null;
   clear(renderContainer);
+  if (playerClip) {
+    renderContainer.append(renderPlayerView());
+    return;
+  }
   renderContainer.append(
     el('div', { class: 'page-heading recording-heading' }, [
       el('div', {}, [
@@ -1696,7 +1944,7 @@ function render(): void {
       activeTab === 'manual' ? renderRecordingHeadingActions() : null,
       renderTabs(),
     ]),
-    playerClip ? renderPlayerView() : activeTab === 'manual' ? renderManualView() : activeTab === 'clips' ? renderClipsView() : renderAudioView(),
+    activeTab === 'manual' ? renderManualView() : activeTab === 'clips' ? renderClipsView() : renderAudioView(),
   );
 }
 
