@@ -88,6 +88,10 @@ let mon: MonState | null = null;
 let fpsTimer: number | null = null;
 let graphRedrawFrame: number | null = null;
 const miniCanvasLayouts = new WeakMap<HTMLCanvasElement, { width: number; height: number; dpr: number }>();
+// The stress dialog is recreated when the Monitoring tab is rendered. Keep
+// the dismissed result identity outside that DOM so a tab switch cannot
+// resurrect the same completed run.
+let dismissedStabilityRunId: string | null = null;
 
 // M9: the Monitoring page's sub-view - 'monitoring' = the readout grid +
 // canvas graphs, 'overlay' = the overlay settings content. Module-level
@@ -772,6 +776,14 @@ function updateStabilityStressDialog(root: HTMLElement, state: AppState): void {
   const run = state.stabilityRun;
   if (!dialog || !run) return;
   const active = run.state === 'running';
+  // The dialog node is rebuilt on every tab entry. Reapply the dismissal to
+  // the same completed run before rendering its result so navigation cannot
+  // reopen a test the user already closed.
+  if (dismissedStabilityRunId === run.runId && !active) {
+    dialog.dataset.dismissed = 'true';
+    dialog.hidden = true;
+    return;
+  }
   if (active) dialog.dataset.dismissed = 'false';
   if (dialog.dataset.dismissed === 'true' && !active) { dialog.hidden = true; return; }
   dialog.hidden = false;
@@ -889,7 +901,11 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
   ]);
   start.addEventListener('click', async () => {
     start.disabled = true;
-    try { ctx.store.set({ stabilityRun: await api.stabilityRunStart({ deviceKey: select.value, cadenceMs: Number(cadence.value), durationSec: Number(duration.value) }) }); }
+    try {
+      const nextRun = await api.stabilityRunStart({ deviceKey: select.value, cadenceMs: Number(cadence.value), durationSec: Number(duration.value) });
+      dismissedStabilityRunId = null;
+      ctx.store.set({ stabilityRun: nextRun });
+    }
     catch (error) { const node = root.querySelector<HTMLElement>('[data-stability-note]'); if (node) node.textContent = error instanceof Error ? error.message : String(error); }
     finally { updateStabilityLabPanel(root, ctx.store.get()); }
   });
@@ -905,6 +921,7 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
     const runId = current?.runId;
     if (!runId) return;
     if (current?.state !== 'running') {
+      dismissedStabilityRunId = runId;
       stressDialog.dataset.dismissed = 'true';
       stressDialog.hidden = true;
       return;
@@ -916,6 +933,8 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
     }
   });
   stressDialog.querySelector<HTMLButtonElement>('[data-stability-stress-close]')?.addEventListener('click', () => {
+    const runId = ctx.store.get().stabilityRun?.runId;
+    if (runId) dismissedStabilityRunId = runId;
     stressDialog.dataset.dismissed = 'true';
     stressDialog.hidden = true;
   });

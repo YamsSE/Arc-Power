@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { DEFAULT_RECORDING_SETTINGS, RECORDING_EDITOR_VERSION, RECORDING_SCHEMA_VERSION, mapRecordingMarkersToClip, normalizeRecordingClip, normalizeRecordingMarker, normalizeRecordingMarkers, normalizeRecordingSettings, safeVideoExtension, sortRecordingClips } from '../recording-pure.js';
+import { DEFAULT_RECORDING_SETTINGS, RECORDING_EDITOR_VERSION, RECORDING_SCHEMA_VERSION, isRecordingTemporaryArtifact, mapRecordingMarkersToClip, normalizeRecordingClip, normalizeRecordingMarker, normalizeRecordingMarkers, normalizeRecordingSettings, safeVideoExtension, sortRecordingClips } from '../recording-pure.js';
 
 function defaultDataDir() {
   return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ArcPower');
@@ -138,10 +138,11 @@ export class RecordingStore {
     const modeNeedsMigration = rawSettings && typeof rawSettings === 'object'
       && Object.prototype.hasOwnProperty.call(rawSettings, 'mode')
       && rawSettings.mode !== data.settings.mode;
+    const invalidClipNeedsMigration = Array.isArray(raw?.clips) && raw.clips.length !== data.clips.length;
     return {
       raw,
       data,
-      needsMigration: !raw || raw.schemaVersion !== RECORDING_SCHEMA_VERSION || modeNeedsMigration,
+      needsMigration: !raw || raw.schemaVersion !== RECORDING_SCHEMA_VERSION || modeNeedsMigration || invalidClipNeedsMigration,
     };
   }
 
@@ -235,7 +236,7 @@ export class RecordingStore {
           if (stat.isDirectory()) {
             if (!walk(full, depth + 1)) return false;
           }
-          else if (stat.isFile() && safeVideoExtension(full)) {
+          else if (stat.isFile() && safeVideoExtension(full) && !isRecordingTemporaryArtifact(full)) {
             const relativePath = path.relative(root, full);
             const old = known.get(relativePath);
             found.push({

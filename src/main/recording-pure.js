@@ -447,7 +447,7 @@ export function normalizeRecordingClip(clip = {}) {
   if (!clip || typeof clip !== 'object') return null;
   const id = typeof clip.id === 'string' && /^[a-zA-Z0-9_-]{8,128}$/.test(clip.id) ? clip.id : null;
   const relativePath = typeof clip.relativePath === 'string' && clip.relativePath.length <= 4096 ? clip.relativePath : null;
-  if (!id || !relativePath || !safeVideoExtension(relativePath)) return null;
+  if (!id || !relativePath || !safeVideoExtension(relativePath) || isRecordingTemporaryArtifact(relativePath)) return null;
   const seenSummaryIds = new Set();
   const markerSummaries = (Array.isArray(clip.markerSummaries ?? clip.markers) ? (clip.markerSummaries ?? clip.markers) : [])
     .map(normalizeRecordingMarkerSummary)
@@ -500,6 +500,14 @@ export function normalizeEncoderStates(value) {
 export function safeVideoExtension(filePath) {
   const ext = path.extname(String(filePath)).toLowerCase();
   return SAFE_VIDEO_EXTENSIONS.includes(ext) ? ext : null;
+}
+
+// Native replay captures and editor intermediates live beside the final clip
+// while they are being finalized. They are never library entries, even when a
+// scan catches them after an EBUSY/EPERM from the encoder process.
+export function isRecordingTemporaryArtifact(filePath) {
+  const name = path.basename(String(filePath));
+  return /\.arc-(?:native|trim|source|original|editor)-/i.test(name);
 }
 
 export function sortRecordingClips(clips) {

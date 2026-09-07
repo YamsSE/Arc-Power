@@ -202,7 +202,9 @@ export async function trimRecordingClipToDuration(filePath, durationMs, {
       const actualDurationMs = await probeDuration(spawn, ffprobePath, temporaryPath);
       return Number.isFinite(actualDurationMs)
         && actualDurationMs > 0
-        && actualDurationMs >= Number(durationMs) - DURATION_TOLERANCE_MS
+        // A replay buffer may have been armed for less time than the
+        // requested window on the first save. A shorter, verified tail is
+        // valid; an output longer than requested is the bug we must reject.
         && actualDurationMs <= Number(durationMs) + DURATION_TOLERANCE_MS;
     };
     const removeTemporary = () => {

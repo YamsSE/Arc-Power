@@ -1177,8 +1177,12 @@ type RecordingTrackerElement = HTMLElement & {
 };
 
 function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = '', onSeek?: (atMs: number) => void): RecordingApmChartElement {
-  const samples = Array.isArray(clip.apmSamples) ? clip.apmSamples.filter((sample) => Number.isFinite(sample.atMs) && Number.isFinite(sample.apm)) : [];
-  let span = Math.max(1000, durationMs, ...samples.map((sample) => sample.atMs));
+  // Keep the raw telemetry so a late video metadata event can establish the
+  // authoritative playable span without allowing samples from the sampler's
+  // shutdown tail to stretch the graph beyond the actual file.
+  const allSamples = Array.isArray(clip.apmSamples) ? clip.apmSamples.filter((sample) => Number.isFinite(sample.atMs) && Number.isFinite(sample.apm)) : [];
+  let samples = allSamples;
+  let span = Math.max(1000, durationMs, ...allSamples.map((sample) => sample.atMs));
   const chart = el('div', { class: `recording-apm-chart recording-apm-chart-live${extraClass ? ` ${extraClass}` : ''}`, 'aria-label': samples.length || clip.apmAvailable === true ? 'APM timeline' : 'APM telemetry unavailable for this clip' }) as RecordingApmChartElement;
   let playbackMs = 0;
   const playhead = el('div', { class: 'recording-apm-playhead', 'aria-hidden': 'true' });
@@ -1254,7 +1258,12 @@ function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = ''
   chart.append(playhead, tooltip);
   chart.updateDuration = (nextDurationMs: number) => {
     if (!Number.isFinite(nextDurationMs) || nextDurationMs <= 0) return;
-    span = Math.max(1000, Math.round(nextDurationMs), ...samples.map((sample) => sample.atMs));
+    const boundedDuration = Math.max(1000, Math.round(nextDurationMs));
+    // Video metadata is the source of truth for the timeline. APM capture can
+    // publish one or two samples after the encoder has closed; those points
+    // must be clipped instead of moving the ruler/playhead past the video.
+    samples = allSamples.filter((sample) => sample.atMs <= boundedDuration);
+    span = boundedDuration;
     updateTrace();
   };
   chart.updatePlayback = (nextPlaybackMs: number) => {
