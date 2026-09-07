@@ -216,6 +216,10 @@ export class OldIgcl {
     this._tempCapable = null; // cached V1 temperature-symbol capability
     this._lastError = null;
     this._props = null;
+    // Some Alchemist driver packages accept an extended temperature write but
+    // expose only the stock 90 C/zero sentinel through the bundled getter.
+    // Keep the accepted setpoint per physical adapter for subsequent reads.
+    this._acceptedTemperatureLimits = new Map();
     // CONCURRENTLY (the boot warm-up + the first caps query + a boot-apply
     // all race for the same probe). The first caller owns the init/enum/
     // waiver sequence; every concurrent caller awaits the SAME promise -
@@ -520,6 +524,25 @@ export class OldIgcl {
     return control === 'powerLimitW' ? mwToW(raw) : raw;
   }
 
+  _temperatureKey(deviceId = 0, deviceKey = null, physicalTarget = null) {
+    const stable = deviceKey
+      ?? physicalTarget?.deviceKey
+      ?? (physicalTarget?.pciVendorId !== undefined && physicalTarget?.pciDeviceId !== undefined
+        ? `${physicalTarget.pciVendorId}:${physicalTarget.pciDeviceId}:${physicalTarget.bdf ?? ''}`
+        : null);
+    return stable ? `key:${String(stable)}` : `id:${Number.isInteger(deviceId) ? deviceId : 0}`;
+  }
+
+  /** Return the last temperature setpoint accepted by the native setter. */
+  getAcceptedTemperatureLimitC(deviceId = 0, deviceKey = null, physicalTarget = null) {
+    const value = this._acceptedTemperatureLimits.get(this._temperatureKey(deviceId, deviceKey, physicalTarget));
+    return Number.isFinite(value) ? value : null;
+  }
+
+  clearAcceptedTemperatureLimitC(deviceId = 0, deviceKey = null, physicalTarget = null) {
+    this._acceptedTemperatureLimits.delete(this._temperatureKey(deviceId, deviceKey, physicalTarget));
+  }
+
 
   /**
    * One extended write with the momentary-lie guard. Target selection,
@@ -585,6 +608,9 @@ export class OldIgcl {
     await this._sleep(this._delayedVerifyMs);
     const readBack = this._read(control, targetHandle);
     if (readBack !== null && nearlyEqual(readBack, target)) {
+      if (control === 'tempLimitC') {
+        this._acceptedTemperatureLimits.set(this._temperatureKey(deviceId, deviceKey, physicalTarget), target);
+      }
       return { ok: true, readBackEqual: true, readBackValue: readBack };
     }
     // The bundled Alchemist getter is not an authoritative extended
@@ -603,15 +629,19 @@ export class OldIgcl {
     // io-failed error. Native setter refusals above remain hard failures.
     const extendedTemperatureReadBackUnavailable = control === 'tempLimitC';
     if (extendedTemperatureReadBackUnavailable) {
+      this._acceptedTemperatureLimits.set(this._temperatureKey(deviceId, deviceKey, physicalTarget), target);
       return {
         ok: true,
-        // Retain the historical true value for old callers that only use
-        // this flag as an apply-success gate; readBackUnavailable is the
-        // authoritative distinction for current UI/state consumers.
+        // Retain the historical unavailable flag for diagnostics. The finite
+        // readBackValue below is the accepted-write setpoint and is therefore
+        // authoritative for the control state even when the native getter is
+        // only exposing a sentinel.
         readBackEqual: true,
         readBackUnavailable: true,
+        readBackValue: target,
+        readBackSource: 'accepted-write',
         readBackSentinel: readBack,
-        message: 'extended temperature limit accepted; bundled driver read-back unavailable',
+        message: 'extended temperature limit accepted; bundled driver read-back exposed a sentinel; showing the accepted setpoint',
       };
     }
     const label = control === 'powerLimitW' ? 'power limit' : 'temperature limit';
@@ -656,5 +686,6 @@ export class OldIgcl {
     }
     this._apiHandle = null;
     this._device = null;
+    this._acceptedTemperatureLimits.clear();
   }
 }

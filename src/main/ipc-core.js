@@ -1198,6 +1198,7 @@ export function createIpcHandlers({
   stabilityLab = null,
   stabilityStore = null,
   stabilityWorkload = null,
+  wheaMonitor = null,
   overlayLayoutStore = null,
   obsStream = null,
   applyOverlayLayout = async () => {},
@@ -1289,6 +1290,19 @@ export function createIpcHandlers({
   // Main-renderer selection pushes carry a monotonic session generation. This
   // remains in memory even when deviceSet could not persist the new choice.
   let latestMainSelectionGeneration = -1;
+  // The elevated apply worker has its own OldIgcl instance. Keep the accepted
+  // temperature setpoint in the main process as well so a later settings read
+  // remains identity-scoped after a worker-backed apply.
+  const acceptedTemperatureLimits = new Map();
+  const acceptedTemperatureKey = (deviceId, deviceKey, physicalTarget) => {
+    const stable = deviceKey
+      ?? physicalTarget?.legacyDeviceKey
+      ?? physicalTarget?.deviceKey
+      ?? (physicalTarget?.pciVendorId !== undefined && physicalTarget?.pciDeviceId !== undefined
+        ? `${physicalTarget.pciVendorId}:${physicalTarget.pciDeviceId}:${JSON.stringify(physicalTarget.bdf ?? null)}`
+        : null);
+    return stable ? `key:${String(stable)}` : `id:${Number.isInteger(deviceId) ? deviceId : 0}`;
+  };
   /** @type {Map<number, TelemetryService | { stop: () => Promise<void> }>} */
   const telemetry = new Map();
   /** The most recent fully composed sample for each active telemetry lane.
@@ -1869,6 +1883,21 @@ export function createIpcHandlers({
         // a store failure must never break the apply flow
       }
     };
+    const rememberAcceptedTemperature = (envelope) => {
+      const cacheKey = acceptedTemperatureKey(deviceId, deviceKey, physicalTarget);
+      // A standard-range write/reset supersedes a previously accepted
+      // extended setpoint. Do not let a stale 112 C value reappear after the
+      // user returns the control to the normal 90 C range.
+      if (Number.isFinite(settings?.tempLimitC) && settings.tempLimitC <= 90) {
+        acceptedTemperatureLimits.delete(cacheKey);
+        oldIgcl?.clearAcceptedTemperatureLimitC?.(deviceId, deviceKey, physicalTarget);
+      }
+      const per = envelope?.result?.perControl?.tempLimitC;
+      const value = Number(per?.readBackValue);
+      if (per?.ok === true && Number.isFinite(value) && value > 0) {
+        acceptedTemperatureLimits.set(cacheKey, value);
+      }
+    };
     const attempt = async (waiverAccepted) => {
       if (applyRunner?.needsWorker?.()) {
         // M17c (step-4 N6): the parent-resolved limits-key rides the worker
@@ -1891,11 +1920,13 @@ export function createIpcHandlers({
         // dialog re-shows - the wedge (stale-true parent flag with failing
         // applies) must never happen.
         const normalized = normalizeApply(out);
+        rememberAcceptedTemperature(normalized);
         if (hasWaiverNotSet(normalized.result)) await backend.restoreWaiverState(deviceId, false);
         recordRefusals(normalized.result);
         return normalized;
       }
       const normalized = normalizeApply(await executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply, waiverAccepted }, ocMode, sysmanPowerLimits }));
+      rememberAcceptedTemperature(normalized);
       recordRefusals(normalized.result);
       return normalized;
     };
@@ -1978,6 +2009,7 @@ export function createIpcHandlers({
     stabilityService = createStabilityLabService({
       reportStore: labStore,
       workloadController: stabilityWorkload,
+      wheaMonitor,
       resolveTarget: async (deviceKey) => {
         const devices = await backend.listDevices();
         const matches = devices.filter((device) => device?.deviceKey === deviceKey
@@ -2164,7 +2196,31 @@ export function createIpcHandlers({
 
       'get-current-settings': async (deviceId) => {
         assertValidDeviceId(deviceId);
-        return backend.getCurrentSettings(deviceId);
+        const state = await backend.getCurrentSettings(deviceId);
+        // On affected Alchemist packages the V1 temperature getter returns a
+        // stock 90 C/zero sentinel after accepting an extended write. Surface
+        // the adapter's identity-scoped accepted setpoint so the UI does not
+        // regress to 90 C or claim the readback was unavailable.
+        const target = await backend.getDeviceTarget?.(deviceId);
+        const physicalTarget = physicalTargetOf(target);
+        const accepted = acceptedTemperatureLimits.get(acceptedTemperatureKey(
+          deviceId,
+          target?.deviceKey ?? null,
+          physicalTarget,
+        ))
+          ?? oldIgcl?.getAcceptedTemperatureLimitC?.(deviceId, target?.deviceKey ?? null, physicalTarget);
+        if (state && Number.isFinite(accepted)
+          && (state.tempLimitC === null
+            || state.tempLimitCReadBackUnavailable === true
+            || (Number.isFinite(state.tempLimitC) && accepted > state.tempLimitC))) {
+          return {
+            ...state,
+            tempLimitC: accepted,
+            tempLimitCReadBackUnavailable: false,
+            tempLimitCReadBackSource: 'accepted-write',
+          };
+        }
+        return state;
       },
 
       // M17f: the sysman PL2 read-out source - { sustainedW, burstW, peakW }
@@ -2500,6 +2556,10 @@ export function createIpcHandlers({
         // ctlOverclockResetToDefault, which works elevated only). The
         // non-elevated app delegates to the elevated self-worker.
         const target = await backend.getDeviceTarget?.(deviceId);
+        const resetPhysicalTarget = physicalTargetOf(target);
+        const resetTemperatureKey = acceptedTemperatureKey(deviceId, target?.deviceKey ?? null, resetPhysicalTarget);
+        acceptedTemperatureLimits.delete(resetTemperatureKey);
+        oldIgcl?.clearAcceptedTemperatureLimitC?.(deviceId, target?.deviceKey ?? null, resetPhysicalTarget);
         // M26: the legacy Alchemist Sysman voltage target is independent of
         // IGCL's reset-to-default operation. Clear a known negative Sysman
         // offset first, and require its exact zero read-back, so Reset cannot
@@ -2536,7 +2596,7 @@ export function createIpcHandlers({
         }
         let state = null;
         if (applyRunner?.needsWorker?.()) {
-          const out = await applyRunner.reset(deviceId, target?.deviceKey ?? null, physicalTargetOf(target));
+          const out = await applyRunner.reset(deviceId, target?.deviceKey ?? null, resetPhysicalTarget);
           state = out.state;
         } else {
           await backend.resetToDefaults(deviceId);

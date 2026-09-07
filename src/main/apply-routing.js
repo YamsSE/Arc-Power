@@ -1735,11 +1735,16 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
     if (finiteReadBack) {
       state.tempLimitC = tempResult.readBackValue;
       state.tempLimitCReadBackUnavailable = false;
+      state.tempLimitCReadBackSource = tempResult.readBackSource === 'accepted-write' ? 'accepted-write' : 'native';
     } else if (tempResult.ok === true) {
       // Keep an explicit unavailable marker only when no finite native
       // source was exposed. The renderer can then distinguish this case
       // from an actual finite current-driver value such as 90 C.
-      state.tempLimitCReadBackUnavailable = tempResult.readBackUnavailable === true;
+      // An accepted-write value is the explicit setpoint cache used when the
+      // native getter exposes a stock sentinel. It is still marked as a
+      // getter limitation for diagnostics, but the control itself is usable.
+      state.tempLimitCReadBackUnavailable = tempResult.readBackUnavailable === true
+        && !Number.isFinite(tempResult.readBackValue);
     }
   }
   if (isNegativeAlchemistVoltage(clamped, effectiveClampRanges)

@@ -8,18 +8,25 @@ const D3D_DRIVER_TYPE_UNKNOWN = 0;
 const D3D11_SDK_VERSION = 7;
 const DXGI_FORMAT_R8G8B8A8_UNORM = 28;
 const D3D11_BIND_RENDER_TARGET = 0x20;
+// Keep a substantial set of render targets resident on the selected adapter.
+// The old 3072x1728 + CPU upload loop mostly measured JavaScript/memory-copy
+// work and barely moved dedicated VRAM. These 3072x3072 surfaces are GPU
+// resources (~36 MiB each); the draw/copy/clear loop exercises the 3D engine
+// and the adapter's local-memory path without allocating per tick.
 const TEXTURE_WIDTH = 3072;
-const TEXTURE_HEIGHT = 1728;
-const TEXTURE_COUNT = 3;
-// The stability run should spend its time on the selected GPU. Repeated
-// Clear calls alone are often serviced by a fast-path and can report almost
-// no engine work. Pair a clear pass with repeated full-surface uploads/copies
-// so Stability Lab produces measurable GPU memory traffic on the selected
-// adapter while remaining bounded by the caller's duration.
-const CLEARS_PER_TICK = 12;
-const UPDATES_PER_TICK = 8;
-const COPIES_PER_TICK = 24;
-const TICK_MS = 16;
+const TEXTURE_HEIGHT = 3072;
+// Keep roughly 1.15 GiB of render-target storage resident. This is large
+// enough to move the selected adapter's VRAM usage visibly while remaining
+// safe on the supported discrete Arc boards.
+const TEXTURE_COUNT = 32;
+const CLEARS_PER_TICK = 8;
+const UPDATES_PER_TICK = 0;
+const COPIES_PER_TICK = 512;
+const DRAW_PASSES_PER_TICK = 48;
+// Poll the GPU fence frequently enough to submit the next batch as soon as
+// the previous one completes. A 16 ms timer left visible idle gaps between
+// batches, which capped measured engine utilization below a full stress run.
+const TICK_MS = 2;
 const D3D11_QUERY_EVENT = 0;
 const D3D11_ASYNC_GETDATA_DONOTFLUSH = 1;
 
@@ -35,6 +42,12 @@ const VOID_END = koffi.proto('void', ['void*', 'void*']);
 const HR_GET_DATA = koffi.proto('int32', ['void*', 'void*', 'void*', 'uint32', 'uint32']);
 const VOID_FLUSH = koffi.proto('void', ['void*']);
 const RELEASE = koffi.proto('uint32', ['void*']);
+const HR_CREATE_SHADER = koffi.proto('int32', ['void*', 'void*', 'size_t', 'void*', 'void**']);
+const VOID_SET_SHADER = koffi.proto('void', ['void*', 'void*', 'void*', 'uint32']);
+const VOID_SET_TOPOLOGY = koffi.proto('void', ['void*', 'uint32']);
+const VOID_SET_VIEWPORTS = koffi.proto('void', ['void*', 'uint32', 'void*']);
+const VOID_SET_RENDER_TARGETS = koffi.proto('void', ['void*', 'uint32', 'void*', 'void*']);
+const VOID_DRAW = koffi.proto('void', ['void*', 'uint32', 'uint32']);
 // ID3D11DeviceContext inherits the four ID3D11DeviceChild methods and then
 // exposes the full command list. These are zero-based COM vtable slots. A
 // wrong slot is not recoverable: koffi will call a different native method
@@ -43,7 +56,10 @@ const RELEASE = koffi.proto('uint32', ['void*']);
 const CONTEXT_COPY_RESOURCE = 47;
 const CONTEXT_UPDATE_SUBRESOURCE = 48;
 const CONTEXT_CLEAR_RENDER_TARGET = 50;
-const CONTEXT_FLUSH = 55;
+// ID3D11DeviceContext::Flush is vtable slot 111. Slot 55 is
+// SetResourceMinLOD and must never be called with the Flush signature.
+const CONTEXT_FLUSH = 111;
+const D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST = 4;
 
 const IID_IDXGIFACTORY1 = [
   0x78, 0xae, 0x0a, 0x77, 0x6f, 0xf2, 0xba, 0x4d,
@@ -139,6 +155,57 @@ function releaseObject(object) {
   try { callSlot(object, 2, RELEASE, object); } catch { /* best effort */ }
 }
 
+function blobBytes(blob) {
+  if (!blob) return null;
+  const pointer = callSlot(blob, 3, koffi.proto('void*', ['void*']), blob);
+  const size = callSlot(blob, 4, koffi.proto('size_t', ['void*']), blob);
+  return pointer && Number.isFinite(size) && size > 0 ? { pointer, size } : null;
+}
+
+function compileShader(d3dCompiler, source, entryPoint, target) {
+  const compile = d3dCompiler.func('D3DCompile', 'int32', [
+    'void*', 'size_t', 'str', 'void*', 'void*', 'str', 'str', 'uint32', 'uint32', 'void**', 'void**',
+  ]);
+  const bytecode = koffi.alloc('void*', 1);
+  const errors = koffi.alloc('void*', 1);
+  const sourceBuffer = Buffer.from(source, 'utf8');
+  const hr = compile(sourceBuffer, sourceBuffer.length, 'arc-power-stability.hlsl', null, null, entryPoint, target, 0, 0, bytecode, errors);
+  if (hr < 0) {
+    let message = `HLSL ${entryPoint} compilation failed (0x${hr >>> 0})`;
+    const errorBlob = koffi.decode(errors, 0, 'void*');
+    if (errorBlob) {
+      try {
+        const bytes = blobBytes(errorBlob);
+        if (bytes) message += `: ${Buffer.from(koffi.decode(bytes.pointer, 0, `uint8[${bytes.size}]`)).toString('utf8')}`;
+      } catch { /* keep the HRESULT */ }
+      releaseObject(errorBlob);
+    }
+    throw new Error(message);
+  }
+  const blob = koffi.decode(bytecode, 0, 'void*');
+  const bytes = blobBytes(blob);
+  if (!bytes) { releaseObject(blob); throw new Error(`HLSL ${entryPoint} compiler returned no bytecode`); }
+  return { blob, ...bytes };
+}
+
+const STABILITY_VERTEX_SHADER = `
+struct VSOut { float4 position : SV_Position; float2 uv : TEXCOORD0; };
+VSOut main(uint vertexId : SV_VertexID) {
+  float2 position = vertexId == 0 ? float2(-1, -1) : (vertexId == 1 ? float2(-1, 3) : float2(3, -1));
+  VSOut output; output.position = float4(position, 0, 1); output.uv = position * 0.5 + 0.5; return output;
+}`;
+
+const STABILITY_PIXEL_SHADER = `
+struct VSOut { float4 position : SV_Position; float2 uv : TEXCOORD0; };
+float4 main(VSOut input) : SV_Target {
+  float3 value = float3(input.uv, 0.37);
+  [loop] for (uint i = 0; i < 448; ++i) {
+    value = frac(value * 1.6180339 + float3(0.113, 0.271, 0.419));
+    value = abs(value * (2.0 - value) + value.yzx * 0.37);
+  }
+  return float4(value, 1.0);
+}`;
+
 function enumerateAdapters(load) {
   const dxgi = load('dxgi.dll');
   const createFactory = dxgi.func('CreateDXGIFactory1', 'int32', ['void*', 'void**']);
@@ -195,6 +262,8 @@ export function createGpuWorkloadController({ load = (name) => koffi.load(name),
     if (!run) return;
     if (run.timer !== null) clearTimer(run.timer);
     releaseObject(run.query);
+    releaseObject(run.vertexShader);
+    releaseObject(run.pixelShader);
     for (const view of run.views) releaseObject(view);
     for (const texture of run.textures) releaseObject(texture);
     releaseObject(run.context);
@@ -227,9 +296,26 @@ export function createGpuWorkloadController({ load = (name) => koffi.load(name),
         const queryHr = callSlot(device, 24, HR_CREATE_QUERY, device, queryDesc(), queryBuffer);
         if (queryHr < 0) throw new Error(`D3D11 event query creation failed (0x${queryHr >>> 0})`);
         const query = koffi.decode(queryBuffer, 0, 'void*');
-          const color = Buffer.allocUnsafe(16);
-          [0.2, 0.36, 0.62, 1].forEach((value, index) => color.writeFloatLE(value, index * 4));
-          const upload = UPDATES_PER_TICK > 0 ? Buffer.alloc(TEXTURE_WIDTH * TEXTURE_HEIGHT * 4, 0x7f) : null;
+        const d3dCompiler = load('d3dcompiler_47.dll');
+        const vertexBytecode = compileShader(d3dCompiler, STABILITY_VERTEX_SHADER, 'main', 'vs_5_0');
+        const pixelBytecode = compileShader(d3dCompiler, STABILITY_PIXEL_SHADER, 'main', 'ps_5_0');
+        const vertexShaderBuffer = koffi.alloc('void*', 1);
+        const pixelShaderBuffer = koffi.alloc('void*', 1);
+        const vertexShaderHr = callSlot(device, 12, HR_CREATE_SHADER, device, vertexBytecode.pointer, vertexBytecode.size, null, vertexShaderBuffer);
+        const pixelShaderHr = callSlot(device, 15, HR_CREATE_SHADER, device, pixelBytecode.pointer, pixelBytecode.size, null, pixelShaderBuffer);
+        releaseObject(vertexBytecode.blob);
+        releaseObject(pixelBytecode.blob);
+        if (vertexShaderHr < 0 || pixelShaderHr < 0) {
+          releaseObject(query);
+          throw new Error(`D3D11 stability shader creation failed (0x${(vertexShaderHr < 0 ? vertexShaderHr : pixelShaderHr) >>> 0})`);
+        }
+        const vertexShader = koffi.decode(vertexShaderBuffer, 0, 'void*');
+        const pixelShader = koffi.decode(pixelShaderBuffer, 0, 'void*');
+        const color = Buffer.allocUnsafe(16);
+        [0.2, 0.36, 0.62, 1].forEach((value, index) => color.writeFloatLE(value, index * 4));
+        // No per-tick CPU upload buffer: Stability Lab should spend its time
+        // in the selected GPU, not copying hundreds of MiB/s from Node.
+        const upload = null;
         const textures = [];
         const views = [];
         try {
@@ -248,7 +334,10 @@ export function createGpuWorkloadController({ load = (name) => koffi.load(name),
             textures.push(texture);
             views.push(view);
           }
-          const run = { factory: enumerated.factory, adapters: enumerated.adapters, adapterLuid: selected.identity.luid, device, context, query, queryPending: false, textures, views, timer: null, color, tick: 0 };
+          const rtvList = koffi.alloc('void*', 1);
+          const viewport = koffi.alloc('float', 6);
+          [0, 0, TEXTURE_WIDTH, TEXTURE_HEIGHT, 0, 1].forEach((value, index) => koffi.encode(viewport, index * 4, 'float', value));
+          const run = { factory: enumerated.factory, adapters: enumerated.adapters, adapterLuid: selected.identity.luid, device, context, query, queryPending: false, vertexShader, pixelShader, rtvList, viewport, textures, views, timer: null, color, tick: 0 };
           const tick = () => {
             if (active !== run) return;
             // Do not queue another large upload while the previous batch is
@@ -270,6 +359,16 @@ export function createGpuWorkloadController({ load = (name) => koffi.load(name),
                 const destination = textures[(pass + run.tick + 1) % textures.length];
                 callSlot(context, CONTEXT_COPY_RESOURCE, VOID_COPY_RESOURCE, context, destination, source);
               }
+              callSlot(context, 11, VOID_SET_SHADER, context, vertexShader, null, 0);
+              callSlot(context, 9, VOID_SET_SHADER, context, pixelShader, null, 0);
+              callSlot(context, 24, VOID_SET_TOPOLOGY, context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+              callSlot(context, 44, VOID_SET_VIEWPORTS, context, 1, viewport);
+              for (let pass = 0; pass < DRAW_PASSES_PER_TICK; pass += 1) {
+                const view = views[(pass + run.tick) % views.length];
+                koffi.encode(rtvList, 'void*', view);
+                callSlot(context, 33, VOID_SET_RENDER_TARGETS, context, 1, rtvList, null);
+                callSlot(context, 13, VOID_DRAW, context, 3, 0);
+              }
               for (let pass = 0; pass < CLEARS_PER_TICK; pass += 1) {
                 const view = views[(pass + run.tick) % views.length];
                 callSlot(context, CONTEXT_CLEAR_RENDER_TARGET, VOID_CLEAR, context, view, color);
@@ -289,6 +388,8 @@ export function createGpuWorkloadController({ load = (name) => koffi.load(name),
           if (typeof run.timer === 'undefined') tick();
           return { started: true, adapterLuid: selected.identity.luid, deviceKey: target?.deviceKey ?? null };
         } catch (error) {
+          releaseObject(vertexShader);
+          releaseObject(pixelShader);
           for (const view of views) releaseObject(view);
           for (const texture of textures) releaseObject(texture);
           releaseObject(query);

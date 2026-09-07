@@ -712,6 +712,101 @@ function stabilityOutcomeLabel(outcome: string | null | undefined): string {
   return 'Ready';
 }
 
+function stressMetricText(value: number | null | undefined, unit: string): string {
+  return Number.isFinite(value) ? `${Math.round(Number(value))} ${unit}` : '—';
+}
+
+function stressVramText(bytes: number | null | undefined): string {
+  return Number.isFinite(bytes) ? `${Math.round(Number(bytes) / 1e9)} GB` : '—';
+}
+
+function renderStabilityStressDialog(): HTMLElement {
+  const metric = (label: string, key: string, unit: string) => el('div', { class: 'stability-stress-metric' }, [
+    el('div', { class: 'stability-stress-metric-label', text: label }),
+    el('div', { class: 'stability-stress-metric-value' }, [
+      el('span', { dataset: { stabilityStressValue: key }, text: '—' }),
+      el('small', { text: unit }),
+    ]),
+    el('div', { class: 'stability-stress-spark', dataset: { stabilityStressSpark: key } }),
+  ]);
+  const dialog = el('section', {
+    class: 'stability-stress-dialog',
+    role: 'dialog',
+    'aria-modal': 'false',
+    'aria-label': 'Arc Power stability test',
+    hidden: true,
+    dataset: { stabilityStressDialog: 'true', dismissed: 'false' },
+  }, [
+    el('header', { class: 'stability-stress-header' }, [
+      el('div', { class: 'stability-stress-title', dataset: { stabilityStressTitle: 'true' }, text: 'Stress Test' }),
+      el('button', { class: 'stability-stress-close', type: 'button', title: 'Close results', 'aria-label': 'Close stability test results', dataset: { stabilityStressClose: 'true' }, text: '×' }),
+    ]),
+    el('div', { class: 'stability-stress-grid' }, [
+      metric('GPU Clock Speed', 'gpuClockMhz', 'MHz'),
+      metric('VRAM Clock Speed', 'vramClockMhz', 'MHz'),
+      metric('Power Consumption', 'powerW', 'W'),
+      metric('Fan Speed', 'fanRpm', 'RPM'),
+      metric('Junction Temperature', 'junctionTempC', '°C'),
+      metric('Current Temperature', 'currentTempC', '°C'),
+      metric('GPU Utilization', 'gpuUtilPct', '%'),
+      metric('VRAM In Use', 'vramUsedBytes', ''),
+    ]),
+    el('div', { class: 'stability-stress-footer' }, [
+      el('div', { class: 'stability-stress-result', dataset: { stabilityStressResult: 'true' }, text: 'Starting stress test' }),
+      el('div', { class: 'stability-stress-whea', dataset: { stabilityStressWhea: 'true' }, text: 'WHEA check starting…' }),
+      el('button', { class: 'btn btn-danger stability-stress-stop', type: 'button', dataset: { stabilityStressStop: 'true' }, text: 'Stop Testing' }),
+    ]),
+  ]);
+  return dialog;
+}
+
+function updateStabilityStressDialog(root: HTMLElement, state: AppState): void {
+  const dialog = root.querySelector<HTMLElement>('[data-stability-stress-dialog]');
+  const run = state.stabilityRun;
+  if (!dialog || !run) return;
+  const active = run.state === 'running';
+  if (active) dialog.dataset.dismissed = 'false';
+  if (dialog.dataset.dismissed === 'true' && !active) { dialog.hidden = true; return; }
+  dialog.hidden = false;
+  const title = dialog.querySelector<HTMLElement>('[data-stability-stress-title]');
+  const result = dialog.querySelector<HTMLElement>('[data-stability-stress-result]');
+  const stop = dialog.querySelector<HTMLButtonElement>('[data-stability-stress-stop]');
+  const close = dialog.querySelector<HTMLButtonElement>('[data-stability-stress-close]');
+  const metrics = run.metrics ?? null;
+  const targetName = run.target?.name ?? 'Selected GPU';
+  if (title) title.textContent = `Stress Test — ${targetName}`;
+  const startMs = Date.parse(run.startedAt);
+  const endMs = run.endedAt ? Date.parse(run.endedAt) : Date.now();
+  const elapsed = Number.isFinite(startMs) ? Math.max(0, Math.floor((endMs - startMs) / 1000)) : 0;
+  if (result) result.textContent = active
+    ? `Running Stress Test   ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`
+    : `${stabilityOutcomeLabel(run.outcome)}   ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
+  if (stop) { stop.disabled = !active; stop.textContent = active ? 'Stop Testing' : 'Close Results'; }
+  if (close) close.hidden = active;
+  const values: Record<string, string> = {
+    gpuClockMhz: stressMetricText(metrics?.gpuClockMhz, 'MHz'),
+    vramClockMhz: stressMetricText(metrics?.vramClockMhz, 'MHz'),
+    powerW: stressMetricText(metrics?.powerW, 'W'),
+    fanRpm: stressMetricText(metrics?.fanRpm, 'RPM'),
+    junctionTempC: stressMetricText(metrics?.junctionTempC, '°C'),
+    currentTempC: stressMetricText(metrics?.currentTempC, '°C'),
+    gpuUtilPct: stressMetricText(metrics?.gpuUtilPct, '%'),
+    vramUsedBytes: stressVramText(metrics?.vramUsedBytes),
+  };
+  Object.entries(values).forEach(([key, value]) => {
+    const node = dialog.querySelector<HTMLElement>(`[data-stability-stress-value="${key}"]`);
+    if (node) node.textContent = value;
+  });
+  const whea = run.whea;
+  const wheaNode = dialog.querySelector<HTMLElement>('[data-stability-stress-whea]');
+  if (wheaNode) {
+    wheaNode.dataset.outcome = whea?.errorCount ? 'error' : whea?.available ? 'ok' : 'unknown';
+    wheaNode.textContent = whea?.errorCount
+      ? `WHEA: ${whea.errorCount} error${whea.errorCount === 1 ? '' : 's'} found`
+      : whea?.available ? 'WHEA: no errors found' : `WHEA: ${whea?.error ?? 'check unavailable'}`;
+  }
+}
+
 function updateStabilityLabPanel(root: HTMLElement, state: AppState): void {
   const run = state.stabilityRun;
   const report = state.stabilityReports.at(-1) ?? null;
@@ -735,6 +830,7 @@ function updateStabilityLabPanel(root: HTMLElement, state: AppState): void {
   }
   if (start) start.disabled = active;
   if (cancel) cancel.disabled = !active;
+  updateStabilityStressDialog(root, state);
 }
 
 function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement {
@@ -745,6 +841,7 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
   const duration = el('input', { class: 'stability-lab-duration', type: 'number', min: '10', max: '900', step: '10', value: '30', 'aria-label': 'Run duration in seconds' }) as HTMLInputElement;
   const start = el('button', { class: 'btn btn-primary', type: 'button', text: 'Start run', dataset: { stabilityStart: 'true' } }) as HTMLButtonElement;
   const cancel = el('button', { class: 'btn btn-secondary', type: 'button', text: 'Cancel', dataset: { stabilityCancel: 'true' } }) as HTMLButtonElement;
+  const stressDialog = renderStabilityStressDialog();
   const root = el('section', { class: 'card stability-lab-panel', dataset: { stabilityLab: 'true' } }, [
     el('div', { class: 'telemetry-section-heading' }, [
       el('div', {}, [el('h2', { class: 'card-title', text: 'Stability Lab' }), el('p', { class: 'card-note', text: 'Runs a bounded workload on the selected GPU while sampling telemetry.' })]),
@@ -758,6 +855,7 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
     ]),
     el('p', { class: 'card-note', dataset: { stabilityCounters: 'true' }, text: 'No run yet' }),
     el('p', { class: 'card-note', dataset: { stabilityNote: 'true' }, text: 'Runs stay tied to the selected physical GPU.' }),
+    stressDialog,
   ]);
   start.addEventListener('click', async () => {
     start.disabled = true;
@@ -771,6 +869,25 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
     cancel.disabled = true;
     try { await api.stabilityRunCancel(runId); }
     catch (error) { const node = root.querySelector<HTMLElement>('[data-stability-note]'); if (node) node.textContent = error instanceof Error ? error.message : String(error); }
+  });
+  stressDialog.querySelector<HTMLButtonElement>('[data-stability-stress-stop]')?.addEventListener('click', async () => {
+    const current = ctx.store.get().stabilityRun;
+    const runId = current?.runId;
+    if (!runId) return;
+    if (current?.state !== 'running') {
+      stressDialog.dataset.dismissed = 'true';
+      stressDialog.hidden = true;
+      return;
+    }
+    try { await api.stabilityRunCancel(runId); }
+    catch (error) {
+      const node = stressDialog.querySelector<HTMLElement>('[data-stability-stress-result]');
+      if (node) node.textContent = error instanceof Error ? error.message : String(error);
+    }
+  });
+  stressDialog.querySelector<HTMLButtonElement>('[data-stability-stress-close]')?.addEventListener('click', () => {
+    stressDialog.dataset.dismissed = 'true';
+    stressDialog.hidden = true;
   });
   updateStabilityLabPanel(root, state);
   return root;

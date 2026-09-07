@@ -102,7 +102,7 @@ export function classifyStabilityRun(input = {}) {
   if (input.cancelled === true || outcomeHint === 'cancelled') outcome = 'cancelled';
   else if (input.unavailable === true || outcomeHint === 'unavailable' || sampleCount === 0) outcome = 'unavailable';
   else if (!workloadEvidence) outcome = 'no-workload';
-  else if (freshCount / sampleCount < 0.8 || missingCount > 0 || (Number(input.driverErrorCount) || 0) > 0 || (Number(input.thresholdBreaches) || 0) > 0) outcome = 'warning';
+  else if (freshCount / sampleCount < 0.8 || missingCount > 0 || (Number(input.driverErrorCount) || 0) > 0 || (Number(input.thresholdBreaches) || 0) > 0 || (Number(input.wheaErrorCount) || 0) > 0) outcome = 'warning';
   else outcome = 'passed';
   return {
     outcome,
@@ -113,6 +113,7 @@ export function classifyStabilityRun(input = {}) {
     missingMetrics: Array.isArray(input.missingMetrics) ? [...new Set(input.missingMetrics.map(String))].slice(0, 32) : [],
     thresholdBreaches: Math.max(0, Number(input.thresholdBreaches) || 0),
     driverErrorCount: Math.max(0, Number(input.driverErrorCount) || 0),
+    wheaErrorCount: Math.max(0, Number(input.wheaErrorCount) || 0),
   };
 }
 
@@ -139,5 +140,6 @@ export function normalizeStabilityReport(report = {}) {
     freshSampleCount: Math.max(0, Math.round(Number(report.freshSampleCount) || 0)),
     thresholdBreaches: Math.max(0, Math.round(Number(report.thresholdBreaches) || 0)),
     driverErrorCount: Math.max(0, Math.round(Number(report.driverErrorCount) || 0)),
+    wheaErrorCount: Math.max(0, Math.round(Number(report.wheaErrorCount) || 0)),
   };
 }

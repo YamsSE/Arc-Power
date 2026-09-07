@@ -177,7 +177,11 @@ export function showRecordingShareDialog(options: RecordingShareDialogOptions): 
     el('span', { class: 'recording-share-action-icon recording-share-action-icon-folder', 'aria-hidden': 'true' }),
     el('span', { text: 'Open Folder' }),
   ]) as HTMLButtonElement;
-  const titleInput = el('input', { type: 'text', value: currentFileName.replace(/\.[^.]+$/, ''), readonly: true, 'aria-label': 'Clip title' }) as HTMLInputElement;
+  const titleNode = el('div', {
+    class: 'recording-share-title-value',
+    text: currentFileName.replace(/\.[^.]+$/, ''),
+    'aria-label': 'Clip title',
+  });
   const previewSlot = el('div', { class: 'recording-share-preview' });
   const loadingState = el('div', { class: 'recording-share-loading', role: 'status', 'aria-live': 'polite' }, [
     el('span', { class: 'recording-share-spinner', 'aria-hidden': 'true' }),
@@ -216,7 +220,7 @@ export function showRecordingShareDialog(options: RecordingShareDialogOptions): 
     setReady: (previewUrl, fileName) => {
       isLoading = false;
       if (fileName) currentFileName = fileName;
-      titleInput.value = currentFileName.replace(/\.[^.]+$/, '');
+      titleNode.textContent = currentFileName.replace(/\.[^.]+$/, '');
       copyButton.disabled = false;
       folderButton.disabled = false;
       renderPreview(previewUrl);
@@ -243,8 +247,7 @@ export function showRecordingShareDialog(options: RecordingShareDialogOptions): 
       ]),
       previewSlot,
       el('div', { class: 'recording-share-title-row' }, [
-        el('label', { class: 'recording-share-field' }, [el('span', { text: 'CLIP TITLE' }), titleInput]),
-        el('span', { class: 'recording-share-edit-icon', 'aria-hidden': 'true', text: '✎' }),
+        el('div', { class: 'recording-share-field' }, [el('span', { text: 'CLIP TITLE' }), titleNode]),
       ]),
       el('div', { class: 'recording-share-actions' }, [folderButton, copyButton]),
     ]),

@@ -58,6 +58,7 @@ import { GameProfileStore } from './store/game-profile-store.js';
 import { RecordingStore } from './store/recording-store.js';
 import { StabilityStore } from './store/stability-store.js';
 import { createGpuWorkloadController } from './gpu-workload.js';
+import { createWheaMonitor } from './whea-check.js';
 import { OverlayLayoutStore } from './overlay-layout-store.js';
 import { createObsStreamService } from './obs-stream.js';
 import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js';
@@ -1643,6 +1644,7 @@ async function main() {
   });
   const stabilityStore = new StabilityStore({ dir: store.dir });
   const stabilityWorkload = mock ? null : createGpuWorkloadController();
+  const wheaMonitor = mock ? null : createWheaMonitor();
   const overlayLayoutStore = new OverlayLayoutStore({ dir: store.dir, defaults: () => {
     const current = store.loadSettingsSync() ?? {};
     return {
@@ -1827,9 +1829,10 @@ async function main() {
       }
       return recordingCaptureSelection(settings?.captureTarget, targets, screen.getPrimaryDisplay());
     },
-    trimReplayClip: ({ path: clipPath, durationMs }) => trimRecordingClipToDuration(clipPath, durationMs, {
+    trimReplayClip: ({ path: clipPath, destinationPath, durationMs }) => trimRecordingClipToDuration(clipPath, durationMs, {
       ffmpegPath: resolveRecordingFfmpegPath(),
       ffprobePath: resolveRecordingFfprobePath(),
+      destinationPath,
     }),
     runtimeResolver: () => {
       let configuredPath = null;
@@ -3553,6 +3556,7 @@ async function main() {
     recordingEditor,
     stabilityStore,
     stabilityWorkload,
+    wheaMonitor,
     overlayLayoutStore,
     obsStream,
     applyOverlayLayout: async (layout) => {

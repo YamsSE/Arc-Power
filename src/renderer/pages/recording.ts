@@ -1199,6 +1199,17 @@ function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = ''
     if (rect.width <= 0) return 0;
     return recordingEditorTimelineMsFromRatio((event.clientX - rect.left) / rect.width, span);
   };
+  const placeTooltipAtSample = (sample: { atMs: number; apm: number }): void => {
+    const width = chart.clientWidth || 0;
+    const ratio = span > 0 ? Math.min(1, Math.max(0, sample.atMs / span)) : 0;
+    // Keep the pill attached to the nearest sampled point and inside the
+    // graph when the point is near either edge.
+    const halfPill = 58;
+    const left = Math.min(Math.max(halfPill, ratio * width), Math.max(halfPill, width - halfPill));
+    tooltip.style.left = `${left}px`;
+    tooltip.textContent = `APM: ${sample.apm} · ${formatTime(sample.atMs / 1000)}`;
+    tooltip.hidden = false;
+  };
   const seekFromEvent = (event: MouseEvent): void => {
     const atMs = timelineMsAtEvent(event);
     playbackMs = atMs;
@@ -1220,9 +1231,7 @@ function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = ''
     chart.updatePlayback?.(atMs);
     if (samples.length > 0) {
       const sample = samples.reduce((best, candidate) => Math.abs(candidate.atMs - atMs) < Math.abs(best.atMs - atMs) ? candidate : best, samples[0]);
-      tooltip.textContent = `APM: ${sample.apm} · ${formatTime(sample.atMs / 1000)}`;
-      tooltip.hidden = false;
-      tooltip.style.left = `${Math.min(Math.max(6, (sample.atMs / span) * (chart.clientWidth || 0)), Math.max(6, (chart.clientWidth || 0) - 110))}px`;
+      placeTooltipAtSample(sample);
     }
   });
   if (samples.length > 0) {
@@ -1234,9 +1243,7 @@ function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = ''
       const rect = chart.getBoundingClientRect();
       const ratio = rect.width > 0 ? Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)) : 0;
       const sample = nearest(ratio);
-      tooltip.textContent = `APM: ${sample.apm} · ${formatTime(sample.atMs / 1000)}`;
-      tooltip.hidden = false;
-      tooltip.style.left = `${Math.min(Math.max(6, event.clientX - rect.left), Math.max(6, rect.width - 110))}px`;
+      placeTooltipAtSample(sample);
     };
     chart.addEventListener('mousemove', showTooltip);
     chart.addEventListener('mouseleave', () => { tooltip.hidden = true; });

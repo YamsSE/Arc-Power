@@ -56,9 +56,11 @@ export interface DeviceState {
   gpuFreqOffsetMhz: number | null;
   tempLimitC: number | null;
   /** Advanced Alchemist writes can be accepted while the driver exposes only
-   * no finite native temperature getter was available. A finite stock 90 C
-   * result remains visible as the driver's actual current read-back. */
+   * a stock sentinel through its native temperature getter. */
   tempLimitCReadBackUnavailable?: boolean;
+  /** Identifies an identity-scoped accepted setpoint when native read-back is
+   * unavailable. */
+  tempLimitCReadBackSource?: 'native' | 'accepted-write';
   vramFreqOffsetGts: number | null;
   vramVoltOffsetV: number | null;
   gpuLock: { voltageV: number; freqMhz: number } | null;
@@ -544,6 +546,23 @@ export interface TelemetrySample {
 
 export type StabilityOutcome = 'passed' | 'warning' | 'no-workload' | 'unavailable' | 'cancelled';
 export type StabilityRunState = 'running' | 'completed';
+export interface StabilityLiveMetrics {
+  gpuClockMhz: number | null;
+  vramClockMhz: number | null;
+  powerW: number | null;
+  fanRpm: number | null;
+  currentTempC: number | null;
+  junctionTempC: number | null;
+  gpuUtilPct: number | null;
+  vramUsedBytes: number | null;
+}
+export interface StabilityWheaStatus {
+  available: boolean;
+  checked: boolean;
+  errorCount: number;
+  error: string | null;
+  lastCheckedAt: number | null;
+}
 export interface StabilityRunStatus {
   runId: string;
   state: StabilityRunState;
@@ -560,6 +579,8 @@ export interface StabilityRunStatus {
   workloadActive?: boolean;
   workloadStatus?: 'starting' | 'running' | 'unavailable' | 'monitor-only';
   workloadReason?: string | null;
+  metrics?: StabilityLiveMetrics;
+  whea?: StabilityWheaStatus;
   outcome: StabilityOutcome | null;
   reason: string | null;
   startedAt: string;
@@ -581,6 +602,7 @@ export interface StabilityReport {
   reason: string | null;
   thresholdBreaches?: number;
   driverErrorCount?: number;
+  wheaErrorCount?: number;
 }
 
 export interface OverlayLayout {

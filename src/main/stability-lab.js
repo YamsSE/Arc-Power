@@ -12,6 +12,7 @@ export function createStabilityLabService({
   sampleTarget = async () => null,
   workloadProbe = async () => null,
   workloadController = null,
+  wheaMonitor = null,
   settingsSnapshot = async () => ({}),
   reportStore = null,
   clock = () => Date.now(),
@@ -42,6 +43,8 @@ export function createStabilityLabService({
     workloadActive: run.workloadActive,
     workloadStatus: run.workloadStatus,
     workloadReason: run.workloadReason ?? null,
+    metrics: { ...run.metrics },
+    whea: { ...run.whea },
     outcome: run.outcome ?? null,
     reason: run.reason ?? null,
     startedAt: run.startedAt,
@@ -56,11 +59,22 @@ export function createStabilityLabService({
     run.outcome = outcome;
     run.reason = reason;
     run.endedAt = new Date(clock()).toISOString();
+    try {
+      if (wheaMonitor?.stop) run.whea = { ...run.whea, ...(await wheaMonitor.stop()) };
+    } catch (error) {
+      run.whea = { ...run.whea, available: false, checked: true, error: error instanceof Error ? error.message : String(error) };
+    }
+    const wheaErrorCount = Math.max(0, Number(run.whea?.errorCount) || 0);
+    const finalReason = wheaErrorCount > 0
+      ? `${reason ? `${reason}; ` : ''}${wheaErrorCount} WHEA error${wheaErrorCount === 1 ? '' : 's'} detected during the test`
+      : reason;
+    run.reason = finalReason;
     const verdict = classifyStabilityRun({
       ...run,
       outcomeHint: outcome,
       cancelled: outcome === 'cancelled',
       unavailable: outcome === 'unavailable',
+      wheaErrorCount,
     });
     const report = normalizeStabilityReport({
       runId: run.runId,
@@ -75,15 +89,16 @@ export function createStabilityLabService({
       effectiveDurationSec: run.durationSec,
       startedAt: run.startedAt,
       endedAt: run.endedAt,
-      reason,
+      reason: finalReason,
       thresholdBreaches: run.thresholdBreaches,
       driverErrorCount: run.driverErrorCount,
+      wheaErrorCount,
     });
     run.report = report;
     try { await workloadController?.stop?.(run.runId); } catch (error) {
       run.workloadReason = `${run.workloadReason ? `${run.workloadReason}; ` : ''}GPU workload cleanup failed: ${error.message}`;
     }
-    try { await reportStore?.append?.(report); } catch (error) { run.reason = `${reason ? `${reason}; ` : ''}report persistence failed: ${error.message}`; }
+    try { await reportStore?.append?.(report); } catch (error) { run.reason = `${finalReason ? `${finalReason}; ` : ''}report persistence failed: ${error.message}`; }
     publish(run);
     if (active === run) active = null;
     return report;
@@ -121,6 +136,21 @@ export function createStabilityLabService({
     // counters may be seconds since boot or another relative clock; retain
     // that source timestamp without comparing it to Date.now().
     const normalized = normalizeStabilitySample({ ...data, receivedAtMs: data.receivedAtMs ?? data.sampledAtMs, foregroundProcess: probe ?? data.foregroundProcess }, clock());
+    const source = normalized.sample ?? {};
+    run.metrics = {
+      gpuClockMhz: Number.isFinite(source.gpuClockMhz) ? source.gpuClockMhz : null,
+      vramClockMhz: Number.isFinite(source.memClockMhz) ? source.memClockMhz : null,
+      powerW: Number.isFinite(normalized.powerW) ? normalized.powerW : null,
+      fanRpm: Array.isArray(source.fanRpm) && Number.isFinite(source.fanRpm[0]) ? source.fanRpm[0] : null,
+      currentTempC: Number.isFinite(normalized.temperatureC) ? normalized.temperatureC : null,
+      junctionTempC: Number.isFinite(source.junctionTempC) ? source.junctionTempC
+        : Number.isFinite(source.vramTempC) ? source.vramTempC
+          : Number.isFinite(source.memTempC) ? source.memTempC : null,
+      gpuUtilPct: Number.isFinite(source.gpuUtilPct) ? source.gpuUtilPct
+        : Number.isFinite(normalized.utilPct) ? normalized.utilPct : null,
+      vramUsedBytes: Number.isFinite(source.gpuMemUsedBytes) ? source.gpuMemUsedBytes : null,
+    };
+    if (wheaMonitor?.snapshot) run.whea = { ...run.whea, ...wheaMonitor.snapshot() };
     run.sampleCount += 1;
     const age = Math.max(0, clock() - normalized.sampledAtMs);
     const fresh = !normalized.readError && age <= Math.max(1000, run.cadenceMs * 2.5);
@@ -162,11 +192,19 @@ export function createStabilityLabService({
         runId: crypto.randomUUID(), state: 'running', target: targetSnapshot,
         cadenceMs: request.cadenceMs, durationSec: request.durationSec, startedMs: clock(), startedAt: new Date(clock()).toISOString(), endedAt: null,
         settingsSnapshot: {}, sampleCount: 0, freshSampleCount: 0, foregroundCount: 0, presentEvidenceCount: 0, utilEvidenceCount: 0,
-        missingMetrics: new Set(), thresholdBreaches: 0, driverErrorCount: 0, workloadActive: false, workloadStatus: workloadController ? 'starting' : 'monitor-only', workloadReason: null, timer: null, finished: false, outcome: null, reason: null, report: null,
+        missingMetrics: new Set(), thresholdBreaches: 0, driverErrorCount: 0,
+        metrics: { gpuClockMhz: null, vramClockMhz: null, powerW: null, fanRpm: null, currentTempC: null, junctionTempC: null, gpuUtilPct: null, vramUsedBytes: null },
+        whea: { available: wheaMonitor ? true : false, checked: false, errorCount: 0, error: wheaMonitor ? null : 'WHEA check unavailable', lastCheckedAt: null },
+        workloadActive: false, workloadStatus: workloadController ? 'starting' : 'monitor-only', workloadReason: null, timer: null, finished: false, outcome: null, reason: null, report: null,
       };
       active = run;
       if (!target || (resolvedKey && resolvedKey !== request.deviceKey)) return finish(run, 'unavailable', 'selected device is unavailable or changed');
       try { run.settingsSnapshot = { ...(await settingsSnapshot(target) ?? {}) }; } catch { run.settingsSnapshot = {}; }
+      try {
+        if (wheaMonitor?.start) run.whea = { ...run.whea, ...(await wheaMonitor.start(run.startedMs)) };
+      } catch (error) {
+        run.whea = { ...run.whea, available: false, checked: true, error: error instanceof Error ? error.message : String(error) };
+      }
       if (workloadController?.start) {
         try {
           const workload = await workloadController.start({ ...target, deviceKey: request.deviceKey });

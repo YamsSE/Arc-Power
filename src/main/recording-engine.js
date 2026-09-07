@@ -1156,15 +1156,15 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     return lastError;
   }
 
-  async function boundReplayClip(clipPath, headDuration, fileReady = false) {
+  async function boundReplayClip(sourcePath, headDuration, fileReady = false, destinationPath = sourcePath) {
     if (typeof trimReplayClip !== 'function') return false;
     // Re-check stability on every attempt. `replay_ready` can arrive while
     // the native muxer is still extending the file, and trimming that moving
     // source is how an entire rolling buffer escaped as a short clip.
-    if (!await waitForReplayFile(clipPath, fileReady ? REPLAY_FILE_STABLE_MS * 3 : REPLAY_FILE_WAIT_MS)) return false;
+    if (!await waitForReplayFile(sourcePath, fileReady ? REPLAY_FILE_STABLE_MS * 3 : REPLAY_FILE_WAIT_MS)) return false;
     try {
-      const result = await trimReplayClip({ path: clipPath, durationMs: headDuration });
-      if (result === true) return clipPath;
+      const result = await trimReplayClip({ path: sourcePath, destinationPath, durationMs: headDuration });
+      if (result === true) return destinationPath;
       if (result && typeof result.path === 'string' && result.path.trim()) return result.path;
       return false;
     } catch {
@@ -1172,7 +1172,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }
   }
 
-  async function enforceReplayClipDuration(clipPath, headDuration, fileReady = false) {
+  async function enforceReplayClipDuration(sourcePath, headDuration, fileReady = false, destinationPath = sourcePath) {
     if (typeof trimReplayClip !== 'function') return;
     // The runtime can keep the native output handle open well after the
     // replay-ready event. Retry the bounded copy while that handle drains;
@@ -1180,7 +1180,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const deadline = Date.now() + Math.max(0, Number(replayTrimRetryMs) || 0);
     let firstAttempt = true;
     while (Date.now() <= deadline) {
-      const attempt = await boundReplayClip(clipPath, headDuration, fileReady || !firstAttempt);
+      const attempt = await boundReplayClip(sourcePath, headDuration, fileReady || !firstAttempt, destinationPath);
       firstAttempt = false;
       if (attempt) return attempt;
       if (Date.now() >= deadline) break;
@@ -1268,6 +1268,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
 
   async function saveReplayClipInternal({ path: initialClipPath, headDuration, thumbnailFolder }) {
     let clipPath = initialClipPath;
+    let nativeClipPath = initialClipPath;
     const activeReplay = activeRecorders.get('replay');
     const publishSaveError = (error) => {
       publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.ERROR, {
@@ -1288,9 +1289,15 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }
     const bufferIdentifier = activeReplay.identifier;
     const captureIdentifier = nextIdentifier++;
+    // Ascent keeps the native replay output open for a short period after its
+    // ready event. Capture into a private source path and publish only the
+    // separately written, duration-verified destination. This removes the
+    // first-save EBUSY race where replacing the native file failed and the
+    // rolling/unbounded source was accidentally surfaced as the clip.
+    nativeClipPath = `${initialClipPath}.arc-native-${captureIdentifier}.mp4`;
     publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.SAVING, { updatedAt: clock() });
     try {
-      await startReplayCaptureWithRetry({ clipPath, durationMs, thumbnailFolder, bufferIdentifier, captureIdentifier });
+      await startReplayCaptureWithRetry({ clipPath: nativeClipPath, durationMs, thumbnailFolder, bufferIdentifier, captureIdentifier });
       // Ascent acknowledges START_REPLAY_CAPTURE before writing the file. The
       // file is only usable after STOP_REPLAY_CAPTURE causes replay_ready.
       const response = await stopReplayClipInternal(captureIdentifier);
@@ -1298,7 +1305,12 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // The native replay output can include the previous keyframe/PTS lead-in
       // even when the requested head duration is shorter. Bound the completed
       // file to the requested tail after the runtime has released it.
-      clipPath = await enforceReplayClipDuration(clipPath, durationMs) ?? clipPath;
+      const boundedClipPath = await enforceReplayClipDuration(nativeClipPath, durationMs, false, initialClipPath);
+      if (!boundedClipPath) throw new Error('replay clip could not be bounded to the requested duration');
+      clipPath = boundedClipPath;
+      // The bounded destination is now authoritative. Source cleanup is
+      // best-effort because the native muxer may still hold its handle.
+      void discardReplayClipAfterFailure(nativeClipPath);
       publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.READY, { outputPath: clipPath, updatedAt: clock() });
       return replayReadyPayload(response, activeReplay, clipPath, thumbnailFolder, durationMs);
     } catch (error) {
@@ -1308,9 +1320,9 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // would only create another misleading error and could disturb the
       // still-running replay buffer.
       const completedReplayFile = typeof trimReplayClip === 'function'
-        ? await waitForReplayFile(clipPath, REPLAY_FILE_WAIT_MS)
+        ? await waitForReplayFile(nativeClipPath, REPLAY_FILE_WAIT_MS)
         : (() => {
-          try { return fs.statSync(clipPath).isFile() && fs.statSync(clipPath).size > 0; } catch { return false; }
+          try { return fs.statSync(nativeClipPath).isFile() && fs.statSync(nativeClipPath).size > 0; } catch { return false; }
         })();
       if (replayCapture?.bufferIdentifier === bufferIdentifier
         && replayCapture.phase === 'capturing'
@@ -1320,7 +1332,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
         // "not capturing" error. That file is still authoritative, but it
         // must go through the same duration bound as the normal success path.
         try {
-          clipPath = await enforceReplayClipDuration(clipPath, durationMs, true) ?? clipPath;
+          const boundedClipPath = await enforceReplayClipDuration(nativeClipPath, durationMs, true, initialClipPath);
+          if (!boundedClipPath) throw new Error('replay clip could not be bounded to the requested duration');
+          clipPath = boundedClipPath;
+          void discardReplayClipAfterFailure(nativeClipPath);
           publish({ error: null });
           publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.READY, { outputPath: clipPath, updatedAt: clock() });
           return replayReadyPayload({ event: ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY, identifier: bufferIdentifier, path: clipPath }, activeReplay, clipPath, thumbnailFolder, durationMs);
@@ -1341,10 +1356,14 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       } else {
         replayCapture = null;
       }
-      const cleanupError = await discardReplayClipAfterFailure(clipPath);
-      if (cleanupError) {
+      const cleanupErrors = [];
+      for (const candidate of new Set([nativeClipPath, clipPath])) {
+        const cleanupError = await discardReplayClipAfterFailure(candidate);
+        if (cleanupError) cleanupErrors.push(cleanupError);
+      }
+      if (cleanupErrors.length > 0) {
         const originalError = error instanceof Error ? error : new Error(String(error));
-        const reportedError = new Error(`${originalError.message}; replay clip cleanup failed: ${cleanupError.message}`);
+        const reportedError = new Error(`${originalError.message}; replay clip cleanup failed: ${cleanupErrors.map((item) => item.message).join('; ')}`);
         reportedError.code = 'REPLAY_CLIP_CLEANUP_FAILED';
         reportedError.cause = originalError;
         error = reportedError;

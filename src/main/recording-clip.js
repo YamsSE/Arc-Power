@@ -179,13 +179,19 @@ export async function trimRecordingClipToDuration(filePath, durationMs, {
   ffprobePath,
   spawn = spawnProcess,
   fsImpl = fs,
+  destinationPath = filePath,
   tempSuffix = `${process.pid}-${randomUUID()}`,
   lockRetryMs = TRIM_LOCK_RETRY_MS,
   lockRetryDelayMs = TRIM_LOCK_RETRY_DELAY_MS,
 } = {}) {
-  if (typeof filePath !== 'string' || !filePath || typeof ffmpegPath !== 'string' || !ffmpegPath || !validDurationSeconds(durationMs)) return false;
+  if (typeof filePath !== 'string' || !filePath || typeof destinationPath !== 'string' || !destinationPath
+    || typeof ffmpegPath !== 'string' || !ffmpegPath || !validDurationSeconds(durationMs)) return false;
   if (!hasUsableFile(fsImpl, filePath)) return false;
-  const temporaryPath = `${filePath}.arc-trim-${tempSuffix}.tmp`;
+  const replaceInPlace = path.resolve(filePath) === path.resolve(destinationPath);
+  // A replay muxer can keep the native source open after STOP_REPLAY_CAPTURE
+  // has answered.  When a separate destination is supplied, never rename or
+  // unlink that source as part of publishing the verified bounded clip.
+  const temporaryPath = `${destinationPath}.arc-trim-${tempSuffix}.tmp`;
   const sourceSnapshotPath = `${filePath}.arc-source-${tempSuffix}.mp4`;
   if (path.resolve(temporaryPath) === path.resolve(filePath)) return false;
   let publishedFallbackPath = null;
@@ -231,6 +237,19 @@ export async function trimRecordingClipToDuration(filePath, durationMs, {
       }
       if (!await renderBoundedOutput(sourceForTrim)) return false;
     }
+    if (!replaceInPlace) {
+      try {
+        await retryFileOperation(() => fsImpl.renameSync(temporaryPath, destinationPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
+        return { ok: true, path: destinationPath, bounded: true };
+      } catch (destinationError) {
+        const fallbackPath = availableFallbackPath(destinationPath, fsImpl);
+        if (!fallbackPath) throw destinationError;
+        await retryFileOperation(() => fsImpl.renameSync(temporaryPath, fallbackPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
+        publishedFallbackPath = fallbackPath;
+        return { ok: true, path: fallbackPath, bounded: true, fallback: true };
+      }
+    }
+
     const backupPath = `${filePath}.arc-original-${tempSuffix}.tmp`;
     try {
       await retryFileOperation(() => fsImpl.renameSync(filePath, backupPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
