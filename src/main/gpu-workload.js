@@ -15,14 +15,15 @@ const D3D11_BIND_RENDER_TARGET = 0x20;
 // and the adapter's local-memory path without allocating per tick.
 const TEXTURE_WIDTH = 3072;
 const TEXTURE_HEIGHT = 3072;
-// Keep roughly 1.15 GiB of render-target storage resident. This is large
+// Keep roughly 2.30 GiB of render-target storage resident. This is large
 // enough to move the selected adapter's VRAM usage visibly while remaining
-// safe on the supported discrete Arc boards.
-const TEXTURE_COUNT = 32;
+// safe on the supported discrete Arc boards. The copy pass also keeps the
+// local-memory controller busy instead of only exercising the 3D engine.
+const TEXTURE_COUNT = 64;
 const CLEARS_PER_TICK = 8;
 const UPDATES_PER_TICK = 0;
-const COPIES_PER_TICK = 512;
-const DRAW_PASSES_PER_TICK = 48;
+const COPIES_PER_TICK = 1024;
+const DRAW_PASSES_PER_TICK = 64;
 // Poll the GPU fence frequently enough to submit the next batch as soon as
 // the previous one completes. A 16 ms timer left visible idle gaps between
 // batches, which capped measured engine utilization below a full stress run.
@@ -199,7 +200,7 @@ const STABILITY_PIXEL_SHADER = `
 struct VSOut { float4 position : SV_Position; float2 uv : TEXCOORD0; };
 float4 main(VSOut input) : SV_Target {
   float3 value = float3(input.uv, 0.37);
-  [loop] for (uint i = 0; i < 448; ++i) {
+  [loop] for (uint i = 0; i < 576; ++i) {
     value = frac(value * 1.6180339 + float3(0.113, 0.271, 0.419));
     value = abs(value * (2.0 - value) + value.yzx * 0.37);
   }

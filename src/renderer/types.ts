@@ -552,9 +552,19 @@ export interface StabilityLiveMetrics {
   powerW: number | null;
   fanRpm: number | null;
   currentTempC: number | null;
-  junctionTempC: number | null;
+  vramTempC: number | null;
   gpuUtilPct: number | null;
   vramUsedBytes: number | null;
+}
+export interface StabilityMetricLimits {
+  gpuClockMhz: number;
+  vramClockMhz: number;
+  powerW: number;
+  fanRpm: number;
+  vramTempC: number;
+  currentTempC: number;
+  gpuUtilPct: number;
+  vramUsedBytes: number;
 }
 export interface StabilityWheaStatus {
   available: boolean;
@@ -580,6 +590,7 @@ export interface StabilityRunStatus {
   workloadStatus?: 'starting' | 'running' | 'unavailable' | 'monitor-only';
   workloadReason?: string | null;
   metrics?: StabilityLiveMetrics;
+  limits?: StabilityMetricLimits;
   whea?: StabilityWheaStatus;
   outcome: StabilityOutcome | null;
   reason: string | null;

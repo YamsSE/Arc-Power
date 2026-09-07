@@ -2321,7 +2321,7 @@ input[type="number"] {
 .stability-stress-metric-label { color: #a9bad0; font-size: 11px; font-weight: 700; }
 .stability-stress-metric-value { display: flex; align-items: baseline; gap: 6px; margin-top: 7px; color: #f4f8ff; font-size: 24px; font-weight: 800; letter-spacing: .01em; }
 .stability-stress-metric-value small { color: #67caff; font-size: 11px; font-weight: 700; }
-.stability-stress-spark { height: 9px; margin-top: 9px; border-radius: 999px; background: linear-gradient(90deg, #146eab 0%, #32c4ff 48%, rgba(45, 75, 112, .26) 48%, rgba(45, 75, 112, .26) 100%); box-shadow: 0 0 12px rgba(47, 191, 255, .2); }
+.stability-stress-spark { --stress-fill: 0%; height: 9px; margin-top: 9px; border-radius: 999px; background: linear-gradient(90deg, #146eab 0%, #32c4ff var(--stress-fill), rgba(45, 75, 112, .26) var(--stress-fill), rgba(45, 75, 112, .26) 100%); box-shadow: 0 0 12px rgba(47, 191, 255, .2); transition: background .18s ease; }
 .stability-stress-footer { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 14px 16px 16px; background: rgba(8, 13, 23, .92); }
 .stability-stress-result { color: #eaf6ff; font-weight: 800; font-size: 14px; }
 .stability-stress-whea { color: #77cfff; font-size: 11px; font-weight: 700; }

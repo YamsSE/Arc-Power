@@ -7,6 +7,33 @@ function stableKeyOf(target) {
   return typeof target?.deviceKey === 'string' ? target.deviceKey.trim() : null;
 }
 
+function finitePositive(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function stressLimitsOf(run) {
+  const settings = run?.settingsSnapshot ?? {};
+  const target = run?.target ?? {};
+  const graphicsClock = finitePositive(target.graphicsClockMHz);
+  const vramBytes = finitePositive(target.vramBytes);
+  const powerLimit = finitePositive(settings.stabilityPowerLimitW ?? settings.powerLimitW);
+  const temperatureLimit = finitePositive(settings.stabilityTemperatureLimitC ?? settings.tempLimitC);
+  return {
+    // Clock ceilings are intentionally conservative driver-safe reference
+    // points. They make the meter useful even when a driver does not expose
+    // a formal boost limit for the selected adapter.
+    gpuClockMhz: Math.max(3000, graphicsClock ? graphicsClock * 1.25 : 0),
+    vramClockMhz: 3000,
+    powerW: powerLimit ?? 252,
+    fanRpm: 3000,
+    vramTempC: 100,
+    currentTempC: temperatureLimit ?? 90,
+    gpuUtilPct: 100,
+    vramUsedBytes: vramBytes ?? 8 * 1024 * 1024 * 1024,
+  };
+}
+
 export function createStabilityLabService({
   resolveTarget = async () => null,
   sampleTarget = async () => null,
@@ -44,6 +71,7 @@ export function createStabilityLabService({
     workloadStatus: run.workloadStatus,
     workloadReason: run.workloadReason ?? null,
     metrics: { ...run.metrics },
+    limits: { ...run.limits },
     whea: { ...run.whea },
     outcome: run.outcome ?? null,
     reason: run.reason ?? null,
@@ -143,9 +171,8 @@ export function createStabilityLabService({
       powerW: Number.isFinite(normalized.powerW) ? normalized.powerW : null,
       fanRpm: Array.isArray(source.fanRpm) && Number.isFinite(source.fanRpm[0]) ? source.fanRpm[0] : null,
       currentTempC: Number.isFinite(normalized.temperatureC) ? normalized.temperatureC : null,
-      junctionTempC: Number.isFinite(source.junctionTempC) ? source.junctionTempC
-        : Number.isFinite(source.vramTempC) ? source.vramTempC
-          : Number.isFinite(source.memTempC) ? source.memTempC : null,
+      vramTempC: Number.isFinite(source.vramTempC) ? source.vramTempC
+        : Number.isFinite(source.memTempC) ? source.memTempC : null,
       gpuUtilPct: Number.isFinite(source.gpuUtilPct) ? source.gpuUtilPct
         : Number.isFinite(normalized.utilPct) ? normalized.utilPct : null,
       vramUsedBytes: Number.isFinite(source.gpuMemUsedBytes) ? source.gpuMemUsedBytes : null,
@@ -193,13 +220,15 @@ export function createStabilityLabService({
         cadenceMs: request.cadenceMs, durationSec: request.durationSec, startedMs: clock(), startedAt: new Date(clock()).toISOString(), endedAt: null,
         settingsSnapshot: {}, sampleCount: 0, freshSampleCount: 0, foregroundCount: 0, presentEvidenceCount: 0, utilEvidenceCount: 0,
         missingMetrics: new Set(), thresholdBreaches: 0, driverErrorCount: 0,
-        metrics: { gpuClockMhz: null, vramClockMhz: null, powerW: null, fanRpm: null, currentTempC: null, junctionTempC: null, gpuUtilPct: null, vramUsedBytes: null },
+        metrics: { gpuClockMhz: null, vramClockMhz: null, powerW: null, fanRpm: null, currentTempC: null, vramTempC: null, gpuUtilPct: null, vramUsedBytes: null },
+        limits: stressLimitsOf({ target: targetSnapshot, settingsSnapshot: {} }),
         whea: { available: wheaMonitor ? true : false, checked: false, errorCount: 0, error: wheaMonitor ? null : 'WHEA check unavailable', lastCheckedAt: null },
         workloadActive: false, workloadStatus: workloadController ? 'starting' : 'monitor-only', workloadReason: null, timer: null, finished: false, outcome: null, reason: null, report: null,
       };
       active = run;
       if (!target || (resolvedKey && resolvedKey !== request.deviceKey)) return finish(run, 'unavailable', 'selected device is unavailable or changed');
       try { run.settingsSnapshot = { ...(await settingsSnapshot(target) ?? {}) }; } catch { run.settingsSnapshot = {}; }
+      run.limits = stressLimitsOf(run);
       try {
         if (wheaMonitor?.start) run.whea = { ...run.whea, ...(await wheaMonitor.start(run.startedMs)) };
       } catch (error) {

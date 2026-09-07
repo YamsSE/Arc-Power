@@ -712,12 +712,19 @@ function stabilityOutcomeLabel(outcome: string | null | undefined): string {
   return 'Ready';
 }
 
-function stressMetricText(value: number | null | undefined, unit: string): string {
-  return Number.isFinite(value) ? `${Math.round(Number(value))} ${unit}` : '—';
+function stressMetricText(value: number | null | undefined): string {
+  return Number.isFinite(value) ? Math.round(Number(value)).toLocaleString('en-US') : '—';
 }
 
 function stressVramText(bytes: number | null | undefined): string {
-  return Number.isFinite(bytes) ? `${Math.round(Number(bytes) / 1e9)} GB` : '—';
+  return Number.isFinite(bytes) ? `${Math.round(Number(bytes) / 1e9).toLocaleString('en-US')} GB` : '—';
+}
+
+function stressMetricFill(key: string, value: number | null | undefined, limits: Record<string, number>): number {
+  if (!Number.isFinite(value)) return 0;
+  const limit = Number(limits[key]);
+  if (!Number.isFinite(limit) || limit <= 0) return 0;
+  return Math.max(0, Math.min(100, (Number(value) / limit) * 100));
 }
 
 function renderStabilityStressDialog(): HTMLElement {
@@ -746,7 +753,7 @@ function renderStabilityStressDialog(): HTMLElement {
       metric('VRAM Clock Speed', 'vramClockMhz', 'MHz'),
       metric('Power Consumption', 'powerW', 'W'),
       metric('Fan Speed', 'fanRpm', 'RPM'),
-      metric('Junction Temperature', 'junctionTempC', '°C'),
+      metric('VRAM Temperature', 'vramTempC', '°C'),
       metric('Current Temperature', 'currentTempC', '°C'),
       metric('GPU Utilization', 'gpuUtilPct', '%'),
       metric('VRAM In Use', 'vramUsedBytes', ''),
@@ -784,18 +791,41 @@ function updateStabilityStressDialog(root: HTMLElement, state: AppState): void {
   if (stop) { stop.disabled = !active; stop.textContent = active ? 'Stop Testing' : 'Close Results'; }
   if (close) close.hidden = active;
   const values: Record<string, string> = {
-    gpuClockMhz: stressMetricText(metrics?.gpuClockMhz, 'MHz'),
-    vramClockMhz: stressMetricText(metrics?.vramClockMhz, 'MHz'),
-    powerW: stressMetricText(metrics?.powerW, 'W'),
-    fanRpm: stressMetricText(metrics?.fanRpm, 'RPM'),
-    junctionTempC: stressMetricText(metrics?.junctionTempC, '°C'),
-    currentTempC: stressMetricText(metrics?.currentTempC, '°C'),
-    gpuUtilPct: stressMetricText(metrics?.gpuUtilPct, '%'),
+    gpuClockMhz: stressMetricText(metrics?.gpuClockMhz),
+    vramClockMhz: stressMetricText(metrics?.vramClockMhz),
+    powerW: stressMetricText(metrics?.powerW),
+    fanRpm: stressMetricText(metrics?.fanRpm),
+    vramTempC: stressMetricText(metrics?.vramTempC),
+    currentTempC: stressMetricText(metrics?.currentTempC),
+    gpuUtilPct: stressMetricText(metrics?.gpuUtilPct),
     vramUsedBytes: stressVramText(metrics?.vramUsedBytes),
+  };
+  const fallbackLimits: Record<string, number> = {
+    gpuClockMhz: 3000,
+    vramClockMhz: 3000,
+    powerW: 252,
+    fanRpm: 3000,
+    vramTempC: 100,
+    currentTempC: 90,
+    gpuUtilPct: 100,
+    vramUsedBytes: 8 * 1024 * 1024 * 1024,
+  };
+  const limits = { ...fallbackLimits, ...(run.limits ?? {}) };
+  const rawValues: Record<string, number | null | undefined> = {
+    gpuClockMhz: metrics?.gpuClockMhz,
+    vramClockMhz: metrics?.vramClockMhz,
+    powerW: metrics?.powerW,
+    fanRpm: metrics?.fanRpm,
+    vramTempC: metrics?.vramTempC,
+    currentTempC: metrics?.currentTempC,
+    gpuUtilPct: metrics?.gpuUtilPct,
+    vramUsedBytes: metrics?.vramUsedBytes,
   };
   Object.entries(values).forEach(([key, value]) => {
     const node = dialog.querySelector<HTMLElement>(`[data-stability-stress-value="${key}"]`);
     if (node) node.textContent = value;
+    const spark = dialog.querySelector<HTMLElement>(`[data-stability-stress-spark="${key}"]`);
+    if (spark) spark.style.setProperty('--stress-fill', `${stressMetricFill(key, rawValues[key], limits)}%`);
   });
   const whea = run.whea;
   const wheaNode = dialog.querySelector<HTMLElement>('[data-stability-stress-whea]');
