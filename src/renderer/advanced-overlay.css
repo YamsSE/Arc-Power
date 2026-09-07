@@ -1218,6 +1218,16 @@ html, body {
 }
 .graphics-select { display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; }
 .graphics-select:focus { outline: none; border-color: var(--accent-strong); }
+
+/* Native selects can still receive the Windows yellow focus ring in the
+   overlay window. Keep the selection border aligned with Arc Power's blue
+   recording controls across every theme and overlay panel. */
+select:focus,
+select:focus-visible {
+  outline: none;
+  border-color: #38c5ff !important;
+  box-shadow: 0 0 0 2px rgba(56, 197, 255, .2) !important;
+}
 .graphics-select::after { color: var(--text-muted); }
 .graphics-fps-row {
   margin-top: 8px;

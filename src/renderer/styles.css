@@ -1056,6 +1056,18 @@ select {
   color: var(--text);
 }
 
+/* Keep every native selector in the Arc Power palette. Chromium/Windows can
+   otherwise add a yellow system focus ring to an otherwise blue interface.
+   The rule is intentionally global so newly added selectors inherit it too. */
+select:focus,
+select:focus-visible {
+  outline: none;
+  /* Selection stays Arc blue even when the user has selected the optional
+     yellow theme. This is a focus state, not a theme accent. */
+  border-color: #38c5ff !important;
+  box-shadow: 0 0 0 2px rgba(56, 197, 255, .2) !important;
+}
+
 /* M180: every product dropdown is rendered in the owning BrowserWindow so
    its dark rounded menu, blue active state, keyboard focus, and viewport
    placement stay identical in the main window and Advanced Overlay. */

@@ -800,7 +800,9 @@ function updateStabilityStressDialog(root: HTMLElement, state: AppState): void {
   if (result) result.textContent = active
     ? `Running Stress Test   ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`
     : `${stabilityOutcomeLabel(run.outcome)}   ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
-  if (stop) { stop.disabled = !active; stop.textContent = active ? 'Stop Testing' : 'Close Results'; }
+  // Once the run is complete this same button becomes the dismissal action.
+  // Leaving it disabled made the visible "Close Results" control inert.
+  if (stop) { stop.disabled = false; stop.textContent = active ? 'Stop Testing' : 'Close Results'; }
   if (close) close.hidden = active;
   const values: Record<string, string> = {
     gpuClockMhz: stressMetricText(metrics?.gpuClockMhz),

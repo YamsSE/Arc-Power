@@ -130,6 +130,18 @@ function unsupportedEncoderError(requested, encoders) {
   return error;
 }
 
+// Windows reports a native ascent-obs access violation as either the unsigned
+// NTSTATUS value (3221225477) or its signed int32 representation
+// (-1073741819). Treat both forms as a recoverable child crash so a transient
+// QSV/DXGI initialization fault does not leave Instant Replay offline until
+// the whole desktop is restarted.
+function isNativeChildCrash(error) {
+  const code = Number(error?.code);
+  const unsignedCode = Number.isFinite(code) ? (code >>> 0) : null;
+  if (unsignedCode === 0xc0000005) return true;
+  return /Ascent exited \((?:3221225477|-1073741819)\)/i.test(String(error?.message ?? ''));
+}
+
 function invalidEncoderSelectionError(value) {
   const error = new Error(`Encoder selection '${String(value)}' is malformed or does not contain a stable physical adapter target.`);
   error.code = 'INVALID_ENCODER_SELECTION';
@@ -506,6 +518,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   // hotkeys cannot enqueue two native captures at once.
   let replayClipSaveInFlight = false;
   let machineInfoReady = false;
+  let replayCrashRecoveryInFlight = false;
 
   function startApmSession(recorder) {
     const sessionId = recorder?.sessionId;
@@ -831,6 +844,12 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     spawnedChild.on('exit', (code, signal) => {
       if (retiredChildren.has(spawnedChild) || child !== spawnedChild) return;
       const failure = protocolFailure;
+      const crashed = !failure && !disposed && isNativeChildCrash({ code, message: `Ascent exited (${code ?? signal ?? 'unknown'})` });
+      const replayRecorder = activeRecorders.get('replay') ?? startingRecorders.get('replay');
+      const replayRecoverySettings = replayRecorder?.settings ?? null;
+      const replayWasStarting = startingRecorders.has('replay');
+      const replaySessions = [...activeRecorders.values(), ...startingRecorders.values()]
+        .filter((recorder) => recorder?.sessionId);
       closingChild = spawnedChild;
       child = null;
       activeRecorders.clear();
@@ -838,10 +857,33 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       replayCapture = null;
       replayCaptureReadyAt = 0;
       terminationStarted = false;
-      publish({ available: false, ...captureStatePatch(), error: failure ? `Ascent protocol error: ${failure.message}` : disposed ? null : `Ascent exited (${code ?? signal ?? 'unknown'})` });
-      rejectPending(failure ?? new Error('Ascent process exited'));
-      rejectQueued(failure ?? new Error('Ascent process exited'));
+      for (const recorder of replaySessions) stopApmSession(recorder);
+      const exitError = failure ?? Object.assign(new Error(`Ascent exited (${code ?? signal ?? 'unknown'})`), {
+        code: Number.isInteger(code) ? code : undefined,
+        signal: signal ?? null,
+      });
+      publish({ available: false, ...captureStatePatch(), error: failure ? `Ascent protocol error: ${failure.message}` : disposed ? null : exitError.message });
+      rejectPending(exitError);
+      rejectQueued(exitError);
       protocolFailure = null;
+      // Replay is a rolling buffer and can be recreated without losing a
+      // finished file. Queue one bounded recovery after an access violation;
+      // manual recordings stay stopped so their output path is never reused.
+      if (crashed && replayRecoverySettings && !replayWasStarting && !replayCrashRecoveryInFlight) {
+        replayCrashRecoveryInFlight = true;
+        void serialize(async () => {
+          try {
+            await waitMs(REPLAY_CAPTURE_RETRY_DELAY_MS);
+            machineInfoReady = false;
+            await probeInternal();
+            await startInternal(replayRecoverySettings, 'replay', false);
+          } catch (recoveryError) {
+            publish({ error: `Instant Replay could not recover after the capture runtime crashed: ${recoveryError?.message ?? String(recoveryError)}` });
+          } finally {
+            replayCrashRecoveryInFlight = false;
+          }
+        }).catch(() => { replayCrashRecoveryInFlight = false; });
+      }
     });
     publish({ available: true, error: null, probeComplete: false });
     return child;
@@ -936,7 +978,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }
   }
 
-  async function startInternal(settings, mode = 'video') {
+  async function startInternal(settings, mode = 'video', retryAfterCrash = true) {
     if (activeRecorders.has(mode) || startingRecorders.has(mode)) throw new Error(`${mode === 'replay' ? 'Instant Replay' : 'Recording'} is already active or a previous start is still pending`);
     await prepareFreshChild();
     // The startup probe already validates the bundled runtime and publishes
@@ -986,7 +1028,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }, outputPath, type);
     const identifier = nextIdentifier++;
     const fields = Object.fromEntries(Object.entries(payload).filter(([key]) => !['cmd', 'identifier', 'recorder_type'].includes(key)));
-    const startingRecorder = { identifier, type, mode, ready: false, sessionId: `${mode}:${identifier}`, startedAt: clock(), outputPath: typeof outputPath === 'string' ? outputPath : null };
+    const startingRecorder = { identifier, type, mode, ready: false, sessionId: `${mode}:${identifier}`, startedAt: clock(), outputPath: typeof outputPath === 'string' ? outputPath : null, settings };
     startingRecorders.set(mode, startingRecorder);
     startApmSession(startingRecorder);
     try {
@@ -1003,6 +1045,17 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       } else if (startingRecorder?.identifier === identifier) {
         stopApmSession(startingRecorder);
         startingRecorders.delete(mode);
+      }
+      if (mode === 'replay' && retryAfterCrash && !disposed && isNativeChildCrash(error)) {
+        await waitMs(REPLAY_CAPTURE_RETRY_DELAY_MS);
+        machineInfoReady = false;
+        try {
+          await probeInternal();
+          return startInternal(settings, mode, false);
+        } catch (retryError) {
+          retryError.cause = error;
+          throw retryError;
+        }
       }
       // Keep failure/demotion state keyed by the canonical codec and physical
       // selection. A non-display target uses a soft runtime variant internally,
