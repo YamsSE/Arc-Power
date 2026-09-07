@@ -226,18 +226,28 @@ export async function trimRecordingClipToDuration(filePath, durationMs, {
       return false;
     };
 
-    // Read the native output directly first. This is the fast path and avoids
-    // copying a potentially large rolling file before every save. If the
-    // muxer still denies reads, fall back to a snapshot and retry once.
-    if (!await renderBoundedOutput(filePath)) {
-      if (typeof fsImpl.copyFileSync !== 'function') return false;
+    // Detach the replay from the native muxer before invoking FFmpeg. The
+    // runtime can keep its output handle open after replay_ready; pointing
+    // FFmpeg at that path first can block for its full timeout and then turn
+    // a transient lock into the user-facing EBUSY cleanup error. A completed
+    // snapshot is independent of that handle and is still much faster than
+    // re-encoding the rolling source.
+    if (typeof fsImpl.copyFileSync === 'function') {
       try {
         await retryFileOperation(() => fsImpl.copyFileSync(filePath, sourceSnapshotPath), { timeoutMs: lockRetryMs, delayMs: lockRetryDelayMs });
         sourceForTrim = sourceSnapshotPath;
       } catch {
         sourceForTrim = filePath;
       }
-      if (!await renderBoundedOutput(sourceForTrim)) return false;
+    }
+    if (!await renderBoundedOutput(sourceForTrim)) {
+      // Keep the native direct-read fallback for runtimes/filesystems where a
+      // snapshot is denied even though FFmpeg can still read the source.
+      if (sourceForTrim !== filePath && await renderBoundedOutput(filePath)) {
+        sourceForTrim = filePath;
+      } else {
+        return false;
+      }
     }
     if (!replaceInPlace) {
       try {
