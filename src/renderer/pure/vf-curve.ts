@@ -18,6 +18,61 @@ export interface VfCurvePoint {
 export const VF_EDITOR_MAX_POINTS = 10;
 export const VF_MIN_POINTS = 2;
 
+/** Compare two curves by their native point coordinates and frequencies. */
+export function sameVfCurve(
+  left: VfCurvePoint[] | null | undefined,
+  right: VfCurvePoint[] | null | undefined,
+  voltageToleranceV = 0.0005,
+  frequencyToleranceMhz = 1,
+): boolean {
+  return Array.isArray(left) && Array.isArray(right)
+    && left.length === right.length
+    && left.every((point, index) => {
+      const other = right[index];
+      return Number.isFinite(point?.voltageV) && Number.isFinite(point?.freqMhz)
+        && Number.isFinite(other?.voltageV) && Number.isFinite(other?.freqMhz)
+        && Math.abs(point.voltageV - other.voltageV) <= voltageToleranceV
+        && Math.abs(point.freqMhz - other.freqMhz) <= frequencyToleranceMhz;
+    });
+}
+
+/** Compare only frequencies while allowing each curve to use another grid. */
+export function sameVfCurveFrequencies(
+  left: VfCurvePoint[] | null | undefined,
+  right: VfCurvePoint[] | null | undefined,
+  frequencyToleranceMhz = 1,
+): boolean {
+  return Array.isArray(left) && Array.isArray(right)
+    && left.length === right.length
+    && left.every((point, index) => Number.isFinite(point?.freqMhz)
+      && Number.isFinite(right[index]?.freqMhz)
+      && Math.abs(point.freqMhz - right[index].freqMhz) <= frequencyToleranceMhz);
+}
+
+/**
+ * Identify the stale profile shape emitted by older Battlemage builds: the
+ * stock frequencies, a uniformly translated voltage grid, and a non-zero
+ * scalar core offset. A custom voltage-only curve is intentionally excluded
+ * unless it has that complete legacy fingerprint.
+ */
+export function isLegacyStockVfCurve(
+  requested: VfCurvePoint[] | null | undefined,
+  native: VfCurvePoint[] | null | undefined,
+  coreOffsetMhz: number | null | undefined,
+): boolean {
+  if (!Array.isArray(requested) || !Array.isArray(native)
+    || requested.length < VF_MIN_POINTS || requested.length !== native.length) return false;
+  if (sameVfCurve(requested, native)) return true;
+  const offset = typeof coreOffsetMhz === 'number' && Number.isFinite(coreOffsetMhz) ? coreOffsetMhz : null;
+  if (offset === null || Math.abs(offset) < 0.5
+    || !sameVfCurveFrequencies(requested, native)) return false;
+  const shift = requested[0].voltageV - native[0].voltageV;
+  if (!Number.isFinite(shift) || Math.abs(shift) < 0.01) return false;
+  return requested.every((point, index) => Number.isFinite(point?.voltageV)
+    && Number.isFinite(native[index]?.voltageV)
+    && Math.abs((point.voltageV - native[index].voltageV) - shift) <= 0.001);
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }

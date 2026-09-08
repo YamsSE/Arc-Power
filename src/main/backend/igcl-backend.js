@@ -70,7 +70,7 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 // bSupported:false - the probe-3 evidence).
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
-import { prepareVfCurveForDriver } from '../../renderer/pure/vf-curve.ts';
+import { isLegacyStockVfCurve, prepareVfCurveForDriver } from '../../renderer/pure/vf-curve.ts';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
@@ -4903,6 +4903,36 @@ export class IgclBackend {
     const dev = await this._device(deviceId);
     const units = await this._ocUnitsOf(deviceId);
     const result = { ok: true, perControl: {} };
+
+    // Profiles created by older builds can contain the B-series STOCK VF
+    // table on a voltage grid from another driver revision. The compatibility
+    // path recognizes that complete legacy fingerprint before any scalar
+    // writes so startup, tray, elevated, and renderer loads agree. Legitimate
+    // custom voltage coordinates remain intact and are still sent to the
+    // driver's native writer.
+    if (opts.profileApply === true && isBattlemageGpuName(caps.deviceName, caps)
+      && Array.isArray(settings.vfCurve)) {
+      const out = { ...settings };
+      if (caps.controls.vfCurve !== true) {
+        delete out.vfCurve;
+      } else {
+        const stock = this._readVfCurvePoints(dev.handle, 0, 0);
+        const live = this._readVfCurvePoints(dev.handle, 1, 0);
+        const native = stock.ok ? stock : live;
+        const nativeCanonical = native.ok
+          ? native.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
+          : null;
+        if (nativeCanonical && isLegacyStockVfCurve(settings.vfCurve, nativeCanonical, settings.gpuFreqOffsetMhz)) {
+          delete out.vfCurve;
+        } else {
+          // A custom VF table is authoritative for core frequency. Older
+          // profiles could carry both fields, which makes the driver apply
+          // the scalar first and then reject the curve transaction.
+          delete out.gpuFreqOffsetMhz;
+        }
+      }
+      settings = out;
+    }
 
     // M17e (round-1 S1b): the UNIVERSAL lock-vs-offset normalization - a
     // NON-ZERO gpuLock forces the freq/volt offsets to 0 in EVERY apply

@@ -41,6 +41,7 @@ import { physicalTargetOf, pnpParts } from './gpu-inventory.js';
 // imports apply-on-boot).
 import { clampSettings } from './ipc-core.js';
 import { deviceHardwareKey } from './backend/units.js';
+import { normalizeBattlemageProfileSettings } from '../renderer/pure/profile-compat.ts';
 
 function stableTargetMatchesKey(target, expectedKey) {
   if (typeof expectedKey !== 'string' || expectedKey.length === 0) return true;
@@ -350,9 +351,14 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   const capabilityPerControl = capabilityRefusal
     ? tempCapabilityPerControl(capabilityRefusal)
     : {};
+  let profileState = null;
+  if (Array.isArray(profile.settings.vfCurve)) {
+    try { profileState = await backend.getCurrentSettings(deviceId_); } catch { /* backend normalization remains as a fallback */ }
+  }
+  const normalizedProfileSettings = normalizeBattlemageProfileSettings(profile.settings, caps, profileState);
   const routedProfileSettings = capabilityControls.length > 0
-    ? Object.fromEntries(Object.entries(profile.settings).filter(([key]) => !capabilityControls.includes(key)))
-    : profile.settings;
+    ? Object.fromEntries(Object.entries(normalizedProfileSettings).filter(([key]) => !capabilityControls.includes(key)))
+    : normalizedProfileSettings;
   const withCapabilityRefusal = (out) => {
     if (!capabilityRefusal) return withCapabilityFlags(out);
     const perControl = {

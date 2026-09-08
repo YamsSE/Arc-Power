@@ -30,6 +30,8 @@ import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pu
 import { chipLabelGpu } from '../pure/chip-label.ts';
 import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import { controlDisplay, formatValue } from '../pure/slider.ts';
+import { isLegacyStockVfCurve } from '../pure/vf-curve.ts';
+import { normalizeBattlemageProfileSettings } from '../pure/profile-compat.ts';
 import type { AppState } from '../router.ts';
 import type { Capabilities, DeviceInfo, DeviceState, FlipMode, FrameGenOverride, GameCatalogEntry, GameGpuProfile, GameProfileCapabilities, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, RangeInfo, Settings, StartupGetState } from '../types.ts';
 
@@ -196,8 +198,9 @@ export function profileIsActiveOnOtherGpu(profile: Profile, settings: ProfilesEn
 
 /**
  * Build a Settings payload from the driver's current read-back (only
- * controls the UI understands; expert controls gpuLock/vfCurve are excluded -
- * they are not editable in M2b and a saved {0,0} lock pair would mislead).
+ * controls the UI understands; gpuLock remains excluded because it is not
+ * editable in the profile UI. Custom VF curves are retained when they differ
+ * from the driver's stock curve so Battlemage profiles can be restored.
  * M20-B (plan F4): the read-back derives 'fixed' from a FLAT TABLE (TABLE
  * mode + numPoints >= 2 + every speed within 1 + PERCENT) while keeping the
  * table points in fanCurve - saving that derived 'fixed' as-is would
@@ -244,8 +247,21 @@ export function settingsFromState(state: DeviceState): Settings {
   // profile-load RE-write the table (flipping the mode back to curve) -
   // auto never carries a table.
   if (state.fanCurve && state.fanMode !== 'auto') out.fanCurve = state.fanCurve;
-  if (state.vfCurve && state.vfCurve.length >= 2) {
+  // Battlemage exposes the driver's STOCK VF table in every read-back. That
+  // table is not a user tuning choice, and persisting it makes an ordinary
+  // offset profile replay both the core offset and a custom VF write. The
+  // driver accepts those controls independently, but refuses the conflicting
+  // pair during a profile load. Persist VF only when it differs from the
+  // driver-owned default (older runtimes without a default still preserve
+  // the curve so they remain loadable).
+  if (state.vfCurve && state.vfCurve.length >= 2
+    && (!Array.isArray(state.vfCurveDefault)
+      || !isLegacyStockVfCurve(state.vfCurve, state.vfCurveDefault, state.gpuFreqOffsetMhz))) {
     out.vfCurve = state.vfCurve.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz }));
+    // Curve mode owns the core-frequency shape. Do not persist a stale scalar
+    // offset alongside a custom VF curve; the scalar remains for legacy stock
+    // profiles whose unchanged curve was omitted above.
+    delete out.gpuFreqOffsetMhz;
   }
   return out;
 }
@@ -313,8 +329,8 @@ export function settingsSummary(settings: Settings, caps: Capabilities | null, p
 /** Keep a saved profile's fan payload compatible with the focused physical
  * adapter. Scalar tuning values remain loadable when only the fan surface is
  * unsupported or exposes a different set of modes. */
-export function profileSettingsForCapabilities(settings: Settings, caps: Capabilities | null): Settings {
-  const out = { ...settings };
+export function profileSettingsForCapabilities(settings: Settings, caps: Capabilities | null, currentState: DeviceState | null = null): Settings {
+  const out = normalizeBattlemageProfileSettings(settings, caps, currentState);
   const fanKeys = ['fanMode', 'fanCurve', 'fixedFanPct'] as const;
   if (caps?.fan?.canControl !== true) {
     for (const key of fanKeys) delete out[key];
@@ -1159,7 +1175,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         // M4O: { profileApply: true } keeps saved profiles independent of the
         // interactive OC-mode gate; runtime capability refusals still surface
         // as per-control error toasts.
-        const settingsToApply = profileSettingsForCapabilities(p.settings, targetCaps);
+        const settingsToApply = profileSettingsForCapabilities(p.settings, targetCaps, targetState);
         appliedResponse = await api.applySettings(targetDeviceId, settingsToApply, { profileApply: true });
         const { result, state: fresh } = appliedResponse;
         if (fresh) {
