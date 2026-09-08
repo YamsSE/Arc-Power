@@ -18,12 +18,12 @@ const DEFAULT_PROBE_MS = 15000;
 // source handle. Keep the save operation in its finalizing state long enough
 // for that handle to drain; publishing the rolling source during this window
 // is what previously produced 40-second "10-second" clips.
-const REPLAY_FILE_WAIT_MS = 15000;
+const REPLAY_FILE_WAIT_MS = 5000;
 const REPLAY_FILE_STABLE_MS = 200;
 // Keep retries bounded. A save must either publish a verified bounded file or
 // fail cleanly; waiting a full minute only to publish the rolling source is
 // worse than surfacing a retryable error.
-const REPLAY_TRIM_RETRY_MS = 10000;
+const REPLAY_TRIM_RETRY_MS = 5000;
 const REPLAY_FILE_CLEANUP_WAIT_MS = 1000;
 const REPLAY_CAPTURE_RETRY_DELAY_MS = 500;
 const REPLAY_CAPTURE_RETRY_MS = 30000;
@@ -1216,6 +1216,19 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }
   }
 
+  // If FFmpeg cannot read or replace the native file while ascent-obs still
+  // owns it, one buffer restart releases that handle. Retry the duration
+  // bound against the same completed source after the restart; this keeps the
+  // first Save Clip successful instead of making the user click again.
+  async function enforceReplayClipDurationWithBufferRecovery(sourcePath, headDuration, fileReady = false, destinationPath = sourcePath) {
+    try {
+      return await enforceReplayClipDuration(sourcePath, headDuration, fileReady, destinationPath);
+    } catch (error) {
+      if (!await restartReplayBufferAfterCaptureFailure()) throw error;
+      return enforceReplayClipDuration(sourcePath, headDuration, true, destinationPath);
+    }
+  }
+
   async function waitForReplayFile(filePath, timeoutMs = REPLAY_FILE_WAIT_MS, stableMs = REPLAY_FILE_STABLE_MS) {
     const fileState = () => {
       try {
@@ -1477,8 +1490,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // The native replay output can include the previous keyframe/PTS lead-in
       // even when the requested head duration is shorter. Bound the completed
       // file to the requested tail after the runtime has released it.
-      const boundedClipPath = await enforceReplayClipDuration(replaySourcePath, durationMs, false, initialClipPath);
+      const boundedClipPath = await enforceReplayClipDurationWithBufferRecovery(replaySourcePath, durationMs, false, initialClipPath);
       if (typeof trimReplayClip === 'function' && !boundedClipPath) throw new Error('replay clip could not be bounded to the requested duration');
+      const refreshedReplay = activeRecorders.get('replay');
+      if (refreshedReplay?.type === ASCENT_RECORDER_TYPES.REPLAY) activeReplay = refreshedReplay;
       clipPath = boundedClipPath || initialClipPath;
       replayCapture = null;
       // The bounded destination is now authoritative. Source cleanup is
@@ -1509,8 +1524,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
         // "not capturing" error. That file is still authoritative, but it
         // must go through the same duration bound as the normal success path.
         try {
-          const boundedClipPath = await enforceReplayClipDuration(replaySourcePath, durationMs, true, initialClipPath);
+          const boundedClipPath = await enforceReplayClipDurationWithBufferRecovery(replaySourcePath, durationMs, true, initialClipPath);
           if (typeof trimReplayClip === 'function' && !boundedClipPath) throw new Error('replay clip could not be bounded to the requested duration');
+          const refreshedReplay = activeRecorders.get('replay');
+          if (refreshedReplay?.type === ASCENT_RECORDER_TYPES.REPLAY) activeReplay = refreshedReplay;
           clipPath = boundedClipPath || initialClipPath;
           replayCapture = null;
           if (replaySourcePath !== clipPath) void discardReplayClipAfterFailure(replaySourcePath);
