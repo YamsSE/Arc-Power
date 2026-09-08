@@ -519,6 +519,11 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   let replayClipSaveInFlight = false;
   let machineInfoReady = false;
   let replayCrashRecoveryInFlight = false;
+  // A replay clip finalization failure can require recycling the native replay
+  // buffer. Keep that internal stop/start cycle out of the public lifecycle
+  // stream so the desktop toast does not claim that Instant Replay stopped
+  // while the recovery is already bringing it back.
+  let replayBufferRecoveryInFlight = false;
 
   function startApmSession(recorder) {
     const sessionId = recorder?.sessionId;
@@ -712,10 +717,13 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       }
     }
     const startedMode = recorderForEvent?.mode ?? (event === ASCENT_EVENTS.REPLAY_STARTED ? 'replay' : 'video');
+    const suppressReplayRecoveryStopState = stopped
+      && eventMode === 'replay'
+      && replayBufferRecoveryInFlight;
     publish({
       lastEvent: { ...message, at: clock() },
       ...(started && recorderForEvent ? { ...captureStatePatch(), error: null } : {}),
-      ...(stopped ? captureStatePatch() : {}),
+      ...(stopped && !suppressReplayRecoveryStopState ? captureStatePatch() : {}),
     });
     let waiter = identifier === null ? null : pending.get(identifier);
     let waiterIdentifier = identifier;
@@ -1094,11 +1102,12 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     return state;
   }
 
-  async function stopInternal(requestedMode = null) {
+  async function stopInternal(requestedMode = null, options = {}) {
     if (!child) return state;
     const modes = requestedMode === 'video' || requestedMode === 'replay' ? [requestedMode] : ['video', 'replay'];
     const recorder = modes.map((mode) => activeRecorders.get(mode) ?? startingRecorders.get(mode)).find(Boolean);
     if (!recorder) return state;
+    const suppressReplayState = options?.suppressReplayState === true && recorder.mode === 'replay';
     if (recorder.stopInFlight) return state;
     const wasActive = activeRecorders.get(recorder.mode)?.identifier === recorder.identifier;
     if (!wasActive && startingRecorders.get(recorder.mode)?.identifier === recorder.identifier) recorder.cancelRequested = true;
@@ -1114,8 +1123,8 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       const starting = startingRecorders.get(recorder.mode);
       if (starting?.identifier === recorder.identifier && (stoppedActive || starting.startedAfterCancel)) startingRecorders.delete(recorder.mode);
       if (stoppedActive) freshChildRequired = true;
-      publish(captureStatePatch());
-      if (recorder.mode === 'replay') publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.IDLE, { updatedAt: clock() });
+      if (!suppressReplayState) publish(captureStatePatch());
+      if (recorder.mode === 'replay' && !suppressReplayState) publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.IDLE, { updatedAt: clock() });
       return state;
     } finally {
       recorder.stopInFlight = false;
@@ -1179,11 +1188,15 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const replayRecorder = activeRecorders.get('replay');
     const settings = replayRecorder?.settings;
     if (!replayRecorder || !settings) return false;
+    let restarted = false;
+    replayBufferRecoveryInFlight = true;
     try {
-      await stopInternal('replay');
+      await stopInternal('replay', { suppressReplayState: true });
     } catch (stopError) {
       if (activeRecorders.has('video') || startingRecorders.has('video')) {
         publish({ error: `Replay capture recovery could not stop the shared runtime: ${stopError?.message ?? String(stopError)}` });
+        replayBufferRecoveryInFlight = false;
+        publish(captureStatePatch());
         return false;
       }
       const target = child;
@@ -1209,10 +1222,20 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     replayCaptureReadyAt = 0;
     try {
       await startInternal(settings, 'replay', false);
+      restarted = true;
       return true;
     } catch (error) {
       publish({ error: `Instant Replay could not restart after capture finalization failed: ${error?.message ?? String(error)}` });
       return false;
+    } finally {
+      replayBufferRecoveryInFlight = false;
+      // If recovery failed after the native stop was accepted, expose the
+      // actual stopped state once the silent recovery window is over. A
+      // successful restart has already published the active state.
+      if (!restarted) {
+        publish(captureStatePatch());
+        if (!activeRecorders.has('replay')) publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.IDLE, { updatedAt: clock() });
+      }
     }
   }
 
