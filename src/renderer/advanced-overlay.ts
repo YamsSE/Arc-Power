@@ -99,6 +99,14 @@ import { recordingBitrateRange, recordingGpuEncoderOptions } from './pure/record
 const store = new Store();
 let activeTab: 'tuning' | 'fan' | 'graphics' | 'recording' = 'tuning';
 
+// Active-tab readback hooks. Main-window applies arrive through IPC while the
+// panel is open; keeping these closures next to the tab renderers lets each
+// surface refresh its existing controls without requiring a tab switch.
+let tuningStateSync: ((state: DeviceState) => void) | null = null;
+let fanStateSync: (() => void) | null = null;
+let graphicsStateSync: ((state: GraphicsState) => void) | null = null;
+let recordingSettingsSync: ((settings: RecordingSettings) => void) | null = null;
+
 // A selection push is the panel's ownership boundary. Every device identity
 // change advances this generation so async reads/applies from the old panel
 // cannot commit into the newly selected device.
@@ -290,18 +298,31 @@ api.onTelemetrySample((sample) => {
   acceptTelemetrySample(sample, live.deviceId, panelGeneration);
 });
 
-// The post-apply device read-back push (the tray/profile apply path).
-// M24 (fix): the panel's own apply already handles state updates via
-// renderTuningInPlace - a full re-render from the push causes a race
-// (the push arrives before applied[] is set, so the rebuilt chips show
-// 'dirty' instead of 'applied'). Just update the store; the next tab
-// switch or explicit render picks up the fresh state.
+// The post-apply device read-back push (the tray/profile apply path). The
+// panel's active tab consumes the same push in place, so a main-window or
+// tray apply is visible immediately without switching tabs.
 api.onStateUpdated((payload) => {
   const live = store.get();
   // State pushes carry the originating session id; never let a read-back from
   // another device overwrite the selected device's state.
   if (!payload || !payload.state || payload.deviceId !== live.deviceId) return;
   store.set({ state: payload.state });
+  if (activeTab === 'tuning') tuningStateSync?.(payload.state);
+  else if (activeTab === 'fan') fanStateSync?.();
+});
+
+// Recording settings are persisted by either renderer. The main process
+// broadcasts the normalized result so the panel's quick controls cannot lag
+// until the Recording tab is rebuilt.
+api.onRecordingSettingsUpdated((next) => {
+  if (!next || typeof next !== 'object') return;
+  recordingSettingsSync?.(next);
+});
+
+api.onRecordingPillSettingsUpdated((next) => {
+  if (!next || typeof next.enabled !== 'boolean') return;
+  recordingQuickPillEnabled = next.enabled;
+  if (activeTab === 'recording') renderRecording();
 });
 
 // Recording actions are main-owned, but the Advanced Overlay is another
@@ -389,7 +410,7 @@ api.onDeviceSelectionUpdated((payload) => {
 api.onGraphicsStateUpdated((payload) => {
   if (payload && payload.deviceId === store.get().deviceId && graphicsStateGeneration === panelGeneration) {
     graphicsState = payload.graphicsState;
-    if (activeTab === 'graphics' && !graphicsApplying) renderGraphics();
+    if (activeTab === 'graphics' && !graphicsApplying) graphicsStateSync?.(payload.graphicsState);
   }
 });
 
@@ -528,6 +549,10 @@ async function boot(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function renderTab(): void {
+  tuningStateSync = null;
+  fanStateSync = null;
+  graphicsStateSync = null;
+  recordingSettingsSync = null;
   const tabs = document.querySelectorAll<HTMLButtonElement>('.adv-tab');
   for (const t of tabs) {
     const on = t.dataset.tab === activeTab;
@@ -917,6 +942,20 @@ async function renderTuning(): Promise<void> {
     updateFloating();
   };
 
+  // Main-window, tray, and profile applies all arrive through the shared
+  // device-state push. Keep the panel's active Tuning controls in place and
+  // preserve any control that is already dirty or has an applied reference.
+  tuningStateSync = (nextState: DeviceState): void => {
+    currentState = nextState;
+    for (const key of controls) {
+      if (key in applied) continue;
+      const range = cardSliderRange(caps, key);
+      const raw = nextState[key as keyof DeviceState];
+      if (range && typeof raw === 'number' && Number.isFinite(raw)) values[key] = snapToRange(raw, range);
+    }
+    renderTuningInPlace();
+  };
+
   stack.append(
     ...controls.filter((k) => k !== 'powerLimitW').map(buildCard),
     ...(controls.includes('powerLimitW') ? [buildPlCard()] : []),
@@ -932,6 +971,7 @@ async function renderTuning(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function renderFan(): void {
+  fanStateSync = () => renderFan();
   clear(contentEl);
   const view = el('div', { class: 'adv-view fan-view' });
   view.append(el('p', { class: 'adv-view-title', text: 'Fan' }));
@@ -1409,6 +1449,13 @@ function renderStreamMode(): HTMLElement {
 }
 
 function renderRecording(): void {
+  recordingSettingsSync = (next: RecordingSettings): void => {
+    recordingQuickSettings = next;
+    // Keep a local unsaved quick-control draft intact while adopting the
+    // pushed settings as the clean base. Clean controls update immediately.
+    if (!recordingQuickDirty && !recordingQuickApplying) recordingQuickDraft = cloneRecordingQuickSettings(next);
+    if (activeTab === 'recording') renderRecording();
+  };
   closeOpenAdvancedMenu();
   clear(contentEl);
   const view = el('div', { class: 'adv-view recording-view' });
@@ -1428,6 +1475,8 @@ function renderRecording(): void {
 // Graphics tab - the four M8 cards (the shared option lists EXPORTED from
 // pages/graphics.ts - export, never duplicate)
 // ---------------------------------------------------------------------------
+const GRAPHICS_LOAD_TIMEOUT_MS = 5000;
+
 async function renderGraphics(): Promise<void> {
   closeOpenAdvancedMenu();
   clear(contentEl);
@@ -1443,14 +1492,20 @@ async function renderGraphics(): Promise<void> {
   }
   contentEl.append(view);
   let state: GraphicsState;
+  let timeoutHandle: number | null = null;
   try {
-    state = await api.graphicsGet(deviceId);
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutHandle = window.setTimeout(() => reject(new Error('graphics capability read timed out')), GRAPHICS_LOAD_TIMEOUT_MS);
+    });
+    state = await Promise.race([api.graphicsGet(deviceId), timeout]);
   } catch (err) {
     if (!panelIdentityMatches(deviceId, deviceKey, generation)
       || activeTab !== 'graphics' || !view.isConnected || !contentEl.contains(view)) return;
     clear(view);
     view.append(el('p', { class: 'text-error', text: `Graphics settings unavailable: ${err instanceof Error ? err.message : String(err)}` }));
     return;
+  } finally {
+    if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
   }
   if (!panelIdentityMatches(deviceId, deviceKey, generation)
     || activeTab !== 'graphics' || !view.isConnected || !contentEl.contains(view)) return;
@@ -1491,8 +1546,9 @@ let graphicsApplyBtn: HTMLButtonElement | null = null;
 const GRAPHICS_CONTROLS = ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency'];
 
 function renderGraphicsCards(view: HTMLElement): void {
-  const state = graphicsState;
-  if (!state) return;
+  const initialState = graphicsState;
+  if (!initialState) return;
+  let state = initialState;
 
   const updateFloating = (): void => {
     if (!graphicsApplyBtn) return;
@@ -1744,6 +1800,37 @@ function renderGraphicsCards(view: HTMLElement): void {
       graphicsActions,
     ]),
   );
+
+  // Keep the visible dropdowns and limiter slider synchronized with a
+  // graphics apply made by the main window or another renderer. Dirty local
+  // controls retain their draft; untouched controls adopt the readback.
+  graphicsStateSync = (nextState: GraphicsState): void => {
+    state = nextState;
+    graphicsState = nextState;
+    const pushedDraft = normalizeGraphicsSettings(nextState);
+    for (const key of GRAPHICS_CONTROLS) {
+      if (key in graphicsApplied) continue;
+      if (key in pushedDraft) (graphicsDraft as Record<string, unknown>)[key] = (pushedDraft as Record<string, unknown>)[key];
+    }
+    for (const key of ['frameGenOverride', 'flipMode', 'lowLatency']) {
+      const value = (graphicsDraft as Record<string, unknown>)[key];
+      const select = view.querySelector<DropdownElement>(`[data-graphics-select="${key}"]`);
+      if (select && typeof value === 'string') select.setValue(value);
+    }
+    const frame = graphicsDraft.frameLimit ?? { enabled: false, value: frameLimitRange(state).default };
+    const toggle = view.querySelector<DropdownElement>('[data-graphics-toggle="frameLimit"]');
+    if (toggle) toggle.setValue(frame.enabled ? 'on' : 'off');
+    const slider = view.querySelector<HTMLInputElement>('.graphics-fps-slider-row input[type="range"]');
+    const valueNode = view.querySelector<HTMLElement>('.graphics-fps-value');
+    const range = frameLimitRange(state);
+    const frameValue = clampFrameLimitValue(frame.value, range);
+    if (slider) slider.value = String(frameValue);
+    if (valueNode) valueNode.textContent = `${frameValue} FPS`;
+    const row = view.querySelector<HTMLElement>('.graphics-fps-slider-row');
+    if (row) row.hidden = !frame.enabled;
+    for (const key of GRAPHICS_CONTROLS) refreshChip(key);
+    updateFloating();
+  };
   updateFloating();
 }
 

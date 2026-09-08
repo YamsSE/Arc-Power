@@ -204,6 +204,16 @@ contextBridge.exposeInMainWorld('arcPower', {
     ipcRenderer.on('recording:state', listener);
     return () => ipcRenderer.removeListener('recording:state', listener);
   },
+  onRecordingSettingsUpdated: (cb) => {
+    const listener = (_event, settings) => cb(settings);
+    ipcRenderer.on('recording:settings', listener);
+    return () => ipcRenderer.removeListener('recording:settings', listener);
+  },
+  onRecordingPillSettingsUpdated: (cb) => {
+    const listener = (_event, settings) => cb(settings);
+    ipcRenderer.on('recording:pill-settings', listener);
+    return () => ipcRenderer.removeListener('recording:pill-settings', listener);
+  },
   onRecordingActionResult: (cb) => {
     const listener = (_event, result) => cb(result);
     ipcRenderer.on('recording:action', listener);

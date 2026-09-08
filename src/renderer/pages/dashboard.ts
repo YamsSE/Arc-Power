@@ -29,6 +29,7 @@ import { aibOf, aibOfPnpDeviceId } from '../pure/aib.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import type { ProfilesEnvelope, RecordingClip, RecordingSettings, RecordingStorageInfo, TelemetrySample } from '../types.ts';
+import { TELEMETRY_HISTORY_POINTS, TELEMETRY_PULSE_COLORS } from '../pure/telemetry-visuals.ts';
 
 /** M4-D2 (§6): the "Cores / clock" bundled row's LIVE half - the current
  *  CPU frequency from the telemetry tick, ALWAYS in GHz with 1 decimal
@@ -68,13 +69,13 @@ function statValue(v: number | null | undefined, decimals = 0): string {
 type DashboardPulseId = 'gpu-util' | 'temperature' | 'power' | 'vram';
 
 const DASHBOARD_PULSE: Array<{ id: DashboardPulseId; label: string; unit: string; color: string }> = [
-  { id: 'gpu-util', label: 'GPU utilization', unit: '%', color: '#43c7ff' },
-  { id: 'temperature', label: 'GPU temperature', unit: '°C', color: '#f2b15b' },
-  { id: 'power', label: 'GPU power', unit: 'W', color: '#b995ff' },
-  { id: 'vram', label: 'VRAM in use', unit: 'GB', color: '#55d6a5' },
+  { id: 'gpu-util', label: 'GPU utilization', unit: '%', color: TELEMETRY_PULSE_COLORS.utilization },
+  { id: 'temperature', label: 'GPU temperature', unit: '°C', color: TELEMETRY_PULSE_COLORS.temperature },
+  { id: 'power', label: 'GPU power', unit: 'W', color: TELEMETRY_PULSE_COLORS.power },
+  { id: 'vram', label: 'VRAM in use', unit: 'GB', color: TELEMETRY_PULSE_COLORS.memory },
 ];
 
-const DASHBOARD_HISTORY_LIMIT = 60;
+const DASHBOARD_HISTORY_LIMIT = TELEMETRY_HISTORY_POINTS;
 type DashboardPulseLane = {
   key: string;
   history: TelemetrySample[];

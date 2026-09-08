@@ -57,6 +57,8 @@ let renderContainer: HTMLElement | null = null;
 let loading = false;
 let actionBusy = false;
 let unsubscribeRecordingState: (() => void) | null = null;
+let unsubscribeRecordingSettings: (() => void) | null = null;
+let unsubscribeRecordingPillSettings: (() => void) | null = null;
 let playerVideo: HTMLVideoElement | null = null;
 let recordingProcesses: string[] = [];
 let recordingProcessesBusy = false;
@@ -2166,6 +2168,23 @@ export const recordingPage: Page = {
         if (renderContainer === container) render();
       });
     }
+    if (!unsubscribeRecordingSettings) {
+      unsubscribeRecordingSettings = api.onRecordingSettingsUpdated((next) => {
+        if (!next || typeof next !== 'object') return;
+        settings = next;
+        // Preserve a local unsaved draft, but adopt the pushed settings as
+        // the clean base so the page and the Advanced Overlay stay aligned.
+        if (!settingsDirty && !applyingSettings) draftSettings = cloneRecordingSettings(next);
+        if (renderContainer === container) render();
+      });
+    }
+    if (!unsubscribeRecordingPillSettings) {
+      unsubscribeRecordingPillSettings = api.onRecordingPillSettingsUpdated((next) => {
+        if (!next || typeof next.enabled !== 'boolean') return;
+        recordingPillEnabled = next.enabled;
+        if (renderContainer === container) render();
+      });
+    }
     // Do not make first paint wait for settings, clip scanning, or an engine
     // probe. Startup owns the runtime probe; this page refreshes its cached
     // state asynchronously after the shell and controls are visible.
@@ -2183,6 +2202,10 @@ export const recordingPage: Page = {
   leave(): void {
     unsubscribeRecordingState?.();
     unsubscribeRecordingState = null;
+    unsubscribeRecordingSettings?.();
+    unsubscribeRecordingSettings = null;
+    unsubscribeRecordingPillSettings?.();
+    unsubscribeRecordingPillSettings = null;
     disposePlayerVideo();
     applySettingsButton = null;
     draftSettings = null;

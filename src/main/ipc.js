@@ -3,7 +3,7 @@
 // module only binds the map to ipcMain.handle.
 
 import { app, ipcMain } from 'electron';
-import { createIpcHandlers, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL } from './ipc-core.js';
+import { createIpcHandlers, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, RECORDING_SETTINGS_CHANNEL, RECORDING_PILL_SETTINGS_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL } from './ipc-core.js';
 import { createDriverInfo } from './driver-info.js';
 import { createRegistryCatalog, REGISTRY_CATALOG } from './registry-catalog.js';
 import { createRegistryApply } from './registry-apply.js';
@@ -265,6 +265,27 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
           error: null,
           state: recordingEngine?.getState?.() ?? null,
         });
+      }
+      // Recording settings are shared by the main Recording page and the
+      // Advanced Overlay quick-controls. Broadcast the normalized result to
+      // both renderer windows after every successful save.
+      if (channel === 'recording-settings-save' && out?.settings) {
+        const payload = out.settings;
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(RECORDING_SETTINGS_CHANNEL, payload);
+        const advancedOverlayWin = getAdvancedOverlayWindow();
+        if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(RECORDING_SETTINGS_CHANNEL, payload);
+      }
+      // The Recording Pill is persisted with profile settings rather than the
+      // recording profile. Broadcast its normalized value to both renderer
+      // surfaces so the main Recording page and Advanced Overlay checkbox
+      // remain live when either one changes it.
+      if (channel === 'profiles-settings-save' && out && typeof out.overlayRecordingPill === 'boolean') {
+        const payload = { enabled: out.overlayRecordingPill };
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(RECORDING_PILL_SETTINGS_CHANNEL, payload);
+        const advancedOverlayWin = getAdvancedOverlayWindow();
+        if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(RECORDING_PILL_SETTINGS_CHANNEL, payload);
       }
       // M24 (Part B): the cross-window settings sync - an apply/reset from
       // ANY renderer (the main window OR the advanced-overlay panel) pushes

@@ -1,7 +1,8 @@
 // Arc Power - Monitoring page (M2b-B/M168): a compact Metrics surface fed by
 // the telemetry IPC push. FPS, CPU, system memory, and every physical GPU get
 // their own independently collapsible readout panel; GPU history remains in
-// one rolling Canvas trend per signal and per adapter with a 60 s window.
+// one rolling Canvas trend per signal and per adapter with the same 60-sample
+// pulse window as Dashboard (about 24 seconds at the stock 400 ms cadence).
 // Trend cards start collapsed so the page stays dense on entry.
 // FPS comes from the fps-poll IPC channel (the ETW/PresentMon lane first -
 // the foreground program's per-frame present stream; the DXGI
@@ -35,9 +36,14 @@ import {
   sortSeriesByTime,
   autoScale,
   downsample,
-  GRAPH_WINDOW_S,
 } from '../pure/graph.ts';
 import type { SeriesPoint } from '../pure/graph.ts';
+import {
+  TELEMETRY_HISTORY_POINTS,
+  TELEMETRY_HISTORY_WINDOW_LABEL,
+  TELEMETRY_HISTORY_WINDOW_S,
+  TELEMETRY_PULSE_COLORS,
+} from '../pure/telemetry-visuals.ts';
 
 const FPS_POLL_MS = 1000;
 // M4-D2 (plan-review M5): the PresentMon mention is gone - the FPS source is
@@ -159,9 +165,9 @@ function fpsGraphKey(id: FpsBinding['id']): string {
 function pushMetricSeries(seriesId: string, t: number, value: number | undefined): void {
   if (!mon || value === undefined || !Number.isFinite(value)) return;
   mon.series[seriesId] = trimSeriesWindow(
-    sortSeriesByTime(pushSeries(mon.series[seriesId] ?? [], t, value)),
+    sortSeriesByTime(pushSeries(mon.series[seriesId] ?? [], t, value, TELEMETRY_HISTORY_POINTS)),
     t,
-    GRAPH_WINDOW_S,
+    TELEMETRY_HISTORY_WINDOW_S,
   );
 }
 
@@ -316,8 +322,19 @@ function refreshFpsMetrics(sample: FpsSample | null): void {
   }
 }
 
+function monitoringSeriesColor(seriesId: string): string {
+  const segment = seriesId.startsWith('system-')
+    ? seriesId.slice('system-'.length)
+    : seriesId.replace(/^gpu-\d+-/, '');
+  if (segment === 'util' || segment === 'cpu-util') return TELEMETRY_PULSE_COLORS.utilization;
+  if (segment === 'temp' || segment === 'vram-temp' || segment === 'cpu-temp') return TELEMETRY_PULSE_COLORS.temperature;
+  if (segment === 'power' || segment === 'cpu-power' || segment === 'voltage') return TELEMETRY_PULSE_COLORS.power;
+  if (segment === 'vram' || segment === 'ram-used' || segment === 'ram-capacity' || segment === 'fan') return TELEMETRY_PULSE_COLORS.memory;
+  return cssVar('--accent');
+}
+
 /** AMD-style compact history strip for each readout row. */
-function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[]): void {
+function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], color = cssVar('--accent')): void {
   const dpr = Math.max(1, window.devicePixelRatio || 1);
   const w = Math.round(canvas.clientWidth);
   const h = Math.round(canvas.clientHeight);
@@ -353,7 +370,6 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[]): void 
   const span = scale.max - scale.min;
   const x = (index: number): number => drawn.length <= 1 ? w / 2 : (index / (drawn.length - 1)) * (w - 4) + 2;
   const y = (value: number): number => span <= 0 ? h / 2 : 3 + (1 - (value - scale.min) / span) * Math.max(4, h - 6);
-  const accent = cssVar('--accent');
   ctx.beginPath();
   drawn.forEach((point, index) => {
     const px = x(index);
@@ -364,7 +380,7 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[]): void 
   ctx.lineTo(w - 2, h - 2);
   ctx.lineTo(2, h - 2);
   ctx.closePath();
-  ctx.fillStyle = accent;
+  ctx.fillStyle = color;
   ctx.globalAlpha = .22;
   ctx.fill();
   ctx.globalAlpha = 1;
@@ -375,7 +391,7 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[]): void 
     if (index === 0) ctx.moveTo(px, py);
     else ctx.lineTo(px, py);
   });
-  ctx.strokeStyle = accent;
+  ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
@@ -458,7 +474,7 @@ export const monitoringPage: Page = {
         class: 'page-subtitle',
         text: monView === 'overlay'
           ? 'The in-game HUD - enable it, pick the stats, colors, size, position and hotkey.'
-          : 'Live values and 60-second rolling graphs from the GPU.',
+          : `Live values and ${TELEMETRY_HISTORY_WINDOW_LABEL} rolling graphs from the GPU.`,
       }),
       viewToggle,
       viewContainer,
@@ -1014,7 +1030,7 @@ function redrawAll(): void {
     graphRedrawFrame = null;
     if (!mon) return;
     for (const [id, canvas] of mon.metricCanvases) {
-      drawMiniSeries(canvas, mon.series[id] ?? []);
+      drawMiniSeries(canvas, mon.series[id] ?? [], monitoringSeriesColor(id));
     }
   });
 }

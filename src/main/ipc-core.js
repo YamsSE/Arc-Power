@@ -174,6 +174,9 @@ export const DEVICE_STATE_UPDATED_CHANNEL = 'device:state-updated';
 export const GRAPHICS_STATE_UPDATED_CHANNEL = 'graphics:state-updated';
 /** M99: main-process Ascent state push for the Recording page. */
 export const RECORDING_STATE_CHANNEL = 'recording:state';
+/** Normalized recording settings push shared by both renderer windows. */
+export const RECORDING_SETTINGS_CHANNEL = 'recording:settings';
+export const RECORDING_PILL_SETTINGS_CHANNEL = 'recording:pill-settings';
 /** M101: main-process result push for global recording shortcuts. */
 export const RECORDING_ACTION_CHANNEL = 'recording:action';
 /** M31: explicit panel request and main-owned atomic selection push channels. */

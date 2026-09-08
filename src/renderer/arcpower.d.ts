@@ -261,6 +261,10 @@ export interface ArcPowerApi {
   recordingEditorCopy(jobId: string): Promise<{ ok: boolean }>;
   recordingEditorFolder(jobId: string): Promise<{ ok: boolean }>;
   onRecordingStateUpdated(cb: (state: RecordingEngineState) => void): () => void;
+  /** Normalized recording settings pushed after a save from either renderer. */
+  onRecordingSettingsUpdated(cb: (settings: RecordingSettings) => void): () => void;
+  /** Recording Pill preference pushed after a profile settings save. */
+  onRecordingPillSettingsUpdated(cb: (settings: { enabled: boolean }) => void): () => void;
   onRecordingActionResult(cb: (result: RecordingActionResult) => void): () => void;
   onRecordingNotification(cb: (notification: RecordingNotification) => void): () => void;
   /** M2D (mock mode only): the featureset list + current selection for the
