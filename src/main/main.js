@@ -1785,12 +1785,27 @@ async function main() {
         ? device.pciDeviceId.match(/0x0*([0-9a-fA-F]{1,4})$/)?.[1]
         : null;
       if (!deviceId) throw targetUnavailable('the selected GPU has no PCI device id');
+      // The raw IGCL device list does not always carry displayActive. Resolve
+      // it from the same physical adapter's display-output route before
+      // choosing the QSV runtime variant. A replay that captures the primary
+      // monitor from another GPU must use the non-display/soft QSV path;
+      // sending the display-texture encoder with a foreign LUID is accepted by
+      // Ascent and then immediately stops with REPLAY_STOPPED (-8).
+      let displayActive = device.displayActive;
+      if (displayActive !== true && displayActive !== false && typeof backend.getDisplaySettings === 'function') {
+        try {
+          const displayState = await backend.getDisplaySettings(device.id);
+          if (Array.isArray(displayState?.displays)) {
+            displayActive = displayState.displays.some((display) => display?.flags?.active === true);
+          }
+        } catch { /* preserve the conservative legacy encoder when display probing is unavailable */ }
+      }
       // The unified Windows inventory already carries the exact DXGI LUID
       // for many adapters. Prefer that direct physical proof: resolving it
       // again by PCI/BDF can miss a provider-enriched BDF and previously left
       // the recording runtime free to fall back to adapter 0 (the display GPU).
       const inventoryLuid = normalizeDxgiLuid(device.osLuid ?? device.osController?.luid ?? device.luid ?? device.adapterLuid);
-      const runtimeEncoderId = recordingRuntimeEncoderIdForTarget(encoderId, device.displayActive);
+      const runtimeEncoderId = recordingRuntimeEncoderIdForTarget(encoderId, displayActive);
       if (inventoryLuid) return {
         luid: inventoryLuid,
         ...(runtimeEncoderId !== encoderId ? { runtimeEncoderId } : {}),

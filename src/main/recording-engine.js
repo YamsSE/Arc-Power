@@ -116,6 +116,16 @@ function runtimeEncoderIdOf(encoderId, requestedRuntimeEncoderId) {
   return requestedRuntimeEncoderId === expectedNonDisplayId ? requestedRuntimeEncoderId : encoderId;
 }
 
+function replayCaptureDurationMsOf(requestedDurationMs) {
+  const durationMs = Math.max(1, Math.round(Number(requestedDurationMs) || 0));
+  // Ascent's replay muxer rejects a capture whose head exactly equals a
+  // round-number buffer boundary (30,000 ms is the common case) even when
+  // the rolling buffer is longer. Leave one tenth of a second for the
+  // boundary/keyframe lead-in; the final file is still duration-bounded to
+  // the user's requested value below.
+  return durationMs >= 30000 ? durationMs - 100 : durationMs;
+}
+
 function isUsableEncoder(encoder) {
   return encoder?.enumerated === true && encoder.probeValid === true && encoder.startSupported === true;
 }
@@ -1184,14 +1194,14 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   // from a clean native capture session.  A manual recording keeps the
   // shared child alive; when replay is the only active mode, a failed buffer
   // stop is recovered by retiring that child and starting a fresh one.
-  async function restartReplayBufferAfterCaptureFailure() {
+  async function restartReplayBufferAfterCaptureFailure(settingsOverride = null) {
     const replayRecorder = activeRecorders.get('replay');
-    const settings = replayRecorder?.settings;
-    if (!replayRecorder || !settings) return false;
+    const settings = replayRecorder?.settings ?? settingsOverride;
+    if (!settings) return false;
     let restarted = false;
     replayBufferRecoveryInFlight = true;
     try {
-      await stopInternal('replay', { suppressReplayState: true });
+      if (replayRecorder) await stopInternal('replay', { suppressReplayState: true });
     } catch (stopError) {
       if (activeRecorders.has('video') || startingRecorders.has('video')) {
         publish({ error: `Replay capture recovery could not stop the shared runtime: ${stopError?.message ?? String(stopError)}` });
@@ -1237,6 +1247,20 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
         if (!activeRecorders.has('replay')) publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.IDLE, { updatedAt: clock() });
       }
     }
+  }
+
+  async function waitForReplayBufferDuration(durationMs) {
+    const targetMs = Math.max(0, Number(durationMs) || 0);
+    if (targetMs <= 0) return true;
+    const deadline = Date.now() + targetMs + 5000;
+    while (Date.now() <= deadline) {
+      const replay = activeRecorders.get('replay');
+      const startedAt = Number(replay?.startedAt);
+      if (replay && Number.isFinite(startedAt) && clock() - startedAt >= targetMs) return true;
+      if (!activeRecorders.has('replay') && !startingRecorders.has('replay')) return false;
+      await waitMs(Math.min(250, Math.max(25, deadline - Date.now())));
+    }
+    return false;
   }
 
   // If FFmpeg cannot read or replace the native file while ascent-obs still
@@ -1466,7 +1490,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     };
   }
 
-  async function saveReplayClipInternal({ path: initialClipPath, headDuration, thumbnailFolder }) {
+  async function saveReplayClipInternal({ path: initialClipPath, headDuration, thumbnailFolder }, recoveryAttempt = 0) {
     let clipPath = initialClipPath;
     let nativeClipPath = initialClipPath;
     let replaySourcePath = initialClipPath;
@@ -1505,7 +1529,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     nativeClipPath = `${initialClipPath}.arc-native-${captureIdentifier}.mp4`;
     publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.SAVING, { updatedAt: clock() });
     try {
-      await startReplayCaptureWithRetry({ clipPath: nativeClipPath, durationMs, thumbnailFolder, bufferIdentifier, captureIdentifier });
+      await startReplayCaptureWithRetry({ clipPath: nativeClipPath, durationMs: replayCaptureDurationMsOf(durationMs), thumbnailFolder, bufferIdentifier, captureIdentifier });
       // Ascent acknowledges START_REPLAY_CAPTURE before writing the file. The
       // file is only usable after STOP_REPLAY_CAPTURE causes replay_ready.
       const response = await stopReplayClipInternal(captureIdentifier);
@@ -1539,6 +1563,22 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       if (!completedReplayFile && replaySourcePath !== initialClipPath && !initialClipExisted && usableReplayFile(initialClipPath)) {
         replaySourcePath = initialClipPath;
         completedReplayFile = true;
+      }
+      // A long replay capture can race Ascent's private muxer: the runtime
+      // accepts START_REPLAY_CAPTURE, then answers STOP with "not capturing"
+      // before it has produced a file. Recycle the rolling buffer and retry
+      // the same requested duration once. This keeps 30-second saves as
+      // reliable as shorter saves without asking the user to restart Replay.
+      if (!completedReplayFile
+        && recoveryAttempt === 0
+        && replayCaptureNotReady(error)
+        && (activeRecorders.has('replay') || activeReplay?.settings)) {
+        const recovered = await restartReplayBufferAfterCaptureFailure(activeReplay?.settings ?? null);
+        if (recovered) {
+          await waitForReplayBufferDuration(durationMs);
+          void discardReplayClipAfterFailure(nativeClipPath);
+          return saveReplayClipInternal({ path: initialClipPath, headDuration, thumbnailFolder }, recoveryAttempt + 1);
+        }
       }
       if (replayCapture?.bufferIdentifier === bufferIdentifier
         && (replayCapture.phase === 'capturing' || replayCapture.phase === 'ready')
