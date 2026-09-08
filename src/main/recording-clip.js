@@ -6,7 +6,10 @@ import { spawn as spawnProcess } from 'node:child_process';
 const TRIM_TIMEOUT_MS = 30000;
 const TRIM_LOCK_RETRY_MS = 3000;
 const TRIM_LOCK_RETRY_DELAY_MS = 50;
-const DURATION_TOLERANCE_MS = 250;
+// Stream-copy trimming can land on the preceding keyframe. Allow one GOP of
+// bounded lead-in so replay saves stay fast; the native request and the
+// destination duration are still limited to the requested tail.
+const DURATION_TOLERANCE_MS = 750;
 
 function retryableFileError(error) {
   return ['EBUSY', 'EPERM', 'EACCES'].includes(error?.code);
@@ -51,7 +54,7 @@ export function recordingClipTrimArguments(inputPath, outputPath, durationMs) {
     '-map', '0',
     '-t', duration,
     '-c:v', 'libx264',
-    '-preset', 'veryfast',
+    '-preset', 'ultrafast',
     '-crf', '18',
     '-c:a', 'aac',
     '-avoid_negative_ts', 'make_zero',
@@ -60,16 +63,22 @@ export function recordingClipTrimArguments(inputPath, outputPath, durationMs) {
   ];
 }
 
-export function recordingClipCopyArguments(inputPath, outputPath, durationMs) {
+export function recordingClipCopyArguments(inputPath, outputPath, durationMs, sourceDurationMs = null) {
   const seconds = validDurationSeconds(durationMs);
   if (!seconds || typeof inputPath !== 'string' || typeof outputPath !== 'string') return null;
   const duration = seconds.toFixed(3);
+  const sourceDuration = Number(sourceDurationMs);
+  const tailOffset = Number.isFinite(sourceDuration) && sourceDuration > 0
+    ? Math.max(0, sourceDuration - Number(durationMs)) / 1000
+    : null;
+  const seekInput = tailOffset === null
+    ? ['-sseof', `-${duration}`, '-i', inputPath]
+    : ['-i', inputPath, '-ss', tailOffset.toFixed(3)];
   return [
     '-hide_banner',
     '-loglevel', 'error',
     '-nostdin',
-    '-sseof', `-${duration}`,
-    '-i', inputPath,
+    ...seekInput,
     '-map', '0',
     '-t', duration,
     '-c', 'copy',
@@ -211,11 +220,12 @@ export async function trimRecordingClipToDuration(filePath, durationMs, {
       try { fsImpl.unlinkSync(temporaryPath); } catch { /* no output or a transient lock */ }
     };
     const renderBoundedOutput = async (sourcePath) => {
+      const sourceDurationMs = ffprobePath ? await probeDuration(spawn, ffprobePath, sourcePath) : null;
       // Stream-copy first. Replay clips are already encoded, so this avoids
       // re-encoding several minutes of video just to keep a ten-second tail.
       // If a keyframe/PTS lead-in makes the copy too long, use the exact
       // re-encode below and verify that result before publishing it.
-      if (await runTrim(spawn, ffmpegPath, recordingClipCopyArguments(sourcePath, temporaryPath, durationMs))
+      if (await runTrim(spawn, ffmpegPath, recordingClipCopyArguments(sourcePath, temporaryPath, durationMs, sourceDurationMs))
         && hasUsableFile(fsImpl, temporaryPath)
         && await outputMatchesDuration()) return true;
       removeTemporary();

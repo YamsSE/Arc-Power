@@ -27,6 +27,14 @@ const REPLAY_TRIM_RETRY_MS = 5000;
 const REPLAY_FILE_CLEANUP_WAIT_MS = 1000;
 const REPLAY_CAPTURE_RETRY_DELAY_MS = 500;
 const REPLAY_CAPTURE_RETRY_MS = 30000;
+// Keep a small lead-in in the native rolling buffer. Ascent needs roughly
+// half a second of keyframe history to produce a complete head duration; the
+// user-facing destination is still trimmed back to the requested duration.
+const REPLAY_CAPTURE_LEAD_MS = 750;
+// Ascent acknowledges START_REPLAY_CAPTURE before its replay muxer has
+// finished opening the capture. Sending STOP in the same event turn can race
+// that initialization and return "not capturing" for longer head durations.
+const REPLAY_CAPTURE_START_SETTLE_MS = 300;
 
 /**
  * FFmpeg writes these two informational lines while a normal output closes.
@@ -116,14 +124,18 @@ function runtimeEncoderIdOf(encoderId, requestedRuntimeEncoderId) {
   return requestedRuntimeEncoderId === expectedNonDisplayId ? requestedRuntimeEncoderId : encoderId;
 }
 
-function replayCaptureDurationMsOf(requestedDurationMs) {
+function replayCaptureDurationMsOf(requestedDurationMs, replayLengthSec = null) {
   const durationMs = Math.max(1, Math.round(Number(requestedDurationMs) || 0));
+  const bufferMs = Number.isFinite(Number(replayLengthSec))
+    ? Math.max(0, Math.round(Number(replayLengthSec) * 1000))
+    : 0;
   // Ascent's replay muxer rejects a capture whose head exactly equals a
-  // round-number buffer boundary (30,000 ms is the common case) even when
-  // the rolling buffer is longer. Leave one tenth of a second for the
-  // boundary/keyframe lead-in; the final file is still duration-bounded to
-  // the user's requested value below.
-  return durationMs >= 30000 ? durationMs - 100 : durationMs;
+  // round-number buffer boundary. Request the user duration plus a small
+  // lead-in from the internally enlarged buffer; FFmpeg bounds the published
+  // destination back to the exact requested duration below.
+  return bufferMs > 0 && durationMs >= bufferMs
+    ? durationMs + REPLAY_CAPTURE_LEAD_MS
+    : durationMs;
 }
 
 function isUsableEncoder(encoder) {
@@ -477,7 +489,15 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
     ...(recorderType === ASCENT_RECORDER_TYPES.VIDEO ? {
       file_output: { filename: outputPath, format: 'mp4', max_file_size_bytes: 0, enbale_on_demand_spilt_video: false, include_full_video: true },
     } : {}),
-    ...(recorderType === ASCENT_RECORDER_TYPES.REPLAY ? { replay: { max_time_sec: settings.replayLengthSec } } : {}),
+    ...(recorderType === ASCENT_RECORDER_TYPES.REPLAY ? {
+      replay: {
+        // The extra second is internal headroom for keyframes and muxer
+        // startup. The Save Clip destination remains the configured length.
+        max_time_sec: Number.isFinite(Number(settings.replayLengthSec))
+          ? Math.max(1, Math.ceil(Number(settings.replayLengthSec) + 1))
+          : settings.replayLengthSec,
+      },
+    } : {}),
   });
 }
 
@@ -1141,9 +1161,22 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     }
   }
 
-  async function stopReplayClipInternal(identifier = replayCapture?.captureIdentifier) {
-    if (!Number.isSafeInteger(identifier)) throw new Error('Instant Replay capture is not active');
-    return request(ASCENT_COMMANDS.STOP_REPLAY_CAPTURE, ASCENT_RECORDER_TYPES.REPLAY, {}, [ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY], 10000, identifier);
+  function replayCaptureStopIdentifier(identifier = null) {
+    const capture = replayCapture;
+    if (capture && (identifier === null || identifier === capture.captureIdentifier || identifier === capture.bufferIdentifier)) {
+      // START_REPLAY_CAPTURE uses a one-shot capture identifier, but Ascent
+      // addresses STOP_REPLAY_CAPTURE and replay_ready by the rolling replay
+      // buffer identifier. Sending the temporary capture id makes longer
+      // captures answer "not capturing" and forces an unsafe buffer restart.
+      return capture.bufferIdentifier;
+    }
+    return identifier;
+  }
+
+  async function stopReplayClipInternal(identifier = null) {
+    const stopIdentifier = replayCaptureStopIdentifier(identifier);
+    if (!Number.isSafeInteger(stopIdentifier)) throw new Error('Instant Replay capture is not active');
+    return request(ASCENT_COMMANDS.STOP_REPLAY_CAPTURE, ASCENT_RECORDER_TYPES.REPLAY, {}, [ASCENT_EVENTS.REPLAY_CAPTURE_VIDEO_READY], 10000, stopIdentifier);
   }
 
   function replayCaptureAlreadyActive(error) {
@@ -1170,7 +1203,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       return true;
     }
     try {
-      await stopReplayClipInternal(capture.captureIdentifier);
+      await stopReplayClipInternal(capture.bufferIdentifier);
       replayCapture = null;
       return true;
     } catch (error) {
@@ -1436,7 +1469,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
         // recovery STOP clears that state. A not-ready buffer simply gets a
         // short retry while its first keyframe/armed signal arrives.
         if (replayCaptureAlreadyActive(error)) {
-          try { await stopReplayClipInternal(replayCapture?.captureIdentifier); } catch { /* retry below */ }
+          try { await stopReplayClipInternal(replayCapture?.bufferIdentifier); } catch { /* retry below */ }
         }
         replayCapture = null;
         await waitMs(REPLAY_CAPTURE_RETRY_DELAY_MS);
@@ -1449,9 +1482,23 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const sourceSessionId = typeof response?.sourceSessionId === 'string' && response.sourceSessionId.trim()
       ? response.sourceSessionId.trim()
       : activeReplay?.sessionId ?? null;
-    const nativeDuration = Number.isFinite(response?.durationMs) ? Math.max(0, Math.round(response.durationMs)) : null;
-    const nativeStart = Number.isFinite(response?.sourceStartMs) ? Math.max(0, Math.round(response.sourceStartMs)) : null;
-    const nativeEnd = Number.isFinite(response?.sourceEndMs) ? Math.max(0, Math.round(response.sourceEndMs)) : null;
+    const nativeDuration = Number.isFinite(response?.durationMs)
+      ? Math.max(0, Math.round(response.durationMs))
+      : Number.isFinite(response?.duration)
+        ? Math.max(0, Math.round(response.duration))
+        : null;
+    const replayStartedAt = Number(activeReplay?.startedAt);
+    const nativeVideoStart = Number.isFinite(response?.video_start_time) && Number.isFinite(replayStartedAt)
+      ? Math.max(0, Math.round(response.video_start_time - replayStartedAt))
+      : null;
+    const nativeStart = Number.isFinite(response?.sourceStartMs)
+      ? Math.max(0, Math.round(response.sourceStartMs))
+      : nativeVideoStart;
+    const nativeEnd = Number.isFinite(response?.sourceEndMs)
+      ? Math.max(0, Math.round(response.sourceEndMs))
+      : nativeStart !== null && nativeDuration !== null
+        ? nativeStart + nativeDuration
+        : null;
     const elapsedNow = Math.max(0, Math.round(clock() - Number(activeReplay?.startedAt ?? clock())));
     const requested = Math.max(1, Math.round(requestedDurationMs ?? nativeDuration ?? 1));
     // Older runtime builds have returned wall-clock timestamps (or a stale
@@ -1466,9 +1513,15 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       && (nativeEnd > nativeStart || elapsedNow < 1000)
       && (nativeEnd - nativeStart) <= requested + 5000
       && (nativeDuration === null || Math.abs((nativeEnd - nativeStart) - nativeDuration) <= 5000);
-    const duration = nativeIntervalValid ? Math.max(1, nativeEnd - nativeStart) : Math.min(requested, Math.max(1, elapsedNow || requested));
+    const nativeIntervalDuration = nativeIntervalValid ? Math.max(1, nativeEnd - nativeStart) : 0;
+    // The native request includes a keyframe lead-in so the bounded output can
+    // contain the full user duration. Map APM to that published tail rather
+    // than the private lead-in, which otherwise shifts the activity window.
+    const duration = nativeIntervalValid
+      ? Math.min(requested, nativeIntervalDuration)
+      : Math.min(requested, Math.max(1, elapsedNow || requested));
     const end = nativeIntervalValid ? nativeEnd : Math.max(duration, elapsedNow);
-    const start = nativeIntervalValid ? nativeStart : Math.max(0, end - duration);
+    const start = nativeIntervalValid ? Math.max(nativeStart, end - duration) : Math.max(0, end - duration);
     const apm = apmCapture?.getInterval?.(activeReplay?.sessionId, start, end) ?? null;
     return {
       ...response,
@@ -1529,10 +1582,17 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     nativeClipPath = `${initialClipPath}.arc-native-${captureIdentifier}.mp4`;
     publishInstantReplaySave(INSTANT_REPLAY_SAVE_STATUS.SAVING, { updatedAt: clock() });
     try {
-      await startReplayCaptureWithRetry({ clipPath: nativeClipPath, durationMs: replayCaptureDurationMsOf(durationMs), thumbnailFolder, bufferIdentifier, captureIdentifier });
+      await startReplayCaptureWithRetry({
+        clipPath: nativeClipPath,
+        durationMs: replayCaptureDurationMsOf(durationMs, activeReplay?.settings?.replayLengthSec),
+        thumbnailFolder,
+        bufferIdentifier,
+        captureIdentifier,
+      });
       // Ascent acknowledges START_REPLAY_CAPTURE before writing the file. The
       // file is only usable after STOP_REPLAY_CAPTURE causes replay_ready.
-      const response = await stopReplayClipInternal(captureIdentifier);
+      await waitMs(REPLAY_CAPTURE_START_SETTLE_MS);
+      const response = await stopReplayClipInternal(bufferIdentifier);
       replaySourcePath = resolveReplaySourcePath({ response, nativePath: nativeClipPath, requestedPath: initialClipPath, requestedPathExisted: initialClipExisted });
       // The native replay output can include the previous keyframe/PTS lead-in
       // even when the requested head duration is shorter. Bound the completed
