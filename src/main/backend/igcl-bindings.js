@@ -1183,14 +1183,24 @@ export function loadIgcl(dllPath) {
  * accepted consent. A missing or false flag is refused before any native
  * call. Adapter selection is exact by the parent-provided PCI/BDF proof.
  *
- * @param {{ findDll?: () => string|null, log?: (s: string) => void }} [opts]
+ * @param {{ findDll?: () => string|null, load?: (dllPath: string) => object, log?: (s: string) => void }} [opts]
  * @returns {{ setForTarget: (physicalTarget: object|null, accepted?: boolean) => { ok: boolean, errorCode?: string, message?: string }, close: () => void }}
  */
-export function createIgclWaiverBridge({ findDll = findIgclDll, log = () => {} } = {}) {
+export function createIgclWaiverBridge({ findDll = findIgclDll, load = loadIgcl, log = () => {} } = {}) {
   let lib = null;
   let apiHandle = null;
   let devices = null;
   let failure = null;
+  const zeroUid = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
+  // The bundled ArcTool runtime registers this identity. Some driver
+  // packages reject a zero application UID even though they accept the
+  // registered identity; keep the same narrowly-scoped fallback as OldIgcl.
+  const arcToolUid = {
+    Data1: 0xe8e10f95,
+    Data2: 0x1a70,
+    Data3: 0x4b27,
+    Data4: [0x9c, 0xcf, 0x02, 0x01, 0x02, 0x64, 0xe9, 0xc8],
+  };
 
   const normalizeBdf = (value) => {
     if (typeof value === 'string') {
@@ -1222,7 +1232,7 @@ export function createIgclWaiverBridge({ findDll = findIgclDll, log = () => {} }
     try {
       const dllPath = findDll();
       if (!dllPath) throw new Error('IGCL runtime DLL not found');
-      lib = loadIgcl(dllPath);
+      lib = load(dllPath);
       if (typeof lib.ctlInit !== 'function'
         || typeof lib.ctlEnumerateDevices !== 'function'
         || typeof lib.ctlGetDeviceProperties !== 'function'
@@ -1239,18 +1249,27 @@ export function createIgclWaiverBridge({ findDll = findIgclDll, log = () => {} }
           AppVersion: makeVersion(1, 1),
           flags,
           SupportedVersion: 0,
-          ApplicationUID: { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] },
+          ApplicationUID: zeroUid,
         });
         koffi.encode(apiBuf, 'void*', 0n);
         return lib.ctlInit(initBuf, apiBuf);
       };
-      let result = init(CTL_INIT_FLAG_USE_LEVEL_ZERO | CTL_INIT_FLAG_IGSC_FUL);
-      if ((result >>> 0) === CTL_RESULT.ERROR_IGSC_LOADER) {
+      // The waiver bridge needs only the Level Zero adapter surface. Do not
+      // request IGSC FUL here: that optional loader is absent on some
+      // Alchemist driver packages (notably A750-class systems), and the
+      // failed FUL attempt can leave the native control context in the same
+      // arbitration window that the Sysman helper is trying to initialize.
+      // The full backend still uses its established FUL-then-fallback probe;
+      // this narrow bridge deliberately follows the proven old-IGCL path.
+      let result = init(CTL_INIT_FLAG_USE_LEVEL_ZERO);
+      if (result === CTL_RESULT.ERROR_KMD_CALL || result === CTL_RESULT.ERROR_UNKNOWN_APPLICATION_UID) {
         const failedHandle = koffi.decode(apiBuf, 0, 'void*');
         if (failedHandle && typeof lib.ctlClose === 'function') {
           try { lib.ctlClose(failedHandle); } catch { /* best effort */ }
         }
-        result = init(CTL_INIT_FLAG_USE_LEVEL_ZERO);
+        koffi.encode(initBuf, koffi.offsetof('ctl_init_args_t', 'ApplicationUID'), 'ctl_application_id_t', arcToolUid);
+        koffi.encode(apiBuf, 'void*', 0n);
+        result = lib.ctlInit(initBuf, apiBuf);
       }
       if (result !== CTL_RESULT.SUCCESS) throw new Error(`ctlInit failed: ${describeResult(result)}`);
       apiHandle = koffi.decode(apiBuf, 0, 'void*');
@@ -1287,6 +1306,12 @@ export function createIgclWaiverBridge({ findDll = findIgclDll, log = () => {} }
       return true;
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
+      if (apiHandle && typeof lib?.ctlClose === 'function') {
+        try { lib.ctlClose(apiHandle); } catch { /* best effort */ }
+      }
+      apiHandle = null;
+      lib = null;
+      devices = null;
       log(`IGCL Sysman waiver bridge unavailable: ${failure}`);
       return false;
     }

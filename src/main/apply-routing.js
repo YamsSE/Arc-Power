@@ -556,6 +556,44 @@ export const NOT_READY_RETRY_POLL_MS = 400;
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * M204: a voltage write can hit the same detached-helper startup gap as the
+ * Sysman power-limit companion. The old path returned its first `not-ready`
+ * verdict directly, so the first Alchemist undervolt click could fail even
+ * though the helper became ready moments later. Warm once, then retry only
+ * that transient class within the same bounded window used by the power
+ * companion. Real capability, waiver, target, and read-back failures remain
+ * immediate and honest.
+ */
+async function setSysmanVoltageOffsetWithRetry(
+  sysmanPowerLimits,
+  offsetV,
+  deviceId,
+  physicalTarget,
+  waiverAccepted = false,
+  { sleep = defaultSleep, log = () => {} } = {},
+) {
+  let result = await setSysmanVoltageOffset(sysmanPowerLimits, offsetV, deviceId, physicalTarget, waiverAccepted);
+  if (result?.errorCode !== 'not-ready' || typeof sysmanPowerLimits?.warm !== 'function') return result;
+
+  try {
+    void Promise.resolve(sysmanPowerLimits.warm()).catch(() => { /* the bounded retries carry the honest verdict */ });
+  } catch { /* a synchronous warm failure is covered by the bounded retries */ }
+  const deadline = Date.now() + NOT_READY_RETRY_BOUND_MS;
+  while (Date.now() < deadline) {
+    await sleep(NOT_READY_RETRY_POLL_MS);
+    result = await setSysmanVoltageOffset(sysmanPowerLimits, offsetV, deviceId, physicalTarget, waiverAccepted);
+    if (result?.errorCode !== 'not-ready') {
+      log(result?.ok === true
+        ? `[apply] Sysman voltage offset: helper became ready and landed ${offsetV.toFixed(3)} V`
+        : `[apply] Sysman voltage offset: helper became ready but returned ${result?.errorCode ?? 'unknown'}`);
+      return result;
+    }
+  }
+  log(`[apply] Sysman voltage offset: not-ready persisted across the ${NOT_READY_RETRY_BOUND_MS} ms fresh-helper retry bound`);
+  return result;
+}
+
+/**
  * Split one Settings payload into the DriverStore-runtime part and the
  * extended (2023-runtime) part, per control. Null/absent values are dropped.
  *
@@ -1124,7 +1162,14 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
     const prior = await readSysmanVoltageOffset(sysmanPowerLimits, deviceId, physicalTarget);
     const needsClear = prior.ok !== true || !Number.isFinite(prior.offsetV) || prior.offsetV < -0.0005;
     if (needsClear) {
-      const clear = await setSysmanVoltageOffset(sysmanPowerLimits, 0, deviceId, physicalTarget, opts.waiverAccepted === true);
+      const clear = await setSysmanVoltageOffsetWithRetry(
+        sysmanPowerLimits,
+        0,
+        deviceId,
+        physicalTarget,
+        opts.waiverAccepted === true,
+        { sleep, log },
+      );
       log(clear.ok === true
         ? '[apply] cleared the stale Sysman negative voltage offset before the non-negative IGCL voltage request'
         : `[apply] stale Sysman voltage cleanup did not verify (${clear.message ?? clear.errorCode ?? 'unknown'}) - the IGCL result remains canonical`);
@@ -1157,7 +1202,14 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
     // not claim the lock is clean when the prior Sysman state cannot be read;
     // that would leave an unknown voltage writer active underneath the lock.
     if (lockPriorVoltage.offsetV < -0.0005) {
-      const clear = await setSysmanVoltageOffset(sysmanPowerLimits, 0, deviceId, physicalTarget, opts.waiverAccepted === true);
+      const clear = await setSysmanVoltageOffsetWithRetry(
+        sysmanPowerLimits,
+        0,
+        deviceId,
+        physicalTarget,
+        opts.waiverAccepted === true,
+        { sleep, log },
+      );
       if (!verifiedVoltageResult(clear, 0)) {
         perControl.gpuLock = { ok: false, errorCode: clear.errorCode ?? 'io-failed', message: clear.message ?? 'the Sysman voltage offset could not be cleared while GPU lock is active' };
       }
@@ -1171,7 +1223,14 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
       // Sysman undervolt instead of applying the negative request after the
       // backend has normalized the lock payload to zero offsets.
       const prior = await readSysmanVoltageOffset(sysmanPowerLimits, deviceId, physicalTarget);
-      const clear = await setSysmanVoltageOffset(sysmanPowerLimits, 0, deviceId, physicalTarget, opts.waiverAccepted === true);
+      const clear = await setSysmanVoltageOffsetWithRetry(
+        sysmanPowerLimits,
+        0,
+        deviceId,
+        physicalTarget,
+        opts.waiverAccepted === true,
+        { sleep, log },
+      );
       if (clear.ok !== true || (clear.offsetV !== undefined && !verifiedVoltageResult(clear, 0))) {
         perControl.gpuVoltOffsetV = { ok: false, errorCode: clear.errorCode ?? 'io-failed', message: clear.message ?? 'the Sysman voltage offset could not be cleared while GPU lock is active' };
       } else {
@@ -1181,7 +1240,14 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
         log(`[apply] negative Alchemist voltage skipped because GPU lock is active and the stale Sysman offset could not be cleared (${prior.message ?? prior.errorCode ?? 'unavailable'})`);
       }
     } else {
-      const result = await setSysmanVoltageOffset(sysmanPowerLimits, wantedOffsetV, deviceId, physicalTarget, opts.waiverAccepted === true);
+      const result = await setSysmanVoltageOffsetWithRetry(
+        sysmanPowerLimits,
+        wantedOffsetV,
+        deviceId,
+        physicalTarget,
+        opts.waiverAccepted === true,
+        { sleep, log },
+      );
       if (verifiedVoltageResult(result, wantedOffsetV)) {
         perControl.gpuVoltOffsetV = { ok: true, readBackEqual: true };
         if (wantedOffsetV !== settings.gpuVoltOffsetV) {

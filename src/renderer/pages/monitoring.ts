@@ -93,6 +93,7 @@ interface FpsBinding {
 let mon: MonState | null = null;
 let fpsTimer: number | null = null;
 let graphRedrawFrame: number | null = null;
+let monitoringResizeObserver: ResizeObserver | null = null;
 const miniCanvasLayouts = new WeakMap<HTMLCanvasElement, { width: number; height: number; dpr: number }>();
 // The stress dialog is recreated when the Monitoring tab is rendered. Keep
 // the dismissed result identity outside that DOM so a tab switch cannot
@@ -197,8 +198,7 @@ function metricNode(
     : el('div', { class: 'telemetry-metric-sparkline telemetry-metric-sparkline-empty', 'aria-hidden': 'true' });
   const node = el('div', { class: `telemetry-metric stat-tile${extraClass ? ` ${extraClass}` : ''}`, dataset: { metricId: `${category}:${label}` } }, [
     el('div', { class: 'telemetry-metric-copy' }, [
-      valueNode,
-      unitNode,
+      el('div', { class: 'telemetry-metric-value-line' }, [valueNode, unitNode]),
       el('div', { class: 'telemetry-metric-label stat-label', text: label }),
     ]),
     sparkline,
@@ -279,8 +279,7 @@ function fpsMetricNode(label: string, id: FpsBinding['id'], unit: string): HTMLE
   const seriesId = fpsGraphKey(id);
   const node = el('div', { class: `telemetry-metric stat-tile${id === 'fps' ? ' mon-fps-tile' : ''}`, dataset: { metricId: `fps:${label}` } }, [
     el('div', { class: 'telemetry-metric-copy' }, [
-      valueNode,
-      unitNode,
+      el('div', { class: 'telemetry-metric-value-line' }, [valueNode, unitNode]),
       el('div', { class: 'telemetry-metric-label stat-label', text: label }),
     ]),
     el('canvas', { class: 'telemetry-metric-sparkline' }),
@@ -486,6 +485,8 @@ export const monitoringPage: Page = {
     const renderMonView = (): void => {
       if (!viewContainer) return;
       if (monView === 'overlay') {
+        monitoringResizeObserver?.disconnect();
+        monitoringResizeObserver = null;
         renderOverlaySettings(viewContainer, ctx);
         return;
       }
@@ -517,6 +518,8 @@ export const monitoringPage: Page = {
       window.cancelAnimationFrame(graphRedrawFrame);
       graphRedrawFrame = null;
     }
+    monitoringResizeObserver?.disconnect();
+    monitoringResizeObserver = null;
     mon = null;
   },
 
@@ -963,6 +966,8 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
 function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
   const m = mon;
   if (!m) return;
+  monitoringResizeObserver?.disconnect();
+  monitoringResizeObserver = null;
   clear(container);
   const s = ctx.store.get();
   m.metricCanvases = new Map();
@@ -1018,6 +1023,11 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
     renderTrackingPanel(s),
   ]);
   container.append(workspace);
+  const metricsColumn = workspace.querySelector<HTMLElement>('.monitoring-metrics-column');
+  if (metricsColumn && typeof ResizeObserver !== 'undefined') {
+    monitoringResizeObserver = new ResizeObserver(() => redrawAll());
+    monitoringResizeObserver.observe(metricsColumn);
+  }
   redrawAll();
 }
 

@@ -106,11 +106,15 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       return matches.length === 1 ? matches[0] : null;
     }
     if (devices.length === 1) return devices[0];
-    // The helper's init probe is read-only and needs one usable context to
-    // establish readiness. Actual reads/writes always carry the parent
-    // physical proof after the IPC routing fix, so no production operation
-    // can use this ordinal fallback.
-    if (forProbe && devices.length > 0) return devices[0];
+    // The helper's init probe is read-only and needs one usable power-domain
+    // context to establish readiness. Sysman enumeration can include an
+    // adapter whose power domain is absent or failed its one-shot probe
+    // before the actual Arc board. Picking ordinal 0 here made the whole
+    // detached helper stay in the generic `not-ready` state on those
+    // machines, including otherwise usable A750 systems. Actual reads and
+    // writes always carry the parent physical proof after the IPC routing
+    // fix, so no production operation can use this ordinal fallback.
+    if (forProbe && devices.length > 0) return devices.find((device) => device.pwrHandle) ?? null;
     return null;
   };
 
@@ -183,6 +187,21 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       // exact BDF needed to route A770/B580 (and arbitrary future MGPU
       // combinations) without trusting enumeration order.
       const devices = [];
+      // A card-domain getter can succeed while returning a handle that the
+      // driver has not actually made readable yet. Keep the same one-shot
+      // read probe for both enumerated and compatibility-fallback handles;
+      // an unverified fallback must not become the helper's init context.
+      const probePowerDomain = (candidate) => {
+        if (candidate === null || candidate === undefined) return false;
+        try {
+          const sb = koffi.alloc('zes_power_sustained_limit_t', 1);
+          const bb = koffi.alloc('zes_power_burst_limit_t', 1);
+          const pb = koffi.alloc('zes_power_peak_limit_t', 1);
+          return zeOk(lib.zesPowerGetLimits(candidate, sb, bb, pb));
+        } catch {
+          return false;
+        }
+      };
       for (let i = 0; i < zesDevCount; i++) {
         const zesDev = koffi.decode(zesDevBuf, i * 8, 'void*');
         let bdf = null;
@@ -240,10 +259,7 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
           enumVerdict = 'zesDeviceEnumPowerDomains yielded no domains (count 0)';
         } else {
           for (const candidate of en.handles) {
-            const sb = koffi.alloc('zes_power_sustained_limit_t', 1);
-            const bb = koffi.alloc('zes_power_burst_limit_t', 1);
-            const pb = koffi.alloc('zes_power_peak_limit_t', 1);
-            if (zeOk(lib.zesPowerGetLimits(candidate, sb, bb, pb))) { pwrHandle = candidate; break; }
+            if (probePowerDomain(candidate)) { pwrHandle = candidate; break; }
           }
           if (pwrHandle === null) enumVerdict = 'the enumerated power domains failed the one-shot zesPowerGetLimits probe';
         }
@@ -251,7 +267,12 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
           const pwrBuf = koffi.alloc('void*', 1);
           r = lib.zesDeviceGetCardPowerDomain(zesDev, pwrBuf);
           if (zeOk(r)) {
-            pwrHandle = koffi.decode(pwrBuf, 0, 'void*');
+            const candidate = koffi.decode(pwrBuf, 0, 'void*');
+            if (probePowerDomain(candidate)) {
+              pwrHandle = candidate;
+            } else {
+              log(`Sysman GPU ${i + 1} card power-domain fallback failed the zesPowerGetLimits probe`);
+            }
           } else {
             // One adapter without a power domain must not hide the usable
             // contexts of the other adapters.
@@ -467,11 +488,14 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       if (!finite(offsetV)) return { ok: false, errorCode: 'invalid-argument', message: 'offsetV must be a finite number' };
       if (offsetV > 0) return { ok: false, errorCode: 'invalid-argument', message: 'the Sysman voltage offset path accepts only negative offsets or zero to clear' };
       const clampedOffsetV = Math.max(ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V, offsetV);
-      // The legacy Sysman target setter is still guarded by the driver's
-      // IGCL overclock-waiver state. Establish that state in the helper
-      // process BEFORE zesInit: loading IGCL after Sysman has initialized is
-      // the poisoned ordering measured on this driver. The bridge never
-      // accepts consent; it only replays the parent-side accepted flag.
+      // Keep ordinary Sysman initialization independent of ControlLib. The
+      // detached helper must first establish its power/frequency context
+      // without loading IGCL; otherwise the optional IGCL startup surface can
+      // poison zesInit on Alchemist packages such as the reported A750. The
+      // bridge is invoked here only for an explicit, accepted voltage write,
+      // immediately before this consumer's first ensure() for that request.
+      // It never accepts consent; it only replays the parent-side accepted
+      // flag.
       if (typeof ensureVoltageWaiver === 'function') {
         const waiver = ensureVoltageWaiver({ physicalTarget, accepted: waiverAccepted === true });
         if (!waiver || waiver.ok !== true) return waiver ?? { ok: false, errorCode: 'unavailable', message: 'the IGCL overclock-waiver bridge returned no result' };

@@ -91,7 +91,11 @@ function patchUnpackedExecutable() {
 function validateWindowsExecutable(target) {
   const image = readFileSync(target);
   const text = image.toString('utf8');
-  if (!text.includes('requestedExecutionLevel') || !text.includes('requireAdministrator')) {
+  // Check the actual Windows manifest entry, rather than merely accepting
+  // the two words anywhere in the PE. This covers both the unpacked app and
+  // the portable NSIS wrapper, whose wrapper manifest is the one Windows
+  // evaluates before extraction and launch.
+  if (!/<requestedExecutionLevel\b[^>]*\blevel="requireAdministrator"/i.test(text)) {
     throw new Error(`packaged executable is not administrator-elevated: ${target}`);
   }
   // rcedit writes a five-image RT_GROUP_ICON resource from build/icon.ico.

@@ -186,6 +186,10 @@ export const NOT_READY_MESSAGE = 'the sysman helper is still initializing (the d
 // of any connection to an already-ready helper - the grace catches it - the
 // first set/read on a fresh connection never races the ready line).
 export const NOT_READY_GRACE_MS = 200;
+// The boot path may wait for the helper's actual ready signal separately
+// from the socket connect. A slower Alchemist driver must not turn every
+// tuning apply into the transient not-ready retry path.
+export const READY_WAIT_POLL_MS = 50;
 // M17m THE BOUNDED CONNECT-RETRY LOOP (round-1 S2 - the post-spawn connect
 // is never a single attempt: a cold spawn can flake on an AV scan / cold
 // disk): the connect retries at CONNECT_RETRY_INTERVAL_MS until it lands or
@@ -871,6 +875,35 @@ export function createSysmanHelperProxy({
       // post-cap).
       consecutiveHealSpawns = 0;
       await ensureConnected().catch(() => { /* a warm failure degrades silently - the not-ready verdicts cover the calls */ });
+    },
+    /**
+     * Warm the detached helper and wait until its Sysman consumer has
+     * completed initialization. This is used only during application boot;
+     * interactive request paths retain their bounded, non-blocking
+     * not-ready behavior when a helper is genuinely unavailable.
+     * @param {number} [timeoutMs] maximum wait for a ready helper
+     * @returns {Promise<boolean>} true when the current socket is ready
+     */
+    async warmUntilReady(timeoutMs = CONNECT_RETRY_CAP_MS) {
+      const boundedTimeout = Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : CONNECT_RETRY_CAP_MS;
+      const deadline = Date.now() + boundedTimeout;
+      consecutiveHealSpawns = 0;
+      while (Date.now() <= deadline) {
+        if (ready && socket !== null) return true;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        if (!socket && !connecting) {
+          try {
+            await Promise.race([
+              ensureConnected(),
+              sleep(remaining),
+            ]);
+          } catch { /* a later loop may reconnect while the bound remains */ }
+          continue;
+        }
+        await sleep(Math.min(READY_WAIT_POLL_MS, remaining));
+      }
+      return ready && socket !== null;
     },
     /**
      * M23 CHANGE 2 (the full-close reap): the PARENT-SIDE shutdown - the

@@ -319,23 +319,26 @@ const sysmanHelperPipeIdx = process.argv.indexOf('--sysman-helper-pipe');
 // ~0.5 s (the M17o2 live evidence: 5/5, even 2 s after a write; the Acer
 // Predator tool applies its profile 300/300 instantly by spawning a fresh
 // helper per apply), so the boot warm gets up to SYSMAN_WARM_BOUND_MS to
-// establish the context BEFORE the backend load; a helper that genuinely
-// cannot init never stalls the boot past the bound (the apply's own
-// bounded fresh-spawn retry in runSysmanCompanion covers the rest).
-const SYSMAN_WARM_BOUND_MS = 3000;
+// establish the context BEFORE the backend load. The proxy now waits for the
+// helper's explicit `ready` signal as part of that boot warm, rather than
+// treating a connected pipe as initialized. A helper that genuinely cannot
+// init never stalls the boot past the bound (the apply's own bounded
+// fresh-spawn retry in runSysmanCompanion covers the rest).
+const SYSMAN_WARM_BOUND_MS = 10000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** M19: bound-await the proxy warm (idempotent, never throws). The warm
- *  resolves on the SOCKET CONNECT (helper-proxy's ensureConnected) - NOT
- *  the helper's ready line, so the ze init may still be in flight when it
- *  lands; the bounded fresh-spawn retry in runSysmanCompanion covers that
- *  residual ze-init gap. A warm that lands inside the bound gives the whole
- *  session working PL2 (300/300 on every apply).
- *  @param {{ warm?: () => Promise<unknown> } | null | undefined} proxy */
+/** M19: bound-await the proxy warm (idempotent, never throws). New proxies
+ *  wait for the helper's explicit ready line; older/test doubles that only
+ *  expose warm() retain the socket-connect fallback. A warm that lands inside
+ *  the bound gives the whole session working PL2 (300/300 on every apply).
+ *  @param {{ warm?: () => Promise<unknown>, warmUntilReady?: (timeoutMs: number) => Promise<boolean> } | null | undefined} proxy */
 async function boundWarm(proxy) {
   if (!proxy || typeof proxy.warm !== 'function') return;
   try {
-    await Promise.race([proxy.warm(), sleep(SYSMAN_WARM_BOUND_MS)]);
+    const warm = typeof proxy.warmUntilReady === 'function'
+      ? proxy.warmUntilReady(SYSMAN_WARM_BOUND_MS)
+      : proxy.warm();
+    await Promise.race([warm, sleep(SYSMAN_WARM_BOUND_MS)]);
   } catch {
     // a warm failure degrades silently - the apply's not-ready retry covers it
   }
@@ -939,19 +942,23 @@ async function main() {
   if (sysmanHelperPipeIdx >= 0) {
     const helperLog = createSysmanHelperLogFileWriter();
     const igclWaiver = createIgclWaiverBridge({ log: (s) => helperLog(`[igcl-waiver] ${s}`) });
-    igclWaiver.warm();
-    const code = await runSysmanHelperPipeMode({
-      // M17o2 THE SINGLE INIT ATTEMPT on a FRESH consumer (the real
-      // createSysmanPowerLimits LATCHES its degrade - a failed ze init
-      // stays unavailable on that instance forever; the in-process retry
-      // is gone, the fresh-process retry is the proxy's HEAL respawn).
-      // The consumer's log is pinned to the helper's OWN log file.
-      createConsumer: () => createSysmanPowerLimits({
-        ensureVoltageWaiver: ({ physicalTarget, accepted }) => igclWaiver.setForTarget(physicalTarget, accepted),
-        log: (s) => helperLog(`[sysman] ${s}`),
-      }),
-      log: (s) => helperLog(s),
-    });
+    let code = 1;
+    try {
+      code = await runSysmanHelperPipeMode({
+        // M17o2 THE SINGLE INIT ATTEMPT on a FRESH consumer (the real
+        // createSysmanPowerLimits LATCHES its degrade - a failed ze init
+        // stays unavailable on that instance forever; the in-process retry
+        // is gone, the fresh-process retry is the proxy's HEAL respawn).
+        // The consumer's log is pinned to the helper's OWN log file.
+        createConsumer: () => createSysmanPowerLimits({
+          ensureVoltageWaiver: ({ physicalTarget, accepted }) => igclWaiver.setForTarget(physicalTarget, accepted),
+          log: (s) => helperLog(`[sysman] ${s}`),
+        }),
+        log: (s) => helperLog(s),
+      });
+    } finally {
+      igclWaiver.close();
+    }
     app.exit(code);
     return;
   }
@@ -974,15 +981,19 @@ async function main() {
       return;
     }
     const igclWaiver = createIgclWaiverBridge({ log: (s) => console.log(`[igcl-waiver] ${s}`) });
-    igclWaiver.warm();
-    const code = await runSysmanHelperMode({
-      reqPath: sysmanHelperReqFile,
-      outPath: sysmanHelperOutFile,
-      consumer: createSysmanPowerLimits({
-        ensureVoltageWaiver: ({ physicalTarget, accepted }) => igclWaiver.setForTarget(physicalTarget, accepted),
-      }),
-      log: (s) => console.log(`[sysman-helper] ${s}`),
-    });
+    let code = 1;
+    try {
+      code = await runSysmanHelperMode({
+        reqPath: sysmanHelperReqFile,
+        outPath: sysmanHelperOutFile,
+        consumer: createSysmanPowerLimits({
+          ensureVoltageWaiver: ({ physicalTarget, accepted }) => igclWaiver.setForTarget(physicalTarget, accepted),
+        }),
+        log: (s) => console.log(`[sysman-helper] ${s}`),
+      });
+    } finally {
+      igclWaiver.close();
+    }
     app.exit(code);
     return;
   }

@@ -1,11 +1,14 @@
 // Arc Power - M17i/M17m the sysman-helper modes: the dedicated IGCL-free
-// process for the sysman power-limits consumer. The measured root cause
+// startup process for the sysman power-limits consumer. The measured root cause
 // (plan M17i): the consumer's zesInit fails with ERROR_UNINITIALIZED ONLY
 // when the IGCL is loaded inside an ELECTRON process - the packaged app
 // (requireAdministrator) runs its applies in-process = electron + IGCL =
 // the poisoned combo. The consumer therefore runs HERE, in a process that
 // loads ONLY the consumer (NO backend, NO OldIgcl, NO IGCL - the
-// bare-context zesInit path, proven by the M17i diagnostic ladder).
+// bare-context zesInit path, proven by the M17i diagnostic ladder). The
+// optional voltage-waiver bridge is loaded lazily by the injected consumer
+// only when an accepted voltage write is explicitly requested; it is never
+// part of ordinary power-limit startup.
 //
 // TWO forms share this module (the M17j/M17l PERSISTENT stdin form
 // `--sysman-helper-persist` was REMOVED in M17m run B - the detached pipe

@@ -10,8 +10,10 @@
 // its ze init works (live-proven: RUNASNODE-VERDICT PL1 300 PL2 252).
 //
 // This entry is the --sysman-helper-pipe branch's wiring in a NO-ELECTRON
-// file: the helper-mode + the consumer + process.exit. It imports NOTHING
-// from 'electron' - the RUN-AS-NODE node cannot destructure the electron
+// file: the helper-mode + the consumer + process.exit. Its normal startup
+// imports no ControlLib runtime, so Sysman remains the first native context;
+// the optional waiver bridge is only loaded on a voltage write. It imports
+// NOTHING from 'electron' - the RUN-AS-NODE node cannot destructure the
 // module (require('electron') yields the exe path in that mode).
 //
 // The proxy spawns it with: ELECTRON_RUN_AS_NODE=1 + the helper-entry path
@@ -25,13 +27,15 @@ import { createIgclWaiverBridge } from '../backend/igcl-bindings.js';
 
 const helperLog = createSysmanHelperLogFileWriter();
 // The Sysman voltage-target API is the writer, but this driver gates that
-// writer on the IGCL overclock-waiver state. The bridge is lazy and is only
-// initialized for an explicitly accepted voltage write, before Sysman itself
-// initializes in the consumer.
+// writer on the IGCL overclock-waiver state. Keep the bridge lazy: ordinary
+// power-limit startup must remain the proven IGCL-free Sysman path. It is
+// initialized only for an explicitly accepted voltage write, immediately
+// before that write's consumer initialization.
 const igclWaiver = createIgclWaiverBridge({ log: (s) => helperLog(`[igcl-waiver] ${s}`) });
-// Open the IGCL context before the Sysman consumer performs its first
-// `zesInit`; this ordering is required by the current Intel driver.
-igclWaiver.warm();
+// Do not warm the bridge here. Loading ControlLib before the first Sysman
+// `zesInit` changes the native arbitration state on some Alchemist packages
+// (the A750 regression); the power-limit helper must initialize Sysman alone.
+// setVoltageOffset invokes the bridge on demand after an accepted request.
 
 // M17o4 THE EXIT-CRASH PROBE (N3): the user's A770 showed the 0xC0000409
 // crash AFTER the helper's 'helper exiting (code 77)' log line (the
@@ -55,15 +59,22 @@ process.on('exit', () => {
   helperLog('exit-handler phase reached');
 });
 
-const code = await runSysmanHelperPipeMode({
-  // A fresh consumer per init attempt - the real createSysmanPowerLimits
-  // LATCHES its degrade, so each attempt must be a new instance. The
-  // consumer's log is pinned to the helper's OWN log file.
-  createConsumer: () => createSysmanPowerLimits({
-    ensureVoltageWaiver: ({ physicalTarget, accepted }) => igclWaiver.setForTarget(physicalTarget, accepted),
-    log: (s) => helperLog(`[sysman] ${s}`),
-  }),
-  log: (s) => helperLog(s),
-});
-
+let code = 1;
+try {
+  code = await runSysmanHelperPipeMode({
+    // A fresh consumer per init attempt - the real createSysmanPowerLimits
+    // LATCHES its degrade, so each attempt must be a new instance. The
+    // consumer's log is pinned to the helper's OWN log file.
+    createConsumer: () => createSysmanPowerLimits({
+      ensureVoltageWaiver: ({ physicalTarget, accepted }) => igclWaiver.setForTarget(physicalTarget, accepted),
+      log: (s) => helperLog(`[sysman] ${s}`),
+    }),
+    log: (s) => helperLog(s),
+  });
+} finally {
+  // The bridge owns a native IGCL context. Close it before process.exit so a
+  // bind-conflict loser or failed-init helper cannot crash during native DLL
+  // teardown after its JS exit handler has already run.
+  igclWaiver.close();
+}
 process.exit(code);
