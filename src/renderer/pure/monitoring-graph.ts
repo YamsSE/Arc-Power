@@ -13,14 +13,31 @@ export interface GraphRange {
   max: number;
 }
 
+const MONITORING_GRAPH_DEFAULT_CEILINGS: Readonly<Record<string, number>> = {
+  util: 100,
+  'cpu-util': 100,
+  temp: 100,
+  'vram-temp': 100,
+  'cpu-temp': 100,
+  'cpu-clock': 5000,
+  clock: 3500,
+  'mem-clock': 3500,
+  fan: 5000,
+  voltage: 2,
+  power: 400,
+  'cpu-power': 400,
+};
+
 /**
  * Return the fixed-bottom, metric-aware range used by Monitoring canvases.
  * Utilization is a percentage, so its meaningful domain is always 0..100.
- * Other metrics use zero as their floor and the largest finite sample as
- * their ceiling. A zero-only (or otherwise non-positive) series gets a
- * small positive ceiling so the line still has a drawable scale.
+ * Other metrics use zero as their floor and a metric-specific ceiling; the
+ * optional context ceiling carries physical capacities or a session
+ * high-water mark, and the result expands to the largest finite sample when
+ * hardware reports above it. A zero-only (or otherwise non-positive) series
+ * still gets a positive ceiling so the line has a drawable scale.
  */
-export function monitoringGraphRange(seriesId: string, points: SeriesPoint[]): GraphRange | null {
+export function monitoringGraphRange(seriesId: string, points: SeriesPoint[], ceiling?: number | null): GraphRange | null {
   if (points.length === 0) return null;
   let max = -Infinity;
   for (const point of points) {
@@ -28,8 +45,10 @@ export function monitoringGraphRange(seriesId: string, points: SeriesPoint[]): G
   }
   if (!Number.isFinite(max)) return null;
   const segment = monitoringGraphSegment(seriesId);
-  if (segment === 'util' || segment === 'cpu-util') return { min: 0, max: 100 };
-  return { min: 0, max: max > 0 ? max : 1 };
+  const defaultCeiling = MONITORING_GRAPH_DEFAULT_CEILINGS[segment] ?? null;
+  const suppliedCeiling = Number.isFinite(ceiling) && Number(ceiling) > 0 ? Number(ceiling) : null;
+  const floorCeiling = suppliedCeiling ?? defaultCeiling ?? 0;
+  return { min: 0, max: Math.max(1, floorCeiling, max) };
 }
 
 export interface GraphSamplePosition {

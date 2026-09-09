@@ -66,6 +66,7 @@ interface MonState {
   deviceId: number | null;
   series: Record<string, SeriesPoint[]>;
   metricCanvases: Map<string, HTMLCanvasElement>;
+  graphCeilings: Map<string, number>;
   rangeNodes: Map<string, { min: HTMLElement; max: HTMLElement }>;
   metricGraphs: Map<string, MetricGraphOverlay>;
   fpsTileValue: HTMLElement | null;
@@ -201,6 +202,47 @@ function systemGraphKey(segmentId: string): string {
   return `system-${segmentId}`;
 }
 
+function setGraphCeiling(seriesId: string, value: number | null | undefined): void {
+  if (!mon || !Number.isFinite(value) || Number(value) <= 0) return;
+  const previous = mon.graphCeilings.get(seriesId) ?? 0;
+  if (Number(value) > previous) mon.graphCeilings.set(seriesId, Number(value));
+}
+
+/**
+ * Seed capacity ceilings from the current machine. The same map receives
+ * per-series high-water marks from pushMetricSeries, so a transient value
+ * above a default or physical capacity remains visible for this session.
+ */
+function refreshMonitoringGraphCeilings(state: AppState): void {
+  if (!mon) return;
+  const ramBytes = state.sysinfo?.ram.totalBytes;
+  if (Number.isFinite(ramBytes) && Number(ramBytes) > 0) {
+    const ramGb = Number(ramBytes) / 1e9;
+    setGraphCeiling(systemGraphKey('ram-used'), ramGb);
+    setGraphCeiling(systemGraphKey('ram-capacity'), ramGb);
+  }
+  const seedGpuVramCeiling = (key: string, vramBytes: number | null | undefined, sharedMemoryBytes?: number | null, useShared = false): void => {
+    // Dedicated capacity is preferred. Integrated/mobile adapters expose
+    // shared capacity instead, which is meaningful for their shared-memory
+    // graph.
+    const capacityBytes = vramBytes ?? (useShared ? sharedMemoryBytes : null);
+    if (Number.isFinite(capacityBytes) && Number(capacityBytes) > 0) {
+      setGraphCeiling(gpuGraphKey(key, 'vram'), Number(capacityBytes) / 1e9);
+    }
+  };
+  state.devices.forEach((device) => {
+    seedGpuVramCeiling(
+      device.deviceKey ?? deviceHardwareKey(device),
+      device.vramBytes,
+      device.sharedMemoryBytes,
+      device.integrated === true || device.mobile === true,
+    );
+  });
+  if (state.devices.length === 0 && state.osGpu) {
+    seedGpuVramCeiling('vendor', state.osGpu.vramBytes, state.osGpu.sharedMemoryBytes, true);
+  }
+}
+
 function fpsGraphKey(id: FpsBinding['id']): string {
   return `fps-${id}`;
 }
@@ -211,6 +253,7 @@ function graphSegment(seriesId: string): string {
 
 function pushMetricSeries(seriesId: string, t: number, value: number | undefined): void {
   if (!mon || value === undefined || !Number.isFinite(value)) return;
+  setGraphCeiling(seriesId, value);
   const current = mon.series[seriesId] ?? [];
   // onUpdate can run once for each adapter while the other adapter's latest
   // sample is unchanged. Replace a point with the same timestamp instead of
@@ -476,7 +519,7 @@ function updateMetricGraphOverlay(seriesId: string, observed?: { min: number; ma
   if (!graph) return;
   const series = mon.series[seriesId] ?? [];
   const observedRange = observed === undefined ? seriesObservedRange(series) : observed;
-  const range = monitoringGraphRange(seriesId, series);
+  const range = monitoringGraphRange(seriesId, series, mon.graphCeilings.get(seriesId));
   if (!observedRange || !range) {
     graph.yMax.hidden = true;
     graph.yMin.hidden = true;
@@ -516,7 +559,7 @@ function updateMetricGraphOverlay(seriesId: string, observed?: { min: number; ma
 }
 
 /** Dashboard-style compact history strip for each readout row. */
-function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], seriesId: string, color = cssVar('--accent')): { min: number; max: number } | null {
+function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], seriesId: string, color = cssVar('--accent'), ceiling?: number): { min: number; max: number } | null {
   const dpr = Math.max(1, window.devicePixelRatio || 1);
   const w = Math.round(canvas.clientWidth);
   const h = Math.round(canvas.clientHeight);
@@ -548,7 +591,7 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], series
   // reported value. The observed range is returned separately so the
   // existing Min/Max readout below the graph remains useful.
   const range = seriesObservedRange(points);
-  const axisRange = monitoringGraphRange(seriesId, points);
+  const axisRange = monitoringGraphRange(seriesId, points, ceiling);
   if (!range || !axisRange) return null;
   const { min, max } = axisRange;
   const span = Math.max(0.001, max - min);
@@ -616,6 +659,7 @@ export const monitoringPage: Page = {
       deviceId: defaultFpsDevice(s)?.id ?? null,
       series: {},
       metricCanvases: new Map(),
+      graphCeilings: new Map(),
       rangeNodes: new Map(),
       metricGraphs: new Map(),
       fpsTileValue: null,
@@ -702,6 +746,7 @@ export const monitoringPage: Page = {
   onUpdate(container: HTMLElement, ctx: PageContext) {
     if (!mon) return;
     const state = ctx.store.get();
+    refreshMonitoringGraphCeilings(state);
     const stabilityPanel = container.querySelector<HTMLElement>('[data-stability-lab]');
     if (stabilityPanel) updateStabilityLabPanel(stabilityPanel, state);
     const telemetryDevices: Array<DeviceInfo | null> = state.devices.length > 0 ? state.devices : [null];
@@ -1145,6 +1190,7 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
   clearMonitoringGraphBindings();
   clear(container);
   const s = ctx.store.get();
+  refreshMonitoringGraphCeilings(s);
   m.metricCanvases = new Map();
   m.rangeNodes = new Map();
   m.metricGraphs = new Map();
@@ -1217,7 +1263,7 @@ function redrawAll(): void {
     graphRedrawFrame = null;
     if (!mon || monView !== 'monitoring') return;
     for (const [id, canvas] of mon.metricCanvases) {
-      const range = drawMiniSeries(canvas, mon.series[id] ?? [], id, monitoringSeriesColor(id));
+      const range = drawMiniSeries(canvas, mon.series[id] ?? [], id, monitoringSeriesColor(id), mon.graphCeilings.get(id));
       const nodes = mon.rangeNodes.get(id);
       if (nodes) {
         nodes.min.textContent = range ? graphRangeValue(id, range.min) : '—';
