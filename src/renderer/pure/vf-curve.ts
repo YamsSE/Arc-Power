@@ -26,6 +26,7 @@ const LEGACY_B580_BAKED_OFFSET_MHZ = 99;
 const LEGACY_B580_BAKED_DELTA_PATTERN_MHZ = [
   100, 100, 100, 100, 90, 100, 100, 100, 100, 100,
 ] as const;
+const LEGACY_B580_UNIFORM_BAKED_OFFSET_MHZ = 100;
 const LEGACY_ZERO_SHIFT_TOLERANCE_V = 0.001;
 
 /** Compare two curves by their native point coordinates and frequencies. */
@@ -108,6 +109,51 @@ export function isLegacyStockVfCurve(
   return requested.every((point, index) => Number.isFinite(point?.voltageV)
     && Number.isFinite(native[index]?.voltageV)
     && Math.abs((point.voltageV - native[index].voltageV) - shift) <= 0.001);
+}
+
+/**
+ * Identify the B580 profile shape emitted after the scalar VF metadata was
+ * lost: the complete ten point native voltage grid and maximum-frequency
+ * plateau are preserved, while the frequencies are translated by +100 MHz
+ * (with the first point or one quantized interior point clamped by the
+ * driver).
+ * This exact shape is the old baked core-offset table without a remaining
+ * gpuFreqOffsetMhz field. Keep it separate from isLegacyStockVfCurve so a
+ * caller that explicitly supplies scalar metadata retains its stricter
+ * legacy fingerprint rules.
+ */
+export function isLegacyBakedB580VfCurve(
+  requested: VfCurvePoint[] | null | undefined,
+  native: VfCurvePoint[] | null | undefined,
+): boolean {
+  if (!Array.isArray(requested) || !Array.isArray(native)
+    || requested.length !== 10 || native.length !== requested.length) return false;
+  if (!requested.every((point, index) => Number.isFinite(point?.voltageV)
+    && Number.isFinite(point?.freqMhz)
+    && Number.isFinite(native[index]?.voltageV)
+    && Number.isFinite(native[index]?.freqMhz))) return false;
+  // The baked table retained the driver's voltage coordinates exactly. A
+  // custom voltage grid must remain eligible for a real VF write.
+  if (!requested.every((point, index) => Math.abs(point.voltageV - native[index].voltageV) <= 0.001)) return false;
+  const deltas = requested.map((point, index) => point.freqMhz - native[index].freqMhz);
+  // Depending on the driver revision, the first point is clamped at the
+  // native minimum instead of receiving the scalar shift. Older tables also
+  // rounded one interior point down by one 10-MHz grid step. Both are still
+  // the same baked scalar shape; arbitrary edits remain rejected.
+  const matchesBakedOffset = deltas.every((delta, index) => {
+    if (Math.abs(delta - LEGACY_B580_UNIFORM_BAKED_OFFSET_MHZ) <= 1) return true;
+    if (index === 0 && Math.abs(delta) <= 1) return true;
+    return index === 4 && Math.abs(delta - (LEGACY_B580_UNIFORM_BAKED_OFFSET_MHZ - 10)) <= 1;
+  });
+  if (!matchesBakedOffset || deltas.filter((delta) => Math.abs(delta - LEGACY_B580_UNIFORM_BAKED_OFFSET_MHZ) <= 1).length < 8) return false;
+  // B580's simplified native table ends in a shared maximum-frequency
+  // plateau. Requiring the same plateau on the translated table prevents a
+  // short arbitrary custom curve from being treated as migration data.
+  const nativeTail = native.slice(-2);
+  const requestedTail = requested.slice(-2);
+  return Math.abs(nativeTail[1].freqMhz - nativeTail[0].freqMhz) <= 1
+    && Math.abs(requestedTail[1].freqMhz - requestedTail[0].freqMhz) <= 1
+    && requestedTail[1].freqMhz > nativeTail[1].freqMhz;
 }
 
 function clamp(value: number, min: number, max: number): number {
