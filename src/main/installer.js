@@ -44,7 +44,7 @@ const INSTALLER_ELEVATION_RELAUNCHED = 'ARC_POWER_INSTALLER_ELEVATION_RELAUNCHED
 // The previous desktop identity was cached by Windows with the generic
 // document icon on some installations. Keep the new identity stable for
 // this release so a repaired shortcut cannot inherit that stale shell entry.
-const APP_USER_MODEL_ID = 'com.rid.arcpower.desktop.v2';
+const APP_USER_MODEL_ID = 'com.rid.arcpower.desktop.v3';
 if (process.platform === 'win32') {
   try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch { /* best effort */ }
 }
