@@ -432,13 +432,16 @@ function graphSurface(
   const yMin = el('span', { class: 'telemetry-graph-axis-label telemetry-graph-axis-y telemetry-graph-axis-y-min', hidden: true });
   const crosshair = el('span', { class: 'telemetry-graph-crosshair', hidden: true, 'aria-hidden': 'true' });
   const tooltip = el('span', { class: 'telemetry-graph-tooltip', hidden: true, role: 'status' });
+  const axisRail = el('div', { class: 'telemetry-graph-axis-rail', 'aria-hidden': 'true' }, [yMax, yMin]);
   const surface = el('div', { class: 'telemetry-metric-graph-surface', 'aria-label': `${label} graph` }, [
     canvas,
-    yMax,
-    yMin,
     crosshair,
     tooltip,
   ]);
+  // Keep the plot surface at its existing size while giving the Y readouts a
+  // dedicated rail immediately to its left. The rail is part of the graph
+  // layout, so labels never paint over the line or the hover pill.
+  const layout = el('div', { class: 'telemetry-metric-graph-layout' }, [axisRail, surface]);
   if (mon) {
     const graph: MetricGraphOverlay = {
       surface,
@@ -463,7 +466,7 @@ function graphSurface(
     });
     surface.addEventListener('pointerleave', hide);
   }
-  return surface;
+  return layout;
 }
 
 function updateMetricGraphOverlay(seriesId: string, observed?: { min: number; max: number } | null): void {

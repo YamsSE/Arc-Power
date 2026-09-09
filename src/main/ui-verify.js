@@ -4128,10 +4128,14 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       surface.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX, clientY: surfaceRect.top + surfaceRect.height / 2 }));
       const tooltip = surface.querySelector('.telemetry-graph-tooltip');
       const crosshair = surface.querySelector('.telemetry-graph-crosshair');
-      const yValues = [surface.querySelector('.telemetry-graph-axis-y-max'), surface.querySelector('.telemetry-graph-axis-y-min')];
+      const axisRail = surface.parentElement?.querySelector('.telemetry-graph-axis-rail');
+      const yValues = [axisRail?.querySelector('.telemetry-graph-axis-y-max'), axisRail?.querySelector('.telemetry-graph-axis-y-min')];
       const yRects = yValues.map((node) => node?.getBoundingClientRect());
-      const yInside = yRects.every((rect) => !!rect && rect.left >= surfaceRect.left - 1 && rect.right <= surfaceRect.right + 1);
-      if (!tooltip || !crosshair || !yInside || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-hidden' };
+      const axisRect = axisRail?.getBoundingClientRect();
+      const yOutside = !!axisRect && yRects.every((rect) => !!rect
+        && rect.left >= axisRect.left - 1 && rect.right <= axisRect.right + 1
+        && rect.right <= surfaceRect.left + 1);
+      if (!tooltip || !crosshair || !yOutside || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-hidden' };
       const crosshairX = Number.parseFloat(crosshair.style.left);
       const yTexts = yValues.map((node) => node?.textContent?.trim() ?? '');
       const tooltipText = tooltip.textContent?.trim() ?? '';
@@ -4202,11 +4206,15 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const metric = surface?.closest('.telemetry-metric');
     const tooltip = surface?.querySelector('.telemetry-graph-tooltip');
     const crosshair = surface?.querySelector('.telemetry-graph-crosshair');
-    const yValues = [surface?.querySelector('.telemetry-graph-axis-y-max'), surface?.querySelector('.telemetry-graph-axis-y-min')];
+    const axisRail = surface?.parentElement?.querySelector('.telemetry-graph-axis-rail');
+    const yValues = [axisRail?.querySelector('.telemetry-graph-axis-y-max'), axisRail?.querySelector('.telemetry-graph-axis-y-min')];
     const surfaceRect = surface?.getBoundingClientRect();
     const yRects = yValues.map((node) => node?.getBoundingClientRect());
-    const yInside = !!surfaceRect && yRects.every((rect) => !!rect && rect.left >= surfaceRect.left - 1 && rect.right <= surfaceRect.right + 1);
-    if (!surface || !canvas || !metric || !tooltip || !crosshair || !yInside || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-lost-after-tick', strokes: window.__arcPowerMonitoringGraphTickProbe?.count ?? -1 };
+    const axisRect = axisRail?.getBoundingClientRect();
+    const yOutside = !!surfaceRect && !!axisRect && yRects.every((rect) => !!rect
+      && rect.left >= axisRect.left - 1 && rect.right <= axisRect.right + 1
+      && rect.right <= surfaceRect.left + 1);
+    if (!surface || !canvas || !metric || !tooltip || !crosshair || !yOutside || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-lost-after-tick', strokes: window.__arcPowerMonitoringGraphTickProbe?.count ?? -1 };
     const rect = surface.getBoundingClientRect();
     const width = surface.clientWidth || rect.width;
     const height = surface.clientHeight || rect.height;
@@ -4250,7 +4258,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     return { ok: !!tooltip && tooltip.hidden && !!crosshair && crosshair.hidden && !surface.querySelector('.telemetry-graph-axis-x') };
   })()`);
   if (!graphHoverLeaveProbe.ok) fail(`M207d: pointerleave did not hide graph hover chrome: ${JSON.stringify(graphHoverLeaveProbe)}`);
-  step('m207d-graph-hover', `M207d: in-graph Y axes are numeric, the rounded Arc-blue value pill stays anchored to the hovered line (${graphHoverProbe.interior.text}); hover persisted across ${graphHoverTickProbe.strokes} telemetry redraws, the elapsed X readout is absent, and pointerleave hid the hover chrome; Min/Max remains '${graphHoverProbe.rangeTextBeforeLeave}'`);
+  step('m207d-graph-hover', `M207d: the left Y-axis rail is numeric, the rounded Arc-blue value pill stays anchored above the hovered line (${graphHoverProbe.interior.text}); hover persisted across ${graphHoverTickProbe.strokes} telemetry redraws, the elapsed X readout is absent, and pointerleave hid the hover chrome; Min/Max remains '${graphHoverProbe.rangeTextBeforeLeave}'`);
 
   // --- M9: the Monitoring | Overlay view switch (the S2 re-registration) ----
   // The view pill renders 'Monitoring | Overlay' at the page top; the
