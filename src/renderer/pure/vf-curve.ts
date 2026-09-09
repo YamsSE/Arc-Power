@@ -17,6 +17,16 @@ export interface VfCurvePoint {
 
 export const VF_EDITOR_MAX_POINTS = 10;
 export const VF_MIN_POINTS = 2;
+// The native B-series frequency grid can round a persisted scalar core offset
+// differently at adjacent points. Keep this small enough to distinguish the
+// legacy translated stock table from an intentional custom frequency curve.
+const LEGACY_CORE_OFFSET_TOLERANCE_MHZ = 2;
+const LEGACY_CORE_OFFSET_QUANTIZATION_TOLERANCE_MHZ = 10;
+const LEGACY_B580_BAKED_OFFSET_MHZ = 99;
+const LEGACY_B580_BAKED_DELTA_PATTERN_MHZ = [
+  100, 100, 100, 100, 90, 100, 100, 100, 100, 100,
+] as const;
+const LEGACY_ZERO_SHIFT_TOLERANCE_V = 0.001;
 
 /** Compare two curves by their native point coordinates and frequencies. */
 export function sameVfCurve(
@@ -51,9 +61,10 @@ export function sameVfCurveFrequencies(
 
 /**
  * Identify the stale profile shape emitted by older Battlemage builds: the
- * stock frequencies, a uniformly translated voltage grid, and a non-zero
- * scalar core offset. A custom voltage-only curve is intentionally excluded
- * unless it has that complete legacy fingerprint.
+ * stock frequencies (or the same frequencies translated by the persisted
+ * scalar offset), a uniformly translated voltage grid, and a non-zero scalar
+ * core offset. A custom voltage-only curve is intentionally excluded unless
+ * it has that complete legacy fingerprint.
  */
 export function isLegacyStockVfCurve(
   requested: VfCurvePoint[] | null | undefined,
@@ -64,10 +75,36 @@ export function isLegacyStockVfCurve(
     || requested.length < VF_MIN_POINTS || requested.length !== native.length) return false;
   if (sameVfCurve(requested, native)) return true;
   const offset = typeof coreOffsetMhz === 'number' && Number.isFinite(coreOffsetMhz) ? coreOffsetMhz : null;
-  if (offset === null || Math.abs(offset) < 0.5
-    || !sameVfCurveFrequencies(requested, native)) return false;
+  if (offset === null || Math.abs(offset) < 0.5) return false;
+  const firstRequestedFrequency = requested[0]?.freqMhz;
+  const firstNativeFrequency = native[0]?.freqMhz;
+  if (typeof firstRequestedFrequency !== 'number' || !Number.isFinite(firstRequestedFrequency)
+    || typeof firstNativeFrequency !== 'number' || !Number.isFinite(firstNativeFrequency)) return false;
+  const firstFrequencyDelta = firstRequestedFrequency - firstNativeFrequency;
+  const sameFrequencyGrid = sameVfCurveFrequencies(requested, native);
+  const frequencyDeltas = requested.map((point, index) => {
+    const requestedFrequency = point?.freqMhz;
+    const nativeFrequency = native[index]?.freqMhz;
+    if (typeof requestedFrequency !== 'number' || !Number.isFinite(requestedFrequency)
+      || typeof nativeFrequency !== 'number' || !Number.isFinite(nativeFrequency)) return Number.NaN;
+    return requestedFrequency - nativeFrequency;
+  });
+  const offsetFrequencyGrid = Math.abs(firstFrequencyDelta - offset) <= LEGACY_CORE_OFFSET_TOLERANCE_MHZ
+    && frequencyDeltas.every((delta) => Number.isFinite(delta)
+      && Math.abs(delta - firstFrequencyDelta) <= LEGACY_CORE_OFFSET_TOLERANCE_MHZ);
+  const quantizedOffsetFrequencyGrid = frequencyDeltas.every((delta) => Number.isFinite(delta)
+    && Math.abs(delta - offset) <= LEGACY_CORE_OFFSET_QUANTIZATION_TOLERANCE_MHZ)
+    && Math.max(...frequencyDeltas) - Math.min(...frequencyDeltas)
+      <= LEGACY_CORE_OFFSET_QUANTIZATION_TOLERANCE_MHZ;
+  if (!sameFrequencyGrid && !offsetFrequencyGrid && !quantizedOffsetFrequencyGrid) return false;
   const shift = requested[0].voltageV - native[0].voltageV;
-  if (!Number.isFinite(shift) || Math.abs(shift) < 0.01) return false;
+  const zeroShiftBakedFrequencyGrid = quantizedOffsetFrequencyGrid
+    && offset === LEGACY_B580_BAKED_OFFSET_MHZ
+    && frequencyDeltas.length === LEGACY_B580_BAKED_DELTA_PATTERN_MHZ.length
+    && frequencyDeltas.every((delta, index) => delta === LEGACY_B580_BAKED_DELTA_PATTERN_MHZ[index]);
+  if (!Number.isFinite(shift)
+    || (Math.abs(shift) < 0.01
+      && !(zeroShiftBakedFrequencyGrid && Math.abs(shift) <= LEGACY_ZERO_SHIFT_TOLERANCE_V))) return false;
   return requested.every((point, index) => Number.isFinite(point?.voltageV)
     && Number.isFinite(native[index]?.voltageV)
     && Math.abs((point.voltageV - native[index].voltageV) - shift) <= 0.001);
