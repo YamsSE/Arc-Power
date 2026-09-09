@@ -31,9 +31,8 @@ import { deviceHardwareKey, stripVramSuffix } from '../pure/device.ts';
 import { dashboardGpuOrder } from '../pure/dashboard.ts';
 import { renderOverlaySettings } from './overlay-settings.ts';
 import {
-  pushSeries,
+  upsertSeriesPoint,
   trimSeriesWindow,
-  sortSeriesByTime,
   nearestSampleIndex,
 } from '../pure/graph.ts';
 import type { SeriesPoint } from '../pure/graph.ts';
@@ -42,7 +41,7 @@ import {
   formatMonitoringGraphValue,
   graphDrawnPoints,
   graphSamplePosition,
-  monitoringGraphRange,
+  monitoringGraphRangeForMax,
   monitoringGraphSegment,
 } from '../pure/monitoring-graph.ts';
 import {
@@ -256,15 +255,12 @@ function pushMetricSeries(seriesId: string, t: number, value: number | undefined
   setGraphCeiling(seriesId, value);
   const current = mon.series[seriesId] ?? [];
   // onUpdate can run once for each adapter while the other adapter's latest
-  // sample is unchanged. Replace a point with the same timestamp instead of
-  // appending it again; duplicate timestamps made the polyline appear to
-  // twitch or fold when the two telemetry lanes arrived close together.
-  const sameTime = current.findIndex((point) => point.t === t);
-  const next = sameTime >= 0
-    ? current.map((point, index) => index === sameTime ? { t, v: value } : point)
-    : pushSeries(current, t, value, TELEMETRY_HISTORY_POINTS);
+  // sample is unchanged. The pure upsert helper skips identical duplicates,
+  // replaces a changed tail in place, and only sorts the rare old timestamp.
+  const next = upsertSeriesPoint(current, t, value, TELEMETRY_HISTORY_POINTS);
+  if (next === current) return;
   mon.series[seriesId] = trimSeriesWindow(
-    sortSeriesByTime(next),
+    next,
     t,
     TELEMETRY_HISTORY_WINDOW_S,
   );
@@ -443,13 +439,13 @@ function refreshFpsMetrics(sample: FpsSample | null): void {
   }
 }
 
-function monitoringSeriesColor(seriesId: string): string {
+function monitoringSeriesColor(seriesId: string, accentColor = cssVar('--accent')): string {
   const segment = graphSegment(seriesId);
   if (segment === 'util' || segment === 'cpu-util') return TELEMETRY_PULSE_COLORS.utilization;
   if (segment === 'temp' || segment === 'vram-temp' || segment === 'cpu-temp') return TELEMETRY_PULSE_COLORS.temperature;
   if (segment === 'power' || segment === 'cpu-power' || segment === 'voltage') return TELEMETRY_PULSE_COLORS.power;
   if (segment === 'vram' || segment === 'ram-used' || segment === 'ram-capacity' || segment === 'fan') return TELEMETRY_PULSE_COLORS.memory;
-  return cssVar('--accent');
+  return accentColor;
 }
 
 function graphRangeValue(seriesId: string, value: number): string {
@@ -519,7 +515,7 @@ function updateMetricGraphOverlay(seriesId: string, observed?: { min: number; ma
   if (!graph) return;
   const series = mon.series[seriesId] ?? [];
   const observedRange = observed === undefined ? seriesObservedRange(series) : observed;
-  const range = monitoringGraphRange(seriesId, series, mon.graphCeilings.get(seriesId));
+  const range = monitoringGraphRangeForMax(seriesId, observedRange?.max, mon.graphCeilings.get(seriesId));
   if (!observedRange || !range) {
     graph.yMax.hidden = true;
     graph.yMin.hidden = true;
@@ -591,7 +587,7 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], series
   // reported value. The observed range is returned separately so the
   // existing Min/Max readout below the graph remains useful.
   const range = seriesObservedRange(points);
-  const axisRange = monitoringGraphRange(seriesId, points, ceiling);
+  const axisRange = monitoringGraphRangeForMax(seriesId, range?.max, ceiling);
   if (!range || !axisRange) return null;
   const { min, max } = axisRange;
   const span = Math.max(0.001, max - min);
@@ -1262,8 +1258,9 @@ function redrawAll(): void {
   graphRedrawFrame = window.requestAnimationFrame(() => {
     graphRedrawFrame = null;
     if (!mon || monView !== 'monitoring') return;
+    const accentColor = cssVar('--accent');
     for (const [id, canvas] of mon.metricCanvases) {
-      const range = drawMiniSeries(canvas, mon.series[id] ?? [], id, monitoringSeriesColor(id), mon.graphCeilings.get(id));
+      const range = drawMiniSeries(canvas, mon.series[id] ?? [], id, monitoringSeriesColor(id, accentColor), mon.graphCeilings.get(id));
       const nodes = mon.rangeNodes.get(id);
       if (nodes) {
         nodes.min.textContent = range ? graphRangeValue(id, range.min) : '—';

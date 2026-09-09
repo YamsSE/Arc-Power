@@ -28,6 +28,33 @@ export function pushSeries(series: SeriesPoint[], t: number, v: number | undefin
 }
 
 /**
+ * Efficiently insert or replace one timestamped point. Telemetry normally
+ * arrives in order, so the common append path avoids a full sort. Repeated
+ * adapter/store notifications for the same timestamp are no-ops when their
+ * value is unchanged and tail replacements avoid an array-wide map. Older or
+ * otherwise out-of-order timestamps retain the sorted fallback.
+ */
+export function upsertSeriesPoint(series: SeriesPoint[], t: number, v: number | undefined, maxLen: number = GRAPH_MAX_POINTS): SeriesPoint[] {
+  if (v === undefined || !Number.isFinite(v) || !Number.isFinite(t)) return series;
+  if (series.length === 0) return [{ t, v }];
+  const tailIndex = series.length - 1;
+  const tail = series[tailIndex];
+  if (t > tail.t) return pushSeries(series, t, v, maxLen);
+  if (t === tail.t) {
+    if (tail.v === v) return series;
+    return [...series.slice(0, tailIndex), { t, v }];
+  }
+  const sameTime = series.findIndex((point) => point.t === t);
+  if (sameTime >= 0) {
+    if (series[sameTime].v === v) return series;
+    const next = series.slice();
+    next[sameTime] = { t, v };
+    return next;
+  }
+  return sortSeriesByTime(pushSeries(series, t, v, maxLen));
+}
+
+/**
  * M4-D2 fix ("the monitoring graphs are glitched - the lines
  * overlap"): the REAL driver's telemetry timestamp occasionally ticks
  * BACKWARD (live-verified: 8 folds in 40 s under load on the A770 - a

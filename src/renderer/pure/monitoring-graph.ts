@@ -37,20 +37,29 @@ const MONITORING_GRAPH_DEFAULT_CEILINGS: Readonly<Record<string, number>> = {
  * hardware reports above it. A zero-only (or otherwise non-positive) series
  * still gets a positive ceiling so the line has a drawable scale.
  */
-export function monitoringGraphRange(seriesId: string, points: SeriesPoint[], ceiling?: number | null): GraphRange | null {
-  if (points.length === 0) return null;
-  let max = -Infinity;
-  for (const point of points) {
-    if (Number.isFinite(point.v) && point.v > max) max = point.v;
-  }
-  if (!Number.isFinite(max)) return null;
+export function monitoringGraphRangeForMax(seriesId: string, observedMax: number | null | undefined, ceiling?: number | null): GraphRange | null {
+  if (!Number.isFinite(observedMax)) return null;
   const segment = monitoringGraphSegment(seriesId);
   const defaultCeiling = MONITORING_GRAPH_DEFAULT_CEILINGS[segment] ?? null;
   const suppliedCeiling = Number.isFinite(ceiling) && Number(ceiling) > 0 ? Number(ceiling) : null;
   // A physical capacity or session high-water mark can extend a default,
   // but must never replace it. Otherwise a low first sample (for example
   // 3% utilization) would incorrectly collapse the axis to 0..3.
-  return { min: 0, max: Math.max(1, defaultCeiling ?? 0, suppliedCeiling ?? 0, max) };
+  return { min: 0, max: Math.max(1, defaultCeiling ?? 0, suppliedCeiling ?? 0, Number(observedMax)) };
+}
+
+/**
+ * Compute the same axis from a series when its observed maximum is not yet
+ * available. The renderer normally scans the series once for its observed
+ * Min/Max row, then calls monitoringGraphRangeForMax to avoid a second scan.
+ */
+export function monitoringGraphRange(seriesId: string, points: SeriesPoint[], ceiling?: number | null): GraphRange | null {
+  if (points.length === 0) return null;
+  let max = -Infinity;
+  for (const point of points) {
+    if (Number.isFinite(point.v) && point.v > max) max = point.v;
+  }
+  return monitoringGraphRangeForMax(seriesId, max, ceiling);
 }
 
 export interface GraphSamplePosition {
