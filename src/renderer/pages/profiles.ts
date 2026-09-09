@@ -258,9 +258,10 @@ export function settingsFromState(state: DeviceState): Settings {
     && (!Array.isArray(state.vfCurveDefault)
       || !isLegacyStockVfCurve(state.vfCurve, state.vfCurveDefault, state.gpuFreqOffsetMhz))) {
     out.vfCurve = state.vfCurve.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz }));
-    // Curve mode owns the core-frequency shape. Do not persist a stale scalar
-    // offset alongside a custom VF curve; the scalar remains for legacy stock
-    // profiles whose unchanged curve was omitted above.
+    // Curve mode owns the core voltage/frequency shape. Do not persist stale
+    // scalar offsets alongside a custom VF curve; the scalars remain for
+    // legacy stock profiles whose unchanged curve was omitted above.
+    delete out.gpuVoltOffsetV;
     delete out.gpuFreqOffsetMhz;
   }
   return out;

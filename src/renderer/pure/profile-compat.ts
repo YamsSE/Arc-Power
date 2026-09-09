@@ -6,8 +6,8 @@ import { isLegacyStockVfCurve } from './vf-curve.ts';
  * Normalize the VF portion of a profile for a Battlemage target. Older
  * profiles can carry the same frequencies on a voltage grid from another
  * driver revision; that exact legacy fingerprint is omitted. Custom voltage
- * coordinates remain intact, while a custom curve owns core frequency instead
- * of replaying a stale scalar offset beside it.
+ * coordinates remain intact, while a custom curve owns the core voltage and
+ * frequency shape instead of replaying stale scalar offsets beside it.
  */
 export function normalizeBattlemageProfileSettings(
   settings: Settings,
@@ -28,6 +28,10 @@ export function normalizeBattlemageProfileSettings(
     && isLegacyStockVfCurve(out.vfCurve, native, out.gpuFreqOffsetMhz)) {
     delete out.vfCurve;
   } else if (Array.isArray(out.vfCurve)) {
+    // Battlemage's scalar voltage and frequency offsets target the same core
+    // VF surface as a custom curve. Replaying either one before the table
+    // makes the driver's custom write fail with a generic io-failed result.
+    delete out.gpuVoltOffsetV;
     delete out.gpuFreqOffsetMhz;
   }
   return out;

@@ -4925,9 +4925,11 @@ export class IgclBackend {
         if (nativeCanonical && isLegacyStockVfCurve(settings.vfCurve, nativeCanonical, settings.gpuFreqOffsetMhz)) {
           delete out.vfCurve;
         } else {
-          // A custom VF table is authoritative for core frequency. Older
-          // profiles could carry both fields, which makes the driver apply
-          // the scalar first and then reject the curve transaction.
+          // A custom VF table is authoritative for the core voltage/frequency
+          // shape. Older profiles could carry either scalar offset, which
+          // makes the driver apply the scalar first and then reject the curve
+          // transaction.
+          delete out.gpuVoltOffsetV;
           delete out.gpuFreqOffsetMhz;
         }
       }
