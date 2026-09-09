@@ -1068,6 +1068,18 @@ select:focus-visible {
   box-shadow: 0 0 0 2px rgba(56, 197, 255, .2) !important;
 }
 
+/* M206: form controls use the same fixed Arc-blue focus treatment as the
+   Recording editor. Several page-specific rules intentionally use the
+   theme accent for their resting/hover border, so the important focus
+   declarations keep the optional yellow theme from bringing back the
+   native yellow selection ring while editing any field. */
+:where(input:not([type='range']), textarea):focus,
+:where(input:not([type='range']), textarea):focus-visible {
+  outline: none !important;
+  border-color: #38c5ff !important;
+  box-shadow: 0 0 0 2px rgba(56, 197, 255, .2) !important;
+}
+
 /* M180: every product dropdown is rendered in the owning BrowserWindow so
    its dark rounded menu, blue active state, keyboard focus, and viewport
    placement stay identical in the main window and Advanced Overlay. */
@@ -1091,7 +1103,7 @@ select:focus-visible {
 .shared-dropdown::after { content: '▾'; color: var(--text-muted); flex: 0 0 auto; }
 .shared-dropdown:hover { border-color: var(--accent); }
 .shared-dropdown:focus,
-.shared-dropdown:focus-visible { outline: none; border-color: var(--accent-strong); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .18); }
+.shared-dropdown:focus-visible { outline: none; border-color: #38c5ff !important; box-shadow: 0 0 0 2px rgba(56, 197, 255, .2) !important; }
 .shared-dropdown.is-disabled { color: var(--text-dim); cursor: not-allowed; opacity: .72; }
 .shared-dropdown-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shared-dropdown-menu {
@@ -2363,16 +2375,16 @@ input[type="number"] {
 .telemetry-panel-badge { margin-left: auto; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 7px; border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border)); border-radius: 999px; color: var(--text-muted); font: 550 10px var(--mono); }
 .telemetry-panel-body { border-top: 1px solid var(--border); padding: 7px; }
 .telemetry-panel-body[hidden] { display: none; }
-.telemetry-metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 6px; }
-.telemetry-panel[data-telemetry-panel="fps"] .telemetry-metric-grid { grid-template-columns: repeat(auto-fit, minmax(min(145px, 100%), 1fr)); }
-.telemetry-metric { min-width: 0; min-height: 56px; display: grid; grid-template-columns: minmax(0, .78fr) minmax(0, 1.22fr); align-items: center; gap: 7px; padding: 6px 7px; border: 1px solid color-mix(in srgb, var(--border) 86%, var(--accent)); border-radius: 6px; background: color-mix(in srgb, var(--bg-inset) 82%, var(--bg-elev)); }
+.telemetry-metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 6px; }
+.telemetry-panel[data-telemetry-panel="fps"] .telemetry-metric-grid { grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); }
+.telemetry-metric { min-width: 0; min-height: 56px; display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.08fr); align-items: center; gap: 7px; padding: 6px 7px; border: 1px solid color-mix(in srgb, var(--border) 86%, var(--accent)); border-radius: 6px; background: color-mix(in srgb, var(--bg-inset) 82%, var(--bg-elev)); }
 .telemetry-metric-copy { min-width: 0; display: grid; grid-template-rows: auto auto; align-items: end; }
 .telemetry-metric-value-line { min-width: 0; display: inline-flex; align-items: baseline; gap: 4px; max-width: 100%; }
 .telemetry-metric-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font: 650 20px var(--mono); line-height: 1.05; font-variant-numeric: tabular-nums; }
 .telemetry-metric-unit { flex: 0 0 auto; color: var(--accent); font: 550 10px var(--mono); white-space: nowrap; }
 .telemetry-metric-label { min-width: 0; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 10px; }
-.telemetry-metric-sparkline { display: block; width: 100%; height: 38px; min-width: 0; border-radius: 3px; background: var(--bg-inset); }
-.telemetry-metric-sparkline-empty { background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px); background-size: 25% 50%, 25% 100%; opacity: .7; }
+.telemetry-metric-sparkline { display: block; width: 100%; height: 38px; min-width: 0; border-radius: 3px; background-color: var(--bg-inset); background-image: linear-gradient(color-mix(in srgb, var(--border) 42%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--border) 42%, transparent) 1px, transparent 1px); background-size: 25% 50%, 25% 100%; }
+.telemetry-metric-sparkline-empty { opacity: .7; }
 .telemetry-section-heading { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 9px; }
 .telemetry-section-heading .card-title { margin: 0; }
 .telemetry-section-heading .card-note { margin: 3px 0 0; }

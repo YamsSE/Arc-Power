@@ -34,7 +34,6 @@ import {
   pushSeries,
   trimSeriesWindow,
   sortSeriesByTime,
-  autoScale,
   downsample,
 } from '../pure/graph.ts';
 import type { SeriesPoint } from '../pure/graph.ts';
@@ -332,7 +331,7 @@ function monitoringSeriesColor(seriesId: string): string {
   return cssVar('--accent');
 }
 
-/** AMD-style compact history strip for each readout row. */
+/** Dashboard-style compact history strip for each readout row. */
 function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], color = cssVar('--accent')): void {
   const dpr = Math.max(1, window.devicePixelRatio || 1);
   const w = Math.round(canvas.clientWidth);
@@ -359,30 +358,21 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], color 
   if (!ctx) return;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  const bg = cssVar('--bg-inset');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, w, h);
   if (points.length === 0) return;
-  const scale = autoScale(points);
-  if (!scale) return;
+  // Keep the plotted range tight to the samples, matching Dashboard's
+  // Performance pulse. A flat series still gets a tiny scale so it remains
+  // visible without inventing a large amount of empty headroom.
+  let min = Infinity;
+  let max = -Infinity;
+  for (const point of points) {
+    if (point.v < min) min = point.v;
+    if (point.v > max) max = point.v;
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return;
+  const span = Math.max(0.001, max - min);
   const drawn = downsample(points, 72);
-  const span = scale.max - scale.min;
   const x = (index: number): number => drawn.length <= 1 ? w / 2 : (index / (drawn.length - 1)) * (w - 4) + 2;
-  const y = (value: number): number => span <= 0 ? h / 2 : 3 + (1 - (value - scale.min) / span) * Math.max(4, h - 6);
-  ctx.beginPath();
-  drawn.forEach((point, index) => {
-    const px = x(index);
-    const py = y(point.v);
-    if (index === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
-  });
-  ctx.lineTo(w - 2, h - 2);
-  ctx.lineTo(2, h - 2);
-  ctx.closePath();
-  ctx.fillStyle = color;
-  ctx.globalAlpha = .22;
-  ctx.fill();
-  ctx.globalAlpha = 1;
+  const y = (value: number): number => h - 3 - ((value - min) / span) * Math.max(4, h - 6);
   ctx.beginPath();
   drawn.forEach((point, index) => {
     const px = x(index);
