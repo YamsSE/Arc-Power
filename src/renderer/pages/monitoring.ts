@@ -472,11 +472,22 @@ function graphSurface(
   const yMin = el('span', { class: 'telemetry-graph-axis-label telemetry-graph-axis-y telemetry-graph-axis-y-min', hidden: true });
   const crosshair = el('span', { class: 'telemetry-graph-crosshair', hidden: true, 'aria-hidden': 'true' });
   const tooltip = el('span', { class: 'telemetry-graph-tooltip', hidden: true, role: 'status' });
+  const grid = el('div', { class: 'telemetry-graph-grid', 'aria-hidden': 'true' }, [
+    el('span', { class: 'telemetry-graph-grid-line telemetry-graph-grid-h telemetry-graph-grid-top' }),
+    el('span', { class: 'telemetry-graph-grid-line telemetry-graph-grid-h telemetry-graph-grid-mid' }),
+    el('span', { class: 'telemetry-graph-grid-line telemetry-graph-grid-h telemetry-graph-grid-bottom' }),
+    el('span', { class: 'telemetry-graph-grid-line telemetry-graph-grid-v telemetry-graph-grid-left' }),
+    el('span', { class: 'telemetry-graph-grid-line telemetry-graph-grid-v telemetry-graph-grid-quarter' }),
+    el('span', { class: 'telemetry-graph-grid-line telemetry-graph-grid-v telemetry-graph-grid-half' }),
+    el('span', { class: 'telemetry-graph-grid-line telemetry-graph-grid-v telemetry-graph-grid-three-quarter' }),
+    el('span', { class: 'telemetry-graph-grid-line telemetry-graph-grid-v telemetry-graph-grid-right' }),
+  ]);
   const axisRail = el('div', { class: 'telemetry-graph-axis-rail', 'aria-hidden': 'true' }, [yMax, yMin]);
   const surface = el('div', { class: 'telemetry-metric-graph-surface', 'aria-label': `${label} graph` }, [
     canvas,
     crosshair,
     tooltip,
+    grid,
   ]);
   // Keep the plot surface at its existing size while giving the Y readouts a
   // dedicated rail immediately to its left. The rail is part of the graph

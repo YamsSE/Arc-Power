@@ -869,6 +869,29 @@ html, body {
 .dashboard-pulse-inline-value { display: inline-flex; align-items: baseline; gap: 4px; flex: 0 0 auto; }
 .dashboard-pulse-value { color: var(--text); font-family: var(--font-display); font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .dashboard-sparkline { display: block; width: 100%; height: 25px; margin-top: 4px; overflow: visible; opacity: .9; }
+.dashboard-pulse-metric { overflow: visible; }
+.dashboard-sparkline-layout { width: calc(100% + 24px); min-width: 0; margin-left: -24px; display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 4px; align-items: stretch; }
+.dashboard-sparkline-axis-rail { position: relative; min-width: 0; height: 25px; overflow: hidden; }
+.dashboard-sparkline-surface { position: relative; min-width: 0; height: 25px; overflow: visible; }
+.dashboard-sparkline-grid { position: absolute; top: 18.75%; right: 0; bottom: 12.5%; left: 0; z-index: 0; pointer-events: none; }
+.dashboard-sparkline-grid-line { position: absolute; display: block; background: color-mix(in srgb, var(--border) 42%, transparent); }
+.dashboard-sparkline-grid-h { right: 0; left: 0; height: 1px; }
+.dashboard-sparkline-grid-top { top: 0; }
+.dashboard-sparkline-grid-mid { top: 50%; }
+.dashboard-sparkline-grid-bottom { bottom: 0; }
+.dashboard-sparkline-grid-v { top: 0; bottom: 0; width: 1px; }
+.dashboard-sparkline-grid-left { left: 0; }
+.dashboard-sparkline-grid-quarter { left: 25%; }
+.dashboard-sparkline-grid-half { left: 50%; }
+.dashboard-sparkline-grid-three-quarter { left: 75%; }
+.dashboard-sparkline-grid-right { right: 0; }
+.dashboard-sparkline-surface > .dashboard-sparkline { position: relative; z-index: 1; }
+.dashboard-sparkline-axis-label { position: absolute; left: 0; right: 0; z-index: 3; max-width: 100%; overflow: hidden; color: #38c5ff; font: 550 8px var(--mono); line-height: 1; pointer-events: none; text-align: right; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(4, 7, 14, .9); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dashboard-sparkline-axis-label[hidden], .dashboard-sparkline-crosshair[hidden], .dashboard-sparkline-hover[hidden] { display: none; }
+.dashboard-sparkline-axis-y-max { top: 1px; }
+.dashboard-sparkline-axis-y-min { bottom: 2px; }
+.dashboard-sparkline-crosshair { position: absolute; top: 18.75%; bottom: 12.5%; z-index: 2; width: 1px; transform: translateX(-.5px); border-left: 1px dashed color-mix(in srgb, #38c5ff 76%, transparent); box-shadow: 0 0 6px rgba(56, 197, 255, .35); pointer-events: none; }
+.dashboard-sparkline-hover { position: absolute; top: 2px; z-index: 5; max-width: calc(100% - 4px); overflow: hidden; padding: 0; border: 0; border-radius: 0; background: transparent; color: #38c5ff; font: 550 8px var(--mono); line-height: 1; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(4, 7, 14, .9); white-space: nowrap; pointer-events: none; }
 .dashboard-sparkline-range, .telemetry-graph-range { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-dim); font: 500 9px var(--mono); line-height: 1.15; font-variant-numeric: tabular-nums; }
 .dashboard-sparkline-range { margin-top: 2px; }
 .dashboard-sparkline-range > span, .telemetry-graph-range > span { min-width: 0; display: inline-flex; align-items: baseline; gap: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2393,13 +2416,25 @@ input[type="number"] {
 .telemetry-metric-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font: 650 20px var(--mono); line-height: 1.05; font-variant-numeric: tabular-nums; }
 .telemetry-metric-unit { flex: 0 0 auto; color: var(--accent); font: 550 10px var(--mono); white-space: nowrap; }
 .telemetry-metric-label { min-width: 0; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 10px; }
-.telemetry-metric-sparkline { display: block; width: 100%; height: 48px; min-width: 0; border-radius: 3px; background-color: transparent; background-image: linear-gradient(color-mix(in srgb, var(--border) 42%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--border) 42%, transparent) 1px, transparent 1px); background-size: 25% 50%, 25% 100%; }
+.telemetry-metric-sparkline { position: relative; z-index: 1; display: block; width: 100%; height: 48px; min-width: 0; border-radius: 3px; background-color: transparent; }
+.telemetry-graph-grid { position: absolute; top: 5px; right: 0; bottom: 13px; left: 0; z-index: 0; pointer-events: none; }
+.telemetry-graph-grid-line { position: absolute; display: block; background: color-mix(in srgb, var(--border) 42%, transparent); }
+.telemetry-graph-grid-h { right: 0; left: 0; height: 1px; }
+.telemetry-graph-grid-top { top: 0; }
+.telemetry-graph-grid-mid { top: 50%; }
+.telemetry-graph-grid-bottom { bottom: 0; }
+.telemetry-graph-grid-v { top: 0; bottom: 0; width: 1px; }
+.telemetry-graph-grid-left { left: 0; }
+.telemetry-graph-grid-quarter { left: 25%; }
+.telemetry-graph-grid-half { left: 50%; }
+.telemetry-graph-grid-three-quarter { left: 75%; }
+.telemetry-graph-grid-right { right: 0; }
 .telemetry-graph-axis-label { position: absolute; z-index: 3; max-width: 100%; overflow: hidden; color: #38c5ff; font: 550 8px var(--mono); line-height: 1; pointer-events: none; text-align: right; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(4, 7, 14, .9); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .telemetry-graph-axis-label[hidden], .telemetry-graph-crosshair[hidden], .telemetry-graph-tooltip[hidden] { display: none; }
 .telemetry-graph-axis-y { left: 0; right: 0; }
 .telemetry-graph-axis-y-max { top: 2px; }
 .telemetry-graph-axis-y-min { bottom: 13px; }
-.telemetry-graph-crosshair { position: absolute; top: 0; bottom: 12px; z-index: 2; width: 1px; transform: translateX(-.5px); border-left: 1px dashed color-mix(in srgb, #38c5ff 76%, transparent); box-shadow: 0 0 6px rgba(56, 197, 255, .35); pointer-events: none; }
+.telemetry-graph-crosshair { position: absolute; top: 5px; bottom: 13px; z-index: 2; width: 1px; transform: translateX(-.5px); border-left: 1px dashed color-mix(in srgb, #38c5ff 76%, transparent); box-shadow: 0 0 6px rgba(56, 197, 255, .35); pointer-events: none; }
 .telemetry-graph-tooltip { position: absolute; z-index: 5; max-width: calc(100% - 4px); overflow: hidden; transform: none; padding: 0; border: 0; border-radius: 0; background: transparent; color: #38c5ff; box-shadow: none; font: 550 8px var(--mono); line-height: 1; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(4, 7, 14, .9); white-space: nowrap; pointer-events: none; }
 .telemetry-metric-sparkline-empty { opacity: .7; }
 .telemetry-section-heading { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 9px; }
@@ -3467,8 +3502,10 @@ input[type="number"] {
 .recording-apm-chart { position: relative; height: 60px; padding: 5px 1px 8px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); overflow: hidden; }
 .recording-apm-chart-live { outline: none; cursor: crosshair; }
 .recording-apm-chart-live:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, #38c5ff 55%, transparent); }
-.recording-apm-tooltip { position: absolute; top: 6px; z-index: 6; transform: translateX(-50%); padding: 5px 8px; border: 1px solid color-mix(in srgb, #38c5ff 55%, var(--border)); border-radius: 6px; background: #0d2130; color: #dff7ff; box-shadow: 0 7px 20px rgba(0,0,0,.36); font: 650 10px var(--mono); white-space: nowrap; pointer-events: none; }
+.recording-apm-tooltip { position: absolute; top: 2px; z-index: 6; max-width: calc(100% - 4px); overflow: hidden; padding: 0; border: 0; border-radius: 0; background: transparent; color: #38c5ff; box-shadow: none; font: 550 8px var(--mono); line-height: 1; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(4, 7, 14, .9); white-space: nowrap; pointer-events: none; }
 .recording-apm-tooltip[hidden] { display: none; }
+.recording-apm-hover-crosshair { position: absolute; top: 0; bottom: 9px; z-index: 5; width: 1px; transform: translateX(-.5px); border-left: 1px dashed color-mix(in srgb, #38c5ff 76%, transparent); box-shadow: 0 0 6px rgba(56, 197, 255, .35); pointer-events: none; }
+.recording-apm-hover-crosshair[hidden] { display: none; }
 .recording-apm-trace { position: absolute; inset: 6px 0 8px; width: 100%; height: calc(100% - 14px); overflow: visible; }
 .recording-apm-trace polyline { fill: none; stroke: #38e7ff; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 64%, transparent)); }
 .recording-apm-marker-ticks { position: absolute; inset: 0; }

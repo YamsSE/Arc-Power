@@ -1188,6 +1188,7 @@ function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = ''
   const chart = el('div', { class: `recording-apm-chart recording-apm-chart-live${extraClass ? ` ${extraClass}` : ''}`, 'aria-label': samples.length || clip.apmAvailable === true ? 'APM timeline' : 'APM telemetry unavailable for this clip' }) as RecordingApmChartElement;
   let playbackMs = 0;
   const playhead = el('div', { class: 'recording-apm-playhead', 'aria-hidden': 'true' });
+  const hoverCrosshair = el('div', { class: 'recording-apm-hover-crosshair', hidden: true, 'aria-hidden': 'true' });
   const tooltip = el('div', { class: 'recording-apm-tooltip', hidden: true });
   const trace = samples.length > 0 ? svgEl('polyline', { points: '' }) : null;
   const updateTrace = () => {
@@ -1208,13 +1209,19 @@ function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = ''
   const placeTooltipAtSample = (sample: { atMs: number; apm: number }): void => {
     const width = chart.clientWidth || 0;
     const ratio = span > 0 ? Math.min(1, Math.max(0, sample.atMs / span)) : 0;
-    // Keep the pill attached to the nearest sampled point and inside the
-    // graph when the point is near either edge.
-    const halfPill = 58;
-    const left = Math.min(Math.max(halfPill, ratio * width), Math.max(halfPill, width - halfPill));
-    tooltip.style.left = `${left}px`;
-    tooltip.textContent = `APM: ${sample.apm} · ${formatTime(sample.atMs / 1000)}`;
+    const x = Math.min(width, Math.max(0, ratio * width));
+    hoverCrosshair.style.left = `${x}px`;
+    hoverCrosshair.hidden = false;
+    tooltip.textContent = `${sample.apm} · ${formatTime(sample.atMs / 1000)}`;
     tooltip.hidden = false;
+    // Keep the compact text next to the nearest sample's dashed line. It is
+    // placed on the side with room, matching the Monitoring graph hover.
+    const textWidth = tooltip.offsetWidth || 48;
+    const textHeight = tooltip.offsetHeight || 10;
+    const maxLeft = Math.max(1, width - textWidth - 1);
+    const left = x <= width / 2 ? Math.min(maxLeft, x + 5) : Math.max(1, x - textWidth - 5);
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = '2px';
   };
   const seekFromEvent = (event: MouseEvent): void => {
     const atMs = timelineMsAtEvent(event);
@@ -1252,12 +1259,12 @@ function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = ''
       placeTooltipAtSample(sample);
     };
     chart.addEventListener('mousemove', showTooltip);
-    chart.addEventListener('mouseleave', () => { tooltip.hidden = true; });
-    chart.addEventListener('focusout', () => { tooltip.hidden = true; });
+    chart.addEventListener('mouseleave', () => { tooltip.hidden = true; hoverCrosshair.hidden = true; });
+    chart.addEventListener('focusout', () => { tooltip.hidden = true; hoverCrosshair.hidden = true; });
   } else {
     chart.append(el('div', { class: 'recording-apm-empty-trace', 'aria-hidden': 'true' }));
   }
-  chart.append(playhead, tooltip);
+  chart.append(playhead, hoverCrosshair, tooltip);
   chart.updateDuration = (nextDurationMs: number) => {
     if (!Number.isFinite(nextDurationMs) || nextDurationMs <= 0) return;
     const boundedDuration = Math.max(1000, Math.round(nextDurationMs));

@@ -116,13 +116,15 @@ export function graphSamplePosition(
   width: number,
   height: number,
   range: GraphRange,
+  bottomPadding = 13,
+  plotHeight = Math.max(4, height - 18),
 ): GraphSamplePosition | null {
   if (points.length === 0 || index < 0 || index >= points.length || width <= 0 || height <= 0) return null;
   const timeSpan = Math.max(0.001, points[points.length - 1].t - points[0].t);
   const ratio = Math.min(1, Math.max(0, (points[index].t - points[0].t) / timeSpan));
   const valueSpan = Math.max(0.001, range.max - range.min);
   const x = points.length <= 1 ? width / 2 : ratio * (width - 4) + 2;
-  const y = height - 13 - ((points[index].v - range.min) / valueSpan) * Math.max(4, height - 18);
+  const y = height - bottomPadding - ((points[index].v - range.min) / valueSpan) * Math.max(4, plotHeight);
   return { x, y };
 }
 
