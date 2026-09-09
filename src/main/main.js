@@ -45,7 +45,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
-import { prepareArcPowerCacheSync, resolveArcPowerCachePath, shouldClearCache, filterRelaunchArgs, ensureCacheDirectorySync, resetCacheDirectorySync } from './cache-lifecycle.js';
+import { prepareArcPowerCacheSync, resolveArcPowerCachePath, shouldClearCache, resolveCacheRestartRelaunchOptions, ensureCacheDirectorySync, resetCacheDirectorySync } from './cache-lifecycle.js';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
 import { runSmoke } from './smoke.js';
@@ -3397,8 +3397,13 @@ async function main() {
         return { ok: true, restarting: false };
       }
       try {
-        const args = [...filterRelaunchArgs(process.argv.slice(1)), '--clear-cache'];
-        app.relaunch({ args });
+        const relaunchOptions = resolveCacheRestartRelaunchOptions({
+          argv: process.argv.slice(1),
+          isPackaged: app.isPackaged,
+          platform: process.platform,
+          portableWrapperPath,
+        });
+        app.relaunch(relaunchOptions);
         // app.quit() can be held by a renderer close-to-tray handler while
         // the relaunch target is already queued. Exit deterministically after
         // scheduling the relaunch so Maintenance really restarts Arc Power.

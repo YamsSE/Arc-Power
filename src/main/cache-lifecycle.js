@@ -173,6 +173,33 @@ export function filterRelaunchArgs(argv = []) {
 }
 
 /**
+ * Build the one-shot cache reset relaunch options without touching Electron.
+ *
+ * A portable Electron process runs from the wrapper's temporary extraction
+ * directory. When that process exits, the portable wrapper removes the
+ * extraction directory, so Electron's default `process.execPath` is no longer
+ * a valid relaunch target. Point portable packaged launches back at the stable
+ * wrapper and leave dev/installed launches on Electron's normal executable.
+ */
+export function resolveCacheRestartRelaunchOptions({
+  argv = [],
+  isPackaged = false,
+  platform = process.platform,
+  portableWrapperPath = null,
+} = {}) {
+  const args = [...filterRelaunchArgs(argv), CLEAR_CACHE_ARG];
+  const usePortableWrapper = platform === 'win32'
+    && isPackaged === true
+    && typeof portableWrapperPath === 'string'
+    && path.isAbsolute(portableWrapperPath);
+  if (!usePortableWrapper) return Object.freeze({ args: Object.freeze(args) });
+  return Object.freeze({
+    args: Object.freeze(args),
+    execPath: path.resolve(portableWrapperPath),
+  });
+}
+
+/**
  * Recursively remove a dedicated user-data tree. The target must be absolute
  * and non-root; rm's force option makes an already-clean reset idempotent.
  */
