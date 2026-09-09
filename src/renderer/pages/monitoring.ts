@@ -58,6 +58,7 @@ interface MonState {
   deviceId: number | null;
   series: Record<string, SeriesPoint[]>;
   metricCanvases: Map<string, HTMLCanvasElement>;
+  rangeNodes: Map<string, { min: HTMLElement; max: HTMLElement }>;
   fpsTileValue: HTMLElement | null;
   fpsNote: HTMLElement | null;
   metricBindings: MetricBinding[];
@@ -150,8 +151,8 @@ function shortGpuNameFromName(name: string | null | undefined): string {
   return chipLabelGpu(plainName) ?? plainName;
 }
 
-function graphKey(deviceId: number, segmentId: string): string {
-  return `gpu-${deviceId}-${segmentId}`;
+function gpuGraphKey(deviceKey: string, segmentId: string): string {
+  return `gpu:${encodeURIComponent(deviceKey)}:${segmentId}`;
 }
 
 function systemGraphKey(segmentId: string): string {
@@ -162,10 +163,25 @@ function fpsGraphKey(id: FpsBinding['id']): string {
   return `fps-${id}`;
 }
 
+function graphSegment(seriesId: string): string {
+  if (seriesId.startsWith('gpu:')) return seriesId.slice(seriesId.lastIndexOf(':') + 1);
+  if (seriesId.startsWith('system-')) return seriesId.slice('system-'.length);
+  return seriesId.replace(/^gpu-\d+-/, '');
+}
+
 function pushMetricSeries(seriesId: string, t: number, value: number | undefined): void {
   if (!mon || value === undefined || !Number.isFinite(value)) return;
+  const current = mon.series[seriesId] ?? [];
+  // onUpdate can run once for each adapter while the other adapter's latest
+  // sample is unchanged. Replace a point with the same timestamp instead of
+  // appending it again; duplicate timestamps made the polyline appear to
+  // twitch or fold when the two telemetry lanes arrived close together.
+  const sameTime = current.findIndex((point) => point.t === t);
+  const next = sameTime >= 0
+    ? current.map((point, index) => index === sameTime ? { t, v: value } : point)
+    : pushSeries(current, t, value, TELEMETRY_HISTORY_POINTS);
   mon.series[seriesId] = trimSeriesWindow(
-    sortSeriesByTime(pushSeries(mon.series[seriesId] ?? [], t, value, TELEMETRY_HISTORY_POINTS)),
+    sortSeriesByTime(next),
     t,
     TELEMETRY_HISTORY_WINDOW_S,
   );
@@ -195,12 +211,22 @@ function metricNode(
   const sparkline = seriesId
     ? el('canvas', { class: 'telemetry-metric-sparkline' })
     : el('div', { class: 'telemetry-metric-sparkline telemetry-metric-sparkline-empty', 'aria-hidden': 'true' });
+  const graph = el('div', { class: 'telemetry-metric-graph' }, [sparkline]);
+  if (seriesId && mon) {
+    const min = el('strong', { text: '—' });
+    const max = el('strong', { text: '—' });
+    mon.rangeNodes.set(seriesId, { min, max });
+    graph.append(el('div', { class: 'telemetry-graph-range', 'aria-label': `${label} graph range` }, [
+      el('span', {}, [el('span', { class: 'telemetry-graph-range-label', text: 'Min' }), min]),
+      el('span', {}, [el('span', { class: 'telemetry-graph-range-label', text: 'Max' }), max]),
+    ]));
+  }
   const node = el('div', { class: `telemetry-metric stat-tile${extraClass ? ` ${extraClass}` : ''}`, dataset: { metricId: `${category}:${label}` } }, [
     el('div', { class: 'telemetry-metric-copy' }, [
       el('div', { class: 'telemetry-metric-value-line' }, [valueNode, unitNode]),
       el('div', { class: 'telemetry-metric-label stat-label', text: label }),
     ]),
-    sparkline,
+    graph,
   ]);
   if (mon) {
     mon.metricBindings.push({ category, label, logMetricId, node, valueNode, unitNode, read });
@@ -233,7 +259,7 @@ function gpuMetricNodes(device: DeviceInfo | null, state: AppState): HTMLElement
   // Intel telemetry surface. Do not render an empty Fan 1 tile for them.
   const fanCount = sharedMemoryGpu ? 0 : Math.max(1, sample?.fanRpm?.length ?? 1);
   const category = device ? `gpu-${device.id}` : 'gpu-vendor';
-  const series = (segmentId: string): string | undefined => graphKey(device?.id ?? 0, segmentId);
+  const series = (segmentId: string): string | undefined => gpuGraphKey(device ? deviceKeyOf(device) : 'vendor', segmentId);
   const nodes = [
     metricNode('Util', (s) => {
       const v = readSample(s);
@@ -259,16 +285,16 @@ function gpuMemoryMetricNodes(device: DeviceInfo | null, state: AppState): HTMLE
       metricNode('Shared memory in use', (s) => {
         const v = readSample(s);
         return { value: formatGpuMemoryGb(v?.gpuMemUsedBytes), unit: 'GB shared' };
-      }, state, '', category, graphKey(device?.id ?? 0, 'vram'), 'gpu-shared-memory'),
+      }, state, '', category, gpuGraphKey(device ? deviceKeyOf(device) : 'vendor', 'vram'), 'gpu-shared-memory'),
     ];
   }
   return [
     metricNode('VRAM in use', (s) => {
       const v = readSample(s);
       return { value: formatGpuMemoryGb(v?.gpuMemUsedBytes), unit: gpuMemoryLabel(v?.gpuMemorySource) === 'VRAM' ? 'GB' : 'GB shared' };
-    }, state, '', category, graphKey(device?.id ?? 0, 'vram'), 'gpu-vram'),
-    metricNode('Memory clock', (s) => ({ value: statValue(readSample(s)?.memClockMhz), unit: 'MHz' }), state, '', category, graphKey(device?.id ?? 0, 'mem-clock'), 'gpu-memory-clock'),
-    metricNode('VramTemp', (s) => ({ value: statValue(readSample(s)?.vramTempC), unit: '°C' }), state, '', category, graphKey(device?.id ?? 0, 'vram-temp'), 'gpu-vram-temperature'),
+    }, state, '', category, gpuGraphKey(device ? deviceKeyOf(device) : 'vendor', 'vram'), 'gpu-vram'),
+    metricNode('Memory clock', (s) => ({ value: statValue(readSample(s)?.memClockMhz), unit: 'MHz' }), state, '', category, gpuGraphKey(device ? deviceKeyOf(device) : 'vendor', 'mem-clock'), 'gpu-memory-clock'),
+    metricNode('VramTemp', (s) => ({ value: statValue(readSample(s)?.vramTempC), unit: '°C' }), state, '', category, gpuGraphKey(device ? deviceKeyOf(device) : 'vendor', 'vram-temp'), 'gpu-vram-temperature'),
   ];
 }
 
@@ -276,17 +302,27 @@ function fpsMetricNode(label: string, id: FpsBinding['id'], unit: string): HTMLE
   const valueNode = el('div', { class: 'telemetry-metric-value stat-value', text: '-' });
   const unitNode = el('div', { class: 'telemetry-metric-unit stat-unit', text: unit });
   const seriesId = fpsGraphKey(id);
+  const canvas = el('canvas', { class: 'telemetry-metric-sparkline' });
+  const min = el('strong', { text: '—' });
+  const max = el('strong', { text: '—' });
+  const graph = el('div', { class: 'telemetry-metric-graph' }, [
+    canvas,
+    el('div', { class: 'telemetry-graph-range', 'aria-label': `${label} graph range` }, [
+      el('span', {}, [el('span', { class: 'telemetry-graph-range-label', text: 'Min' }), min]),
+      el('span', {}, [el('span', { class: 'telemetry-graph-range-label', text: 'Max' }), max]),
+    ]),
+  ]);
   const node = el('div', { class: `telemetry-metric stat-tile${id === 'fps' ? ' mon-fps-tile' : ''}`, dataset: { metricId: `fps:${label}` } }, [
     el('div', { class: 'telemetry-metric-copy' }, [
       el('div', { class: 'telemetry-metric-value-line' }, [valueNode, unitNode]),
       el('div', { class: 'telemetry-metric-label stat-label', text: label }),
     ]),
-    el('canvas', { class: 'telemetry-metric-sparkline' }),
+    graph,
   ]);
   if (mon) {
     mon.fpsBindings.push({ category: 'fps', label, node, id, seriesId, valueNode, unitNode });
-    const canvas = node.querySelector('canvas');
-    if (canvas instanceof HTMLCanvasElement) mon.metricCanvases.set(seriesId, canvas);
+    mon.rangeNodes.set(seriesId, { min, max });
+    mon.metricCanvases.set(seriesId, canvas);
   }
   return node;
 }
@@ -321,9 +357,7 @@ function refreshFpsMetrics(sample: FpsSample | null): void {
 }
 
 function monitoringSeriesColor(seriesId: string): string {
-  const segment = seriesId.startsWith('system-')
-    ? seriesId.slice('system-'.length)
-    : seriesId.replace(/^gpu-\d+-/, '');
+  const segment = graphSegment(seriesId);
   if (segment === 'util' || segment === 'cpu-util') return TELEMETRY_PULSE_COLORS.utilization;
   if (segment === 'temp' || segment === 'vram-temp' || segment === 'cpu-temp') return TELEMETRY_PULSE_COLORS.temperature;
   if (segment === 'power' || segment === 'cpu-power' || segment === 'voltage') return TELEMETRY_PULSE_COLORS.power;
@@ -331,12 +365,20 @@ function monitoringSeriesColor(seriesId: string): string {
   return cssVar('--accent');
 }
 
+function graphRangeValue(seriesId: string, value: number): string {
+  const segment = graphSegment(seriesId);
+  if (segment === 'power' || segment === 'cpu-power' || segment === 'vram' || segment === 'ram-used' || segment === 'ram-capacity') return value.toFixed(1);
+  if (segment === 'voltage') return value.toFixed(3);
+  if (segment === 'frame-time') return value.toFixed(1);
+  return String(Math.round(value));
+}
+
 /** Dashboard-style compact history strip for each readout row. */
-function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], color = cssVar('--accent')): void {
+function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], color = cssVar('--accent')): { min: number; max: number } | null {
   const dpr = Math.max(1, window.devicePixelRatio || 1);
   const w = Math.round(canvas.clientWidth);
   const h = Math.round(canvas.clientHeight);
-  if (w <= 0 || h <= 0) return;
+  if (w <= 0 || h <= 0) return null;
   const previousLayout = miniCanvasLayouts.get(canvas);
   const pixelWidth = Math.max(1, Math.round(w * dpr));
   const pixelHeight = Math.max(1, Math.round(h * dpr));
@@ -355,10 +397,10 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], color 
     miniCanvasLayouts.set(canvas, { width: w, height: h, dpr });
   }
   const ctx = canvas.getContext('2d');
-  if (!ctx) return;
+  if (!ctx) return null;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  if (points.length === 0) return;
+  if (points.length === 0) return null;
   // Keep the plotted range tight to the samples, matching Dashboard's
   // Performance pulse. A flat series still gets a tiny scale so it remains
   // visible without inventing a large amount of empty headroom.
@@ -368,7 +410,7 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], color 
     if (point.v < min) min = point.v;
     if (point.v > max) max = point.v;
   }
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return;
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
   const span = Math.max(0.001, max - min);
   const drawn = downsample(points, 72);
   const x = (index: number): number => drawn.length <= 1 ? w / 2 : (index / (drawn.length - 1)) * (w - 4) + 2;
@@ -385,6 +427,7 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], color 
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.stroke();
+  return { min, max };
 }
 
 async function pollFps(): Promise<void> {
@@ -427,6 +470,7 @@ export const monitoringPage: Page = {
       deviceId: defaultFpsDevice(s)?.id ?? null,
       series: {},
       metricCanvases: new Map(),
+      rangeNodes: new Map(),
       fpsTileValue: null,
       fpsNote: null,
       metricBindings: [],
@@ -523,18 +567,18 @@ export const monitoringPage: Page = {
       const sample = device ? sampleForDevice(state, device) : systemSample(state);
       const now = sample?.t ?? Date.now();
       const t = now > 10_000_000_000 ? now / 1000 : now;
-      const id = device?.id ?? 0;
-      pushMetricSeries(graphKey(id, 'util'), t, sample?.gpuUtilPct ?? sample?.utilPct);
-      pushMetricSeries(graphKey(id, 'clock'), t, sample?.gpuClockMhz);
-      pushMetricSeries(graphKey(id, 'voltage'), t, sample?.gpuVoltageV);
-      pushMetricSeries(graphKey(id, 'temp'), t, sample?.tempC);
-      pushMetricSeries(graphKey(id, 'power'), t, sample?.powerW);
-      pushMetricSeries(graphKey(id, 'fan'), t, sample?.fanRpm?.[0]);
-      pushMetricSeries(graphKey(id, 'vram'), t, sample?.gpuMemUsedBytes === null || sample?.gpuMemUsedBytes === undefined
+      const key = device ? deviceKeyOf(device) : 'vendor';
+      pushMetricSeries(gpuGraphKey(key, 'util'), t, sample?.gpuUtilPct ?? sample?.utilPct);
+      pushMetricSeries(gpuGraphKey(key, 'clock'), t, sample?.gpuClockMhz);
+      pushMetricSeries(gpuGraphKey(key, 'voltage'), t, sample?.gpuVoltageV);
+      pushMetricSeries(gpuGraphKey(key, 'temp'), t, sample?.tempC);
+      pushMetricSeries(gpuGraphKey(key, 'power'), t, sample?.powerW);
+      pushMetricSeries(gpuGraphKey(key, 'fan'), t, sample?.fanRpm?.[0]);
+      pushMetricSeries(gpuGraphKey(key, 'vram'), t, sample?.gpuMemUsedBytes === null || sample?.gpuMemUsedBytes === undefined
         ? undefined
         : sample.gpuMemUsedBytes / 1e9);
-      pushMetricSeries(graphKey(id, 'mem-clock'), t, sample?.memClockMhz);
-      pushMetricSeries(graphKey(id, 'vram-temp'), t, sample?.vramTempC);
+      pushMetricSeries(gpuGraphKey(key, 'mem-clock'), t, sample?.memClockMhz);
+      pushMetricSeries(gpuGraphKey(key, 'vram-temp'), t, sample?.vramTempC);
     }
     const sample = systemSample(state);
     const now = sample?.t ?? Date.now();
@@ -961,6 +1005,7 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
   clear(container);
   const s = ctx.store.get();
   m.metricCanvases = new Map();
+  m.rangeNodes = new Map();
   m.metricBindings = [];
   m.fpsBindings = [];
   const fpsNote = el('p', { class: 'card-note mon-fps-note', text: FPS_CHECKING_NOTE });
@@ -1030,7 +1075,11 @@ function redrawAll(): void {
     graphRedrawFrame = null;
     if (!mon) return;
     for (const [id, canvas] of mon.metricCanvases) {
-      drawMiniSeries(canvas, mon.series[id] ?? [], monitoringSeriesColor(id));
+      const range = drawMiniSeries(canvas, mon.series[id] ?? [], monitoringSeriesColor(id));
+      const nodes = mon.rangeNodes.get(id);
+      if (!nodes) continue;
+      nodes.min.textContent = range ? graphRangeValue(id, range.min) : '—';
+      nodes.max.textContent = range ? graphRangeValue(id, range.max) : '—';
     }
   });
 }

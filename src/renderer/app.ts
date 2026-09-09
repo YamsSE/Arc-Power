@@ -152,12 +152,25 @@ let featuresetSwapInFlight = false;
  * the complete list on selection changes also moves the previous focus into
  * the secondary set without leaving a stale lane behind.
  */
-async function configureDashboardTelemetry(focusedId: number | null, devices: Array<{ id: number }>): Promise<void> {
-  const secondaryIds = devices
-    .map((device) => device.id)
-    .filter((id) => Number.isInteger(id) && id >= 0 && id !== focusedId);
+async function configureDashboardTelemetry(
+  focusedId: number | null,
+  devices: Array<{ id: number; deviceKey?: string; deviceKeys?: string[] | null }>,
+): Promise<void> {
+  // Secondary lanes are requested by durable identity. Numeric session ids
+  // can be reassigned after an inventory refresh, which used to make the
+  // dashboard ask the overlay lane for the wrong physical adapter.
+  const focused = devices.find((device) => device.id === focusedId);
+  const focusedKeys = new Set([
+    focused?.deviceKey,
+    ...(Array.isArray(focused?.deviceKeys) ? focused.deviceKeys : []),
+  ].filter((key): key is string => typeof key === 'string' && key.trim().length > 0));
+  const secondaryKeys = devices
+    .filter((device) => device.id !== focusedId)
+    .map((device) => device.deviceKey ?? device.deviceKeys?.[0] ?? null)
+    .filter((key): key is string => typeof key === 'string' && key.trim().length > 0)
+    .filter((key) => !focusedKeys.has(key));
   try {
-    await api.overlayTelemetryStart(secondaryIds);
+    await api.overlayTelemetryStart({ owner: 'dashboard', deviceKeys: secondaryKeys });
   } catch (err) {
     toast('warn', 'Telemetry', `Additional GPU telemetry could not start: ${err instanceof Error ? err.message : String(err)}`);
   }

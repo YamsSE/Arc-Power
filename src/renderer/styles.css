@@ -869,6 +869,12 @@ html, body {
 .dashboard-pulse-inline-value { display: inline-flex; align-items: baseline; gap: 4px; flex: 0 0 auto; }
 .dashboard-pulse-value { color: var(--text); font-family: var(--font-display); font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .dashboard-sparkline { display: block; width: 100%; height: 25px; margin-top: 4px; overflow: visible; opacity: .9; }
+.dashboard-sparkline-range, .telemetry-graph-range { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-dim); font: 500 9px var(--mono); line-height: 1.15; font-variant-numeric: tabular-nums; }
+.dashboard-sparkline-range { margin-top: 2px; }
+.dashboard-sparkline-range > span, .telemetry-graph-range > span { min-width: 0; display: inline-flex; align-items: baseline; gap: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dashboard-sparkline-range > span:last-child, .telemetry-graph-range > span:last-child { text-align: right; }
+.dashboard-sparkline-range strong, .telemetry-graph-range strong { color: var(--text-muted); font-weight: 650; }
+.dashboard-sparkline-range-label, .telemetry-graph-range-label { color: var(--text-dim); }
 .dashboard-session-stats { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 10.5px; }
 .dashboard-session-title { color: var(--text-muted); font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
 .dashboard-session-stat { display: inline-flex; align-items: baseline; gap: 5px; }
@@ -2379,11 +2385,12 @@ input[type="number"] {
 .telemetry-panel[data-telemetry-panel="fps"] .telemetry-metric-grid { grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); }
 .telemetry-metric { min-width: 0; min-height: 56px; display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.08fr); align-items: center; gap: 7px; padding: 6px 7px; border: 1px solid color-mix(in srgb, var(--border) 86%, var(--accent)); border-radius: 6px; background: color-mix(in srgb, var(--bg-inset) 82%, var(--bg-elev)); }
 .telemetry-metric-copy { min-width: 0; display: grid; grid-template-rows: auto auto; align-items: end; }
+.telemetry-metric-graph { min-width: 0; display: grid; align-content: center; gap: 2px; }
 .telemetry-metric-value-line { min-width: 0; display: inline-flex; align-items: baseline; gap: 4px; max-width: 100%; }
 .telemetry-metric-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font: 650 20px var(--mono); line-height: 1.05; font-variant-numeric: tabular-nums; }
 .telemetry-metric-unit { flex: 0 0 auto; color: var(--accent); font: 550 10px var(--mono); white-space: nowrap; }
 .telemetry-metric-label { min-width: 0; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 10px; }
-.telemetry-metric-sparkline { display: block; width: 100%; height: 38px; min-width: 0; border-radius: 3px; background-color: var(--bg-inset); background-image: linear-gradient(color-mix(in srgb, var(--border) 42%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--border) 42%, transparent) 1px, transparent 1px); background-size: 25% 50%, 25% 100%; }
+.telemetry-metric-sparkline { display: block; width: 100%; height: 38px; min-width: 0; border-radius: 3px; background-color: transparent; background-image: linear-gradient(color-mix(in srgb, var(--border) 42%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--border) 42%, transparent) 1px, transparent 1px); background-size: 25% 50%, 25% 100%; }
 .telemetry-metric-sparkline-empty { opacity: .7; }
 .telemetry-section-heading { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 9px; }
 .telemetry-section-heading .card-title { margin: 0; }

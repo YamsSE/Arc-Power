@@ -124,8 +124,9 @@ export interface ArcPowerApi {
    *  integer starts the per-device telemetry. */
   telemetryStart(deviceId: number | null): Promise<void>;
   telemetryLatest(deviceId: number): Promise<TelemetrySample | null>;
-  /** Basic Overlay secondary-adapter lanes; an empty list hides GPU2. */
-  overlayTelemetryStart(deviceIds: number[]): Promise<void>;
+  /** Identity-bound secondary-adapter lanes. The owner keeps dashboard and
+   * Basic Overlay requests independent while the main process shares work. */
+  overlayTelemetryStart(request: { owner?: 'dashboard' | 'overlay' | string; deviceKeys: string[] } | number[] | string[]): Promise<void>;
   /** Resize the Basic Overlay after its all-device inventory is rendered. */
   overlayResize(deviceCount: number): Promise<void>;
   /** 1.0.1 no-Intel round: telemetryStop(null) is the symmetric stop for

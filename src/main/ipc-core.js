@@ -1350,6 +1350,11 @@ export function createIpcHandlers({
    * selected-device service; the HUD may additionally subscribe to every
    * other inventory row without changing the selected-device state flow. */
   const overlayTelemetry = new Map();
+  // Dashboard and Basic Overlay are separate consumers. Keep their desired
+  // identity sets independently and reconcile the union, so a late settings
+  // refresh from one renderer cannot stop the other renderer's lanes.
+  const overlayTelemetryOwners = new Map();
+  let overlayTelemetryRequestQueue = Promise.resolve();
   // Vendor telemetry factories own their adapter instance. Overlay OS-only
   // rows therefore use independent lanes instead of rebinding the main
   // renderer's singleton adapter.
@@ -1666,7 +1671,7 @@ export function createIpcHandlers({
    * do not replace the main selected-device service or the shared OS-stats
    * target; they publish only the secondary adapter's own readings.
    */
-  const startOverlayTelemetry = async (deviceIds) => {
+  const startOverlayTelemetry = async (requests = []) => {
     const generation = ++overlayTelemetryGeneration;
     await stopOverlayTelemetry();
     let pollMs = OVERLAY_POLL_MS_DEFAULT;
@@ -1677,9 +1682,21 @@ export function createIpcHandlers({
     if (generation !== overlayTelemetryGeneration) return;
     const devices = await backend.listDevices();
     if (generation !== overlayTelemetryGeneration) return;
-    const wanted = [...new Set(deviceIds)]
-      .filter((id) => Number.isInteger(id) && id >= 0)
-      .filter((id) => devices.some((device) => device.id === id));
+    const wantedRequests = Array.isArray(requests) ? requests : [];
+    const wanted = devices
+      .filter((device) => {
+        const aliases = [
+          device.deviceKey,
+          ...(Array.isArray(device.deviceKeys) ? device.deviceKeys : []),
+          deviceHardwareKey(device),
+        ].filter((key) => typeof key === 'string' && key.length > 0);
+        return wantedRequests.some((request) => {
+          if (Number.isInteger(request)) return device.id === request;
+          if (typeof request !== 'string') return false;
+          return aliases.includes(request);
+        });
+      })
+      .map((device) => device.id);
     for (const deviceId of wanted) {
       if (generation !== overlayTelemetryGeneration) return;
       const device = devices.find((entry) => entry.id === deviceId);
@@ -1726,7 +1743,7 @@ export function createIpcHandlers({
             emitTelemetry({
               t: Date.now(),
               deviceId,
-              deviceKey: target?.deviceKey ?? device?.deviceKey ?? null,
+              deviceKey: target?.deviceKey ?? device?.deviceKey ?? deviceHardwareKey(device) ?? null,
               deviceKeys: Array.isArray(target?.deviceKeys)
                 ? [...target.deviceKeys]
                 : Array.isArray(device?.deviceKeys) ? [...device.deviceKeys] : null,
@@ -1753,7 +1770,7 @@ export function createIpcHandlers({
         if (generation !== overlayTelemetryGeneration) return;
         emitTelemetry({
           deviceId,
-          deviceKey: target?.deviceKey ?? device?.deviceKey ?? null,
+          deviceKey: target?.deviceKey ?? device?.deviceKey ?? deviceHardwareKey(device) ?? null,
           deviceKeys: Array.isArray(target?.deviceKeys)
             ? [...target.deviceKeys]
             : Array.isArray(device?.deviceKeys) ? [...device.deviceKeys] : null,
@@ -1786,6 +1803,34 @@ export function createIpcHandlers({
     }
   };
 
+  const requestOverlayTelemetry = async (payload) => {
+    const isObject = payload && typeof payload === 'object' && !Array.isArray(payload);
+    const owner = isObject && typeof payload.owner === 'string' && payload.owner.trim().length > 0
+      ? payload.owner.trim()
+      : 'legacy';
+    const requests = Array.isArray(payload)
+      ? payload
+      : isObject && Array.isArray(payload.deviceKeys) ? payload.deviceKeys : null;
+    if (!requests || requests.some((value) => !(
+      (Number.isInteger(value) && value >= 0)
+      || (typeof value === 'string' && value.length > 0 && value.length <= 256)
+    ))) {
+      throw new Error('overlay telemetry request must contain device keys or non-negative device ids');
+    }
+    overlayTelemetryOwners.set(owner, [...new Set(requests)]);
+    // Serialize stop/start reconciliation. Both renderers can publish a
+    // selection at once; each request then sees the latest owner sets and the
+    // last call cannot tear down a newer lane halfway through startup.
+    const reconcile = overlayTelemetryRequestQueue
+      .catch(() => {})
+      .then(async () => {
+        const union = [...new Set([...overlayTelemetryOwners.values()].flat())];
+        await startOverlayTelemetry(union);
+      });
+    overlayTelemetryRequestQueue = reconcile.catch(() => {});
+    return reconcile;
+  };
+
   // M152: the main process assigns the holder after IPC registration. If a
   // renderer starts a lane during that window, its initial optional calls are
   // intentionally empty; once the adapter lands, reconcile the live session
@@ -1802,6 +1847,7 @@ export function createIpcHandlers({
     try { await stabilityService?.stop?.(); } catch { /* close the run honestly on teardown */ }
     telemetryGeneration += 1;
     overlayTelemetryGeneration += 1;
+    overlayTelemetryOwners.clear();
     // A startup can still be waiting on inventory/sysinfo when teardown
     // arrives. Do not let a later snapshot read join that invalidated promise
     // instead of starting a fresh lane for the current panel.
@@ -2683,9 +2729,8 @@ export function createIpcHandlers({
         await startTelemetry(deviceId, false);
         return latestTelemetry.get(deviceId) ?? null;
       },
-      'overlay-telemetry-start': async (deviceIds) => {
-        if (!Array.isArray(deviceIds)) throw new Error('overlay telemetry device list must be an array');
-        await startOverlayTelemetry(deviceIds);
+      'overlay-telemetry-start': async (request) => {
+        await requestOverlayTelemetry(request);
       },
 
       'telemetry-stop': async (deviceId) => {

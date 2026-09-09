@@ -494,8 +494,11 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const cpuFreqMhz = numOrNull(s.cpuFreqMhz);
   const cpuTemp = numOrNull(s.cpuTempC);
   const cpuPower = numOrNull(s.cpuPowerW);
-  // The device utilPct wins; the OS counter is the fallback (both null -> '-').
-  const gpuUtil = numOrNull(s.utilPct) ?? numOrNull(s.gpuUtilPct);
+  // Prefer the adapter-specific GPU counter. The legacy utilPct field can be
+  // an aggregate/engine value from a different source (and was especially
+  // misleading for a selected secondary GPU); it remains the fallback for
+  // older samples that do not carry gpuUtilPct.
+  const gpuUtil = numOrNull(s.gpuUtilPct) ?? numOrNull(s.utilPct);
   const gpuClock = numOrNull(s.gpuClockMhz);
   const memClock = numOrNull(s.memClockMhz);
   const vram = numOrNull(s.gpuMemUsedBytes);

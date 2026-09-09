@@ -82,6 +82,8 @@ type DashboardPulseLane = {
   startedAt: number;
   valueNodes: Map<DashboardPulseId, HTMLElement>;
   pathNodes: Map<DashboardPulseId, SVGPathElement>;
+  rangeMinNodes: Map<DashboardPulseId, HTMLElement>;
+  rangeMaxNodes: Map<DashboardPulseId, HTMLElement>;
   runtimeNode: HTMLElement | null;
   peakNode: HTMLElement | null;
   averageNode: HTMLElement | null;
@@ -125,6 +127,8 @@ function pulseLaneFor(key: string): DashboardPulseLane {
     startedAt: Date.now(),
     valueNodes: new Map(),
     pathNodes: new Map(),
+    rangeMinNodes: new Map(),
+    rangeMaxNodes: new Map(),
     runtimeNode: null,
     peakNode: null,
     averageNode: null,
@@ -160,10 +164,26 @@ function pulseHistoryValues(lane: DashboardPulseLane, id: DashboardPulseId): num
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
 }
 
+function pulseRangeValue(id: DashboardPulseId, value: number): string {
+  if (id === 'power' || id === 'vram') return value.toFixed(1);
+  return String(Math.round(value));
+}
+
 function updatePulsePath(lane: DashboardPulseLane, id: DashboardPulseId): void {
   const path = lane.pathNodes.get(id);
   if (!path) return;
   const values = pulseHistoryValues(lane, id);
+  const minNode = lane.rangeMinNodes.get(id);
+  const maxNode = lane.rangeMaxNodes.get(id);
+  if (values.length === 0) {
+    if (minNode) minNode.textContent = '—';
+    if (maxNode) maxNode.textContent = '—';
+  } else {
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    if (minNode) minNode.textContent = pulseRangeValue(id, min);
+    if (maxNode) maxNode.textContent = pulseRangeValue(id, max);
+  }
   if (values.length < 2) {
     path.setAttribute('d', 'M 0 16 L 120 16');
     return;
@@ -217,6 +237,8 @@ function pulseLaneElement(
 ): HTMLElement {
   lane.valueNodes.clear();
   lane.pathNodes.clear();
+  lane.rangeMinNodes.clear();
+  lane.rangeMaxNodes.clear();
   const pulseCards = DASHBOARD_PULSE.map((metric) => {
     const path = svgEl('path', {
       d: 'M 0 16 L 120 16',
@@ -236,12 +258,21 @@ function pulseLaneElement(
     const valueNode = el('strong', { class: 'dashboard-pulse-value', text: pulseDisplayValue(metric.id, sample) });
     lane.valueNodes.set(metric.id, valueNode);
     lane.pathNodes.set(metric.id, path);
+    const rangeMinNode = el('strong', { text: '—' });
+    const rangeMaxNode = el('strong', { text: '—' });
+    lane.rangeMinNodes.set(metric.id, rangeMinNode);
+    lane.rangeMaxNodes.set(metric.id, rangeMaxNode);
+    const range = el('div', { class: 'dashboard-sparkline-range', 'aria-label': `${metric.label} graph range` }, [
+      el('span', {}, [el('span', { class: 'dashboard-sparkline-range-label', text: 'Min' }), rangeMinNode]),
+      el('span', {}, [el('span', { class: 'dashboard-sparkline-range-label', text: 'Max' }), rangeMaxNode]),
+    ]);
     return el('div', { class: 'dashboard-pulse-metric', dataset: { pulseMetric: metric.id } }, [
       el('div', { class: 'dashboard-pulse-metric-head' }, [
         el('span', { class: 'dashboard-pulse-label', text: metric.label }),
         el('span', { class: 'dashboard-pulse-inline-value' }, [valueNode, el('span', { class: 'dashboard-pulse-unit', text: metric.unit })]),
       ]),
       svg,
+      range,
     ]);
   });
   lane.runtimeNode = el('strong', { text: formatSessionAge(lane.startedAt) });
