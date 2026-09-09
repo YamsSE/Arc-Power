@@ -157,14 +157,13 @@ export function pmQueryElements(elements: Array<{
 /** The decoded poll result shape (all null/absent when a metric was not
  *  registered or the blob carried no usable value for it). */
 export interface PmPollResult {
-  /** The display-cadence fps (the DISPLAYED_FPS metric - what IGS shows);
+  /** The display-cadence AVG fps (the DISPLAYED_FPS metric - what IGS shows);
    *  null when not queried / garbage / a <= 0 rate (a 0 AVG is the
    *  service's dry-window answer - the lane's dry signal). */
   displayedFps: number | null;
-  /** M17f: the DISPLAYED_FPS NEWEST_POINT value - the INSTANT display rate
-   *  (the newest frame's rate, no windowing) - the accuracy lever: at a
-   *  fast overlay poll the displayed fps follows the newest frame instead
-   *  of the ~500 ms AVG. null when not queried / garbage / <= 0. */
+  /** M17f: the DISPLAYED_FPS NEWEST_POINT value - the instantaneous display
+   *  rate used only when the stable AVG is unavailable. null when not
+   *  queried / garbage / <= 0. */
   displayedFpsNewest: number | null;
   /** The Present() call-rate fps (the PRESENTED_FPS metric). */
   presentedFps: number | null;
@@ -226,9 +225,9 @@ export function pmReadPollBlob(elements: unknown, blob: unknown): PmPollResult |
       case PM_METRIC.DISPLAYED_FPS: {
         const v = readDouble(e);
         if (v !== null) {
-          // M17f: the stat distinguishes the windowed AVG from the instant
-          // NEWEST_POINT (the accuracy lever) - the NEWEST_POINT wins the
-          // lane's displayed-fps selection, the AVG stays the fallback.
+          // M17f: the stat distinguishes the stable windowed AVG from the
+          // instantaneous NEWEST_POINT - the lane selects AVG first and
+          // falls back to NEWEST_POINT when AVG is unavailable.
           if (e.stat === PM_STAT.NEWEST_POINT) out.displayedFpsNewest = v;
           else out.displayedFps = v;
           tracked++;

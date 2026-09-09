@@ -34,9 +34,17 @@ import {
   pushSeries,
   trimSeriesWindow,
   sortSeriesByTime,
-  downsample,
+  nearestSampleIndex,
 } from '../pure/graph.ts';
 import type { SeriesPoint } from '../pure/graph.ts';
+import {
+  clampGraphTooltipPosition,
+  formatMonitoringGraphValue,
+  graphAxisTime,
+  graphDrawnPoints,
+  graphSamplePosition,
+  monitoringGraphSegment,
+} from '../pure/monitoring-graph.ts';
 import {
   TELEMETRY_HISTORY_POINTS,
   TELEMETRY_HISTORY_WINDOW_LABEL,
@@ -59,6 +67,7 @@ interface MonState {
   series: Record<string, SeriesPoint[]>;
   metricCanvases: Map<string, HTMLCanvasElement>;
   rangeNodes: Map<string, { min: HTMLElement; max: HTMLElement }>;
+  metricGraphs: Map<string, MetricGraphOverlay>;
   fpsTileValue: HTMLElement | null;
   fpsNote: HTMLElement | null;
   metricBindings: MetricBinding[];
@@ -109,6 +118,29 @@ let dismissedStabilityRunId: string | null = null;
 let monView: 'monitoring' | 'overlay' = 'monitoring';
 let viewContainer: HTMLElement | null = null;
 
+/**
+ * Drop all DOM-owned Monitoring graph bindings while preserving the rolling
+ * sample history. The Overlay sub-view replaces the graph DOM in-place, so a
+ * binding that survives that transition would keep detached canvases alive
+ * and let telemetry redraw work target nodes the user can no longer see.
+ */
+function clearMonitoringGraphBindings(): void {
+  if (graphRedrawFrame !== null) {
+    window.cancelAnimationFrame(graphRedrawFrame);
+    graphRedrawFrame = null;
+  }
+  monitoringResizeObserver?.disconnect();
+  monitoringResizeObserver = null;
+  if (!mon) return;
+  mon.metricCanvases.clear();
+  mon.rangeNodes.clear();
+  mon.metricGraphs.clear();
+  mon.metricBindings = [];
+  mon.fpsBindings = [];
+  mon.fpsTileValue = null;
+  mon.fpsNote = null;
+}
+
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#4cc2ff';
 }
@@ -155,6 +187,17 @@ function gpuGraphKey(deviceKey: string, segmentId: string): string {
   return `gpu:${encodeURIComponent(deviceKey)}:${segmentId}`;
 }
 
+interface MetricGraphOverlay {
+  surface: HTMLElement;
+  canvas: HTMLCanvasElement;
+  tooltip: HTMLElement;
+  crosshair: HTMLElement;
+  yMax: HTMLElement;
+  yMin: HTMLElement;
+  xValue: HTMLElement;
+  pointerRatio: number | null;
+}
+
 function systemGraphKey(segmentId: string): string {
   return `system-${segmentId}`;
 }
@@ -164,9 +207,7 @@ function fpsGraphKey(id: FpsBinding['id']): string {
 }
 
 function graphSegment(seriesId: string): string {
-  if (seriesId.startsWith('gpu:')) return seriesId.slice(seriesId.lastIndexOf(':') + 1);
-  if (seriesId.startsWith('system-')) return seriesId.slice('system-'.length);
-  return seriesId.replace(/^gpu-\d+-/, '');
+  return monitoringGraphSegment(seriesId);
 }
 
 function pushMetricSeries(seriesId: string, t: number, value: number | undefined): void {
@@ -211,7 +252,11 @@ function metricNode(
   const sparkline = seriesId
     ? el('canvas', { class: 'telemetry-metric-sparkline' })
     : el('div', { class: 'telemetry-metric-sparkline telemetry-metric-sparkline-empty', 'aria-hidden': 'true' });
-  const graph = el('div', { class: 'telemetry-metric-graph' }, [sparkline]);
+  const graph = el('div', { class: 'telemetry-metric-graph' }, [
+    seriesId && sparkline instanceof HTMLCanvasElement
+      ? graphSurface(seriesId, label, sparkline)
+      : sparkline,
+  ]);
   if (seriesId && mon) {
     const min = el('strong', { text: '—' });
     const max = el('strong', { text: '—' });
@@ -306,7 +351,7 @@ function fpsMetricNode(label: string, id: FpsBinding['id'], unit: string): HTMLE
   const min = el('strong', { text: '—' });
   const max = el('strong', { text: '—' });
   const graph = el('div', { class: 'telemetry-metric-graph' }, [
-    canvas,
+    graphSurface(seriesId, label, canvas),
     el('div', { class: 'telemetry-graph-range', 'aria-label': `${label} graph range` }, [
       el('span', {}, [el('span', { class: 'telemetry-graph-range-label', text: 'Min' }), min]),
       el('span', {}, [el('span', { class: 'telemetry-graph-range-label', text: 'Max' }), max]),
@@ -366,11 +411,113 @@ function monitoringSeriesColor(seriesId: string): string {
 }
 
 function graphRangeValue(seriesId: string, value: number): string {
-  const segment = graphSegment(seriesId);
-  if (segment === 'power' || segment === 'cpu-power' || segment === 'vram' || segment === 'ram-used' || segment === 'ram-capacity') return value.toFixed(1);
-  if (segment === 'voltage') return value.toFixed(3);
-  if (segment === 'frame-time') return value.toFixed(1);
-  return String(Math.round(value));
+  return formatMonitoringGraphValue(seriesId, value);
+}
+
+function seriesObservedRange(points: SeriesPoint[]): { min: number; max: number } | null {
+  if (points.length === 0) return null;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const point of points) {
+    if (point.v < min) min = point.v;
+    if (point.v > max) max = point.v;
+  }
+  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
+}
+
+function graphSurface(
+  seriesId: string,
+  label: string,
+  canvas: HTMLCanvasElement,
+): HTMLElement {
+  const yMax = el('span', { class: 'telemetry-graph-axis-label telemetry-graph-axis-y telemetry-graph-axis-y-max', hidden: true });
+  const yMin = el('span', { class: 'telemetry-graph-axis-label telemetry-graph-axis-y telemetry-graph-axis-y-min', hidden: true });
+  const xValue = el('span', { class: 'telemetry-graph-axis-label telemetry-graph-axis-x', hidden: true });
+  const crosshair = el('span', { class: 'telemetry-graph-crosshair', hidden: true, 'aria-hidden': 'true' });
+  const tooltip = el('span', { class: 'telemetry-graph-tooltip', hidden: true, role: 'status' });
+  const surface = el('div', { class: 'telemetry-metric-graph-surface', 'aria-label': `${label} graph` }, [
+    canvas,
+    yMax,
+    yMin,
+    xValue,
+    crosshair,
+    tooltip,
+  ]);
+  if (mon) {
+    const graph: MetricGraphOverlay = {
+      surface,
+      canvas,
+      tooltip,
+      crosshair,
+      yMax,
+      yMin,
+      xValue,
+      pointerRatio: null,
+    };
+    mon.metricGraphs.set(seriesId, graph);
+    const hide = (): void => {
+      graph.pointerRatio = null;
+      tooltip.hidden = true;
+      crosshair.hidden = true;
+      xValue.hidden = true;
+    };
+    surface.addEventListener('pointermove', (event) => {
+      const rect = surface.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      graph.pointerRatio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      updateMetricGraphOverlay(seriesId);
+    });
+    surface.addEventListener('pointerleave', hide);
+  }
+  return surface;
+}
+
+function updateMetricGraphOverlay(seriesId: string, observed?: { min: number; max: number } | null): void {
+  if (!mon) return;
+  const graph = mon.metricGraphs.get(seriesId);
+  if (!graph) return;
+  const series = mon.series[seriesId] ?? [];
+  const range = observed === undefined ? seriesObservedRange(series) : observed;
+  if (!range) {
+    graph.yMax.hidden = true;
+    graph.yMin.hidden = true;
+    graph.xValue.hidden = true;
+    graph.crosshair.hidden = true;
+    graph.tooltip.hidden = true;
+    return;
+  }
+  graph.yMax.textContent = graphRangeValue(seriesId, range.max);
+  graph.yMin.textContent = graphRangeValue(seriesId, range.min);
+  graph.yMax.hidden = false;
+  graph.yMin.hidden = false;
+  if (graph.pointerRatio === null || series.length === 0) return;
+  // Hover the same downsampled points that drawMiniSeries paints. A full
+  // history can contain samples that are not present in the Canvas polyline;
+  // selecting one of those would place the crosshair beside the visible line.
+  const points = graphDrawnPoints(series);
+  const index = nearestSampleIndex(points, graph.pointerRatio);
+  if (index < 0) return;
+  const point = points[index];
+  const rect = graph.surface.getBoundingClientRect();
+  const width = graph.surface.clientWidth || rect.width;
+  const height = graph.surface.clientHeight || rect.height;
+  const position = graphSamplePosition(points, index, width, height, range);
+  if (!position) return;
+  const { x, y } = position;
+  graph.crosshair.style.left = `${x}px`;
+  graph.crosshair.hidden = false;
+  graph.xValue.textContent = graphAxisTime(points, index);
+  graph.xValue.style.left = `${Math.min(Math.max(14, x), Math.max(14, width - 14))}px`;
+  graph.xValue.hidden = false;
+  graph.tooltip.textContent = `${graphRangeValue(seriesId, point.v)} · ${graphAxisTime(points, index)}`;
+  graph.tooltip.hidden = false;
+  // Measure after updating the value so the pill stays inside the tile at
+  // either edge, just like the APM graph readout.
+  const pillWidth = graph.tooltip.offsetWidth || 58;
+  const pillHeight = graph.tooltip.offsetHeight || 19;
+  const tooltipPosition = clampGraphTooltipPosition(x, y, width, height, pillWidth, pillHeight);
+  graph.tooltip.style.left = `${tooltipPosition.left}px`;
+  graph.tooltip.style.top = `${tooltipPosition.top}px`;
 }
 
 /** Dashboard-style compact history strip for each readout row. */
@@ -404,20 +551,22 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], color 
   // Keep the plotted range tight to the samples, matching Dashboard's
   // Performance pulse. A flat series still gets a tiny scale so it remains
   // visible without inventing a large amount of empty headroom.
-  let min = Infinity;
-  let max = -Infinity;
-  for (const point of points) {
-    if (point.v < min) min = point.v;
-    if (point.v > max) max = point.v;
-  }
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+  const range = seriesObservedRange(points);
+  if (!range) return null;
+  const { min, max } = range;
   const span = Math.max(0.001, max - min);
-  const drawn = downsample(points, 72);
-  const x = (index: number): number => drawn.length <= 1 ? w / 2 : (index / (drawn.length - 1)) * (w - 4) + 2;
-  const y = (value: number): number => h - 3 - ((value - min) / span) * Math.max(4, h - 6);
+  const drawn = graphDrawnPoints(points);
+  const timeSpan = Math.max(0.001, drawn[drawn.length - 1].t - drawn[0].t);
+  const x = (point: SeriesPoint): number => drawn.length <= 1
+    ? w / 2
+    : ((point.t - drawn[0].t) / timeSpan) * (w - 4) + 2;
+  // Reserve the lower strip for the hover time label. Keep this coordinate
+  // system in lockstep with updateMetricGraphOverlay so the crosshair and
+  // pill remain attached to the rendered line after a resize.
+  const y = (value: number): number => h - 13 - ((value - min) / span) * Math.max(4, h - 18);
   ctx.beginPath();
   drawn.forEach((point, index) => {
-    const px = x(index);
+    const px = x(point);
     const py = y(point.v);
     if (index === 0) ctx.moveTo(px, py);
     else ctx.lineTo(px, py);
@@ -471,6 +620,7 @@ export const monitoringPage: Page = {
       series: {},
       metricCanvases: new Map(),
       rangeNodes: new Map(),
+      metricGraphs: new Map(),
       fpsTileValue: null,
       fpsNote: null,
       metricBindings: [],
@@ -519,8 +669,7 @@ export const monitoringPage: Page = {
     const renderMonView = (): void => {
       if (!viewContainer) return;
       if (monView === 'overlay') {
-        monitoringResizeObserver?.disconnect();
-        monitoringResizeObserver = null;
+        clearMonitoringGraphBindings();
         renderOverlaySettings(viewContainer, ctx);
         return;
       }
@@ -548,12 +697,8 @@ export const monitoringPage: Page = {
       window.clearInterval(fpsTimer);
       fpsTimer = null;
     }
-    if (graphRedrawFrame !== null) {
-      window.cancelAnimationFrame(graphRedrawFrame);
-      graphRedrawFrame = null;
-    }
-    monitoringResizeObserver?.disconnect();
-    monitoringResizeObserver = null;
+    clearMonitoringGraphBindings();
+    viewContainer = null;
     mon = null;
   },
 
@@ -1000,12 +1145,12 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
 function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
   const m = mon;
   if (!m) return;
-  monitoringResizeObserver?.disconnect();
-  monitoringResizeObserver = null;
+  clearMonitoringGraphBindings();
   clear(container);
   const s = ctx.store.get();
   m.metricCanvases = new Map();
   m.rangeNodes = new Map();
+  m.metricGraphs = new Map();
   m.metricBindings = [];
   m.fpsBindings = [];
   const fpsNote = el('p', { class: 'card-note mon-fps-note', text: FPS_CHECKING_NOTE });
@@ -1067,19 +1212,21 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
 }
 
 function redrawAll(): void {
-  if (!mon || graphRedrawFrame !== null) return;
+  if (!mon || monView !== 'monitoring' || mon.metricCanvases.size === 0 || graphRedrawFrame !== null) return;
   // A telemetry push is emitted once per adapter, so a multi-GPU machine can
   // deliver multiple store updates in one paint interval. Coalesce those
   // updates into one frame so graphs never render an intermediate snapshot.
   graphRedrawFrame = window.requestAnimationFrame(() => {
     graphRedrawFrame = null;
-    if (!mon) return;
+    if (!mon || monView !== 'monitoring') return;
     for (const [id, canvas] of mon.metricCanvases) {
       const range = drawMiniSeries(canvas, mon.series[id] ?? [], monitoringSeriesColor(id));
       const nodes = mon.rangeNodes.get(id);
-      if (!nodes) continue;
-      nodes.min.textContent = range ? graphRangeValue(id, range.min) : '—';
-      nodes.max.textContent = range ? graphRangeValue(id, range.max) : '—';
+      if (nodes) {
+        nodes.min.textContent = range ? graphRangeValue(id, range.min) : '—';
+        nodes.max.textContent = range ? graphRangeValue(id, range.max) : '—';
+      }
+      updateMetricGraphOverlay(id, range);
     }
   });
 }

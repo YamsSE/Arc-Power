@@ -4067,6 +4067,186 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('mon-canvas', `${graphSnapshot.canvases} per-metric canvas graphs rendered and sized from live telemetry pushes`);
 
+  // M207d: select the first graph with a live numeric range. The FPS panel is
+  // rendered before CPU and GPU telemetry, but with RID_MOCK_FPS unset its
+  // series are intentionally empty (including Frame time and the percentile
+  // rows). Keeping the selection range-driven preserves FPS graph coverage in
+  // the enabled matrix while falling through to the always-populated CPU/GPU
+  // path in the default matrix.
+  const populatedGraphSurfaceProbe = `(() => {
+    const surfaces = Array.from(document.querySelectorAll('.telemetry-metric-graph-surface'));
+    return surfaces.find((surface) => {
+      const canvas = surface.querySelector('canvas.telemetry-metric-sparkline');
+      const metric = surface.closest('.telemetry-metric');
+      const values = metric ? Array.from(metric.querySelectorAll('.telemetry-graph-range strong')).map((node) => Number(node.textContent)) : [];
+      return !!canvas && canvas.width > 0 && canvas.height > 0
+        && values.length === 2 && values.every(Number.isFinite) && values[1] >= values[0];
+    }) ?? null;
+  })()`;
+  if (!(await waitFor(win, `!!(${populatedGraphSurfaceProbe})`, 8000))) {
+    fail('M207d: Monitoring did not render a populated graph surface before the first hover probe');
+  }
+
+  // M207d: exercise the live graph surface itself. This intentionally uses
+  // the browser's pointer, Canvas and layout APIs rather than source-pattern
+  // checks: the popup must snap to a rendered sample, use numeric unitless
+  // axes, stay inside the surface at an edge hover, and leave the Min/Max row
+  // intact. The pixel probe uses the tooltip value + observed range to derive
+  // the expected Y coordinate, so it catches a crosshair that merely shares an
+  // X column with some unrelated line pixel.
+  const graphHoverProbe = await js(`(() => {
+    const surface = ${populatedGraphSurfaceProbe};
+    const canvas = surface?.querySelector('canvas.telemetry-metric-sparkline');
+    const metric = surface?.closest('.telemetry-metric');
+    if (!surface || !canvas || !metric) return { ok: false, why: 'missing-graph-surface' };
+    const surfaceRect = surface.getBoundingClientRect();
+    if (surfaceRect.width <= 0 || surfaceRect.height <= 0) return { ok: false, why: 'zero-graph-rect' };
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return { ok: false, why: 'missing-canvas-context' };
+    const dpr = window.devicePixelRatio || 1;
+    const width = surface.clientWidth || surfaceRect.width;
+    const height = surface.clientHeight || surfaceRect.height;
+    const isNumeric = (value) => {
+      const text = String(value ?? '').trim();
+      return text !== '' && Number.isFinite(Number(text));
+    };
+    const range = metric.querySelector('.telemetry-graph-range');
+    const rangeValues = range ? Array.from(range.querySelectorAll('strong')).map((node) => Number(node.textContent)) : [];
+    if (rangeValues.length !== 2 || !rangeValues.every(Number.isFinite) || rangeValues[1] < rangeValues[0]) return { ok: false, why: 'non-numeric-range', range: range?.textContent ?? '' };
+    const lineNear = (x, y) => {
+      const px = Math.max(0, Math.min(canvas.width - 1, Math.round(x * dpr)));
+      const py = Math.max(0, Math.min(canvas.height - 1, Math.round(y * dpr)));
+      let pixels = 0;
+      for (let xx = Math.max(0, px - 2); xx <= Math.min(canvas.width - 1, px + 2); xx++) {
+        for (let yy = Math.max(0, py - Math.max(2, Math.round(3 * dpr))); yy <= Math.min(canvas.height - 1, py + Math.max(2, Math.round(3 * dpr))); yy++) {
+          if (ctx.getImageData(xx, yy, 1, 1).data[3] > 0) pixels++;
+        }
+      }
+      return pixels > 0;
+    };
+    const hover = (clientX) => {
+      surface.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX, clientY: surfaceRect.top + surfaceRect.height / 2 }));
+      const tooltip = surface.querySelector('.telemetry-graph-tooltip');
+      const crosshair = surface.querySelector('.telemetry-graph-crosshair');
+      const xValue = surface.querySelector('.telemetry-graph-axis-x');
+      const yValues = [surface.querySelector('.telemetry-graph-axis-y-max'), surface.querySelector('.telemetry-graph-axis-y-min')];
+      if (!tooltip || !crosshair || !xValue || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || xValue.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-hidden' };
+      const crosshairX = Number.parseFloat(crosshair.style.left);
+      const xText = xValue.textContent?.trim() ?? '';
+      const yTexts = yValues.map((node) => node?.textContent?.trim() ?? '');
+      const parts = (tooltip.textContent ?? '').split(' · ');
+      const sampleValue = Number(parts[0]);
+      const expectedY = height - 13 - ((sampleValue - rangeValues[0]) / Math.max(.001, rangeValues[1] - rangeValues[0])) * Math.max(4, height - 18);
+      const mappedLine = Number.isFinite(sampleValue) && Number.isFinite(expectedY) && lineNear(crosshairX, expectedY);
+      const popupRect = tooltip.getBoundingClientRect();
+      const inside = popupRect.left >= surfaceRect.left - 1
+        && popupRect.right <= surfaceRect.right + 1
+        && popupRect.top >= surfaceRect.top - 1
+        && popupRect.bottom <= surfaceRect.bottom + 1;
+      const style = getComputedStyle(tooltip);
+      const colors = {
+        border: style.borderTopColor.replace(/\s+/g, ''),
+        background: style.backgroundColor.replace(/\s+/g, ''),
+        color: style.color.replace(/\s+/g, ''),
+      };
+      return {
+        ok: Number.isFinite(crosshairX) && isNumeric(xText) && yTexts.every(isNumeric) && parts.length === 2 && isNumeric(parts[0]) && isNumeric(parts[1]) && mappedLine,
+        inside,
+        text: tooltip.textContent ?? '',
+        crosshairX,
+        expectedY,
+        mappedLine,
+        x: xText,
+        y: yTexts,
+        colors,
+      };
+    };
+    const interior = hover(surfaceRect.left + surfaceRect.width * .5);
+    const edge = hover(surfaceRect.right + 8);
+    const left = hover(surfaceRect.left - 8);
+    const rangeTextBeforeLeave = range?.textContent?.trim() ?? '';
+    const persistent = hover(surfaceRect.left + surfaceRect.width * .5);
+    if (!window.__arcPowerMonitoringGraphTickProbe) {
+      const nativeStroke = CanvasRenderingContext2D.prototype.stroke;
+      window.__arcPowerMonitoringGraphTickProbe = { count: 0 };
+      CanvasRenderingContext2D.prototype.stroke = function (...args) {
+        window.__arcPowerMonitoringGraphTickProbe.count++;
+        return nativeStroke.apply(this, args);
+      };
+    }
+    window.__arcPowerMonitoringGraphTickProbe.count = 0;
+    return {
+      ok: interior.ok && edge.ok && left.ok && persistent.ok && edge.inside && left.inside
+        && Math.abs(edge.crosshairX - (width - 2)) <= 1.5 && Math.abs(left.crosshairX - 2) <= 1.5
+        && edge.colors.border === 'rgb(56,197,255)' && edge.colors.background === 'rgb(13,33,48)' && edge.colors.color === 'rgb(223,247,255)'
+        && !!range && rangeTextBeforeLeave.includes('Min') && rangeTextBeforeLeave.includes('Max'),
+      interior,
+      edge,
+      left,
+      persistent,
+      rangeTextBeforeLeave,
+    };
+  })()`);
+  if (!graphHoverProbe.ok) {
+    fail(`M207d: graph hover/axes/pixel mapping behavior failed: ${JSON.stringify(graphHoverProbe)}`);
+  }
+  await sleep(900);
+  const graphHoverTickProbe = await js(`(() => {
+    const surface = ${populatedGraphSurfaceProbe};
+    const canvas = surface?.querySelector('canvas.telemetry-metric-sparkline');
+    const metric = surface?.closest('.telemetry-metric');
+    const tooltip = surface?.querySelector('.telemetry-graph-tooltip');
+    const crosshair = surface?.querySelector('.telemetry-graph-crosshair');
+    const xValue = surface?.querySelector('.telemetry-graph-axis-x');
+    const yValues = [surface?.querySelector('.telemetry-graph-axis-y-max'), surface?.querySelector('.telemetry-graph-axis-y-min')];
+    if (!surface || !canvas || !metric || !tooltip || !crosshair || !xValue || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || xValue.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-lost-after-tick', strokes: window.__arcPowerMonitoringGraphTickProbe?.count ?? -1 };
+    const rect = surface.getBoundingClientRect();
+    const width = surface.clientWidth || rect.width;
+    const height = surface.clientHeight || rect.height;
+    const range = Array.from(metric.querySelectorAll('.telemetry-graph-range strong')).map((node) => Number(node.textContent));
+    const parts = (tooltip.textContent ?? '').split(' · ');
+    const sampleValue = Number(parts[0]);
+    const expectedY = height - 13 - ((sampleValue - range[0]) / Math.max(.001, range[1] - range[0])) * Math.max(4, height - 18);
+    const dpr = window.devicePixelRatio || 1;
+    const ctx = canvas.getContext('2d');
+    const crosshairX = Number.parseFloat(crosshair.style.left);
+    let pixels = 0;
+    if (ctx && Number.isFinite(expectedY) && Number.isFinite(crosshairX)) {
+      const px = Math.round(crosshairX * dpr);
+      const py = Math.round(expectedY * dpr);
+      for (let xx = Math.max(0, px - 2); xx <= Math.min(canvas.width - 1, px + 2); xx++) {
+        for (let yy = Math.max(0, py - Math.max(2, Math.round(3 * dpr))); yy <= Math.min(canvas.height - 1, py + Math.max(2, Math.round(3 * dpr))); yy++) {
+          if (ctx.getImageData(xx, yy, 1, 1).data[3] > 0) pixels++;
+        }
+      }
+    }
+    const numeric = (value) => { const text = String(value ?? '').trim(); return text !== '' && Number.isFinite(Number(text)); };
+    return {
+      ok: (window.__arcPowerMonitoringGraphTickProbe?.count ?? 0) > 0 && Number.isFinite(crosshairX) && numeric(xValue.textContent) && yValues.every((node) => numeric(node.textContent)) && parts.length === 2 && numeric(parts[0]) && numeric(parts[1]) && pixels > 0,
+      strokes: window.__arcPowerMonitoringGraphTickProbe?.count ?? -1,
+      text: tooltip.textContent ?? '',
+      x: xValue.textContent ?? '',
+      y: yValues.map((node) => node?.textContent ?? ''),
+      crosshairX,
+      expectedY,
+      linePixels: pixels,
+    };
+  })()`);
+  if (!graphHoverTickProbe.ok) {
+    fail(`M207d: tooltip/axes/line did not persist across a mock telemetry tick: ${JSON.stringify(graphHoverTickProbe)}`);
+  }
+  const graphHoverLeaveProbe = await js(`(() => {
+    const surface = ${populatedGraphSurfaceProbe};
+    if (!surface) return { ok: false, why: 'missing-graph-surface-on-leave' };
+    surface.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, clientX: surface.getBoundingClientRect().right, clientY: surface.getBoundingClientRect().top + surface.getBoundingClientRect().height / 2 }));
+    const tooltip = surface.querySelector('.telemetry-graph-tooltip');
+    const crosshair = surface.querySelector('.telemetry-graph-crosshair');
+    const xValue = surface.querySelector('.telemetry-graph-axis-x');
+    return { ok: !!tooltip && tooltip.hidden && !!crosshair && crosshair.hidden && !!xValue && xValue.hidden };
+  })()`);
+  if (!graphHoverLeaveProbe.ok) fail(`M207d: pointerleave did not hide graph hover chrome: ${JSON.stringify(graphHoverLeaveProbe)}`);
+  step('m207d-graph-hover', `M207d: graph axes are numeric, tooltip is Arc-blue, line/crosshair mapping is pixel-aligned (${graphHoverProbe.interior.text}); hover persisted across ${graphHoverTickProbe.strokes} telemetry redraws, then pointerleave hid it; Min/Max remains '${graphHoverProbe.rangeTextBeforeLeave}'`);
+
   // --- M9: the Monitoring | Overlay view switch (the S2 re-registration) ----
   // The view pill renders 'Monitoring | Overlay' at the page top; the
   // round trip (monitoring -> overlay -> monitoring) must return the
@@ -4076,12 +4256,40 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // detached nodes a clear() orphaned.
   const viewLabels = await js(`Array.from(document.querySelectorAll('.mon-view-btn')).map((b) => (b.textContent ?? '').trim()).join('|')`);
   if (viewLabels !== 'Monitoring|Overlay') fail(`M9: the Monitoring view pill must read 'Monitoring|Overlay' (got '${viewLabels}')`);
+  // M207d lifecycle: instrument the canvas clear path before replacing the
+  // Monitoring view. A telemetry tick during Overlay must not redraw the
+  // detached graph canvases that were just removed from the document.
+  await js(`(() => {
+    if (!window.__arcPowerMonitoringGraphClearProbe) {
+      const nativeClearRect = CanvasRenderingContext2D.prototype.clearRect;
+      window.__arcPowerMonitoringGraphClearProbe = { count: 0 };
+      CanvasRenderingContext2D.prototype.clearRect = function (...args) {
+        window.__arcPowerMonitoringGraphClearProbe.count++;
+        return nativeClearRect.apply(this, args);
+      };
+    }
+    window.__arcPowerMonitoringGraphClearProbe.count = 0;
+  })()`);
   // overlay -> the Overlay Settings content root renders (the M25 heading was removed;
   // Monitoring's page title/subtitle describe this sub-view).
   await js(`(() => { const b = Array.from(document.querySelectorAll('.mon-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Overlay'); b.click(); })()`);
   if (!(await waitFor(win, `!!document.querySelector('#overlay-settings-root')`, 8000))) {
     fail('M9: the Overlay view did not render the Overlay Settings content');
   }
+  // Reset after the view replacement has completed, so a frame already queued
+  // before the click cannot be mistaken for a detached redraw.
+  await js(`window.__arcPowerMonitoringGraphClearProbe.count = 0`);
+  // The mock telemetry lane ticks while this wait runs, so this covers the
+  // real onUpdate path rather than a static post-navigation DOM snapshot.
+  await sleep(1300);
+  const overlayGraphLifecycle = await js(`({
+    detachedGraphSurfaces: document.querySelectorAll('.telemetry-metric-graph-surface').length,
+    detachedCanvasRedraws: window.__arcPowerMonitoringGraphClearProbe?.count ?? -1,
+  })`);
+  if (overlayGraphLifecycle.detachedGraphSurfaces !== 0 || overlayGraphLifecycle.detachedCanvasRedraws !== 0) {
+    fail(`M207d: Monitoring graph bindings survived the Overlay transition or redrew detached canvases: ${JSON.stringify(overlayGraphLifecycle)}`);
+  }
+  step('m207d-graph-lifecycle', `M207d: Overlay transition releases graph surfaces and a telemetry tick performs no detached canvas redraw (${JSON.stringify(overlayGraphLifecycle)})`);
   // monitoring -> the readout grid returns.
   await js(`(() => { const b = Array.from(document.querySelectorAll('.mon-view-btn')).find((x) => (x.textContent ?? '').trim() === 'Monitoring'); b.click(); })()`);
   if (!(await waitFor(win, `document.querySelectorAll('#mon-readout-gpu .stat-tile').length >= 6 && document.querySelectorAll('#mon-readout-gpu-memory .stat-tile').length >= 3`, 8000))) {
@@ -4100,6 +4308,45 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     }
     step('m9-mon-view-switch', 'M9: the Monitoring|Overlay pill round-tripped; the readout grid returned + the FPS note stays live (S2 re-registration)');
   }
+  if (!(await waitFor(win, `!!(${populatedGraphSurfaceProbe})`, 8000))) {
+    fail('M207d: Monitoring did not render a populated graph surface after view re-entry');
+  }
+
+  // M207d: force the real metrics column through the narrow container query
+  // and repeat the hover geometry check after the graph has been rebuilt.
+  const narrowGraphProbe = await js(`(() => {
+    const column = document.querySelector('.monitoring-metrics-column');
+    const surface = ${populatedGraphSurfaceProbe};
+    if (!column || !surface) return { ok: false, why: 'missing-narrow-probe-nodes' };
+    column.style.width = '320px';
+    column.style.maxWidth = '320px';
+    column.style.minWidth = '0';
+    const rect = surface.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return { ok: false, why: 'zero-narrow-graph-rect', columnWidth: column.getBoundingClientRect().width };
+    const pointer = (clientX) => {
+      surface.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX, clientY: rect.top + rect.height / 2 }));
+      const tooltip = surface.querySelector('.telemetry-graph-tooltip');
+      const crosshair = surface.querySelector('.telemetry-graph-crosshair');
+      if (!tooltip || !crosshair || tooltip.hidden || crosshair.hidden) return { ok: false, why: 'narrow-hover-hidden' };
+      const p = tooltip.getBoundingClientRect();
+      const inside = p.left >= rect.left - 1 && p.right <= rect.right + 1 && p.top >= rect.top - 1 && p.bottom <= rect.bottom + 1;
+      return { ok: inside, text: tooltip.textContent ?? '', left: p.left, right: p.right, surfaceLeft: rect.left, surfaceRight: rect.right };
+    };
+    const interior = pointer(rect.left + rect.width * .5);
+    const edge = pointer(rect.right + 8);
+    const metric = surface.closest('.telemetry-metric');
+    const range = metric?.querySelector('.telemetry-graph-range');
+    return {
+      ok: rect.width <= 320 && interior.ok && edge.ok && !!range && (range.textContent ?? '').includes('Min') && (range.textContent ?? '').includes('Max'),
+      width: rect.width,
+      containerColumns: getComputedStyle(column.querySelector('.telemetry-metrics') ?? column).gridTemplateColumns,
+      interior,
+      edge,
+      range: range?.textContent ?? '',
+    };
+  })()`);
+  if (!narrowGraphProbe.ok) fail(`M207d: narrow-container graph hover geometry failed: ${JSON.stringify(narrowGraphProbe)}`);
+  step('m207d-graph-narrow', `M207d: narrow container (${narrowGraphProbe.width}px) keeps interior and edge hover pills inside with Min/Max '${narrowGraphProbe.range}'`);
 
   // M171: the former multi-segment trend inspector was removed. Keep the
   // historical hover probes disabled because the current UI uses one compact
