@@ -1,35 +1,38 @@
-// Arc Power - M4-D2 startup registration: the HKCU Run value, with a
-// one-time cleanup of the legacy portable registrations.
+// Arc Power startup registration. Dev/mock uses the HKCU Run value with a
+// one-time cleanup of legacy portable registrations. Packaged Windows builds
+// request administrator access, and Explorer cannot reliably consent that
+// manifest from HKCU Run during logon, so they use an explicitly approved
+// per-user onlogon task (ArcPowerStartup) whose action targets the stable
+// installed executable or portable wrapper. The existing ArcPowerBootApply
+// task remains a separate apply-on-boot compatibility path.
 //
-// M2b/M2C-C used scheduled tasks (onlogon /rl highest) for start-with-
-// Windows + apply-on-boot - every enable/disable UAC'd, and the user
-// declined, so "none of them work" (M4-D2 §12 root cause b). Tasks are
-// GONE. The ONLY registration is the HKCU Run value:
-//   HKCU\Software\Microsoft\Windows\CurrentVersion\Run\ArcPower = "<exe>"
-// via reg.exe - zero UAC, unelevated, HKCU-only. New versions also remove
-// the old M4-D scheduled-task registrations when the user explicitly changes
-// this setting. Those tasks pointed portable builds at a temporary extracted
-// path and otherwise remain visible as stale Startup-app entries.
-//
-// "Active" = the value exists. ONE value serves both toggles: the
-// Settings "Start with Windows" toggle and the Profiles "start at boot"
-// toggle both write it (the in-app boot apply handles the apply - the
-// bare "<exe>" launch runs the UI, which applies the active profile at
-// boot when ocOnBoot is set). The startup adapter stays DUMB (raw
-// { valueExists, value }); ipc-core's startup-get composes the
-// { startWithWindows, applyOnBoot } derivation from its own store read.
+// "Active" means the selected registration was read back successfully. ONE
+// registration serves both toggles: the Settings "Start with Windows" toggle
+// and the Profiles "start at boot" toggle both write it (the app boot path
+// handles the apply). The startup adapter returns raw { valueExists, value }
+// plus registration:'task' for the packaged path; ipc-core's startup-get
+// composes { startWithWindows, applyOnBoot } from its own store read.
 //
 // Mock mode: createMockStartup() is the default for tests and --ui-verify
 // (in-memory, never touches the registry); the product path injects
 // createStartup in ipc.js/main.js.
 
 import { execFile as nodeExecFile } from 'node:child_process';
+import { spawn as nodeSpawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { POWERSHELL_EXE } from './elevated-apply.js';
+import { decodeTaskXml, parseTaskXml } from './setup-boot.js';
 
 const execFile = promisify(nodeExecFile);
 
 export const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 export const RUN_VALUE = 'ArcPower';
+// Packaged Windows builds request administrator access. Explorer's HKCU Run
+// launcher cannot reliably consent an elevated executable during logon, so
+// those builds use this per-user elevated logon task after an explicit UAC
+// setup. The existing ArcPowerBootApply task remains a separate apply-on-boot
+// compatibility path for installed builds.
+export const STARTUP_TASK_NAME = 'ArcPowerStartup';
 // M4-D/M2C-C registrations left by older portable builds. Do not remove
 // ArcPowerBootApply: that is the current installed-build profile task.
 export const LEGACY_TASK_NAMES = ['ArcPowerAppOnBoot', 'ArcPowerApplyOnBoot'];
@@ -39,6 +42,39 @@ export const LEGACY_TASK_NAMES = ['ArcPowerAppOnBoot', 'ArcPowerApplyOnBoot'];
 export const LEGACY_RUN_VALUE_NAMES = ['Arc Power'];
 // reg.exe exit code when the queried/deleted value does not exist.
 export const REG_NOT_FOUND = 1;
+
+/**
+ * Build the task action for the packaged app's normal UI launch. The action
+ * intentionally has no arguments: startMinimized and apply-on-boot remain
+ * persisted app state, and the app owns those decisions after logon.
+ * @param {string} execPath absolute path to the stable executable/wrapper
+ */
+export function buildStartupTaskCommand(execPath) {
+  const trValue = `'${String(execPath)}'`;
+  const psLiteral = `'${trValue.replace(/'/g, "''")}'`;
+  return `schtasks /create /tn ${STARTUP_TASK_NAME} /sc onlogon /rl highest /tr ${psLiteral} /f`;
+}
+
+/**
+ * Build the elevated setup/delete PowerShell command. The encoded inner
+ * command avoids native PowerShell argument splitting for paths with spaces.
+ * @param {string} command schtasks command
+ * @param {{ powershellExe?: string }} [deps]
+ */
+export function buildStartupTaskLaunch(command, { powershellExe = POWERSHELL_EXE } = {}) {
+  const encoded = Buffer.from(String(command), 'utf16le').toString('base64');
+  const ps = String(powershellExe).replace(/'/g, "''");
+  return `$p = Start-Process -FilePath '${ps}' -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','${encoded}' -Verb RunAs -Wait -PassThru -ErrorAction Stop; if ($null -eq $p) { exit 1 }; exit $p.ExitCode`;
+}
+
+function startupTaskActionMatches(task, execPath) {
+  if (!task || typeof task.command !== 'string' || task.command.length === 0) return false;
+  if (task.enabled === false) return false;
+  const command = task.command.replace(/^"|"$/g, '');
+  return command.toLowerCase() === String(execPath).toLowerCase()
+    && typeof task.arguments === 'string'
+    && task.arguments.trim() === '';
+}
 
 /**
  * The exact command-line value stored in the Run key: the bare quoted
@@ -121,7 +157,7 @@ export async function resolveLogonExecPath(deps = {}) {
 /**
  * Remove registrations written by releases that used elevated scheduled
  * tasks or Electron's product-name Run value. Cleanup is deliberately
- * best-effort: the new Run value must still be usable if an old task is
+ * best-effort: the new startup registration must still be usable if an old task is
  * already absent or Windows refuses an old task deletion.
  * @param {typeof execFile} exec
  */
@@ -143,29 +179,100 @@ async function cleanupLegacyRegistrations(exec) {
 }
 
 /**
- * Real adapter (reg.exe via injectable execFile for tests). The Run value
- * is written/removed unelevated - NEVER any elevated helper, NEVER a UAC
- * (M4-D2 hard constraint). The value points at the LOGON-STABLE executable
- * (M4-D2: the portable wrapper exe when packaged, else process.execPath).
+ * Real adapter (reg.exe/schtasks via injectable execFile + spawn for tests).
+ * Dev/legacy mode writes the Run value unelevated. Packaged Windows mode
+ * creates/removes the elevated startup task through an explicit UAC action.
+ * Both modes target the LOGON-STABLE executable (the portable wrapper when
+ * packaged, else process.execPath).
  * @param {{
  *   execFile?: typeof execFile,
+ *   spawnFn?: typeof nodeSpawn,
  *   execPath?: string,
  *   logonExecPath?: string,
+ *   useElevatedTask?: boolean,
+ *   taskName?: string,
+ *   powershellExe?: string,
  *   cleanupLegacy?: boolean,
  * }} [deps]
  */
 export function createStartup(deps = {}) {
   const exec = deps.execFile ?? execFile;
+  const spawn = deps.spawnFn ?? nodeSpawn;
   const execPath = deps.logonExecPath ?? deps.execPath ?? process.execPath;
+  const useElevatedTask = deps.useElevatedTask === true;
+  const taskName = deps.taskName ?? STARTUP_TASK_NAME;
+  const powershellExe = deps.powershellExe ?? POWERSHELL_EXE;
   const cleanupLegacy = deps.cleanupLegacy !== false;
+  // A declined/failing UAC must not produce a prompt storm from concurrent
+  // settings saves. A new app launch is the retry boundary.
+  let elevatedSetupAttempted = false;
+  let elevatedDeleteAttempted = false;
+
+  const readTask = async () => {
+    let exists = false;
+    try {
+      await exec('schtasks', ['/query', '/tn', taskName], { windowsHide: true, timeout: 10000 });
+      exists = true;
+    } catch {
+      return { valueExists: false, value: null, taskExists: false };
+    }
+    try {
+      const { stdout } = await exec('schtasks', ['/query', '/tn', taskName, '/xml'], {
+        windowsHide: true,
+        timeout: 10000,
+        encoding: 'buffer',
+      });
+      const parsed = parseTaskXml(decodeTaskXml(stdout));
+      if (!startupTaskActionMatches({ ...parsed, exists }, execPath)) {
+        return { valueExists: false, value: null, taskExists: true };
+      }
+      return { valueExists: true, value: buildRunValue(execPath), registration: 'task', taskExists: true };
+    } catch {
+      return { valueExists: false, value: null, taskExists: true };
+    }
+  };
+
+  const publicTaskState = (state) => {
+    const { taskExists: _taskExists, ...publicState } = state;
+    return publicState;
+  };
+
+  const runElevated = async (command) => new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(powershellExe, ['-NoProfile', '-Command', buildStartupTaskLaunch(command, { powershellExe })], {
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+    } catch {
+      resolve(null);
+      return;
+    }
+    child.on('exit', (code) => resolve(code));
+    child.on('error', () => resolve(null));
+  });
+
+  const deleteRunValue = async () => {
+    try {
+      await exec('reg', ['delete', RUN_KEY, '/v', RUN_VALUE, '/f'], { windowsHide: true });
+    } catch (err) {
+      if (err?.code !== REG_NOT_FOUND) throw new Error(`startup-set: legacy Run cleanup failed: ${err.message}`);
+    }
+  };
+
   return {
+    // Main/IPC uses this to propagate an explicit task-setup failure to the
+    // Profiles page. Legacy Run registration failures retain their previous
+    // best-effort save behavior for compatibility.
+    registrationMode: useElevatedTask ? 'task' : 'run',
     /**
-     * The raw registry truth: whether our Run value exists and its value.
-     * A query failure (absent value -> exit 1, or any other error)
+     * The raw registration truth: whether our Run value/task exists and its
+     * value. A query failure (absent value -> exit 1, or any other error)
      * degrades to valueExists:false - the read is never a boot blocker.
      * @returns {Promise<{ valueExists: boolean, value: string | null }>}
      */
     async get() {
+      if (useElevatedTask) return publicTaskState(await readTask());
       try {
         const { stdout } = await exec('reg', ['query', RUN_KEY, '/v', RUN_VALUE], { windowsHide: true });
         const parsed = parseRegQuery(stdout);
@@ -180,12 +287,57 @@ export function createStartup(deps = {}) {
       }
     },
     /**
-     * Enable = write the bare-quoted-exe Run value (unelevated reg.exe,
-     * zero UAC); disable = delete it (absent value = success).
+     * Enable = verify/create the packaged task (one explicit UAC) or write
+     * the bare-quoted-exe Run value; disable removes the same registration.
      * @param {boolean} enabled
      * @returns {Promise<{ valueExists: boolean, value: string | null }>}
      */
     async set(enabled) {
+      if (useElevatedTask) {
+        const current = await readTask();
+        if (enabled) {
+          if (!current.valueExists) {
+            if (elevatedSetupAttempted) {
+              throw new Error('startup-set: administrator approval is required to create the Windows startup task (restart Arc Power to retry)');
+            }
+            elevatedSetupAttempted = true;
+            const exitCode = await runElevated(buildStartupTaskCommand(execPath));
+            if (exitCode !== 0) {
+              throw new Error('startup-set: administrator approval is required to create the Windows startup task');
+            }
+            const afterSetup = await readTask();
+            if (!afterSetup.valueExists) {
+              throw new Error('startup-set: the Windows startup task was not created or points at a different executable');
+            }
+          }
+          // A previous release may have left the HKCU Run value behind. It
+          // must be removed after the task is verified, or Windows may start
+          // two Arc Power processes at logon.
+          await deleteRunValue();
+          if (cleanupLegacy) await cleanupLegacyRegistrations(exec);
+          return publicTaskState(await readTask());
+        }
+        // A stale or disabled task still has to be removed. Leaving it in
+        // place would let an old executable launch at the next logon while
+        // the UI claims Start with Windows is off.
+        if (current.taskExists) {
+          if (elevatedDeleteAttempted) {
+            throw new Error('startup-set: administrator approval is required to remove the Windows startup task (restart Arc Power to retry)');
+          }
+          elevatedDeleteAttempted = true;
+          const exitCode = await runElevated(`schtasks /delete /tn ${taskName} /f`);
+          if (exitCode !== 0) {
+            throw new Error('startup-set: administrator approval is required to remove the Windows startup task');
+          }
+        }
+        await deleteRunValue();
+        if (cleanupLegacy) await cleanupLegacyRegistrations(exec);
+        const afterDelete = await readTask();
+        if (afterDelete.valueExists) {
+          throw new Error('startup-set: the Windows startup task could not be removed');
+        }
+        return publicTaskState(afterDelete);
+      }
       if (enabled) {
         try {
           await exec('reg', ['add', RUN_KEY, '/v', RUN_VALUE, '/t', 'REG_SZ', '/d', buildRunValue(execPath), '/f'], { windowsHide: true });

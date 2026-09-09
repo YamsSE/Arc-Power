@@ -1,9 +1,9 @@
 // Arc Power - Profiles page (M2b-B): list/create/save/rename/delete/load
 // profiles persisted by the main-process ProfileStore (via the profiles-*
 // IPC channels), plus the "start at boot" toggle (ocOnBoot) backed by the
-// shared HKCU Run value with honest state reporting. M4-D2 (plan F4): the
+// shared startup registration with honest state reporting. M4-D2 (plan F4): the
 // toggle ONLY persists the intent - profilesSettingsSave owns the
-// Run-value write (main re-derives the value from the merged intent; the
+// startup-registration write (main re-derives it from the merged intent; the
 // renderer never calls startupSet directly).
 // Loading a profile applies its settings through the same waiver gate and
 // toast rules as the Overclocking page (no-op applies stay silent; errors
@@ -838,7 +838,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     } catch { /* keep the last known list */ }
     try {
       bootState = await api.startupGet();
-    } catch { /* keep the last known Run-key state */ }
+    } catch { /* keep the last known startup state */ }
     renderList();
   };
 
@@ -847,11 +847,13 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const activeProfiles = envelope.profiles.filter((p) => activeIds.has(p.id));
     const waiverAccepted = caps.waiverAccepted === true;
     // Honest ocOnBoot state: the startup-get derivation is the truth
-    // (applyOnBoot = the Run value exists AND ocOnBoot is on AND an active
-    // profile exists), settings.json the persisted intent - a mismatch
-    // surfaces as a hint, never a lie.
+    // (applyOnBoot = the verified startup registration exists AND ocOnBoot is
+    // on AND an active profile exists), settings.json the persisted intent -
+    // a mismatch surfaces as a hint, never a lie.
     const applyOnBoot = bootState?.applyOnBoot === true;
     const bootMismatch = applyOnBoot !== (envelope.settings.ocOnBoot === true && activeProfiles.length > 0);
+    const packagedStartup = ctx.store.get().buildKind === 'installed' || ctx.store.get().buildKind === 'portable';
+    const startupTaskMissing = packagedStartup && bootState?.registration !== 'task';
 
     const bootCard = el('section', { class: 'card boot-card' }, [
       el('h2', { class: 'card-title', text: 'Start at boot' }),
@@ -872,6 +874,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         : activeProfiles.length > 0
           ? el('p', { class: 'card-note', text: `Applies ${activeProfiles.map((profile) => `"${profile.name}"`).join(' and ')} at boot.` })
           : el('p', { class: 'card-note', text: 'Load a profile first - start-at-boot applies active profiles for each GPU.' }),
+      startupTaskMissing
+        ? el('p', { class: 'card-note boot-hint', text: 'Packaged startup needs one-time administrator approval to launch Arc Power reliably at logon.' })
+        : null,
       bootMismatch
         ? el('p', { class: 'card-note boot-hint', text: 'The startup registration and the saved settings disagree - the toggle reflects the registration.' })
         : null,
@@ -1015,9 +1020,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       }
       try {
         // M4-D2 (plan F4): the toggle only persists the intent -
-        // profilesSettingsSave({ ocOnBoot }) is the ONLY writer of the Run
-        // value (main re-derives it from the merged intent; NO direct
-        // startupSet call).
+        // profilesSettingsSave({ ocOnBoot }) is the ONLY writer of the
+        // startup registration (main re-derives it from the merged intent;
+        // NO direct startupSet call).
         await api.profilesSettingsSave({
           ocOnBoot: true,
           activeProfileIds: activeMap,
@@ -1034,8 +1039,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         : `"${activeProfile?.name ?? 'the active profile'}" will apply when Arc Power starts.`);
     } else {
       try {
-        // M4-D2 (plan F4): disabling just persists the intent - main
-        // removes the Run value only when nothing else owns it (the merged
+        // M4-D2 (plan F4): disabling just persists the intent - main removes
+        // the startup registration only when nothing else owns it (the merged
         // intent derivation). NO direct startupSet call, no renderer-side
         // ownership guard (the single writer cannot double-remove).
         await api.profilesSettingsSave({ ocOnBoot: false });

@@ -2236,12 +2236,18 @@ async function main() {
   const seededMode = await seedOcMode(backend, store);
   if (seededMode) console.log(`[boot] oc-mode pre-seed: ${seededMode}`);
   markProfileBoot('seed-oc-mode');
-  // Run-key adapter: the real one writes HKCU only on an explicit user click
-  // (startup-set IPC); mock mode (incl. --ui-verify) never touches the
-  // registry.
+  // Startup adapter: dev/mock keeps the lightweight HKCU Run path. Packaged
+  // Windows builds use an explicitly approved elevated logon task because a
+  // bare HKCU Run value cannot reliably launch this administrator-manifested
+  // executable at logon. The task target is the stable portable wrapper when
+  // present, otherwise the installed executable; it is verified on every
+  // read before the UI reports startup active.
   const startup = mock
     ? createMockStartup()
-    : createStartup({ logonExecPath: await resolveLogonExecPath({ execPath: process.execPath, isPackaged: app.isPackaged }) });
+    : createStartup({
+        logonExecPath: await resolveLogonExecPath({ execPath: process.execPath, isPackaged: app.isPackaged }),
+        useElevatedTask: app.isPackaged && process.platform === 'win32',
+      });
   // Driver-date adapter: real reg.exe query in the product path; mock mode
   // (incl. --ui-verify) returns the fixture date and never spawns reg.exe.
   const driverInfo = mock ? createMockDriverInfo() : createDriverInfo();

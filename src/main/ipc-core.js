@@ -968,7 +968,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   backend: import('./backend/backend.interface.js').IOCBackend,
  *   store: import('./store/profile-store.js').ProfileStore,
  *   emit: (channel: string, payload: unknown) => void,
- *   startup?: { get: () => Promise<{ valueExists: boolean, value: string | null }>, set: (enabled: boolean) => Promise<unknown> },
+ *   startup?: { get: () => Promise<{ valueExists: boolean, value: string | null, registration?: 'task' | 'run' }>, set: (enabled: boolean) => Promise<unknown>, registrationMode?: 'task' | 'run' },
  *   driverInfo?: { get: () => Promise<{ driverDate: string | null }> },
  *   sysinfo?: { get: () => Promise<unknown> },  // M4-D: CIM system info (CPU/RAM/video controllers)
  *   windowOps?: {                              // M4-D: injected BrowserWindow ops (title-bar buttons)
@@ -2840,18 +2840,18 @@ export function createIpcHandlers({
         return registryApplyAdapter.apply(entryId, action);
       },
 
-      // Run-key (start-with-windows / apply-at-boot) state (M2b/M4-D2).
-      // startup.set writes the HKCU Run value ONLY on an explicit user
-      // click (unelevated reg.exe - zero UAC); the default adapter is the
-      // MOCK so tests/ui-verify never touch the real registry.
+      // Startup (start-with-windows / apply-at-boot) state (M2b/M4-D2).
+      // Packaged Windows startup.set uses the verified elevated logon task;
+      // dev/mock retains the HKCU Run adapter and never touches the real
+      // registry in tests/ui-verify.
       'startup-get': async (...args) => {
         assertNoPayload(args, 'startup-get');
         const raw = await startup.get();
-        // M4-D2 derivation: ONE Run value serves both toggles. The value
-        // existing means the app starts at logon; the toggle semantics are
+        // M4-D2 derivation: ONE startup registration serves both toggles. Its
+        // verified existence means the app starts at logon; the toggle semantics are
         // composed HERE from the persisted settings:
-        //   startWithWindows = value exists AND the Settings toggle is on;
-        //   applyOnBoot = value exists AND the profile's start-at-boot is
+        //   startWithWindows = registration exists AND the Settings toggle is on;
+        //   applyOnBoot = registration exists AND the profile's start-at-boot is
         //   on AND an active profile exists.
         const settings = await store.loadSettings();
         let hasActiveProfile = Boolean(settings.activeProfileId);
@@ -2861,17 +2861,22 @@ export function createIpcHandlers({
           // Keep the legacy scalar fallback if the profile list is temporarily
           // unavailable; the persisted intent remains authoritative.
         }
-        return {
+        const composed = {
           startWithWindows: raw.valueExists === true && settings.startWithWindows === true,
           applyOnBoot: raw.valueExists === true
             && settings.ocOnBoot === true
             && hasActiveProfile,
         };
+        // Packaged Windows builds expose the verified registration mechanism
+        // so the renderer can explain the one-time elevated task setup. Keep
+        // the legacy mock/Run shape unchanged for existing consumers.
+        if (raw.registration) composed.registration = raw.registration;
+        return composed;
       },
 
-      // M4-D2: enable/disable the HKCU Run value (the bare "<exe>" - no
-      // profile id, no tasks, no elevation). Validates the boolean and
-      // returns the composed state (same derivation as startup-get).
+      // M4-D2: enable/disable the configured startup registration (the bare
+      // Run value in dev/legacy mode; an elevated task in packaged Windows).
+      // Validates the boolean and returns the composed state.
       'startup-set': async (enabled) => {
         if (typeof enabled !== 'boolean') throw new Error('startup-set: enabled must be a boolean');
         await startup.set(enabled);
@@ -3392,7 +3397,7 @@ export function createIpcHandlers({
       // Profiles (M2b-B). Every channel returns the full envelope
       // { profiles, settings } so the renderer can re-render from one
       // response. `settings` mirrors ProfileStore.loadSettings() (the
-      // persisted ocOnBoot / activeProfileId - the Run-key truth lives in
+      // persisted ocOnBoot / activeProfileId - the startup-registration truth lives in
       // startup-get). Payloads are validated before touching the store.
       'profiles-list': async (...args) => {
         assertNoPayload(args, 'profiles-list');
@@ -3672,7 +3677,7 @@ export function createIpcHandlers({
         if (typeof profile.id !== 'string' || profile.id.length === 0) {
           throw new Error('profiles-save: id must be a non-empty string');
         }
-        // M2b review F6: profile ids become Run-key values (startup-set) -
+        // M2b review F6: profile ids still share the startup-set intent -
         // whitespace would silently break the startup-get round trip.
         if (!/^\S+$/.test(profile.id)) {
           throw new Error('profiles-save: id must not contain whitespace');
@@ -3739,11 +3744,11 @@ export function createIpcHandlers({
       // Persisted-settings patch (activeProfileId / ocOnBoot + M4-D the
       // Settings-tab fields). Read-modify-write in main so the renderer can
       // never clobber waiverAccepted. M4-D2 (plan F4 / review F1): THIS
-      // handler is the ONLY writer of the HKCU Run value (via the startup
-      // adapter) - every settings save re-derives the value from the MERGED
+      // handler is the ONLY writer of the startup registration (via the
+      // startup adapter) - every settings save re-derives it from the MERGED
       // intent (startWithWindows || (ocOnBoot && an active profile)), so a
       // missing/externally-deleted value self-heals on the next save.
-      // One reg.exe call per save; a registry failure degrades to the
+      // One registration write per save; a legacy Run failure degrades to the
       // honest save envelope (the intent still persists and the renderer's
       // mismatch hint surfaces the disagreement until the next save
       // re-derives). The value write lands BEFORE the settings save: a
@@ -3946,9 +3951,9 @@ export function createIpcHandlers({
             throw new Error('overlayHotkeyLetter must differ from the advanced overlay hotkey letter (the Control+<letter> hotkeys would collide)');
           }
         }
-        // M4-D2 (plan F4): derive the Run value from the merged intent and
-        // write it through the startup adapter (write when true, delete when
-        // false - one reg.exe call per save, mock-safe). M152: a multi-GPU
+        // M4-D2 (plan F4): derive the startup registration from the merged
+        // intent and write it through the startup adapter (write/create when
+        // true, delete when false, mock-safe). M152: a multi-GPU
         // profile map is active when at least one mapped profile still exists;
         // the legacy scalar remains a compatibility fallback. A registry
         // failure degrades to the honest save envelope below (never a failed
@@ -3960,16 +3965,21 @@ export function createIpcHandlers({
           // Keep the scalar fallback if the profile list is temporarily
           // unavailable; the persisted intent must still be saved.
         }
+        let startupError = null;
         try {
           await startup.set(
             next.startWithWindows === true
               || (next.ocOnBoot === true && hasActiveProfile),
           );
-        } catch {
-          // honest degradation: the persisted intent stays, the renderer's
-          // mismatch hint (startup truth vs intent) surfaces the reg failure
+        } catch (err) {
+          startupError = err;
+          // Legacy Run registration keeps the historical best-effort save;
+          // packaged task registration propagates the explicit UAC failure
+          // after the intent is persisted so the renderer can show an honest
+          // error and mismatch state.
         }
         await store.saveSettings(next);
+        if (startupError && startup.registrationMode === 'task') throw startupError;
         // M5: the overlay reaction (the rebuildTray pattern) - when any
         // overlay field the PATCH touched actually changed, the injected
         // callback gets the CHANGED fields so main.js applies the new

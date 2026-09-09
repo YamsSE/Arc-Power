@@ -158,9 +158,9 @@ export interface ArcPowerApi {
    *  never sends raw reg commands). */
   registryApply(entryId: string, action: 'enable' | 'disable' | 'revert'): Promise<RegistryApplyResponse>;
   startupGet(): Promise<StartupGetState>;
-  /** M4-D2: enable/disable the HKCU Run value (the bare "<exe>" - the ONE
-   *  registration shared by Start with Windows and start-at-boot; zero
-   *  UAC). Returns the composed derivation. */
+  /** M4-D2: enable/disable the startup registration shared by Start with
+   *  Windows and start-at-boot. Packaged Windows uses one explicit elevated
+   *  task; dev/mock retains the HKCU Run adapter. */
   startupSet(enabled: boolean): Promise<StartupGetState>;
   /** M4-D: the CIM system info (CPU/RAM/video controllers) - the dashboard
    *  CPU card + the real-GPU VRAM suffix source. */

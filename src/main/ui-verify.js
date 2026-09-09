@@ -4815,7 +4815,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('tweaks', `Tweaks: ${tweakIds} rendered; mpo=Off, hags=Active (HwSchMode=0x2), game-dvr=Default, fullscreen=Active; Enable/Disable/Revert per applyable card (mock round trip: mpo -> Active -> revert -> Default), fullscreen read-only`);
 
   // --- M4-D + M4-D2: the Settings tab ------------------------------
-  // Start with Windows (the HKCU Run value via the MOCK startup adapter -
+  // Start with Windows (the mock startup registration via the MOCK adapter -
   // never spawns, never elevates), Start minimized (persisted), Close to
   // tray (persisted), and the app version row. Monitoring owns the separate
   // Log to file control surface.
@@ -4880,8 +4880,8 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
     }
   }
 step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save; Log to file is intentionally absent here; version row 1.1.5');
-  // Start with Windows round trip + the honest shared-value state. The
-  // Settings checkbox shows ON whenever the Run value exists - the profile's
+  // Start with Windows round trip + the honest shared-registration state. The
+  // Settings checkbox shows ON whenever the registration exists - the profile's
   // start-at-boot (ocOnBoot) can own it (F6: never a false mismatch).
   await js(`window.arcPower.profilesSettingsSave({ ocOnBoot: true, activeProfileId: 'profile-1' })`);
   await js(`window.arcPower.startupSet(true)`);
@@ -4899,7 +4899,7 @@ step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round
   if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('Arc Power starts at logon to apply it')`, 5000))) {
     fail('M4-D2: the apply-profile hint is missing its logon wording');
   }
-  step('m4d-settings-owned', 'M4-D2 (F6): the profile start-at-boot owns the Run value -> Settings checkbox ON + the reworded "Apply active profile at boot is enabled" hint (no false mismatch)');
+  step('m4d-settings-owned', 'M4-D2 (F6): the profile start-at-boot owns the startup registration -> Settings checkbox ON + the reworded "Apply active profile at boot is enabled" hint (no false mismatch)');
   // Disable the profile registration: the value comes off, the checkbox
   // follows.
   await js(`window.arcPower.startupSet(false)`);
@@ -4922,12 +4922,12 @@ step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round
   await clearToasts();
   await js(`${startWithBox}.click()`);
   if (!(await waitFor(win, `window.arcPower.startupGet().then((s) => s.startWithWindows === false)`, 5000))) {
-    fail('M4-D2: disabling Start with Windows did not remove the Run value');
+    fail('M4-D2: disabling Start with Windows did not remove the startup registration');
   }
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.startWithWindows === false)`, 5000))) {
     fail('M4-D: Start with Windows did not persist startWithWindows=false');
   }
-  step('m4d-settings-startwith', 'M4-D2: Start with Windows round trip (shared HKCU Run value + persisted startWithWindows true/false, zero tasks)');
+  step('m4d-settings-startwith', 'M4-D2: Start with Windows round trip (shared mock registration + persisted startWithWindows true/false)');
   await clearToasts();
 
   // --- M4-D review F4: the PARTIAL-FAILURE honesty path (M4-D2 shape) ------

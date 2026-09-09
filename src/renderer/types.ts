@@ -408,15 +408,17 @@ export interface RegistryCatalogResponse {
 }
 
 /**
- * M4-D2: the startup-get shape - ONE HKCU Run value serves both toggles;
- * the derivation is composed in main from the raw value + the persisted
- * settings: startWithWindows = value exists AND the Settings toggle is on;
- * applyOnBoot = value exists AND the profile's start-at-boot is on AND an
+ * M4-D2: the startup-get shape - one verified startup registration serves
+ * both toggles; the derivation is composed in main from the raw value + the persisted
+ * settings: startWithWindows = registration exists AND the Settings toggle is on;
+ * applyOnBoot = registration exists AND the profile's start-at-boot is on AND an
  * active profile exists.
  */
 export interface StartupGetState {
   startWithWindows: boolean;
   applyOnBoot: boolean;
+  /** Packaged Windows builds report the verified elevated task path. */
+  registration?: 'task' | 'run';
 }
 
 /** M4-D: one Win32_VideoController row (AdapterRAM already degraded). */

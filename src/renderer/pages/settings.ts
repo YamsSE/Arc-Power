@@ -1,30 +1,31 @@
-// Arc Power - Settings tab (M4-D + M4-D2): Start with Windows (the HKCU Run
-// value - ONE registration, zero UAC), Start minimized (persisted
+// Arc Power - Settings tab (M4-D + M4-D2): Start with Windows (the verified
+// packaged task or legacy HKCU Run registration), Start minimized (persisted
 // startMinimized - the app starts hidden in the system tray at boot, the tray
 // click restores), Close to tray (persisted closeToTray - closing the
 // window hides it to the icon list instead of quitting; the tray menu's
 // Quit still exits), and the app version row.
 //
-// M4-D2 (r2 F4/F6): the Run value is SHARED with the Profiles page's
-// "start at boot" (ocOnBoot) - one value serves both toggles. Honesty
+// M4-D2 (r2 F4/F6): the startup registration is SHARED with the Profiles
+// page's "start at boot" (ocOnBoot) - one registration serves both toggles.
+// Honesty
 // rules:
 //   - the checkbox reflects the STARTUP-GET derivation (checked whenever
-//     the value exists - either toggle can own it), never the persisted
+//     the registration exists - either toggle can own it), never the persisted
 //     intent alone;
 //   - the mismatch hint compares the startup truth against the persisted
 //     intent `(settings.startWithWindows || (settings.ocOnBoot &&
 //     !!settings.activeProfileId))` - NEVER a false mismatch when ocOnBoot
 //     owns the value (plan-review r2 F6);
-//   - disabling Start with Windows must NOT remove the Run value while the
-//     profile's start-at-boot owns it (the value is shared) - the toggle
+//   - disabling Start with Windows must NOT remove the startup registration
+//     while the profile's start-at-boot owns it (the registration is shared) - the toggle
 //     RE-QUERIES startup-get FRESH before that ownership decision (never
 //     the mount-captured bootState); main's profiles-settings-save is the
-//     single writer of the value and re-derives it from the persisted
+//     single writer of the registration and re-derives it from the persisted
 //     intent on every save.
 //
-// The old elevated scheduled-task wording (ArcPowerAppOnBoot) is GONE -
-// tasks are dead (M4-D2 §12 root cause b); the HKCU Run value is the only
-// registration and it never UACs.
+// Packaged Windows builds use an explicit elevated ArcPowerStartup task:
+// Explorer cannot reliably consent a requireAdministrator executable from a
+// bare HKCU Run value at logon. Dev/mock keeps the Run adapter for tests.
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
@@ -91,8 +92,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       startMinimized: envelope.settings.startMinimized === true,
       closeToTray: envelope.settings.closeToTray === true,
       // M4-D2 (r2 F6): the mismatch formula also reads the profile's
-      // start-at-boot intent (ocOnBoot + activeProfileId) - the Run value
-      // is shared, so the Settings checkbox can legitimately be ON because
+      // start-at-boot intent (ocOnBoot + activeProfileId) - the startup
+      // registration is shared, so the Settings checkbox can legitimately be ON because
       // the profile owns it.
       ocOnBoot: envelope.settings.ocOnBoot === true,
       activeProfileId: envelope.settings.activeProfileId,
@@ -118,8 +119,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const render = (): void => {
-    // M4-D2 (r2 F6): the Settings checkbox shows ON whenever the Run value
-    // exists - either the Settings toggle OR the profile's start-at-boot
+    // M4-D2 (r2 F6): the Settings checkbox shows ON whenever the verified
+    // startup registration exists - either the Settings toggle OR the profile's start-at-boot
     // owns it. The mismatch hint compares the startup truth against the
     // persisted INTENT (never a false mismatch when ocOnBoot owns the
     // value).
@@ -128,6 +129,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const valueExists = startWithWindows || applyOnBoot;
     const intended = persisted.startWithWindows || (persisted.ocOnBoot && !!persisted.activeProfileId);
     const startWithMismatch = valueExists !== intended;
+    const packagedStartup = s.buildKind === 'installed' || s.buildKind === 'portable';
+    const taskStartup = bootState?.registration === 'task' || packagedStartup;
 
     const startWithCard = el('section', { class: 'card settings-card settings-startup-card' }, [
       el('h2', { class: 'card-title', text: 'Start with Windows' }),
@@ -143,11 +146,14 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           el('span', { text: 'Launch Arc Power when Windows starts' }),
         ]),
       ]),
-      // Honest current-state line: the HKCU Run value is the ONLY
-      // registration (no tasks, no elevation).
+      // Honest current-state line: packaged builds report the verified task;
+      // dev/mock retains the Run adapter wording.
       valueExists
-        ? el('p', { class: 'card-note settings-state', text: 'Active - Arc Power starts at logon.' })
-        : el('p', { class: 'card-note settings-state', text: 'Not active - the app starts manually.' }),
+        ? el('p', { class: 'card-note settings-state', text: taskStartup ? 'Active - an administrator startup task launches Arc Power at logon.' : 'Active - Arc Power starts at logon.' })
+        : el('p', { class: 'card-note settings-state', text: taskStartup ? 'Not active - enable this setting to create the one-time administrator startup task.' : 'Not active - the app starts manually.' }),
+      valueExists && persisted.startMinimized
+        ? el('p', { class: 'card-note boot-hint', text: 'Start minimized is enabled - the window stays hidden at logon; open Arc Power from the tray icon.' })
+        : null,
       // M4-D2 (r2 F6 reword): when the profile's start-at-boot owns the
       // value, the Settings checkbox is ON because Arc Power starts at
       // logon to run the boot apply - the hint explains the ownership
@@ -158,7 +164,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // M4-E (plan §3): distributed builds request administrator access at
       // launch, so their logon applies use the same elevated session.
       s.buildKind === 'installed' || s.buildKind === 'portable'
-        ? el('p', { class: 'card-note boot-hint', text: 'Arc Power applies the active profile at logon with administrator access.' })
+        ? el('p', { class: 'card-note boot-hint', text: 'Packaged startup uses a one-time administrator approval so Arc Power can launch reliably at logon.' })
         : null,
       startWithMismatch
         ? el('p', { class: 'card-note boot-hint', text: 'The startup registration and the saved settings disagree - the toggle reflects the registration.' })
@@ -304,7 +310,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
 
   const onStartWithWindowsToggle = async (checked: boolean): Promise<void> => {
     try {
-      // M4-D2: the HKCU Run value is shared with the Profiles page's
+      // M4-D2: the startup registration is shared with the Profiles page's
       // start-at-boot - disabling must NOT remove it while the profile's
       // boot apply owns it (the in-app boot apply then still runs). The
       // ownership decision ALWAYS re-queries startup-get FRESH - never the
