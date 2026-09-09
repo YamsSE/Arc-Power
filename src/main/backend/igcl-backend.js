@@ -70,7 +70,7 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 // bSupported:false - the probe-3 evidence).
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
-import { isLegacyBakedB580VfCurve, isLegacyStockVfCurve, prepareVfCurveForDriver } from '../../renderer/pure/vf-curve.ts';
+import { isLegacyBakedB580VfCurve, isLegacyStockVfCurve, prepareVfCurveForDriver, rebaseB580VfCurveToNativeGrid } from '../../renderer/pure/vf-curve.ts';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
@@ -4922,6 +4922,9 @@ export class IgclBackend {
         const nativeCanonical = native.ok
           ? native.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
           : null;
+        const liveCanonical = live.ok
+          ? live.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
+          : null;
         const bakedB580 = nativeCanonical && isLegacyBakedB580VfCurve(settings.vfCurve, nativeCanonical);
         if (nativeCanonical
           && (isLegacyStockVfCurve(settings.vfCurve, nativeCanonical, settings.gpuFreqOffsetMhz) || bakedB580)) {
@@ -4934,6 +4937,10 @@ export class IgclBackend {
           // transaction.
           delete out.gpuVoltOffsetV;
           delete out.gpuFreqOffsetMhz;
+          const rebased = nativeCanonical
+            ? rebaseB580VfCurveToNativeGrid(settings.vfCurve, nativeCanonical, liveCanonical)
+            : null;
+          if (rebased) out.vfCurve = rebased;
         }
       }
       settings = out;

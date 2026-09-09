@@ -28,6 +28,9 @@ const LEGACY_B580_BAKED_DELTA_PATTERN_MHZ = [
 ] as const;
 const LEGACY_B580_UNIFORM_BAKED_OFFSET_MHZ = 100;
 const LEGACY_ZERO_SHIFT_TOLERANCE_V = 0.001;
+const B580_SIMPLIFIED_POINT_COUNT = 10;
+const B580_STALE_VOLTAGE_SHIFT_MIN_V = 0.01;
+const B580_STALE_FREQUENCY_TOLERANCE_MHZ = 10;
 
 /** Compare two curves by their native point coordinates and frequencies. */
 export function sameVfCurve(
@@ -154,6 +157,41 @@ export function isLegacyBakedB580VfCurve(
   return Math.abs(nativeTail[1].freqMhz - nativeTail[0].freqMhz) <= 1
     && Math.abs(requestedTail[1].freqMhz - requestedTail[0].freqMhz) <= 1
     && requestedTail[1].freqMhz > nativeTail[1].freqMhz;
+}
+
+/**
+ * Rebase a valid ten-point B580 profile whose voltage grid came from an older
+ * driver revision onto the current native grid. The profile remains a custom
+ * VF curve: only stale voltage coordinates are replaced, and only when the
+ * requested frequencies match the current LIVE table within the driver's
+ * observed 10 MHz endpoint quantization.
+ */
+export function rebaseB580VfCurveToNativeGrid(
+  requested: VfCurvePoint[] | null | undefined,
+  native: VfCurvePoint[] | null | undefined,
+  live: VfCurvePoint[] | null | undefined = null,
+): VfCurvePoint[] | null {
+  if (!Array.isArray(requested) || !Array.isArray(native)
+    || requested.length !== B580_SIMPLIFIED_POINT_COUNT
+    || native.length !== requested.length) return null;
+  const reference = Array.isArray(live) && live.length === requested.length ? live : native;
+  if (!requested.every((point, index) => Number.isFinite(point?.voltageV)
+    && Number.isFinite(point?.freqMhz)
+    && Number.isFinite(native[index]?.voltageV)
+    && Number.isFinite(native[index]?.freqMhz)
+    && Number.isFinite(reference[index]?.freqMhz))) return null;
+  if (!requested.every((point, index) => index === 0
+    || (point.voltageV > requested[index - 1].voltageV
+      && point.freqMhz >= requested[index - 1].freqMhz))
+    || !native.every((point, index) => index === 0 || point.voltageV > native[index - 1].voltageV)) return null;
+  const voltageShift = requested[0].voltageV - native[0].voltageV;
+  if (Math.abs(voltageShift) <= B580_STALE_VOLTAGE_SHIFT_MIN_V
+    || !requested.every((point, index) => Math.abs(
+      (point.voltageV - native[index].voltageV) - voltageShift,
+    ) <= 0.001)) return null;
+  if (!requested.every((point, index) => Math.abs(point.freqMhz - reference[index].freqMhz)
+    <= B580_STALE_FREQUENCY_TOLERANCE_MHZ)) return null;
+  return requested.map((point, index) => ({ ...point, voltageV: native[index].voltageV }));
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -1,6 +1,6 @@
 import type { Capabilities, DeviceState, Settings } from '../types.ts';
 import { isBattlemageGpuName } from './hardware-icons.ts';
-import { isLegacyBakedB580VfCurve, isLegacyStockVfCurve } from './vf-curve.ts';
+import { isLegacyBakedB580VfCurve, isLegacyStockVfCurve, rebaseB580VfCurveToNativeGrid } from './vf-curve.ts';
 
 /**
  * Normalize the VF portion of a profile for a Battlemage target. Older
@@ -39,6 +39,10 @@ export function normalizeBattlemageProfileSettings(
     // makes the driver's custom write fail with a generic io-failed result.
     delete out.gpuVoltOffsetV;
     delete out.gpuFreqOffsetMhz;
+    const rebased = Array.isArray(native)
+      ? rebaseB580VfCurveToNativeGrid(out.vfCurve, native, currentState?.vfCurve)
+      : null;
+    if (rebased) out.vfCurve = rebased;
   }
   return out;
 }
