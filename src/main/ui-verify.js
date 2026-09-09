@@ -4089,7 +4089,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 
   // M207d: exercise the live graph surface itself. This intentionally uses
   // the browser's pointer, Canvas and layout APIs rather than source-pattern
-  // checks: the popup must snap to a rendered sample, use numeric unitless
+  // checks: the compact readout must snap to a rendered sample, use numeric unitless
   // axes, stay inside the surface at an edge hover, and leave the Min/Max row
   // intact. The pixel probe uses the tooltip value + observed range to derive
   // the expected Y coordinate, so it catches a crosshair that merely shares an
@@ -4147,11 +4147,16 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
         && popupRect.right <= surfaceRect.right + 1
         && popupRect.top >= surfaceRect.top - 1
         && popupRect.bottom <= surfaceRect.bottom + 1;
-      const pillCenter = popupRect.left + popupRect.width / 2 - surfaceRect.left;
-      const pillAnchorDelta = Math.abs(pillCenter - crosshairX);
+      const crosshairRect = crosshair.getBoundingClientRect();
+      const crosshairPageX = crosshairRect.left + crosshairRect.width / 2;
+      const textSide = crosshairX <= width / 2 ? 'right' : 'left';
+      const textAdjacent = textSide === 'right'
+        ? popupRect.left - crosshairPageX >= 2 && popupRect.left - crosshairPageX <= 8
+        : crosshairPageX - popupRect.right >= 2 && crosshairPageX - popupRect.right <= 8;
+      const textTop = popupRect.top >= surfaceRect.top - 1 && popupRect.top <= surfaceRect.top + 4;
       const style = getComputedStyle(tooltip);
       const colors = {
-        border: style.borderTopColor.replace(/\s+/g, ''),
+        borderWidth: style.borderTopWidth,
         background: style.backgroundColor.replace(/\s+/g, ''),
         color: style.color.replace(/\s+/g, ''),
         radius: style.borderRadius,
@@ -4161,7 +4166,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
         inside,
         text: tooltipText,
         crosshairX,
-        pillAnchorDelta,
+        textSide,
+        textAdjacent,
+        textTop,
         expectedY,
         mappedLine,
         y: yTexts,
@@ -4185,9 +4192,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     return {
       ok: interior.ok && edge.ok && left.ok && persistent.ok && edge.inside && left.inside
         && Math.abs(edge.crosshairX - (width - 2)) <= 1.5 && Math.abs(left.crosshairX - 2) <= 1.5
-        && interior.pillAnchorDelta <= 1.5 && persistent.pillAnchorDelta <= 1.5
-        && edge.colors.border === 'rgb(56,197,255)' && edge.colors.background === 'rgb(13,33,48)' && edge.colors.color === 'rgb(223,247,255)'
-        && Number.parseFloat(edge.colors.radius) >= 10
+        && interior.textAdjacent && persistent.textAdjacent
+        && edge.textSide === 'left' && left.textSide === 'right'
+        && [interior, edge, left, persistent].every((probe) => probe.textTop && probe.textAdjacent)
+        && edge.colors.borderWidth === '0px' && edge.colors.background === 'rgba(0,0,0,0)' && edge.colors.color === 'rgb(56,197,255)'
+        && Number.parseFloat(edge.colors.radius) === 0
         && !!range && rangeTextBeforeLeave.includes('Min') && rangeTextBeforeLeave.includes('Max'),
       interior,
       edge,
@@ -4258,7 +4267,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     return { ok: !!tooltip && tooltip.hidden && !!crosshair && crosshair.hidden && !surface.querySelector('.telemetry-graph-axis-x') };
   })()`);
   if (!graphHoverLeaveProbe.ok) fail(`M207d: pointerleave did not hide graph hover chrome: ${JSON.stringify(graphHoverLeaveProbe)}`);
-  step('m207d-graph-hover', `M207d: the left Y-axis rail is numeric, the rounded Arc-blue value pill stays anchored above the hovered line (${graphHoverProbe.interior.text}); hover persisted across ${graphHoverTickProbe.strokes} telemetry redraws, the elapsed X readout is absent, and pointerleave hid the hover chrome; Min/Max remains '${graphHoverProbe.rangeTextBeforeLeave}'`);
+  step('m207d-graph-hover', `M207d: the left Y-axis rail is numeric, compact blue hover text stays at the top beside the dashed crosshair (${graphHoverProbe.interior.text}); it switches sides at the graph midpoint, persisted across ${graphHoverTickProbe.strokes} telemetry redraws, and pointerleave hid the hover chrome; Min/Max remains '${graphHoverProbe.rangeTextBeforeLeave}'`);
 
   // --- M9: the Monitoring | Overlay view switch (the S2 re-registration) ----
   // The view pill renders 'Monitoring | Overlay' at the page top; the

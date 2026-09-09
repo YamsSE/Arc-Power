@@ -504,11 +504,11 @@ function updateMetricGraphOverlay(seriesId: string, observed?: { min: number; ma
   graph.crosshair.hidden = false;
   graph.tooltip.textContent = graphRangeValue(seriesId, point.v);
   graph.tooltip.hidden = false;
-  // Measure after updating the value so the pill stays inside the tile at
-  // either edge, just like the APM graph readout.
-  const pillWidth = graph.tooltip.offsetWidth || 58;
-  const pillHeight = graph.tooltip.offsetHeight || 19;
-  const tooltipPosition = clampGraphTooltipPosition(x, y, width, height, pillWidth, pillHeight);
+  // Measure after updating the value so the compact text stays inside the
+  // frame while switching sides of the crosshair at the horizontal midpoint.
+  const textWidth = graph.tooltip.offsetWidth || 28;
+  const textHeight = graph.tooltip.offsetHeight || 10;
+  const tooltipPosition = clampGraphTooltipPosition(x, y, width, height, textWidth, textHeight);
   graph.tooltip.style.left = `${tooltipPosition.left}px`;
   graph.tooltip.style.top = `${tooltipPosition.top}px`;
 }

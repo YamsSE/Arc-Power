@@ -77,20 +77,28 @@ export function graphSamplePosition(
   return { x, y };
 }
 
-/** Keep the centered tooltip inside the graph, flipping below top-edge data. */
+/**
+ * Place the compact hover readout at the top of the graph, next to the
+ * vertical crosshair. Keep it on the right for a left-side crosshair and on
+ * the left for a right-side crosshair so the text remains easy to read.
+ */
 export function clampGraphTooltipPosition(
   x: number,
   y: number,
   width: number,
   height: number,
-  pillWidth: number,
-  pillHeight: number,
+  textWidth: number,
+  textHeight: number,
 ): GraphTooltipPosition {
-  const halfPill = Math.max(0, pillWidth / 2);
-  const left = Math.min(Math.max(halfPill, x), Math.max(halfPill, width - halfPill));
-  const above = y - pillHeight - 5;
-  const top = above >= 1
-    ? above
-    : Math.min(Math.max(1, y + 5), Math.max(1, height - pillHeight - 14));
+  // The Y coordinate is intentionally independent of the sample value. The
+  // graph's top edge is a stable, uncluttered home for the hover readout.
+  const gap = 5;
+  const maxLeft = Math.max(1, width - Math.max(0, textWidth) - 1);
+  const desiredLeft = x <= width / 2
+    ? x + gap
+    : x - Math.max(0, textWidth) - gap;
+  const left = Math.min(Math.max(1, desiredLeft), maxLeft);
+  const maxTop = Math.max(1, height - Math.max(0, textHeight) - 1);
+  const top = Math.min(2, maxTop);
   return { left, top };
 }
