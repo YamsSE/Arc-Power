@@ -47,8 +47,10 @@ export function monitoringGraphRange(seriesId: string, points: SeriesPoint[], ce
   const segment = monitoringGraphSegment(seriesId);
   const defaultCeiling = MONITORING_GRAPH_DEFAULT_CEILINGS[segment] ?? null;
   const suppliedCeiling = Number.isFinite(ceiling) && Number(ceiling) > 0 ? Number(ceiling) : null;
-  const floorCeiling = suppliedCeiling ?? defaultCeiling ?? 0;
-  return { min: 0, max: Math.max(1, floorCeiling, max) };
+  // A physical capacity or session high-water mark can extend a default,
+  // but must never replace it. Otherwise a low first sample (for example
+  // 3% utilization) would incorrectly collapse the axis to 0..3.
+  return { min: 0, max: Math.max(1, defaultCeiling ?? 0, suppliedCeiling ?? 0, max) };
 }
 
 export interface GraphSamplePosition {
