@@ -4128,17 +4128,14 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       surface.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX, clientY: surfaceRect.top + surfaceRect.height / 2 }));
       const tooltip = surface.querySelector('.telemetry-graph-tooltip');
       const crosshair = surface.querySelector('.telemetry-graph-crosshair');
-      const xValue = surface.querySelector('.telemetry-graph-axis-x');
-      const axisRail = surface.parentElement?.querySelector('.telemetry-graph-axis-rail');
-      const yValues = [axisRail?.querySelector('.telemetry-graph-axis-y-max'), axisRail?.querySelector('.telemetry-graph-axis-y-min')];
-      const railRect = axisRail?.getBoundingClientRect();
-      const railOutside = !!railRect && railRect.right <= surfaceRect.left + 1;
-      if (!tooltip || !crosshair || !xValue || !axisRail || !railOutside || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || xValue.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-hidden' };
+      const yValues = [surface.querySelector('.telemetry-graph-axis-y-max'), surface.querySelector('.telemetry-graph-axis-y-min')];
+      const yRects = yValues.map((node) => node?.getBoundingClientRect());
+      const yInside = yRects.every((rect) => !!rect && rect.left >= surfaceRect.left - 1 && rect.right <= surfaceRect.right + 1);
+      if (!tooltip || !crosshair || !yInside || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-hidden' };
       const crosshairX = Number.parseFloat(crosshair.style.left);
-      const xText = xValue.textContent?.trim() ?? '';
       const yTexts = yValues.map((node) => node?.textContent?.trim() ?? '');
-      const parts = (tooltip.textContent ?? '').split(' · ');
-      const sampleValue = Number(parts[0]);
+      const tooltipText = tooltip.textContent?.trim() ?? '';
+      const sampleValue = Number(tooltipText);
       const expectedY = height - 13 - ((sampleValue - rangeValues[0]) / Math.max(.001, rangeValues[1] - rangeValues[0])) * Math.max(4, height - 18);
       const mappedLine = Number.isFinite(sampleValue) && Number.isFinite(expectedY) && lineNear(crosshairX, expectedY);
       const popupRect = tooltip.getBoundingClientRect();
@@ -4146,20 +4143,23 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
         && popupRect.right <= surfaceRect.right + 1
         && popupRect.top >= surfaceRect.top - 1
         && popupRect.bottom <= surfaceRect.bottom + 1;
+      const pillCenter = popupRect.left + popupRect.width / 2 - surfaceRect.left;
+      const pillAnchorDelta = Math.abs(pillCenter - crosshairX);
       const style = getComputedStyle(tooltip);
       const colors = {
         border: style.borderTopColor.replace(/\s+/g, ''),
         background: style.backgroundColor.replace(/\s+/g, ''),
         color: style.color.replace(/\s+/g, ''),
+        radius: style.borderRadius,
       };
       return {
-        ok: Number.isFinite(crosshairX) && isNumeric(xText) && yTexts.every(isNumeric) && parts.length === 2 && isNumeric(parts[0]) && isNumeric(parts[1]) && mappedLine,
+        ok: Number.isFinite(crosshairX) && yTexts.every(isNumeric) && isNumeric(tooltipText) && mappedLine,
         inside,
-        text: tooltip.textContent ?? '',
+        text: tooltipText,
         crosshairX,
+        pillAnchorDelta,
         expectedY,
         mappedLine,
-        x: xText,
         y: yTexts,
         colors,
       };
@@ -4168,7 +4168,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const edge = hover(surfaceRect.right + 8);
     const left = hover(surfaceRect.left - 8);
     const rangeTextBeforeLeave = range?.textContent?.trim() ?? '';
-    const persistent = hover(surfaceRect.left + surfaceRect.width * .5);
+    const persistent = hover(surfaceRect.left + surfaceRect.width * .25);
     if (!window.__arcPowerMonitoringGraphTickProbe) {
       const nativeStroke = CanvasRenderingContext2D.prototype.stroke;
       window.__arcPowerMonitoringGraphTickProbe = { count: 0 };
@@ -4181,7 +4181,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     return {
       ok: interior.ok && edge.ok && left.ok && persistent.ok && edge.inside && left.inside
         && Math.abs(edge.crosshairX - (width - 2)) <= 1.5 && Math.abs(left.crosshairX - 2) <= 1.5
+        && interior.pillAnchorDelta <= 1.5 && persistent.pillAnchorDelta <= 1.5
         && edge.colors.border === 'rgb(56,197,255)' && edge.colors.background === 'rgb(13,33,48)' && edge.colors.color === 'rgb(223,247,255)'
+        && Number.parseFloat(edge.colors.radius) >= 10
         && !!range && rangeTextBeforeLeave.includes('Min') && rangeTextBeforeLeave.includes('Max'),
       interior,
       edge,
@@ -4200,19 +4202,17 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const metric = surface?.closest('.telemetry-metric');
     const tooltip = surface?.querySelector('.telemetry-graph-tooltip');
     const crosshair = surface?.querySelector('.telemetry-graph-crosshair');
-    const xValue = surface?.querySelector('.telemetry-graph-axis-x');
-    const axisRail = surface?.parentElement?.querySelector('.telemetry-graph-axis-rail');
-    const yValues = [axisRail?.querySelector('.telemetry-graph-axis-y-max'), axisRail?.querySelector('.telemetry-graph-axis-y-min')];
+    const yValues = [surface?.querySelector('.telemetry-graph-axis-y-max'), surface?.querySelector('.telemetry-graph-axis-y-min')];
     const surfaceRect = surface?.getBoundingClientRect();
-    const railRect = axisRail?.getBoundingClientRect();
-    const railOutside = !!surfaceRect && !!railRect && railRect.right <= surfaceRect.left + 1;
-    if (!surface || !canvas || !metric || !tooltip || !crosshair || !xValue || !axisRail || !railOutside || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || xValue.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-lost-after-tick', strokes: window.__arcPowerMonitoringGraphTickProbe?.count ?? -1 };
+    const yRects = yValues.map((node) => node?.getBoundingClientRect());
+    const yInside = !!surfaceRect && yRects.every((rect) => !!rect && rect.left >= surfaceRect.left - 1 && rect.right <= surfaceRect.right + 1);
+    if (!surface || !canvas || !metric || !tooltip || !crosshair || !yInside || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-lost-after-tick', strokes: window.__arcPowerMonitoringGraphTickProbe?.count ?? -1 };
     const rect = surface.getBoundingClientRect();
     const width = surface.clientWidth || rect.width;
     const height = surface.clientHeight || rect.height;
     const range = Array.from(metric.querySelectorAll('.telemetry-graph-range strong')).map((node) => Number(node.textContent));
-    const parts = (tooltip.textContent ?? '').split(' · ');
-    const sampleValue = Number(parts[0]);
+    const tooltipText = tooltip.textContent?.trim() ?? '';
+    const sampleValue = Number(tooltipText);
     const expectedY = height - 13 - ((sampleValue - range[0]) / Math.max(.001, range[1] - range[0])) * Math.max(4, height - 18);
     const dpr = window.devicePixelRatio || 1;
     const ctx = canvas.getContext('2d');
@@ -4229,10 +4229,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     }
     const numeric = (value) => { const text = String(value ?? '').trim(); return text !== '' && Number.isFinite(Number(text)); };
     return {
-      ok: (window.__arcPowerMonitoringGraphTickProbe?.count ?? 0) > 0 && Number.isFinite(crosshairX) && numeric(xValue.textContent) && yValues.every((node) => numeric(node.textContent)) && parts.length === 2 && numeric(parts[0]) && numeric(parts[1]) && pixels > 0,
+      ok: (window.__arcPowerMonitoringGraphTickProbe?.count ?? 0) > 0 && Number.isFinite(crosshairX) && yValues.every((node) => numeric(node.textContent)) && numeric(tooltipText) && pixels > 0,
       strokes: window.__arcPowerMonitoringGraphTickProbe?.count ?? -1,
-      text: tooltip.textContent ?? '',
-      x: xValue.textContent ?? '',
+      text: tooltipText,
       y: yValues.map((node) => node?.textContent ?? ''),
       crosshairX,
       expectedY,
@@ -4248,11 +4247,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     surface.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, clientX: surface.getBoundingClientRect().right, clientY: surface.getBoundingClientRect().top + surface.getBoundingClientRect().height / 2 }));
     const tooltip = surface.querySelector('.telemetry-graph-tooltip');
     const crosshair = surface.querySelector('.telemetry-graph-crosshair');
-    const xValue = surface.querySelector('.telemetry-graph-axis-x');
-    return { ok: !!tooltip && tooltip.hidden && !!crosshair && crosshair.hidden && !!xValue && xValue.hidden };
+    return { ok: !!tooltip && tooltip.hidden && !!crosshair && crosshair.hidden && !surface.querySelector('.telemetry-graph-axis-x') };
   })()`);
   if (!graphHoverLeaveProbe.ok) fail(`M207d: pointerleave did not hide graph hover chrome: ${JSON.stringify(graphHoverLeaveProbe)}`);
-  step('m207d-graph-hover', `M207d: graph axes are numeric, tooltip is Arc-blue, line/crosshair mapping is pixel-aligned (${graphHoverProbe.interior.text}); hover persisted across ${graphHoverTickProbe.strokes} telemetry redraws, then pointerleave hid it; Min/Max remains '${graphHoverProbe.rangeTextBeforeLeave}'`);
+  step('m207d-graph-hover', `M207d: in-graph Y axes are numeric, the rounded Arc-blue value pill stays anchored to the hovered line (${graphHoverProbe.interior.text}); hover persisted across ${graphHoverTickProbe.strokes} telemetry redraws, the elapsed X readout is absent, and pointerleave hid the hover chrome; Min/Max remains '${graphHoverProbe.rangeTextBeforeLeave}'`);
 
   // --- M9: the Monitoring | Overlay view switch (the S2 re-registration) ----
   // The view pill renders 'Monitoring | Overlay' at the page top; the

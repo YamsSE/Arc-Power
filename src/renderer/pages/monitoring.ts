@@ -40,7 +40,6 @@ import type { SeriesPoint } from '../pure/graph.ts';
 import {
   clampGraphTooltipPosition,
   formatMonitoringGraphValue,
-  graphAxisTime,
   graphDrawnPoints,
   graphSamplePosition,
   monitoringGraphSegment,
@@ -194,7 +193,6 @@ interface MetricGraphOverlay {
   crosshair: HTMLElement;
   yMax: HTMLElement;
   yMin: HTMLElement;
-  xValue: HTMLElement;
   pointerRatio: number | null;
 }
 
@@ -432,16 +430,12 @@ function graphSurface(
 ): HTMLElement {
   const yMax = el('span', { class: 'telemetry-graph-axis-label telemetry-graph-axis-y telemetry-graph-axis-y-max', hidden: true });
   const yMin = el('span', { class: 'telemetry-graph-axis-label telemetry-graph-axis-y telemetry-graph-axis-y-min', hidden: true });
-  const xValue = el('span', { class: 'telemetry-graph-axis-label telemetry-graph-axis-x', hidden: true });
   const crosshair = el('span', { class: 'telemetry-graph-crosshair', hidden: true, 'aria-hidden': 'true' });
   const tooltip = el('span', { class: 'telemetry-graph-tooltip', hidden: true, role: 'status' });
-  const yAxis = el('div', { class: 'telemetry-graph-axis-rail', 'aria-hidden': 'true' }, [
-    yMax,
-    yMin,
-  ]);
   const surface = el('div', { class: 'telemetry-metric-graph-surface', 'aria-label': `${label} graph` }, [
     canvas,
-    xValue,
+    yMax,
+    yMin,
     crosshair,
     tooltip,
   ]);
@@ -453,7 +447,6 @@ function graphSurface(
       crosshair,
       yMax,
       yMin,
-      xValue,
       pointerRatio: null,
     };
     mon.metricGraphs.set(seriesId, graph);
@@ -461,7 +454,6 @@ function graphSurface(
       graph.pointerRatio = null;
       tooltip.hidden = true;
       crosshair.hidden = true;
-      xValue.hidden = true;
     };
     surface.addEventListener('pointermove', (event) => {
       const rect = surface.getBoundingClientRect();
@@ -471,7 +463,7 @@ function graphSurface(
     });
     surface.addEventListener('pointerleave', hide);
   }
-  return el('div', { class: 'telemetry-metric-graph-layout' }, [yAxis, surface]);
+  return surface;
 }
 
 function updateMetricGraphOverlay(seriesId: string, observed?: { min: number; max: number } | null): void {
@@ -483,7 +475,6 @@ function updateMetricGraphOverlay(seriesId: string, observed?: { min: number; ma
   if (!range) {
     graph.yMax.hidden = true;
     graph.yMin.hidden = true;
-    graph.xValue.hidden = true;
     graph.crosshair.hidden = true;
     graph.tooltip.hidden = true;
     return;
@@ -508,10 +499,7 @@ function updateMetricGraphOverlay(seriesId: string, observed?: { min: number; ma
   const { x, y } = position;
   graph.crosshair.style.left = `${x}px`;
   graph.crosshair.hidden = false;
-  graph.xValue.textContent = graphAxisTime(points, index);
-  graph.xValue.style.left = `${Math.min(Math.max(14, x), Math.max(14, width - 14))}px`;
-  graph.xValue.hidden = false;
-  graph.tooltip.textContent = `${graphRangeValue(seriesId, point.v)} · ${graphAxisTime(points, index)}`;
+  graph.tooltip.textContent = graphRangeValue(seriesId, point.v);
   graph.tooltip.hidden = false;
   // Measure after updating the value so the pill stays inside the tile at
   // either edge, just like the APM graph readout.
