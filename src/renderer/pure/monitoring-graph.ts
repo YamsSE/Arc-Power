@@ -13,6 +13,25 @@ export interface GraphRange {
   max: number;
 }
 
+/**
+ * Return the fixed-bottom, metric-aware range used by Monitoring canvases.
+ * Utilization is a percentage, so its meaningful domain is always 0..100.
+ * Other metrics use zero as their floor and the largest finite sample as
+ * their ceiling. A zero-only (or otherwise non-positive) series gets a
+ * small positive ceiling so the line still has a drawable scale.
+ */
+export function monitoringGraphRange(seriesId: string, points: SeriesPoint[]): GraphRange | null {
+  if (points.length === 0) return null;
+  let max = -Infinity;
+  for (const point of points) {
+    if (Number.isFinite(point.v) && point.v > max) max = point.v;
+  }
+  if (!Number.isFinite(max)) return null;
+  const segment = monitoringGraphSegment(seriesId);
+  if (segment === 'util' || segment === 'cpu-util') return { min: 0, max: 100 };
+  return { min: 0, max: max > 0 ? max : 1 };
+}
+
 export interface GraphSamplePosition {
   x: number;
   y: number;

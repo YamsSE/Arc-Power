@@ -42,6 +42,7 @@ import {
   formatMonitoringGraphValue,
   graphDrawnPoints,
   graphSamplePosition,
+  monitoringGraphRange,
   monitoringGraphSegment,
 } from '../pure/monitoring-graph.ts';
 import {
@@ -474,8 +475,9 @@ function updateMetricGraphOverlay(seriesId: string, observed?: { min: number; ma
   const graph = mon.metricGraphs.get(seriesId);
   if (!graph) return;
   const series = mon.series[seriesId] ?? [];
-  const range = observed === undefined ? seriesObservedRange(series) : observed;
-  if (!range) {
+  const observedRange = observed === undefined ? seriesObservedRange(series) : observed;
+  const range = monitoringGraphRange(seriesId, series);
+  if (!observedRange || !range) {
     graph.yMax.hidden = true;
     graph.yMin.hidden = true;
     graph.crosshair.hidden = true;
@@ -514,7 +516,7 @@ function updateMetricGraphOverlay(seriesId: string, observed?: { min: number; ma
 }
 
 /** Dashboard-style compact history strip for each readout row. */
-function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], color = cssVar('--accent')): { min: number; max: number } | null {
+function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], seriesId: string, color = cssVar('--accent')): { min: number; max: number } | null {
   const dpr = Math.max(1, window.devicePixelRatio || 1);
   const w = Math.round(canvas.clientWidth);
   const h = Math.round(canvas.clientHeight);
@@ -541,12 +543,14 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], color 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   if (points.length === 0) return null;
-  // Keep the plotted range tight to the samples, matching Dashboard's
-  // Performance pulse. A flat series still gets a tiny scale so it remains
-  // visible without inventing a large amount of empty headroom.
+  // The labels and line share the same metric-aware axis: utilization is
+  // always 0..100 and every other metric starts at 0 and ends at its largest
+  // reported value. The observed range is returned separately so the
+  // existing Min/Max readout below the graph remains useful.
   const range = seriesObservedRange(points);
-  if (!range) return null;
-  const { min, max } = range;
+  const axisRange = monitoringGraphRange(seriesId, points);
+  if (!range || !axisRange) return null;
+  const { min, max } = axisRange;
   const span = Math.max(0.001, max - min);
   const drawn = graphDrawnPoints(points);
   const timeSpan = Math.max(0.001, drawn[drawn.length - 1].t - drawn[0].t);
@@ -569,7 +573,7 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], color 
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.stroke();
-  return { min, max };
+  return range;
 }
 
 async function pollFps(): Promise<void> {
@@ -1213,7 +1217,7 @@ function redrawAll(): void {
     graphRedrawFrame = null;
     if (!mon || monView !== 'monitoring') return;
     for (const [id, canvas] of mon.metricCanvases) {
-      const range = drawMiniSeries(canvas, mon.series[id] ?? [], monitoringSeriesColor(id));
+      const range = drawMiniSeries(canvas, mon.series[id] ?? [], id, monitoringSeriesColor(id));
       const nodes = mon.rangeNodes.get(id);
       if (nodes) {
         nodes.min.textContent = range ? graphRangeValue(id, range.min) : '—';

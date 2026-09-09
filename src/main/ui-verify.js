@@ -4138,9 +4138,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       if (!tooltip || !crosshair || !yOutside || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-hidden' };
       const crosshairX = Number.parseFloat(crosshair.style.left);
       const yTexts = yValues.map((node) => node?.textContent?.trim() ?? '');
+      const axisValues = yTexts.map((text) => Number(text));
+      if (!axisValues.every(Number.isFinite) || axisValues[1] !== 0 || axisValues[0] <= 0) return { ok: false, why: 'invalid-zero-based-axis', axis: yTexts };
       const tooltipText = tooltip.textContent?.trim() ?? '';
       const sampleValue = Number(tooltipText);
-      const expectedY = height - 13 - ((sampleValue - rangeValues[0]) / Math.max(.001, rangeValues[1] - rangeValues[0])) * Math.max(4, height - 18);
+      const expectedY = height - 13 - ((sampleValue - axisValues[1]) / Math.max(.001, axisValues[0] - axisValues[1])) * Math.max(4, height - 18);
       const mappedLine = Number.isFinite(sampleValue) && Number.isFinite(expectedY) && lineNear(crosshairX, expectedY);
       const popupRect = tooltip.getBoundingClientRect();
       const inside = popupRect.left >= surfaceRect.left - 1
@@ -4228,9 +4230,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const width = surface.clientWidth || rect.width;
     const height = surface.clientHeight || rect.height;
     const range = Array.from(metric.querySelectorAll('.telemetry-graph-range strong')).map((node) => Number(node.textContent));
+    const axis = yValues.map((node) => Number(node?.textContent));
+    if (!axis.every(Number.isFinite) || axis[1] !== 0 || axis[0] <= 0) return { ok: false, why: 'invalid-zero-based-axis-after-tick', axis };
     const tooltipText = tooltip.textContent?.trim() ?? '';
     const sampleValue = Number(tooltipText);
-    const expectedY = height - 13 - ((sampleValue - range[0]) / Math.max(.001, range[1] - range[0])) * Math.max(4, height - 18);
+    const expectedY = height - 13 - ((sampleValue - axis[1]) / Math.max(.001, axis[0] - axis[1])) * Math.max(4, height - 18);
     const dpr = window.devicePixelRatio || 1;
     const ctx = canvas.getContext('2d');
     const crosshairX = Number.parseFloat(crosshair.style.left);
