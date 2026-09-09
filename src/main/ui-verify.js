@@ -4129,8 +4129,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       const tooltip = surface.querySelector('.telemetry-graph-tooltip');
       const crosshair = surface.querySelector('.telemetry-graph-crosshair');
       const xValue = surface.querySelector('.telemetry-graph-axis-x');
-      const yValues = [surface.querySelector('.telemetry-graph-axis-y-max'), surface.querySelector('.telemetry-graph-axis-y-min')];
-      if (!tooltip || !crosshair || !xValue || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || xValue.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-hidden' };
+      const axisRail = surface.parentElement?.querySelector('.telemetry-graph-axis-rail');
+      const yValues = [axisRail?.querySelector('.telemetry-graph-axis-y-max'), axisRail?.querySelector('.telemetry-graph-axis-y-min')];
+      const railRect = axisRail?.getBoundingClientRect();
+      const railOutside = !!railRect && railRect.right <= surfaceRect.left + 1;
+      if (!tooltip || !crosshair || !xValue || !axisRail || !railOutside || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || xValue.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-hidden' };
       const crosshairX = Number.parseFloat(crosshair.style.left);
       const xText = xValue.textContent?.trim() ?? '';
       const yTexts = yValues.map((node) => node?.textContent?.trim() ?? '');
@@ -4198,8 +4201,12 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const tooltip = surface?.querySelector('.telemetry-graph-tooltip');
     const crosshair = surface?.querySelector('.telemetry-graph-crosshair');
     const xValue = surface?.querySelector('.telemetry-graph-axis-x');
-    const yValues = [surface?.querySelector('.telemetry-graph-axis-y-max'), surface?.querySelector('.telemetry-graph-axis-y-min')];
-    if (!surface || !canvas || !metric || !tooltip || !crosshair || !xValue || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || xValue.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-lost-after-tick', strokes: window.__arcPowerMonitoringGraphTickProbe?.count ?? -1 };
+    const axisRail = surface?.parentElement?.querySelector('.telemetry-graph-axis-rail');
+    const yValues = [axisRail?.querySelector('.telemetry-graph-axis-y-max'), axisRail?.querySelector('.telemetry-graph-axis-y-min')];
+    const surfaceRect = surface?.getBoundingClientRect();
+    const railRect = axisRail?.getBoundingClientRect();
+    const railOutside = !!surfaceRect && !!railRect && railRect.right <= surfaceRect.left + 1;
+    if (!surface || !canvas || !metric || !tooltip || !crosshair || !xValue || !axisRail || !railOutside || yValues.some((node) => !node) || tooltip.hidden || crosshair.hidden || xValue.hidden || yValues.some((node) => node.hidden)) return { ok: false, why: 'hover-lost-after-tick', strokes: window.__arcPowerMonitoringGraphTickProbe?.count ?? -1 };
     const rect = surface.getBoundingClientRect();
     const width = surface.clientWidth || rect.width;
     const height = surface.clientHeight || rect.height;

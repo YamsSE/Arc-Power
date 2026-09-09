@@ -435,10 +435,12 @@ function graphSurface(
   const xValue = el('span', { class: 'telemetry-graph-axis-label telemetry-graph-axis-x', hidden: true });
   const crosshair = el('span', { class: 'telemetry-graph-crosshair', hidden: true, 'aria-hidden': 'true' });
   const tooltip = el('span', { class: 'telemetry-graph-tooltip', hidden: true, role: 'status' });
-  const surface = el('div', { class: 'telemetry-metric-graph-surface', 'aria-label': `${label} graph` }, [
-    canvas,
+  const yAxis = el('div', { class: 'telemetry-graph-axis-rail', 'aria-hidden': 'true' }, [
     yMax,
     yMin,
+  ]);
+  const surface = el('div', { class: 'telemetry-metric-graph-surface', 'aria-label': `${label} graph` }, [
+    canvas,
     xValue,
     crosshair,
     tooltip,
@@ -469,7 +471,7 @@ function graphSurface(
     });
     surface.addEventListener('pointerleave', hide);
   }
-  return surface;
+  return el('div', { class: 'telemetry-metric-graph-layout' }, [yAxis, surface]);
 }
 
 function updateMetricGraphOverlay(seriesId: string, observed?: { min: number; max: number } | null): void {
