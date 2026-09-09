@@ -253,16 +253,13 @@ export function settingsFromState(state: DeviceState): Settings {
   // driver accepts those controls independently, but refuses the conflicting
   // pair during a profile load. Persist VF only when it differs from the
   // driver-owned default (older runtimes without a default still preserve
-  // the curve so they remain loadable).
+  // the curve so they remain loadable). Keep the scalar read-back in the
+  // saved profile for the card summary; profileSettingsForCapabilities drops
+  // the conflicting core scalars at apply time.
   if (state.vfCurve && state.vfCurve.length >= 2
     && (!Array.isArray(state.vfCurveDefault)
       || !isLegacyStockVfCurve(state.vfCurve, state.vfCurveDefault, state.gpuFreqOffsetMhz))) {
     out.vfCurve = state.vfCurve.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz }));
-    // Curve mode owns the core voltage/frequency shape. Do not persist stale
-    // scalar offsets alongside a custom VF curve; the scalars remain for
-    // legacy stock profiles whose unchanged curve was omitted above.
-    delete out.gpuVoltOffsetV;
-    delete out.gpuFreqOffsetMhz;
   }
   return out;
 }
@@ -324,6 +321,7 @@ export function settingsSummary(settings: Settings, caps: Capabilities | null, p
   }
   if (settings.fanCurve) out.push('Fan Curve');
   else if (settings.fanMode && settings.fanMode !== 'auto') out.push(`Fan ${settings.fanMode}`);
+  if (Array.isArray(settings.vfCurve) && settings.vfCurve.length >= 2) out.push('VF Curve');
   return out;
 }
 
