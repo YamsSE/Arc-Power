@@ -21,6 +21,7 @@ import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.j
 import {
   PRODUCT_NAME,
   INSTALLED_EXECUTABLE_NAME,
+  INSTALLED_LAUNCH_ENV,
   createInstallationPlan,
   createUninstallLaunchScript,
   createUninstallCleanupScript,
@@ -290,6 +291,7 @@ function launchInstalledApp(executablePath, workingDirectory) {
   delete environment.PORTABLE_EXECUTABLE_FILE;
   delete environment.PORTABLE_EXECUTABLE_DIR;
   delete environment.PORTABLE_EXECUTABLE_APP_FILENAME;
+  environment[INSTALLED_LAUNCH_ENV] = '1';
   return new Promise((resolve, reject) => {
     const child = spawn(executablePath, [], {
       cwd: workingDirectory,

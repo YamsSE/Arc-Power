@@ -145,7 +145,13 @@ export async function resolveLogonExecPath(deps = {}) {
     );
     const parent = String(stdout ?? '').trim();
     if (!parent) return execPath;
-    if (/arc[-\s_]?power/i.test(parent.split(/[\\/]/).pop() ?? '') && parent !== execPath) {
+    const parentName = parent.split(/[\\/]/).pop() ?? '';
+    // Only a portable wrapper is a stable logon target. The custom Installer
+    // can be the temporary parent of the installed app on its first launch;
+    // never persist that setup EXE as the installed app's startup target.
+    if (/arc[-\s_]?power/i.test(parentName)
+      && !/installer/i.test(parentName)
+      && parent !== execPath) {
       return parent;
     }
   } catch {

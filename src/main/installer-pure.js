@@ -22,6 +22,11 @@ export const LEGACY_RUN_VALUE_NAMES = Object.freeze(['Arc Power']);
 export const CLEANUP_RUN_VALUE_NAMES = Object.freeze([CURRENT_RUN_VALUE_NAME, ...LEGACY_RUN_VALUE_NAMES]);
 export const UPDATE_PARENT_PID_ARG = '--update-parent-pid';
 export const UPDATE_INSTALL_DIR_ARG = '--update-install-dir';
+// The custom Installer clears the portable-wrapper markers before it launches
+// the installed executable. This handoff marker prevents the child from
+// mistaking its Installer parent for another installer launch when the parent
+// query runs before Explorer reparents the detached process.
+export const INSTALLED_LAUNCH_ENV = 'ARC_POWER_INSTALLED_LAUNCH';
 
 function requireAbsolute(value, label) {
   if (typeof value !== 'string' || value.length === 0 || !path.isAbsolute(value)) {

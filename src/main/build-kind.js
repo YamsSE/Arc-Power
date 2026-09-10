@@ -2,9 +2,18 @@ import path from 'node:path';
 
 export const PORTABLE_EXECUTABLE_NAME = 'Arc-Power_Portable.exe';
 
+const PORTABLE_EXECUTABLE_LAUNCH_PATTERN = /^arc[- _]?power[- _]?portable(?:[- _.(].*)?\.exe$/i;
+
 function validatedPortablePath(value) {
   if (typeof value !== 'string' || !path.isAbsolute(value)) return null;
   return path.basename(value).toLowerCase() === PORTABLE_EXECUTABLE_NAME.toLowerCase()
+    ? path.resolve(value)
+    : null;
+}
+
+function actualPortableLaunchPath(value) {
+  if (typeof value !== 'string' || !path.isAbsolute(value)) return null;
+  return PORTABLE_EXECUTABLE_LAUNCH_PATTERN.test(path.basename(value))
     ? path.resolve(value)
     : null;
 }
@@ -17,6 +26,22 @@ export function resolvePortableWrapperPath({ portableExecutableFile = null, port
   return validatedPortablePath(portableExecutableFile)
     ?? validatedPortablePath(directoryCandidate)
     ?? validatedPortablePath(parentExecutableFile);
+}
+
+/**
+ * Resolve the executable that actually launched a packaged Portable build for
+ * startup registration. Unlike the build/update classifier above, this must
+ * retain Windows' duplicate-download suffixes such as " (1)"; pointing the
+ * startup task at a guessed canonical filename can launch an older copy or a
+ * path that no longer exists.
+ */
+export function resolvePortableStartupPath({ portableExecutableFile = null, portableExecutableDir = null, parentExecutableFile = null } = {}) {
+  const directoryCandidate = typeof portableExecutableDir === 'string' && path.isAbsolute(portableExecutableDir)
+    ? path.join(portableExecutableDir, PORTABLE_EXECUTABLE_NAME)
+    : null;
+  return actualPortableLaunchPath(portableExecutableFile)
+    ?? actualPortableLaunchPath(parentExecutableFile)
+    ?? actualPortableLaunchPath(directoryCandidate);
 }
 
 // Arc Power - the app:build-info distribution-kind derivation (electron-free,
