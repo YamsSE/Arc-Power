@@ -121,14 +121,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const render = (): void => {
     // M4-D2 (r2 F6): the Settings checkbox shows ON whenever the verified
     // startup registration exists - either the Settings toggle OR the profile's start-at-boot
-    // owns it. The mismatch hint compares the startup truth against the
-    // persisted INTENT (never a false mismatch when ocOnBoot owns the
-    // value).
+    // owns it.
     const startWithWindows = bootState?.startWithWindows === true;
     const applyOnBoot = bootState?.applyOnBoot === true;
     const valueExists = startWithWindows || applyOnBoot;
-    const intended = persisted.startWithWindows || (persisted.ocOnBoot && !!persisted.activeProfileId);
-    const startWithMismatch = valueExists !== intended;
     const packagedStartup = s.buildKind === 'installed' || s.buildKind === 'portable';
     const taskStartup = bootState?.registration === 'task' || packagedStartup;
 
@@ -151,24 +147,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       valueExists
         ? el('p', { class: 'card-note settings-state', text: taskStartup ? 'Active - an administrator startup task launches Arc Power at logon.' : 'Active - Arc Power starts at logon.' })
         : el('p', { class: 'card-note settings-state', text: taskStartup ? 'Not active - enable this setting to create the one-time administrator startup task.' : 'Not active - the app starts manually.' }),
-      valueExists && persisted.startMinimized
-        ? el('p', { class: 'card-note boot-hint', text: 'Start minimized is enabled - the window stays hidden at logon; open Arc Power from the tray icon.' })
-        : null,
-      // M4-D2 (r2 F6 reword): when the profile's start-at-boot owns the
-      // value, the Settings checkbox is ON because Arc Power starts at
-      // logon to run the boot apply - the hint explains the ownership
-      // (never a false mismatch).
-      applyOnBoot
-        ? el('p', { class: 'card-note boot-hint', text: 'Apply active profile at boot is enabled - Arc Power starts at logon to apply it.' })
-        : null,
-      // M4-E (plan §3): distributed builds request administrator access at
-      // launch, so their logon applies use the same elevated session.
-      s.buildKind === 'installed' || s.buildKind === 'portable'
-        ? el('p', { class: 'card-note boot-hint', text: 'Packaged startup uses a one-time administrator approval so Arc Power can launch reliably at logon.' })
-        : null,
-      startWithMismatch
-        ? el('p', { class: 'card-note boot-hint', text: 'The startup registration and the saved settings disagree - the toggle reflects the registration.' })
-        : null,
     ]);
 
     const startMinimizedCard = el('section', { class: 'card settings-card' }, [

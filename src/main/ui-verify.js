@@ -5167,18 +5167,15 @@ step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round
   await js(`location.hash = '#/dashboard'`);
   await js(`location.hash = '#/settings'`);
   await sleep(250);
-  // The checkbox is ON (the value exists - the profile owns it) + the
-  // reworded hint explains the ownership.
+  // The checkbox is ON (the value exists - the profile owns it), while the
+  // Start with Windows card stays free of the removed yellow explanations.
   if (!(await waitFor(win, `${startWithBox}.checked === true`, 5000))) {
     fail('M4-D2: the Settings checkbox must show ON whenever the value exists (the profile start-at-boot owns it here)');
   }
-  if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('Apply active profile at boot is enabled')`, 5000))) {
-    fail('M4-D2: the Settings card does not show the reworded apply-profile hint while the profile owns the value');
+  if (await js(`!!document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')?.closest('.settings-card')?.querySelector('.boot-hint')`)) {
+    fail('M4-D2: the Start with Windows card still renders a yellow boot hint');
   }
-  if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('Arc Power starts at logon to apply it')`, 5000))) {
-    fail('M4-D2: the apply-profile hint is missing its logon wording');
-  }
-  step('m4d-settings-owned', 'M4-D2 (F6): the profile start-at-boot owns the startup registration -> Settings checkbox ON + the reworded "Apply active profile at boot is enabled" hint (no false mismatch)');
+  step('m4d-settings-owned', 'M4-D2 (F6): the profile start-at-boot owns the startup registration -> Settings checkbox ON with no yellow Start with Windows notes');
   // Disable the profile registration: the value comes off, the checkbox
   // follows.
   await js(`window.arcPower.startupSet(false)`);
