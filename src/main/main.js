@@ -84,6 +84,7 @@ import { createRecordingStatusPillWindow } from './recording-status-pill.js';
 // interactivity (NO setIgnoreMouseEvents).
 import { createAdvancedOverlayWindow } from './advanced-overlay.js';
 import { createStartup, createMockStartup } from './startup.js';
+import { createRtssStartup, createMockRtssStartup } from './rtss-startup.js';
 import { attachStartupUpdateStatus, createStartupSplash } from './splash.js';
 import { runInstallerMode } from './installer.js';
 import { INSTALLED_EXECUTABLE_NAME, INSTALLED_LAUNCH_ENV, installerModeFromEnvironment, resolveNewerInstalledExecutable } from './installer-pure.js';
@@ -2259,6 +2260,11 @@ async function main() {
         logonExecPath: portableStartupPath ?? process.execPath,
         useElevatedTask: app.isPackaged && process.platform === 'win32',
       });
+  // RTSS startup is always an independent, unelevated HKCU Run value. It
+  // must never reuse Arc Power's elevated startup task.
+  const rtssStartup = mock
+    ? createMockRtssStartup({ available: process.env.RID_MOCK_RTSS_AVAILABLE !== '0' })
+    : createRtssStartup();
   // Driver-date adapter: real reg.exe query in the product path; mock mode
   // (incl. --ui-verify) returns the fixture date and never spawns reg.exe.
   const driverInfo = mock ? createMockDriverInfo() : createDriverInfo();
@@ -3519,6 +3525,7 @@ async function main() {
     // by profiles-settings-save when an overlay field changed.
     onOverlaySettings,
     startup,
+    rtssStartup,
     driverInfo,
     driverMonitor,
     sysinfo,

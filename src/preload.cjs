@@ -77,6 +77,8 @@ contextBridge.exposeInMainWorld('arcPower', {
   registryApply: (entryId, action) => ipcRenderer.invoke('registry-apply', entryId, action),
   startupGet: () => ipcRenderer.invoke('startup-get'),
   startupSet: (enabled) => ipcRenderer.invoke('startup-set', enabled),
+  rtssStartupGet: () => ipcRenderer.invoke('rtssStartupGet'),
+  rtssStartupSet: (enabled) => ipcRenderer.invoke('rtssStartupSet', enabled),
   sysinfo: () => ipcRenderer.invoke('sysinfo:get'),
   // M17d: the vendor-lane static info ({ vramBytes, computeCores } - the
   // no-Intel dashboard VRAM/Compute rows' source; honest nulls when no

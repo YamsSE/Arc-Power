@@ -35,6 +35,7 @@ import { pnpParts } from './gpu-inventory.js';
 import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createMockRegistryApply } from './registry-apply.js';
 import { createMockStartup } from './startup.js';
+import { createMockRtssStartup } from './rtss-startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
@@ -969,6 +970,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   store: import('./store/profile-store.js').ProfileStore,
  *   emit: (channel: string, payload: unknown) => void,
  *   startup?: { get: () => Promise<{ valueExists: boolean, value: string | null, registration?: 'task' | 'run' }>, set: (enabled: boolean) => Promise<unknown>, registrationMode?: 'task' | 'run' },
+ *   rtssStartup?: { get: () => Promise<object>, set: (enabled: boolean) => Promise<object>, registrationMode?: 'run' },
  *   driverInfo?: { get: () => Promise<{ driverDate: string | null }> },
  *   sysinfo?: { get: () => Promise<unknown> },  // M4-D: CIM system info (CPU/RAM/video controllers)
  *   windowOps?: {                              // M4-D: injected BrowserWindow ops (title-bar buttons)
@@ -1049,6 +1051,7 @@ export function createIpcHandlers({
   store,
   emit,
   startup = createMockStartup(),
+  rtssStartup = createMockRtssStartup(),
   driverInfo = createMockDriverInfo(),
   driverMonitor = null,
   // M4-D: the sysinfo adapter. The DEFAULT is the MOCK fixture (never
@@ -1315,6 +1318,11 @@ export function createIpcHandlers({
   // Monitoring log toggle cannot be overwritten by an unrelated Settings,
   // Profiles, or Overlay save that started from the previous snapshot.
   let settingsSaveQueue = Promise.resolve();
+  const queueSettingsSave = (operation) => {
+    const queued = settingsSaveQueue.then(operation, operation);
+    settingsSaveQueue = queued.then(() => undefined, () => undefined);
+    return queued;
+  };
   const emitTelemetry = (payload) => {
     const key = Number.isInteger(payload?.deviceId) ? payload.deviceId : NULL_DEVICE_KEY;
     latestTelemetry.set(key, payload);
@@ -2925,6 +2933,26 @@ export function createIpcHandlers({
         return handlers['startup-get']();
       },
 
+      // RTSS has an independent per-user Run value. Unlike Arc Power startup,
+      // this path never elevates and enabling is persisted only after the
+      // adapter has verified the registry write.
+      'rtssStartupGet': async (...args) => {
+        assertNoPayload(args, 'rtssStartupGet');
+        await settingsSaveQueue;
+        const state = await rtssStartup.get();
+        const settings = await store.loadSettings();
+        return { ...state, rtssOnBoot: settings.rtssOnBoot === true };
+      },
+      'rtssStartupSet': async (enabled) => {
+        if (typeof enabled !== 'boolean') throw new Error('rtssStartupSet: enabled must be a boolean');
+        return queueSettingsSave(async () => {
+          const current = await store.loadSettings();
+          const state = await rtssStartup.set(enabled);
+          await store.saveSettings({ ...current, rtssOnBoot: enabled });
+          return { ...state, rtssOnBoot: enabled };
+        });
+      },
+
       // M4-D: the system-info read (CPU card + the VRAM enrichment
       // source). Read-side only, cached at boot in the product path; the
       // default adapter is the MOCK fixture (tests/--ui-verify never spawn
@@ -3822,6 +3850,16 @@ export function createIpcHandlers({
           startWithWindows: patch.startWithWindows === undefined
             ? cur.startWithWindows
             : patch.startWithWindows === true,
+          // RTSS startup is a separate preference, but this channel is a
+          // read-modify-write of the same settings file. Preserve it so an
+          // unrelated Settings/Profiles save cannot erase the user's choice.
+          ...(patch.rtssOnBoot !== undefined || cur.rtssOnBoot !== undefined
+            ? {
+                rtssOnBoot: patch.rtssOnBoot === undefined
+                  ? cur.rtssOnBoot === true
+                  : patch.rtssOnBoot === true,
+              }
+            : {}),
           startMinimized: patch.startMinimized === undefined
             ? cur.startMinimized
             : patch.startMinimized === true,
@@ -4085,9 +4123,7 @@ export function createIpcHandlers({
         }
         return next;
         };
-        const queued = settingsSaveQueue.then(save, save);
-        settingsSaveQueue = queued.then(() => undefined, () => undefined);
-        return queued;
+        return queueSettingsSave(save);
       },
 
       // M3-C-E/M157: the OC mode is persisted per physical GPU. The scalar

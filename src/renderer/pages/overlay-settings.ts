@@ -59,7 +59,7 @@ import {
   isValidAdvancedOverlayPosition,
 } from '../pure/overlay.ts';
 import { dedupeOverlayDevices } from '../pure/overlay-routing.ts';
-import type { OverlayPosition, OverlayState, AdvancedOverlayState } from '../types.ts';
+import type { OverlayPosition, OverlayState, AdvancedOverlayState, RtssStartupState } from '../types.ts';
 
 // M9: the Overlay Settings content renderer - the old page module's export
 // (the fan-editor.ts precedent: the old page shell moved into the
@@ -168,6 +168,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   // note never goes stale (M1: a letter-save re-register failure
   // mid-session must surface immediately).
   let overlayState: OverlayState | null = null;
+  let rtssStartupState: RtssStartupState | null = null;
+  let rtssStartupBusy = false;
   let overlayDevices: OverlayDevice[] = [];
   let persisted: PersistedOverlay;
   try {
@@ -231,6 +233,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   try {
     advancedOverlayState = await api.advancedOverlayGetState();
   } catch { /* the card degrades to the persisted state */ }
+  try {
+    rtssStartupState = await api.rtssStartupGet();
+  } catch { /* the card degrades to a disabled/unavailable state */ }
   const refresh = async (): Promise<void> => {
     try {
       overlayState = await api.overlayGetState();
@@ -238,6 +243,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     try {
       advancedOverlayState = await api.advancedOverlayGetState();
     } catch { /* keep the last known panel state */ }
+    try {
+      rtssStartupState = await api.rtssStartupGet();
+    } catch { /* keep the last known RTSS state */ }
     render();
   };
 
@@ -295,6 +303,40 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           : [el('span', { class: 'settings-hint', text: 'No GPU devices detected' })]),
       ]),
     ]);
+    // A stale Arc Power-owned registration remains actionable so the user
+    // can remove it after RTSS is uninstalled or moved. Enabling still
+    // requires a verified executable path in the main process.
+    const rtssAvailable = rtssStartupState?.capable === true || rtssStartupState?.valueExists === true;
+    // The checkbox mirrors the verified Run entry, not only persisted intent.
+    // That keeps a stale/partially-saved registration actionable so disabling
+    // it can remove the entry even when RTSS is no longer installed.
+    const rtssEnabled = rtssAvailable && rtssStartupState?.valueExists === true;
+    const rtssStartupRow = el('div', { class: 'settings-row overlay-rtss-startup-row' }, [
+      el('label', {
+        class: 'boot-toggle',
+        title: rtssAvailable
+          ? 'Launch RivaTuner Statistics Server when you sign in to Windows.'
+          : 'Install RTSS before enabling its Windows startup registration.',
+      }, [
+        el('input', {
+          type: 'checkbox',
+          class: 'settings-checkbox',
+          dataset: { setting: 'rtssOnBoot' },
+          checked: rtssEnabled,
+          disabled: !rtssAvailable || rtssStartupBusy,
+          onchange: (ev: Event) => void onRtssStartupToggle((ev.target as HTMLInputElement).checked),
+        }),
+        el('span', { text: 'Start RTSS with Windows' }),
+      ]),
+    ]);
+    const rtssStartupNote = el('p', {
+      class: 'card-note boot-hint overlay-rtss-startup-note',
+      text: rtssAvailable
+        ? rtssStartupState?.registered === false && rtssStartupState?.valueExists === true
+          ? 'A stale RTSS startup entry was found. Disable it here to remove the old registration.'
+          : 'RivaTuner Statistics Server is detected. Its startup registration is managed independently from Arc Power.'
+        : 'RTSS was not detected. Install RTSS first to enable its Windows startup registration.',
+    });
     // --- General card (M6-amd3): the enable TOGGLE - moved here from the
     // Settings page (the Settings card is button-only now). The
     // .settings-checkbox[data-setting="overlayEnabled"] class + dataset
@@ -330,6 +372,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           el('span', { text: 'Show Advanced Overlay' }),
         ]),
       ]),
+      rtssStartupRow,
+      rtssStartupNote,
       // M35: the overlay owns an independent GPU selection. Multiple checks
       // keep multiple telemetry lanes; with one checked the renderer returns
       // to the unnumbered GPU / VRAM labels.
@@ -709,6 +753,25 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast('error', 'Chip names could not be changed', err instanceof Error ? err.message : String(err));
       if (box) box.checked = persisted.chipNames;
       return;
+    }
+  };
+
+  const onRtssStartupToggle = async (checked: boolean): Promise<void> => {
+    if (rtssStartupBusy) return;
+    rtssStartupBusy = true;
+    render();
+    try {
+      const next = await api.rtssStartupSet(checked);
+      if (checked && (!next.capable || !next.registered || !next.rtssOnBoot)) {
+        throw new Error('RTSS startup registration could not be verified.');
+      }
+      rtssStartupState = next;
+      toast(checked ? 'success' : 'info', checked ? 'RTSS will start with Windows' : 'RTSS Windows startup disabled', '');
+    } catch (err) {
+      toast('error', 'RTSS startup could not be changed', err instanceof Error ? err.message : String(err));
+    } finally {
+      rtssStartupBusy = false;
+      await refresh();
     }
   };
   let monitoredDeviceSaveQueue: Promise<void> = Promise.resolve();

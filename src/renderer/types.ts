@@ -421,6 +421,16 @@ export interface StartupGetState {
   registration?: 'task' | 'run';
 }
 
+/** Independent RTSS per-user startup registration state. */
+export interface RtssStartupState {
+  capable: boolean;
+  executablePath: string | null;
+  valueExists: boolean;
+  registeredPath: string | null;
+  registered: boolean;
+  rtssOnBoot: boolean;
+}
+
 /** M4-D: one Win32_VideoController row (AdapterRAM already degraded). */
 export interface VideoControllerInfo {
   name: string | null;
@@ -743,6 +753,8 @@ export interface ProfileSettingsState {
   advancedModeAccepted: boolean;
   /** M4-D: the Settings-tab fields (absent on old files -> false). */
   startWithWindows: boolean;
+  /** Independent RTSS startup preference (absent on old files -> false). */
+  rtssOnBoot?: boolean;
   startMinimized: boolean;
   /** M4-D: closing the window hides it to the tray instead of quitting. */
   closeToTray: boolean;
