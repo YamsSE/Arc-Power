@@ -3335,14 +3335,22 @@ input[type="number"] {
 .recording-process-select { width: 100%; }
 .recording-process-select:disabled { opacity: .52; cursor: not-allowed; }
 .recording-process-refresh { align-self: flex-start; margin-top: 2px; }
-.recording-hotkey-row { display: grid; grid-template-columns: minmax(160px, 1fr) 150px minmax(70px, 1fr); gap: 12px; align-items: center; padding: 9px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.recording-hotkey-row { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(260px, auto); gap: 12px; align-items: center; padding: 9px 0; border-top: 1px solid var(--border); font-size: 12px; }
 .recording-hotkey-row:first-of-type { border-top: 0; }
+.recording-hotkey { display: inline-flex; align-items: center; justify-content: center; width: 150px; min-height: 34px; padding: 7px 9px; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text); font: inherit; font-family: var(--mono); text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.recording-hotkey:hover, .recording-hotkey:focus-visible { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
 .recording-hotkey-none { min-height: 34px; padding-inline: 8px; font: 700 10px var(--mono); letter-spacing: .04em; }
-.recording-hotkey { width: 150px; font-family: var(--mono); }
 .recording-hotkey-copy { display: flex; flex-direction: column; gap: 2px; }
 .recording-hotkey-copy span { color: var(--text-dim); font-size: 11px; }
-.recording-hotkey-status { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.recording-hotkey-status { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
 .recording-hotkey-warning { font-size: 11px; }
+.recording-hotkey-dialog { width: min(380px, calc(100vw - 32px)); max-width: 380px; padding: 18px 20px; }
+.recording-hotkey-dialog .modal-title { margin-bottom: 8px; }
+.recording-hotkey-dialog .modal-text { margin-bottom: 14px; }
+.recording-hotkey-dialog-capture { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-bottom: 12px; padding: 16px 12px; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border-strong)); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--accent) 8%, var(--bg-inset)); box-shadow: inset 0 0 18px color-mix(in srgb, var(--accent) 6%, transparent); }
+.recording-hotkey-dialog-capture-label { color: var(--text-dim); font: 650 10px var(--font); letter-spacing: .08em; text-transform: uppercase; }
+.recording-hotkey-dialog-value { min-height: 27px; color: var(--accent); font: 700 21px var(--mono); letter-spacing: .04em; }
+.recording-hotkey-dialog-hint { min-height: 30px; margin: 0 0 16px; color: var(--text-dim); font-size: 11px; line-height: 1.45; }
 .recording-storage-panel { display: grid; grid-template-columns: minmax(170px, .6fr) minmax(260px, 1fr); gap: 12px 16px; }
 .recording-storage-panel .recording-panel-heading { grid-column: 1 / -1; }
 .recording-storage-controls { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
@@ -3638,7 +3646,7 @@ input[type="number"] {
 @media (max-width: 900px) { .recording-editor-ascent .recording-editor-header { grid-template-columns: minmax(150px, 1fr) auto auto; } .recording-editor-ascent .recording-editor-audio-field { grid-column: span 1; } }
 @media (max-width: 620px) { .recording-editor-ascent .recording-editor-header { grid-template-columns: 1fr 1fr; } .recording-editor-ascent .recording-editor-clip-name, .recording-editor-ascent .recording-editor-audio-field { grid-column: 1 / -1; } .recording-editor-timeline-actions { margin-left: 0; } .recording-apm-heading { flex-direction: column; } .recording-apm-heading-actions { width: 100%; } }
 @media (max-width: 1050px) { .recording-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 700px) { .recording-heading, .recording-library-toolbar, .recording-player-view-heading { flex-direction: column; align-items: stretch; } .recording-player-heading-actions { margin-left: 0; } .recording-tabs, .recording-search { width: 100%; } .recording-tab { flex: 1; } .recording-settings-grid, .recording-storage-panel, .recording-audio-sections, .recording-quickstart-grid, .recording-capture-target-row { grid-template-columns: 1fr; } .recording-storage-panel .recording-panel-heading { grid-column: auto; } .recording-panel-heading { flex-direction: column; } .recording-storage-heading-meta { width: 100%; justify-content: space-between; } .recording-hotkey-row { grid-template-columns: 1fr 150px; } .recording-hotkey-status { grid-column: 1 / -1; } .recording-library-actions { flex-wrap: wrap; } .recording-library-actions .recording-search { flex-basis: 100%; } .recording-player-controls { flex-wrap: wrap; } .recording-player-volume { flex: 1; } .recording-player-brand { display: none; } .recording-player-timeline-ruler { padding-inline: 43px; } .recording-target-refresh { width: max-content; } }
+@media (max-width: 700px) { .recording-heading, .recording-library-toolbar, .recording-player-view-heading { flex-direction: column; align-items: stretch; } .recording-player-heading-actions { margin-left: 0; } .recording-tabs, .recording-search { width: 100%; } .recording-tab { flex: 1; } .recording-settings-grid, .recording-storage-panel, .recording-audio-sections, .recording-quickstart-grid, .recording-capture-target-row { grid-template-columns: 1fr; } .recording-storage-panel .recording-panel-heading { grid-column: auto; } .recording-panel-heading { flex-direction: column; } .recording-storage-heading-meta { width: 100%; justify-content: space-between; } .recording-hotkey-row { grid-template-columns: 1fr; } .recording-hotkey-status { grid-column: auto; justify-content: flex-start; flex-wrap: wrap; } .recording-library-actions { flex-wrap: wrap; } .recording-library-actions .recording-search { flex-basis: 100%; } .recording-player-controls { flex-wrap: wrap; } .recording-player-volume { flex: 1; } .recording-player-brand { display: none; } .recording-player-timeline-ruler { padding-inline: 43px; } .recording-target-refresh { width: max-content; } }
 .recording-delete-modal { width: min(460px, calc(100vw - 32px)); }
 .recording-delete-file { overflow-wrap: anywhere; word-break: break-word; }
 @media (max-width: 900px) { .dashboard-pulse-grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); } }
