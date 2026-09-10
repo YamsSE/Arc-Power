@@ -60,6 +60,7 @@ h1 span { color: transparent; background: linear-gradient(100deg, var(--cyan), v
 .check-row input:checked + .fake-check { border-color: var(--cyan); background: rgba(76,194,255,.18); }
 .check-row input:checked + .fake-check::after { content: ""; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px; border: solid var(--cyan); border-width: 0 2px 2px 0; transform: rotate(45deg); }
 .check-row input:focus-visible + .fake-check { outline: 2px solid var(--violet); outline-offset: 2px; }
+.dependency-note { margin: 10px 0; color: #69d7a1; font-size: 12px; }
 .progress-area { margin: 32px 0 12px; }
 .progress-meta { display: flex; justify-content: space-between; margin-bottom: 10px; color: var(--muted); font: 500 11px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
 .progress-track { height: 5px; overflow: hidden; background: #1a2436; }

@@ -25,7 +25,6 @@
  */
 
 import { isElevated as detectElevated } from './elevation.js';
-import { presentMonExePath } from './fps-etw.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -53,17 +52,6 @@ export async function runSmoke(backend, opts = {}) {
   const fail = (n, msg) => {
     throw new SmokeFailure(`smoke step ${n}: ${msg}`);
   };
-
-  // M17c: the ETW/PresentMon sidecar path-resolution gate - the vendored
-  // PresentMon64.exe must resolve to an existing file in BOTH the dev tree
-  // and the packaged payload (app.asar.unpacked - the asar extraction
-  // survival check). The live ETW spawn itself needs elevation (the
-  // packaged EXE is elevated; this smoke is not) - the PATH is the
-  // packaged-run verifiable part.
-  step('presentmon', 'PresentMon64.exe sidecar path resolution');
-  const pmPath = presentMonExePath();
-  if (pmPath === null) fail('presentmon', 'PresentMon64.exe not found (dev tree or app.asar.unpacked)');
-  step('presentmon', `resolved: ${pmPath}`);
 
   // --- init + discovery -----------------------------------------------------
   step('init', 'backend.init() (zero UID + Level Zero + CTL_INIT_FLAG_IGSC_FUL)');

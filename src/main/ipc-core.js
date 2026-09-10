@@ -980,7 +980,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   registryCatalog?: { get: () => Promise<unknown> },  // M3-A read-side catalog
  *   registryApply?: { apply: (entryId: string, action: string) => Promise<unknown> },  // M3-B elevated apply
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null, avgFps: number | null, low1Pct: number | null, low01Pct: number | null, p99: number | null } | null>, stop?: () => Promise<void> },
- *   presentMonLane?: { poll: (deviceId: number) => Promise<object | null>, stop?: () => Promise<void> } | null,  // M17c: the ETW/PresentMon lane (the PREFERRED FPS source; M17d: wraps the pm-service + sidecar SOURCE CHAIN; null in mock/tests - the determinism seam like foregroundApi)
+ *   fpsLane?: { poll: (deviceId: number) => Promise<object | null>, stop?: () => Promise<void> } | null,  // Native RTSS foreground-process lane; null in mock/tests - the determinism seam like foregroundApi
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
  *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe). M17g: the emit-site composition MOVED into the sysStats adapter's FAST lane - this param is kept for call-site compatibility and is no longer consumed by the telemetry push (the fast-lane field replaces it).
  *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>, sampleFast?: () => Promise<object>, sampleSlow?: () => Promise<object>, setTarget?: (target?: object|null) => void, startSlowLane?: (cadenceMs?: number) => void, stopSlowLane?: () => void } | { current: object | null },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample). M17g: the telemetry push samples the FAST lane (sampleFast) per tick - never the slow PowerShell query; the slow lane runs on the adapter's own background timer (startSlowLane/stopSlowLane, tied to the telemetry session lifecycle). M17p: main.js may pass a MUTABLE HOLDER ({ current: null } - the sysStats block lands AFTER registerIpc; the ONE normalize at the top unwraps it per-access; a plain adapter passes through).
@@ -1094,14 +1094,11 @@ export function createIpcHandlers({
   // product path. On this machine the real adapter may also degrade to
   // null (DXGI unavailable), so mock and product agree on 'unavailable'.
   fpsAdapter = { poll: async () => null },
-  // M17c: the ETW/PresentMon lane - the PREFERRED FPS source when it has a
-  // fresh sample (the game's own present rate via the dxgkrnl ETW stream);
-  // the fps-poll handler consults it FIRST and falls back to fpsAdapter
-  // (the DXGI desktop-presentation tier) when the lane is idle/absent.
-  // THE DETERMINISM SEAM (the foregroundApi pattern): the DEFAULT is null
-  // (tests + mock/ui-verify never run the sidecar or the foreground-pid
-  // probe); main.js wires the real lane ONLY in the non-mock product path.
-  presentMonLane = null,
+  // Native RTSS is the preferred FPS/frametime source when it has a fresh
+  // target-process sample. The handler consults it first and falls back to
+  // the DXGI desktop-presentation tier when RTSS is absent or idle.
+  // Mock/ui-verify keeps this null as the deterministic seam.
+  fpsLane = null,
   // M10a: the foreground-window Graphics-API detector (the overlay's FPS-row
   // badge). The DEFAULT is the null-returning detector (tests + mock/
   // ui-verify NEVER run the real koffi probe - the determinism seam:
@@ -2092,7 +2089,7 @@ export function createIpcHandlers({
         const receivedAtMs = Date.now();
         let fpsSample = null;
         try {
-          const laneSample = presentMonLane ? await presentMonLane.poll(target.id) : null;
+          const laneSample = fpsLane ? await fpsLane.poll(target.id) : null;
           fpsSample = laneSample !== null ? laneSample : await fpsAdapter.poll(target.id);
         } catch { fpsSample = null; }
         let foregroundProcess = null;
@@ -3145,16 +3142,10 @@ export function createIpcHandlers({
         await installUpdate(filePath, { buildKind, portableWrapperPath });
       },
 
-      // FPS via DXGI GetFrameStatistics (M4-D2 - replaced PresentMon). The
-      // default adapter is the mock (always null); the product path injects
-      // the real DXGI adapter, which itself degrades to null when DXGI is
-      // unavailable. Never throws.
-      // M17c: the ETW/PresentMon lane is the PREFERRED source when it has a
-      // fresh sample (the game's per-frame present rate - RTSS-class
-      // accuracy); the DXGI adapter remains the fallback tier (the
-      // desktop-presentation rate) when the lane is idle/absent. The lane
-      // is null in mock/tests - the composition is a no-op there and every
-      // existing pin stays green.
+      // FPS/frametime via native RTSS shared memory. The default adapter is
+      // the mock (always null); the product path injects the RTSS lane first
+      // and the DXGI adapter remains the honest fallback when RTSS is absent
+      // or a target process is not hooked. Never throws.
       // M10a: the sample COMPOSES the foreground-window Graphics-API badge -
       // the fpsAdapter's own api field (the RID_MOCK_API=1 mock fixture)
       // wins, otherwise the injected detector answers (the DEFAULT is the
@@ -3162,7 +3153,7 @@ export function createIpcHandlers({
       // probe runs only in the product path).
       'fps-poll': async (deviceId) => {
         assertValidDeviceId(deviceId);
-        const laneSample = presentMonLane ? await presentMonLane.poll(deviceId) : null;
+        const laneSample = fpsLane ? await fpsLane.poll(deviceId) : null;
         const sample = laneSample !== null ? laneSample : await fpsAdapter.poll(deviceId);
         if (sample === null || typeof sample !== 'object') return null;
         // M10a: the foreground-window Graphics-API badge composition. The
@@ -3170,14 +3161,10 @@ export function createIpcHandlers({
         // answers (the DEFAULT is the null-returning detector - the
         // determinism seam; the real koffi probe runs only in the product
         // path).
-        // M17d (Run C, item 1e): the PresentMon-service CLASS corroboration
-        // - when the module scan yields null, the lane's presentRuntime
-        // class ('dxgi'/'d3d9'/'other' - the PM_GRAPHICS_RUNTIME class the
-        // overlay labels DXGI/D3D9/Other) answers through the SAME api
-        // field; a module-scan verdict ALWAYS wins (the fine grain stays
-        // module-derived). Absent presentRuntime -> null (the overlay row
-        // stays empty - the honest degrade).
-        const api = sample.api ?? (await foregroundApi.detect()) ?? (typeof sample.presentRuntime === 'string' ? sample.presentRuntime : null);
+        // RTSS supplies a native API id when its v2.10+ flags are available;
+        // otherwise the foreground module detector remains the fine-grained
+        // fallback. Unknown values leave the overlay API row empty.
+        const api = sample.api ?? (await foregroundApi.detect()) ?? null;
         return { ...sample, api };
       },
 

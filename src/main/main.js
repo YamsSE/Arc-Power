@@ -94,8 +94,7 @@ import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
 import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createRegistryApply, createMockRegistryApply } from './registry-apply.js';
 import { createDxgiFpsAdapter } from './fps-dxgi.js';
-import { createPresentMonFpsSource, createPresentMonLane, createPresentMonSourceChain } from './fps-etw.js';
-import { createPmFpsSource } from './fps-pm.js';
+import { createRtssFpsLane } from './fps-rtss.js';
 import { createForegroundApiDetector } from './foreground-api.js';
 import { createMemoryUtilDetector } from './memory-util.js';
 import { createSysStats, createMockSysStats } from './sys-stats.js';
@@ -3335,38 +3334,19 @@ async function main() {
         bootApplyLog: async () => mockBootApplyLog.slice(),
       }
     : null;
-  // M17c/M17d: the ETW/PresentMon FPS lane - the PREFERRED FPS source in
-  // the product path (the game's per-frame present rate via the dxgkrnl
-  // ETW stream; the packaged app runs elevated, which ETW realtime sessions
-  // require - the dev run degrades to the DXGI fallback honestly). THE
-  // DETERMINISM SEAM (the foregroundApi pattern): the lane exists ONLY in
-  // the non-mock path - mock/ui-verify never spawn the sidecar or probe
-  // the foreground. M17d (Run C): the lane consumes the SOURCE CHAIN - the
-  // PresentMon SERVICE source (the IGS-class DISPLAYED_FPS when the driver
-  // ships the service: pmOpenSession + pmStartTrackingProcess + the
-  // DISPLAYED_FPS/PRESENT_RUNTIME dynamic query - the plan's primary lane;
-  // on this dev box the probe finds NO SCM service - the IGS spawns its
-  // middleware as a child - so the pm source stays idle) + the M17c
-  // vendored console-exe sidecar (the display-cadence columns); the chain
-  // orders pm data first, the sidecar second, and the fps-poll falls back
-  // to the DXGI desktop-rate tier when both are idle. The lane is LAZY:
-  // the sidecar spawns / the pm probe runs on the first fps-poll (no
-  // capture before anything asks for FPS); the retarget check runs per
-  // poll (getForegroundWindow + GetWindowThreadProcessId - the cheap
-  // foreground-api probe ops). ownPids = the main process + the windows'
-  // renderer processes - the lane never measures the app itself (the
-  // foreground over Arc Power keeps the last game target instead).
-  let presentMonLane = null;
+  // Native RTSS is the preferred FPS/frametime source in the product path.
+  // It reads the target game's RTSSSharedMemoryV2 entry lazily on the first
+  // fps-poll, retargets by foreground PID, and never writes RTSS's OSD slots.
+  // Mock/ui-verify mode keeps the deterministic inline fixture and never
+  // opens the mapping. If RTSS is absent or a game is not hooked, ipc-core
+  // falls back to the DXGI desktop-presentation provider honestly.
+  let fpsLane = null;
   if (!mock) {
-    presentMonLane = createPresentMonLane({
-      source: createPresentMonSourceChain({
-        pmSource: createPmFpsSource({}),
-        sidecarSource: createPresentMonFpsSource({}),
-      }),
+    fpsLane = createRtssFpsLane({
       resolveForegroundPid: async () => await foregroundApi.detectPid(),
       isOwnPid: async (pid) => {
         const own = new Set([process.pid]);
-        for (const w of [win, overlayHandle?.getWindow?.()]) {
+        for (const w of [win, overlayHandle?.getWindow?.(), advancedOverlayHandle?.getWindow?.()]) {
           if (w && !w.isDestroyed()) {
             try { own.add(w.webContents.getOSProcessId()); } catch { /* best effort */ }
           }
@@ -3548,7 +3528,7 @@ async function main() {
     appLifecycle,
     registryApply,
     fpsAdapter,
-    presentMonLane,
+    fpsLane,
     foregroundApi,
     memoryUtil,
     // M17p: the sysStats MUTABLE HOLDER (never the by-value null - the

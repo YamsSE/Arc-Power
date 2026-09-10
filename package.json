@@ -27,12 +27,17 @@
                   "icon":  "build/icon.ico",
                   "files":  [
                                 "src/**/*",
+                                "!src/main/backend/presentmon/**",
+                                "!src/main/fps-etw.js",
+                                "!src/main/fps-pm.js",
+                                "!src/main/pm-bindings.js",
+                                "!src/main/pm-service.js",
+                                "!src/renderer/pure/presentmon-csv.ts",
+                                "!src/renderer/pure/fps-pm-layout.ts",
                                 "src/main/backend/IntelMSR.bin",
                                 "src/main/backend/AMDFamily17.bin",
                                 "src/main/backend/COPYING",
                                 "src/main/backend/PawnIO_setup.exe",
-                                "src/main/backend/presentmon/PresentMon64.exe",
-                                "src/main/backend/presentmon/LICENSE",
                                 "THIRD_PARTY_NOTICES.txt",
                                 "LICENSE",
                                 "package.json",
@@ -66,8 +71,7 @@
                   "asarUnpack":  [
                                      "node_modules/koffi/build/koffi/win32_x64/koffi.node",
                                      "src/main/backend/igcl2023/**",
-                                     "src/main/backend/PawnIO_setup.exe",
-                                     "src/main/backend/presentmon/**"
+                                     "src/main/backend/PawnIO_setup.exe"
                                  ],
                   "extraResources":  [
                                         {

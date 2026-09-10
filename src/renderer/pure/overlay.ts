@@ -270,13 +270,10 @@ export function isValidOverlayStat(v: unknown): v is string {
  *  'OpenGL'; the ids are the detector contract of src/main/foreground-api.js;
  *  M10b added 'dx9' - the League-of-Legends (DirectX 9) detection; M12 added
  *  'dx10' - the DirectX-10 detection completeness).
- *  M17d (Run C, item 1e): the PresentMon-service CLASS corroboration ids -
- *  'dxgi' / 'd3d9' / 'other' (the fps-pm lane's presentRuntime field - the
- *  PM_GRAPHICS_RUNTIME class: DXGI/D3D9/Other). The badge logic is
- *  UNCHANGED: the class rides the SAME sample field the overlay already
- *  renders (apiLabelOf - the fps-poll composes it only when the module scan
- *  yields null); the FINE grain (dx11-vs-dx12, Vulkan-vs-OGL) stays
- *  module-derived (PresentMon's runtime class cannot distinguish them). */
+ *  The native RTSS provider maps legacy DirectDraw/DX8 to the stable 'other'
+ *  class; the coarse 'dxgi' / 'd3d9' / 'other' classes remain supported for
+ *  the fallback provider. The foreground module detector remains authoritative
+ *  for fine-grained labels when the provider does not expose an API id. */
 export const OVERLAY_API_LABELS: Record<string, string> = {
   dx12: 'DX12',
   vulkan: 'Vulkan',

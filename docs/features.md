@@ -71,14 +71,15 @@ Quick access and apply-on-startup controls without opening the window.
 
 ## Overlay and monitoring accuracy
 
-- **FPS** - the preferred source is the per-process present stream
-  (PresentMon ETW events, pinned v2.5.1 sidecar): the foreground game's own
-  present rate, exact per frame. When the ETW lane is inactive (no
-  foreground program, or the sidecar unavailable - e.g. the unelevated dev
-  run) the reading falls back to the DXGI desktop presentation sampler (a
-  400-600 ms window; on the windowed desktop the count tracks the display
-  refresh rate, not the game's render rate - the honest limit of the
-  fallback tier). The AVG FPS stat is the last 10 seconds of frames.
+- **FPS and frametime** - the preferred source is native RTSS shared memory
+  for the foreground game's process. It supplies the game's own FPS,
+  instantaneous frametime, native averages, and frame-time percentiles. If
+  RTSS is not installed, is not running, or cannot hook the game, the reading
+  falls back to the DXGI desktop presentation sampler (a 400-600 ms window;
+  on the windowed desktop the count tracks the display refresh rate, not the
+  game's render rate - the honest limit of the fallback tier). The custom
+  Arc Power installer can install RTSS through WinGet and skips that step when
+  RTSS is already installed.
 - **API badge** - the foreground graphics API is detected from the process's
   loaded modules: Vulkan and OpenGL-with-a-vendor-ICD rank above DirectX, a
   bare system OpenGL falls through to DirectX, and launcher-owned windows

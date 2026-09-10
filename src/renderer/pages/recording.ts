@@ -459,7 +459,6 @@ function renderCapturePanel(): HTMLElement {
     renderCaptureActions(),
     renderCaptureTargetSettings(),
     renderCaptureCursorSetting(),
-    renderRecordingPillSetting(),
     status.error && status.available ? el('p', { class: 'recording-inline-error', text: messageOf(status.error) }) : null,
     status.hotkeys.error ? el('p', { class: 'recording-inline-error', text: `Shortcut registration issue: ${messageOf(status.hotkeys.error)}` }) : null,
   ]);
@@ -928,6 +927,7 @@ function renderStorage(): HTMLElement {
     ]),
     el('div', { class: 'recording-storage-controls' }, [
       field('Recording folder', el('div', { class: 'recording-input-row' }, [location, button('Browse', () => void chooseFolder(), 'btn btn-secondary'), button('Open folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Recording folder', messageOf(err))), 'btn btn-secondary', !locationValue)])),
+      renderRecordingPillSetting(),
     ]),
   ]);
 }
