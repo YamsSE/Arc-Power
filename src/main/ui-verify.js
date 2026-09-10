@@ -4142,7 +4142,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
       if (!axisValues.every(Number.isFinite) || axisValues[1] !== 0 || axisValues[0] <= 0) return { ok: false, why: 'invalid-zero-based-axis', axis: yTexts };
       const tooltipText = tooltip.textContent?.trim() ?? '';
       const sampleValue = Number(tooltipText);
-      const expectedY = height - 13 - ((sampleValue - axisValues[1]) / Math.max(.001, axisValues[0] - axisValues[1])) * Math.max(4, height - 18);
+      const graphStyle = getComputedStyle(surface);
+      const plotTop = Number.parseFloat(graphStyle.getPropertyValue('--telemetry-graph-plot-top')) || 5;
+      const plotBottom = Number.parseFloat(graphStyle.getPropertyValue('--telemetry-graph-plot-bottom')) || 13;
+      const expectedY = height - plotBottom - ((sampleValue - axisValues[1]) / Math.max(.001, axisValues[0] - axisValues[1])) * Math.max(4, height - plotTop - plotBottom);
       const mappedLine = Number.isFinite(sampleValue) && Number.isFinite(expectedY) && lineNear(crosshairX, expectedY);
       const popupRect = tooltip.getBoundingClientRect();
       const inside = popupRect.left >= surfaceRect.left - 1
@@ -4234,7 +4237,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (!axis.every(Number.isFinite) || axis[1] !== 0 || axis[0] <= 0) return { ok: false, why: 'invalid-zero-based-axis-after-tick', axis };
     const tooltipText = tooltip.textContent?.trim() ?? '';
     const sampleValue = Number(tooltipText);
-    const expectedY = height - 13 - ((sampleValue - axis[1]) / Math.max(.001, axis[0] - axis[1])) * Math.max(4, height - 18);
+    const graphStyle = getComputedStyle(surface);
+    const plotTop = Number.parseFloat(graphStyle.getPropertyValue('--telemetry-graph-plot-top')) || 5;
+    const plotBottom = Number.parseFloat(graphStyle.getPropertyValue('--telemetry-graph-plot-bottom')) || 13;
+    const expectedY = height - plotBottom - ((sampleValue - axis[1]) / Math.max(.001, axis[0] - axis[1])) * Math.max(4, height - plotTop - plotBottom);
     const dpr = window.devicePixelRatio || 1;
     const ctx = canvas.getContext('2d');
     const crosshairX = Number.parseFloat(crosshair.style.left);

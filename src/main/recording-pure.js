@@ -303,6 +303,10 @@ export function normalizeRecordingAccelerator(value, fallback) {
 }
 
 function normalizeHotkey(value, fallback) {
+  // An explicitly blank shortcut is an intentional opt-out. Missing fields
+  // still use the established defaults, while whitespace-only input is also
+  // treated as disabled after the user clears a control.
+  if (typeof value === 'string' && value.trim() === '') return '';
   return normalizeRecordingAccelerator(boundedString(value, fallback, 32), fallback);
 }
 

@@ -834,7 +834,10 @@ function renderHotkeys(): HTMLElement {
     return el('div', { class: 'recording-hotkey-row' }, [
       el('div', { class: 'recording-hotkey-copy' }, [el('strong', { text: label }), el('span', { text: description })]),
       input,
-      conflict ? el('span', { class: 'text-warn recording-hotkey-warning', text: `Not registered (${conflict} is in use)` }) : el('span', { class: 'recording-hotkey-registered', text: status.hotkeys.registered[key] ? 'Registered' : 'Not registered' }),
+      el('div', { class: 'recording-hotkey-status' }, [
+        conflict ? el('span', { class: 'text-warn recording-hotkey-warning', text: `Not registered (${conflict} is in use)` }) : null,
+        button('NONE', () => stagePatch({ hotkeys: { [key]: '' } as Partial<RecordingSettings['hotkeys']> }), 'btn btn-secondary recording-hotkey-none'),
+      ]),
     ]);
   };
   return el('section', { class: 'recording-panel' }, [

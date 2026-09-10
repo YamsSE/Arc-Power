@@ -156,6 +156,7 @@ let recordingQuickDraft: RecordingSettings | null = null;
 let recordingQuickStatus: RecordingEngineState = EMPTY_RECORDING_STATUS;
 let recordingQuickTargets: RecordingCaptureTargets = { displays: [], windows: [] };
 let recordingQuickPillEnabled = false;
+let recordingQuickInitialized = false;
 let recordingQuickLoading = false;
 let recordingQuickActionBusy = false;
 let recordingQuickApplying = false;
@@ -178,6 +179,17 @@ function cloneRecordingQuickSettings(value: RecordingSettings): RecordingSetting
     hotkeys: { ...value.hotkeys },
     captureTarget: { ...value.captureTarget },
   };
+}
+
+function syncRecordingSettings(next: RecordingSettings): void {
+  // Keep the normalized push as the clean base even when Recording is not the
+  // visible tab. This prevents the one-time quick-settings load from bringing
+  // back values that were changed in the main Recording page meanwhile.
+  recordingQuickSettings = cloneRecordingQuickSettings(next);
+  if (!recordingQuickDirty && !recordingQuickApplying) {
+    recordingQuickDraft = cloneRecordingQuickSettings(next);
+  }
+  if (activeTab === 'recording') renderRecording();
 }
 
 function recordingQuickPatch(patch: RecordingSettingsPatch): void {
@@ -316,7 +328,7 @@ api.onStateUpdated((payload) => {
 // until the Recording tab is rebuilt.
 api.onRecordingSettingsUpdated((next) => {
   if (!next || typeof next !== 'object') return;
-  recordingSettingsSync?.(next);
+  syncRecordingSettings(next);
 });
 
 api.onRecordingPillSettingsUpdated((next) => {
@@ -410,7 +422,7 @@ api.onDeviceSelectionUpdated((payload) => {
 api.onGraphicsStateUpdated((payload) => {
   if (payload && payload.deviceId === store.get().deviceId && graphicsStateGeneration === panelGeneration) {
     graphicsState = payload.graphicsState;
-    if (activeTab === 'graphics' && !graphicsApplying) graphicsStateSync?.(payload.graphicsState);
+    if (activeTab === 'graphics') graphicsStateSync?.(payload.graphicsState);
   }
 });
 
@@ -943,15 +955,25 @@ async function renderTuning(): Promise<void> {
   };
 
   // Main-window, tray, and profile applies all arrive through the shared
-  // device-state push. Keep the panel's active Tuning controls in place and
-  // preserve any control that is already dirty or has an applied reference.
+  // device-state push. Keep the panel's active Tuning controls in place while
+  // preserving only a genuinely unsaved local draft. A clean control with an
+  // old Applied reference must still adopt an external read-back.
   tuningStateSync = (nextState: DeviceState): void => {
+    const previousState = currentState;
     currentState = nextState;
     for (const key of controls) {
-      if (key in applied) continue;
       const range = cardSliderRange(caps, key);
+      if (!range) continue;
+      const previous = previousState[key as keyof DeviceState];
+      const hasLocalDraft = key in applied
+        ? values[key] !== applied[key]
+        : typeof previous === 'number' && values[key] !== snapToRange(previous, range);
+      if (hasLocalDraft) continue;
       const raw = nextState[key as keyof DeviceState];
-      if (range && typeof raw === 'number' && Number.isFinite(raw)) values[key] = snapToRange(raw, range);
+      if (typeof raw === 'number' && Number.isFinite(raw)) {
+        values[key] = snapToRange(raw, range);
+        if (key in applied) applied[key] = values[key];
+      }
     }
     renderTuningInPlace();
   };
@@ -1140,7 +1162,7 @@ function normalizeRecordingQuickStatus(value: RecordingEngineState | null | unde
 }
 
 async function loadRecordingQuick(): Promise<void> {
-  if (recordingQuickLoading || recordingQuickSettings) return;
+  if (recordingQuickLoading || recordingQuickInitialized) return;
   recordingQuickLoading = true;
   recordingQuickError = null;
   renderRecording();
@@ -1149,16 +1171,21 @@ async function loadRecordingQuick(): Promise<void> {
       api.recordingSettingsGet(),
       api.recordingStatus(),
     ]);
-    recordingQuickSettings = loadedSettings;
-    recordingQuickDraft = cloneRecordingQuickSettings(loadedSettings);
+    // A settings push can arrive before the first visit to this tab. Keep
+    // that normalized value as the authoritative quick-settings base while
+    // still loading the status, targets, and profile-backed pill state.
+    if (!recordingQuickSettings) {
+      recordingQuickSettings = loadedSettings;
+      recordingQuickDraft = cloneRecordingQuickSettings(loadedSettings);
+    }
     recordingQuickStatus = normalizeRecordingQuickStatus(loadedStatus);
-    recordingQuickDirty = false;
     const [targets, profileEnvelope] = await Promise.all([
       api.recordingCaptureTargets().catch(() => ({ displays: [], windows: [] })),
       api.profilesList().catch(() => null),
     ]);
     recordingQuickTargets = targets;
     recordingQuickPillEnabled = profileEnvelope?.settings?.overlayRecordingPill === true;
+    recordingQuickInitialized = true;
   } catch (err) {
     recordingQuickError = err instanceof Error ? err.message : String(err);
   } finally {
@@ -1449,21 +1476,15 @@ function renderStreamMode(): HTMLElement {
 }
 
 function renderRecording(): void {
-  recordingSettingsSync = (next: RecordingSettings): void => {
-    recordingQuickSettings = next;
-    // Keep a local unsaved quick-control draft intact while adopting the
-    // pushed settings as the clean base. Clean controls update immediately.
-    if (!recordingQuickDirty && !recordingQuickApplying) recordingQuickDraft = cloneRecordingQuickSettings(next);
-    if (activeTab === 'recording') renderRecording();
-  };
+  recordingSettingsSync = syncRecordingSettings;
   closeOpenAdvancedMenu();
   clear(contentEl);
   const view = el('div', { class: 'adv-view recording-view' });
   view.append(el('div', { class: 'adv-view-heading' }, [el('p', { class: 'adv-view-title', text: 'Recording' })]));
-  if (recordingQuickLoading || !recordingQuickSettings) {
+  if (recordingQuickLoading || !recordingQuickInitialized) {
     view.append(el('p', { class: 'page-subtitle', text: recordingQuickError ?? 'Loading recording settings…' }));
     contentEl.append(view);
-    if (!recordingQuickLoading && !recordingQuickSettings) void loadRecordingQuick();
+    if (!recordingQuickLoading && !recordingQuickInitialized) void loadRecordingQuick();
     return;
   }
   view.append(renderRecordingQuickActions(), renderRecordingQuickSettings(), renderStreamMode());
@@ -1803,14 +1824,23 @@ function renderGraphicsCards(view: HTMLElement): void {
 
   // Keep the visible dropdowns and limiter slider synchronized with a
   // graphics apply made by the main window or another renderer. Dirty local
-  // controls retain their draft; untouched controls adopt the readback.
+  // controls retain their draft; clean controls (including previously
+  // applied controls) adopt the readback.
   graphicsStateSync = (nextState: GraphicsState): void => {
+    const previousState = state;
+    const preserveDraft = new Map<string, boolean>();
+    for (const key of GRAPHICS_CONTROLS) {
+      preserveDraft.set(key, isGraphicsControlDirtyVsApplied(key, graphicsDraft, previousState, graphicsApplied));
+    }
     state = nextState;
     graphicsState = nextState;
     const pushedDraft = normalizeGraphicsSettings(nextState);
     for (const key of GRAPHICS_CONTROLS) {
-      if (key in graphicsApplied) continue;
+      if (preserveDraft.get(key)) continue;
       if (key in pushedDraft) (graphicsDraft as Record<string, unknown>)[key] = (pushedDraft as Record<string, unknown>)[key];
+      if (key in graphicsApplied && key in pushedDraft) {
+        (graphicsApplied as Record<string, unknown>)[key] = (pushedDraft as Record<string, unknown>)[key];
+      }
     }
     for (const key of ['frameGenOverride', 'flipMode', 'lowLatency']) {
       const value = (graphicsDraft as Record<string, unknown>)[key];

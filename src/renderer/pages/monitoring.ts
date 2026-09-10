@@ -41,6 +41,8 @@ import {
   formatMonitoringGraphValue,
   graphDrawnPoints,
   graphSamplePosition,
+  MONITORING_GRAPH_PLOT_BOTTOM_PX,
+  monitoringGraphPlotHeight,
   monitoringGraphRangeForMax,
   monitoringGraphSegment,
 } from '../pure/monitoring-graph.ts';
@@ -610,7 +612,8 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], series
   // Reserve the lower strip for the hover time label. Keep this coordinate
   // system in lockstep with updateMetricGraphOverlay so the crosshair and
   // pill remain attached to the rendered line after a resize.
-  const y = (value: number): number => h - 13 - ((value - min) / span) * Math.max(4, h - 18);
+  const y = (value: number): number => h - MONITORING_GRAPH_PLOT_BOTTOM_PX
+    - ((value - min) / span) * monitoringGraphPlotHeight(h);
   ctx.beginPath();
   drawn.forEach((point, index) => {
     const px = x(point);

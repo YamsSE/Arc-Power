@@ -23,6 +23,9 @@ export function createRecordingHotkeys({ shortcut, getSettings, onAction, reserv
     // legacy value readable, but never register or invoke it.
     const actions = [['start', 'start'], ['stop', 'stop'], ['saveClip', 'saveClip'], ['screenshot', 'screenshot']];
     for (const [key, action] of actions) {
+      // An explicit empty shortcut is a durable opt-out, not a malformed
+      // value that should fall back to the default accelerator.
+      if (typeof settings.hotkeys?.[key] === 'string' && settings.hotkeys[key].trim() === '') continue;
       const accelerator = normalizeRecordingAccelerator(settings.hotkeys?.[key], key === 'start' ? 'F9' : key === 'stop' ? 'F10' : key === 'saveClip' ? 'F8' : 'F7');
       if (reservedAccelerators.has(accelerator) || Object.values(next.registered).includes(accelerator)) {
         next.conflicts[key] = accelerator;

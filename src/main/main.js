@@ -83,10 +83,10 @@ import { createRecordingStatusPillWindow } from './recording-status-pill.js';
 // overlay.js stays untouched - this panel has its own lifecycle + its own
 // interactivity (NO setIgnoreMouseEvents).
 import { createAdvancedOverlayWindow } from './advanced-overlay.js';
-import { createStartup, createMockStartup, resolveLogonExecPath } from './startup.js';
+import { createStartup, createMockStartup } from './startup.js';
 import { attachStartupUpdateStatus, createStartupSplash } from './splash.js';
 import { runInstallerMode } from './installer.js';
-import { INSTALLED_EXECUTABLE_NAME, installerModeFromEnvironment, resolveNewerInstalledExecutable } from './installer-pure.js';
+import { INSTALLED_EXECUTABLE_NAME, INSTALLED_LAUNCH_ENV, installerModeFromEnvironment, resolveNewerInstalledExecutable } from './installer-pure.js';
 import { checkForUpdates } from './auto-update.js';
 import { createStartupUpdateCoordinator, shouldBlockStartupSplashClose } from './startup-update.js';
 import { createStartupUpdateHandoff } from './startup-update-handoff.js';
@@ -107,7 +107,7 @@ import { applyProfile, runApplyOnStartup, applyProfileBoot, resolveApplyDeviceId
 import { runBootApplyMode } from './boot-apply-mode.js';
 import { shouldUseInstanceLock, acquireInstanceLock, focusExistingWindow } from './single-instance.js';
 import { createBootSetup, taskActionMatches } from './setup-boot.js';
-import { deriveBuildKind, resolvePortableWrapperPath } from './build-kind.js';
+import { deriveBuildKind, resolvePortableStartupPath, resolvePortableWrapperPath } from './build-kind.js';
 import { createTray, buildTrayMenuTemplate, trayToggleAction, TRAY_LABEL_TOGGLE, TRAY_LABEL_APPLY_PROFILE, trayBalloonForOutcome } from './tray.js';
 import { trayApplyActiveProfile } from './tray-apply.js';
 import { isElevated as isElevatedReal } from './elevation.js';
@@ -274,7 +274,15 @@ function redirectStaleInstalledLaunch() {
   }
 }
 
-const parentExecutableFile = process.env.PORTABLE_EXECUTABLE_FILE ? null : portableParentExecutableFile();
+const installedLaunchHandoff = process.env[INSTALLED_LAUNCH_ENV] === '1';
+const parentExecutableFile = (process.env.PORTABLE_EXECUTABLE_FILE || installedLaunchHandoff)
+  ? null
+  : portableParentExecutableFile();
+const portableStartupPath = resolvePortableStartupPath({
+  portableExecutableFile: process.env.PORTABLE_EXECUTABLE_FILE ?? null,
+  portableExecutableDir: process.env.PORTABLE_EXECUTABLE_DIR ?? null,
+  parentExecutableFile,
+});
 const portableWrapperPath = resolvePortableWrapperPath({
   portableExecutableFile: process.env.PORTABLE_EXECUTABLE_FILE ?? null,
   portableExecutableDir: process.env.PORTABLE_EXECUTABLE_DIR ?? null,
@@ -2245,7 +2253,11 @@ async function main() {
   const startup = mock
     ? createMockStartup()
     : createStartup({
-        logonExecPath: await resolveLogonExecPath({ execPath: process.execPath, isPackaged: app.isPackaged }),
+        // The portable wrapper path is already proven by its stable filename
+        // and wrapper markers. Installed builds must always register their
+        // own executable; querying an Installer parent here could otherwise
+        // leave a startup task pointing back at a deleted setup EXE.
+        logonExecPath: portableStartupPath ?? process.execPath,
         useElevatedTask: app.isPackaged && process.platform === 'win32',
       });
   // Driver-date adapter: real reg.exe query in the product path; mock mode

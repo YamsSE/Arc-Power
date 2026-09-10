@@ -8,6 +8,15 @@ import type { SeriesPoint } from './graph.ts';
 /** Maximum number of points painted into a compact Monitoring sparkline. */
 export const MONITORING_GRAPH_MAX_POINTS = 72;
 
+/** Vertical padding reserved outside the drawable Monitoring plot band. */
+export const MONITORING_GRAPH_PLOT_TOP_PX = 5;
+export const MONITORING_GRAPH_PLOT_BOTTOM_PX = 13;
+
+/** Return the drawable height used by both the Canvas line and hover overlay. */
+export function monitoringGraphPlotHeight(height: number): number {
+  return Math.max(4, height - MONITORING_GRAPH_PLOT_TOP_PX - MONITORING_GRAPH_PLOT_BOTTOM_PX);
+}
+
 export interface GraphRange {
   min: number;
   max: number;
@@ -107,8 +116,8 @@ export function graphAxisTime(points: SeriesPoint[], index: number): string {
 }
 
 /**
- * Position a nearest sample using the same 2 px endpoint margins and lower
- * 13 px X-label strip as the Canvas renderer.
+ * Position a nearest sample using the same 2 px endpoint margins and plot
+ * band as the Canvas renderer.
  */
 export function graphSamplePosition(
   points: SeriesPoint[],
@@ -116,8 +125,8 @@ export function graphSamplePosition(
   width: number,
   height: number,
   range: GraphRange,
-  bottomPadding = 13,
-  plotHeight = Math.max(4, height - 18),
+  bottomPadding = MONITORING_GRAPH_PLOT_BOTTOM_PX,
+  plotHeight = monitoringGraphPlotHeight(height),
 ): GraphSamplePosition | null {
   if (points.length === 0 || index < 0 || index >= points.length || width <= 0 || height <= 0) return null;
   const timeSpan = Math.max(0.001, points[points.length - 1].t - points[0].t);
