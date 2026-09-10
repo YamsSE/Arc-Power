@@ -250,13 +250,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const render = (): void => {
-    const liveOverlay = overlayState?.exists === true && persisted.enabled;
+    const liveOverlay = persisted.enabled && (overlayState?.provider === 'rtss'
+      ? overlayState.available === true
+      : overlayState?.exists === true);
     const liveHotkey = overlayState?.hotkeyRegistered !== false;
     const hero = el('header', { class: 'overlay-settings-hero' }, [
       el('div', { class: 'overlay-hero-copy' }, [
         el('span', { class: 'overlay-section-kicker', text: 'OVERLAY CONTROL' }),
         el('h2', { class: 'overlay-hero-title', text: 'Overlay Settings' }),
-        el('p', { class: 'overlay-hero-subtitle', text: 'Tune your Arc telemetry HUD, visual system, and interactive panel.' }),
+        el('p', { class: 'overlay-hero-subtitle', text: 'Tune your RTSS telemetry HUD, visual system, and interactive panel.' }),
       ]),
       el('div', { class: 'overlay-hero-status', dataset: { status: liveOverlay ? 'active' : 'idle' } }, [
         el('span', { class: 'overlay-status-dot' }),
@@ -355,7 +357,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
             checked: persisted.enabled,
             onchange: (ev: Event) => void onOverlayEnabledToggle((ev.target as HTMLInputElement).checked),
           }),
-          el('span', { text: 'Show the overlay' }),
+          el('span', { text: 'Show RTSS telemetry' }),
         ]),
       ]),
       // M25: the "Show Advanced Overlay" toggle moved here from the
@@ -680,7 +682,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         el('div', {}, [el('span', { class: 'overlay-card-eyebrow', text: 'INTERACTION LAYER' }), el('h2', { class: 'card-title', text: 'Advanced Overlay' })]),
         el('span', { class: 'overlay-value-badge', text: persisted.advEnabled ? 'ENABLED' : 'READY' }),
       ]),
-      el('p', { class: 'overlay-card-description', text: 'Configure the HUD shortcut and the anchored interactive panel.' }),
+      el('p', { class: 'overlay-card-description', text: 'Configure the RTSS HUD shortcut and the anchored interactive panel.' }),
       el('div', { class: 'overlay-subsection-label', text: 'HUD shortcut' }),
       el('div', { class: 'settings-row overlay-hotkey-row' }, [
         el('span', { class: 'settings-row-label', text: 'Monitor' }),

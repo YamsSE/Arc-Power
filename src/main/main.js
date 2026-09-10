@@ -96,6 +96,7 @@ import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, cre
 import { createRegistryApply, createMockRegistryApply } from './registry-apply.js';
 import { createDxgiFpsAdapter } from './fps-dxgi.js';
 import { createRtssFpsLane } from './fps-rtss.js';
+import { createRtssOsdPublisher } from './rtss-osd.js';
 import { createForegroundApiDetector } from './foreground-api.js';
 import { createMemoryUtilDetector } from './memory-util.js';
 import { createSysStats, createMockSysStats } from './sys-stats.js';
@@ -2265,6 +2266,40 @@ async function main() {
   const rtssStartup = mock
     ? createMockRtssStartup({ available: process.env.RID_MOCK_RTSS_AVAILABLE !== '0' })
     : createRtssStartup();
+  // The product telemetry HUD is rendered by RTSS itself. Keep the FPS lane
+  // mutable because the foreground/process ownership seam is created after
+  // the overlay lifecycle objects below; the publisher can safely queue its
+  // first sample until that lane is available.
+  let fpsLane = null;
+  const rtssOverlay = mock
+    ? null
+    : createRtssOsdPublisher({
+        getFpsSample: async () => fpsLane?.poll(0) ?? null,
+      });
+  if (rtssOverlay) {
+    try {
+      const initialOverlaySettings = store.loadSettingsSync() ?? {};
+      rtssOverlay.updateSettings({
+        enabled: initialOverlaySettings.overlayEnabled === true,
+        position: initialOverlaySettings.overlayPosition,
+        scale: initialOverlaySettings.overlayScale,
+        color: initialOverlaySettings.overlayColor,
+        theme: initialOverlaySettings.overlayTheme,
+        stats: initialOverlaySettings.overlayStats,
+        monitoredDeviceKeys: initialOverlaySettings.overlayDeviceKeys,
+        overlayBgEnabled: initialOverlaySettings.overlayBgEnabled,
+        overlayBgColor: initialOverlaySettings.overlayBgColor,
+        overlayBgOpacity: initialOverlaySettings.overlayBgOpacity,
+        overlayChipNames: initialOverlaySettings.overlayChipNames,
+        pollMs: initialOverlaySettings.overlayPollMs,
+      });
+      rtssOverlay.setVisible(initialOverlaySettings.overlayEnabled === true);
+    } catch {
+      // A settings read failure leaves the optional publisher disabled until
+      // the normal settings reaction supplies a valid envelope.
+      rtssOverlay.setVisible(false);
+    }
+  }
   // Driver-date adapter: real reg.exe query in the product path; mock mode
   // (incl. --ui-verify) returns the fixture date and never spawns reg.exe.
   const driverInfo = mock ? createMockDriverInfo() : createDriverInfo();
@@ -2806,6 +2841,7 @@ async function main() {
   // (the tray-Quit path already works via app.quit).
   win.on('closed', () => {
     overlayHandle?.destroy();
+    void rtssOverlay?.stop?.();
     unregisterOverlayHotkey();
     recordingStatusPillHandle?.destroy();
     recordingStatusPillHandle = null;
@@ -2823,16 +2859,15 @@ async function main() {
     unregisterAdvancedOverlayHotkey();
   });
 
-  // --- M5: the software overlay (the MSI Afterburner/RTSS-style HUD) ------
-  // Created UNCONDITIONALLY on the product window path (HIDDEN when
-  // overlayEnabled is false - apply() shows it when the user enables it
-  // through the Overlay page; a lazy create would break the enable path).
-  // NEVER in headless/boot-apply/apply-profile (they return earlier);
-  // ui-verify creates it only under RID_MOCK_OVERLAY=1 (the variant's
-  // real-window pins). M7b (fix 5): the hotkey/shortcut NEVER shows the
-  // overlay while the master overlayEnabled is OFF - the gate lives in
-  // overlay.js toggle().
+  // --- M5: the software overlay / RTSS telemetry HUD ----------------------
+  // The product path publishes this HUD through RTSSSharedMemoryV2. The
+  // legacy Electron window is retained only for the explicit ui-verify
+  // variants that exercise the old renderer contract; it is never created in
+  // a normal product run. M7b (fix 5): the hotkey/shortcut NEVER shows the
+  // HUD while the master overlayEnabled is OFF.
   let overlayHandle = null;
+  let rtssOverlayVisible = true;
+  let rtssOverlayHotkeyRegistered = false;
   let recordingStatusPillHandle = null;
   let recordingToastHandle = null;
   let overlayHotkeyAccelerator = null;
@@ -2846,13 +2881,38 @@ async function main() {
   // the Overlay page then shows the honest note (the Show-the-overlay
   // toggle still works; the hotkey does not).
   const overlayHotkeyProbe = { registrations: [], failRegister: false };
+  const getRtssOverlayState = () => {
+    if (!rtssOverlay) return null;
+    try {
+      // Opening here is intentional: the Overlay page should report the
+      // actual RTSS capability as soon as it asks for live state, rather than
+      // waiting for the next telemetry tick to claim an OSD slot.
+      rtssOverlay.available?.();
+    } catch { /* capability remains unavailable */ }
+    return {
+      ...rtssOverlay.getState(),
+      hotkeyRegistered: rtssOverlayHotkeyRegistered,
+    };
+  };
+  const toggleRtssOverlay = async () => {
+    if (!rtssOverlay) return;
+    let current = {};
+    try { current = store.loadSettingsSync() ?? {}; } catch { current = {}; }
+    // The hotkey and session toggle never override the persisted master. This
+    // mirrors the old HUD contract while changing the rendering owner to RTSS.
+    if (current.overlayEnabled !== true) return;
+    rtssOverlayVisible = !rtssOverlayVisible;
+    rtssOverlay.setVisible(rtssOverlayVisible);
+  };
   const registerOverlayHotkey = (letter) => {
-    if (!overlayHandle) return;
+    if (!overlayHandle && !rtssOverlay) return;
     const normalized = typeof letter === 'string' && /^[A-Za-z]$/.test(letter) ? letter.toUpperCase() : 'O';
     const accel = `Control+${normalized}`;
     if (uiVerify) {
       overlayHotkeyProbe.registrations.push(accel);
-      overlayHandle.setHotkeyRegistered(!overlayHotkeyProbe.failRegister);
+      overlayHotkeyProbe.failRegister = overlayHotkeyProbe.failRegister === true;
+      if (overlayHandle) overlayHandle.setHotkeyRegistered(!overlayHotkeyProbe.failRegister);
+      rtssOverlayHotkeyRegistered = !overlayHotkeyProbe.failRegister;
       return;
     }
     if (overlayHotkeyAccelerator) {
@@ -2861,12 +2921,16 @@ async function main() {
     }
     let ok = false;
     try {
-      ok = globalShortcut.register(accel, () => { void overlayHandle.toggle(); });
+      ok = globalShortcut.register(accel, () => {
+        if (overlayHandle) void overlayHandle.toggle();
+        else void toggleRtssOverlay();
+      });
     } catch {
       ok = false;
     }
     overlayHotkeyAccelerator = ok ? accel : null;
-    overlayHandle.setHotkeyRegistered(ok);
+    rtssOverlayHotkeyRegistered = ok;
+    if (overlayHandle) overlayHandle.setHotkeyRegistered(ok);
     if (!ok) {
       console.log(`[overlay] hotkey ${accel} registration failed (taken by another application?)`);
     }
@@ -2876,6 +2940,7 @@ async function main() {
       try { globalShortcut.unregister(overlayHotkeyAccelerator); } catch { /* best effort */ }
       overlayHotkeyAccelerator = null;
     }
+    rtssOverlayHotkeyRegistered = false;
     overlayHandle?.setHotkeyRegistered(false);
   };
   // The overlay settings reaction (the rebuildTray pattern): re-apply the
@@ -2889,9 +2954,32 @@ async function main() {
         && typeof patch === 'object'
         && Object.prototype.hasOwnProperty.call(patch, 'overlayEnabled');
       applyOverlaySettings({ preserveVisibility: !masterChanged });
-      if (patch && typeof patch.overlayHotkeyLetter === 'string') {
-        registerOverlayHotkey(patch.overlayHotkeyLetter);
-      }
+    }
+    if (patch && typeof patch.overlayHotkeyLetter === 'string') {
+      registerOverlayHotkey(patch.overlayHotkeyLetter);
+    }
+    if (rtssOverlay) {
+      let settings = {};
+      try { settings = store.loadSettingsSync() ?? {}; } catch { settings = {}; }
+      const masterChanged = patch
+        && typeof patch === 'object'
+        && Object.prototype.hasOwnProperty.call(patch, 'overlayEnabled');
+      rtssOverlay.updateSettings({
+        enabled: settings.overlayEnabled === true,
+        position: settings.overlayPosition,
+        scale: settings.overlayScale,
+        color: settings.overlayColor,
+        theme: settings.overlayTheme,
+        stats: settings.overlayStats,
+        monitoredDeviceKeys: settings.overlayDeviceKeys,
+        overlayBgEnabled: settings.overlayBgEnabled,
+        overlayBgColor: settings.overlayBgColor,
+        overlayBgOpacity: settings.overlayBgOpacity,
+        overlayChipNames: settings.overlayChipNames,
+        pollMs: settings.overlayPollMs,
+      });
+      if (masterChanged) rtssOverlayVisible = settings.overlayEnabled === true;
+      rtssOverlay.setVisible(settings.overlayEnabled === true && rtssOverlayVisible);
     }
     // M143: a status-pill preference change applies independently of the HUD
     // master toggle; the pill is a separate desktop-level overlay surface.
@@ -2966,9 +3054,8 @@ async function main() {
     }, { preserveVisibility });
   };
   if (uiVerify
-    ? (process.env.RID_MOCK_OVERLAY === '1'
-      || process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1')
-    : true) {
+    && (process.env.RID_MOCK_OVERLAY === '1'
+      || process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1')) {
     overlayHandle = createOverlayWindow({
       // The CURRENT persisted settings - the sync cache (the same cache the
       // close handler reads; a read failure degrades to the defaults).
@@ -2984,6 +3071,15 @@ async function main() {
     stealthVerifyWindow(overlayHandle.getWindow?.() ?? null);
     applyOverlaySettings();
     // Boot the hotkey with the persisted letter (default 'O').
+    let bootLetter = 'O';
+    try {
+      const s = store.loadSettingsSync() ?? {};
+      if (typeof s.overlayHotkeyLetter === 'string' && /^[A-Za-z]$/.test(s.overlayHotkeyLetter)) {
+        bootLetter = s.overlayHotkeyLetter;
+      }
+    } catch { /* default O */ }
+    registerOverlayHotkey(bootLetter);
+  } else if (rtssOverlay) {
     let bootLetter = 'O';
     try {
       const s = store.loadSettingsSync() ?? {};
@@ -3034,6 +3130,7 @@ async function main() {
 
   app.on('will-quit', () => {
     overlayHandle?.destroy();
+    void rtssOverlay?.stop?.();
     unregisterOverlayHotkey();
     recordingStatusPillHandle?.destroy();
     recordingStatusPillHandle = null;
@@ -3342,11 +3439,11 @@ async function main() {
     : null;
   // Native RTSS is the preferred FPS/frametime source in the product path.
   // It reads the target game's RTSSSharedMemoryV2 entry lazily on the first
-  // fps-poll, retargets by foreground PID, and never writes RTSS's OSD slots.
+  // fps-poll and retargets by foreground PID. The separate rtssOverlay
+  // publisher owns the Arc telemetry OSD slot; this lane remains read-only.
   // Mock/ui-verify mode keeps the deterministic inline fixture and never
   // opens the mapping. If RTSS is absent or a game is not hooked, ipc-core
   // falls back to the DXGI desktop-presentation provider honestly.
-  let fpsLane = null;
   if (!mock) {
     fpsLane = createRtssFpsLane({
       resolveForegroundPid: async () => await foregroundApi.detectPid(),
@@ -3483,8 +3580,9 @@ async function main() {
     backend,
     store,
     getWindow: () => win,
-    // M5: the overlay window (the telemetry emit forwards to BOTH windows;
-    // null when no overlay exists - the emit null-guards it).
+    // M5: the legacy telemetry window is null in normal product runs. The
+    // RTSS publisher consumes telemetry directly through rtssOverlay below;
+    // keeping this getter preserves only the ui-verify seam.
     getOverlayWindow: () => (overlayHandle ? overlayHandle.getWindow() : null),
     // M23 (Part B): the ADVANCED overlay window - the telemetry push's THIRD
     // consumer (the panel's live clock/temp/fan/power readout strip rides
@@ -3502,7 +3600,16 @@ async function main() {
           toggle: async () => { await overlayHandle.toggle(); },
           resize: async (deviceCount) => { await overlayHandle.resize(deviceCount); },
         }
-      : undefined,
+      : rtssOverlay
+        ? {
+            getState: async () => getRtssOverlayState(),
+            toggle: async () => { await toggleRtssOverlay(); },
+            // RTSS lays out its own native slot. Keep the IPC contract alive
+            // for old renderer callers, but geometry is applied by the next
+            // native hypertext publish rather than an Electron window resize.
+            resize: async () => {},
+          }
+        : undefined,
     // M23 (Part B): the injected ADVANCED-overlay ops - dynamically
     // dereference the lazy panel handle so enabling the feature after boot
     // can create its renderer without rebuilding the IPC surface. When no
@@ -3536,6 +3643,7 @@ async function main() {
     registryApply,
     fpsAdapter,
     fpsLane,
+    rtssOverlay,
     foregroundApi,
     memoryUtil,
     // M17p: the sysStats MUTABLE HOLDER (never the by-value null - the

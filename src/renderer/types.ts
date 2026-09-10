@@ -508,6 +508,8 @@ export interface TelemetrySample {
   /** Main-process session identity; stale handover samples are ignored. */
   deviceId?: number | null;
   deviceKey?: string | null;
+  /** Human-readable physical adapter name for native RTSS rows. */
+  deviceName?: string | null;
   /** Physical identity aliases retained across inventory enrichment. */
   deviceKeys?: string[] | null;
   sessionGeneration?: number;
@@ -715,6 +717,9 @@ export interface OverlayState {
   /** LIVE-derived from the current globalShortcut registration (a failed
    *  register - the accelerator taken by another app - reads false). */
   hotkeyRegistered: boolean;
+  /** Native RTSS mapping capability/state for the product telemetry HUD. */
+  available?: boolean;
+  provider?: 'rtss' | 'electron';
 }
 
 /** M23/M51: the ADVANCED-overlay settings push payload. Software theme
