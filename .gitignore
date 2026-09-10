@@ -3,11 +3,15 @@ dist/
 out/
 *.log
 
+# Codex-local orchestration and configuration (not part of the product build)
+/.agents/
+/.codex/
+
 # Testing (kept locally - npm test / smoke:mock / ui-verify need them on disk)
 test/
 mock/
 
-# Noting / pipeline docs (kept locally; not part of the software or website)
+# Notes / pipeline docs (kept locally; not part of the software or website)
 plan.md
 AGENTS.md
 docs/igcl-integration.md
