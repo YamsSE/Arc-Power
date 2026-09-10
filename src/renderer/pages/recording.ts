@@ -7,6 +7,7 @@ import type { DeviceInfo, RecordingAudioDevice, RecordingCaptureTarget, Recordin
 import { toast } from '../components/toast.ts';
 import { showRecordingClipDeleteConfirm } from '../components/recording-delete-dialog.ts';
 import { showRecordingShareDialog, type RecordingShareDialogHandle } from '../components/recording-share-dialog.ts';
+import { showRecordingHotkeyDialog } from '../components/recording-hotkey-dialog.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { parseRecordingEncoderSelection, recordingAdapterTargetOf, recordingBitrateRange, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage } from '../pure/recording.ts';
 import { clampRecordingEditorRange, normalizeRecordingEditorClipName, recordingEditorResumePosition, recordingEditorSelectionFromRatios, recordingEditorSeekTargetMs, recordingEditorTimelineMsFromRatio } from '../pure/recording-editor.ts';
@@ -289,6 +290,8 @@ function recordingSettingsPatchFrom(value: RecordingSettings): RecordingSettings
     captureColorMode: value.captureColorMode,
     showCursor: value.showCursor,
     replayLengthSec: value.replayLengthSec,
+    instantReplayAutoStart: value.instantReplayAutoStart,
+    replayMarkersEnabled: value.replayMarkersEnabled,
     audio: {
       microphone: { ...value.audio.microphone },
       system: { ...value.audio.system },
@@ -822,20 +825,34 @@ function renderAudioSettings(): HTMLElement {
 function renderHotkeys(): HTMLElement {
   const working = settingsForRender();
   const make = (key: 'start' | 'stop' | 'saveClip' | 'screenshot', label: string, description: string): HTMLElement => {
-    const input = el('input', {
+    const current = working?.hotkeys[key] ?? '';
+    const focusPicker = (): void => {
+      document.querySelector<HTMLButtonElement>(`[data-recording-hotkey="${key}"]`)?.focus();
+    };
+    const picker = el('button', {
       class: 'recording-hotkey',
-      type: 'text',
-      value: working?.hotkeys[key] ?? '',
-      maxlength: 32,
-      'aria-label': label,
-    }) as HTMLInputElement;
-    input.addEventListener('change', () => stagePatch({ hotkeys: { [key]: input.value } as Partial<RecordingSettings['hotkeys']> }));
+      type: 'button',
+      dataset: { recordingHotkey: key },
+      title: current ? `Change ${label} hotkey` : `Set ${label} hotkey`,
+      'aria-label': `${label} hotkey${current ? `: ${current}` : ': not set'}`,
+      text: current,
+      onClick: () => {
+        void showRecordingHotkeyDialog(label, current).then((next) => {
+          if (next === null) {
+            focusPicker();
+            return;
+          }
+          stagePatch({ hotkeys: { [key]: next } as Partial<RecordingSettings['hotkeys']> });
+          focusPicker();
+        });
+      },
+    }) as HTMLButtonElement;
     const conflict = status.hotkeys.conflicts[key];
     return el('div', { class: 'recording-hotkey-row' }, [
       el('div', { class: 'recording-hotkey-copy' }, [el('strong', { text: label }), el('span', { text: description })]),
-      input,
       el('div', { class: 'recording-hotkey-status' }, [
         conflict ? el('span', { class: 'text-warn recording-hotkey-warning', text: `Not registered (${conflict} is in use)` }) : null,
+        picker,
         button('NONE', () => stagePatch({ hotkeys: { [key]: '' } as Partial<RecordingSettings['hotkeys']> }), 'btn btn-secondary recording-hotkey-none'),
       ]),
     ]);
@@ -1215,7 +1232,7 @@ function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = ''
     const x = Math.min(width, Math.max(0, ratio * width));
     hoverCrosshair.style.left = `${x}px`;
     hoverCrosshair.hidden = false;
-    tooltip.textContent = `${sample.apm} · ${formatTime(sample.atMs / 1000)}`;
+    tooltip.textContent = `${sample.apm}`;
     tooltip.hidden = false;
     // Keep the compact text next to the nearest sample's dashed line. It is
     // placed on the side with room, matching the Monitoring graph hover.

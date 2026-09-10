@@ -66,6 +66,8 @@ const FPS_CHECKING_NOTE = 'Checking FPS…';
 interface MonState {
   deviceId: number | null;
   series: Record<string, SeriesPoint[]>;
+  dirtySeries: Set<string>;
+  fullRedrawPending: boolean;
   metricCanvases: Map<string, HTMLCanvasElement>;
   graphCeilings: Map<string, number>;
   rangeNodes: Map<string, { min: HTMLElement; max: HTMLElement }>;
@@ -206,7 +208,10 @@ function systemGraphKey(segmentId: string): string {
 function setGraphCeiling(seriesId: string, value: number | null | undefined): void {
   if (!mon || !Number.isFinite(value) || Number(value) <= 0) return;
   const previous = mon.graphCeilings.get(seriesId) ?? 0;
-  if (Number(value) > previous) mon.graphCeilings.set(seriesId, Number(value));
+  if (Number(value) > previous) {
+    mon.graphCeilings.set(seriesId, Number(value));
+    mon.dirtySeries.add(seriesId);
+  }
 }
 
 /**
@@ -266,6 +271,7 @@ function pushMetricSeries(seriesId: string, t: number, value: number | undefined
     t,
     TELEMETRY_HISTORY_WINDOW_S,
   );
+  mon.dirtySeries.add(seriesId);
 }
 
 function updateMetricBindings(state: AppState): void {
@@ -668,6 +674,8 @@ export const monitoringPage: Page = {
     mon = {
       deviceId: defaultFpsDevice(s)?.id ?? null,
       series: {},
+      dirtySeries: new Set(),
+      fullRedrawPending: false,
       metricCanvases: new Map(),
       graphCeilings: new Map(),
       rangeNodes: new Map(),
@@ -1258,22 +1266,32 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
   container.append(workspace);
   const metricsColumn = workspace.querySelector<HTMLElement>('.monitoring-metrics-column');
   if (metricsColumn && typeof ResizeObserver !== 'undefined') {
-    monitoringResizeObserver = new ResizeObserver(() => redrawAll());
+    monitoringResizeObserver = new ResizeObserver(() => redrawAll(true));
     monitoringResizeObserver.observe(metricsColumn);
   }
-  redrawAll();
+  redrawAll(true);
 }
 
-function redrawAll(): void {
-  if (!mon || monView !== 'monitoring' || mon.metricCanvases.size === 0 || graphRedrawFrame !== null) return;
+function redrawAll(force = false): void {
+  if (!mon || monView !== 'monitoring' || mon.metricCanvases.size === 0) return;
+  if (force) mon.fullRedrawPending = true;
+  if (!mon.fullRedrawPending && mon.dirtySeries.size === 0) return;
+  if (graphRedrawFrame !== null) return;
   // A telemetry push is emitted once per adapter, so a multi-GPU machine can
   // deliver multiple store updates in one paint interval. Coalesce those
   // updates into one frame so graphs never render an intermediate snapshot.
   graphRedrawFrame = window.requestAnimationFrame(() => {
     graphRedrawFrame = null;
     if (!mon || monView !== 'monitoring') return;
+    const drawAll = mon.fullRedrawPending;
+    mon.fullRedrawPending = false;
+    const dirty = drawAll ? new Set(mon.metricCanvases.keys()) : new Set(mon.dirtySeries);
+    mon.dirtySeries.clear();
+    if (dirty.size === 0) return;
     const accentColor = cssVar('--accent');
-    for (const [id, canvas] of mon.metricCanvases) {
+    for (const id of dirty) {
+      const canvas = mon.metricCanvases.get(id);
+      if (!canvas) continue;
       const range = drawMiniSeries(canvas, mon.series[id] ?? [], id, monitoringSeriesColor(id, accentColor), mon.graphCeilings.get(id));
       const nodes = mon.rangeNodes.get(id);
       if (nodes) {
@@ -1292,5 +1310,5 @@ function redrawAll(): void {
  * tick). No-op when the Monitoring page is not mounted.
  */
 export function redrawMonitoringGraphs(): void {
-  redrawAll();
+  redrawAll(true);
 }
