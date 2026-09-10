@@ -460,8 +460,17 @@ export const profilesPage: Page = {
   render(container: HTMLElement, ctx: PageContext) {
     clear(container);
     container.append(
-      el('h1', { class: 'page-title', text: 'Profiles' }),
-      el('p', { id: 'profiles-subtitle', class: 'page-subtitle', text: 'Save and load named tuning presets. Loading applies the profile immediately; the active profile can start at boot.' }),
+      el('header', { class: 'arc-page-hero profiles-page-hero' }, [
+        el('div', { class: 'arc-page-hero-copy' }, [
+          el('span', { class: 'arc-section-kicker', text: 'PROFILE CONTROL' }),
+          el('h1', { class: 'page-title', text: 'Profiles' }),
+          el('p', { id: 'profiles-subtitle', class: 'page-subtitle', text: 'Save and load named tuning presets. Loading applies the profile immediately; the active profile can start at boot.' }),
+        ]),
+        el('div', { class: 'arc-page-hero-side' }, [
+          el('span', { class: 'arc-hero-label', text: 'PROFILE LIBRARY' }),
+          el('span', { class: 'arc-hero-value', text: 'Tuning and game presets' }),
+        ]),
+      ]),
       el('div', { id: 'profiles-root', class: 'profiles-root' }, [el('p', { class: 'page-subtitle', text: 'Loading profiles…' })]),
     );
     void mount(ctx, container);
@@ -894,7 +903,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const filtered = envelope.profiles
       .filter((p) => showFilter === 'all' || activeIds.has(p.id));
     filtered.sort((a, b) => sortMode === 'recent' ? b.createdAt.localeCompare(a.createdAt) : a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-    const listCard = el('section', { class: 'profile-browser' }, [
+    const listCard = el('section', { class: 'card profile-browser profile-list-card arc-surface-card' }, [
       el('div', { class: 'profile-browser-head' }, [
         el('div', { class: 'profile-browser-title' }, [
           el('h2', { class: 'card-title', text: 'Profiles' }),

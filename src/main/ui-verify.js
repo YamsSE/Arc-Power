@@ -1357,17 +1357,17 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     })()`);
     await js(`location.hash = '#/tuning'`);
     await sleep(250);
-    if (!(await waitFor(win, `!!document.querySelector('.oc-mode-row .device-select')`, 8000))) {
+    if (!(await waitFor(win, `!!document.querySelector('.tuning-page-hero .device-select')`, 8000))) {
       fail('M29: mixed A770+A750 Tuning selector is missing');
     }
-    const mixedOptions = JSON.parse(await mixedSelectorOptions('.oc-mode-row .device-select'));
+    const mixedOptions = JSON.parse(await mixedSelectorOptions('.tuning-page-hero .device-select'));
     if (mixedOptions.length !== 2 || mixedOptions.some(([id, name]) => !mixedNames.includes(name)) || mixedOptions.map(([id]) => id).sort().join(',') !== '0,1') {
       fail(`M29: mixed A770+A750 Tuning selector options are ${JSON.stringify(mixedOptions)}`);
     }
-    if ((await driveMixedSelector('.oc-mode-row .device-select', '1')) !== 'ok' || !(await waitFor(win, `window.arcPower.deviceGet().then((d) => d.deviceId === 1 && (document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${mixedNames[1]}')`, 8000))) {
+    if ((await driveMixedSelector('.tuning-page-hero .device-select', '1')) !== 'ok' || !(await waitFor(win, `window.arcPower.deviceGet().then((d) => d.deviceId === 1 && (document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${mixedNames[1]}')`, 8000))) {
       fail(`M30: mixed A770+A750 Tuning selector could not select device 1: '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}'`);
     }
-    if ((await driveMixedSelector('.oc-mode-row .device-select', '0')) !== 'ok' || !(await waitFor(win, `window.arcPower.deviceGet().then((d) => d.deviceId === 0 && (document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${mixedNames[0]}')`, 8000))) {
+    if ((await driveMixedSelector('.tuning-page-hero .device-select', '0')) !== 'ok' || !(await waitFor(win, `window.arcPower.deviceGet().then((d) => d.deviceId === 0 && (document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${mixedNames[0]}')`, 8000))) {
       fail(`M30: mixed A770+A750 Tuning selector could not select device 0: '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}'`);
     }
     await js(`location.hash = '#/dashboard'`);
@@ -1445,14 +1445,14 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     }
     // M30: the selector is vendor-neutral. Dashboard and Tuning both expose
     // all devices, including the unrelated OS-only/synthetic secondary row.
-    const tuningOpts = JSON.parse(await selectorOptions('.oc-mode-row .device-select'));
+    const tuningOpts = JSON.parse(await selectorOptions('.tuning-page-hero .device-select'));
     if (tuningOpts.length !== 2 || tuningOpts.some(([id, name]) => ![A770_NAME, IGPU_NAME].includes(name)) || tuningOpts.map(([id]) => id).sort().join(',') !== '0,1') {
       fail(`M30: Tuning selector options are ${JSON.stringify(tuningOpts)} (expected both '${A770_NAME}' and '${IGPU_NAME}')`);
     }
-    if ((await driveSelector('0', '.oc-mode-row .device-select')) !== 'ok' || !(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${A770_NAME}'`, 8000))) {
+    if ((await driveSelector('0', '.tuning-page-hero .device-select')) !== 'ok' || !(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${A770_NAME}'`, 8000))) {
       fail(`M30: Tuning selector could not select device 0: '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}'`);
     }
-    if ((await driveSelector('1', '.oc-mode-row .device-select')) !== 'ok' || !(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${IGPU_NAME}'`, 8000))) {
+    if ((await driveSelector('1', '.tuning-page-hero .device-select')) !== 'ok' || !(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${IGPU_NAME}'`, 8000))) {
       fail(`M30: Tuning selector could not select device 1: '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}'`);
     }
     step('m30-tuning-selector', `M30: Tuning selector exposes both devices and selects both rows; device 1 is '${IGPU_NAME}' with no-OC controls`);
@@ -1598,7 +1598,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     if (pulseLanes !== devices.length) fail(`M152: Dashboard has ${pulseLanes} telemetry lanes (expected ${devices.length})`);
     await js(`location.hash = '#/tuning'`);
     await sleep(250);
-    const tuningSelector = '.oc-mode-row .device-select';
+    const tuningSelector = '.tuning-page-hero .device-select';
     if (!(await waitFor(win, `!!document.querySelector('${tuningSelector}')`, 5000))) fail('M152: Tuning lost the focused-GPU selector needed to tune one adapter at a time');
     const tuningOptions = JSON.parse(await js(`JSON.stringify(Array.from(document.querySelectorAll('${tuningSelector} option')).map((o) => [o.value, o.textContent.trim()]))`));
     if (tuningOptions.length !== devices.length) fail(`M152: Tuning selector has ${tuningOptions.length} options (expected ${devices.length})`);
@@ -1683,15 +1683,15 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`M4-H: the OC-mode column must be PRESENT on the tuning view (class ${tuneRowState.hasClass}, Stock visible ${tuneRowState.stockVisible}, Advanced visible ${tuneRowState.advancedVisible})`);
   }
   // M4-I (E1): the row order is View FIRST, then OC Mode, then the GPU
-  // selector (when present - the single-device session has no selector
-  // column), then the compact Save button.
+  // compact Save button. The GPU selector now lives in the hero's ACTIVE GPU
+  // rail rather than this mode row.
   const modeRowOrder = await js(`JSON.stringify(Array.from(document.querySelectorAll('.oc-mode-row .oc-mode-col')).map((c) => (c.querySelector('.oc-mode-label')?.textContent ?? '').trim()))`);
   const orderCols = JSON.parse(modeRowOrder);
   if (orderCols[0] !== 'View' || orderCols[1] !== 'OC mode' || orderCols[orderCols.length - 1] !== 'Profile') {
     fail(`M4-I (E1): the mode-row column order is '${modeRowOrder}' (expected 'View' first, 'OC mode' second, 'Profile' last)`);
   }
-  if (orderCols.includes('GPU') && orderCols.indexOf('GPU') !== 2) {
-    fail(`M4-I (E1): the GPU selector column must sit right after 'OC mode' (got '${modeRowOrder}')`);
+  if (orderCols.includes('GPU')) {
+    fail(`M4-I (E1): the GPU selector must not be rendered in the mode row (got '${modeRowOrder}')`);
   }
   // M4-I (E2): the compact Save-as-Profile button (btn-sm) sits in the mode
   // row right of the selector, its bounding TOP equal to the pills' (the
@@ -3285,7 +3285,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // M4-H (A3): while the FAN view is active the OC-mode (Stock/Advanced)
   // column of the shared mode row is HIDDEN (a class on the row + CSS -
   // N6: applied on the INITIAL #/fan render too, not only in setView);
-  // the View pill + the GPU selector stay.
+  // the View pill stays and the GPU selector remains available in the hero.
   const fanModeRow = await js(`(() => {
     const row = document.querySelector('.oc-mode-row');
     if (!row) return 'no-row';
@@ -5956,7 +5956,7 @@ export async function runGraphicsVerify(win, backend) {
     const IGPU_NAME = 'Mock Arc iGPU (fixture)';
     const A770_NAME = 'Mock Arc A770 Graphics (fixture) 16GB GDDR6';
     const driveSelector = (value) => js(`(() => {
-      const s = document.querySelector('.oc-mode-row .device-select');
+      const s = document.querySelector('.tuning-page-hero .device-select');
       if (!s) return 'no-select';
       s.value = '${value}';
       s.dispatchEvent(new Event('change', { bubbles: true }));
@@ -5967,7 +5967,7 @@ export async function runGraphicsVerify(win, backend) {
     await js(`location.hash = '#/tuning'`);
     await sleep(200);
     if ((await driveSelector('1')) !== 'ok') fail('M8: the Tuning selector change did not dispatch (multi-device)');
-    if (!(await waitFor(win, `(() => { const s = document.querySelector('.oc-mode-row .device-select'); return s?.value === '1' && (s.options[s.selectedIndex]?.textContent ?? '').trim() === '${IGPU_NAME}'; })()`, 8000))) {
+    if (!(await waitFor(win, `(() => { const s = document.querySelector('.tuning-page-hero .device-select'); return s?.value === '1' && (s.options[s.selectedIndex]?.textContent ?? '').trim() === '${IGPU_NAME}'; })()`, 8000))) {
       fail('M8: the switch to device 1 did not land');
     }
     await js(`location.hash = '#/graphics'`);
@@ -6012,7 +6012,7 @@ export async function runGraphicsVerify(win, backend) {
     await js(`location.hash = '#/tuning'`);
     await sleep(200);
     if ((await driveSelector('0')) !== 'ok') fail('M8: the switch back to device 0 did not dispatch');
-    if (!(await waitFor(win, `(() => { const s = document.querySelector('.oc-mode-row .device-select'); return s?.value === '0' && (s.options[s.selectedIndex]?.textContent ?? '').trim() === '${A770_NAME}'; })()`, 8000))) {
+    if (!(await waitFor(win, `(() => { const s = document.querySelector('.tuning-page-hero .device-select'); return s?.value === '0' && (s.options[s.selectedIndex]?.textContent ?? '').trim() === '${A770_NAME}'; })()`, 8000))) {
       fail('M8: the switch back to device 0 did not land');
     }
     await js(`location.hash = '#/graphics'`);

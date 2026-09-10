@@ -2602,10 +2602,11 @@ input[type="number"] {
    recessed setting-row treatment: labels remain readable on the left while
    their controls sit in a consistent right-hand control rail. */
 .settings-root {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  max-width: 680px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 14px;
+  max-width: 1060px;
 }
 
 .settings-card {
@@ -3030,9 +3031,9 @@ input[type="number"] {
   overflow: hidden;
   min-height: 112px;
   padding: 22px 24px;
-  border: 1px solid rgba(0, 213, 255, .28);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
   border-radius: var(--radius);
-  background: linear-gradient(115deg, rgba(10, 27, 47, .96), rgba(5, 12, 25, .92));
+  background: linear-gradient(115deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 8%), color-mix(in srgb, var(--bg) 88%, var(--accent) 4%));
   box-shadow: inset 3px 0 0 var(--accent), 0 12px 34px rgba(0, 0, 0, .2);
 }
 .overlay-settings-hero::after {
@@ -3041,9 +3042,9 @@ input[type="number"] {
   top: -110px;
   width: 280px;
   height: 280px;
-  border: 1px solid rgba(0, 213, 255, .16);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
   border-radius: 50%;
-  box-shadow: 0 0 0 24px rgba(0, 213, 255, .025), 0 0 42px rgba(0, 213, 255, .12);
+  box-shadow: 0 0 0 24px color-mix(in srgb, var(--accent) 3%, transparent), 0 0 42px color-mix(in srgb, var(--accent) 12%, transparent);
   content: '';
   pointer-events: none;
 }
@@ -3065,7 +3066,7 @@ input[type="number"] {
   padding: 9px 12px;
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  background: rgba(3, 9, 18, .48);
+  background: color-mix(in srgb, var(--bg-inset) 78%, transparent);
 }
 .overlay-status-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--text-dim); }
 .overlay-hero-status[data-status="active"] .overlay-status-dot { background: var(--accent); box-shadow: 0 0 12px var(--accent); }
@@ -3082,8 +3083,8 @@ input[type="number"] {
 .overlay-settings-root .settings-card {
   padding: 16px 18px;
   border-color: rgba(94, 136, 175, .3);
-  background: linear-gradient(145deg, rgba(13, 23, 39, .94), rgba(7, 14, 27, .94));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035), 0 9px 24px rgba(0, 0, 0, .14);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), color-mix(in srgb, var(--bg-inset) 92%, var(--bg-elev)));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent), 0 9px 24px color-mix(in srgb, #000 14%, transparent);
 }
 .overlay-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .overlay-card-heading .card-title { margin: 3px 0 0; font-size: 16px; letter-spacing: -.01em; }
@@ -3133,9 +3134,9 @@ input[type="number"] {
   min-height: 112px;
   padding: 22px 24px;
   overflow: hidden;
-  border: 1px solid rgba(0, 213, 255, .28);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
   border-radius: var(--radius);
-  background: linear-gradient(115deg, rgba(10, 27, 47, .96), rgba(5, 12, 25, .92));
+  background: linear-gradient(115deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 8%), color-mix(in srgb, var(--bg) 88%, var(--accent) 4%));
   box-shadow: inset 3px 0 0 var(--accent), 0 12px 34px rgba(0, 0, 0, .2);
 }
 .arc-page-hero::after {
@@ -3144,9 +3145,9 @@ input[type="number"] {
   top: -110px;
   width: 280px;
   height: 280px;
-  border: 1px solid rgba(0, 213, 255, .16);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
   border-radius: 50%;
-  box-shadow: 0 0 0 24px rgba(0, 213, 255, .025), 0 0 42px rgba(0, 213, 255, .12);
+  box-shadow: 0 0 0 24px color-mix(in srgb, var(--accent) 3%, transparent), 0 0 42px color-mix(in srgb, var(--accent) 12%, transparent);
   content: '';
   pointer-events: none;
 }
@@ -3180,7 +3181,7 @@ input[type="number"] {
   padding: 9px 12px;
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  background: rgba(3, 9, 18, .48);
+  background: color-mix(in srgb, var(--bg-inset) 78%, transparent);
 }
 .arc-page-hero-side { align-items: stretch; flex-direction: column; gap: 6px; }
 .arc-page-hero-side .device-select,
@@ -3204,9 +3205,9 @@ input[type="number"] {
 .arc-surface-card {
   position: relative;
   overflow: hidden;
-  border-color: rgba(94, 136, 175, .34);
-  background: linear-gradient(145deg, rgba(13, 23, 39, .94), rgba(7, 14, 27, .94));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035), 0 9px 24px rgba(0, 0, 0, .14);
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), color-mix(in srgb, var(--bg-inset) 92%, var(--bg-elev)));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent), 0 9px 24px color-mix(in srgb, #000 14%, transparent);
 }
 .arc-surface-card::after {
   position: absolute;
@@ -3214,7 +3215,7 @@ input[type="number"] {
   bottom: -120px;
   width: 230px;
   height: 230px;
-  border: 1px solid rgba(0, 213, 255, .08);
+  border: 1px solid color-mix(in srgb, var(--accent) 9%, transparent);
   border-radius: 50%;
   content: '';
   pointer-events: none;
@@ -3242,14 +3243,33 @@ input[type="number"] {
    card-specific layout still owns its controls and action buttons. */
 .oc-card,
 .graphics-card,
-.display-group {
+.display-group,
+.boot-card,
+.profile-list-card {
+  position: relative;
+  overflow: hidden;
   border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
   background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 4%), var(--bg-elev));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025), var(--shadow);
 }
 .oc-card:hover,
 .graphics-card:hover,
-.display-group:hover { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); }
+.display-group:hover,
+.boot-card:hover,
+.profile-list-card:hover { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); }
+.oc-card::after,
+.graphics-card::after,
+.display-group::after {
+  position: absolute;
+  right: -70px;
+  bottom: -110px;
+  width: 210px;
+  height: 210px;
+  border: 1px solid rgba(0, 213, 255, .07);
+  border-radius: 50%;
+  content: '';
+  pointer-events: none;
+}
 .oc-card-head,
 .graphics-card-heading,
 .display-group-toggle { min-width: 0; }
@@ -3262,6 +3282,50 @@ input[type="number"] {
 .display-group-toggle .card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .graphics-general-actions,
 .display-general-actions { padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border)); border-radius: 9px; background: color-mix(in srgb, var(--bg-inset) 78%, var(--bg-elev)); }
+
+/* The page shells use a two-column control grid while their small action
+   surfaces and search row stay content-sized. */
+.settings-root > .arc-page-hero,
+.settings-root > .settings-toolbar,
+.settings-root > .overlay-card,
+.settings-root > .maintenance-card,
+.settings-root > .theme-card { grid-column: 1 / -1; }
+.settings-root > .settings-toolbar { justify-self: start; margin: 0; }
+.settings-root > .settings-card { min-width: 0; }
+.settings-root .settings-card {
+  position: relative;
+  overflow: hidden;
+  padding: 16px 18px;
+  border-color: rgba(94, 136, 175, .34);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), color-mix(in srgb, var(--bg-inset) 92%, var(--bg-elev)));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent), 0 9px 24px color-mix(in srgb, #000 14%, transparent);
+}
+.settings-root .settings-card .card-title { margin: 0 0 12px; padding: 0; font-size: 16px; letter-spacing: -.01em; }
+.settings-root .settings-card .settings-row { min-height: 44px; border-color: color-mix(in srgb, var(--accent) 18%, var(--border)); background: color-mix(in srgb, var(--bg-inset) 74%, var(--bg-elev)); }
+.settings-root .settings-card > .card-note { margin-left: 0; margin-right: 0; line-height: 1.45; }
+
+/* Give the compact tuning/graphics/display surfaces the same visual weight
+   as the Arc hero: clearer card rhythm, calmer inset controls, and an action
+   footer that does not blend into the body copy. */
+.oc-stack,
+.graphics-stack { gap: 12px; }
+.oc-card,
+.graphics-card { padding: 14px 16px; }
+.oc-card-head { margin-bottom: 8px; }
+.oc-card .card-title,
+.graphics-card .card-title { font-size: 15px; letter-spacing: -.01em; }
+.oc-card-head-meta { gap: 14px; }
+.oc-slider-row { min-height: 34px; gap: 14px; }
+.oc-meta { margin-top: 9px; }
+.oc-card-actions,
+.graphics-card-actions { margin-top: 12px; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent); }
+.graphics-card .card-note { margin-top: 8px; line-height: 1.45; }
+.graphics-card-heading { min-height: 36px; }
+.display-stack { gap: 14px; }
+.display-group-toggle { padding: 14px 16px; }
+.display-group-body-inner { padding: 14px 16px 16px; }
+.display-control,
+.display-note-row { border-color: color-mix(in srgb, var(--accent) 18%, var(--border)); background: color-mix(in srgb, var(--bg-inset) 74%, var(--bg-elev)); }
 
 /* Overlay Settings: explicit tracks prevent long GPU labels and sliders from
    stealing the space reserved for neighboring controls. */
@@ -3315,6 +3379,7 @@ input[type="number"] {
   .arc-page-hero { align-items: flex-start; flex-direction: column; padding: 18px; }
   .arc-page-hero-status,
   .arc-page-hero-side { width: 100%; max-width: none; flex-basis: auto; }
+  .settings-root { grid-template-columns: 1fr; }
   .overlay-settings-root .overlay-stat-groups { grid-template-columns: 1fr; }
 }
 @media (max-width: 520px) {
@@ -3531,12 +3596,53 @@ input[type="number"] {
 .btn-danger-text { color: var(--error); }
 .btn-danger-text:hover { border-color: var(--error); }
 
-.graphics-general-actions {
+/* Profiles use the same Arc control language as the tuning, graphics, and
+   display pages. Keep the legacy row hooks intact while giving the browser
+   and boot surfaces the same inset rhythm and cyan edge treatment. */
+.profiles-root { min-width: 0; }
+.boot-card,
+.profile-list-card { padding: 16px 18px; }
+.boot-card .boot-row {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-inset) 74%, var(--bg-elev));
+}
+.boot-card .card-note { margin-top: 10px; }
+.profile-list-card .profile-browser-head { align-items: flex-start; }
+.profile-list-card .profile-browser-title .card-title { margin: 0 0 3px; font-size: 16px; }
+.profile-list-card .profile-browser-toolbar {
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-inset) 74%, var(--bg-elev));
+}
+.profile-list-card .profile-row {
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 4%), var(--bg-elev));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025);
+}
+.profile-list-card .profile-row.profile-active {
+  border-color: color-mix(in srgb, var(--accent) 68%, var(--border));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--accent-soft) 76%, var(--bg-elev)), var(--bg-elev));
+}
+
+.graphics-general-actions,
+.display-general-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
   margin: 0 0 10px;
+}
+
+.graphics-view .graphics-general-actions,
+.graphics-view .display-general-actions {
+  width: fit-content;
+  max-width: 100%;
+  align-self: flex-start;
 }
 .graphics-general-actions .floating-apply,
 .graphics-general-actions .adv-floating-apply {

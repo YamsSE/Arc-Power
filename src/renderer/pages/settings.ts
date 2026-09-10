@@ -54,14 +54,7 @@ export const settingsPage: Page = {
 
   render(container: HTMLElement, ctx: PageContext) {
     clear(container);
-    container.append(
-      el('h1', { class: 'page-title', text: 'Settings' }),
-      el('p', {
-        class: 'page-subtitle',
-        text: 'Startup behavior and app information.',
-      }),
-      el('div', { id: 'settings-root', class: 'settings-root' }, [el('p', { class: 'page-subtitle', text: 'Loading settings…' })]),
-    );
+    container.append(el('div', { id: 'settings-root', class: 'settings-root' }, [el('p', { class: 'page-subtitle', text: 'Loading settings…' })]));
     void mount(ctx, container);
   },
 };
@@ -128,7 +121,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const packagedStartup = s.buildKind === 'installed' || s.buildKind === 'portable';
     const taskStartup = bootState?.registration === 'task' || packagedStartup;
 
-    const startWithCard = el('section', { class: 'card settings-card settings-startup-card' }, [
+    const startWithCard = el('section', { class: 'card settings-card settings-startup-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Start with Windows' }),
       el('div', { class: 'settings-row' }, [
         el('label', { class: 'boot-toggle' }, [
@@ -149,7 +142,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         : el('p', { class: 'card-note settings-state', text: taskStartup ? 'Not active - enable this setting to create the one-time administrator startup task.' : 'Not active - the app starts manually.' }),
     ]);
 
-    const startMinimizedCard = el('section', { class: 'card settings-card' }, [
+    const startMinimizedCard = el('section', { class: 'card settings-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Start minimized' }),
       el('div', { class: 'settings-row' }, [
         el('label', { class: 'boot-toggle' }, [
@@ -171,7 +164,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       }),
     ]);
 
-    const closeToTrayCard = el('section', { class: 'card settings-card' }, [
+    const closeToTrayCard = el('section', { class: 'card settings-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Close to tray' }),
       el('div', { class: 'settings-row' }, [
         el('label', { class: 'boot-toggle' }, [
@@ -208,7 +201,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // view active (the Overlay Settings content lives there now - the old
     // #/overlay page is gone; requestOverlayView signals the view BEFORE
     // the navigation, the #/fan pattern).
-    const overlayCard = el('section', { class: 'card settings-card overlay-card' }, [
+    const overlayCard = el('section', { class: 'card settings-card overlay-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Overlay' }),
       el('p', { class: 'card-note', text: 'The in-game HUD - its settings live in the Monitoring tab\'s Overlay view.' }),
       el('div', { class: 'settings-row overlay-open-row' }, [
@@ -222,7 +215,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         }, [el('span', { text: 'Overlay settings' })]),
       ]),
     ]);
-    const maintenanceCard = el('section', { class: 'card settings-card maintenance-card' }, [
+    const maintenanceCard = el('section', { class: 'card settings-card maintenance-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Maintenance' }),
       el('p', { class: 'card-note', text: 'Remove temporary Arc Power cache files without deleting profiles or saved settings, then restart the software.' }),
       el('div', { class: 'settings-row maintenance-row' }, [
@@ -236,7 +229,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ]),
     ]);
 
-    const themeCard = el('section', { class: 'card settings-card theme-card' }, [
+    const themeCard = el('section', { class: 'card settings-card theme-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Theme' }),
       el('p', { class: 'card-note', text: 'Appearance theme - applies immediately.' }),
       el('div', { class: 'theme-options' }, THEMES.map((t) =>
@@ -252,7 +245,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       )),
     ]);
 
-    const aboutCard = el('section', { class: 'card settings-card' }, [
+    const aboutCard = el('section', { class: 'card settings-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'About' }),
       el('div', { class: 'card-body kv-grid' }, [
         el('div', { class: 'kv', 'data-label': 'Version' }, [el('span', { class: 'settings-version', text: versionDisplay })]),
@@ -260,6 +253,17 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
 
     const settingCards = [startWithCard, startMinimizedCard, closeToTrayCard, overlayCard, maintenanceCard, themeCard, aboutCard];
+    const settingsHero = el('header', { class: 'arc-page-hero settings-page-hero' }, [
+      el('div', { class: 'arc-page-hero-copy' }, [
+        el('span', { class: 'arc-section-kicker', text: 'SYSTEM CONTROL' }),
+        el('h1', { class: 'page-title', text: 'Settings' }),
+        el('p', { class: 'page-subtitle', text: 'Configure startup behavior, appearance, and local Arc Power maintenance.' }),
+      ]),
+      el('div', { class: 'arc-page-hero-side' }, [
+        el('span', { class: 'arc-hero-label', text: 'APP PREFERENCES' }),
+        el('span', { class: 'arc-hero-value', text: 'Arc Power' }),
+      ]),
+    ]);
     const search = el('input', {
       class: 'settings-search',
       type: 'search',
@@ -280,7 +284,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     search.addEventListener('input', filterSettings);
     clear(root);
     root.append(
-      el('div', { class: 'settings-toolbar' }, [search, resultCount]),
+      settingsHero,
+      el('div', { class: 'settings-toolbar arc-page-toolbar' }, [search, resultCount]),
       ...settingCards,
     );
     filterSettings();

@@ -586,7 +586,7 @@ export const graphicsPage: Page = {
     ]);
     container.append(
       title,
-      el('div', { class: 'graphics-view-toolbar' }, [viewToggle, displayPickerHost]),
+      el('div', { class: 'graphics-view-toolbar arc-page-toolbar' }, [viewToggle, displayPickerHost]),
       viewContainer,
     );
     viewContainer.append(el('p', { class: 'page-subtitle', text: 'Loading graphics capabilities…' }));
