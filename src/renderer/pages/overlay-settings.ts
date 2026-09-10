@@ -58,6 +58,7 @@ import {
   ADVANCED_OVERLAY_POSITION_LABELS,
   isValidAdvancedOverlayPosition,
 } from '../pure/overlay.ts';
+import { dedupeOverlayDevices } from '../pure/overlay-routing.ts';
 import type { OverlayPosition, OverlayState, AdvancedOverlayState } from '../types.ts';
 
 // M9: the Overlay Settings content renderer - the old page module's export
@@ -79,6 +80,7 @@ interface OverlayDevice {
   id: number;
   name?: string | null;
   deviceKey?: string | null;
+  deviceKeys?: string[] | null;
 }
 
 interface PersistedOverlay {
@@ -172,7 +174,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   }
   try {
     const listed = await api.listDevices();
-    overlayDevices = Array.isArray(listed) ? listed : [];
+    overlayDevices = Array.isArray(listed) ? dedupeOverlayDevices(listed) : [];
   } catch {
     overlayDevices = [];
   }
@@ -197,18 +199,44 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const render = (): void => {
+    const liveOverlay = overlayState?.exists === true && persisted.enabled;
+    const liveHotkey = overlayState?.hotkeyRegistered !== false;
+    const hero = el('header', { class: 'overlay-settings-hero' }, [
+      el('div', { class: 'overlay-hero-copy' }, [
+        el('span', { class: 'overlay-section-kicker', text: 'OVERLAY CONTROL' }),
+        el('h2', { class: 'overlay-hero-title', text: 'Overlay Settings' }),
+        el('p', { class: 'overlay-hero-subtitle', text: 'Tune your Arc telemetry HUD, visual system, and interactive panel.' }),
+      ]),
+      el('div', { class: 'overlay-hero-status', dataset: { status: liveOverlay ? 'active' : 'idle' } }, [
+        el('span', { class: 'overlay-status-dot' }),
+        el('span', { class: 'overlay-status-copy' }, [
+          el('strong', { text: liveOverlay ? 'Overlay active' : 'Overlay disabled' }),
+          el('small', { text: `${persisted.theme === 'arc' ? 'Arc theme' : 'Classic theme'} · ${liveHotkey ? 'HUD ready' : 'HUD hotkey unavailable'}` }),
+        ]),
+      ]),
+    ]);
     // M17e: the polling-rate slider's live value label (declared before the
     // General card - the scale-slider pattern).
     const pollMsValue = el('span', { class: 'settings-poll-ms-value', text: `${persisted.pollMs} ms` });
-    const deviceOptions = overlayDevices
-      .filter((device) => typeof device.deviceKey === 'string' && device.deviceKey.length > 0);
-    const monitoredKeys = persisted.monitoredDeviceKeys ?? deviceOptions.map((device) => device.deviceKey!);
+    const deviceOptions = [...new Map(overlayDevices
+      .filter((device) => typeof device.deviceKey === 'string' && device.deviceKey.trim().length > 0)
+      .map((device) => [device.deviceKey!.trim(), device] as const)).values()];
+    const availableKeys = deviceOptions.map((device) => device.deviceKey!.trim());
+    const availableKeySet = new Set(availableKeys);
+    const savedKeys = persisted.monitoredDeviceKeys
+      ?.map((key) => key.trim())
+      .filter((key, index, keys) => availableKeySet.has(key) && keys.indexOf(key) === index)
+      ?? [];
+    // Persisted selections can outlive a driver reset or a hardware swap.
+    // Never expose or count those stale keys as physical GPUs; when none of
+    // the saved identities resolve, the live inventory is the safe default.
+    const monitoredKeys = savedKeys.length > 0 ? savedKeys : availableKeys;
     const monitoringRow = el('div', { class: 'settings-row overlay-device-monitoring' }, [
       el('span', { class: 'settings-row-label overlay-monitor-label', text: 'Monitor GPUs' }),
       el('div', { class: 'overlay-device-options' }, [
         ...(deviceOptions.length > 0
           ? deviceOptions.map((device, index) => {
-            const key = device.deviceKey!;
+            const key = device.deviceKey!.trim();
             const model = typeof device.name === 'string' && device.name.length > 0 ? ` - ${device.name}` : '';
             return el('label', { class: 'boot-toggle overlay-device-toggle', title: `GPU ${index + 1}${model}` }, [
               el('input', {
@@ -229,7 +257,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // .settings-checkbox[data-setting="overlayEnabled"] class + dataset
     // are KEPT so the ui-verify toggle pins moved with the control.
     const generalCard = el('section', { class: 'card settings-card overlay-general-card' }, [
-      el('h2', { class: 'card-title', text: 'General' }),
+      el('div', { class: 'overlay-card-heading' }, [
+        el('div', {}, [el('span', { class: 'overlay-card-eyebrow', text: 'HUD BEHAVIOR' }), el('h2', { class: 'card-title', text: 'HUD Behavior' })]),
+        el('span', { class: 'overlay-value-badge', text: persisted.enabled ? 'ON' : 'OFF' }),
+      ]),
       el('div', { class: 'settings-row' }, [
         el('label', { class: 'boot-toggle' }, [
           el('input', {
@@ -330,8 +361,11 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         toast('error', 'Overlay stats could not be changed', err instanceof Error ? err.message : String(err));
       }
     };
-    const statsCard = el('section', { class: 'card settings-card overlay-stats-card' }, [
-      el('h2', { class: 'card-title', text: 'Stats' }),
+    const statsCard = el('section', { class: 'card settings-card overlay-stats-card overlay-telemetry-lanes' }, [
+      el('div', { class: 'overlay-card-heading' }, [
+        el('div', {}, [el('span', { class: 'overlay-card-eyebrow', text: 'TELEMETRY LANES' }), el('h2', { class: 'card-title', text: 'Stats' })]),
+        el('span', { class: 'overlay-value-badge', text: `${persisted.stats.length}/${OVERLAY_STAT_IDS.length} visible` }),
+      ]),
       el('div', { class: 'overlay-stat-actions' }, [
         el('button', { class: 'btn btn-sm btn-ghost', text: 'Select all', onClick: () => void onSelectAll() }),
         el('button', { class: 'btn btn-sm btn-ghost', text: 'Hide all', onClick: () => void onHideAll() }),
@@ -430,7 +464,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       onChange: (value) => void onPositionChange(value),
     });
     const appearanceCard = el('section', { class: 'card settings-card overlay-appearance-card' }, [
-      el('h2', { class: 'card-title', text: 'Appearance' }),
+      el('div', { class: 'overlay-card-heading' }, [
+        el('div', {}, [el('span', { class: 'overlay-card-eyebrow', text: 'VISUAL SYSTEM' }), el('h2', { class: 'card-title', text: 'Visual System' })]),
+        el('span', { class: 'overlay-value-badge', text: persisted.theme === 'arc' ? 'ARC' : 'CLASSIC' }),
+      ]),
       el('div', { class: 'settings-row overlay-theme-row' }, [
         el('span', { class: 'settings-row-label', text: 'Theme' }),
         el('div', { class: 'chips overlay-theme-options' }, themeOptions),
@@ -539,8 +576,13 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ariaLabel: 'Advanced overlay position',
       onChange: (value) => void onAdvancedPositionChange(value),
     });
-    const hotkeyCard = el('section', { class: 'card settings-card overlay-hotkey-card' }, [
-      el('h2', { class: 'card-title', text: 'Hotkey' }),
+    const hotkeyCard = el('section', { class: 'card settings-card overlay-hotkey-card overlay-advanced-card' }, [
+      el('div', { class: 'overlay-card-heading' }, [
+        el('div', {}, [el('span', { class: 'overlay-card-eyebrow', text: 'INTERACTION LAYER' }), el('h2', { class: 'card-title', text: 'Advanced Overlay' })]),
+        el('span', { class: 'overlay-value-badge', text: persisted.advEnabled ? 'ENABLED' : 'READY' }),
+      ]),
+      el('p', { class: 'overlay-card-description', text: 'Configure the HUD shortcut and the anchored interactive panel.' }),
+      el('div', { class: 'overlay-subsection-label', text: 'HUD shortcut' }),
       el('div', { class: 'settings-row overlay-hotkey-row' }, [
         el('span', { class: 'settings-row-label', text: 'Monitor' }),
         el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
@@ -556,6 +598,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The CTRL + ${persisted.hotkeyLetter.toUpperCase()} hotkey could not be registered - another application may be using it.` })
         : null,
       el('hr', { class: 'overlay-hotkey-divider' }),
+      el('div', { class: 'overlay-subsection-label', text: 'Advanced panel' }),
       el('div', { class: 'settings-row overlay-advanced-hotkey-row' }, [
         el('span', { class: 'settings-row-label', text: 'Advanced' }),
         el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
@@ -570,8 +613,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         : null,
     ]);
 
+    const workspace = el('div', { class: 'overlay-settings-workspace' }, [
+      el('div', { class: 'overlay-workspace-column overlay-hud-column' }, [generalCard, hotkeyCard]),
+      el('div', { class: 'overlay-workspace-column overlay-visual-column' }, [appearanceCard]),
+    ]);
     clear(root);
-    root.append(generalCard, statsCard, appearanceCard, hotkeyCard);
+    root.append(hero, workspace, statsCard);
   };
 
   // --- M6 handlers (every save goes through profiles-settings-save;
@@ -607,14 +654,22 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       return;
     }
   };
+  let monitoredDeviceSaveQueue: Promise<void> = Promise.resolve();
+  let monitoredDeviceRevision = 0;
+  let pendingMonitoredKeys: string[] | null = null;
   // M35: per-GPU monitoring selection. The first toggle converts the legacy
   // all-GPU default into an explicit durable-key list; the last checked GPU
   // is protected so the overlay never becomes an accidental blank panel.
   const onMonitoredDeviceToggle = async (deviceKey: string, checked: boolean): Promise<void> => {
-    const available = overlayDevices
-      .map((device) => device.deviceKey)
-      .filter((key): key is string => typeof key === 'string' && key.length > 0);
-    const current = persisted.monitoredDeviceKeys ?? available;
+    const available = [...new Set(overlayDevices
+      .map((device) => typeof device.deviceKey === 'string' ? device.deviceKey.trim() : '')
+      .filter((key) => key.length > 0))];
+    const availableSet = new Set(available);
+    const saved = (pendingMonitoredKeys ?? persisted.monitoredDeviceKeys)
+      ?.map((key) => key.trim())
+      .filter((key, index, keys) => availableSet.has(key) && keys.indexOf(key) === index)
+      ?? [];
+    const current = saved.length > 0 ? saved : available;
     const next = checked
       ? (current.includes(deviceKey) ? current : [...current, deviceKey])
       : current.filter((key) => key !== deviceKey);
@@ -624,14 +679,35 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast('info', 'Keep one GPU selected', 'The overlay needs at least one monitored GPU.');
       return;
     }
-    try {
-      await api.profilesSettingsSave({ overlayDeviceKeys: next });
-      persisted.monitoredDeviceKeys = next;
-      toast('success', 'Overlay GPU monitoring updated', `${next.length} GPU${next.length === 1 ? '' : 's'} selected.`);
-    } catch (err) {
-      if (box) box.checked = current.includes(deviceKey);
-      toast('error', 'Overlay GPU monitoring could not be changed', err instanceof Error ? err.message : String(err));
-    }
+    const previous = [...current];
+    const nextKeys = [...new Set(next)];
+    const revision = ++monitoredDeviceRevision;
+    pendingMonitoredKeys = nextKeys;
+    // Optimistically keep the latest selection as the source for a second
+    // click while the first IPC save is still in flight. The queue preserves
+    // save order, and the revision guard prevents an older response from
+    // rolling back a newer selection.
+    persisted.monitoredDeviceKeys = nextKeys;
+    const save = monitoredDeviceSaveQueue
+      .catch(() => { /* a failed older save must not block the latest one */ })
+      .then(async () => {
+        try {
+          await api.profilesSettingsSave({ overlayDeviceKeys: nextKeys });
+          if (revision === monitoredDeviceRevision) {
+            pendingMonitoredKeys = null;
+            toast('success', 'Overlay GPU monitoring updated', `${nextKeys.length} GPU${nextKeys.length === 1 ? '' : 's'} selected.`);
+          }
+        } catch (err) {
+          if (revision === monitoredDeviceRevision) {
+            pendingMonitoredKeys = null;
+            persisted.monitoredDeviceKeys = previous;
+            if (box) box.checked = previous.includes(deviceKey);
+            toast('error', 'Overlay GPU monitoring could not be changed', err instanceof Error ? err.message : String(err));
+          }
+        }
+      });
+    monitoredDeviceSaveQueue = save;
+    await save;
   };
 
 

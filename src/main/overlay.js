@@ -213,6 +213,7 @@ export function createOverlayWindow({ getOverlaySettings }) {
   // resize are applied together, never a race).
   let applied = normalizeSettings(getOverlaySettings());
   let measuredDeviceCount = 1;
+  let hasMeasuredDeviceCount = false;
 
   const build = () => {
     if (win && !win.isDestroyed()) return win;
@@ -290,14 +291,16 @@ export function createOverlayWindow({ getOverlaySettings }) {
     return win;
   };
   const sizeFor = (scale) => {
-    // M36: each monitored secondary GPU adds a GPU + VRAM pair. Keep the
-    // stock 170px geometry unchanged until the renderer reports the actual
-    // all-devices inventory; explicit per-GPU selections are still known
-    // synchronously from the persisted keys.
+    // M36: each monitored secondary GPU adds a GPU + VRAM pair. Persisted
+    // keys are only a bootstrap hint: stale keys can survive a driver reset
+    // and must never keep the window taller after the renderer reports the
+    // live inventory count.
     const configuredCount = Array.isArray(applied.deviceKeys)
       ? applied.deviceKeys.length
       : 1;
-    const deviceCount = Math.max(configuredCount, measuredDeviceCount);
+    const deviceCount = hasMeasuredDeviceCount
+      ? measuredDeviceCount
+      : Math.max(1, configuredCount);
     const secondaryCount = Math.max(0, deviceCount - 1);
     return {
       width: Math.round(OVERLAY_BASE_WIDTH * scale),
@@ -372,6 +375,7 @@ export function createOverlayWindow({ getOverlaySettings }) {
     resize(deviceCount) {
       if (!Number.isInteger(deviceCount) || deviceCount < 1) return;
       measuredDeviceCount = Math.min(32, deviceCount);
+      hasMeasuredDeviceCount = true;
       if (!win || win.isDestroyed()) return;
       const { bounds } = screen.getPrimaryDisplay();
       const size = sizeFor(applied.scale);

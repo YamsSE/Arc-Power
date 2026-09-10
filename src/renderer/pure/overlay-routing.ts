@@ -29,6 +29,35 @@ export function overlayStableDeviceKey(value: OverlayIdentity): string {
   return `id:${value.id}`;
 }
 
+/** Keep the first inventory row for each physical device. Inventory sources
+ * can expose the same adapter more than once with different numeric ids but
+ * overlapping durable aliases. */
+export function dedupeOverlayDevices<T extends OverlayIdentity>(devices: readonly T[]): T[] {
+  const result: T[] = [];
+  for (const device of devices) {
+    const aliases = overlayIdentityAliases(device);
+    const canonical = normalizeOverlayIdentityKey(device.deviceKey);
+    const duplicateIndex = result.findIndex((known) => {
+      const knownCanonical = normalizeOverlayIdentityKey(known.deviceKey);
+      if (canonical && knownCanonical && canonical === knownCanonical) return true;
+      const knownAliases = overlayIdentityAliases(known);
+      // An overlapping alias alone is not enough: a duplicated PNP string can
+      // belong to two real adapters. An exact alias set describes the same
+      // physical row exposed by two inventory providers; distinct secondary
+      // identities stay independent and selectable.
+      return aliases.length > 0
+        && knownAliases.length > 0
+        && aliases.length === knownAliases.length
+        && aliases.every((alias) => knownAliases.includes(alias));
+    });
+    if (duplicateIndex >= 0) {
+      continue;
+    }
+    result.push(device);
+  }
+  return result;
+}
+
 export function overlaySampleMatchesDevice(
   sample: OverlayIdentity | null | undefined,
   device: OverlayIdentity | null | undefined,
@@ -47,9 +76,10 @@ export function resolveOverlayDevice<T extends OverlayIdentity & { id: number }>
   devices: readonly T[],
   requested: string | number,
 ): T | null {
-  if (typeof requested === 'number') return devices.find((device) => device.id === requested) ?? null;
+  const uniqueDevices = dedupeOverlayDevices(devices);
+  if (typeof requested === 'number') return uniqueDevices.find((device) => device.id === requested) ?? null;
   const key = normalizeOverlayIdentityKey(requested);
   if (!key) return null;
-  const matches = devices.filter((device) => overlayIdentityAliases(device).includes(key));
+  const matches = uniqueDevices.filter((device) => overlayIdentityAliases(device).includes(key));
   return matches.length === 1 ? matches[0] : null;
 }

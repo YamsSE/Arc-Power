@@ -39,7 +39,7 @@ import { overlayLines, deriveFrameTimeMs, formatFrametime, clampOverlayScale, is
 // derives the row labels from the sysinfo fixture/real names).
 import { chipLabelGpu, chipLabelCpu } from './pure/chip-label.ts';
 import { resolveBootDevice } from './pure/device.ts';
-import { normalizeOverlayIdentityKey as identityToken, overlayIdentityAliases as identityAliases, overlaySampleMatchesDevice as sampleMatchesDevice, overlayStableDeviceKey as stableDeviceKey } from './pure/overlay-routing.ts';
+import { dedupeOverlayDevices, normalizeOverlayIdentityKey as identityToken, overlayIdentityAliases as identityAliases, overlaySampleMatchesDevice as sampleMatchesDevice, overlayStableDeviceKey as stableDeviceKey } from './pure/overlay-routing.ts';
 import { pushSeries, trimSeriesWindow, autoScale, downsample } from './pure/graph.ts';
 import type { SeriesPoint } from './pure/graph.ts';
 import type { FpsSample, TelemetrySample } from './types.ts';
@@ -769,39 +769,50 @@ async function configureOverlayDevices(
   devices: OverlayDeviceIdentity[],
 ): Promise<void> {
   const generation = ++overlayConfigureGeneration;
-  overlayDevices = devices;
   const selected = overlayDeviceKeys
-    ? devices.filter((device) => identityAliases(device).some((key) => overlayDeviceKeys!.some((wanted) => identityToken(wanted) === key)))
-    : devices;
+    ? dedupeOverlayDevices(devices.filter((device) => identityAliases(device).some((key) => overlayDeviceKeys!.some((wanted) => identityToken(wanted) === key))))
+    : dedupeOverlayDevices(devices);
   // A stale hardware-key list must not blank the HUD after a device swap;
   // degrade to all currently enumerated GPUs until the user selects again.
-  const monitored = selected.length > 0 ? selected : devices;
+  const monitored = selected.length > 0 ? selected : dedupeOverlayDevices(devices);
   const primary = monitored.find((device) => device.id === primaryId) ?? monitored[0] ?? null;
   const mainDeviceId = primaryId;
-  mainSelectedDeviceId = primaryId;
-  const mainSelected = devices.find((device) => device.id === primaryId) ?? null;
-  mainSelectedDeviceKey = mainSelected ? stableDeviceKey(mainSelected) : null;
-  overlayDisplayDeviceId = primary?.id ?? null;
-  overlayDisplayDeviceKey = primary ? stableDeviceKey(primary) : null;
-  document.documentElement.dataset.overlayDisplayDevice = String(overlayDisplayDeviceId ?? '');
-  fpsDeviceId = overlayDisplayDeviceId;
-  if (primary) gpuChipLabel = chipLabelForDevice(primary, sysinfoControllersByPnp ?? undefined);
-  const secondary = monitored.filter((device) => device.id !== overlayDisplayDeviceId);
-  secondaryDeviceIds = secondary.map((device) => device.id);
-  secondaryGpuChipLabels = secondary.map((device) => chipLabelForDevice(device, sysinfoControllersByPnp ?? undefined));
-  secondarySamples.clear();
-  // A new selection is a new display lane. Do not render the previous GPU's
-  // values while its first identity-matched sample is still arriving.
-  latestSample = null;
+  const mainSelected = monitored.find((device) => device.id === primaryId)
+    ?? devices.find((device) => device.id === primaryId)
+    ?? null;
+  const displayDeviceId = primary?.id ?? null;
+  const displayDeviceKey = primary ? stableDeviceKey(primary) : null;
+  const secondary = monitored.filter((device) => device.id !== displayDeviceId);
+  const nextSecondaryDeviceIds = secondary.map((device) => device.id);
+  const nextGpuChipLabel = primary
+    ? chipLabelForDevice(primary, sysinfoControllersByPnp ?? undefined)
+    : null;
+  const nextSecondaryGpuChipLabels = secondary.map((device) => chipLabelForDevice(device, sysinfoControllersByPnp ?? undefined));
   // Keep the existing main telemetry stream as the display lane whenever
   // possible. Start the display lane here only when the user's selection
   // excludes the main window's device (for example, GPU2-only monitoring).
-  const overlayLaneKeys = (mainDeviceId === overlayDisplayDeviceId
+  const overlayLaneKeys = (mainDeviceId === displayDeviceId
     ? secondary
     : monitored).map((device) => stableDeviceKey(device));
   try { await api.overlayTelemetryStart({ owner: 'overlay', deviceKeys: overlayLaneKeys }); } catch { /* best effort */ }
   if (generation !== overlayConfigureGeneration) return;
+  // Commit the complete candidate only after telemetry startup wins the
+  // generation race. This prevents an older, slower request from restoring
+  // stale rows, labels, samples, routing, or geometry after a newer request.
+  overlayDevices = monitored;
+  mainSelectedDeviceId = primaryId;
+  mainSelectedDeviceKey = mainSelected ? stableDeviceKey(mainSelected) : null;
+  overlayDisplayDeviceId = displayDeviceId;
+  overlayDisplayDeviceKey = displayDeviceKey;
+  document.documentElement.dataset.overlayDisplayDevice = String(displayDeviceId ?? '');
+  fpsDeviceId = displayDeviceId;
+  secondaryDeviceIds = nextSecondaryDeviceIds;
+  gpuChipLabel = nextGpuChipLabel;
+  secondaryGpuChipLabels = nextSecondaryGpuChipLabels;
+  secondarySamples.clear();
+  latestSample = null;
   try { await api.overlayResize(monitored.length); } catch { /* best effort */ }
+  if (generation !== overlayConfigureGeneration) return;
   render();
 }
 api.onDeviceSelectionUpdated((payload) => {
