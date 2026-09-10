@@ -475,6 +475,10 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
 export interface OverlayLinesOpts {
   /** M17b: the chip-name row labels (null/absent -> the stock prefixes). */
   chipLabels?: { cpu?: string | null; gpu?: string | null };
+  /** M154: the renderer-wide label column width. Primary and secondary GPU
+   * rows pass the same width so a long chip label cannot move the divider
+   * without moving every value column with it. */
+  labelWidth?: number;
 }
 
 export function overlayLines(sample: OverlaySample | null | undefined, fps: number | null | undefined, stats?: unknown, low1Pct?: number | null, p99?: number | null, api?: string | null, avgFps?: number | null, low01Pct?: number | null, memoryUsedBytes?: number | null, opts?: OverlayLinesOpts): OverlayLines {
@@ -582,28 +586,6 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   // entry joins - the API row is the SIXTH labeled row of the divider
   // column (the M18 headerless decision REVERSED).
   const labels = { fps: 'FPS', cpu: cpuPrefix, memory: 'RAM', gpu: gpuPrefix, vram: gpuMemoryLabel(s.gpuMemorySource), api: 'API' };
-  // M19/M19b (the divider alignment - ONE rule): every NON-EMPTY row's
-  // label is padded to the max label length with a TWO-space separator
-  // after it (`label.padEnd(maxLabelLen) + '  ' + fields`), so EVERY
-  // value starts at `maxLabelLen + 2 ch` - 2ch RIGHT of the divider's
-  // left edge (the divider sits at maxLabelLen + 0.75ch, so the value-to-
-  // divider gap is ~1.25ch; the rows are white-space:pre + monospace, so
-  // space-padding is byte-exact). The empty-row degrade ('' when all
-  // fields off) stays '' - no padding on an empty line. The `labels`
-  // field itself stays UNPADDED (the renderer's --overlay-label-w column
-  // var + the divider position derive from the raw lengths).
-  const maxLabelLen = Math.max(labels.fps.length, labels.cpu.length, labels.memory.length, labels.gpu.length, labels.vram.length, labels.api.length);
-  const labeledRow = (label: string, fields: string[]): string =>
-    fields.length === 0 ? '' : `${label.padEnd(maxLabelLen)}  ${fields.join('  ')}`;
-  const fpsLine = labeledRow(labels.fps, fpsFields);
-  // M17b (2c): the chip-name label replaces the stock 'CPU ' prefix ONLY -
-  // the field order is untouched.
-  const cpuLine = labeledRow(labels.cpu, cpuFields);
-  const memoryLine = labeledRow(labels.memory, memoryFields);
-  // M17b (2c): the chip-name label replaces the stock 'GPU ' prefix ONLY -
-  // the field order is untouched.
-  const gpuLine = labeledRow(labels.gpu, gpuFields);
-  const vramLine = labeledRow(labels.vram, vramFields);
   // M13: the standalone Graphics-API row - the api field LEFT the fpsLine.
   // M19b: the row builds through the SAME labeledRow rule as the other
   // five - the 'API' label padded to the max label length + the two-space
@@ -616,6 +598,44 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
     const badge = apiLabelOf(api);
     if (badge !== null) apiFields.push(badge);
   }
+  // M19/M19b (the divider alignment - ONE rule): every NON-EMPTY row's
+  // label is padded to the max label length with a TWO-space separator
+  // after it (`label.padEnd(maxLabelLen) + '  ' + fields`), so EVERY
+  // value starts at `maxLabelLen + 2 ch` - 2ch RIGHT of the divider's
+  // left edge (the divider sits at maxLabelLen + 0.75ch, so the value-to-
+  // divider gap is ~1.25ch; the rows are white-space:pre + monospace, so
+  // space-padding is byte-exact). The empty-row degrade ('' when all
+  // fields off) stays '' - no padding on an empty line. The `labels`
+  // field itself stays UNPADDED (the renderer's --overlay-label-w column
+  // var + the divider position derive from the raw lengths).
+  const requestedLabelWidth = typeof opts?.labelWidth === 'number' && Number.isFinite(opts.labelWidth)
+    ? Math.max(0, Math.ceil(opts.labelWidth))
+    : 0;
+  // Only rows with at least one enabled field occupy a value column. A
+  // disabled CPU/GPU row must not widen the other rows just because its
+  // optional chip label is long; the renderer passes this same width to the
+  // primary and every secondary formatter before positioning the divider.
+  const maxLabelLen = Math.max(
+    4,
+    requestedLabelWidth,
+    fpsFields.length > 0 ? labels.fps.length : 0,
+    cpuFields.length > 0 ? labels.cpu.length : 0,
+    memoryFields.length > 0 ? labels.memory.length : 0,
+    gpuFields.length > 0 ? labels.gpu.length : 0,
+    vramFields.length > 0 ? labels.vram.length : 0,
+    apiFields.length > 0 ? labels.api.length : 0,
+  );
+  const labeledRow = (label: string, fields: string[]): string =>
+    fields.length === 0 ? '' : `${label.padEnd(maxLabelLen)}  ${fields.join('  ')}`;
+  const fpsLine = labeledRow(labels.fps, fpsFields);
+  // M17b (2c): the chip-name label replaces the stock 'CPU ' prefix ONLY -
+  // the field order is untouched.
+  const cpuLine = labeledRow(labels.cpu, cpuFields);
+  const memoryLine = labeledRow(labels.memory, memoryFields);
+  // M17b (2c): the chip-name label replaces the stock 'GPU ' prefix ONLY -
+  // the field order is untouched.
+  const gpuLine = labeledRow(labels.gpu, gpuFields);
+  const vramLine = labeledRow(labels.vram, vramFields);
   const apiLine = labeledRow(labels.api, apiFields);
   return { fpsLine, cpuLine, memoryLine, gpuLine, vramLine, apiLine, labels, frametimeEnabled: enabled.has('frametime') };
 }

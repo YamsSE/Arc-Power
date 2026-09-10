@@ -310,6 +310,26 @@ function chipLabelForDevice(
   if (!key && resolvedPrimaryLabel) return resolvedPrimaryLabel;
   return chipLabelGpu(device.name ?? null);
 }
+
+function currentDisplayDevice(): OverlayDeviceIdentity | null {
+  if (overlayDisplayDeviceKey) {
+    const wanted = identityToken(overlayDisplayDeviceKey);
+    const keyed = overlayDevices.find((device) => identityToken(stableDeviceKey(device)) === wanted);
+    if (keyed) return keyed;
+  }
+  return overlayDevices.find((device) => device.id === overlayDisplayDeviceId) ?? null;
+}
+
+function projectCurrentChipLabels(resolvedPrimaryLabel?: string | null): void {
+  const primary = currentDisplayDevice();
+  gpuChipLabel = primary
+    ? chipLabelForDevice(primary, sysinfoControllersByPnp ?? undefined, resolvedPrimaryLabel)
+    : null;
+  secondaryGpuChipLabels = secondaryDeviceIds.map((deviceId) => {
+    const device = overlayDevices.find((candidate) => candidate.id === deviceId);
+    return device ? chipLabelForDevice(device, sysinfoControllersByPnp ?? undefined) : null;
+  });
+}
 // M6-amd2: the latest derived frame time (the value line below the strip;
 // null -> the honest '-').
 let latestFrameTime: number | null = null;
@@ -447,11 +467,27 @@ window.addEventListener('resize', () => {
   draw();
 });
 
-function numberedRow(line: string, label: 'GPU' | 'VRAM', number: number): string {
+function renderedLabel(line: string): string {
+  if (!line) return '';
+  const separator = line.indexOf('  ');
+  return (separator >= 0 ? line.slice(0, separator) : line).trimEnd();
+}
+
+function numberedLabel(line: string, label: 'GPU' | 'VRAM', number: number | null): string {
+  const current = renderedLabel(line);
+  return number !== null && current === label ? `${label}${number}` : current;
+}
+
+function numberedRow(line: string, label: 'GPU' | 'VRAM', number: number, labelWidth: number): string {
   // Chip-name mode keeps the human-readable chip label. Numbered prefixes
-  // are the default surface requested for multi-adapter systems.
-  if (!line.startsWith(`${label} `)) return line;
-  return `${label}${number}${line.slice(label.length)}`;
+  // are the default surface requested for multi-adapter systems. Rebuild the
+  // row from its fields so the numbered label uses the same shared column as
+  // every other primary/secondary row.
+  if (renderedLabel(line) !== label) return line;
+  const separator = line.indexOf('  ');
+  const fields = separator >= 0 ? line.slice(separator).trim() : '';
+  const numbered = `${label}${number}`;
+  return `${numbered.padEnd(Math.max(labelWidth, numbered.length))}  ${fields}`;
 }
 
 type SecondaryRowElements = { gpu: HTMLElement; vram: HTMLElement };
@@ -473,6 +509,47 @@ function ensureExtraRows(count: number): void {
   });
 }
 
+function positionOverlayDivider(maxLabelLen: number): void {
+  if (!dividerEl) return;
+  const rows = [
+    fpsEl, cpuEl, memoryEl, gpuEl, vramEl, apiEl,
+    gpu2El, vram2El, ...extraRowElements.flatMap((row) => [row.gpu, row.vram]),
+  ];
+  const row = rows.find((candidate) => {
+    const node = candidate.firstChild;
+    return getComputedStyle(candidate).display !== 'none'
+      && node?.nodeType === Node.TEXT_NODE
+      && (node.textContent?.length ?? 0) >= maxLabelLen + 2;
+  });
+  const node = row?.firstChild;
+  if (!row || !node || node.nodeType !== Node.TEXT_NODE) {
+    dividerEl.style.removeProperty('left');
+    return;
+  }
+
+  // CSS `ch` is usually sufficient, but it can drift from the actual text
+  // column when the overlay is scaled or a platform substitutes a font. Use
+  // the rendered text boundary as the source of truth: the line stays after
+  // the label and before the two-space value separator at every scale.
+  const textNode = node as Text;
+  const boundary = (offset: number): number => {
+    const range = document.createRange();
+    const safeOffset = Math.max(0, Math.min(offset, textNode.length));
+    range.setStart(textNode, safeOffset);
+    range.setEnd(textNode, safeOffset);
+    return range.getBoundingClientRect().left;
+  };
+  const labelEnd = boundary(maxLabelLen);
+  const afterFirstSpace = boundary(maxLabelLen + 1);
+  const charWidth = afterFirstSpace - labelEnd;
+  if (!Number.isFinite(labelEnd) || !(charWidth > 0)) {
+    dividerEl.style.removeProperty('left');
+    return;
+  }
+  const rootRect = rootEl.getBoundingClientRect();
+  dividerEl.style.left = `${Math.max(0, labelEnd - rootRect.left + charWidth * 0.75)}px`;
+}
+
 function render(): void {
   const displaySample = latestCpuSource
     ? { ...latestCpuSource, ...(latestSample ?? {}) }
@@ -483,65 +560,99 @@ function render(): void {
     chipNamesEnabled ? { chipLabels: { cpu: cpuChipLabel, gpu: gpuChipLabel } } : undefined,
   );
   const hasSecondary = secondaryDeviceIds.length > 0;
-  fpsEl.textContent = lines.fpsLine;
-  cpuEl.textContent = lines.cpuLine;
-  memoryEl.textContent = lines.memoryLine;
-  gpuEl.textContent = hasSecondary ? numberedRow(lines.gpuLine, 'GPU', 1) : lines.gpuLine;
-  vramEl.textContent = hasSecondary ? numberedRow(lines.vramLine, 'VRAM', 1) : lines.vramLine;
+  ensureExtraRows(Math.max(0, secondaryDeviceIds.length - 1));
+  const secondaryRows = secondaryDeviceIds.map((deviceId, index) => {
+    const secondaryDevice = overlayDevices.find((device) => device.id === deviceId) ?? null;
+    const secondary = secondaryDevice ? secondarySamples.get(stableDeviceKey(secondaryDevice)) ?? null : null;
+    const secondaryLines = overlayLines(
+      secondary, null, stats, null, null, null, null, null,
+      secondary?.memoryUsedBytes ?? null,
+      chipNamesEnabled
+        ? { chipLabels: { cpu: null, gpu: secondaryGpuChipLabels[index] ?? null } }
+        : undefined,
+    );
+    return {
+      index,
+      sample: secondary,
+      lines: secondaryLines,
+      gpuLabel: secondaryGpuChipLabels[index] ?? null,
+      row: index === 0 ? { gpu: gpu2El, vram: vram2El } : extraRowElements[index - 1],
+    };
+  });
+
+  // The divider and every value column must be driven by one width. Measuring
+  // only the primary labels lets a long secondary chip name cross the line;
+  // measuring after separate formatting merely moves the divider and leaves
+  // the values behind. Collect the labels before padding, including the
+  // numbered prefixes used when chip names are off.
+  const labelLengths = [
+    renderedLabel(lines.fpsLine).length,
+    renderedLabel(lines.cpuLine).length,
+    renderedLabel(lines.memoryLine).length,
+    numberedLabel(lines.gpuLine, 'GPU', hasSecondary ? 1 : null).length,
+    numberedLabel(lines.vramLine, 'VRAM', hasSecondary ? 1 : null).length,
+    renderedLabel(lines.apiLine).length,
+    ...secondaryRows.flatMap(({ lines: secondaryLines, index }) => [
+      numberedLabel(secondaryLines.gpuLine, 'GPU', chipNamesEnabled ? null : index + 2).length,
+      numberedLabel(secondaryLines.vramLine, 'VRAM', index + 2).length,
+    ]),
+  ];
+  const maxLabelLen = Math.max(4, ...labelLengths);
+  const primaryOptions = chipNamesEnabled
+    ? { chipLabels: { cpu: cpuChipLabel, gpu: gpuChipLabel }, labelWidth: maxLabelLen }
+    : { labelWidth: maxLabelLen };
+  const paddedLines = overlayLines(
+    displaySample, latestFps, stats, latestLow1Pct, latestP99, latestApi,
+    latestAvgFps, latestLow01Pct, displaySample?.memoryUsedBytes ?? null,
+    primaryOptions,
+  );
+  const paddedSecondaryRows = secondaryRows.map(({ sample, gpuLabel, index }) => {
+    const options = chipNamesEnabled
+      ? { chipLabels: { cpu: null, gpu: gpuLabel }, labelWidth: maxLabelLen }
+      : { labelWidth: maxLabelLen };
+    return {
+      index,
+      lines: overlayLines(
+        sample, null, stats, null, null, null, null, null,
+        sample?.memoryUsedBytes ?? null,
+        options,
+      ),
+    };
+  });
+
+  fpsEl.textContent = paddedLines.fpsLine;
+  cpuEl.textContent = paddedLines.cpuLine;
+  memoryEl.textContent = paddedLines.memoryLine;
+  gpuEl.textContent = hasSecondary ? numberedRow(paddedLines.gpuLine, 'GPU', 1, maxLabelLen) : paddedLines.gpuLine;
+  vramEl.textContent = hasSecondary ? numberedRow(paddedLines.vramLine, 'VRAM', 1, maxLabelLen) : paddedLines.vramLine;
   gpu2El.style.display = hasSecondary ? 'block' : 'none';
   vram2El.style.display = hasSecondary ? 'block' : 'none';
-  if (hasSecondary) {
-    const secondaryDevice = overlayDevices.find((device) => device.id === secondaryDeviceIds[0]) ?? null;
-    const secondary = secondaryDevice ? secondarySamples.get(stableDeviceKey(secondaryDevice)) ?? null : null;
-    const secondaryLines = overlayLines(
-      secondary, null, stats, null, null, null, null, null,
-      secondary?.memoryUsedBytes ?? null,
-      chipNamesEnabled
-        ? { chipLabels: { cpu: null, gpu: secondaryGpuChipLabels[0] ?? null } }
-        : undefined,
-    );
-    gpu2El.textContent = chipNamesEnabled
-      ? secondaryLines.gpuLine
-      : numberedRow(secondaryLines.gpuLine, 'GPU', 2);
-    vram2El.textContent = numberedRow(secondaryLines.vramLine, 'VRAM', 2);
-  } else {
-    gpu2El.textContent = '';
-    vram2El.textContent = '';
-  }
-  ensureExtraRows(Math.max(0, secondaryDeviceIds.length - 1));
-  for (let i = 1; i < secondaryDeviceIds.length; i += 1) {
-    const row = extraRowElements[i - 1];
-    const secondaryDevice = overlayDevices.find((device) => device.id === secondaryDeviceIds[i]) ?? null;
-    const secondary = secondaryDevice ? secondarySamples.get(stableDeviceKey(secondaryDevice)) ?? null : null;
-    const secondaryLines = overlayLines(
-      secondary, null, stats, null, null, null, null, null,
-      secondary?.memoryUsedBytes ?? null,
-      chipNamesEnabled
-        ? { chipLabels: { cpu: null, gpu: secondaryGpuChipLabels[i] ?? null } }
-        : undefined,
-    );
+  gpu2El.textContent = '';
+  vram2El.textContent = '';
+  for (const { index, lines: secondaryLines } of paddedSecondaryRows) {
+    const row = index === 0 ? { gpu: gpu2El, vram: vram2El } : extraRowElements[index - 1];
     row.gpu.textContent = chipNamesEnabled
       ? secondaryLines.gpuLine
-      : numberedRow(secondaryLines.gpuLine, 'GPU', i + 1);
-    row.vram.textContent = numberedRow(secondaryLines.vramLine, 'VRAM', i + 1);
+      : numberedRow(secondaryLines.gpuLine, 'GPU', index + 2, maxLabelLen);
+    row.vram.textContent = numberedRow(secondaryLines.vramLine, 'VRAM', index + 2, maxLabelLen);
   }
-  apiEl.textContent = lines.apiLine;
+  apiEl.textContent = paddedLines.apiLine;
   // M6/M6-amd2: the frametime stat is NOT a line - it toggles the canvas
   // strip's AND the value line's visibility together (a fully-off line
   // writes '' into its KEPT div, but the strip + the number are HIDDEN -
   // an empty 31rem strip / a stale number would still occupy space).
-  canvas.style.display = lines.frametimeEnabled ? '' : 'none';
-  valueEl.style.display = lines.frametimeEnabled ? '' : 'none';
+  canvas.style.display = paddedLines.frametimeEnabled ? '' : 'none';
+  valueEl.style.display = paddedLines.frametimeEnabled ? '' : 'none';
   // The value line: the latest derived frame time (max 2 decimals; the
   // honest '-' when the last poll had nothing to derive from).
-  valueEl.textContent = lines.frametimeEnabled ? formatFrametime(latestFrameTime) : '';
+  valueEl.textContent = paddedLines.frametimeEnabled ? formatFrametime(latestFrameTime) : '';
   // M18/M19b: the header-divider column - the --overlay-label-w CSS var in
   // ch (WITH the unit - '4ch' / '9ch', never a bare number: a unit-less
-  // value inside the calc is invalid at computed-value time) from the max
-  // of every visible row's labels (GPU1/VRAM1 widen the column in a
-  // multi-adapter session).
-  const maxLabelLen = Math.max(...Object.values(lines.labels).map((l) => l.length), hasSecondary ? 5 : 0);
+  // value inside the calc is invalid at computed-value time) from the same
+  // shared max passed to every formatter above. GPU1/VRAM1 widen the column
+  // in a multi-adapter session, as do long secondary chip labels.
   document.documentElement.style.setProperty('--overlay-label-w', `${maxLabelLen}ch`);
+  positionOverlayDivider(maxLabelLen);
   // M18/M19b: the divider's top/bottom - the FPS row's top to the API
   // row's bottom, relative to the root (measured like sizeCanvas() reads
   // the canvas rect - getBoundingClientRect, so it adapts to the scale and
@@ -831,8 +942,6 @@ api.onDeviceSelectionUpdated((payload) => {
 async function bootNamesFetch(): Promise<void> {
   try {
     await overlayFpsBoot;
-    let gpuName: unknown = null;
-    let cpuName: unknown = null;
     let devices: OverlayDeviceIdentity[] = [];
     try { devices = await api.listDevices(); } catch { devices = []; }
     const primaryId = await resolveOverlayDeviceId() ?? devices[0]?.id ?? null;
@@ -841,14 +950,18 @@ async function bootNamesFetch(): Promise<void> {
     const controllers: OverlaySysinfoController[] = Array.isArray(sysinfo?.videoControllers)
       ? sysinfo.videoControllers
       : [];
-    const primaryDevice = devices.find((device) => device.id === overlayDisplayDeviceId);
     const controllersByPnp = new Map<string, OverlaySysinfoController[]>();
     for (const controller of controllers) {
       const key = identityToken(controller.pnpDeviceId);
       if (key) controllersByPnp.set(key, [...(controllersByPnp.get(key) ?? []), controller]);
     }
     sysinfoControllersByPnp = controllersByPnp;
-    for (const device of devices) {
+    // The listDevices/configure pair can overlap a user selection update while
+    // sysinfo is in flight. Cache and project against the CURRENT inventory,
+    // never the boot-time array, so a late response cannot leave the selected
+    // GPU with a stale decorated name. Identity matching still happens inside
+    // controllerForDevice; this does not introduce ordinal fallback.
+    for (const device of overlayDevices) {
       const key = deviceIdentity(device);
       const controller = controllerForDevice(device, controllersByPnp);
       if (key && controller) {
@@ -856,32 +969,26 @@ async function bootNamesFetch(): Promise<void> {
         if (label) sysinfoGpuLabels.set(key, label);
       }
     }
-    // The mock and older inventory paths expose one primary controller in
-    // sysinfo even when the device row has no PNP mirror. With exactly one
-    // controller this is unambiguous; multi-GPU sessions require a PNP match
-    // and never fall back by ordinal.
+    const primaryDevice = currentDisplayDevice();
+    let primaryLabel: string | null = null;
     if (primaryDevice) {
       const primaryKey = deviceIdentity(primaryDevice);
       const primaryController = controllerForDevice(primaryDevice, controllersByPnp);
+      // The mock and older inventory paths expose one primary controller in
+      // sysinfo even when the device row has no PNP mirror. With exactly one
+      // controller this is unambiguous; multi-GPU sessions require a PNP match
+      // and never fall back by ordinal.
       const unambiguousController = primaryController
         ?? (!primaryKey && controllers.length === 1 ? controllers[0] : undefined);
       if (primaryKey && unambiguousController) {
         const label = chipLabelGpu(unambiguousController.name ?? null);
         if (label) sysinfoGpuLabels.set(primaryKey, label);
       }
-      gpuName = unambiguousController?.name ?? primaryDevice.name ?? null;
+      const gpuName = unambiguousController?.name ?? primaryDevice.name ?? null;
+      primaryLabel = chipLabelGpu(gpuName);
     }
-    cpuName = sysinfo?.cpu?.name ?? null;
-    const primaryLabel = chipLabelGpu(gpuName);
-    if (primaryLabel) gpuChipLabel = primaryLabel;
-    // Re-run the device projection after the authoritative sysinfo labels are
-    // recorded so secondary rows receive their own stable labels too.
-    if (primaryDevice) {
-      gpuChipLabel = chipLabelForDevice(primaryDevice, controllersByPnp, primaryLabel);
-      const secondary = devices.filter((device) => device.id !== overlayDisplayDeviceId);
-      secondaryGpuChipLabels = secondary.map((device) => chipLabelForDevice(device, controllersByPnp));
-    }
-    cpuChipLabel = chipLabelCpu(cpuName);
+    projectCurrentChipLabels(primaryLabel);
+    cpuChipLabel = chipLabelCpu(sysinfo?.cpu?.name ?? null);
     render();
   } catch {
     // The labels stay null and the overlay keeps honest '-' readouts.

@@ -117,6 +117,49 @@ interface PersistedOverlay {
   advPosition: 'left' | 'right';
 }
 
+interface OverlayStatGroup {
+  id: string;
+  label: string;
+  note: string;
+  stats: readonly string[];
+}
+
+// Keep the persisted stat ids and their order untouched. The groups are a
+// presentation layer only, so older settings files and the renderer's
+// overlay formatter continue to use the same canonical ids.
+const OVERLAY_STAT_GROUPS: readonly OverlayStatGroup[] = [
+  {
+    id: 'cpu',
+    label: 'CPU',
+    note: 'Processor load, clocks, temperature, and power.',
+    stats: ['cpu-util', 'cpu-clock', 'cpu-temp', 'cpu-power'],
+  },
+  {
+    id: 'ram',
+    label: 'RAM',
+    note: 'System memory utilization.',
+    stats: ['memory-util'],
+  },
+  {
+    id: 'gpu',
+    label: 'GPU',
+    note: 'Graphics engine, clocks, temperature, power, and fan.',
+    stats: ['gpu-util', 'gpu-clock', 'gpu-voltage', 'gpu-temp', 'gpu-power', 'gpu-fan'],
+  },
+  {
+    id: 'vram',
+    label: 'VRAM',
+    note: 'Video-memory clock, usage, and temperature.',
+    stats: ['gpu-mem-clock', 'gpu-vram', 'gpu-vram-temp'],
+  },
+  {
+    id: 'fps',
+    label: 'FPS + API',
+    note: 'Frame rate, percentile, frametime, and graphics API.',
+    stats: ['fps', 'fps-avg', 'fps-01pct-low', 'fps-1pct-low', 'fps-99pct', 'api', 'frametime'],
+  },
+];
+
 async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const root = container.querySelector('#overlay-settings-root') as HTMLElement;
 
@@ -370,18 +413,30 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         el('button', { class: 'btn btn-sm btn-ghost', text: 'Select all', onClick: () => void onSelectAll() }),
         el('button', { class: 'btn btn-sm btn-ghost', text: 'Hide all', onClick: () => void onHideAll() }),
       ]),
-      el('div', { class: 'overlay-stat-grid' }, OVERLAY_STAT_IDS.map((id) =>
-        el('label', { class: 'boot-toggle overlay-stat-toggle' }, [
-          el('input', {
-            type: 'checkbox',
-            class: 'settings-checkbox overlay-stat-checkbox',
-            dataset: { statId: id },
-            checked: persisted.stats.includes(id),
-            onchange: (ev: Event) => void onStatToggle(id, (ev.target as HTMLInputElement).checked),
-          }),
-          el('span', { text: OVERLAY_STAT_LABELS[id] }),
-        ]),
-      )),
+      el('div', { class: 'overlay-stat-groups' }, OVERLAY_STAT_GROUPS.map((group) => {
+        const visible = group.stats.filter((id) => persisted.stats.includes(id)).length;
+        return el('section', { class: 'overlay-stat-group', dataset: { overlayStatGroup: group.id } }, [
+          el('div', { class: 'overlay-stat-group-heading' }, [
+            el('div', { class: 'overlay-stat-group-copy' }, [
+              el('h3', { class: 'overlay-stat-group-title', text: group.label }),
+              el('p', { class: 'overlay-stat-group-note', text: group.note }),
+            ]),
+            el('span', { class: 'overlay-stat-group-count', text: `${visible}/${group.stats.length}` }),
+          ]),
+          el('div', { class: 'overlay-stat-grid' }, group.stats.map((id) =>
+            el('label', { class: 'boot-toggle overlay-stat-toggle' }, [
+              el('input', {
+                type: 'checkbox',
+                class: 'settings-checkbox overlay-stat-checkbox',
+                dataset: { statId: id },
+                checked: persisted.stats.includes(id),
+                onchange: (ev: Event) => void onStatToggle(id, (ev.target as HTMLInputElement).checked),
+              }),
+              el('span', { text: OVERLAY_STAT_LABELS[id] }),
+            ]),
+          )),
+        ]);
+      })),
     ]);
 
     // --- Appearance card: the color swatch palette (the theme-option
@@ -633,6 +688,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       await api.profilesSettingsSave({ overlayEnabled: checked });
       persisted.enabled = checked;
       toast(checked ? 'success' : 'info', checked ? 'Overlay enabled' : 'Overlay disabled', '');
+      await refresh();
     } catch (err) {
       toast('error', 'Overlay could not be changed', err instanceof Error ? err.message : String(err));
       if (box) box.checked = persisted.enabled;
@@ -648,6 +704,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       await api.profilesSettingsSave({ overlayChipNames: checked });
       persisted.chipNames = checked;
       toast(checked ? 'success' : 'info', checked ? 'Chip names shown' : 'Stock labels restored', '');
+      render();
     } catch (err) {
       toast('error', 'Chip names could not be changed', err instanceof Error ? err.message : String(err));
       if (box) box.checked = persisted.chipNames;
@@ -696,6 +753,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           if (revision === monitoredDeviceRevision) {
             pendingMonitoredKeys = null;
             toast('success', 'Overlay GPU monitoring updated', `${nextKeys.length} GPU${nextKeys.length === 1 ? '' : 's'} selected.`);
+            render();
           }
         } catch (err) {
           if (revision === monitoredDeviceRevision) {
@@ -738,10 +796,22 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ? (persisted.stats.includes(statId) ? persisted.stats : [...persisted.stats, statId])
       : persisted.stats.filter((id) => id !== statId);
     if (next.join(',') === persisted.stats.join(',')) return;
+    const syncStatCounts = (): void => {
+      const totalBadge = root.querySelector<HTMLElement>('.overlay-stats-card .overlay-value-badge');
+      if (totalBadge) totalBadge.textContent = `${persisted.stats.length}/${OVERLAY_STAT_IDS.length} visible`;
+      for (const group of OVERLAY_STAT_GROUPS) {
+        const count = root.querySelector<HTMLElement>(`[data-overlay-stat-group="${group.id}"] .overlay-stat-group-count`);
+        if (count) count.textContent = `${group.stats.filter((id) => persisted.stats.includes(id)).length}/${group.stats.length}`;
+      }
+    };
     try {
       await api.profilesSettingsSave({ overlayStats: next });
       persisted.stats = next;
       toast(checked ? 'success' : 'info', `Overlay ${OVERLAY_STAT_LABELS[statId]} ${checked ? 'shown' : 'hidden'}`, '');
+      // Keep the checkbox node alive so Space/Tab navigation continues
+      // through the grouped lanes after a save. Only the derived counts need
+      // to change for an individual stat toggle.
+      syncStatCounts();
     } catch (err) {
       toast('error', 'Overlay stats could not be changed', err instanceof Error ? err.message : String(err));
       if (box) box.checked = persisted.stats.includes(statId);
@@ -932,6 +1002,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       await api.profilesSettingsSave({ advancedOverlayEnabled: checked });
       persisted.advEnabled = checked;
       toast(checked ? 'success' : 'info', checked ? 'Advanced overlay enabled' : 'Advanced overlay disabled', '');
+      await refresh();
     } catch (err) {
       toast('error', 'Advanced overlay could not be changed', err instanceof Error ? err.message : String(err));
       if (box) box.checked = persisted.advEnabled;

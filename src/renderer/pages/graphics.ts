@@ -554,9 +554,19 @@ export const graphicsPage: Page = {
     viewContainer = el('div', { class: 'graphics-view' });
     displayPickerHost = el('div', { class: 'display-picker-host' });
     const deviceSelect = buildDeviceSelect(ctx.store, (id) => void ctx.selectDevice?.(id));
-    const title = el('div', { class: 'page-title-row' }, [
-      el('h1', { class: 'page-title', text: graphicsView === 'display' ? 'Display' : 'Graphics' }),
-      ...(deviceSelect ? [deviceSelect] : []),
+    const graphicsSubtitle = graphicsView === 'display'
+      ? 'Display settings and capabilities reported by the graphics driver.'
+      : 'Driver-level graphics settings (the same state the Intel Graphics Software app manages). Changes apply on demand - nothing is applied until you press Apply.';
+    const title = el('header', { class: 'page-title-row arc-page-hero graphics-page-hero' }, [
+      el('div', { class: 'arc-page-hero-copy' }, [
+        el('span', { class: 'arc-section-kicker', text: graphicsView === 'display' ? 'DISPLAY CONTROL' : 'GRAPHICS CONTROL' }),
+        el('h1', { class: 'page-title', text: graphicsView === 'display' ? 'Display' : 'Graphics' }),
+        el('p', { class: 'page-subtitle', text: graphicsSubtitle }),
+      ]),
+      el('div', { class: 'arc-page-hero-side' }, [
+        el('span', { class: 'arc-hero-label', text: 'ACTIVE GPU' }),
+        ...(deviceSelect ? [deviceSelect] : [el('span', { class: 'arc-hero-value', text: 'Current adapter' })]),
+      ]),
     ]);
     const viewToggle = el('div', { class: 'graphics-view-toggle-row' }, [
       el('div', { class: 'oc-mode-toggle graphics-view-toggle', role: 'group', 'aria-label': 'Graphics view' }, [
@@ -576,12 +586,6 @@ export const graphicsPage: Page = {
     ]);
     container.append(
       title,
-      el('p', {
-        class: 'page-subtitle',
-        text: graphicsView === 'display'
-          ? 'Display settings and capabilities reported by the graphics driver.'
-          : 'Driver-level graphics settings (the same state the Intel Graphics Software app manages). Changes apply on demand - nothing is applied until you press Apply.',
-      }),
       el('div', { class: 'graphics-view-toolbar' }, [viewToggle, displayPickerHost]),
       viewContainer,
     );
@@ -610,6 +614,8 @@ export const graphicsPage: Page = {
       renderGraphicsView();
       const heading = title.querySelector<HTMLElement>('.page-title');
       if (heading) heading.textContent = graphicsView === 'display' ? 'Display' : 'Graphics';
+      const kicker = title.querySelector<HTMLElement>('.arc-section-kicker');
+      if (kicker) kicker.textContent = graphicsView === 'display' ? 'DISPLAY CONTROL' : 'GRAPHICS CONTROL';
       const subtitle = container.querySelector<HTMLElement>('.page-subtitle');
       if (subtitle) subtitle.textContent = graphicsView === 'display'
         ? 'Display settings and capabilities reported by the graphics driver.'

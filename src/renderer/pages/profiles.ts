@@ -854,9 +854,16 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const packagedStartup = ctx.store.get().buildKind === 'installed' || ctx.store.get().buildKind === 'portable';
     const startupTaskMissing = packagedStartup && bootState?.registration !== 'task';
 
-    const bootCard = el('section', { class: 'card boot-card' }, [
-      el('h2', { class: 'card-title', text: 'Start at boot' }),
-      el('div', { class: 'boot-row' }, [
+    const bootCard = el('section', { class: 'card boot-card arc-surface-card' }, [
+      el('div', { class: 'arc-card-heading arc-boot-heading' }, [
+        el('div', { class: 'arc-card-copy' }, [
+          el('span', { class: 'arc-section-kicker', text: 'PROFILE AUTOMATION' }),
+          el('h2', { class: 'card-title', text: 'Start at boot' }),
+          el('p', { class: 'arc-card-subtitle', text: 'Apply the active profile automatically when Arc Power starts.' }),
+        ]),
+        el('span', { class: `arc-card-status${applyOnBoot ? ' is-active' : ''}`, text: applyOnBoot ? 'ENABLED' : 'DISABLED' }),
+      ]),
+      el('div', { class: 'boot-row arc-setting-row' }, [
         el('label', { class: 'boot-toggle' }, [
           el('input', {
             type: 'checkbox',

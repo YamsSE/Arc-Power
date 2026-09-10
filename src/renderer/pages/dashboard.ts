@@ -30,14 +30,6 @@ import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import type { ProfilesEnvelope, RecordingClip, RecordingSettings, RecordingStorageInfo, TelemetrySample } from '../types.ts';
 import { TELEMETRY_HISTORY_POINTS, TELEMETRY_PULSE_COLORS } from '../pure/telemetry-visuals.ts';
-import { nearestSampleIndex } from '../pure/graph.ts';
-import type { SeriesPoint } from '../pure/graph.ts';
-import {
-  clampGraphTooltipPosition,
-  graphDrawnPoints,
-  graphSamplePosition,
-  monitoringGraphRangeForMax,
-} from '../pure/monitoring-graph.ts';
 
 /** M4-D2 (§6): the "Cores / clock" bundled row's LIVE half - the current
  *  CPU frequency from the telemetry tick, ALWAYS in GHz with 1 decimal
@@ -92,13 +84,6 @@ type DashboardPulseLane = {
   pathNodes: Map<DashboardPulseId, SVGPathElement>;
   rangeMinNodes: Map<DashboardPulseId, HTMLElement>;
   rangeMaxNodes: Map<DashboardPulseId, HTMLElement>;
-  axisMinNodes: Map<DashboardPulseId, HTMLElement>;
-  axisMaxNodes: Map<DashboardPulseId, HTMLElement>;
-  graphSurfaceNodes: Map<DashboardPulseId, HTMLElement>;
-  crosshairNodes: Map<DashboardPulseId, HTMLElement>;
-  hoverNodes: Map<DashboardPulseId, HTMLElement>;
-  pointerRatios: Map<DashboardPulseId, number | null>;
-  graphCeilings: Map<DashboardPulseId, number>;
   runtimeNode: HTMLElement | null;
   peakNode: HTMLElement | null;
   averageNode: HTMLElement | null;
@@ -144,13 +129,6 @@ function pulseLaneFor(key: string): DashboardPulseLane {
     pathNodes: new Map(),
     rangeMinNodes: new Map(),
     rangeMaxNodes: new Map(),
-    axisMinNodes: new Map(),
-    axisMaxNodes: new Map(),
-    graphSurfaceNodes: new Map(),
-    crosshairNodes: new Map(),
-    hoverNodes: new Map(),
-    pointerRatios: new Map(),
-    graphCeilings: new Map(),
     runtimeNode: null,
     peakNode: null,
     averageNode: null,
@@ -163,13 +141,7 @@ function rememberDashboardSample(lane: DashboardPulseLane, sample: TelemetrySamp
   if (!sample) return;
   const last = lane.history[lane.history.length - 1];
   if (last && last.t === sample.t && last.deviceKey === sample.deviceKey) return;
-  const next = [...lane.history, sample];
-  // Telemetry normally arrives in timestamp order. Preserve that cheap path,
-  // while retaining chronological nearest-sample behavior if a late sample
-  // arrives after a renderer or driver hiccup.
-  lane.history = last && sample.t < last.t
-    ? next.sort((a, b) => a.t - b.t).slice(-DASHBOARD_HISTORY_LIMIT)
-    : next.slice(-DASHBOARD_HISTORY_LIMIT);
+  lane.history = [...lane.history, sample].slice(-DASHBOARD_HISTORY_LIMIT);
 }
 
 function pulseSampleValue(id: DashboardPulseId, sample: TelemetrySample): number | undefined {
@@ -192,41 +164,6 @@ function pulseHistoryValues(lane: DashboardPulseLane, id: DashboardPulseId): num
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
 }
 
-function pulseHistoryPoints(lane: DashboardPulseLane, id: DashboardPulseId): SeriesPoint[] {
-  return lane.history
-    .map((sample) => ({ t: sample.t, v: pulseSampleValue(id, sample) }))
-    .filter((point): point is SeriesPoint => Number.isFinite(point.t) && Number.isFinite(point.v));
-}
-
-function pulseObservedRange(points: SeriesPoint[]): { min: number; max: number } | null {
-  if (points.length === 0) return null;
-  let min = Infinity;
-  let max = -Infinity;
-  for (const point of points) {
-    if (point.v < min) min = point.v;
-    if (point.v > max) max = point.v;
-  }
-  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
-}
-
-function pulseGraphSeriesId(id: DashboardPulseId): string {
-  if (id === 'gpu-util') return 'util';
-  if (id === 'temperature') return 'temp';
-  return id;
-}
-
-function setDashboardGraphCeiling(lane: DashboardPulseLane, id: DashboardPulseId, value: number | null | undefined): void {
-  if (!Number.isFinite(value) || Number(value) <= 0) return;
-  const previous = lane.graphCeilings.get(id) ?? 0;
-  if (Number(value) > previous) lane.graphCeilings.set(id, Number(value));
-}
-
-function setDashboardVramCapacity(lane: DashboardPulseLane, vramBytes: number | null | undefined, sharedMemoryBytes?: number | null): void {
-  const capacityBytes = vramBytes ?? sharedMemoryBytes;
-  if (!Number.isFinite(capacityBytes) || Number(capacityBytes) <= 0) return;
-  setDashboardGraphCeiling(lane, 'vram', Number(capacityBytes) / 1e9);
-}
-
 function pulseRangeValue(id: DashboardPulseId, value: number): string {
   if (id === 'power' || id === 'vram') return value.toFixed(1);
   return String(Math.round(value));
@@ -235,78 +172,31 @@ function pulseRangeValue(id: DashboardPulseId, value: number): string {
 function updatePulsePath(lane: DashboardPulseLane, id: DashboardPulseId): void {
   const path = lane.pathNodes.get(id);
   if (!path) return;
-  const points = pulseHistoryPoints(lane, id);
-  const observed = pulseObservedRange(points);
+  const values = pulseHistoryValues(lane, id);
   const minNode = lane.rangeMinNodes.get(id);
   const maxNode = lane.rangeMaxNodes.get(id);
-  const axisMinNode = lane.axisMinNodes.get(id);
-  const axisMaxNode = lane.axisMaxNodes.get(id);
-  const axisRange = monitoringGraphRangeForMax(pulseGraphSeriesId(id), observed?.max, lane.graphCeilings.get(id));
-  if (!observed || !axisRange) {
+  if (values.length === 0) {
     if (minNode) minNode.textContent = '—';
     if (maxNode) maxNode.textContent = '—';
-    if (axisMinNode) axisMinNode.hidden = true;
-    if (axisMaxNode) axisMaxNode.hidden = true;
-    lane.crosshairNodes.get(id)?.setAttribute('hidden', 'true');
-    lane.hoverNodes.get(id)?.setAttribute('hidden', 'true');
+  } else {
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    if (minNode) minNode.textContent = pulseRangeValue(id, min);
+    if (maxNode) maxNode.textContent = pulseRangeValue(id, max);
+  }
+  if (values.length < 2) {
     path.setAttribute('d', 'M 0 16 L 120 16');
     return;
   }
-  if (minNode) minNode.textContent = pulseRangeValue(id, observed.min);
-  if (maxNode) maxNode.textContent = pulseRangeValue(id, observed.max);
-  if (axisMinNode) {
-    axisMinNode.textContent = pulseRangeValue(id, axisRange.min);
-    axisMinNode.hidden = false;
-  }
-  if (axisMaxNode) {
-    axisMaxNode.textContent = pulseRangeValue(id, axisRange.max);
-    axisMaxNode.hidden = false;
-  }
-  const drawn = graphDrawnPoints(points);
-  if (drawn.length < 2) {
-    const position = graphSamplePosition(drawn, 0, 120, 32, axisRange, 4, 22);
-    const y = position?.y ?? 16;
-    path.setAttribute('d', `M 0 ${y.toFixed(1)} L 120 ${y.toFixed(1)}`);
-  } else {
-    const pathPoints = drawn.map((_, index) => graphSamplePosition(drawn, index, 120, 32, axisRange, 4, 22));
-    const pathData = pathPoints
-      .filter((point): point is { x: number; y: number } => point !== null)
-      .map((point) => `${point.x.toFixed(1)} ${point.y.toFixed(1)}`);
-    path.setAttribute('d', pathData.length > 0 ? `M ${pathData.join(' L ')}` : 'M 0 16 L 120 16');
-  }
-  const surface = lane.graphSurfaceNodes.get(id);
-  const crosshair = lane.crosshairNodes.get(id);
-  const hover = lane.hoverNodes.get(id);
-  const pointerRatio = lane.pointerRatios.get(id) ?? null;
-  if (!surface || !crosshair || !hover || pointerRatio === null || drawn.length === 0) {
-    if (crosshair) crosshair.hidden = true;
-    if (hover) hover.hidden = true;
-    return;
-  }
-  const index = nearestSampleIndex(drawn, pointerRatio);
-  if (index < 0) {
-    crosshair.hidden = true;
-    hover.hidden = true;
-    return;
-  }
-  const rect = surface.getBoundingClientRect();
-  const width = surface.clientWidth || rect.width;
-  const height = surface.clientHeight || rect.height;
-  const position = graphSamplePosition(drawn, index, width, height, axisRange, 2, Math.max(4, height - 4));
-  if (!position) {
-    crosshair.hidden = true;
-    hover.hidden = true;
-    return;
-  }
-  crosshair.style.left = `${position.x}px`;
-  crosshair.hidden = false;
-  hover.textContent = pulseRangeValue(id, drawn[index].v);
-  hover.hidden = false;
-  const textWidth = hover.offsetWidth || 28;
-  const textHeight = hover.offsetHeight || 10;
-  const hoverPosition = clampGraphTooltipPosition(position.x, position.y, width, height, textWidth, textHeight);
-  hover.style.left = `${hoverPosition.left}px`;
-  hover.style.top = `${hoverPosition.top}px`;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(0.001, max - min);
+  const points = values.map((value, index) => {
+    const x = (index / (values.length - 1)) * 120;
+    const y = 28 - ((value - min) / span) * 22;
+    return `${x.toFixed(1)} ${y.toFixed(1)}`;
+  });
+  path.setAttribute('d', `M ${points.join(' L ')}`);
 }
 
 function formatSessionAge(startedAt: number): string {
@@ -334,7 +224,6 @@ function updatePulseLane(lane: DashboardPulseLane, sample: TelemetrySample | nul
   for (const metric of DASHBOARD_PULSE) {
     const valueNode = lane.valueNodes.get(metric.id);
     if (valueNode) valueNode.textContent = pulseDisplayValue(metric.id, sample);
-    setDashboardGraphCeiling(lane, metric.id, sample ? pulseSampleValue(metric.id, sample) : undefined);
     updatePulsePath(lane, metric.id);
   }
   updateSessionStats(lane);
@@ -350,11 +239,6 @@ function pulseLaneElement(
   lane.pathNodes.clear();
   lane.rangeMinNodes.clear();
   lane.rangeMaxNodes.clear();
-  lane.axisMinNodes.clear();
-  lane.axisMaxNodes.clear();
-  lane.graphSurfaceNodes.clear();
-  lane.crosshairNodes.clear();
-  lane.hoverNodes.clear();
   const pulseCards = DASHBOARD_PULSE.map((metric) => {
     const path = svgEl('path', {
       d: 'M 0 16 L 120 16',
@@ -378,38 +262,6 @@ function pulseLaneElement(
     const rangeMaxNode = el('strong', { text: '—' });
     lane.rangeMinNodes.set(metric.id, rangeMinNode);
     lane.rangeMaxNodes.set(metric.id, rangeMaxNode);
-    const axisMaxNode = el('span', { class: 'dashboard-sparkline-axis-label dashboard-sparkline-axis-y dashboard-sparkline-axis-y-max', hidden: true });
-    const axisMinNode = el('span', { class: 'dashboard-sparkline-axis-label dashboard-sparkline-axis-y dashboard-sparkline-axis-y-min', hidden: true });
-    const crosshair = el('span', { class: 'dashboard-sparkline-crosshair', hidden: true, 'aria-hidden': 'true' });
-    const hover = el('span', { class: 'dashboard-sparkline-hover', hidden: true, role: 'status' });
-    const grid = el('div', { class: 'dashboard-sparkline-grid', 'aria-hidden': 'true' }, [
-      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-h dashboard-sparkline-grid-top' }),
-      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-h dashboard-sparkline-grid-mid' }),
-      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-h dashboard-sparkline-grid-bottom' }),
-      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-v dashboard-sparkline-grid-left' }),
-      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-v dashboard-sparkline-grid-quarter' }),
-      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-v dashboard-sparkline-grid-half' }),
-      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-v dashboard-sparkline-grid-three-quarter' }),
-      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-v dashboard-sparkline-grid-right' }),
-    ]);
-    const axisRail = el('div', { class: 'dashboard-sparkline-axis-rail', 'aria-hidden': 'true' }, [axisMaxNode, axisMinNode]);
-    const surface = el('div', { class: 'dashboard-sparkline-surface', 'aria-label': `${metric.label} graph` }, [svg, grid, crosshair, hover]);
-    const layout = el('div', { class: 'dashboard-sparkline-layout' }, [axisRail, surface]);
-    lane.axisMaxNodes.set(metric.id, axisMaxNode);
-    lane.axisMinNodes.set(metric.id, axisMinNode);
-    lane.graphSurfaceNodes.set(metric.id, surface);
-    lane.crosshairNodes.set(metric.id, crosshair);
-    lane.hoverNodes.set(metric.id, hover);
-    surface.addEventListener('pointermove', (event) => {
-      const rect = surface.getBoundingClientRect();
-      if (rect.width <= 0) return;
-      lane.pointerRatios.set(metric.id, Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)));
-      updatePulsePath(lane, metric.id);
-    });
-    surface.addEventListener('pointerleave', () => {
-      lane.pointerRatios.set(metric.id, null);
-      updatePulsePath(lane, metric.id);
-    });
     const range = el('div', { class: 'dashboard-sparkline-range', 'aria-label': `${metric.label} graph range` }, [
       el('span', {}, [el('span', { class: 'dashboard-sparkline-range-label', text: 'Min' }), rangeMinNode]),
       el('span', {}, [el('span', { class: 'dashboard-sparkline-range-label', text: 'Max' }), rangeMaxNode]),
@@ -419,7 +271,7 @@ function pulseLaneElement(
         el('span', { class: 'dashboard-pulse-label', text: metric.label }),
         el('span', { class: 'dashboard-pulse-inline-value' }, [valueNode, el('span', { class: 'dashboard-pulse-unit', text: metric.unit })]),
       ]),
-      layout,
+      svg,
       range,
     ]);
   });
@@ -461,12 +313,6 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
   for (const key of dashboardPulseLanes.keys()) {
     if (!activeKeys.has(key)) dashboardPulseLanes.delete(key);
   }
-  const laneElement = (entry: typeof entries[number]): HTMLElement => {
-    const lane = pulseLaneFor(entry.key);
-    if (entry.device) setDashboardVramCapacity(lane, entry.device.vramBytes, entry.device.sharedMemoryBytes);
-    else setDashboardVramCapacity(lane, state.osGpu?.vramBytes, state.osGpu?.sharedMemoryBytes);
-    return pulseLaneElement(lane, entry.label, entry.name, entry.sample);
-  };
   return el('section', { class: 'card dashboard-pulse-card' }, [
     el('div', { class: 'dashboard-pulse-heading' }, [
       el('div', {}, [
@@ -475,7 +321,9 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
       ]),
       el('span', { class: `dashboard-pulse-device${entries.length ? '' : ' text-unknown' }`, text: `${entries.length} GPU${entries.length === 1 ? '' : 's'}` }),
     ]),
-    el('div', { class: 'dashboard-pulse-lanes' }, entries.map(laneElement)),
+    el('div', { class: 'dashboard-pulse-lanes' }, entries.map((entry) => pulseLaneElement(
+      pulseLaneFor(entry.key), entry.label, entry.name, entry.sample,
+    ))),
   ]);
 }
 

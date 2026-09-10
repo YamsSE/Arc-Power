@@ -2083,25 +2083,37 @@ export const tuningPage: Page = {
       }
     };
 
+    const tuningSubtitle = view === 'fan'
+      ? 'Edit the fan curve or switch the fan mode. Changes apply on demand.'
+      : (controls.length === 0
+        ? 'This GPU does not expose any overclocking controls (locked or telemetry-only).'
+        : 'Values are clamped to the range reported by this GPU. Changes apply on demand - nothing is applied until you press Apply.');
+    const tuningHero = el('header', { class: 'arc-page-hero tuning-page-hero' }, [
+      el('div', { class: 'arc-page-hero-copy' }, [
+        el('span', { class: 'arc-section-kicker', text: 'GPU CONTROL' }),
+        el('h1', { class: 'page-title', text: 'Tuning' }),
+        el('p', { class: 'page-subtitle', text: tuningSubtitle }),
+      ]),
+      el('div', { class: 'arc-page-hero-status' }, [
+        el('span', { class: 'arc-status-dot' }),
+        el('span', { class: 'arc-status-copy' }, [
+          el('strong', { text: caps.deviceName || 'GPU' }),
+          el('small', { text: view === 'fan' ? 'Fan curve surface' : (controls.length > 0 ? 'Tuning controls ready' : 'Telemetry-only adapter') }),
+        ]),
+      ]),
+    ]);
+
     // M4-D2 (§8): the page shell (title + subtitle + the pill row) renders
     // once; the ACTIVE VIEW's content lives in the view container below
     // (renderView builds it - the OC controls or the fan curve editor).
     viewContainer = el('div', { class: 'tuning-view' });
     container.append(
-      el('h1', { class: 'page-title', text: 'Tuning' }),
-      el('p', {
-        class: 'page-subtitle',
-        text: view === 'fan'
-          ? 'Edit the fan curve or switch the fan mode. Changes apply on demand.'
-          : (controls.length === 0
-            ? 'This GPU does not expose any overclocking controls (locked or telemetry-only).'
-            : 'Values are clamped to the range reported by this GPU. Changes apply on demand - nothing is applied until you press Apply.'),
-      }),
+      tuningHero,
       // M4-A (correction): the waiver STATUS lives ONLY in the dashboard
       // GPU Status card - this page keeps no waiver UI beyond the apply-time
       // dialog gate (ensureWaiver above). The pill row renders for every
       // device: the Fan Curve view must stay reachable on no-OC devices.
-      modeRow,
+      el('div', { class: 'arc-page-toolbar' }, [modeRow]),
       viewContainer,
     );
     renderView();

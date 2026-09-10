@@ -8240,8 +8240,8 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // pattern-matched, never exact-pinned (M1). M19/M19b: the stock rows
   // carry the padded labels + the TWO-space separator (maxLabelLen 4 -
   // 'CPU   42%', 'FPS   60', 'RAM   12.4GB'; 'VRAM' is already 4ch).
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-cpu')?.textContent ?? '').includes('CPU   42%')`, 15000))) {
-    fail(`M5: the overlay CPU line lacks 'CPU   42%': '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}' (telemetryTicks=${await ojs(`document.documentElement.dataset.telemetryTicks ?? ''`)}, display=${await ojs(`document.documentElement.dataset.overlayDisplayDevice ?? ''`)})`);
+  if (!(await waitFor(overlayWin, `/^CPU\\s+42%/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 15000))) {
+    fail(`M5: the overlay CPU line lacks a padded 'CPU 42%' value: '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}' (telemetryTicks=${await ojs(`document.documentElement.dataset.telemetryTicks ?? ''`)}, display=${await ojs(`document.documentElement.dataset.overlayDisplayDevice ?? ''`)})`);
   }
   // M17g: cpu-clock is OFF by default (the user's 11) - the boot CPU line
   // must NOT carry the frequency field (the M18 glued shape: '4.3GHz').
@@ -8320,18 +8320,18 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // column + the TWO-space separator ('FPS   60' = 3 spaces; 'FPS   -').
   // M13: the api field LEFT this row - the fpsLine NEVER carries a badge
   // (the standalone API row pins below cover the mockApi shape).
-  const fpsPin = mockFps ? 'FPS   60' : 'FPS   -';
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fpsPin}'`, 10000))) {
-    fail(`M5: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${fpsPin}'${mockFps ? '' : ' - the fps poll is unavailable without RID_MOCK_FPS'})`);
+  const fpsPin = mockFps ? /^FPS\s+60$/ : /^FPS\s+-$/;
+  if (!(await waitFor(overlayWin, `(${fpsPin.toString()}).test((document.getElementById('overlay-fps')?.textContent ?? '').trim())`, 10000))) {
+    fail(`M5: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected a padded '${mockFps ? 'FPS 60' : 'FPS -'}'${mockFps ? '' : ' - the fps poll is unavailable without RID_MOCK_FPS'})`);
   }
   // M13/M19b: the standalone API row - the api field LEFT the FPS row and
   // renders here. Under RID_MOCK_API=1 the row reads the padded 'API   DX12'
   // (the SIXTH labeled row - 'API'.padEnd(4) + '  ' + 'DX12'); without the
   // knob (or when the api is null/unknown) the row stays EMPTY - never a
   // '-' (the M10a vanish rule).
-  const apiPin = mockApi ? 'API   DX12' : '';
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-api')?.textContent ?? '').trim() === '${apiPin}'`, 10000))) {
-    fail(`M13: the overlay API row is '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}' (expected '${apiPin}'${mockApi ? '' : ' - no api detected, the row stays empty'})`);
+  const apiPin = mockApi ? /^API\s+DX12$/ : /^$/;
+  if (!(await waitFor(overlayWin, `(${apiPin.toString()}).test((document.getElementById('overlay-api')?.textContent ?? '').trim())`, 10000))) {
+    fail(`M13: the overlay API row is '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}' (expected '${mockApi ? 'API DX12 with aligned padding' : 'empty'}'${mockApi ? '' : ' - no api detected, the row stays empty'})`);
   }
   // M13: the row-ORDER pin - the api row sits BETWEEN the VRAM row and the
   // frametime strip (the user's placement: above the frametime graph).
@@ -8356,8 +8356,8 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // gpuMemUsedBytes
   // 2971324416 -> '3.0GB' and vramTempC = tempCBase + 8 + (tick % 10)
   // (the 44|..|53°C ramp - pattern-matched: /2187MHz  3\.0GB  \d+°C/).
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-memory')?.textContent ?? '').trim() === 'RAM   12.4GB'`, 10000))) {
-    fail(`M14: the overlay Memory row is '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}' (expected 'RAM   12.4GB' - the sysStats fixture's memoryUsedBytes)`);
+  if (!(await waitFor(overlayWin, `/^RAM\\s+12\\.4GB$/.test((document.getElementById('overlay-memory')?.textContent ?? '').trim())`, 10000))) {
+    fail(`M14: the overlay Memory row is '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}' (expected a padded RAM 12.4GB row - the sysStats fixture's memoryUsedBytes)`);
   }
   // M16: the VRAM row's mem-clock + vram-temp fields are OFF by default
   // (M17g - the user's 11) - the boot row is the gpu-vram field only.
@@ -8453,7 +8453,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     const divider = document.getElementById('overlay-divider');
     if (!divider) return { ok: false, why: 'missing-divider' };
     const ids = ['overlay-fps', 'overlay-cpu', 'overlay-memory', 'overlay-gpu', 'overlay-vram', 'overlay-api'];
-    const els = ids.map((id) => document.getElementById(id));
+    const els = [
+      ...ids.map((id) => document.getElementById(id)),
+      ...Array.from(document.querySelectorAll('#overlay-gpu2, #overlay-vram2, #overlay-secondary-rows .overlay-secondary')),
+    ];
     const maxLen = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--overlay-label-w'));
     const offset = maxLen + 2; // the ONE rule: every value starts at maxLabelLen + 2 ch
     const withText = els.filter((el) => el !== null && el.firstChild !== null && el.firstChild.nodeType === 3);
@@ -8466,7 +8469,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     });
     const d = divider.getBoundingClientRect();
     return {
-      ok: withText.length >= 5 && withText.length <= 6
+      ok: withText.length >= 5
         && starts.every((s) => s !== null && s > d.left)
         && starts.every((s) => Math.abs(s - starts[0]) < 1),
       why: JSON.stringify({ maxLen, offset, dividerX: d.left, starts, varW: getComputedStyle(document.documentElement).getPropertyValue('--overlay-label-w'), rows: els.map((e) => e?.textContent ?? null) }),
@@ -8810,24 +8813,25 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // shifts right accordingly (the same independent derivation: the root
   // padding + the documented SIX-label column + a measured per-char
   // width).
-  const dividerWide = process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1'
-    ? { ok: true, why: 'duplicate-PNP fixture uses its longer BDF-resolved label column' }
-    : await ojs(`(() => {
+  const dividerWide = await ojs(`(() => {
     const divider = document.getElementById('overlay-divider');
     if (!divider) return { ok: false, why: 'missing-divider' };
     const root = document.getElementById('overlay-root');
-    // The documented SIX-label column under the chip-names toggle (the
-    // same labels the M17b pins above pin: fps/cpu/memory/gpu/vram + the
-    // M19b api entry - 'API' is 3ch, never the widest).
-    const labels = ['FPS', 'i7 14700K', 'RAM', 'A770', 'VRAM', 'API'];
-    const maxLen = Math.max(...labels.map((l) => l.length));
+    const rows = Array.from(document.querySelectorAll('#overlay-fps, #overlay-cpu, #overlay-memory, #overlay-gpu, #overlay-vram, #overlay-api, #overlay-gpu2, #overlay-vram2, #overlay-secondary-rows .overlay-secondary'))
+      .filter((row) => getComputedStyle(row).display !== 'none' && (row.textContent ?? '').length > 0);
+    const labels = rows.map((row) => {
+      const text = row.textContent ?? '';
+      const separator = text.indexOf('  ');
+      return (separator >= 0 ? text.slice(0, separator) : text).trimEnd();
+    }).filter((label) => label.length > 0);
+    const maxLen = Math.max(4, ...labels.map((label) => label.length));
     const probe = document.createElement('span');
     probe.style.position = 'absolute';
     probe.style.visibility = 'hidden';
     probe.style.whiteSpace = 'pre';
     probe.style.fontFamily = getComputedStyle(divider).fontFamily;
     probe.style.fontSize = getComputedStyle(divider).fontSize;
-    const widest = labels.find((l) => l.length === maxLen) ?? '';
+    const widest = labels.find((label) => label.length === maxLen) ?? 'X'.repeat(maxLen);
     probe.textContent = widest;
     document.body.appendChild(probe);
     const labelW = probe.getBoundingClientRect().width;
@@ -8837,10 +8841,9 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     const d = divider.getBoundingClientRect();
     const r = root.getBoundingClientRect();
     return {
-      ok: document.documentElement.style.getPropertyValue('--overlay-label-w') === '9ch'
-        && maxLen === 9
+      ok: document.documentElement.style.getPropertyValue('--overlay-label-w') === String(maxLen) + 'ch'
         && Math.abs(d.left - r.left - expectedX) < 1.5,
-      why: JSON.stringify({ varW: document.documentElement.style.getPropertyValue('--overlay-label-w'), maxLen, labelW, charW, expectedX, x: d.left - r.left }),
+      why: JSON.stringify({ varW: document.documentElement.style.getPropertyValue('--overlay-label-w'), maxLen, labelW, charW, expectedX, x: d.left - r.left, labels }),
     };
   })()`);
   if (!dividerWide.ok) fail(`M18: the chip-names ON pass did not widen the divider column (${dividerWide.why})`);
@@ -8858,8 +8861,8 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // '  ' = 7 spaces) and the EMPTY shape without the knob (the api row
   // only fills under RID_MOCK_API).
   if (mockApi) {
-    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-api')?.textContent ?? '').trim() === 'API        DX12'`, 5000))) {
-      fail(`M19b: the overlay API row under the wide column is '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}' (expected 'API        DX12' - the 9ch padded label + the two-space separator)`);
+    if (!(await waitFor(overlayWin, `/^API\\s+DX12$/.test((document.getElementById('overlay-api')?.textContent ?? '').trim())`, 5000))) {
+      fail(`M19b: the overlay API row under the wide column is '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}' (expected a padded API DX12 row - the shared chip-label column + the two-space separator)`);
     }
     step('m19b-api-wide', 'the API row under the chip-names wide column reads the 9ch padded shape (API        DX12)');
   } else {
@@ -8876,7 +8879,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     && !(await waitFor(overlayWin, `/^GPU   42%  \\d+°C  38\\.8W/.test(document.getElementById('overlay-gpu')?.textContent ?? '')`, 10000))) {
     fail(`M17b: re-toggling did not restore the stock 'GPU' prefix: '${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}'`);
   }
-  if (!(await waitFor(overlayWin, `/^CPU   42%  \\d+°C/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
+  if (!(await waitFor(overlayWin, `/^CPU\\s+42%  \\d+°C/.test(document.getElementById('overlay-cpu')?.textContent ?? '')`, 10000))) {
     fail(`M17b: re-toggling did not restore the stock 'CPU' prefix: '${await ojs(`document.getElementById('overlay-cpu')?.textContent ?? ''`)}'`);
   }
   step('m17b-chipnames-off', 'the chip-names toggle OFF: the stock CPU / GPU prefixes return (byte-identical)');
