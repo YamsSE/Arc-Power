@@ -16,5 +16,9 @@ tools/
 pipeline/
 .opencode/
 
+# Local Codex orchestration state (not part of the application)
+.agents/skills/astra-orchestrator/
+.codex/
+
 # Dev tools (website asset generation, asar verification — not part of the software)
 scripts/
