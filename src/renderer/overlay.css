@@ -26,6 +26,134 @@ body {
   padding: 0.25rem 0.4rem;
 }
 
+/* -------------------------------------------------------------------------
+   Independent hook-free renderer. The layout borrows the useful visual
+   language of modern performance HUDs (grouped labels, right-aligned values,
+   compact charts) but is Arc Power markup and styling, with no CapFrameX
+   binary or asset dependency. */
+#capframex-root {
+  display: none;
+  position: relative;
+  width: 100%;
+  min-height: 100%;
+  color: #f3f6ff;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', Arial, sans-serif;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+html[data-overlay-renderer="capframex"] #capframex-root { display: block; }
+html[data-overlay-renderer="capframex"] #overlay-backdrop,
+html[data-overlay-renderer="capframex"] #overlay-divider,
+html[data-overlay-renderer="capframex"] #overlay-fps,
+html[data-overlay-renderer="capframex"] #overlay-cpu,
+html[data-overlay-renderer="capframex"] #overlay-memory,
+html[data-overlay-renderer="capframex"] #overlay-gpu,
+html[data-overlay-renderer="capframex"] #overlay-vram,
+html[data-overlay-renderer="capframex"] #overlay-gpu2,
+html[data-overlay-renderer="capframex"] #overlay-vram2,
+html[data-overlay-renderer="capframex"] #overlay-secondary-rows,
+html[data-overlay-renderer="capframex"] #overlay-api,
+html[data-overlay-renderer="capframex"] #overlay-frametime,
+html[data-overlay-renderer="capframex"] #overlay-frametime-value {
+  display: none !important;
+}
+
+.capframex-panel {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0.45rem 0.6rem 0.55rem;
+  background: rgba(10, 10, 18, 0.86);
+  border: 1px solid rgba(105, 113, 148, 0.28);
+  border-radius: 0.3rem;
+  overflow: hidden;
+}
+
+.capframex-section {
+  margin: 0 0 0.34rem;
+  padding-bottom: 0.28rem;
+  border-bottom: 1px solid rgba(131, 139, 171, 0.22);
+}
+
+.capframex-section-title,
+.capframex-gpu-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.7rem;
+  min-width: 0;
+  margin-bottom: 0.13rem;
+  color: #c5a3ff;
+  font-size: 0.78rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.capframex-gpu-title span:first-child,
+.capframex-cpu-title span:first-child { overflow: hidden; text-overflow: ellipsis; }
+
+.capframex-gpu-title .capframex-clock,
+.capframex-gpu-title .capframex-memory-clock {
+  flex: 0 0 auto;
+  color: #ffe800;
+  font-weight: 700;
+}
+
+.capframex-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  column-gap: 0.55rem;
+  min-height: 1.02rem;
+  font-size: 0.78rem;
+  line-height: 1.18;
+}
+
+.capframex-label { overflow: hidden; color: #c5a3ff; text-overflow: ellipsis; white-space: nowrap; }
+.capframex-row > span:not(.capframex-label) { color: #ffe800; font-weight: 700; white-space: nowrap; }
+.capframex-cpu-title { color: #ff5057; }
+.capframex-cpu-section .capframex-label { color: #ff5057; }
+.capframex-cpu-section .capframex-row > span:not(.capframex-label) { color: #f1f2f8; }
+.capframex-memory-row { margin: 0.08rem 0 0.34rem; }
+.capframex-memory-row .capframex-label { color: #91d9ee; }
+.capframex-api-row { margin: 0.02rem 0 0.3rem; color: var(--capframex-accent, #ffffff); font-size: 0.76rem; font-weight: 700; text-align: right; }
+
+.capframex-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(4.4rem, 1fr));
+  gap: 0.3rem;
+  margin: 0.22rem 0 0.38rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid rgba(131, 139, 171, 0.22);
+  border-bottom: 1px solid rgba(131, 139, 171, 0.22);
+}
+
+.capframex-summary > div { min-width: 0; }
+.capframex-summary-label { display: block; color: #9ee22d; font-size: 0.68rem; white-space: nowrap; }
+.capframex-summary strong,
+.capframex-summary span:last-child { color: var(--capframex-accent, #9ee22d); font-size: 0.74rem; font-weight: 700; }
+.capframex-summary strong { margin-right: 0.25rem; }
+.capframex-summary [hidden] { display: none; }
+
+.capframex-chart-card {
+  margin-top: 0.32rem;
+  padding: 0.26rem 0.35rem 0.28rem;
+  background: rgba(12, 12, 22, 0.7);
+  border: 1px solid rgba(131, 139, 171, 0.2);
+  border-radius: 0.26rem;
+}
+
+.capframex-chart-heading {
+  display: flex;
+  justify-content: space-between;
+  color: #bdc1d4;
+  font-size: 0.7rem;
+}
+
+.capframex-chart-heading span:last-child { color: #c7cadb; }
+.capframex-chart { display: block; width: 100%; height: 2.25rem; margin-top: 0.12rem; }
+
 /* M7b (fix 4): the OPTIONAL background box behind the HUD (the Appearance
    card's Background section). Hidden by default; overlay.ts toggles the
    .visible class from the persisted overlayBgEnabled and drives the two

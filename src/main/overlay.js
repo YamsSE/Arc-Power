@@ -50,6 +50,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *  M16 200px bump is rolled back. */
 const OVERLAY_BASE_WIDTH = 460;
 const OVERLAY_BASE_HEIGHT = 170;
+// The hook-free renderer has a grouped, two-column layout and two compact
+// charts, so it needs a little more room than the single RTSS text stack.
+const CAPFRAMEX_BASE_WIDTH = 380;
+const CAPFRAMEX_BASE_HEIGHT = 390;
 /** The margin from the display edge (every corner). */
 const OVERLAY_MARGIN = 8;
 
@@ -100,6 +104,7 @@ const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
 // stays one click away via the Overlay Settings Theme row).
 const OVERLAY_THEMES = ['classic', 'arc'];
 const OVERLAY_THEME_DEFAULT = 'arc';
+const OVERLAY_RENDERERS = ['rtss', 'capframex'];
 
 /**
  * Normalize a raw settings object into the overlay's applied shape (the
@@ -117,6 +122,7 @@ function normalizeSettings(raw = {}) {
   const hotkeyLetter = typeof raw.hotkeyLetter === 'string' && /^[A-Za-z]$/.test(raw.hotkeyLetter)
     ? raw.hotkeyLetter.toUpperCase()
     : 'O';
+  const renderer = OVERLAY_RENDERERS.includes(raw.renderer) ? raw.renderer : 'rtss';
   // M6: the text color (a /^#[0-9a-fA-F]{6}$/ hex - the stock white
   // default) + the enabled stats (known ids, deduped; absent/garbage ->
   // the DEFAULT set - M17g: the user's 11 ON / the others OFF, the same
@@ -151,6 +157,11 @@ function normalizeSettings(raw = {}) {
     : null;
   return {
     enabled: raw.enabled === true,
+    renderer,
+    // ui-verify intentionally exercises the software window even though the
+    // persisted provider default remains RTSS. This transient flag never
+    // leaves the overlay payload and is not a user setting.
+    softwareRenderer: raw.softwareRenderer === true,
     position,
     scale,
     hotkeyLetter,
@@ -302,9 +313,12 @@ export function createOverlayWindow({ getOverlaySettings }) {
       ? measuredDeviceCount
       : Math.max(1, configuredCount);
     const secondaryCount = Math.max(0, deviceCount - 1);
+    const capframex = applied.renderer === 'capframex';
     return {
-      width: Math.round(OVERLAY_BASE_WIDTH * scale),
-      height: Math.round((OVERLAY_BASE_HEIGHT + secondaryCount * 28) * scale),
+      width: Math.round((capframex ? CAPFRAMEX_BASE_WIDTH : OVERLAY_BASE_WIDTH) * scale),
+      height: Math.round((capframex
+        ? CAPFRAMEX_BASE_HEIGHT + secondaryCount * 92
+        : OVERLAY_BASE_HEIGHT + secondaryCount * 28) * scale),
     };
   };
 
@@ -323,6 +337,8 @@ export function createOverlayWindow({ getOverlaySettings }) {
   /** The payload pushed to the overlay renderer (the scale source of truth). */
   const payload = () => ({
     enabled: applied.enabled,
+    renderer: applied.renderer,
+    softwareRenderer: applied.softwareRenderer,
     position: applied.position,
     scale: applied.scale,
     hotkeyLetter: applied.hotkeyLetter,

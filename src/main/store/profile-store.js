@@ -39,6 +39,11 @@ const OVERLAY_SCALE_STEP = 0.25;
 const OVERLAY_THEMES = ['classic', 'arc'];
 const OVERLAY_THEME_DEFAULT = 'arc';
 
+// The overlay renderer is additive so older settings files keep their
+// existing envelope. Missing values intentionally resolve to the native RTSS
+// path everywhere; the hook-free renderer is opt-in.
+export const OVERLAY_RENDERERS = ['rtss', 'capframex'];
+
 // M23: the ADVANCED overlay's anchored-edge ids - the persisted-truth owner
 // of the list (the OVERLAY_POSITIONS pattern). The renderer mirror lives in
 // src/renderer/pure/overlay.ts and the envelope validation in
@@ -433,7 +438,7 @@ export class ProfileStore {
    * files -> the defaults (off / 'P' / 'right'; the M5 overlaySettings
    * pattern, NO schema bump - NO scale key, the panel is a fixed compact
    * size).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, rtssOnBoot?: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, monitorLogMetrics?: string[], deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, rtssOnBoot?: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, monitorLogMetrics?: string[], deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -606,11 +611,16 @@ export class ProfileStore {
     // envelopes until the user explicitly changes the new setting, while
     // every consumer treats an absent value as disabled.
     if (data.rtssOnBoot !== undefined) out.rtssOnBoot = data.rtssOnBoot === true;
+    if (data.overlayRenderer !== undefined) {
+      out.overlayRenderer = OVERLAY_RENDERERS.includes(data.overlayRenderer)
+        ? data.overlayRenderer
+        : 'rtss';
+    }
     return out;
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, rtssOnBoot?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, monitorLogMetrics?: string[], deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, rtssOnBoot?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, monitorLogMetrics?: string[], deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
   async saveSettings(settings) {
     const persisted = {
@@ -715,6 +725,10 @@ export class ProfileStore {
       ? settings.rtssOnBoot === true
       : this._settingsCache?.rtssOnBoot;
     if (rtssOnBoot !== undefined) persisted.rtssOnBoot = rtssOnBoot === true;
+    const overlayRenderer = settings.overlayRenderer !== undefined
+      ? (OVERLAY_RENDERERS.includes(settings.overlayRenderer) ? settings.overlayRenderer : 'rtss')
+      : this._settingsCache?.overlayRenderer;
+    if (overlayRenderer !== undefined) persisted.overlayRenderer = overlayRenderer;
     this._writeAtomic(this.settingsPath, persisted);
     // M4-D2: keep the sync cache in lockstep with the persisted write - the
     // close handler must see the very toggle it just persisted.
@@ -724,6 +738,7 @@ export class ProfileStore {
       ...(ocModeMap !== undefined ? { ocModes: ocModeMap } : {}),
       ...(monitorLogMetrics !== undefined ? { monitorLogMetrics } : {}),
       ...(rtssOnBoot !== undefined ? { rtssOnBoot } : {}),
+      ...(overlayRenderer !== undefined ? { overlayRenderer } : {}),
       schemaVersion: SCHEMA_VERSION,
     });
   }

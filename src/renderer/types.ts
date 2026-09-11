@@ -663,9 +663,16 @@ export interface Profile {
 /** M5: the 4 overlay corners (mirrors profile-store.js + pure/overlay.ts). */
 export type OverlayPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 
+/** Optional overlay presentation provider. Missing persisted values resolve to
+ * the native RTSS path for backwards compatibility. */
+export type OverlayRenderer = 'rtss' | 'capframex';
+
 /** M5: the persisted overlay settings (absent on old files -> the defaults). */
 export interface OverlaySettings {
   enabled: boolean;
+  renderer?: OverlayRenderer;
+  /** Test-only transient flag; the persisted provider remains RTSS by default. */
+  softwareRenderer?: boolean;
   hotkeyLetter: string;
   position: OverlayPosition;
   scale: number;
@@ -720,6 +727,7 @@ export interface OverlayState {
   /** Native RTSS mapping capability/state for the product telemetry HUD. */
   available?: boolean;
   provider?: 'rtss' | 'electron';
+  renderer?: OverlayRenderer;
 }
 
 /** M23/M51: the ADVANCED-overlay settings push payload. Software theme
@@ -775,6 +783,8 @@ export interface ProfileSettingsState {
   theme: Theme;
   /** M5: software overlay settings. */
   overlayEnabled: boolean;
+  /** Optional overlay renderer; absent legacy values mean RTSS. */
+  overlayRenderer?: OverlayRenderer;
   overlayHotkeyLetter: string;
   overlayPosition: OverlayPosition;
   overlayScale: number;

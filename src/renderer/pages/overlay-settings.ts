@@ -46,6 +46,7 @@ import {
   OVERLAY_POLL_MS_MAX,
   isValidOverlayPosition,
   isValidOverlayColor,
+  isValidOverlayRenderer,
   clampOverlayScale,
   clampOverlayPollMs,
   // M23: the ADVANCED overlay's anchored-edge mirror (pure/overlay.ts - the
@@ -55,7 +56,7 @@ import {
   isValidAdvancedOverlayPosition,
 } from '../pure/overlay.ts';
 import { dedupeOverlayDevices, overlayDeviceOrder } from '../pure/overlay-routing.ts';
-import type { OverlayPosition, OverlayState, AdvancedOverlayState, RtssStartupState } from '../types.ts';
+import type { OverlayPosition, OverlayRenderer, OverlayState, AdvancedOverlayState, RtssStartupState } from '../types.ts';
 
 // M9: the Overlay Settings content renderer - the old page module's export
 // (the fan-editor.ts precedent: the old page shell moved into the
@@ -105,6 +106,7 @@ async function resolveOverlayDisplayOrder(devices: OverlayDevice[]): Promise<Ove
 
 interface PersistedOverlay {
   enabled: boolean;
+  renderer: OverlayRenderer;
   hotkeyLetter: string;
   position: OverlayPosition;
   scale: number;
@@ -191,6 +193,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const s = envelope.settings;
     persisted = {
       enabled: s.overlayEnabled === true,
+      renderer: isValidOverlayRenderer(s.overlayRenderer) ? s.overlayRenderer : 'rtss',
       hotkeyLetter: typeof s.overlayHotkeyLetter === 'string'
         && /^[A-Za-z]$/.test(s.overlayHotkeyLetter)
         ? s.overlayHotkeyLetter
@@ -264,17 +267,18 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ? overlayState.available === true
       : overlayState?.exists === true);
     const liveHotkey = overlayState?.hotkeyRegistered !== false;
+    const rendererLabel = persisted.renderer === 'capframex' ? 'CapFrameX-style · hook-free' : 'RTSS · native';
     const hero = el('header', { class: 'overlay-settings-hero' }, [
       el('div', { class: 'overlay-hero-copy' }, [
         el('span', { class: 'overlay-section-kicker', text: 'OVERLAY CONTROL' }),
         el('h2', { class: 'overlay-hero-title', text: 'Overlay Settings' }),
-        el('p', { class: 'overlay-hero-subtitle', text: 'Tune your RTSS telemetry HUD, visual system, and interactive panel.' }),
+        el('p', { class: 'overlay-hero-subtitle', text: 'Choose a native RTSS HUD or an independent hook-free performance overlay.' }),
       ]),
       el('div', { class: 'overlay-hero-status', dataset: { status: liveOverlay ? 'active' : 'idle' } }, [
         el('span', { class: 'overlay-status-dot' }),
         el('span', { class: 'overlay-status-copy' }, [
           el('strong', { text: liveOverlay ? 'Overlay active' : 'Overlay disabled' }),
-          el('small', { text: `Classic theme · ${liveHotkey ? 'HUD ready' : 'HUD hotkey unavailable'}` }),
+          el('small', { text: `${rendererLabel} · ${liveHotkey ? 'HUD ready' : 'HUD hotkey unavailable'}` }),
         ]),
       ]),
     ]);
@@ -344,6 +348,20 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         el('span', { text: 'Start RTSS with Windows' }),
       ]),
     ]);
+    const rendererOptions = el('div', { class: 'overlay-renderer-options' }, [
+      el('button', {
+        type: 'button',
+        class: `theme-option overlay-renderer-option${persisted.renderer === 'rtss' ? ' active' : ''}`,
+        dataset: { overlayRenderer: 'rtss' },
+        onclick: () => void onRendererSelect('rtss'),
+      }, [el('strong', { text: 'RTSS' }), el('small', { text: 'Native OSD' })]),
+      el('button', {
+        type: 'button',
+        class: `theme-option overlay-renderer-option${persisted.renderer === 'capframex' ? ' active' : ''}`,
+        dataset: { overlayRenderer: 'capframex' },
+        onclick: () => void onRendererSelect('capframex'),
+      }, [el('strong', { text: 'CapFrameX style' }), el('small', { text: 'Hook-free' })]),
+    ]);
     // --- General card (M6-amd3): the enable TOGGLE - moved here from the
     // Settings page (the Settings card is button-only now). The
     // .settings-checkbox[data-setting="overlayEnabled"] class + dataset
@@ -352,6 +370,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       el('div', { class: 'overlay-card-heading' }, [
         el('div', {}, [el('span', { class: 'overlay-card-eyebrow', text: 'HUD BEHAVIOR' }), el('h2', { class: 'card-title', text: 'HUD Behavior' })]),
         el('span', { class: 'overlay-value-badge', text: persisted.enabled ? 'ON' : 'OFF' }),
+      ]),
+      el('div', { class: 'overlay-renderer-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Provider' }),
+        rendererOptions,
       ]),
       el('div', { class: 'settings-row' }, [
         el('label', { class: 'boot-toggle' }, [
@@ -362,7 +384,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
             checked: persisted.enabled,
             onchange: (ev: Event) => void onOverlayEnabledToggle((ev.target as HTMLInputElement).checked),
           }),
-          el('span', { text: 'Show RTSS Overlay' }),
+          el('span', { text: persisted.renderer === 'capframex' ? 'Show CapFrameX-style Overlay' : 'Show RTSS Overlay' }),
         ]),
       ]),
       // M25: the "Show Advanced Overlay" toggle moved here from the
@@ -654,6 +676,24 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   // --- M6 handlers (every save goes through profiles-settings-save;
   // main's onOverlaySettings then applies + pushes 'overlay:settings' to
   // the overlay window so the HUD re-renders immediately).
+
+  const onRendererSelect = async (nextRenderer: OverlayRenderer): Promise<void> => {
+    if (!isValidOverlayRenderer(nextRenderer) || nextRenderer === persisted.renderer) return;
+    const previous = persisted.renderer;
+    persisted.renderer = nextRenderer;
+    render();
+    try {
+      await api.profilesSettingsSave({ overlayRenderer: nextRenderer });
+      toast('success', nextRenderer === 'capframex' ? 'Hook-free overlay selected' : 'RTSS overlay selected', nextRenderer === 'capframex'
+        ? 'Arc Power will render the grouped performance HUD directly.'
+        : 'RTSS will render the native telemetry HUD.');
+      await refresh();
+    } catch (err) {
+      persisted.renderer = previous;
+      toast('error', 'Overlay provider could not be changed', err instanceof Error ? err.message : String(err));
+      render();
+    }
+  };
 
   // M6-amd3: the enable toggle (moved from the Settings page; the same
   // read-modify-write save + the honest error revert).

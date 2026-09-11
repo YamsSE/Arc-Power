@@ -41,7 +41,7 @@ import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
 import { executeApply, withCapabilityFlags, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, tempCapabilityRefusal, tempCapabilityPerControl, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED, ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
-import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT, normalizeMonitorLogMetrics, activeProfileEntries } from './store/profile-store.js';
+import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_RENDERERS, normalizeMonitorLogMetrics, activeProfileEntries } from './store/profile-store.js';
 // M17c: the vendor-telemetry lane (non-Intel GPU readouts - NVML/ADL via
 // koffi, hook = the no-device telemetry path, mock fixtures under
 // RID_MOCK_VENDOR).
@@ -422,6 +422,16 @@ export function clampOverlayScale(v) {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : 1.0;
   const clamped = Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
   return Math.round(clamped / OVERLAY_SCALE_STEP) * OVERLAY_SCALE_STEP;
+}
+
+/** The optional overlay renderer is deliberately additive: omitted/legacy
+ * settings use RTSS, while the hook-free CapFrameX-style surface is explicit.
+ */
+export function validateOverlayRenderer(v) {
+  if (typeof v !== 'string' || !OVERLAY_RENDERERS.includes(v)) {
+    throw new Error(`overlayRenderer must be one of: ${OVERLAY_RENDERERS.join(', ')}`);
+  }
+  return v;
 }
 
 /**
@@ -2082,7 +2092,7 @@ export function createIpcHandlers({
       const knownGroups = devices.map(aliasesOf);
       rtssOverlay.setKnownDeviceKeys?.([...new Set(knownOrder)], knownOrder, knownGroups);
     }
-    if (settings?.overlayEnabled !== true) {
+    if (settings?.overlayEnabled !== true || settings?.overlayRenderer === 'capframex') {
       overlayTelemetryOwners.delete('rtss');
     } else {
       if (!Array.isArray(devices)) return;
@@ -4208,6 +4218,13 @@ export function createIpcHandlers({
           overlayPosition: patch.overlayPosition === undefined
             ? cur.overlayPosition
             : validateOverlayPosition(patch.overlayPosition),
+          ...(patch.overlayRenderer !== undefined || cur.overlayRenderer !== undefined
+            ? {
+                overlayRenderer: patch.overlayRenderer === undefined
+                  ? cur.overlayRenderer
+                  : validateOverlayRenderer(patch.overlayRenderer),
+              }
+            : {}),
           overlayScale: patch.overlayScale === undefined
             ? cur.overlayScale
             : clampOverlayScale(patch.overlayScale),
@@ -4364,7 +4381,7 @@ export function createIpcHandlers({
         // persists but onOverlaySettings never fires and the HUD never
         // re-renders (the switch would only apply on the next boot).
         const overlayChanged = {};
-        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme', 'overlayRecordingPill']) {
+        for (const key of ['overlayEnabled', 'overlayRenderer', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme', 'overlayRecordingPill']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) overlayChanged[key] = next[key];
         }
         if (Object.keys(overlayChanged).length > 0) {
@@ -4373,7 +4390,7 @@ export function createIpcHandlers({
           } catch (err) {
             console.log(`[overlay] settings reaction failed: ${err.message}`);
           }
-          const rtssLaneChanged = ['overlayEnabled', 'overlayDeviceKeys', 'overlayPollMs']
+          const rtssLaneChanged = ['overlayEnabled', 'overlayRenderer', 'overlayDeviceKeys', 'overlayPollMs']
             .some((key) => overlayChanged[key] !== undefined);
           if (rtssLaneChanged) {
             try {

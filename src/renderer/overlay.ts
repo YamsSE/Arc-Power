@@ -34,7 +34,7 @@
 // and the number - a stat off hides them together.
 
 import { api } from './ipc.ts';
-import { overlayLines, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor, clampOverlayBgOpacity, clampOverlayPollMs, OVERLAY_BG_COLOR_DEFAULT, isValidOverlayTheme, OVERLAY_THEME_DEFAULT } from './pure/overlay.ts';
+import { overlayLines, normalizeOverlayStats, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor, clampOverlayBgOpacity, clampOverlayPollMs, OVERLAY_BG_COLOR_DEFAULT, isValidOverlayTheme, OVERLAY_THEME_DEFAULT, isValidOverlayRenderer } from './pure/overlay.ts';
 // M17b (2c): the chip-name cut-down rules (pure; the boot names fetch
 // derives the row labels from the sysinfo fixture/real names).
 import { chipLabelGpu, chipLabelCpu } from './pure/chip-label.ts';
@@ -42,7 +42,7 @@ import { resolveBootDevice } from './pure/device.ts';
 import { dedupeOverlayDevices, normalizeOverlayIdentityKey as identityToken, overlayDeviceOrder, overlayIdentityAliases as identityAliases, overlaySampleMatchesDevice as sampleMatchesDevice, overlayStableDeviceKey as stableDeviceKey } from './pure/overlay-routing.ts';
 import { pushSeries, trimSeriesWindow, autoScale, downsample } from './pure/graph.ts';
 import type { SeriesPoint } from './pure/graph.ts';
-import type { FpsSample, TelemetrySample } from './types.ts';
+import type { FpsSample, OverlayRenderer, TelemetrySample } from './types.ts';
 
 /** The base font size at scale 1.0 (CSS px; overlay.css matches). */
 const BASE_FONT_PX = 14;
@@ -88,6 +88,11 @@ let latestLow01Pct: number | null = null;
 // null-returning polls keep the last known value, like the fps itself).
 let latestApi: string | null = null;
 let series: SeriesPoint[] = [];
+// RTSS exposes frame interval timing, which is the honest timing sample
+// available to the hook-free renderer. Keep a second series so the layout can
+// present Frametime and Displaytime independently when a richer sample is
+// added later without changing the renderer contract.
+let displaySeries: SeriesPoint[] = [];
 // M6: the pushed color + stats (undefined until the first push -> the
 // stock white + the full stat set - the overlayLines defaults).
 let color: string = '#ffffff';
@@ -363,6 +368,8 @@ let telemetryTicks = 0;
 // pushed color). The dataset.themeStroke flag exposes the stroke kind for
 // the ui-verify pin.
 let theme: 'classic' | 'arc' = OVERLAY_THEME_DEFAULT;
+let overlayRenderer: OverlayRenderer = 'rtss';
+let softwareRenderer = false;
 
 const fpsEl = document.getElementById('overlay-fps') as HTMLElement;
 const cpuEl = document.getElementById('overlay-cpu') as HTMLElement;
@@ -384,6 +391,26 @@ const valueEl = document.getElementById('overlay-frametime-value') as HTMLElemen
 // the CSS calc carrying the --overlay-label-w var).
 const rootEl = document.getElementById('overlay-root') as HTMLElement;
 const dividerEl = document.getElementById('overlay-divider');
+const capframexRoot = document.getElementById('capframex-root');
+const capframexGpuSections = document.getElementById('capframex-gpu-sections');
+const capframexCpuTitle = document.getElementById('capframex-cpu-title');
+const capframexMemory = document.getElementById('capframex-memory');
+const capframexMemoryRow = document.querySelector<HTMLElement>('.capframex-memory-row');
+const capframexApi = document.getElementById('capframex-api');
+const capframexApiRow = document.getElementById('capframex-api-row');
+const capframexSummary = document.querySelector<HTMLElement>('.capframex-summary');
+const capframexAvg = document.getElementById('capframex-avg');
+const capframexLow1 = document.getElementById('capframex-low1');
+const capframexLow01 = document.getElementById('capframex-low01');
+const capframexP99 = document.getElementById('capframex-p99');
+const capframexPerformance = document.getElementById('capframex-performance');
+const capframexPerformanceFt = document.getElementById('capframex-performance-ft');
+const capframexFrametimeCard = document.getElementById('capframex-frametime-card');
+const capframexDisplaytimeCard = document.getElementById('capframex-displaytime-card');
+const capframexFrametimeCanvas = document.getElementById('capframex-frametime') as HTMLCanvasElement | null;
+const capframexDisplaytimeCanvas = document.getElementById('capframex-displaytime') as HTMLCanvasElement | null;
+const capframexFrametimeValue = document.getElementById('capframex-frametime-value');
+const capframexDisplaytimeValue = document.getElementById('capframex-displaytime-value');
 
 // M3: registered SYNCHRONOUSLY at script top - BEFORE any await - so the
 // initial 'overlay:settings' push (main sends it right after
@@ -391,6 +418,11 @@ const dividerEl = document.getElementById('overlay-divider');
 api.onOverlaySettings((settings) => {
   const s = settings ?? {};
   scale = clampOverlayScale(s.scale);
+  const previousRenderer = overlayRenderer;
+  overlayRenderer = isValidOverlayRenderer(s.renderer) ? s.renderer : 'rtss';
+  softwareRenderer = s.softwareRenderer === true;
+  document.documentElement.dataset.overlayRenderer = overlayRenderer;
+  if (capframexRoot) capframexRoot.setAttribute('aria-hidden', overlayRenderer === 'capframex' ? 'false' : 'true');
   // The CSSOM font-size scaling (CSP-safe): one change scales every rem
   // size in the HUD - the same persisted scale the window was resized with.
   document.documentElement.style.fontSize = `${BASE_FONT_PX * scale}px`;
@@ -400,6 +432,7 @@ api.onOverlaySettings((settings) => {
   // color change). Garbage degrades to the stock white.
   color = isValidOverlayColor(s.color) ? s.color : '#ffffff';
   document.documentElement.style.setProperty('--overlay-color', color);
+  document.documentElement.style.setProperty('--capframex-accent', color);
   // M7b (fix 4): the background box - the two CSS vars via CSSOM (the
   // same CSP-safe pattern) + the .visible class from overlayBgEnabled.
   // The backdrop exists in the fixed overlay.html markup; a bg change
@@ -422,7 +455,8 @@ api.onOverlaySettings((settings) => {
   overlayDeviceKeys = Array.isArray(s.deviceKeys)
     ? s.deviceKeys.filter((key: unknown): key is string => typeof key === 'string' && key.length > 0)
     : null;
-  if (overlayDevices.length > 0) {
+  const softwareRendererSelected = overlayRenderer === 'capframex' || softwareRenderer;
+  if (softwareRendererSelected && overlayDevices.length > 0) {
     void api.listDevices().then((devices) => {
       const primary = overlayDisplayDeviceKey
         ? devices.find((device) => identityAliases(device).some((key) => key === identityToken(overlayDisplayDeviceKey)))
@@ -432,6 +466,12 @@ api.onOverlaySettings((settings) => {
       // Keep the last working inventory if a transient refresh fails.
       void configureOverlayDevices(fpsDeviceId, overlayDevices);
     });
+  } else if (!softwareRendererSelected) {
+    // RTSS owns the native HUD in this mode. Release only this renderer's
+    // optional telemetry owner so the hidden Electron document does not keep
+    // sampling hardware or duplicate the RTSS lanes.
+    overlayConfigureGeneration += 1;
+    void api.overlayTelemetryStart({ owner: 'overlay', deviceKeys: [] }).catch(() => {});
   }
   const backdrop = document.getElementById('overlay-backdrop');
   if (backdrop) backdrop.classList.toggle('visible', s.overlayBgEnabled === true);
@@ -460,6 +500,7 @@ api.onOverlaySettings((settings) => {
   // re-arms its interval when the pushed value changes (the FPS line then
   // updates at the user's chosen rate, not the stock 1000 ms).
   applyFpsPollMs(pollMs);
+  if (previousRenderer !== overlayRenderer) armFpsLoop();
   sizeCanvas();
   render();
 });
@@ -570,10 +611,183 @@ function positionOverlayDivider(maxLabelLen: number): void {
   dividerEl.style.left = `${Math.max(0, labelEnd - rootRect.left + charWidth * 0.75)}px`;
 }
 
+function capNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function capValue(value: unknown, suffix: string, decimals = 0): string {
+  const n = capNumber(value);
+  if (n === null) return '-';
+  const text = decimals > 0 ? n.toFixed(decimals) : String(Math.round(n));
+  return `${text}${suffix}`;
+}
+
+function capGb(value: unknown): number | null {
+  const n = capNumber(value);
+  return n === null ? null : n / 1e9;
+}
+
+function capGpuTitle(sample: TelemetrySample | null, device: OverlayDeviceIdentity | null, ordinal: number): string {
+  const raw = sample?.deviceName ?? device?.name ?? null;
+  const model = chipLabelGpu(raw) ?? (typeof raw === 'string' && raw.trim() ? raw.trim() : `GPU ${ordinal}`);
+  const arc = typeof raw === 'string' && /\barc\b/i.test(raw) ? 'Arc ' : '';
+  return `${ordinal > 1 ? `GPU ${ordinal} · ` : ''}${arc}${model} Graphics`;
+}
+
+function capRow(parent: HTMLElement, label: string, values: string[]): void {
+  const row = document.createElement('div');
+  row.className = 'capframex-row';
+  const labelEl = document.createElement('span');
+  labelEl.className = 'capframex-label';
+  labelEl.textContent = label;
+  row.append(labelEl);
+  for (const value of values) {
+    const valueEl = document.createElement('span');
+    valueEl.textContent = value;
+    row.append(valueEl);
+  }
+  parent.append(row);
+}
+
+function capStatRow(parent: HTMLElement, enabled: Set<string>, statId: string, label: string, values: string[]): void {
+  if (enabled.has(statId)) capRow(parent, label, values);
+}
+
+function capCanvasSize(canvasEl: HTMLCanvasElement | null): void {
+  if (!canvasEl) return;
+  const rect = canvasEl.getBoundingClientRect();
+  const width = Math.max(1, Math.round(rect.width));
+  const height = Math.max(1, Math.round(rect.height));
+  if (canvasEl.width !== width) canvasEl.width = width;
+  if (canvasEl.height !== height) canvasEl.height = height;
+}
+
+function drawCapSeries(canvasEl: HTMLCanvasElement | null, points: SeriesPoint[], stroke: string): void {
+  if (!canvasEl) return;
+  capCanvasSize(canvasEl);
+  const ctx = canvasEl.getContext('2d');
+  if (!ctx) return;
+  ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+  if (points.length === 0) return;
+  const drawn = downsample(points, 120);
+  const values = drawn.map((point) => point.v).filter((value) => Number.isFinite(value));
+  if (values.length === 0) return;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const spread = max - min;
+  const padding = spread > 0 ? spread * 0.12 : Math.max(0.5, min * 0.04);
+  const low = Math.max(0, min - padding);
+  const high = max + padding;
+  const range = Math.max(0.01, high - low);
+  const x = (index: number): number => drawn.length <= 1
+    ? canvasEl.width / 2
+    : (index / (drawn.length - 1)) * canvasEl.width;
+  const y = (value: number): number => canvasEl.height - ((value - low) / range) * canvasEl.height;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  drawn.forEach((point, index) => {
+    if (index === 0) ctx.moveTo(x(index), y(point.v));
+    else ctx.lineTo(x(index), y(point.v));
+  });
+  ctx.stroke();
+}
+
+function renderCapframex(displaySample: TelemetrySample | null): void {
+  if (!capframexGpuSections) return;
+  const enabled = new Set(normalizeOverlayStats(stats));
+  capframexGpuSections.replaceChildren();
+  const primary = currentDisplayDevice();
+  const gpuEntries: Array<{ sample: TelemetrySample | null; device: OverlayDeviceIdentity | null; ordinal: number }> = [
+    { sample: displaySample, device: primary, ordinal: overlayDisplayOrdinal || 1 },
+  ];
+  secondaryDeviceIds.forEach((deviceId, index) => {
+    const device = overlayDevices.find((candidate) => candidate.id === deviceId) ?? null;
+    gpuEntries.push({
+      sample: device ? secondarySamples.get(stableDeviceKey(device)) ?? null : null,
+      device,
+      ordinal: secondaryDeviceOrdinals[index] ?? index + 2,
+    });
+  });
+  gpuEntries.forEach(({ sample, device, ordinal }) => {
+    const section = document.createElement('section');
+    section.className = 'capframex-section capframex-gpu-section';
+    const title = document.createElement('div');
+    title.className = 'capframex-gpu-title';
+    const name = document.createElement('span');
+    name.textContent = capGpuTitle(sample, device, ordinal);
+    const clocks = document.createElement('span');
+    clocks.className = 'capframex-clock';
+    if (enabled.has('gpu-clock')) {
+      clocks.textContent = capValue(sample?.gpuClockMhz, ' MHz');
+      title.append(clocks);
+    }
+    if (enabled.has('gpu-mem-clock')) {
+      const memClock = document.createElement('span');
+      memClock.className = 'capframex-memory-clock';
+      memClock.textContent = capValue(sample?.memClockMhz, ' MHz');
+      title.append(memClock);
+    }
+    title.prepend(name);
+    section.append(title);
+    capStatRow(section, enabled, 'gpu-util', 'GPU Load', [capValue(sample?.utilPct ?? sample?.gpuUtilPct, ' %')]);
+    capStatRow(section, enabled, 'gpu-temp', 'GPU Temp', [capValue(sample?.tempC, ' °C')]);
+    capStatRow(section, enabled, 'gpu-voltage', 'GPU Voltage', [capValue(sample?.gpuVoltageV, ' V', 3)]);
+    capStatRow(section, enabled, 'gpu-power', 'GPU Power', [capValue(sample?.powerW, ' W', 1)]);
+    capStatRow(section, enabled, 'gpu-fan', 'GPU Fan', [capValue(sample?.fanRpm?.[0], ' RPM')]);
+    capStatRow(section, enabled, 'gpu-vram', 'VRAM', [capValue(capGb(sample?.gpuMemUsedBytes), ' GB', 1)]);
+    capStatRow(section, enabled, 'gpu-vram-temp', 'VRAM Temp', [capValue(sample?.vramTempC ?? sample?.memTempC, ' °C')]);
+    capframexGpuSections.append(section);
+  });
+
+  if (capframexCpuTitle) capframexCpuTitle.textContent = cpuChipLabel ? `CPU Model   ${cpuChipLabel}` : 'CPU Model';
+  const cpuSection = capframexCpuTitle?.parentElement;
+  if (cpuSection) {
+    [...cpuSection.querySelectorAll<HTMLElement>('.capframex-row')].forEach((row) => row.remove());
+    capStatRow(cpuSection, enabled, 'cpu-clock', 'CPU Max', [capValue(displaySample?.cpuFreqMhz, ' MHz')]);
+    capStatRow(cpuSection, enabled, 'cpu-util', 'CPU Total', [capValue(displaySample?.cpuUtilPct, ' %')]);
+    const packageValues = [capValue(displaySample?.cpuPowerW, ' W', 1)];
+    if (enabled.has('cpu-temp')) packageValues.push(capValue(displaySample?.cpuTempC, ' °C'));
+    capStatRow(cpuSection, enabled, 'cpu-power', 'CPU Package', packageValues);
+    if (enabled.has('cpu-temp') && !enabled.has('cpu-power')) capStatRow(cpuSection, enabled, 'cpu-temp', 'CPU Temp', [capValue(displaySample?.cpuTempC, ' °C')]);
+  }
+  if (capframexMemory) capframexMemory.textContent = capValue(capGb(displaySample?.memoryUsedBytes), ' GB', 1);
+  if (capframexMemoryRow) capframexMemoryRow.hidden = !enabled.has('memory-util');
+  if (capframexApi) capframexApi.textContent = latestApi ?? '';
+  if (capframexApiRow) capframexApiRow.hidden = !enabled.has('api') || !latestApi;
+  if (capframexAvg) capframexAvg.textContent = capValue(latestAvgFps, ' FPS');
+  if (capframexLow1) capframexLow1.textContent = capValue(latestLow1Pct, ' FPS');
+  if (capframexLow01) capframexLow01.textContent = capValue(latestLow01Pct, ' FPS');
+  if (capframexP99) capframexP99.textContent = capValue(latestP99, ' FPS');
+  if (capframexPerformance) capframexPerformance.textContent = capValue(latestFps, ' FPS');
+  if (capframexPerformanceFt) capframexPerformanceFt.textContent = enabled.has('frametime') ? capValue(latestFrameTime, ' ms', 1) : '';
+  if (capframexFrametimeValue) capframexFrametimeValue.textContent = capValue(latestFrameTime, ' ms', 1);
+  if (capframexDisplaytimeValue) capframexDisplaytimeValue.textContent = capValue(latestFrameTime, ' ms', 1);
+  if (capframexSummary) {
+    capframexSummary.hidden = !['fps', 'fps-avg', 'fps-1pct-low', 'fps-01pct-low', 'fps-99pct', 'frametime'].some((id) => enabled.has(id));
+    const summaryItems = capframexSummary.querySelectorAll<HTMLElement>(':scope > div');
+    const summaryIds = ['fps-avg', 'fps-1pct-low', 'fps-01pct-low', 'fps-99pct', 'fps'];
+    summaryItems.forEach((item, index) => { item.hidden = !enabled.has(summaryIds[index]); });
+  }
+  if (capframexFrametimeCard) capframexFrametimeCard.hidden = !enabled.has('frametime');
+  if (capframexDisplaytimeCard) capframexDisplaytimeCard.hidden = !enabled.has('frametime');
+  drawCapSeries(capframexFrametimeCanvas, series, color);
+  // RTSS supplies frame interval timing rather than a separate present-time
+  // counter. Keep the second chart honest by mirroring that source until a
+  // provider exposes a distinct display-time field.
+  drawCapSeries(capframexDisplaytimeCanvas, displaySeries, color);
+}
+
 function render(): void {
   const displaySample = latestCpuSource
     ? { ...latestCpuSource, ...(latestSample ?? {}) }
     : latestSample;
+  if (overlayRenderer === 'capframex') {
+    renderCapframex(displaySample);
+    return;
+  }
   const lines = overlayLines(
     displaySample, latestFps, stats, latestLow1Pct, latestP99, latestApi,
     latestAvgFps, latestLow01Pct, displaySample?.memoryUsedBytes ?? null,
@@ -834,7 +1048,8 @@ function armFpsLoop(): void {
     window.clearInterval(fpsInterval);
     fpsInterval = null;
   }
-  if (fpsDeviceId === null) return;
+  const softwareRendererSelected = overlayRenderer === 'capframex' || softwareRenderer;
+  if (!softwareRendererSelected || fpsDeviceId === null) return;
   const pollMs = clampOverlayPollMs(fpsPollMs);
   fpsInterval = window.setInterval(() => {
     void (async () => {
@@ -874,6 +1089,7 @@ function armFpsLoop(): void {
       if (ft !== null) {
         const now = Date.now() / 1000;
         series = trimSeriesWindow(pushSeries(series, now, ft, FRAMETIME_DRAW_POINTS), now, FRAMETIME_WINDOW_S);
+        displaySeries = trimSeriesWindow(pushSeries(displaySeries, now, ft, FRAMETIME_DRAW_POINTS), now, FRAMETIME_WINDOW_S);
       }
       render();
     })();
@@ -906,6 +1122,7 @@ async function configureOverlayDevices(
   devices: OverlayDeviceIdentity[],
 ): Promise<void> {
   const generation = ++overlayConfigureGeneration;
+  const softwareRendererSelected = overlayRenderer === 'capframex' || softwareRenderer;
   const enrichedDevices = await Promise.all(devices.map(async (device) => {
     const known = device.displayActive === true || device.displayActive === false
       || device.osController?.displayActive === true || device.osController?.displayActive === false;
@@ -958,7 +1175,9 @@ async function configureOverlayDevices(
   const overlayLaneKeys = (mainDeviceId === displayDeviceId
     ? secondary
     : monitored).map((device) => stableDeviceKey(device));
-  try { await api.overlayTelemetryStart({ owner: 'overlay', deviceKeys: overlayLaneKeys }); } catch { /* best effort */ }
+  try {
+    await api.overlayTelemetryStart({ owner: 'overlay', deviceKeys: softwareRendererSelected ? overlayLaneKeys : [] });
+  } catch { /* best effort */ }
   if (generation !== overlayConfigureGeneration) return;
   // Commit the complete candidate only after telemetry startup wins the
   // generation race. This prevents an older, slower request from restoring
@@ -977,12 +1196,14 @@ async function configureOverlayDevices(
   secondaryGpuChipLabels = nextSecondaryGpuChipLabels;
   secondarySamples.clear();
   latestSample = null;
-  try { await api.overlayResize(monitored.length); } catch { /* best effort */ }
+  if (softwareRendererSelected) {
+    try { await api.overlayResize(monitored.length); } catch { /* best effort */ }
+  }
   if (generation !== overlayConfigureGeneration) return;
   render();
 }
 api.onDeviceSelectionUpdated((payload) => {
-  if (!payload || !Number.isInteger(payload.deviceId)) return;
+  if ((overlayRenderer !== 'capframex' && !softwareRenderer) || !payload || !Number.isInteger(payload.deviceId)) return;
   void api.listDevices()
     .then((devices) => {
       const targetId = devices.find((device) => (

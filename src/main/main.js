@@ -53,7 +53,7 @@ import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerif
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, resolvePreferredDevice, clampOverlayScale, waiverProbeDue, pushRecordingActionResult } from './ipc-core.js';
-import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT } from './store/profile-store.js';
+import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT, OVERLAY_RENDERERS } from './store/profile-store.js';
 import { GameProfileStore } from './store/game-profile-store.js';
 import { RecordingStore } from './store/recording-store.js';
 import { StabilityStore } from './store/stability-store.js';
@@ -2291,7 +2291,8 @@ async function main() {
     try {
       const initialOverlaySettings = store.loadSettingsSync() ?? {};
       rtssOverlay.updateSettings({
-        enabled: initialOverlaySettings.overlayEnabled === true,
+        enabled: initialOverlaySettings.overlayEnabled === true
+          && initialOverlaySettings.overlayRenderer !== 'capframex',
         position: initialOverlaySettings.overlayPosition,
         scale: initialOverlaySettings.overlayScale,
         color: initialOverlaySettings.overlayColor,
@@ -2306,8 +2307,9 @@ async function main() {
         overlayChipNames: initialOverlaySettings.overlayChipNames === true,
         pollMs: initialOverlaySettings.overlayPollMs,
       });
-      rtssOverlay.setVisible(initialOverlaySettings.overlayEnabled === true);
-      void rtssProfile?.apply({ enabled: initialOverlaySettings.overlayEnabled === true });
+      const rtssSelected = initialOverlaySettings.overlayRenderer !== 'capframex';
+      rtssOverlay.setVisible(initialOverlaySettings.overlayEnabled === true && rtssSelected);
+      void rtssProfile?.apply({ enabled: initialOverlaySettings.overlayEnabled === true && rtssSelected });
     } catch {
       // A settings read failure leaves the optional publisher disabled until
       // the normal settings reaction supplies a valid envelope.
@@ -2884,17 +2886,23 @@ async function main() {
   });
 
   // --- M5: the software overlay / RTSS telemetry HUD ----------------------
-  // The product path publishes this HUD through RTSSSharedMemoryV2. The
-  // legacy Electron window is retained only for the explicit ui-verify
-  // variants that exercise the old renderer contract; it is never created in
-  // a normal product run. M7b (fix 5): the hotkey/shortcut NEVER shows the
-  // HUD while the master overlayEnabled is OFF.
+  // The product path can publish the native RTSS HUD or the independent,
+  // hook-free CapFrameX-style renderer. The renderer window stays available
+  // for a live provider switch, but is hidden whenever RTSS owns the HUD.
+  // M7b (fix 5): the hotkey/shortcut NEVER shows the HUD while the master
+  // overlayEnabled is OFF.
   let overlayHandle = null;
   let rtssOverlayVisible = true;
   let rtssOverlayHotkeyRegistered = false;
   let recordingStatusPillHandle = null;
   let recordingToastHandle = null;
   let overlayHotkeyAccelerator = null;
+  const overlayRendererOf = (settings = {}) => OVERLAY_RENDERERS.includes(settings.overlayRenderer)
+    ? settings.overlayRenderer
+    : 'rtss';
+  const currentOverlayRenderer = () => {
+    try { return overlayRendererOf(store.loadSettingsSync() ?? {}); } catch { return 'rtss'; }
+  };
   // The hotkey seam (M6): product path - a REAL globalShortcut registration
   // ('Control+<letter>' - CTRL fixed, only the letter is user-changeable),
   // unregistered on will-quit + re-registered on a letter change. ui-verify
@@ -2919,7 +2927,7 @@ async function main() {
     };
   };
   const toggleRtssOverlay = async () => {
-    if (!rtssOverlay) return;
+    if (!rtssOverlay || currentOverlayRenderer() !== 'rtss') return;
     let current = {};
     try { current = store.loadSettingsSync() ?? {}; } catch { current = {}; }
     // The hotkey and session toggle never override the persisted master. This
@@ -2946,7 +2954,7 @@ async function main() {
     let ok = false;
     try {
       ok = globalShortcut.register(accel, () => {
-        if (overlayHandle) void overlayHandle.toggle();
+        if (currentOverlayRenderer() === 'capframex' && overlayHandle) void overlayHandle.toggle();
         else void toggleRtssOverlay();
       });
     } catch {
@@ -2973,23 +2981,40 @@ async function main() {
   // module sends it DIRECTLY to the overlay window (webContents.send);
   // ipc.js's emit stays telemetry-only (N1).
   const onOverlaySettings = async (patch) => {
-    if (overlayHandle) {
-      const masterChanged = patch
-        && typeof patch === 'object'
-        && Object.prototype.hasOwnProperty.call(patch, 'overlayEnabled');
-      applyOverlaySettings({ preserveVisibility: !masterChanged });
+    let settings = {};
+    try { settings = store.loadSettingsSync() ?? {}; } catch { settings = {}; }
+    const renderer = overlayRendererOf(settings);
+    const masterChanged = patch
+      && typeof patch === 'object'
+      && Object.prototype.hasOwnProperty.call(patch, 'overlayEnabled');
+    const rendererChanged = patch
+      && typeof patch === 'object'
+      && Object.prototype.hasOwnProperty.call(patch, 'overlayRenderer');
+    const electronSelected = renderer === 'capframex' || uiVerify;
+    if (overlayHandle && electronSelected) {
+      applyOverlaySettings({ preserveVisibility: !masterChanged && !rendererChanged });
+    } else if (overlayHandle && (rendererChanged || masterChanged)) {
+      // Keep the inactive renderer hidden while the selected provider owns
+      // visibility. Its window stays alive so switching back is immediate.
+      overlayHandle.apply({
+        enabled: false,
+        renderer: 'rtss',
+        position: settings.overlayPosition,
+        scale: settings.overlayScale,
+        color: settings.overlayColor,
+        stats: settings.overlayStats,
+        deviceKeys: settings.overlayDeviceKeys,
+        overlayChipNames: settings.overlayChipNames === true,
+        overlayPollMs: settings.overlayPollMs,
+        theme: settings.overlayTheme,
+      }, { preserveVisibility: false });
     }
     if (patch && typeof patch.overlayHotkeyLetter === 'string') {
       registerOverlayHotkey(patch.overlayHotkeyLetter);
     }
     if (rtssOverlay) {
-      let settings = {};
-      try { settings = store.loadSettingsSync() ?? {}; } catch { settings = {}; }
-      const masterChanged = patch
-        && typeof patch === 'object'
-        && Object.prototype.hasOwnProperty.call(patch, 'overlayEnabled');
       rtssOverlay.updateSettings({
-        enabled: settings.overlayEnabled === true,
+        enabled: settings.overlayEnabled === true && renderer === 'rtss',
         position: settings.overlayPosition,
         scale: settings.overlayScale,
         color: settings.overlayColor,
@@ -3004,9 +3029,9 @@ async function main() {
         overlayChipNames: settings.overlayChipNames === true,
         pollMs: settings.overlayPollMs,
       });
-      void rtssProfile?.apply({ enabled: settings.overlayEnabled === true });
-      if (masterChanged) rtssOverlayVisible = settings.overlayEnabled === true;
-      rtssOverlay.setVisible(settings.overlayEnabled === true && rtssOverlayVisible);
+      void rtssProfile?.apply({ enabled: settings.overlayEnabled === true && renderer === 'rtss' });
+      if (masterChanged || rendererChanged) rtssOverlayVisible = settings.overlayEnabled === true;
+      rtssOverlay.setVisible(settings.overlayEnabled === true && renderer === 'rtss' && rtssOverlayVisible);
     }
     // M143: a status-pill preference change applies independently of the HUD
     // master toggle; the pill is a separate desktop-level overlay surface.
@@ -3022,6 +3047,8 @@ async function main() {
     }
     overlayHandle.apply({
       enabled: settings.overlayEnabled === true,
+      renderer: overlayRendererOf(settings),
+      softwareRenderer: uiVerify,
       position: OVERLAY_POSITIONS.includes(settings.overlayPosition) ? settings.overlayPosition : 'top-left',
       scale: clampOverlayScale(settings.overlayScale),
       hotkeyLetter: typeof settings.overlayHotkeyLetter === 'string'
@@ -3080,9 +3107,9 @@ async function main() {
         : OVERLAY_THEME_DEFAULT,
     }, { preserveVisibility });
   };
-  if (uiVerify
-    && (process.env.RID_MOCK_OVERLAY === '1'
-      || process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1')) {
+  if (!uiVerify
+    || process.env.RID_MOCK_OVERLAY === '1'
+    || process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1') {
     overlayHandle = createOverlayWindow({
       // The CURRENT persisted settings - the sync cache (the same cache the
       // close handler reads; a read failure degrades to the defaults).
@@ -3095,8 +3122,20 @@ async function main() {
       },
     });
     // M23: the harness must not flash the HUD overlay on the user's screen.
-    stealthVerifyWindow(overlayHandle.getWindow?.() ?? null);
+    if (uiVerify) stealthVerifyWindow(overlayHandle.getWindow?.() ?? null);
     applyOverlaySettings();
+    // RTSS is visible as soon as its native profile is enabled. Keep the
+    // optional CapFrameX-style provider equivalent on a normal product boot;
+    // the ui-verify harness retains the software renderer's no-flash boot
+    // contract above.
+    if (!uiVerify) {
+      try {
+        const bootSettings = store.loadSettingsSync() ?? {};
+        if (overlayRendererOf(bootSettings) === 'capframex' && bootSettings.overlayEnabled === true) {
+          applyOverlaySettings();
+        }
+      } catch { /* the initial hidden apply remains the safe fallback */ }
+    }
     // Boot the hotkey with the persisted letter (default 'O').
     let bootLetter = 'O';
     try {
@@ -3603,40 +3642,46 @@ async function main() {
       });
     }
   };
+  const overlayOps = (overlayHandle || rtssOverlay) ? {
+    getState: async () => {
+      if (currentOverlayRenderer() === 'capframex' && overlayHandle) {
+        return { ...overlayHandle.getState(), provider: 'electron', renderer: 'capframex' };
+      }
+      if (rtssOverlay) return { ...getRtssOverlayState(), provider: 'rtss', renderer: 'rtss' };
+      if (overlayHandle) return { ...overlayHandle.getState(), provider: 'electron', renderer: currentOverlayRenderer() };
+      return { exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false };
+    },
+    toggle: async () => {
+      if (currentOverlayRenderer() === 'capframex' && overlayHandle) await overlayHandle.toggle();
+      else if (!rtssOverlay && overlayHandle) await overlayHandle.toggle();
+      else await toggleRtssOverlay();
+    },
+    resize: async (deviceCount) => {
+      if (overlayHandle && (currentOverlayRenderer() === 'capframex' || !rtssOverlay)) await overlayHandle.resize(deviceCount);
+    },
+  } : undefined;
   teardown = registerIpc({
     backend,
     store,
     getWindow: () => win,
-    // M5: the legacy telemetry window is null in normal product runs. The
-    // RTSS publisher consumes telemetry directly through rtssOverlay below;
-    // keeping this getter preserves only the ui-verify seam.
-    getOverlayWindow: () => (overlayHandle ? overlayHandle.getWindow() : null),
+    // M5: the RTSS publisher consumes telemetry directly through rtssOverlay
+    // in the normal product path. The Electron renderer is also a real
+    // telemetry consumer when CapFrameX mode is selected, and remains exposed
+    // to the ui-verify seam regardless of the provider default.
+    getOverlayWindow: () => (overlayHandle
+      && (currentOverlayRenderer() === 'capframex' || uiVerify)
+      ? overlayHandle.getWindow()
+      : null),
     // M23 (Part B): the ADVANCED overlay window - the telemetry push's THIRD
     // consumer (the panel's live clock/temp/fan/power readout strip rides
     // the same sample stream; null when no panel exists - the emit
     // null-guards it).
     getAdvancedOverlayWindow: () => (advancedOverlayHandle ? advancedOverlayHandle.getWindow() : null),
-    // M5: the injected overlay ops - the REAL overlay handle in both the
-    // product path and the RID_MOCK_OVERLAY=1 ui-verify variant (the
-    // variant's overlay window is real, like the main window - the toggle
-    // really flips it). When no overlay exists (other ui-verify variants)
-    // the DEFAULT no-window ops keep the channels honest.
-    overlayOps: overlayHandle
-      ? {
-          getState: async () => overlayHandle.getState(),
-          toggle: async () => { await overlayHandle.toggle(); },
-          resize: async (deviceCount) => { await overlayHandle.resize(deviceCount); },
-        }
-      : rtssOverlay
-        ? {
-            getState: async () => getRtssOverlayState(),
-            toggle: async () => { await toggleRtssOverlay(); },
-            // RTSS lays out its own native slot. Keep the IPC contract alive
-            // for old renderer callers, but geometry is applied by the next
-            // native hypertext publish rather than an Electron window resize.
-            resize: async () => {},
-          }
-        : undefined,
+    // M5: the injected overlay ops - the selected provider is resolved at
+    // call time so changing the renderer does not require rebuilding the IPC
+    // surface. When no overlay exists (other ui-verify variants), preserve
+    // the optional no-window seam used by the harness.
+    overlayOps,
     // M23 (Part B): the injected ADVANCED-overlay ops - dynamically
     // dereference the lazy panel handle so enabling the feature after boot
     // can create its renderer without rebuilding the IPC surface. When no

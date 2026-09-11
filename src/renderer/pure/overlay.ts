@@ -55,6 +55,15 @@ export const OVERLAY_THEMES: readonly string[] = ['classic', 'arc'];
  *  persisted-truth owner is profile-store.js, keep both in lockstep). */
 export const OVERLAY_THEME_DEFAULT = 'arc';
 
+/** Optional overlay presentation providers. RTSS remains the default; the
+ * CapFrameX-style provider is Arc Power's independent hook-free renderer. */
+export const OVERLAY_RENDERERS = ['rtss', 'capframex'] as const;
+export type OverlayRenderer = typeof OVERLAY_RENDERERS[number];
+
+export function isValidOverlayRenderer(v: unknown): v is OverlayRenderer {
+  return typeof v === 'string' && (OVERLAY_RENDERERS as readonly string[]).includes(v);
+}
+
 /** M24: whether v is one of the two overlay theme ids. */
 export function isValidOverlayTheme(v: unknown): v is 'classic' | 'arc' {
   return typeof v === 'string' && (OVERLAY_THEMES as readonly string[]).includes(v);

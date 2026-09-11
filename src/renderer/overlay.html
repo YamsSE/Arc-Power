@@ -31,6 +31,34 @@
        CSSOM-driven by overlay.ts from the persisted settings - the
        --overlay-color pattern). -->
   <div id="overlay-root">
+    <!-- Independent hook-free provider. This is an original Arc Power
+         renderer inspired by grouped performance HUDs; it does not load or
+         redistribute CapFrameX binaries. -->
+    <div id="capframex-root" aria-hidden="true">
+      <div class="capframex-panel">
+        <div class="capframex-gpu-sections" id="capframex-gpu-sections"></div>
+        <div class="capframex-section capframex-cpu-section">
+          <div class="capframex-section-title capframex-cpu-title" id="capframex-cpu-title">CPU</div>
+        </div>
+        <div class="capframex-row capframex-memory-row"><span class="capframex-label">RAM Info</span><span id="capframex-memory"></span></div>
+        <div class="capframex-api-row" id="capframex-api-row"><span id="capframex-api"></span></div>
+        <div class="capframex-summary" aria-label="Frame rate summary">
+          <div><span class="capframex-summary-label">Average</span><strong id="capframex-avg"></strong></div>
+          <div><span class="capframex-summary-label">1% Low</span><strong id="capframex-low1"></strong></div>
+          <div><span class="capframex-summary-label">0.1% Low</span><strong id="capframex-low01"></strong></div>
+          <div><span class="capframex-summary-label">99%tile</span><strong id="capframex-p99"></strong></div>
+          <div><span class="capframex-summary-label">Performance</span><strong id="capframex-performance"></strong><span id="capframex-performance-ft"></span></div>
+        </div>
+        <div class="capframex-chart-card" id="capframex-frametime-card">
+          <div class="capframex-chart-heading"><span>Frametime</span><span id="capframex-frametime-value"></span></div>
+          <canvas id="capframex-frametime" class="capframex-chart"></canvas>
+        </div>
+        <div class="capframex-chart-card" id="capframex-displaytime-card">
+          <div class="capframex-chart-heading"><span>Displaytime</span><span id="capframex-displaytime-value"></span></div>
+          <canvas id="capframex-displaytime" class="capframex-chart"></canvas>
+        </div>
+      </div>
+    </div>
     <div id="overlay-backdrop"></div>
     <!-- The divider spans the complete stat stack. GPU/VRAM use their stable
          physical ordinal when multiple adapters are known, including when a
