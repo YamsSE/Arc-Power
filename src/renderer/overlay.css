@@ -45,7 +45,7 @@ body {
 
 html[data-overlay-renderer="capframex"] #capframex-root { display: block; }
 html[data-overlay-renderer="capframex"] #overlay-root {
-  background: var(--capframex-bg, #12121b);
+  background: var(--capframex-bg, #1b1d2e);
 }
 html[data-overlay-renderer="capframex"] #overlay-backdrop,
 html[data-overlay-renderer="capframex"] #overlay-divider,

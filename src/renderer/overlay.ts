@@ -51,6 +51,10 @@ const BASE_FONT_PX = 14;
  *  downsample max; never more points than the window holds). */
 const FRAMETIME_WINDOW_S = 120;
 const FRAMETIME_DRAW_POINTS = 120;
+/** Arc Power's own surface stays dark and readable over bright game scenes.
+ * The legacy RTSS background color remains available to the native renderer,
+ * but must not turn this hook-free surface light blue. */
+const ARC_POWER_OVERLAY_BACKGROUND = 'rgba(27, 29, 46, 0.97)';
 
  let scale = 1;
  let latestSample: TelemetrySample | null = null;
@@ -419,12 +423,6 @@ const capframexFrametimeAxisBottom = document.getElementById('capframex-frametim
 const capframexDisplaytimeAxisTop = document.getElementById('capframex-displaytime-axis-top');
 const capframexDisplaytimeAxisBottom = document.getElementById('capframex-displaytime-axis-bottom');
 
-function hexToRgba(hex: string, opacity: number): string {
-  const value = Number.parseInt(hex.slice(1), 16);
-  if (!Number.isInteger(value)) return `rgba(10, 10, 18, ${opacity})`;
-  return `rgba(${(value >> 16) & 0xff}, ${(value >> 8) & 0xff}, ${value & 0xff}, ${opacity})`;
-}
-
 function clearOverlaySampling(): void {
   latestFps = null;
   latestLow1Pct = null;
@@ -479,12 +477,10 @@ api.onOverlaySettings((settings) => {
   );
   const capframexBgColor = isValidOverlayColor(s.overlayBgColor) ? s.overlayBgColor : OVERLAY_BG_COLOR_DEFAULT;
   const capframexBgOpacity = clampOverlayBgOpacity(s.overlayBgOpacity);
-  // Arc Power Overlay owns its dark surface. The legacy RTSS background
-  // toggle remains available for the native renderer, but the hook-free
-  // surface must stay readable over games even when that old toggle is off.
-  const capframexBackground = s.overlayBgEnabled === true
-    ? hexToRgba(capframexBgColor, capframexBgOpacity)
-    : 'rgba(18, 18, 27, 0.97)';
+  // Arc Power Overlay owns a fixed dark blue-purple surface. The legacy RTSS
+  // background controls remain available for the native renderer, but must
+  // not tint this hook-free surface with a saved light-blue color.
+  const capframexBackground = ARC_POWER_OVERLAY_BACKGROUND;
   document.documentElement.style.setProperty(
     '--capframex-bg',
     capframexBackground,

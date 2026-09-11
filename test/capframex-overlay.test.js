@@ -64,6 +64,8 @@ test('CapFrameX-style surface stays independent of CapFrameX native redistributi
   assert.match(overlayCss, /capframex-chart/);
   assert.match(overlayCss, /#capframex-root \[hidden\] \{ display: none !important; \}/);
   assert.match(overlayCss, /var\(--capframex-bg/);
+  assert.match(overlaySrc, /const ARC_POWER_OVERLAY_BACKGROUND = 'rgba\(27, 29, 46, 0\.97\)'/);
+  assert.match(overlaySrc, /const capframexBackground = ARC_POWER_OVERLAY_BACKGROUND/);
   assert.match(overlayCss, /background: url\('\.\.\/assets\/ArcPowerIcon\.png'\)/);
   assert.match(overlayCss, /grid-template-columns: 1fr;/);
   assert.match(overlayCss, /linear-gradient\(180deg, #7fe3ff/);
