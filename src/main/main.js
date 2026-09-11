@@ -2739,7 +2739,13 @@ async function main() {
             ? `Profile '${names[0]}' applied`
             : `Profiles '${names.join("', '")}' applied`,
       };
-      if (trayRef && !trayRef.isDestroyed()) {
+      // Diagnostic/profile-boot launches exercise the real startup apply path
+      // against the host hardware, but they are not user sessions. Do not
+      // leak one Windows balloon per active GPU into the desktop while a
+      // verification run is measuring boot behavior. Product launches keep
+      // the honest administrator-approval warning below.
+      const notifyBootApplyFailure = !profileBoot && !headless && !uiVerify && !mock;
+      if (notifyBootApplyFailure && trayRef && !trayRef.isDestroyed()) {
         for (const { entry, out } of outcomes) {
           if (out.applied) continue;
           const content = isElevated()
