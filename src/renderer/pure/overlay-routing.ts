@@ -5,6 +5,11 @@ export interface OverlayIdentity {
   deviceId?: unknown;
   deviceKey?: unknown;
   deviceKeys?: unknown;
+  /** Stable presentation ordinal after the display-driving adapter is first. */
+  overlayOrdinal?: number;
+  /** Read-only inventory signal: this physical adapter currently drives a display. */
+  displayActive?: boolean | null;
+  osController?: { displayActive?: boolean | null } | null;
 }
 
 export function normalizeOverlayIdentityKey(value: unknown): string | null {
@@ -56,6 +61,32 @@ export function dedupeOverlayDevices<T extends OverlayIdentity>(devices: readonl
     result.push(device);
   }
   return result;
+}
+
+function displayActiveOf(device: OverlayIdentity): boolean | null {
+  if (device.displayActive === true || device.osController?.displayActive === true) return true;
+  if (device.displayActive === false || device.osController?.displayActive === false) return false;
+  return null;
+}
+
+/**
+ * Keep the desktop display adapter in the first presentation slot. This only
+ * changes the UI/overlay order; it never changes the session-local numeric id
+ * used for device-scoped routing. Unknown display state remains in the source
+ * order until the inventory can provide physical display proof.
+ */
+export function overlayDeviceOrder<T extends OverlayIdentity>(devices: readonly T[]): T[] {
+  return devices.map((device, index) => ({ device, index })).sort((left, right) => {
+    const leftActive = displayActiveOf(left.device);
+    const rightActive = displayActiveOf(right.device);
+    const activeDiff = Number(rightActive === true) - Number(leftActive === true);
+    if (activeDiff !== 0) return activeDiff;
+    if (leftActive === true && rightActive === true) {
+      const keyDiff = overlayStableDeviceKey(left.device).localeCompare(overlayStableDeviceKey(right.device));
+      if (keyDiff !== 0) return keyDiff;
+    }
+    return left.index - right.index;
+  }).map(({ device }) => device);
 }
 
 export function overlaySampleMatchesDevice(

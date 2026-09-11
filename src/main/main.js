@@ -85,6 +85,7 @@ import { createRecordingStatusPillWindow } from './recording-status-pill.js';
 import { createAdvancedOverlayWindow } from './advanced-overlay.js';
 import { createStartup, createMockStartup } from './startup.js';
 import { createRtssStartup, createMockRtssStartup } from './rtss-startup.js';
+import { createRtssProfileController } from './rtss-profile.js';
 import { attachStartupUpdateStatus, createStartupSplash } from './splash.js';
 import { runInstallerMode } from './installer.js';
 import { INSTALLED_EXECUTABLE_NAME, INSTALLED_LAUNCH_ENV, installerModeFromEnvironment, resolveNewerInstalledExecutable } from './installer-pure.js';
@@ -2266,6 +2267,15 @@ async function main() {
   const rtssStartup = mock
     ? createMockRtssStartup({ available: process.env.RID_MOCK_RTSS_AVAILABLE !== '0' })
     : createRtssStartup();
+  // RTSS owns the native HUD's final paint step. When the HUD is enabled,
+  // ask RTSS to use its smoother Vector2D renderer and ensure the target app
+  // is detected. This is intentionally optional and global-profile only;
+  // Arc Power still owns the text, colors, scale tag, and telemetry content.
+  const rtssProfile = mock
+    ? null
+    : createRtssProfileController({
+        getExecutablePath: async () => (await rtssStartup.get())?.executablePath ?? null,
+      });
   // The product telemetry HUD is rendered by RTSS itself. Keep the FPS lane
   // mutable because the foreground/process ownership seam is created after
   // the overlay lifecycle objects below; the publisher can safely queue its
@@ -2294,6 +2304,7 @@ async function main() {
         pollMs: initialOverlaySettings.overlayPollMs,
       });
       rtssOverlay.setVisible(initialOverlaySettings.overlayEnabled === true);
+      void rtssProfile?.apply({ enabled: initialOverlaySettings.overlayEnabled === true });
     } catch {
       // A settings read failure leaves the optional publisher disabled until
       // the normal settings reaction supplies a valid envelope.
@@ -2984,6 +2995,7 @@ async function main() {
         overlayChipNames: settings.overlayChipNames,
         pollMs: settings.overlayPollMs,
       });
+      void rtssProfile?.apply({ enabled: settings.overlayEnabled === true });
       if (masterChanged) rtssOverlayVisible = settings.overlayEnabled === true;
       rtssOverlay.setVisible(settings.overlayEnabled === true && rtssOverlayVisible);
     }

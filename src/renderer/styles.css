@@ -3106,7 +3106,7 @@ input[type="number"] {
 .overlay-telemetry-lanes .overlay-stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px 18px; }
 .overlay-telemetry-lanes .overlay-stat-toggle { padding: 5px 7px; border: 1px solid transparent; border-radius: 6px; background: rgba(255, 255, 255, .018); }
 .overlay-telemetry-lanes .overlay-stat-toggle:has(input:checked) { border-color: rgba(0, 213, 255, .16); background: rgba(0, 213, 255, .055); }
-.overlay-settings-root .overlay-device-monitoring { align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.overlay-settings-root .overlay-device-monitoring { align-items: flex-start; padding: 10px 11px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .overlay-settings-root .overlay-device-options { flex: 1; }
 .overlay-settings-root input[type="range"] { accent-color: var(--accent); }
 
@@ -3340,8 +3340,8 @@ input[type="number"] {
   align-items: start;
   gap: 12px;
 }
-.overlay-settings-root .overlay-monitor-label { min-width: 0; padding-top: 5px; }
-.overlay-settings-root .overlay-device-options { min-width: 0; margin-left: 0; justify-content: flex-start; }
+.overlay-settings-root .overlay-monitor-label { min-width: 0; padding-top: 5px; white-space: nowrap; }
+.overlay-settings-root .overlay-device-options { min-width: 0; margin-left: 0; justify-content: flex-start; width: 100%; }
 .overlay-settings-root .overlay-device-toggle { min-width: 0; max-width: 100%; }
 .overlay-settings-root .overlay-device-toggle span { overflow-wrap: anywhere; }
 .overlay-settings-root .overlay-scale-row,

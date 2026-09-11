@@ -39,7 +39,7 @@ import { overlayLines, deriveFrameTimeMs, formatFrametime, clampOverlayScale, is
 // derives the row labels from the sysinfo fixture/real names).
 import { chipLabelGpu, chipLabelCpu } from './pure/chip-label.ts';
 import { resolveBootDevice } from './pure/device.ts';
-import { dedupeOverlayDevices, normalizeOverlayIdentityKey as identityToken, overlayIdentityAliases as identityAliases, overlaySampleMatchesDevice as sampleMatchesDevice, overlayStableDeviceKey as stableDeviceKey } from './pure/overlay-routing.ts';
+import { dedupeOverlayDevices, normalizeOverlayIdentityKey as identityToken, overlayDeviceOrder, overlayIdentityAliases as identityAliases, overlaySampleMatchesDevice as sampleMatchesDevice, overlayStableDeviceKey as stableDeviceKey } from './pure/overlay-routing.ts';
 import { pushSeries, trimSeriesWindow, autoScale, downsample } from './pure/graph.ts';
 import type { SeriesPoint } from './pure/graph.ts';
 import type { FpsSample, TelemetrySample } from './types.ts';
@@ -63,13 +63,15 @@ let latestCpuSource: TelemetrySample | null = null;
 // legacy all-GPU behavior; the resolved ids are refreshed on every settings
 // push so enumeration order never becomes persisted state.
 let overlayDeviceKeys: string[] | null = null;
-let overlayDevices: Array<{ id: number; name?: string; deviceKey?: string | null; deviceKeys?: string[] | null }> = [];
+let overlayDevices: Array<{ id: number; name?: string; deviceKey?: string | null; deviceKeys?: string[] | null; overlayOrdinal?: number }> = [];
 let overlayDisplayDeviceId: number | null = null;
 let overlayDisplayDeviceKey: string | null = null;
+let overlayDisplayOrdinal = 1;
 let mainSelectedDeviceId: number | null = null;
 let mainSelectedDeviceKey: string | null = null;
  // lane keeps the existing single-GPU rendering contract.
- let secondaryDeviceIds: number[] = [];
+let secondaryDeviceIds: number[] = [];
+let secondaryDeviceOrdinals: number[] = [];
  const secondarySamples = new Map<string, TelemetrySample>();
 let overlayConfigureGeneration = 0;
 let latestFps: number | null = null;
@@ -112,7 +114,9 @@ type OverlayDeviceIdentity = {
   bdf?: unknown;
   locationInfo?: unknown;
   pnpDeviceId?: string | null;
-  osController?: { pnpDeviceId?: string | null; pciVendorId?: unknown; pciDeviceId?: unknown; bdf?: unknown; locationInfo?: unknown } | null;
+  overlayOrdinal?: number;
+  displayActive?: boolean | null;
+  osController?: { pnpDeviceId?: string | null; pciVendorId?: unknown; pciDeviceId?: unknown; bdf?: unknown; locationInfo?: unknown; displayActive?: boolean | null } | null;
 };
 type OverlaySysinfoController = {
   name?: string | null;
@@ -560,6 +564,9 @@ function render(): void {
     chipNamesEnabled ? { chipLabels: { cpu: cpuChipLabel, gpu: gpuChipLabel } } : undefined,
   );
   const hasSecondary = secondaryDeviceIds.length > 0;
+  const primaryOrdinal = overlayDisplayOrdinal > 0 ? overlayDisplayOrdinal : 1;
+  const showPrimaryNumber = hasSecondary || primaryOrdinal !== 1;
+  const primaryNumber = showPrimaryNumber ? primaryOrdinal : null;
   ensureExtraRows(Math.max(0, secondaryDeviceIds.length - 1));
   const secondaryRows = secondaryDeviceIds.map((deviceId, index) => {
     const secondaryDevice = overlayDevices.find((device) => device.id === deviceId) ?? null;
@@ -573,6 +580,7 @@ function render(): void {
     );
     return {
       index,
+      ordinal: secondaryDeviceOrdinals[index] ?? index + 2,
       sample: secondary,
       lines: secondaryLines,
       gpuLabel: secondaryGpuChipLabels[index] ?? null,
@@ -589,12 +597,12 @@ function render(): void {
     renderedLabel(lines.fpsLine).length,
     renderedLabel(lines.cpuLine).length,
     renderedLabel(lines.memoryLine).length,
-    numberedLabel(lines.gpuLine, 'GPU', hasSecondary ? 1 : null).length,
-    numberedLabel(lines.vramLine, 'VRAM', hasSecondary ? 1 : null).length,
+    numberedLabel(lines.gpuLine, 'GPU', chipNamesEnabled ? null : primaryNumber).length,
+    numberedLabel(lines.vramLine, 'VRAM', chipNamesEnabled ? null : primaryNumber).length,
     renderedLabel(lines.apiLine).length,
-    ...secondaryRows.flatMap(({ lines: secondaryLines, index }) => [
-      numberedLabel(secondaryLines.gpuLine, 'GPU', chipNamesEnabled ? null : index + 2).length,
-      numberedLabel(secondaryLines.vramLine, 'VRAM', index + 2).length,
+    ...secondaryRows.flatMap(({ lines: secondaryLines, ordinal }) => [
+      numberedLabel(secondaryLines.gpuLine, 'GPU', chipNamesEnabled ? null : ordinal).length,
+      numberedLabel(secondaryLines.vramLine, 'VRAM', chipNamesEnabled ? null : ordinal).length,
     ]),
   ];
   const maxLabelLen = Math.max(4, ...labelLengths);
@@ -606,12 +614,13 @@ function render(): void {
     latestAvgFps, latestLow01Pct, displaySample?.memoryUsedBytes ?? null,
     primaryOptions,
   );
-  const paddedSecondaryRows = secondaryRows.map(({ sample, gpuLabel, index }) => {
+  const paddedSecondaryRows = secondaryRows.map(({ sample, gpuLabel, index, ordinal }) => {
     const options = chipNamesEnabled
       ? { chipLabels: { cpu: null, gpu: gpuLabel }, labelWidth: maxLabelLen }
       : { labelWidth: maxLabelLen };
     return {
       index,
+      ordinal,
       lines: overlayLines(
         sample, null, stats, null, null, null, null, null,
         sample?.memoryUsedBytes ?? null,
@@ -623,18 +632,18 @@ function render(): void {
   fpsEl.textContent = paddedLines.fpsLine;
   cpuEl.textContent = paddedLines.cpuLine;
   memoryEl.textContent = paddedLines.memoryLine;
-  gpuEl.textContent = hasSecondary ? numberedRow(paddedLines.gpuLine, 'GPU', 1, maxLabelLen) : paddedLines.gpuLine;
-  vramEl.textContent = hasSecondary ? numberedRow(paddedLines.vramLine, 'VRAM', 1, maxLabelLen) : paddedLines.vramLine;
+  gpuEl.textContent = primaryNumber === null ? paddedLines.gpuLine : numberedRow(paddedLines.gpuLine, 'GPU', primaryNumber, maxLabelLen);
+  vramEl.textContent = primaryNumber === null ? paddedLines.vramLine : numberedRow(paddedLines.vramLine, 'VRAM', primaryNumber, maxLabelLen);
   gpu2El.style.display = hasSecondary ? 'block' : 'none';
   vram2El.style.display = hasSecondary ? 'block' : 'none';
   gpu2El.textContent = '';
   vram2El.textContent = '';
-  for (const { index, lines: secondaryLines } of paddedSecondaryRows) {
+  for (const { index, ordinal, lines: secondaryLines } of paddedSecondaryRows) {
     const row = index === 0 ? { gpu: gpu2El, vram: vram2El } : extraRowElements[index - 1];
     row.gpu.textContent = chipNamesEnabled
       ? secondaryLines.gpuLine
-      : numberedRow(secondaryLines.gpuLine, 'GPU', index + 2, maxLabelLen);
-    row.vram.textContent = numberedRow(secondaryLines.vramLine, 'VRAM', index + 2, maxLabelLen);
+      : numberedRow(secondaryLines.gpuLine, 'GPU', ordinal, maxLabelLen);
+    row.vram.textContent = numberedRow(secondaryLines.vramLine, 'VRAM', ordinal, maxLabelLen);
   }
   apiEl.textContent = paddedLines.apiLine;
   // M6/M6-amd2: the frametime stat is NOT a line - it toggles the canvas
@@ -649,8 +658,9 @@ function render(): void {
   // M18/M19b: the header-divider column - the --overlay-label-w CSS var in
   // ch (WITH the unit - '4ch' / '9ch', never a bare number: a unit-less
   // value inside the calc is invalid at computed-value time) from the same
-  // shared max passed to every formatter above. GPU1/VRAM1 widen the column
-  // in a multi-adapter session, as do long secondary chip labels.
+  // shared max passed to every formatter above. Physical GPU ordinals widen
+  // the column when a non-display adapter is selected on its own, as do the
+  // multi-adapter rows and long secondary chip labels.
   document.documentElement.style.setProperty('--overlay-label-w', `${maxLabelLen}ch`);
   positionOverlayDivider(maxLabelLen);
   // M18/M19b: the divider's top/bottom - the FPS row's top to the API
@@ -880,21 +890,45 @@ async function configureOverlayDevices(
   devices: OverlayDeviceIdentity[],
 ): Promise<void> {
   const generation = ++overlayConfigureGeneration;
+  const enrichedDevices = await Promise.all(devices.map(async (device) => {
+    const known = device.displayActive === true || device.displayActive === false
+      || device.osController?.displayActive === true || device.osController?.displayActive === false;
+    if (known || !Number.isInteger(device.id) || typeof api.displayGet !== 'function') return device;
+    try {
+      const state = await api.displayGet(device.id);
+      return {
+        ...device,
+        displayActive: Array.isArray(state?.displays)
+          ? state.displays.some((display) => display?.flags?.active === true)
+          : null,
+      };
+    } catch {
+      return device;
+    }
+  }));
+  if (generation !== overlayConfigureGeneration) return;
+  const orderedDevices = overlayDeviceOrder(dedupeOverlayDevices(enrichedDevices))
+    .map((device, index) => ({ ...device, overlayOrdinal: index + 1 }));
   const selected = overlayDeviceKeys
-    ? dedupeOverlayDevices(devices.filter((device) => identityAliases(device).some((key) => overlayDeviceKeys!.some((wanted) => identityToken(wanted) === key))))
-    : dedupeOverlayDevices(devices);
+    ? overlayDeviceOrder(dedupeOverlayDevices(orderedDevices.filter((device) => identityAliases(device).some((key) => overlayDeviceKeys!.some((wanted) => identityToken(wanted) === key)))))
+    : orderedDevices;
   // A stale hardware-key list must not blank the HUD after a device swap;
   // degrade to all currently enumerated GPUs until the user selects again.
-  const monitored = selected.length > 0 ? selected : dedupeOverlayDevices(devices);
-  const primary = monitored.find((device) => device.id === primaryId) ?? monitored[0] ?? null;
+  const monitored = selected.length > 0 ? selected : orderedDevices;
+  const primary = monitored.find((device) => device.displayActive === true || device.osController?.displayActive === true)
+    ?? monitored.find((device) => device.id === primaryId)
+    ?? monitored[0]
+    ?? null;
   const mainDeviceId = primaryId;
   const mainSelected = monitored.find((device) => device.id === primaryId)
     ?? devices.find((device) => device.id === primaryId)
     ?? null;
   const displayDeviceId = primary?.id ?? null;
   const displayDeviceKey = primary ? stableDeviceKey(primary) : null;
+  const displayOrdinal = primary?.overlayOrdinal ?? 1;
   const secondary = monitored.filter((device) => device.id !== displayDeviceId);
   const nextSecondaryDeviceIds = secondary.map((device) => device.id);
+  const nextSecondaryDeviceOrdinals = secondary.map((device, index) => device.overlayOrdinal ?? index + 2);
   const nextGpuChipLabel = primary
     ? chipLabelForDevice(primary, sysinfoControllersByPnp ?? undefined)
     : null;
@@ -915,9 +949,11 @@ async function configureOverlayDevices(
   mainSelectedDeviceKey = mainSelected ? stableDeviceKey(mainSelected) : null;
   overlayDisplayDeviceId = displayDeviceId;
   overlayDisplayDeviceKey = displayDeviceKey;
+  overlayDisplayOrdinal = displayOrdinal;
   document.documentElement.dataset.overlayDisplayDevice = String(displayDeviceId ?? '');
   fpsDeviceId = displayDeviceId;
   secondaryDeviceIds = nextSecondaryDeviceIds;
+  secondaryDeviceOrdinals = nextSecondaryDeviceOrdinals;
   gpuChipLabel = nextGpuChipLabel;
   secondaryGpuChipLabels = nextSecondaryGpuChipLabels;
   secondarySamples.clear();

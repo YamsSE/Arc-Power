@@ -72,6 +72,68 @@ function safeRtssText(value, { lineBreaks = true, backspace = false } = {}) {
   return out;
 }
 
+const SHORT_GPU_DROP_TOKENS = new Set([
+  'nvidia', 'geforce', 'intel', 'arc', 'amd', 'ati', 'radeon',
+  'graphics', 'corporation', 'inc', 'r', 'tm',
+  'mock', 'fixture', 'fixtures', 'test', 'testing', 'sample',
+]);
+
+export function shortGpuLabel(value, fallback = 'GPU') {
+  const source = safeRtssText(value, { lineBreaks: false })
+    .replace(/\((?:r|tm)\)/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!source) return fallback;
+
+  // Intel Arc names are commonly decorated with a trailing "Graphics"
+  // token. Prefer the stable model token so the same physical adapter is
+  // shown as A770/B580 regardless of the vendor string or suffix wording.
+  const arcModel = source.match(/\bArc\b[\s\S]*?\b([AB]\d{3,4})\b/i);
+  if (arcModel) return arcModel[1].toUpperCase();
+
+  const kept = [];
+  const tokens = source.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (/^\d+(?:gb|gib|mb|mib)$/i.test(token) || /^gddr\d+$/i.test(token)) break;
+    if (SHORT_GPU_DROP_TOKENS.has(token.toLowerCase())) continue;
+    if (/^rx$/i.test(token) && /^\d+$/.test(tokens[index + 1] ?? '')) {
+      kept.push(`RX${tokens[index + 1]}`);
+      index += 1;
+      continue;
+    }
+    kept.push(token);
+  }
+  return kept.length > 0 ? kept.join(' ') : fallback;
+}
+
+function canonicalizeRtssApi(value) {
+  const api = safeRtssText(value, { lineBreaks: false }).trim();
+  if (!api) return '';
+  const normalized = api.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const aliases = {
+    vulkan: 'VULKAN',
+    vk: 'VULKAN',
+    opengl: 'OGL',
+    ogl: 'OGL',
+    dx9: 'DX9',
+    directx9: 'DX9',
+    dx10: 'DX10',
+    d3d10: 'DX10',
+    directx10: 'DX10',
+    dx11: 'DX11',
+    d3d11: 'DX11',
+    directx11: 'DX11',
+    dx12: 'DX12',
+    d3d12: 'DX12',
+    directx12: 'DX12',
+    dxgi: 'DXGI',
+    d3d9: 'DX9',
+    other: 'OTHER',
+  };
+  return aliases[normalized] ?? '';
+}
+
 function cleanOwner(value) {
   return safeRtssText(value, { lineBreaks: false }).replace(/\0/g, '');
 }
@@ -190,7 +252,17 @@ function row(label, fields) {
   return fields.length > 0 ? `${label} ${fields.join(' ')}` : '';
 }
 
-function formatGpuRows(telemetry, settings, stats) {
+function gpuOrdinalOf(gpu, fallbackIndex, deviceOrdinals) {
+  if (deviceOrdinals instanceof Map) {
+    for (const alias of gpu.aliases) {
+      const ordinal = deviceOrdinals.get(alias);
+      if (Number.isInteger(ordinal) && ordinal > 0) return ordinal;
+    }
+  }
+  return fallbackIndex + 1;
+}
+
+function formatGpuRows(telemetry, settings, stats, deviceOrdinals = null) {
   const selected = Array.isArray(settings?.monitoredDeviceKeys)
     ? settings.monitoredDeviceKeys.filter((value) => typeof value === 'string' && value.length > 0)
     : null;
@@ -207,9 +279,10 @@ function formatGpuRows(telemetry, settings, stats) {
     : source;
   const rows = [];
   filtered.forEach((gpu, index) => {
+    const ordinal = gpuOrdinalOf(gpu, index, deviceOrdinals);
     const label = settings?.overlayChipNames === true
-      ? safeRtssText(gpu.name).slice(0, 24) || `GPU ${index + 1}`
-      : `GPU${index + 1}`;
+      ? shortGpuLabel(gpu.name, `GPU ${index + 1}`).slice(0, 24)
+      : `GPU${ordinal}`;
     const gpuFields = [];
     if (statEnabled(stats, 'gpu-util')) gpuFields.push(`${numberText(gpu.util)}%`);
     if (statEnabled(stats, 'gpu-clock')) gpuFields.push(`${numberText(gpu.clock)} MHz`);
@@ -224,7 +297,7 @@ function formatGpuRows(telemetry, settings, stats) {
     if (statEnabled(stats, 'gpu-mem-clock')) vramFields.push(`${numberText(gpu.memClock)} MHz`);
     if (statEnabled(stats, 'gpu-vram')) vramFields.push(byteSizeToGb(gpu.vram));
     if (statEnabled(stats, 'gpu-vram-temp')) vramFields.push(`${numberText(gpu.vramTemp)}°C`);
-    const vramRow = row(`VRAM${index + 1}`, vramFields);
+    const vramRow = row(`VRAM${ordinal}`, vramFields);
     if (vramRow) rows.push(vramRow);
   });
   return rows;
@@ -262,6 +335,7 @@ export function buildRtssTelemetryText({
   graphObjectTagsSupported = false,
   formatTagsSupported = true,
   graphObjectOffset = 0,
+  deviceOrdinals = null,
 } = {}) {
   const stats = statsOf(settings);
   const lines = [];
@@ -289,11 +363,11 @@ export function buildRtssTelemetryText({
     addRow(row('RAM', [ramSizeToGb(ramBytes)]));
   }
 
-  formatGpuRows(telemetry, settings, stats).forEach(addRow);
+  formatGpuRows(telemetry, settings, stats, deviceOrdinals).forEach(addRow);
 
   if (statEnabled(stats, 'api')) {
-    const api = safeRtssText(fps?.api ?? telemetry.api ?? '');
-    if (api) addRow(row('API', [api]));
+    const api = canonicalizeRtssApi(fps?.api ?? telemetry.api ?? '');
+    if (api) addRow(api);
   }
   if (statEnabled(stats, 'frametime')) {
     addRow(row('FT', [`${numberText(fps?.frameTimeMs ?? telemetry.frameTimeMs, 2)} ms`]));
@@ -462,6 +536,7 @@ export function createRtssOsdPublisher(deps = {}) {
   const latestByDevice = new Map();
   let knownDeviceKeys = null;
   let knownDeviceOrder = null;
+  let knownDeviceOrdinals = null;
   const frameHistory = [];
   let clearRetryTimer = null;
   let stopped = false;
@@ -770,6 +845,7 @@ export function createRtssOsdPublisher(deps = {}) {
             formatTagsSupported: version >= RTSS_OSD_FORMAT_VERSION,
             graphObjectTagsSupported: graphSupported(),
             graphObjectOffset: 0,
+            deviceOrdinals: knownDeviceOrdinals,
           });
       const textOffset = version >= RTSS_OSD_EXT_VERSION ? RTSS_OSD_ENTRY.ex : RTSS_OSD_ENTRY.text;
       const textSize = version >= RTSS_OSD_EXT_VERSION ? RTSS_OSD_EX_SIZE : 256;
@@ -850,16 +926,22 @@ export function createRtssOsdPublisher(deps = {}) {
     if (next && typeof next === 'object') settings = { ...settings, ...next };
     return { ...settings };
   };
-  const setKnownDeviceKeys = (keys, order = keys) => {
+  const setKnownDeviceKeys = (keys, order = keys, groups = null) => {
     if (!Array.isArray(keys)) {
       knownDeviceKeys = null;
       knownDeviceOrder = null;
+      knownDeviceOrdinals = null;
       return null;
     }
     knownDeviceKeys = new Set(keys.filter((key) => typeof key === 'string' && key.length > 0));
     knownDeviceOrder = Array.isArray(order)
       ? [...new Set(order.filter((key) => typeof key === 'string' && knownDeviceKeys.has(key)))]
       : [...knownDeviceKeys];
+    knownDeviceOrdinals = Array.isArray(groups)
+      ? new Map(groups.flatMap((aliases, index) => (Array.isArray(aliases) ? aliases : [])
+        .filter((key) => typeof key === 'string' && key.length > 0)
+        .map((key) => [key, index + 1])))
+      : null;
     for (const key of latestByDevice.keys()) {
       if (!knownDeviceKeys.has(key)) latestByDevice.delete(key);
     }

@@ -101,9 +101,8 @@ export const OVERLAY_POLL_MS_DEFAULT = 400;
  * the badge in its OWN standalone line (M13: the api field LEFT the FPS
  * row - the apiLine row sits between the VRAM row and the frametime
  * strip; the row order and the tickbox order are independent - the
- * apiLine content is explicit in overlayLines). M19b: the apiLine row
- * carries the 'API' row label like the other five rows - the SIXTH
- * labeled row of the divider column).
+ * apiLine content is explicit in overlayLines). The API value is not
+ * prefixed with a row header.
  * M12: 'fps-avg' + 'fps-01pct-low' (the window-AVG / 0.1% Low row stats)
  * ride right after 'fps' (the row field order); 'memory-util' (the Memory
  * row) joins after the CPU stats; 'gpu-vram' stays where it was - it now
@@ -266,8 +265,8 @@ export function isValidOverlayStat(v: unknown): v is string {
 }
 
 /** M10a: the canonical Graphics-API field labels (the ONLY strings the api
- *  field may ever show - 'DX12' / 'Vulkan' / 'DX11' / 'DX10' / 'DX9' /
- *  'OpenGL'; the ids are the detector contract of src/main/foreground-api.js;
+ *  field may ever show - 'DX12' / 'VULKAN' / 'DX11' / 'DX10' / 'DX9' /
+ *  'OGL'; the ids are the detector contract of src/main/foreground-api.js;
  *  M10b added 'dx9' - the League-of-Legends (DirectX 9) detection; M12 added
  *  'dx10' - the DirectX-10 detection completeness).
  *  The native RTSS provider maps legacy DirectDraw/DX8 to the stable 'other'
@@ -276,20 +275,36 @@ export function isValidOverlayStat(v: unknown): v is string {
  *  for fine-grained labels when the provider does not expose an API id. */
 export const OVERLAY_API_LABELS: Record<string, string> = {
   dx12: 'DX12',
-  vulkan: 'Vulkan',
+  vulkan: 'VULKAN',
   dx11: 'DX11',
   dx10: 'DX10',
   dx9: 'DX9',
-  opengl: 'OpenGL',
+  opengl: 'OGL',
   dxgi: 'DXGI',
-  d3d9: 'D3D9',
-  other: 'Other',
+  d3d9: 'DX9',
+  other: 'OTHER',
 };
 
 /** M10a: the display label for a detected api id - null for null/unknown
- *  (the API row stays EMPTY - never '-', never a raw id). */
+ *  (the API row stays EMPTY - never '-', never a raw id). Input ids are
+ *  accepted case-insensitively because RTSS and legacy detectors may expose
+ *  either the lowercase internal id or an already-uppercase API token. */
 export function apiLabelOf(v: unknown): string | null {
-  return typeof v === 'string' ? (OVERLAY_API_LABELS[v] ?? null) : null;
+  if (typeof v !== 'string') return null;
+  const key = v.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const aliases: Record<string, string> = {
+    vk: 'vulkan',
+    ogl: 'opengl',
+    directx9: 'dx9',
+    directx10: 'dx10',
+    directx11: 'dx11',
+    directx12: 'dx12',
+    d3d9: 'dx9',
+    d3d12: 'dx12',
+    d3d11: 'dx11',
+    d3d10: 'dx10',
+  };
+  return OVERLAY_API_LABELS[aliases[key] ?? key] ?? null;
 }
 
 /**
@@ -378,15 +393,15 @@ export interface OverlayLines {
   vramLine: string;
   /** M13: the standalone Graphics-API row (the api field LEFT the fpsLine
    *  and now feeds this row between the VRAM row and the frametime strip).
-   *  'API   DX12' or '' - the M10a vanish rule: EMPTY when the api is
+   *  'DX12' or '' - the M10a vanish rule: EMPTY when the api is
    *  null/unknown or the api stat is off, never a '-'. */
   apiLine: string;
   /** M18/M19b: the SIX labeled-row labels (the header-divider column
    *  source). The cpu/gpu entries carry the M17b chip-name labels when
    *  enabled, the stock prefixes otherwise (the same cpuPrefix/gpuPrefix
    *  the lines render); fps/memory/vram are the fixed 'FPS' / 'RAM' /
-   *  'VRAM'; the M19b api entry is the fixed 'API' - the API row joined
-   *  the divider column as the SIXTH labeled row. The renderer measures
+   *  'VRAM'; the api entry remains the fixed 'API' label for the divider
+   *  column, while apiLine contains only its value. The renderer measures
    *  the max label length from these and sets the --overlay-label-w CSS
    *  var (in ch) per render. */
   labels: { fps: string; cpu: string; memory: string; gpu: string; vram: string; api: string };
@@ -440,15 +455,13 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
  *     LEADS (gpu-mem-clock), then the VRAM usage (gpu-vram via gbValue),
  *     then the VRAM temperature (gpu-vram-temp); '' when ALL three stats
  *     are off);
- *   apiLine: 'API   DX12' (M13: the standalone Graphics-API row; the api
+ *   apiLine: 'DX12' (M13: the standalone Graphics-API row; the api
  *     field LEFT the fpsLine and now renders its own row between the VRAM
  *     row and the frametime strip. EMPTY when the api is null/unknown or
  *     the api stat is off - "if it's none, it won't display anything",
  *     never a '-'; only the canonical labels ever render (apiLabelOf)).
- *     M19b: the row rides the SAME labeledRow rule - the 'API' label
- *     padded to the max label length + the two-space separator ('API   '
- *     at the stock 4ch column, 'API        ' under the M17b 9ch chip
- *     column), so its value aligns with the other five rows.
+ *     The API value has no row-label padding; labels.api remains available
+ *     for the divider column.
  * M7a (fix 3): the 'CPU '/'GPU ' row label is NOT baked into any field -
  * it is prefixed ONCE to the first field when the row is non-empty
  * ('CPU   61°C' for a temp-only row - never a bare '61°C') and padded to
@@ -633,7 +646,7 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   // the field order is untouched.
   const gpuLine = labeledRow(labels.gpu, gpuFields);
   const vramLine = labeledRow(labels.vram, vramFields);
-  const apiLine = labeledRow(labels.api, apiFields);
+  const apiLine = apiFields.join('  ');
   return { fpsLine, cpuLine, memoryLine, gpuLine, vramLine, apiLine, labels, frametimeEnabled: enabled.has('frametime') };
 }
 

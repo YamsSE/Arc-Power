@@ -886,6 +886,61 @@ export async function resolvePreferredDevice(backend, devices = null) {
     })[0]?.device ?? null;
 }
 
+function overlayDisplayActiveOf(device) {
+  if (device?.displayActive === true || device?.osController?.displayActive === true) return true;
+  if (device?.displayActive === false || device?.osController?.displayActive === false) return false;
+  return null;
+}
+
+/**
+ * Order overlay presentation rows without changing device ids or routing.
+ * The adapter driving an active desktop output is always the first row; if
+ * more than one adapter is active, durable physical identity breaks the tie.
+ * Unknown display state is deliberately not guessed from enumeration order.
+ */
+export function overlayDeviceOrder(devices) {
+  return (Array.isArray(devices) ? devices : [])
+    .map((device, index) => ({ device, index }))
+    .sort((left, right) => {
+      const leftActive = overlayDisplayActiveOf(left.device);
+      const rightActive = overlayDisplayActiveOf(right.device);
+      const activeDiff = Number(rightActive === true) - Number(leftActive === true);
+      if (activeDiff !== 0) return activeDiff;
+      if (leftActive === true && rightActive === true) {
+        const leftKey = typeof left.device?.deviceKey === 'string' && left.device.deviceKey.length > 0
+          ? left.device.deviceKey : deviceHardwareKey(left.device);
+        const rightKey = typeof right.device?.deviceKey === 'string' && right.device.deviceKey.length > 0
+          ? right.device.deviceKey : deviceHardwareKey(right.device);
+        const keyDiff = leftKey.localeCompare(rightKey);
+        if (keyDiff !== 0) return keyDiff;
+      }
+      return left.index - right.index;
+    })
+    .map(({ device }) => device);
+}
+
+/** Resolve missing display flags from the adapter's own display route before
+ * assigning the user-facing GPU 1/GPU 2 labels. This is read-only and only
+ * runs for rows whose inventory did not already carry display proof. */
+export async function resolveOverlayDeviceOrder(backend, devices) {
+  const rows = Array.isArray(devices) ? devices : [];
+  if (typeof backend?.getDisplaySettings !== 'function') return overlayDeviceOrder(rows);
+  const enriched = await Promise.all(rows.map(async (device) => {
+    if (overlayDisplayActiveOf(device) !== null || !Number.isInteger(device?.id)) return device;
+    try {
+      const state = await backend.getDisplaySettings(device.id);
+      if (!Array.isArray(state?.displays)) return device;
+      return {
+        ...device,
+        displayActive: state.displays.some((display) => display?.flags?.active === true),
+      };
+    } catch {
+      return device;
+    }
+  }));
+  return overlayDeviceOrder(enriched).map((device, index) => ({ ...device, overlayOrdinal: index + 1 }));
+}
+
 /** M151: id-only convenience seam for tests and callers that need no key. */
 export async function resolvePreferredDeviceId(backend, devices = null) {
   return (await resolvePreferredDevice(backend, devices))?.id ?? null;
@@ -983,7 +1038,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   registryApply?: { apply: (entryId: string, action: string) => Promise<unknown> },  // M3-B elevated apply
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null, avgFps: number | null, low1Pct: number | null, low01Pct: number | null, p99: number | null } | null>, stop?: () => Promise<void> },
  *   fpsLane?: { poll: (deviceId: number) => Promise<object | null>, stop?: () => Promise<void> } | null,  // Native RTSS foreground-process lane; null in mock/tests - the determinism seam like foregroundApi
- *   rtssOverlay?: { publish: (payload: object) => Promise<unknown>|unknown, updateSettings?: (settings: object) => Promise<unknown>|unknown, setKnownDeviceKeys?: (keys: string[], order?: string[]) => unknown, clear?: () => Promise<unknown>|unknown, stop?: () => Promise<void> } | null,  // Native RTSS telemetry OSD publisher
+ *   rtssOverlay?: { publish: (payload: object) => Promise<unknown>|unknown, updateSettings?: (settings: object) => Promise<unknown>|unknown, setKnownDeviceKeys?: (keys: string[], order?: string[], groups?: string[][]) => unknown, clear?: () => Promise<unknown>|unknown, stop?: () => Promise<void> } | null,  // Native RTSS telemetry OSD publisher
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
  *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe). M17g: the emit-site composition MOVED into the sysStats adapter's FAST lane - this param is kept for call-site compatibility and is no longer consumed by the telemetry push (the fast-lane field replaces it).
  *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>, sampleFast?: () => Promise<object>, sampleSlow?: () => Promise<object>, setTarget?: (target?: object|null) => void, startSlowLane?: (cadenceMs?: number) => void, stopSlowLane?: () => void } | { current: object | null },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample). M17g: the telemetry push samples the FAST lane (sampleFast) per tick - never the slow PowerShell query; the slow lane runs on the adapter's own background timer (startSlowLane/stopSlowLane, tied to the telemetry session lifecycle). M17p: main.js may pass a MUTABLE HOLDER ({ current: null } - the sysStats block lands AFTER registerIpc; the ONE normalize at the top unwraps it per-access; a plain adapter passes through).
@@ -1885,8 +1940,16 @@ export function createIpcHandlers({
     }
     if (lifecycle !== rtssOverlayLifecycle || syncGeneration !== rtssOverlaySyncGeneration) return;
     if (Array.isArray(devices)) {
+      try {
+        devices = await resolveOverlayDeviceOrder(backend, devices);
+      } catch {
+        // A display probe is optional. Keep the inventory order if the probe
+        // itself fails; telemetry identity and routing remain unchanged.
+      }
+      if (lifecycle !== rtssOverlayLifecycle || syncGeneration !== rtssOverlaySyncGeneration) return;
       const knownOrder = devices.flatMap(aliasesOf);
-      rtssOverlay.setKnownDeviceKeys?.([...new Set(knownOrder)], knownOrder);
+      const knownGroups = devices.map(aliasesOf);
+      rtssOverlay.setKnownDeviceKeys?.([...new Set(knownOrder)], knownOrder, knownGroups);
     }
     if (settings?.overlayEnabled !== true) {
       overlayTelemetryOwners.delete('rtss');

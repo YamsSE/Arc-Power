@@ -7978,10 +7978,9 @@ export async function runTrayApplyVerify(win, backend, store, getTrayProbe) {
 //       RID_MOCK_FPS=1 -> 'FPS   60  AVG 58  1% Low 52  0.1% Low 42
 //       99% FPS 58' (M7a/M12: the percentile + AVG stats ride the FPS
 //       row); M13/M19b: the standalone API row (#overlay-api between the
-//       VRAM row and the frametime strip) reads 'API   DX12' under
-//       RID_MOCK_API=1 (M19b: the SIXTH labeled row - the 'API' header
-//       padded to the column, its value after the divider like the other
-//       five) and stays EMPTY without the knob (the M10a vanish rule -
+//       VRAM row and the frametime strip) reads 'DX12' under
+//       RID_MOCK_API=1 (M19b: the API value is shown without a visible
+//       header, aligned with the other values) and stays EMPTY without the knob (the M10a vanish rule -
 //       never '-'); the mock fixture at main.js feeds the 'dx12';
 //   (c) the frametime canvas has DRAWN content under RID_MOCK_FPS=1 (the
 //       16.7ms passthrough series);
@@ -8280,8 +8279,8 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   }
   // M35: the Overlay Settings GPU selector uses durable device keys and
   // reconfigures the live lanes. In a multi-device fixture, selecting only
-  // GPU2 must collapse the HUD back to unnumbered GPU / VRAM labels; restore
-  // the all-GPU default before the rest of this overlay run.
+  // GPU2 must retain its physical GPU2 / VRAM2 identity; restore the all-GPU
+  // default before the rest of this overlay run.
   if (multiGpu) {
     const devices = await js(`window.arcPower.listDevices()`);
     const keys = Array.isArray(devices)
@@ -8289,9 +8288,9 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
       : [];
     if (keys.length >= 2) {
       await js(`window.arcPower.profilesSettingsSave({ overlayDeviceKeys: [${JSON.stringify(keys[1])}] })`);
-      const singleSelected = await waitFor(overlayWin, `(document.getElementById('overlay-gpu2')?.style.display === 'none' && (document.getElementById('overlay-gpu')?.textContent ?? '').startsWith('GPU   '))`, 10000);
+      const singleSelected = await waitFor(overlayWin, `(document.getElementById('overlay-gpu2')?.style.display === 'none' && (document.getElementById('overlay-gpu')?.textContent ?? '').startsWith('GPU2'))`, 10000);
       if (!singleSelected) {
-        fail(`M35: selecting only GPU2 did not collapse the overlay to unnumbered GPU / VRAM rows (GPU='${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}', GPU2='${await ojs(`document.getElementById('overlay-gpu2')?.textContent ?? ''`)}')`);
+        fail(`M35: selecting only GPU2 did not retain the physical GPU2 identity (GPU='${await ojs(`document.getElementById('overlay-gpu')?.textContent ?? ''`)}', GPU2='${await ojs(`document.getElementById('overlay-gpu2')?.textContent ?? ''`)}')`);
       }
       if (!(await waitFor(win, `window.arcPower.overlayGetState().then((s) => s.visible === false)`, 5000))) {
         fail('M53 (HUD lifecycle): the hidden HUD was revived by the non-master overlayDeviceKeys update');
@@ -8302,7 +8301,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
       if (!(await waitFor(win, `window.arcPower.overlayGetState().then((s) => s.visible === false)`, 5000))) {
         fail('M53 (HUD lifecycle): the hidden HUD was revived by restoring overlayDeviceKeys');
       }
-      step('m35-overlay-gpu-selection', `M35/M53: Overlay Settings can monitor only GPU2, collapsing labels to GPU / VRAM, then restore all ${keys.length} GPU lanes while the shortcut-hidden HUD stays hidden`);
+      step('m35-overlay-gpu-selection', `M35/M53: Overlay Settings can monitor only GPU2 while retaining its physical label, then restore all ${keys.length} GPU lanes while the shortcut-hidden HUD stays hidden`);
     }
   }
   // M16: the standalone Voltage row is REMOVED - the #overlay-voltage div
@@ -8325,13 +8324,13 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail(`M5: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected a padded '${mockFps ? 'FPS 60' : 'FPS -'}'${mockFps ? '' : ' - the fps poll is unavailable without RID_MOCK_FPS'})`);
   }
   // M13/M19b: the standalone API row - the api field LEFT the FPS row and
-  // renders here. Under RID_MOCK_API=1 the row reads the padded 'API   DX12'
-  // (the SIXTH labeled row - 'API'.padEnd(4) + '  ' + 'DX12'); without the
+  // renders here. Under RID_MOCK_API=1 the row reads the value-only 'DX12'
+  // (the API header is intentionally not rendered); without the
   // knob (or when the api is null/unknown) the row stays EMPTY - never a
   // '-' (the M10a vanish rule).
-  const apiPin = mockApi ? /^API\s+DX12$/ : /^$/;
+  const apiPin = mockApi ? /^DX12$/ : /^$/;
   if (!(await waitFor(overlayWin, `(${apiPin.toString()}).test((document.getElementById('overlay-api')?.textContent ?? '').trim())`, 10000))) {
-    fail(`M13: the overlay API row is '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}' (expected '${mockApi ? 'API DX12 with aligned padding' : 'empty'}'${mockApi ? '' : ' - no api detected, the row stays empty'})`);
+    fail(`M13: the overlay API row is '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}' (expected '${mockApi ? 'DX12 without a visible API header' : 'empty'}'${mockApi ? '' : ' - no api detected, the row stays empty'})`);
   }
   // M13: the row-ORDER pin - the api row sits BETWEEN the VRAM row and the
   // frametime strip (the user's placement: above the frametime graph).
@@ -8856,15 +8855,14 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail(`M19: the chip-names ON alignment pins failed (${alignWide.why}) - the widened column must still put every value right of the divider, aligned`);
   }
   step('m19-divider-alignment-wide', `M19/M19b: the chip-names ON alignment - ${alignWide.why} (the values still start at maxLabelLen + 2 ch, right of the widened divider)`);
-  // M19b: the API row rides the SAME widened column under the chip toggle -
-  // 'API        DX12' under RID_MOCK_API (the 9ch pad: 'API'.padEnd(9) +
-  // '  ' = 7 spaces) and the EMPTY shape without the knob (the api row
-  // only fills under RID_MOCK_API).
+  // M19b: the API value rides the SAME widened column under the chip toggle
+  // without a visible API header, and stays EMPTY without the knob (the api
+  // row only fills under RID_MOCK_API).
   if (mockApi) {
-    if (!(await waitFor(overlayWin, `/^API\\s+DX12$/.test((document.getElementById('overlay-api')?.textContent ?? '').trim())`, 5000))) {
-      fail(`M19b: the overlay API row under the wide column is '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}' (expected a padded API DX12 row - the shared chip-label column + the two-space separator)`);
+    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-api')?.textContent ?? '').trim() === 'DX12'`, 5000))) {
+      fail(`M19b: the overlay API row under the wide column is '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}' (expected value-only DX12 aligned to the shared chip-label column)`);
     }
-    step('m19b-api-wide', 'the API row under the chip-names wide column reads the 9ch padded shape (API        DX12)');
+    step('m19b-api-wide', 'the API row under the chip-names wide column reads value-only DX12 with the shared alignment');
   } else {
     if (!(await waitFor(overlayWin, `(document.getElementById('overlay-api')?.textContent ?? '').trim() === ''`, 5000))) {
       fail(`M19b: the overlay API row under the wide column is '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}' (expected '' - no RID_MOCK_API)`);
@@ -9053,7 +9051,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // (f3c) M13/M19b: the Graphics-API stat - the api tickbox round-trips
   // the Memory/VRAM row pattern now: unchecking it EMPTIES the API row (''
   // - the fixed div stays, the fps line keeps its badge-free pinned text),
-  // re-checking restores the padded 'API   DX12'. Meaningful ONLY under
+  // re-checking restores the value-only 'DX12'. Meaningful ONLY under
   // RID_MOCK_API=1 (without the knob the row never fills and the none-case
   // apiPin above already covers it). The fps line at this point is the
   // FULL percentile line - the f3b/f3b2 round trips above leave the four
@@ -9072,10 +9070,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
       fail(`M13: the overlay FPS line changed when the api stat was unchecked: '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${avg01Pin}' - the api row is independent; the percentile stats are ON from the round trips above)`);
     }
     await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="api"]'); if (b) b.click(); })()`);
-    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-api')?.textContent ?? '').trim() === 'API   DX12'`, 5000))) {
-      fail(`M13: the overlay API row did not regain 'API   DX12' after re-checking: '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}'`);
+    if (!(await waitFor(overlayWin, `(document.getElementById('overlay-api')?.textContent ?? '').trim() === 'DX12'`, 5000))) {
+      fail(`M13: the overlay API row did not regain 'DX12' after re-checking: '${await ojs(`document.getElementById('overlay-api')?.textContent ?? ''`)}'`);
     }
-    step('m13-api-tickbox', `the Graphics-API tickbox round trip: uncheck -> the API row writes '' (the fps line untouched); re-check -> 'API   DX12' again`);
+    step('m13-api-tickbox', `the Graphics-API tickbox round trip: uncheck -> the API row writes '' (the fps line untouched); re-check -> 'DX12' again`);
   } else {
     step('m13-api-tickbox', 'the Graphics-API tickbox round trip SKIPPED (RID_MOCK_API not set - the row never fills; the none-case apiPin above covers it)');
   }

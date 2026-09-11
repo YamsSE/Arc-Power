@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRtssTelemetryText, createRtssOsdPublisher, encodeRtssGraphObject } from '../src/main/rtss-osd.js';
+import { buildRtssTelemetryText, createRtssOsdPublisher, encodeRtssGraphObject, shortGpuLabel } from '../src/main/rtss-osd.js';
 
 const makeMap = (version = 0x2000E, owner = '', busy = 0, entrySize = version >= 0x2000C ? 266752 : version >= 0x20007 ? 4608 : 512, count = 2) => {
   const offset = 40;
@@ -34,7 +34,7 @@ test('formatter emits RTSS-native tags and keeps telemetry values bounded', () =
       utilPct: 88,
       fanRpm: [1030],
       gpuMemUsedBytes: 4_096_000_000,
-      api: 'DX12<>',
+      api: 'dx12',
     },
     fps: { fps: 144.4, avgFps: 140, low1Pct: 99, low01Pct: 88, p99: 101, frameTimeMs: 6.94 },
     settings: {
@@ -53,12 +53,45 @@ test('formatter emits RTSS-native tags and keeps telemetry values bounded', () =
   const first = buildRtssTelemetryText(args);
   assert.equal(first, buildRtssTelemetryText(args));
   assert.match(first, /<P8><FNT=Consolas,8,400,4><C0=12ABEF><C0>/);
-  assert.match(first, /Arc B580/);
+  assert.match(first, /B580/);
+  assert.doesNotMatch(first, /Arc B580/);
   assert.match(first, /CPU 42% 4\.3 GHz 61C 125\.5 W/);
   assert.match(first, /VRAM1 2187 MHz 4 GB 73C/);
-  assert.match(first, /API DX12\\<\\>/);
+  assert.match(first, /DX12/);
+  assert.doesNotMatch(first, /API DX12/);
   assert.doesNotMatch(first, /[\x00\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/);
   assert.ok(Buffer.byteLength(first, 'ascii') <= 4095);
+});
+
+test('shortGpuLabel keeps concise vendor-neutral model labels', () => {
+  assert.equal(shortGpuLabel('Intel Arc A770'), 'A770');
+  assert.equal(shortGpuLabel('Intel Arc B580'), 'B580');
+  assert.equal(shortGpuLabel('Intel(R) Arc(TM) A770'), 'A770');
+  assert.equal(shortGpuLabel('NVIDIA GeForce RTX 4070'), 'RTX 4070');
+  assert.equal(shortGpuLabel('AMD Radeon RX 7600'), 'RX7600');
+  assert.equal(shortGpuLabel('Custom Accelerator'), 'Custom Accelerator');
+  assert.equal(shortGpuLabel('\u0000\u0001', 'GPU 2'), 'GPU 2');
+});
+
+test('formatter keeps physical GPU ordinals when a non-display adapter is selected alone', () => {
+  const text = buildRtssTelemetryText({
+    telemetry: { deviceKey: 'pci:secondary', gpuClockMhz: 2000, tempC: 60 },
+    settings: { stats: ['gpu-clock', 'gpu-temp'] },
+    deviceOrdinals: new Map([['pci:display', 1], ['pci:secondary', 2]]),
+  });
+  assert.match(text, /GPU2 2000 MHz 60C/);
+  assert.doesNotMatch(text, /GPU1 2000 MHz/);
+});
+
+test('formatter canonicalizes RTSS API values and omits the API row label', () => {
+  for (const [input, expected] of [
+    ['vulkan', 'VULKAN'], ['opengl', 'OGL'], ['dx10', 'DX10'], ['dx11', 'DX11'],
+    ['dx12', 'DX12'], ['dx9', 'DX9'], ['dxgi', 'DXGI'], ['d3d9', 'DX9'], ['other', 'OTHER'],
+  ]) {
+    const text = buildRtssTelemetryText({ telemetry: { api: input }, settings: { stats: ['api'] } });
+    assert.equal(text, `<P0><FNT=Consolas,8,400,2><C0=FFFFFF><C0>${expected}`);
+    assert.doesNotMatch(text, /API/);
+  }
 });
 
 test('formatter respects legacy text mode without leaking format tags', () => {

@@ -58,7 +58,7 @@ import {
   ADVANCED_OVERLAY_POSITION_LABELS,
   isValidAdvancedOverlayPosition,
 } from '../pure/overlay.ts';
-import { dedupeOverlayDevices } from '../pure/overlay-routing.ts';
+import { dedupeOverlayDevices, overlayDeviceOrder } from '../pure/overlay-routing.ts';
 import type { OverlayPosition, OverlayState, AdvancedOverlayState, RtssStartupState } from '../types.ts';
 
 // M9: the Overlay Settings content renderer - the old page module's export
@@ -81,6 +81,30 @@ interface OverlayDevice {
   name?: string | null;
   deviceKey?: string | null;
   deviceKeys?: string[] | null;
+  overlayOrdinal?: number;
+  displayActive?: boolean | null;
+  osController?: { displayActive?: boolean | null } | null;
+}
+
+async function resolveOverlayDisplayOrder(devices: OverlayDevice[]): Promise<OverlayDevice[]> {
+  const enriched = await Promise.all(devices.map(async (device) => {
+    const known = device.displayActive === true || device.displayActive === false
+      || device.osController?.displayActive === true || device.osController?.displayActive === false;
+    if (known || !Number.isInteger(device.id) || typeof api.displayGet !== 'function') return device;
+    try {
+      const state = await api.displayGet(device.id);
+      return {
+        ...device,
+        displayActive: Array.isArray(state?.displays)
+          ? state.displays.some((display) => display?.flags?.active === true)
+          : null,
+      };
+    } catch {
+      return device;
+    }
+  }));
+  return overlayDeviceOrder(dedupeOverlayDevices(enriched))
+    .map((device, index) => ({ ...device, overlayOrdinal: index + 1 }));
 }
 
 interface PersistedOverlay {
@@ -219,7 +243,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   }
   try {
     const listed = await api.listDevices();
-    overlayDevices = Array.isArray(listed) ? dedupeOverlayDevices(listed) : [];
+    overlayDevices = Array.isArray(listed) ? await resolveOverlayDisplayOrder(listed) : [];
   } catch {
     overlayDevices = [];
   }
@@ -291,7 +315,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           ? deviceOptions.map((device, index) => {
             const key = device.deviceKey!.trim();
             const model = typeof device.name === 'string' && device.name.length > 0 ? ` - ${device.name}` : '';
-            return el('label', { class: 'boot-toggle overlay-device-toggle', title: `GPU ${index + 1}${model}` }, [
+            const displayNote = device.displayActive === true || device.osController?.displayActive === true
+              ? ' · display-driving adapter'
+              : '';
+            return el('label', { class: 'boot-toggle overlay-device-toggle', title: `GPU ${index + 1}${displayNote}${model}` }, [
               el('input', {
                 type: 'checkbox',
                 class: 'settings-checkbox',
