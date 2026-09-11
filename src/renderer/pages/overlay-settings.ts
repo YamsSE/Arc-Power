@@ -493,8 +493,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // pattern - button[data-color-option="#..."]; the chips are
     // CLASS-driven swatch chips, CSP-safe) + the custom hex input
     // (type=color - a plain value applied via CSSOM, never an inline
-    // style) + the SIZE slider. RTSS exposes four discrete font zoom levels,
-    // represented by the persisted 0.5x..2x scale values.
+    // style) + the SIZE slider. RTSS exposes the persisted 0.5x..2x scale
+    // values in quarter-size steps.
     // Legacy theme/background values are intentionally not exposed here.
     const colorOptions = OVERLAY_COLOR_PRESETS.map((hex) =>
       el('button', {
@@ -515,7 +515,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       title: 'Custom overlay color',
       onchange: (ev: Event) => void onColorSelect((ev.target as HTMLInputElement).value),
     });
-    const scaleValue = el('span', { class: 'settings-scale-value', text: `${persisted.scale.toFixed(2)}x` });
+    const formatScale = (value: number) => `${Number(value.toFixed(2))}x`;
+    const scaleValue = el('span', { class: 'settings-scale-value', text: formatScale(persisted.scale) });
     // M7b (fix 4): the Background section - the box toggle, the color
     // swatches + custom hex (the overlay-color-option pattern, but
     // data-bg-color-option) + the 0-100 opacity slider (the scale-slider
@@ -552,12 +553,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           class: 'settings-scale-slider',
           min: 0.5,
           max: 2,
-          step: 0.5,
+          step: 0.25,
           value: String(persisted.scale),
           oninput: (ev: Event) => {
             const v = Number((ev.target as HTMLInputElement).value);
-            const stepped = Math.round(v * 2) / 2;
-            scaleValue.textContent = `${stepped.toFixed(2)}x`;
+            const stepped = Math.round(v * 4) / 4;
+            scaleValue.textContent = formatScale(stepped);
           },
           onchange: (ev: Event) => void onScaleChange(Number((ev.target as HTMLInputElement).value)),
         }),

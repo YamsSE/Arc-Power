@@ -175,16 +175,16 @@ function positionTag(position) {
 
 function scaleTag(scale, theme = 'arc') {
   // RTSS's hypertext FNT tag is the per-layer size control. The application
-  // slider is 0.5..2.0; map it to RTSS's 1..4 Raster3D zoom range. Keeping
-  // this in the emitted text makes a live setting change affect the existing
-  // RTSS slot immediately instead of merely changing Arc Power state.
-  const zoom = Math.round(clamp(scale, 0.5, 2, 1) * 2);
+  // slider is 0.5..2.0 in quarter-size steps. RTSS accepts an explicit font
+  // size, so use 4/6/8/10/12/14/16px equivalents instead of rounding adjacent
+  // quarter steps onto the same native zoom level.
+  const fontSize = Math.max(4, Math.min(16, Math.round(clamp(scale, 0.5, 2, 1) * 8)));
   // Raster3D supports the FNT face/weight/zoom tag. Use a distinct face for
   // the two persisted themes so switching themes remains visible on RTSS,
   // whose native surface cannot consume Arc Power's HTML/CSS theme tokens.
   const face = theme === 'classic' ? 'Tahoma' : 'Consolas';
   const weight = theme === 'classic' ? 700 : 400;
-  return `<FNT=${face},8,${weight},${Math.max(1, Math.min(4, zoom))}>`;
+  return `<FNT=${face},${fontSize},${weight},1>`;
 }
 
 function valueOrNull(...values) {
@@ -193,11 +193,11 @@ function valueOrNull(...values) {
 }
 
 function byteSizeToGb(value) {
-  return finite(value) && value >= 0 ? `${Math.round(value / 1_000_000_000)} GB` : '-';
+  return finite(value) && value >= 0 ? `${Math.round(value / 1_000_000_000)}GB` : '-';
 }
 
 function ramSizeToGb(value) {
-  return finite(value) && value >= 0 ? `${(value / 1_000_000_000).toFixed(1)} GB` : '-';
+  return finite(value) && value >= 0 ? `${(value / 1_000_000_000).toFixed(1)}GB` : '-';
 }
 
 function gpuLike(value) {
@@ -214,6 +214,17 @@ function gpuEntries(telemetry) {
   if (gpuLike(telemetry?.gpu)) return [telemetry.gpu];
   return gpuLike(telemetry) ? [telemetry] : [];
 }
+
+// A flat lane sample carries both system fields and one GPU's fields. When
+// samples from multiple adapters are composed, only the GPU fields may be
+// copied from the current lane; copying the whole object would make CPU/RAM
+// values jump to whichever GPU happened to publish last.
+const GPU_TELEMETRY_KEYS = [
+  'deviceKey', 'deviceKeys', 'deviceId', 'deviceName', 'name', 'label',
+  'gpuClockMhz', 'memClockMhz', 'tempC', 'temperatureC', 'vramTempC', 'memTempC',
+  'gpuVoltageV', 'powerW', 'utilPct', 'gpuUtilPct', 'utilization', 'fanRpm',
+  'gpuMemUsedBytes', 'vramUsedMb', 'gpuMemorySource',
+];
 
 function normalizeGpu(gpu, index) {
   const aliases = [
@@ -513,6 +524,10 @@ function defaultBindings() {
 
 function deviceKeyOf(sample) {
   if (typeof sample?.deviceKey === 'string' && sample.deviceKey.length > 0) return sample.deviceKey;
+  if (Array.isArray(sample?.deviceKeys)) {
+    const alias = sample.deviceKeys.find((value) => typeof value === 'string' && value.length > 0);
+    if (alias) return alias;
+  }
   if (Number.isInteger(sample?.deviceId)) return `id:${sample.deviceId}`;
   return null;
 }
@@ -548,6 +563,7 @@ export function createRtssOsdPublisher(deps = {}) {
   let knownDeviceKeys = null;
   let knownDeviceOrder = null;
   let knownDeviceOrdinals = null;
+  let knownDeviceGroupByAlias = null;
   const frameHistory = [];
   let clearRetryTimer = null;
   let stopped = false;
@@ -777,7 +793,10 @@ export function createRtssOsdPublisher(deps = {}) {
 
   const rememberTelemetry = (telemetry) => {
     if (!telemetry || typeof telemetry !== 'object') return;
-    const key = deviceKeyOf(telemetry);
+    const rawKey = deviceKeyOf(telemetry);
+    const key = rawKey === null
+      ? null
+      : (knownDeviceGroupByAlias?.get(rawKey) ?? rawKey);
     if (key) latestByDevice.set(key, telemetry);
     else fallbackSample = telemetry;
     rememberFrameTimes(telemetry.frametimeHistory);
@@ -817,7 +836,9 @@ export function createRtssOsdPublisher(deps = {}) {
     const currentGpus = gpuEntries(current);
     const unique = new Map();
     [...gpuSamples, ...currentGpus].forEach((gpu, index) => {
-      const key = deviceKeyOf(gpu) ?? gpu?.deviceName ?? `gpu:${index}`;
+      const rawKey = deviceKeyOf(gpu);
+      const key = (rawKey === null ? null : (knownDeviceGroupByAlias?.get(rawKey) ?? rawKey))
+        ?? gpu?.deviceName ?? `gpu:${index}`;
       unique.set(key, gpu);
     });
     const composed = { ...current, ...system, gpus: [...unique.values()] };
@@ -825,7 +846,11 @@ export function createRtssOsdPublisher(deps = {}) {
     // current sample only carries system fields, the newest GPU lane supplies
     // the primary row so the OSD never flickers to '-'.
     const currentGpu = gpuLike(current) ? current : samples.find(gpuLike);
-    if (currentGpu) Object.assign(composed, currentGpu);
+    if (currentGpu) {
+      for (const key of GPU_TELEMETRY_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(currentGpu, key)) composed[key] = currentGpu[key];
+      }
+    }
     return composed;
   };
 
@@ -942,6 +967,7 @@ export function createRtssOsdPublisher(deps = {}) {
       knownDeviceKeys = null;
       knownDeviceOrder = null;
       knownDeviceOrdinals = null;
+      knownDeviceGroupByAlias = null;
       return null;
     }
     knownDeviceKeys = new Set(keys.filter((key) => typeof key === 'string' && key.length > 0));
@@ -953,9 +979,35 @@ export function createRtssOsdPublisher(deps = {}) {
         .filter((key) => typeof key === 'string' && key.length > 0)
         .map((key) => [key, index + 1])))
       : null;
-    for (const key of latestByDevice.keys()) {
-      if (!knownDeviceKeys.has(key)) latestByDevice.delete(key);
+    knownDeviceGroupByAlias = new Map();
+    if (Array.isArray(groups)) {
+      for (const aliases of groups) {
+        const group = Array.isArray(aliases)
+          ? [...new Set(aliases.filter((key) => typeof key === 'string' && key.length > 0))]
+          : [];
+        const canonical = group[0];
+        if (!canonical) continue;
+        for (const alias of group) knownDeviceGroupByAlias.set(alias, canonical);
+      }
     }
+    for (const key of knownDeviceKeys) {
+      if (!knownDeviceGroupByAlias.has(key)) knownDeviceGroupByAlias.set(key, key);
+    }
+    // Inventory may arrive after the first telemetry tick. Re-key the cache
+    // immediately so an alias-only sample cannot remain beside the later
+    // canonical sample and overwrite it during composition.
+    const remapped = new Map();
+    for (const [cachedKey, sample] of latestByDevice.entries()) {
+      const rawKey = deviceKeyOf(sample);
+      const canonical = rawKey === null
+        ? cachedKey
+        : (knownDeviceGroupByAlias.get(rawKey) ?? rawKey);
+      if (!knownDeviceKeys.has(canonical)) continue;
+      const previous = remapped.get(canonical);
+      if (!previous || sampleTime(sample) >= sampleTime(previous)) remapped.set(canonical, sample);
+    }
+    latestByDevice.clear();
+    for (const [key, sample] of remapped) latestByDevice.set(key, sample);
     return [...knownDeviceKeys];
   };
   const setVisible = (next) => {

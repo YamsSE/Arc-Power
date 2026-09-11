@@ -52,19 +52,34 @@ test('formatter emits RTSS-native tags and keeps telemetry values bounded', () =
   };
   const first = buildRtssTelemetryText(args);
   assert.equal(first, buildRtssTelemetryText(args));
-  assert.match(first, /<P8><FNT=Tahoma,8,700,4><C0=12ABEF><C0>/);
+  assert.match(first, /<P8><FNT=Tahoma,16,700,1><C0=12ABEF><C0>/);
   assert.match(first, /B580/);
   assert.doesNotMatch(first, /Intel\(R\) Arc\(TM\)|Arc B580|Graphics/);
   assert.match(first, /FPS 144 AVG 140 1% 99 0\.1% 88 99% 101/);
   assert.doesNotMatch(first, /1% Low|0\.1% Low|99% FPS/);
   assert.match(first, /CPU 42% 4\.3 GHz 61C 125\.5 W/);
-  assert.match(first, /VRAM1 2187 MHz 4 GB 73C/);
+  assert.match(first, /VRAM1 2187 MHz 4GB 73C/);
   assert.match(first, /DX12/);
   assert.doesNotMatch(first, /API DX12/);
   assert.match(first, /Frametime 6\.94 ms/);
   assert.doesNotMatch(first, /\bFT\b/);
   assert.doesNotMatch(first, /[\x00\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/);
   assert.ok(Buffer.byteLength(first, 'ascii') <= 4095);
+});
+
+test('formatter maps every quarter-size setting to a distinct RTSS font size', () => {
+  const tags = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((scale) =>
+    buildRtssTelemetryText({ telemetry: { api: 'dx12' }, settings: { scale, stats: ['api'] } })
+      .match(/<FNT=[^>]+>/)?.[0]);
+  assert.deepEqual(tags, [
+    '<FNT=Tahoma,4,700,1>',
+    '<FNT=Tahoma,6,700,1>',
+    '<FNT=Tahoma,8,700,1>',
+    '<FNT=Tahoma,10,700,1>',
+    '<FNT=Tahoma,12,700,1>',
+    '<FNT=Tahoma,14,700,1>',
+    '<FNT=Tahoma,16,700,1>',
+  ]);
 });
 
 test('shortGpuLabel keeps concise vendor-neutral model labels', () => {
@@ -123,7 +138,7 @@ test('formatter canonicalizes RTSS API values and omits the API row label', () =
     ['dx12', 'DX12'], ['dx9', 'DX9'], ['dxgi', 'DXGI'], ['d3d9', 'DX9'], ['other', 'OTHER'],
   ]) {
     const text = buildRtssTelemetryText({ telemetry: { api: input }, settings: { stats: ['api'] } });
-    assert.equal(text, `<P0><FNT=Tahoma,8,700,2><C0=FFFFFF><C0>${expected}`);
+    assert.equal(text, `<P0><FNT=Tahoma,8,700,1><C0=FFFFFF><C0>${expected}`);
     assert.doesNotMatch(text, /API/);
   }
 });
@@ -207,12 +222,106 @@ test('merges separately sampled GPUs and applies live selection/stat changes', (
   const merged = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
   assert.match(merged, /B580 88%/);
   assert.match(merged, /A770 44%/);
-  assert.match(merged, /VRAM1 4 GB/);
+  assert.match(merged, /VRAM1 4GB/);
   publisher.updateSettings({ monitoredDeviceKeys: ['gpu-a'], stats: ['gpu-temp'] });
   assert.equal(publisher.publish({ telemetry: { t: 3, deviceKey: 'gpu-a', tempC: 65 } }), true);
   const updated = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
   assert.match(updated, /GPU1 -%? ?65C|GPU1 65C/);
   assert.doesNotMatch(updated, /VRAM/);
+});
+
+test('keeps alias-only multi-GPU samples attached to their physical rows', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true, overlayChipNames: true, stats: ['cpu-util', 'cpu-power', 'gpu-util', 'gpu-power'] });
+  publisher.setKnownDeviceKeys(['pci:display', 'pci:secondary'], ['pci:display', 'pci:secondary'], [
+    ['pci:display'],
+    ['pci:secondary'],
+  ]);
+  assert.equal(publisher.publish({ telemetry: {
+    t: 1,
+    deviceKeys: ['pci:display'],
+    deviceName: 'Intel Arc B580',
+    cpuUtilPct: 22,
+    cpuPowerW: 31.5,
+    utilPct: 91,
+    powerW: 158.4,
+  } }), true);
+  assert.equal(publisher.publish({ telemetry: {
+    t: 2,
+    deviceKeys: ['pci:secondary'],
+    deviceName: 'Intel Arc A770',
+    cpuUtilPct: 88,
+    cpuPowerW: 77.7,
+    utilPct: 44,
+    powerW: 42.2,
+  } }), true);
+  const base = fixture.offset + fixture.entrySize + 512;
+  const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
+  assert.match(text, /CPU 22% 31\.5 W/);
+  assert.match(text, /B580 91% 158\.4 W/);
+  assert.match(text, /A770 44% 42\.2 W/);
+  assert.doesNotMatch(text, /B580 88%|B580 77\.7 W|A770 91%|A770 158\.4 W/);
+});
+
+test('collapses canonical and alias telemetry keys into one physical row', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true, overlayChipNames: true, stats: ['gpu-util'] });
+  publisher.setKnownDeviceKeys(
+    ['pci:display', 'pnp:display'],
+    ['pci:display', 'pnp:display'],
+    [['pci:display', 'pnp:display']],
+  );
+  assert.equal(publisher.publish({ telemetry: {
+    t: 1,
+    deviceKeys: ['pnp:display'],
+    deviceName: 'Intel Arc B580',
+    utilPct: 11,
+  } }), true);
+  assert.equal(publisher.publish({ telemetry: {
+    t: 2,
+    deviceKey: 'pci:display',
+    deviceName: 'Intel Arc B580',
+    utilPct: 91,
+  } }), true);
+  const base = fixture.offset + fixture.entrySize + 512;
+  const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
+  assert.equal((text.match(/B580 91%/g) ?? []).length, 1);
+  assert.doesNotMatch(text, /B580 11%/);
+});
+
+test('rekeys cached alias telemetry when physical GPU groups arrive late', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true, overlayChipNames: true, stats: ['gpu-util'] });
+  assert.equal(publisher.publish({ telemetry: {
+    t: 1,
+    deviceKeys: ['pnp:display'],
+    deviceName: 'Intel Arc B580',
+    utilPct: 11,
+  } }), true);
+  publisher.setKnownDeviceKeys(
+    ['pci:display', 'pnp:display', 'pci:secondary'],
+    ['pci:display', 'pci:secondary'],
+    [['pci:display', 'pnp:display'], ['pci:secondary']],
+  );
+  assert.equal(publisher.publish({ telemetry: {
+    t: 2,
+    deviceKey: 'pci:display',
+    deviceName: 'Intel Arc B580',
+    utilPct: 91,
+  } }), true);
+  assert.equal(publisher.publish({ telemetry: {
+    t: 3,
+    deviceKey: 'pci:secondary',
+    deviceName: 'Intel Arc A770',
+    utilPct: 44,
+  } }), true);
+  const base = fixture.offset + fixture.entrySize + 512;
+  const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
+  assert.equal((text.match(/B580 91%/g) ?? []).length, 1);
+  assert.doesNotMatch(text, /B580 11%/);
 });
 
 test('prunes removed physical GPU samples before the all-GPU view is rendered', () => {

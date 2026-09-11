@@ -24,10 +24,10 @@ const THEMES = ['dark', 'midnight', 'light', 'red', 'yellow'];
 // files -> 'top-left'; a garbage value degrades to 'top-left' at the STORE.
 const OVERLAY_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
 // M5: the RTSS overlay scale range (mirrored in pure/overlay.ts). The
-// persisted values map to RTSS's four integer font zoom levels.
+// persisted values map to RTSS's quarter-size font grid.
 const OVERLAY_SCALE_MIN = 0.5;
 const OVERLAY_SCALE_MAX = 2.0;
-const OVERLAY_SCALE_STEP = 0.5;
+const OVERLAY_SCALE_STEP = 0.25;
 
 // M24: the overlay THEME ids - the persisted-truth owner of the list (the
 // OVERLAY_POSITIONS pattern). The renderer mirror lives in

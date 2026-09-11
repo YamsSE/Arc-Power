@@ -77,12 +77,11 @@ export function isValidAdvancedOverlayPosition(v: unknown): v is 'left' | 'right
   return typeof v === 'string' && (ADVANCED_OVERLAY_POSITIONS as readonly string[]).includes(v);
 }
 
-/** The RTSS scale slider's range (mirrored in ipc-core's clamp). RTSS uses
- * four integer font zoom levels, so the persisted app-scale maps cleanly to
- * 1x/2x/3x/4x at 0.5 increments. */
+/** The RTSS scale slider's range (mirrored in ipc-core's clamp). The
+ * persisted app-scale uses quarter-size steps from 0.5x through 2x. */
 export const OVERLAY_SCALE_MIN = 0.5;
 export const OVERLAY_SCALE_MAX = 2.0;
-export const OVERLAY_SCALE_STEP = 0.5;
+export const OVERLAY_SCALE_STEP = 0.25;
 
 /** M17e: the overlay polling-rate slider's range + default (the
  *  telemetry-service default; mirrored in profile-store.js + ipc-core.js -
@@ -341,7 +340,7 @@ export function isValidOverlayColor(v: unknown): v is string {
   return typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v);
 }
 
-/** Clamp and snap a scale value to the four RTSS font zoom levels. */
+/** Clamp and snap a scale value to the RTSS quarter-size grid. */
 export function clampOverlayScale(v: unknown): number {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : 1;
   const clamped = Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));

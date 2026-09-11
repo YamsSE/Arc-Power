@@ -210,10 +210,11 @@ const MAX_CURVE_POINTS = 32;
 const RESET_VERIFY_EPS = 1e-6;
 // M5: the RTSS overlay scale range (mirrored in pure/overlay.ts). The
 // native provider has four integer font zoom levels, represented here as
-// 0.5 increments so the existing persisted geometry scale stays compatible.
+// Quarter-size increments keep the existing persisted range compatible while
+// exposing the full RTSS-style 0.5x..2x grid.
 const OVERLAY_SCALE_MIN = 0.5;
 const OVERLAY_SCALE_MAX = 2.0;
-const OVERLAY_SCALE_STEP = 0.5;
+const OVERLAY_SCALE_STEP = 0.25;
 // M17e (the user addition - the overlay polling-rate slider): the
 // telemetry push cadence range (mirrored in profile-store.js +
 // overlay-settings.ts; the telemetry-service default is 400 ms - M17g:
@@ -411,7 +412,7 @@ export function validateAdvancedOverlayPosition(v) {
 }
 
 /**
- * M5: clamp and snap the overlay scale to the four RTSS font zoom levels
+ * M5: clamp and snap the overlay scale to the RTSS quarter-size grid
  * represented by 0.5..2.0 (garbage degrades to the 1.0 default - the store
  * normalizes the same way).
  * @param {unknown} v
@@ -1594,6 +1595,12 @@ export function createIpcHandlers({
     const target = await backend.getDeviceTarget?.(deviceId);
     if (generation !== telemetryGeneration) return;
     const telemetryAliases = Array.isArray(target?.deviceKeys) ? [...target.deviceKeys] : null;
+    // Keep a numeric id as an internal lane key only. A synthetic `id:N`
+    // deviceKey in the shared payload looks like a durable identity and makes
+    // the Advanced Overlay reject otherwise valid identity-less samples.
+    const stableDeviceKey = target?.deviceKey
+      ?? (Array.isArray(telemetryAliases) ? telemetryAliases[0] : null)
+      ?? null;
     try { await sysStats.setTarget?.(target); } catch { /* stale OS target degrades to null fields */ }
     if (generation !== telemetryGeneration) return;
     if (target?.synthetic || target?.backendKind === 'os') {
@@ -1616,8 +1623,8 @@ export function createIpcHandlers({
         emitTelemetry({
           t: Date.now(),
           deviceId,
-          deviceKey: target?.deviceKey ?? null,
-          deviceKeys: telemetryAliases,
+          deviceKey: stableDeviceKey,
+          deviceKeys: telemetryAliases ? [...new Set([stableDeviceKey, ...telemetryAliases].filter(Boolean))] : null,
           deviceName: target?.name ?? null,
           sessionGeneration: generation,
           ...extra,
@@ -1675,8 +1682,8 @@ export function createIpcHandlers({
       if (generation !== telemetryGeneration) return;
       emitTelemetry({
         deviceId,
-        deviceKey: target?.deviceKey ?? null,
-        deviceKeys: telemetryAliases,
+        deviceKey: stableDeviceKey,
+        deviceKeys: telemetryAliases ? [...new Set([stableDeviceKey, ...telemetryAliases].filter(Boolean))] : null,
         deviceName: target?.name ?? null,
         sessionGeneration: generation,
         ...extra,
@@ -1702,8 +1709,8 @@ export function createIpcHandlers({
         emitTelemetry({
           t: Date.now(),
           deviceId,
-          deviceKey: target?.deviceKey ?? null,
-          deviceKeys: telemetryAliases,
+          deviceKey: stableDeviceKey,
+          deviceKeys: telemetryAliases ? [...new Set([stableDeviceKey, ...telemetryAliases].filter(Boolean))] : null,
           deviceName: target?.name ?? null,
           sessionGeneration: generation,
           ...extra,
@@ -1789,6 +1796,18 @@ export function createIpcHandlers({
       const device = devices.find((entry) => entry.id === deviceId);
       const target = await backend.getDeviceTarget?.(deviceId);
       if (generation !== overlayTelemetryGeneration) return;
+      const telemetryDeviceKey = target?.deviceKey
+        ?? (Array.isArray(target?.deviceKeys) ? target.deviceKeys[0] : null)
+        ?? device?.deviceKey
+        ?? (Array.isArray(device?.deviceKeys) ? device.deviceKeys[0] : null)
+        ?? deviceHardwareKey(device)
+        ?? null;
+      const telemetryDeviceKeys = [...new Set([
+        telemetryDeviceKey,
+        ...(Array.isArray(target?.deviceKeys) ? target.deviceKeys : []),
+        ...(Array.isArray(device?.deviceKeys) ? device.deviceKeys : []),
+      ].filter((key) => typeof key === 'string' && key.length > 0))];
+      const telemetryDeviceAliases = telemetryDeviceKeys.length > 0 ? telemetryDeviceKeys : null;
       // Register every physical target before choosing its telemetry source.
       // Synthetic AMD/NVIDIA lanes use vendor samples for vendor-specific
       // fields, but generic VRAM/utilization counters still come from the
@@ -1830,10 +1849,8 @@ export function createIpcHandlers({
             emitTelemetry({
               t: Date.now(),
               deviceId,
-              deviceKey: target?.deviceKey ?? device?.deviceKey ?? deviceHardwareKey(device) ?? null,
-              deviceKeys: Array.isArray(target?.deviceKeys)
-                ? [...target.deviceKeys]
-                : Array.isArray(device?.deviceKeys) ? [...device.deviceKeys] : null,
+              deviceKey: telemetryDeviceKey,
+              deviceKeys: telemetryDeviceAliases,
               deviceName: target?.name ?? device?.name ?? null,
               sessionGeneration: telemetryGeneration,
               ...merged,
@@ -1858,10 +1875,8 @@ export function createIpcHandlers({
         if (generation !== overlayTelemetryGeneration) return;
         emitTelemetry({
           deviceId,
-          deviceKey: target?.deviceKey ?? device?.deviceKey ?? deviceHardwareKey(device) ?? null,
-          deviceKeys: Array.isArray(target?.deviceKeys)
-            ? [...target.deviceKeys]
-            : Array.isArray(device?.deviceKeys) ? [...device.deviceKeys] : null,
+          deviceKey: telemetryDeviceKey,
+          deviceKeys: telemetryDeviceAliases,
           deviceName: target?.name ?? device?.name ?? null,
           sessionGeneration: telemetryGeneration,
           ...extra,
@@ -1971,16 +1986,21 @@ export function createIpcHandlers({
       // Match the renderer's stale-key behavior: an explicit selection that
       // no longer matches inventory falls back to all currently visible GPUs.
       if (selected.length === 0) selected = devices;
-      const mainDevice = devices.find((device) => (
+      // Durable identity wins over the session id. The numeric id can be
+      // reused after an inventory refresh, which previously caused the main
+      // lane to be excluded from the wrong GPU's RTSS reconciliation and
+      // made GPU1/GPU2 values appear to swap.
+      const mainDeviceByKey = typeof settings.deviceKey === 'string' && settings.deviceKey.length > 0
+        ? devices.find((device) => aliasesOf(device).includes(settings.deviceKey))
+        : null;
+      const mainDevice = mainDeviceByKey ?? devices.find((device) => (
         Number.isInteger(settings.deviceId) && device?.id === settings.deviceId
-      )) ?? (typeof settings.deviceKey === 'string' && settings.deviceKey.length > 0
-        ? devices.find((device) => {
-            return aliasesOf(device).includes(settings.deviceKey);
-          })
-        : null);
+      )) ?? null;
       const keys = selected
         .filter((device) => !mainDevice || device?.id !== mainDevice.id)
-        .map((device) => device?.deviceKey ?? deviceHardwareKey(device) ?? (
+        .map((device) => device?.deviceKey
+          ?? (Array.isArray(device?.deviceKeys) ? device.deviceKeys[0] : null)
+          ?? deviceHardwareKey(device) ?? (
           Number.isInteger(device?.id) ? `id:${device.id}` : null
         ))
         .filter((key) => typeof key === 'string' && key.length > 0);
