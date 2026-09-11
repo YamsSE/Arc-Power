@@ -174,3 +174,31 @@ back to the built-in DXGI sampler.
 - Package: `Guru3D.RTSS`
 - Project page: https://www.guru3d.com/download/rtss-rivatuner-statistics-server-download/
 
+## LibreHardwareMonitor - hardware telemetry bridge
+
+- Component: `src/main/telemetry/lhm-runtime/`, including the read-only
+  `ArcPower.LhmBridge.exe` bridge and the managed
+  `LibreHardwareMonitorLib.dll` payload.
+- Version: LibreHardwareMonitor 0.9.6, net472 release payload, pinned to
+  upstream revision `3d331e3370efb858411f19511373eff65a218701`. The bridge
+  source is `src/main/telemetry/lhm-bridge/ArcPower.LhmBridge.cs`; it is an
+  Arc Power integration file and is separate from the upstream library.
+- License: Mozilla Public License 2.0 (MPL-2.0). The license text is
+  reproduced in `LICENSES/MPL-2.0.txt`.
+- Upstream source and release: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/tree/3d331e3370efb858411f19511373eff65a218701
+  and https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/tag/v0.9.6
+- Corresponding source: the pinned upstream LibreHardwareMonitor source is
+  available from the upstream revision above; Arc Power's bridge
+  source and its reproducible build script are included in this repository.
+  This notice is included with the packaged application so recipients know
+  where to obtain the source for the executable-form payload.
+- The release payload contains upstream dependency assemblies whose notices
+  are maintained by LibreHardwareMonitor. See the upstream
+  `THIRD-PARTY-NOTICES.txt` at
+  https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/blob/master/THIRD-PARTY-NOTICES.txt.
+- Arc Power does not use LibreHardwareMonitor's GPU load sensors. Windows
+  GPU Engine counters provide GPU utilization, and RTSS provides FPS and
+  frametime. No advertising attribution or in-app splash credit is required
+  by MPL-2.0; preserving the license/source notices is the attribution and
+  redistribution requirement.
+

@@ -1048,6 +1048,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
  *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe). M17g: the emit-site composition MOVED into the sysStats adapter's FAST lane - this param is kept for call-site compatibility and is no longer consumed by the telemetry push (the fast-lane field replaces it).
  *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>, sampleFast?: () => Promise<object>, sampleSlow?: () => Promise<object>, setTarget?: (target?: object|null) => void, startSlowLane?: (cadenceMs?: number) => void, stopSlowLane?: () => void } | { current: object | null },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample). M17g: the telemetry push samples the FAST lane (sampleFast) per tick - never the slow PowerShell query; the slow lane runs on the adapter's own background timer (startSlowLane/stopSlowLane, tied to the telemetry session lifecycle). M17p: main.js may pass a MUTABLE HOLDER ({ current: null } - the sysStats block lands AFTER registerIpc; the ONE normalize at the top unwraps it per-access; a plain adapter passes through).
+ *   lhmTelemetry?: { sampleForTarget: (target?: object|null) => Promise<object|null>, close?: () => Promise<void> },  // LibreHardwareMonitor hardware source; GPU utilization is composed separately from the Windows GPU Engine counter.
  *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: log-to-file writer (monitor-YYYYMMDD.txt)
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
@@ -1150,6 +1151,10 @@ export function createIpcHandlers({
   // real rolling-delta adapter in the product path. sample() is called on
   // every telemetry tick; its values ride the pushed telemetry sample.
   sysStats = createMockSysStats(),
+  // Production injects one shared LibreHardwareMonitor bridge. Tests and
+  // mock mode leave it absent so deterministic fixtures never touch
+  // privileged hardware access.
+  lhmTelemetry = null,
   // M4-D2: the log-to-file writer (monitor-YYYYMMDD.txt). The DEFAULT is a no-op (tests never
   // write to Documents); ipc.js injects the real writer in the product
   // path (dir: RID_MOCK_LOG_DIR ?? app.getPath('documents')).
@@ -1336,6 +1341,7 @@ export function createIpcHandlers({
       sample: (...args) => holder.current?.sample?.(...args),
       sampleFast: (...args) => holder.current?.sampleFast?.(...args),
       sampleForTarget: (...args) => holder.current?.sampleForTarget?.(...args),
+      sampleGpuUtilForTarget: (...args) => holder.current?.sampleGpuUtilForTarget?.(...args),
       registerTarget: (...args) => holder.current?.registerTarget?.(...args),
       sampleSlow: (...args) => holder.current?.sampleSlow?.(...args),
       setTarget: (...args) => holder.current?.setTarget?.(...args),
@@ -1400,6 +1406,37 @@ export function createIpcHandlers({
       // The RTSS OSD is an optional native consumer. A missing mapping or a
       // transient renderer lock must never break Arc Power telemetry delivery.
     }
+  };
+
+  // The production telemetry contract is intentionally source-specific:
+  // LibreHardwareMonitor owns CPU/RAM/GPU hardware readouts, Windows GPU
+  // Engine owns GPU utilization, and RTSS owns FPS/frametime. Removing the
+  // old IGCL/sys-stats readout fields here is important: a stale native field
+  // must never silently win when the new provider is unavailable.
+  const composeHybridTelemetry = async (target, deviceSample = null) => {
+    if (!lhmTelemetry || typeof lhmTelemetry.sampleForTarget !== 'function') return null;
+    let hardware = null;
+    try { hardware = await lhmTelemetry.sampleForTarget(target); } catch { hardware = null; }
+    let engine = { gpuUtilPct: null };
+    try {
+      engine = await sysStats.sampleGpuUtilForTarget?.(target) ?? engine;
+    } catch { /* honest null utilization */ }
+    const base = { ...(deviceSample ?? {}) };
+    for (const key of [
+      'utilPct', 'gpuUtilPct', 'gpuClockMhz', 'memClockMhz', 'tempC',
+      'vramTempC', 'gpuVoltageV', 'powerW', 'fanRpm', 'gpuMemUsedBytes',
+      'gpuMemorySource', 'cpuUtilPct', 'cpuTempC', 'cpuFreqMhz', 'cpuPowerW',
+      'memoryUsedBytes',
+    ]) delete base[key];
+    return {
+      ...base,
+      ...(hardware ?? {}),
+      gpuUtilPct: engine?.gpuUtilPct ?? null,
+      // Keep the legacy renderer contract working while making the source
+      // explicit; no IGCL utilization value reaches any consumer.
+      utilPct: engine?.gpuUtilPct ?? null,
+      gpuUtilSource: 'windows-gpu-engine',
+    };
   };
   // M151: device-preferred-get may be called concurrently by the main window
   // and either overlay. Deduplicate only the currently running probe. Do not
@@ -1515,6 +1552,26 @@ export function createIpcHandlers({
       // a store read failure keeps the default cadence
     }
     if (generation !== telemetryGeneration) return;
+    if (lhmTelemetry) {
+      const sampleNow = async () => {
+        const hybrid = await composeHybridTelemetry(null);
+        if (generation !== telemetryGeneration) return false;
+        emitTelemetry({
+          t: Date.now(),
+          deviceId: null,
+          sessionGeneration: generation,
+          ...(hybrid ?? {}),
+        });
+        return true;
+      };
+      const timer = setInterval(() => { void sampleNow(); }, pollMs);
+      telemetry.set(NULL_DEVICE_KEY, {
+        stop: async () => clearInterval(timer),
+        sampleNow,
+      });
+      await sampleNow();
+      return;
+    }
     // M17c: the vendor-telemetry lane - the no-device path hook. When the
     // ACTIVE device is non-Intel, the sysinfo controller vendor selects
     // the first available of [NVML, ADL] matching it; the adapter's
@@ -1603,6 +1660,31 @@ export function createIpcHandlers({
       ?? null;
     try { await sysStats.setTarget?.(target); } catch { /* stale OS target degrades to null fields */ }
     if (generation !== telemetryGeneration) return;
+    if (lhmTelemetry) {
+      const sampleNow = async () => {
+        const hybrid = await composeHybridTelemetry(target);
+        if (generation !== telemetryGeneration) return false;
+        emitTelemetry({
+          t: Date.now(),
+          deviceId,
+          deviceKey: stableDeviceKey,
+          deviceKeys: telemetryAliases ? [...new Set([stableDeviceKey, ...telemetryAliases].filter(Boolean))] : null,
+          deviceName: target?.name ?? null,
+          sessionGeneration: generation,
+          ...(hybrid ?? {}),
+        });
+        return true;
+      };
+      const timer = setInterval(() => { void sampleNow(); }, pollMs);
+      try { await sysStats.startSlowLane?.(undefined, generation); } catch { /* best effort */ }
+      if (await cleanupStaleTelemetryStartup({ generation, timer })) return;
+      telemetry.set(deviceId, {
+        stop: async () => clearInterval(timer),
+        sampleNow,
+      });
+      await sampleNow();
+      return;
+    }
     if (target?.synthetic || target?.backendKind === 'os') {
       let vendor = null;
       try {
@@ -1813,6 +1895,35 @@ export function createIpcHandlers({
       // fields, but generic VRAM/utilization counters still come from the
       // per-adapter sysStats record.
       try { sysStats.registerTarget?.(target); } catch { /* per-target stats registration is best effort */ }
+      if (lhmTelemetry) {
+        const sampleNow = async () => {
+          if (generation !== overlayTelemetryGeneration) return false;
+          const hybrid = await composeHybridTelemetry(target);
+          if (generation !== overlayTelemetryGeneration) return false;
+          emitTelemetry({
+            t: Date.now(),
+            deviceId,
+            deviceKey: telemetryDeviceKey,
+            deviceKeys: telemetryDeviceAliases,
+            deviceName: target?.name ?? device?.name ?? null,
+            sessionGeneration: telemetryGeneration,
+            ...(hybrid ?? {}),
+          });
+          return true;
+        };
+        const timer = setInterval(() => { void sampleNow(); }, pollMs);
+        try { await sysStats.startSlowLane?.(undefined, telemetryGeneration); } catch { /* best effort */ }
+        if (generation !== overlayTelemetryGeneration) {
+          clearInterval(timer);
+          return;
+        }
+        overlayTelemetry.set(deviceId, {
+          stop: async () => clearInterval(timer),
+          sampleNow,
+        });
+        await sampleNow();
+        continue;
+      }
       if (target?.synthetic || target?.backendKind === 'os') {
         // renderer's vendor singleton must never be rebound by this lane.
         const vendorLane = typeof vendorTelemetryFactory === 'function'

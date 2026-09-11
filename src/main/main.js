@@ -101,6 +101,7 @@ import { createRtssOsdPublisher } from './rtss-osd.js';
 import { createForegroundApiDetector } from './foreground-api.js';
 import { createMemoryUtilDetector } from './memory-util.js';
 import { createSysStats, createMockSysStats } from './sys-stats.js';
+import { createLhmTelemetry } from './telemetry/lhm-provider.js';
 import { createMsrReader } from './msr-reader.js';
 import { createMonitorLog } from './monitor-log.js';
 import { collectSysinfo, createMockSysinfo, vramBytesOfDevice, applyDriverReBar, createDriverReBar } from './sysinfo.js';
@@ -2427,6 +2428,9 @@ async function main() {
     try { sysStatsHolder.onReady?.(); } catch { /* best effort */ }
   };
   let msrReader = null;
+  // Production hardware readouts use one shared LibreHardwareMonitor bridge;
+  // mock/ui-verify stays deterministic and never starts a privileged helper.
+  const lhmTelemetry = mock ? null : createLhmTelemetry();
   // M4-D2: the Monitoring log-to-file writer. RID_MOCK_LOG_DIR redirects
   // the directory (ui-verify); the default is <Documents>\Arc Power.
   const monitorLog = createMonitorLog({
@@ -2452,6 +2456,7 @@ async function main() {
     }
     void backend.close().catch(() => {});
     void oldIgcl?.close?.().catch(() => {});
+    void lhmTelemetry?.close?.().catch(() => {});
     // M4L (N2): release the PawnIO device handle (msr-reader close hygiene).
     try { msrReader?.close?.(); } catch { /* best effort */ }
     // M23 CHANGE 3 (Part A): the window path's full close reaps the
@@ -3672,6 +3677,7 @@ async function main() {
     // sysStats block below lands AFTER registerIpc; createIpcHandlers
     // unwraps the holder per-access).
     sysStats: sysStatsHolder,
+    lhmTelemetry,
     monitorLog,
     oldIgcl,
     applyRunner,

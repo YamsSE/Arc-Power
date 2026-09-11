@@ -28,6 +28,7 @@
                   "files":  [
                                 "src/**/*",
                                 "!src/main/backend/presentmon/**",
+                                "!src/main/telemetry/lhm-runtime/**",
                                 "!src/main/fps-etw.js",
                                 "!src/main/fps-pm.js",
                                 "!src/main/pm-bindings.js",
@@ -39,6 +40,7 @@
                                 "src/main/backend/COPYING",
                                 "src/main/backend/PawnIO_setup.exe",
                                 "THIRD_PARTY_NOTICES.txt",
+                                "LICENSES/MPL-2.0.txt",
                                 "LICENSE",
                                 "package.json",
                                 "!node_modules/koffi/CHANGELOG.md",
@@ -92,6 +94,13 @@
                                         {
                                           "from":  "build/icon.ico",
                                           "to":  "app-icon-fallback.ico"
+                                        },
+                                        {
+                                          "from":  "src/main/telemetry/lhm-runtime",
+                                          "to":  "lhm",
+                                          "filter":  [
+                                                        "**/*"
+                                                    ]
                                         }
                                     ],
                   "win":  {
