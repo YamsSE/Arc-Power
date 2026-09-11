@@ -354,7 +354,7 @@ function gpuMetricNodes(device: DeviceInfo | null, state: AppState): HTMLElement
   const nodes = [
     metricNode('Util', (s) => {
       const v = readSample(s);
-      return { value: statValue(v?.gpuUtilPct ?? v?.utilPct), unit: '%' };
+      return { value: statValue(v?.utilPct ?? v?.gpuUtilPct), unit: '%' };
     }, state, '', category, series('util'), 'gpu-util'),
     metricNode('Core clock', (s) => ({ value: statValue(readSample(s)?.gpuClockMhz), unit: 'MHz' }), state, '', category, series('clock'), 'gpu-clock'),
     metricNode('Voltage', (s) => ({ value: statValue(readSample(s)?.gpuVoltageV, 3), unit: 'V' }), state, '', category, series('voltage'), 'gpu-voltage'),
@@ -694,7 +694,9 @@ export const monitoringPage: Page = {
 
     clear(container);
     const viewToggle = el('div', { class: 'mon-view-toggle-row' }, [
-      el('div', { class: 'oc-mode-toggle mon-view-toggle', role: 'group', 'aria-label': 'Monitoring view' }, [
+      el('div', { class: 'oc-mode-col' }, [
+        el('span', { class: 'oc-mode-label', text: 'VIEW' }),
+        el('div', { class: 'oc-mode-toggle mon-view-toggle', role: 'group', 'aria-label': 'Monitoring view' }, [
         el('button', {
           class: `oc-mode-btn mon-view-btn${monView === 'monitoring' ? ' active' : ''}`,
           dataset: { view: 'monitoring' },
@@ -707,6 +709,7 @@ export const monitoringPage: Page = {
           text: 'Overlay',
           onClick: () => setMonView('overlay'),
         }),
+        ]),
       ]),
     ]);
     viewContainer = el('div', { class: 'mon-view' });
@@ -773,7 +776,7 @@ export const monitoringPage: Page = {
       const now = sample?.t ?? Date.now();
       const t = now > 10_000_000_000 ? now / 1000 : now;
       const key = device ? deviceKeyOf(device) : 'vendor';
-      pushMetricSeries(gpuGraphKey(key, 'util'), t, sample?.gpuUtilPct ?? sample?.utilPct);
+      pushMetricSeries(gpuGraphKey(key, 'util'), t, sample?.utilPct ?? sample?.gpuUtilPct ?? undefined);
       pushMetricSeries(gpuGraphKey(key, 'clock'), t, sample?.gpuClockMhz);
       pushMetricSeries(gpuGraphKey(key, 'voltage'), t, sample?.gpuVoltageV);
       pushMetricSeries(gpuGraphKey(key, 'temp'), t, sample?.tempC);

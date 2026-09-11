@@ -7218,11 +7218,10 @@ export async function runNoIntelVerify(win) {
   if (gpuMemory['VramTemp'] !== '58') fail(`M17d: the VRAM-temp tile is '${gpuMemory['VramTemp']}' (expected '58' - the NVML_FI_DEV_MEMORY_TEMP field-values read)`);
   if (gpu['Temperature'] !== '62') fail(`M17d: the GPU temperature tile is '${gpu['Temperature']}' (expected '62' - the NVML temp)`);
   if (gpu['Power'] !== '152.4') fail(`M17d: the GPU power tile is '${gpu['Power']}' (expected '152.4' - the NVML mW->W readout)`);
-  // M4-I (D4): the Util tile reads `gpuUtilPct ?? utilPct` - on no-Intel the
-  // OS GPUEngine counter (the mock's fixed 42) is the only source (the
-  // NVML util is utilPct - the OS counter wins the ??:).
+  // M4-I (D4): the Util tile prefers the native device-wide `utilPct`, with
+  // the OS GPUEngine counter `gpuUtilPct` retained as a fallback.
   if (gpu['Util'] !== '42') fail(`1.0.1/M4-I: the monitoring Util tile is '${gpu['Util']}' (expected 42 - gpuUtilPct from the no-device sys-stats push)`);
-  step('monitoring', `monitoring: CPU Util 42 %, CPU Temperature ${cpu['Temperature']} °C; GPU and GPU memory panels LIVE from the vendor lane - Core clock 1965, Memory clock 7010, VRAM 4.3 GB (the NVML used-VRAM), VramTemp 58, Temperature 62, Power 152.4 W, Util 42 % (M4-I: gpuUtilPct ?? utilPct)`);
+  step('monitoring', `monitoring: CPU Util 42 %, CPU Temperature ${cpu['Temperature']} °C; GPU and GPU memory panels LIVE from the vendor lane - Core clock 1965, Memory clock 7010, VRAM 4.3 GB (the NVML used-VRAM), VramTemp 58, Temperature 62, Power 152.4 W, Util 42 % (M4-I: utilPct ?? gpuUtilPct)`);
 
   // --- 7. the Tuning page: 'No GPU available.', never the caps-loading text --
   // deviceId is null on no-Intel: the page must present the honest no-device
@@ -7974,9 +7973,9 @@ export async function runTrayApplyVerify(win, backend, store, getTrayProbe) {
 //       INSIDE the row between the temp and the power fields; the
 //       standalone #overlay-voltage div does NOT exist); the FPS row pins
 //       the FULL line -
-//       'FPS   -  AVG -  1% Low -  0.1% Low -  99% FPS -' unless
-//       RID_MOCK_FPS=1 -> 'FPS   60  AVG 58  1% Low 52  0.1% Low 42
-//       99% FPS 58' (M7a/M12: the percentile + AVG stats ride the FPS
+//       'FPS   -  AVG -  1% -  0.1% -  99% -' unless
+//       RID_MOCK_FPS=1 -> 'FPS   60  AVG 58  1% 52  0.1% 42
+//       99% 58' (M7a/M12: the percentile + AVG stats ride the FPS
 //       row); M13/M19b: the standalone API row (#overlay-api between the
 //       VRAM row and the frametime strip) reads 'DX12' under
 //       RID_MOCK_API=1 (M19b: the API value is shown without a visible
@@ -8310,7 +8309,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail('M16: the standalone #overlay-voltage row still exists (the GPU voltage must be a field INSIDE the GPU row - the row div was removed)');
   }
   // M7a/M12: the FPS row carries the percentile + AVG stats - the FULL
-  // pinned line is 'FPS   60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58'
+  // pinned line is 'FPS   60  AVG 58  1% 52  0.1% 42  99% 58'
   // under RID_MOCK_FPS=1 ONLY when those stats are ON. M17g: the stock
   // overlay stats = the user's 11 (fps ON, the percentile stats OFF by
   // default) - the BOOT line is the plain frame rate ('FPS   60' with the
@@ -8624,7 +8623,8 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     return (title?.textContent ?? '').trim() === 'Overlay'
       && !!b
       && b.classList.contains('active')
-      && !!document.querySelector('#overlay-settings-root');
+      && !!document.querySelector('#overlay-settings-root')
+      && !!document.querySelector('.overlay-hotkey-card .overlay-position-row .settings-position-select');
   })()`, 5000))) {
     fail('M9: the Settings-button navigation did not render the Overlay Monitoring contract (title, active view pill, and overlay settings root)');
   }
@@ -8988,7 +8988,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   }
   step('m6-stats-tickbox', 'gpu-fan tickbox round trip via profiles-settings-save: uncheck -> persisted overlayStats trimmed + the gpuLine loses RPM; re-check -> restored');
 
-  // (f3b) M7a: the two new FPS-row stats - the 1% Low / 99% FPS tickboxes
+  // (f3b) M7a: the two new FPS-row stats - the 1% / 99% tickboxes
   // round-trip like gpu-fan: unchecking BOTH reverts the fps line to the
   // plain frame-rate (the fields vanish with their stats), re-checking
   // restores the full pinned line. M17g: the percentile stats are OFF by
@@ -8998,15 +8998,16 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // uncheck never touches them).
   await ensureStatOn('fps-1pct-low');
   await ensureStatOn('fps-99pct');
-  const fullPctPin = mockFps ? 'FPS   60  1% Low 52  99% FPS 58' : 'FPS   -  1% Low -  99% FPS -';
+  const fpsLabelPrefix = multiGpu ? 'FPS    ' : 'FPS   ';
+  const fullPctPin = mockFps ? `${fpsLabelPrefix}60  1% 52  99% 58` : `${fpsLabelPrefix}-  1% -  99% -`;
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fullPctPin}'`, 5000))) {
     fail(`M7a: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${fullPctPin}' after turning the percentile stats on)`);
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-1pct-low"]'); if (b) b.click(); })()`);
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-99pct"]'); if (b) b.click(); })()`);
-  const plainFpsPin = mockFps ? 'FPS   60' : 'FPS   -';
+  const plainFpsPin = mockFps ? `${fpsLabelPrefix}60` : `${fpsLabelPrefix}-`;
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('fps-1pct-low') === false && e.settings.overlayStats.includes('fps-99pct') === false)`, 5000))) {
-    fail('M7a: unchecking the 1% Low / 99% FPS tickboxes did not persist overlayStats without them');
+    fail('M7a: unchecking the 1% / 99% tickboxes did not persist overlayStats without them');
   }
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${plainFpsPin}'`, 5000))) {
     fail(`M7a: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${plainFpsPin}' after unchecking both stats)`);
@@ -9016,27 +9017,27 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${fullPctPin}'`, 5000))) {
     fail(`M7a: the overlay FPS line did not regain the percentile fields after re-checking: '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}'`);
   }
-  step('m7a-fps-stats-tickbox', `the 1% Low / 99% FPS tickbox round trip (turned ON first - OFF by default under M17g): uncheck both -> the fps line reverts to '${plainFpsPin}'; re-check -> '${fullPctPin}' again`);
+  step('m7a-fps-stats-tickbox', `the 1% / 99% tickbox round trip (turned ON first - OFF by default under M17g): uncheck both -> the fps line reverts to '${plainFpsPin}'; re-check -> '${fullPctPin}' again`);
 
-  // (f3b2) M12: the AVG / 0.1% Low tickboxes round-trip like the 1% Low /
-  // 99% FPS pair - unchecking BOTH drops the two fields (the 1% Low /
-  // 99% FPS fields stay), re-checking restores the full pinned line.
-  // M17g: the AVG / 0.1% Low stats are OFF by default too.
+  // (f3b2) M12: the AVG / 0.1% tickboxes round-trip like the 1% / 99%
+  // pair - unchecking BOTH drops the two fields (the 1% / 99% fields stay),
+  // re-checking restores the full pinned line.
+  // M17g: the AVG / 0.1% stats are OFF by default too.
   await ensureStatOn('fps-avg');
   await ensureStatOn('fps-01pct-low');
   const avg01Pin = mockFps
-    ? 'FPS   60  AVG 58  1% Low 52  0.1% Low 42  99% FPS 58'
-    : 'FPS   -  AVG -  1% Low -  0.1% Low -  99% FPS -';
+    ? `${fpsLabelPrefix}60  AVG 58  1% 52  0.1% 42  99% 58`
+    : `${fpsLabelPrefix}-  AVG -  1% -  0.1% -  99% -`;
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${avg01Pin}'`, 5000))) {
-    fail(`M12: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${avg01Pin}' after turning the AVG / 0.1% Low stats on)`);
+    fail(`M12: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${avg01Pin}' after turning the AVG / 0.1% stats on)`);
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-avg"]'); if (b) b.click(); })()`);
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-01pct-low"]'); if (b) b.click(); })()`);
   const noAvg01Pin = mockFps
-    ? 'FPS   60  1% Low 52  99% FPS 58'
-    : 'FPS   -  1% Low -  99% FPS -';
+    ? `${fpsLabelPrefix}60  1% 52  99% 58`
+    : `${fpsLabelPrefix}-  1% -  99% -`;
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayStats.includes('fps-avg') === false && e.settings.overlayStats.includes('fps-01pct-low') === false)`, 5000))) {
-    fail('M12: unchecking the AVG / 0.1% Low tickboxes did not persist overlayStats without them');
+    fail('M12: unchecking the AVG / 0.1% tickboxes did not persist overlayStats without them');
   }
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${noAvg01Pin}'`, 5000))) {
     fail(`M12: the overlay FPS line is '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}' (expected '${noAvg01Pin}' after unchecking both new stats)`);
@@ -9044,9 +9045,9 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-avg"]'); if (b) b.click(); })()`);
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="fps-01pct-low"]'); if (b) b.click(); })()`);
   if (!(await waitFor(overlayWin, `(document.getElementById('overlay-fps')?.textContent ?? '').trim() === '${avg01Pin}'`, 5000))) {
-    fail(`M12: the overlay FPS line did not regain the AVG / 0.1% Low fields after re-checking: '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}'`);
+    fail(`M12: the overlay FPS line did not regain the AVG / 0.1% fields after re-checking: '${await ojs(`document.getElementById('overlay-fps')?.textContent ?? ''`)}'`);
   }
-  step('m12-avg01-fps-stats-tickbox', `the AVG / 0.1% Low tickbox round trip (turned ON first - OFF by default under M17g): uncheck both -> the fps line reverts to '${noAvg01Pin}'; re-check -> '${avg01Pin}' again`);
+  step('m12-avg01-fps-stats-tickbox', `the AVG / 0.1% tickbox round trip (turned ON first - OFF by default under M17g): uncheck both -> the fps line reverts to '${noAvg01Pin}'; re-check -> '${avg01Pin}' again`);
 
   // (f3c) M13/M19b: the Graphics-API stat - the api tickbox round-trips
   // the Memory/VRAM row pattern now: unchecking it EMPTIES the API row (''
@@ -9089,10 +9090,11 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail(`M14: the overlay Memory row is '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}' (expected '' after unchecking memory-util - the row fully off writes '')`);
   }
   await js(`(() => { const b = document.querySelector('.overlay-stat-checkbox[data-stat-id="memory-util"]'); if (b) b.click(); })()`);
-  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-memory')?.textContent ?? '').trim() === 'RAM   12.4GB'`, 5000))) {
-    fail(`M14: the overlay Memory row did not regain 'RAM   12.4GB' after re-checking: '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}'`);
+  const memoryPin = `${multiGpu ? 'RAM    ' : 'RAM   '}12.4GB`;
+  if (!(await waitFor(overlayWin, `(document.getElementById('overlay-memory')?.textContent ?? '').trim() === '${memoryPin}'`, 5000))) {
+    fail(`M14: the overlay Memory row did not regain '${memoryPin}' after re-checking: '${await ojs(`document.getElementById('overlay-memory')?.textContent ?? ''`)}'`);
   }
-  step('m14-memory-tickbox', 'the Memory tickbox round trip: uncheck -> the Memory row writes \'\'; re-check -> \'RAM   12.4GB\' again');
+  step('m14-memory-tickbox', `the Memory tickbox round trip: uncheck -> the Memory row writes ''; re-check -> '${memoryPin}' again`);
 
   // (f3d-2) M13: the CPU-row watt field - the cpu-power tickbox round-trips
   // like the Memory/VRAM stats: unchecking it drops the '125.5W' TAIL from
@@ -9232,77 +9234,23 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   }
   step('m6-color-swatch', 'yellow swatch -> overlayColor #ffe600 persisted + the overlay re-rendered (css var + computed line color + canvas stroke); restored to the stock white');
 
-  // (f6) M7b (fix 4): the background box - the Appearance card's
-  // Background section. (a) the toggle persists overlayBgEnabled + the
-  // overlay's backdrop gains the .visible class; (b) a swatch round trip
-  // persists overlayBgColor + re-renders the --overlay-bg-color CSS var;
-  // (c) the opacity slider (0-100) persists overlayBgOpacity + re-renders
-  // the --overlay-bg-opacity CSS var; (d) off -> the backdrop hides again.
-  // The overlay view of the Monitoring page is active here (the
-  // Settings-button block above navigated there; the M9 .settings-position-
-  // select lives in the SAME Appearance card now - the position pins below
-  // run against this card).
-  if (!(await waitFor(win, `!!document.querySelector('.settings-checkbox[data-setting="overlayBgEnabled"]')`, 5000))) {
-    fail('M7b: the overlay view Appearance card has no overlayBgEnabled toggle');
+  // (f6) M7b: RTSS owns the overlay surface now. The removed Arc/background
+  // controls must stay absent so stale profile fields cannot re-enable them.
+  const removedOverlayControls = await js(`JSON.stringify({
+    bgToggle: !!document.querySelector('.settings-checkbox[data-setting="overlayBgEnabled"]'),
+    bgOptions: !!document.querySelector('.overlay-bg-options'),
+    bgOpacity: !!document.querySelector('.settings-bg-opacity-slider'),
+    arcTheme: !!document.querySelector('.overlay-theme-option')
+  })`);
+  const removedOverlayControlsState = JSON.parse(removedOverlayControls);
+  if (Object.values(removedOverlayControlsState).some(Boolean)) {
+    fail(`M7b: removed RTSS background/theme controls are still present (${removedOverlayControls})`);
   }
-  // The boot defaults: box off, black, 0.5 - the backdrop is hidden + the
-  // CSS vars carry the defaults (the seeded session).
-  if (await ojs(`document.getElementById('overlay-backdrop')?.classList.contains('visible')`)) {
-    fail('M7b: the backdrop must boot HIDDEN (overlayBgEnabled defaults to false)');
+  const appearanceText = await js(`document.querySelector('.overlay-appearance-card')?.textContent ?? ''`);
+  if (!appearanceText.includes('CLASSIC')) {
+    fail('M7b: the RTSS appearance card does not advertise the Classic-only surface');
   }
-  const bootBgVars = await ojs(`JSON.stringify({ color: document.documentElement.style.getPropertyValue('--overlay-bg-color'), opacity: document.documentElement.style.getPropertyValue('--overlay-bg-opacity') })`);
-  const bootBg = JSON.parse(bootBgVars);
-  if (bootBg.color !== '#000000' || bootBg.opacity !== '0.5') {
-    fail(`M7b: the boot background vars read ${bootBgVars} (expected color '#000000' + opacity '0.5' - the seeded defaults)`);
-  }
-  // (a) the toggle on: the backdrop appears + the overlay re-renders (the
-  // overlayChanged loop must carry the bg keys or the box never appears).
-  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayBgEnabled"]'); b.click(); })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayBgEnabled === true)`, 5000))) {
-    fail('M7b: the bg toggle did not persist overlayBgEnabled=true');
-  }
-  if (!(await waitFor(overlayWin, `document.getElementById('overlay-backdrop')?.classList.contains('visible')`, 5000))) {
-    fail('M7b: the backdrop did not gain .visible after the bg toggle (the push must re-render the box)');
-  }
-  if (!(await waitFor(overlayWin, `getComputedStyle(document.getElementById('overlay-backdrop')).display === 'block'`, 5000))) {
-    fail('M7b: the visible backdrop computes display:block');
-  }
-  // (b) the yellow swatch round trip: overlayBgColor '#ffe600' persists +
-  // the --overlay-bg-color var re-renders.
-  await js(`(() => { const b = document.querySelector('.overlay-bg-color-option[data-bg-color-option="#ffe600"]'); if (b) b.click(); })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayBgColor === '#ffe600')`, 5000))) {
-    fail('M7b: the yellow bg swatch did not persist overlayBgColor #ffe600');
-  }
-  if (!(await waitFor(overlayWin, `document.documentElement.style.getPropertyValue('--overlay-bg-color') === '#ffe600'`, 5000))) {
-    fail(`M7b: the --overlay-bg-color var reads '${await ojs(`document.documentElement.style.getPropertyValue('--overlay-bg-color')`)}' (expected '#ffe600' after the swatch)`);
-  }
-  // (c) the opacity slider: 30 -> overlayBgOpacity 0.3 persists + the var
-  // re-renders (the live value label follows the oninput pattern).
-  await js(`(() => {
-    const s = document.querySelector('.settings-bg-opacity-slider');
-    if (!s) return;
-    s.value = '30';
-    s.dispatchEvent(new Event('change'));
-  })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayBgOpacity === 0.3)`, 5000))) {
-    fail('M7b: the opacity slider did not persist overlayBgOpacity 0.3');
-  }
-  if (!(await waitFor(overlayWin, `document.documentElement.style.getPropertyValue('--overlay-bg-opacity') === '0.3'`, 5000))) {
-    fail(`M7b: the --overlay-bg-opacity var reads '${await ojs(`document.documentElement.style.getPropertyValue('--overlay-bg-opacity')`)}' (expected '0.3' after the slider)`);
-  }
-  if (!(await waitFor(overlayWin, `getComputedStyle(document.getElementById('overlay-backdrop')).opacity === '0.3'`, 5000))) {
-    fail('M7b: the backdrop computed opacity did not follow the slider (expected 0.3)');
-  }
-  // (d) off again: the backdrop hides (the .visible class drops) + the
-  // persisted value flips back.
-  await js(`(() => { const b = document.querySelector('.settings-checkbox[data-setting="overlayBgEnabled"]'); b.click(); })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayBgEnabled === false)`, 5000))) {
-    fail('M7b: the bg toggle off did not persist overlayBgEnabled=false');
-  }
-  if (!(await waitFor(overlayWin, `document.getElementById('overlay-backdrop')?.classList.contains('visible') === false`, 5000))) {
-    fail('M7b: the backdrop is still visible after the bg toggle off');
-  }
-  step('m7b-background', 'M7b background: toggle on -> backdrop .visible + display:block; yellow swatch -> overlayBgColor #ffe600 + the CSS var; opacity slider 30 -> overlayBgOpacity 0.3 + the computed opacity; toggle off -> hidden again');
+  step('m7b-classic-only', 'M7b: RTSS-only appearance keeps the Classic surface and removes the background box, opacity, and Arc theme controls');
 
   // (g) the mid-run register-failure honesty: the probe fakes a failure
   // (settable mid-run - not a boot-time knob), a letter save via the
@@ -9344,10 +9292,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   // letter O + a successful registration -> the note disappears, and the
   // geometry back to the defaults (a crashed run must never bleed into the
   // next overlay variant; the M6 color/stats pins already restored the
-  // stock white + the full stat set above, and the M7b bg pins restore the
-  // box off/black/0.5 here).
+  // stock white + the full stat set above, and the RTSS-only appearance
+  // remains Classic here).
   hotkeyProbe.failRegister = false;
-  await js(`window.arcPower.profilesSettingsSave({ overlayHotkeyLetter: 'O', overlayPosition: 'top-left', overlayScale: 1, overlayBgEnabled: false, overlayBgColor: '#000000', overlayBgOpacity: 0.5 })`);
+  await js(`window.arcPower.profilesSettingsSave({ overlayHotkeyLetter: 'O', overlayPosition: 'top-left', overlayScale: 1 })`);
   await sleep(500);
   const s5 = await js(`window.arcPower.overlayGetState()`);
   if (s5.hotkeyRegistered !== true) fail('M5: hotkeyRegistered did not recover after the failure fake was cleared');

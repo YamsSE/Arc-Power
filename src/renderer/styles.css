@@ -2215,6 +2215,7 @@ input[type="number"] {
 /* Graphics | Display segmented view and compact IGS-style Display rows. */
 .graphics-view-toolbar { margin: 2px 0 14px; display: flex; flex-direction: column; align-items: flex-start; }
 .graphics-view-toolbar .graphics-view-toggle-row { margin: 0 0 8px; justify-content: flex-start; }
+.graphics-view-toggle-row, .mon-view-toggle-row { display: flex; max-width: 100%; }
 .graphics-view { min-width: 0; }
 .display-stack { display: flex; flex-direction: column; gap: 12px; }
 .display-group {
@@ -2299,6 +2300,9 @@ input[type="number"] {
    (the .oc-mode-toggle / .oc-mode-btn classes carry the segmented styling;
    this row just keeps the same page-top spacing). */
 .mon-view-toggle-row { margin: 2px 0 14px; }
+.mon-view-toggle-row .oc-mode-col, .graphics-view-toggle-row .oc-mode-col { min-width: 0; }
+.mon-view-toggle, .graphics-view-toggle { max-width: 100%; }
+.mon-view-toggle .oc-mode-btn, .graphics-view-toggle .oc-mode-btn { min-width: 0; }
 
 /* M9: the Overlay Settings sub-view heading (inside the Monitoring page's
    Overlay view - the old page-title became the sub-view's heading). */

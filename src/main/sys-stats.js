@@ -53,7 +53,7 @@
 //                      no conversion). The class is often ABSENT on
 //                      desktops (no power-metering hardware), so it
 //                      honestly degrades to null ('-' in the UI).
-//   gpuUtilPct        - M4-I: the OS GPU-utilization counter - the
+//   gpuUtilPct        - M4-I: the OS GPU-utilization fallback counter - the
 //                      Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine
 //                      rows for the matched LUID (aggregate: per (eng#,
 //                      engtype) the MAX across the process rows, then SUM,

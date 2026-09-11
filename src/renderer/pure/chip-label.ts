@@ -45,7 +45,11 @@
 
 /** The vendor/legal/generic GPU tokens - dropped, never part of the label.
  *  '(R)' / '(TM)' split into 'R' / 'TM' by the tokenizer. */
-const GPU_DROP_TOKENS = new Set(['nvidia', 'geforce', 'intel', 'arc', 'amd', 'radeon', 'graphics', 'r', 'tm']);
+const GPU_DROP_TOKENS = new Set([
+  'nvidia', 'geforce', 'intel', 'arc', 'amd', 'radeon', 'graphics',
+  'gpu', 'laptop', 'mobile', 'display', 'adapter', 'controller', 'video',
+  'r', 'tm',
+]);
 const GPU_DECORATION_DROP_TOKENS = new Set(['mock', 'fixture', 'fixtures', 'test', 'testing', 'sample']);
 const GPU_MEMORY_TOKEN_RE = /^\d+(?:gb|gib|mb|mib)$/i;
 

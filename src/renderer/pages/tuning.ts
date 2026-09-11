@@ -1728,7 +1728,7 @@ export const tuningPage: Page = {
     // in the row. The old full-width Save-as-Profile CARD is REMOVED.
     const modeRow = el('div', { class: 'oc-mode-row' }, [
       el('div', { class: 'oc-mode-col' }, [
-        el('span', { class: 'oc-mode-label', text: 'View' }),
+        el('span', { class: 'oc-mode-label', text: 'VIEW' }),
         el('div', { class: 'oc-mode-toggle tuning-view-toggle', role: 'group', 'aria-label': 'Tuning view' }, [
           el('button', {
             class: `oc-mode-btn tuning-view-btn${view === 'tuning' ? ' active' : ''}`,

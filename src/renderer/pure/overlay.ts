@@ -77,9 +77,12 @@ export function isValidAdvancedOverlayPosition(v: unknown): v is 'left' | 'right
   return typeof v === 'string' && (ADVANCED_OVERLAY_POSITIONS as readonly string[]).includes(v);
 }
 
-/** The scale slider's range (mirrored in ipc-core's clamp). */
+/** The RTSS scale slider's range (mirrored in ipc-core's clamp). RTSS uses
+ * four integer font zoom levels, so the persisted app-scale maps cleanly to
+ * 1x/2x/3x/4x at 0.5 increments. */
 export const OVERLAY_SCALE_MIN = 0.5;
 export const OVERLAY_SCALE_MAX = 2.0;
+export const OVERLAY_SCALE_STEP = 0.5;
 
 /** M17e: the overlay polling-rate slider's range + default (the
  *  telemetry-service default; mirrored in profile-store.js + ipc-core.js -
@@ -95,15 +98,15 @@ export const OVERLAY_POLL_MS_DEFAULT = 400;
  * like the positions). A stat off -> its field/line vanishes; the
  * frametime id is NOT a line - it drives the canvas strip visibility.
  * M7a: 'fps-1pct-low' + 'fps-99pct' ride the FPS row (right after the M12
- * AVG / 0.1% Low pair) - the 1% Low / 99% FPS percentile stats.
+ * AVG / 0.1% pair) - the 1% / 99% percentile stats.
  * M10a: 'api' (the foreground-window Graphics-API badge) rides AFTER
- * 'fps-99pct' - the tickbox renders after '99% FPS' while the ROW renders
+ * 'fps-99pct' - the tickbox renders after '99%' while the ROW renders
  * the badge in its OWN standalone line (M13: the api field LEFT the FPS
  * row - the apiLine row sits between the VRAM row and the frametime
  * strip; the row order and the tickbox order are independent - the
  * apiLine content is explicit in overlayLines). The API value is not
  * prefixed with a row header.
- * M12: 'fps-avg' + 'fps-01pct-low' (the window-AVG / 0.1% Low row stats)
+ * M12: 'fps-avg' + 'fps-01pct-low' (the window-AVG / 0.1% row stats)
  * ride right after 'fps' (the row field order); 'memory-util' (the Memory
  * row) joins after the CPU stats; 'gpu-vram' stays where it was - it now
  * feeds the standalone VRAM row.
@@ -143,9 +146,9 @@ export const OVERLAY_STATS_DEFAULT: readonly string[] = [
 export const OVERLAY_STAT_LABELS: Record<string, string> = {
   fps: 'FPS',
   'fps-avg': 'AVG FPS',
-  'fps-01pct-low': '0.1% Low',
-  'fps-1pct-low': '1% Low',
-  'fps-99pct': '99% FPS',
+  'fps-01pct-low': '0.1%',
+  'fps-1pct-low': '1%',
+  'fps-99pct': '99%',
   api: 'Graphics API',
   'cpu-util': 'CPU Util',
   'cpu-clock': 'CPU Clock',
@@ -338,17 +341,18 @@ export function isValidOverlayColor(v: unknown): v is string {
   return typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v);
 }
 
-/** Clamp a scale value to 0.5..2.0 (garbage degrades to 1.0 - the default). */
+/** Clamp and snap a scale value to the four RTSS font zoom levels. */
 export function clampOverlayScale(v: unknown): number {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : 1;
-  return Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+  const clamped = Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+  return Math.round(clamped / OVERLAY_SCALE_STEP) * OVERLAY_SCALE_STEP;
 }
 
 /** The telemetry fields the overlay lines read (a subset of TelemetrySample). */
 export interface OverlaySample {
   utilPct?: number | null;
-  /** M4-I: the OS GPU-utilization counter - the fallback when the device
-   *  utilPct is absent (the no-Intel shape). */
+  /** M4-I: the OS GPU-utilization counter - the fallback when the native
+   *  device-wide utilPct is absent (the no-Intel/vendor shape). */
   gpuUtilPct?: number | null;
   gpuClockMhz?: number | null;
   memClockMhz?: number | null;
@@ -428,10 +432,10 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
  * (M7a/M12 - the low1Pct / low01Pct / avgFps / p99 numbers from the same
  * fps poll, null until the sampler's frame floors) + the api id + the RAM
  * utilization. Every enabled field degrades honestly to '-':
- *   fpsLine: 'FPS   60  AVG 58  1% Low 52  0.1% Low 40  99% FPS 58' - the
+ *   fpsLine: 'FPS   60  AVG 58  1% 52  0.1% 40  99% 58' - the
  *     FPS field rounds like the Monitoring tile and renders 'FPS   -' for
  *     null, non-finite or <= 0 fps (0 is the DXGI no-signal shape - not a
- *     real frame rate); the AVG / 1% Low / 0.1% Low / 99% FPS fields
+ *     real frame rate); the AVG / 1% / 0.1% / 99% fields
  *     render '-' when their numbers are null (the honest degrade - never
  *     a stale value); each field vanishes with its stat; '' when all five
  *     are off (M13: the api field LEFT this row - the six FPS-row stats
@@ -508,11 +512,11 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const cpuFreqMhz = numOrNull(s.cpuFreqMhz);
   const cpuTemp = numOrNull(s.cpuTempC);
   const cpuPower = numOrNull(s.cpuPowerW);
-  // Prefer the adapter-specific GPU counter. The legacy utilPct field can be
-  // an aggregate/engine value from a different source (and was especially
-  // misleading for a selected secondary GPU); it remains the fallback for
-  // older samples that do not carry gpuUtilPct.
-  const gpuUtil = numOrNull(s.gpuUtilPct) ?? numOrNull(s.utilPct);
+  // Prefer the native device-wide activity counter. The WMI GPUEngine
+  // aggregate is useful as a fallback for vendor lanes and driver builds
+  // that do not provide utilPct, but can under-report a busy Intel adapter
+  // when it only exposes a subset of engine activity.
+  const gpuUtil = numOrNull(s.utilPct) ?? numOrNull(s.gpuUtilPct);
   const gpuClock = numOrNull(s.gpuClockMhz);
   const memClock = numOrNull(s.memClockMhz);
   const vram = numOrNull(s.gpuMemUsedBytes);
@@ -531,7 +535,7 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const memoryUsed = numOrNull(memoryUsedBytes ?? s.memoryUsedBytes);
   // M7a/M12: the FPS row builds from its FIVE enabled stats in fixed
   // order - the first field is the bare frame rate, then ' AVG <round>' +
-  // ' 1% Low <round>' + ' 0.1% Low <round>' + ' 99% FPS <round>' (each
+  // ' 1% <round>' + ' 0.1% <round>' + ' 99% <round>' (each
   // field carries its leading two-space separator, exactly like the plan
   // pins; M13: the api badge LEFT this row and renders its own standalone
   // apiLine below). The numeric fields round to whole numbers and render
@@ -546,9 +550,9 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
     fpsFields.push(fpsNum !== null && fpsNum > 0 ? `${Math.round(fpsNum)}` : '-');
   }
   if (enabled.has('fps-avg')) fpsFields.push(`AVG ${avg === null ? '-' : Math.round(avg)}`);
-  if (enabled.has('fps-1pct-low')) fpsFields.push(`1% Low ${low1 === null ? '-' : Math.round(low1)}`);
-  if (enabled.has('fps-01pct-low')) fpsFields.push(`0.1% Low ${low01 === null ? '-' : Math.round(low01)}`);
-  if (enabled.has('fps-99pct')) fpsFields.push(`99% FPS ${p99num === null ? '-' : Math.round(p99num)}`);
+  if (enabled.has('fps-1pct-low')) fpsFields.push(`1% ${low1 === null ? '-' : Math.round(low1)}`);
+  if (enabled.has('fps-01pct-low')) fpsFields.push(`0.1% ${low01 === null ? '-' : Math.round(low01)}`);
+  if (enabled.has('fps-99pct')) fpsFields.push(`99% ${p99num === null ? '-' : Math.round(p99num)}`);
   // M6: each line builds from its ENABLED stats only - a stat off -> its
   // field vanishes; ALL of a line's stats off -> the line writes '' (the
   // renderer KEEPS the fixed div and only empties it - never removed).

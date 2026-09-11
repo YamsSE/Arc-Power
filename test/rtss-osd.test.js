@@ -19,7 +19,7 @@ test('formatter emits RTSS-native tags and keeps telemetry values bounded', () =
     telemetry: {
       t: 1,
       deviceKey: 'pci-a',
-      deviceName: 'Arc B580',
+      deviceName: 'Intel(R) Arc(TM) B580 Graphics',
       cpuUtilPct: 42,
       cpuFreqMhz: 4300,
       cpuTempC: 61,
@@ -52,13 +52,17 @@ test('formatter emits RTSS-native tags and keeps telemetry values bounded', () =
   };
   const first = buildRtssTelemetryText(args);
   assert.equal(first, buildRtssTelemetryText(args));
-  assert.match(first, /<P8><FNT=Consolas,8,400,4><C0=12ABEF><C0>/);
+  assert.match(first, /<P8><FNT=Tahoma,8,700,4><C0=12ABEF><C0>/);
   assert.match(first, /B580/);
-  assert.doesNotMatch(first, /Arc B580/);
+  assert.doesNotMatch(first, /Intel\(R\) Arc\(TM\)|Arc B580|Graphics/);
+  assert.match(first, /FPS 144 AVG 140 1% 99 0\.1% 88 99% 101/);
+  assert.doesNotMatch(first, /1% Low|0\.1% Low|99% FPS/);
   assert.match(first, /CPU 42% 4\.3 GHz 61C 125\.5 W/);
   assert.match(first, /VRAM1 2187 MHz 4 GB 73C/);
   assert.match(first, /DX12/);
   assert.doesNotMatch(first, /API DX12/);
+  assert.match(first, /Frametime 6\.94 ms/);
+  assert.doesNotMatch(first, /\bFT\b/);
   assert.doesNotMatch(first, /[\x00\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/);
   assert.ok(Buffer.byteLength(first, 'ascii') <= 4095);
 });
@@ -68,9 +72,24 @@ test('shortGpuLabel keeps concise vendor-neutral model labels', () => {
   assert.equal(shortGpuLabel('Intel Arc B580'), 'B580');
   assert.equal(shortGpuLabel('Intel(R) Arc(TM) A770'), 'A770');
   assert.equal(shortGpuLabel('NVIDIA GeForce RTX 4070'), 'RTX 4070');
+  assert.equal(shortGpuLabel('NVIDIA RTX A2000 Laptop GPU'), 'RTX A2000');
+  assert.equal(shortGpuLabel('Intel UHD Graphics 770'), 'UHD 770');
   assert.equal(shortGpuLabel('AMD Radeon RX 7600'), 'RX7600');
   assert.equal(shortGpuLabel('Custom Accelerator'), 'Custom Accelerator');
   assert.equal(shortGpuLabel('\u0000\u0001', 'GPU 2'), 'GPU 2');
+});
+
+test('formatter prefers native device-wide GPU activity over the WMI fallback', () => {
+  const text = buildRtssTelemetryText({
+    telemetry: {
+      deviceName: 'Intel(R) Arc(TM) B580 Graphics',
+      utilPct: 78,
+      gpuUtilPct: 21,
+    },
+    settings: { overlayChipNames: true, stats: ['gpu-util'] },
+  });
+  assert.match(text, /B580 78%/);
+  assert.doesNotMatch(text, /B580 21%/);
 });
 
 test('formatter keeps physical GPU ordinals when a non-display adapter is selected alone', () => {
@@ -83,13 +102,28 @@ test('formatter keeps physical GPU ordinals when a non-display adapter is select
   assert.doesNotMatch(text, /GPU1 2000 MHz/);
 });
 
+test('formatter disambiguates duplicate compact GPU model labels', () => {
+  const text = buildRtssTelemetryText({
+    telemetry: {
+      gpus: [
+        { deviceKey: 'pci:display', deviceName: 'Intel(R) Arc(TM) A770 Graphics', utilPct: 80 },
+        { deviceKey: 'pci:secondary', deviceName: 'Intel(R) Arc(TM) A770 Graphics', utilPct: 60 },
+      ],
+    },
+    settings: { overlayChipNames: true, stats: ['gpu-util'] },
+    deviceOrdinals: new Map([['pci:display', 1], ['pci:secondary', 2]]),
+  });
+  assert.match(text, /A770 80%/);
+  assert.match(text, /A770 Secondary 60%/);
+});
+
 test('formatter canonicalizes RTSS API values and omits the API row label', () => {
   for (const [input, expected] of [
     ['vulkan', 'VULKAN'], ['opengl', 'OGL'], ['dx10', 'DX10'], ['dx11', 'DX11'],
     ['dx12', 'DX12'], ['dx9', 'DX9'], ['dxgi', 'DXGI'], ['d3d9', 'DX9'], ['other', 'OTHER'],
   ]) {
     const text = buildRtssTelemetryText({ telemetry: { api: input }, settings: { stats: ['api'] } });
-    assert.equal(text, `<P0><FNT=Consolas,8,400,2><C0=FFFFFF><C0>${expected}`);
+    assert.equal(text, `<P0><FNT=Tahoma,8,700,2><C0=FFFFFF><C0>${expected}`);
     assert.doesNotMatch(text, /API/);
   }
 });
@@ -104,11 +138,11 @@ test('formatter respects legacy text mode without leaking format tags', () => {
   assert.doesNotMatch(text, /<[^>]+>/);
 });
 
-test('graph encoder bounds samples, raises the graph height, and writes RTSS header', () => {
+test('graph encoder bounds samples, reduces the graph height, and writes RTSS header', () => {
   const graph = encodeRtssGraphObject({ values: Array.from({ length: 700 }, (_, index) => index) });
   assert.equal(graph.readUInt32LE(0), 0x47523030);
   assert.equal(graph.readUInt32LE(32), 512);
-  assert.equal(graph.readInt32LE(12), -6);
+  assert.equal(graph.readInt32LE(12), -5);
   assert.equal(graph.readUInt32LE(20), 0);
   assert.equal(graph.readUInt32LE(4), graph.length);
 });
@@ -165,14 +199,14 @@ test('claims reusable slot, publishes extended text, and clears only its owner',
 test('merges separately sampled GPUs and applies live selection/stat changes', () => {
   const fixture = makeMap(0x2000E, '', 0, 4608);
   const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
-  publisher.updateSettings({ enabled: true, monitoredDeviceKeys: ['gpu-a', 'gpu-b'], stats: ['gpu-util', 'gpu-vram'] });
+  publisher.updateSettings({ enabled: true, overlayChipNames: true, monitoredDeviceKeys: ['gpu-a', 'gpu-b'], stats: ['gpu-util', 'gpu-vram'] });
   publisher.setKnownDeviceKeys(['gpu-a', 'gpu-b'], ['gpu-a', 'gpu-b']);
   assert.equal(publisher.publish({ telemetry: { t: 1, deviceKey: 'gpu-a', deviceName: 'B580', utilPct: 88, gpuMemUsedBytes: 4_000_000_000 } }), true);
   assert.equal(publisher.publish({ telemetry: { t: 2, deviceKey: 'gpu-b', deviceName: 'A770', utilPct: 44, gpuMemUsedBytes: 6_000_000_000 } }), true);
   const base = fixture.offset + fixture.entrySize + 512;
   const merged = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
-  assert.match(merged, /GPU1 88%/);
-  assert.match(merged, /GPU2 44%/);
+  assert.match(merged, /B580 88%/);
+  assert.match(merged, /A770 44%/);
   assert.match(merged, /VRAM1 4 GB/);
   publisher.updateSettings({ monitoredDeviceKeys: ['gpu-a'], stats: ['gpu-temp'] });
   assert.equal(publisher.publish({ telemetry: { t: 3, deviceKey: 'gpu-a', tempC: 65 } }), true);
@@ -206,20 +240,20 @@ test('falls back to current GPU rows when the saved selection is stale', () => {
   assert.match(text, /GPU1 72%/);
 });
 
-test('preserves RTSS background control bytes and renders themes distinctly', () => {
+test('forces classic value-only RTSS output despite stale theme/background settings', () => {
   const fixture = makeMap(0x2000E, '', 0, 4608);
   const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
   publisher.updateSettings({ enabled: true, theme: 'classic', overlayBgEnabled: true, overlayBgColor: '#112233', overlayBgOpacity: 1, stats: ['gpu-util'] });
   assert.equal(publisher.publish({ telemetry: { t: 1, deviceKey: 'gpu-a', utilPct: 88 } }), true);
   const base = fixture.offset + fixture.entrySize + 512;
   const bytes = fixture.map.subarray(base, base + 4096);
-  assert.ok(bytes.includes(0x08), 'the RTSS background fill marker must reach shared memory');
   const classic = bytes.toString('ascii').replaceAll('\0', '');
   assert.match(classic, /<FNT=Tahoma,8,700,/);
+  assert.doesNotMatch(classic, /<B=0,0>|\x08/);
   publisher.updateSettings({ theme: 'arc', overlayBgEnabled: false });
   assert.equal(publisher.publish({ telemetry: { t: 2, deviceKey: 'gpu-a', utilPct: 77 } }), true);
   const arc = bytes.toString('ascii').replaceAll('\0', '');
-  assert.match(arc, /<FNT=Consolas,8,400,/);
+  assert.match(arc, /<FNT=Tahoma,8,700,/);
   assert.doesNotMatch(arc, /<B=0,0>/);
 });
 
@@ -233,7 +267,7 @@ test('publishes embedded frametime graph when the RTSS entry supports it', () =>
   assert.match(text, /<OBJ=00000000>/);
   const graph = fixture.map.subarray(fixture.offset + fixture.entrySize + 4608, fixture.offset + fixture.entrySize + 4608 + 40);
   assert.equal(graph.readUInt32LE(0), 0x47523030);
-  assert.equal(graph.readInt32LE(12), -6);
+  assert.equal(graph.readInt32LE(12), -5);
   assert.equal(graph.readUInt32LE(32), 1);
   assert.ok(Math.abs(graph.readFloatLE(36) - 16.7) < 0.001);
 });

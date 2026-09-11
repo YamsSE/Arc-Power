@@ -208,9 +208,12 @@ const MAX_CURVE_POINTS = 32;
 // Reset read-back tolerance (canonical units; a reset must land on the
 // capability default within this).
 const RESET_VERIFY_EPS = 1e-6;
-// M5: the overlay scale slider's range (mirrored in pure/overlay.ts).
+// M5: the RTSS overlay scale range (mirrored in pure/overlay.ts). The
+// native provider has four integer font zoom levels, represented here as
+// 0.5 increments so the existing persisted geometry scale stays compatible.
 const OVERLAY_SCALE_MIN = 0.5;
 const OVERLAY_SCALE_MAX = 2.0;
+const OVERLAY_SCALE_STEP = 0.5;
 // M17e (the user addition - the overlay polling-rate slider): the
 // telemetry push cadence range (mirrored in profile-store.js +
 // overlay-settings.ts; the telemetry-service default is 400 ms - M17g:
@@ -408,14 +411,16 @@ export function validateAdvancedOverlayPosition(v) {
 }
 
 /**
- * M5: clamp the overlay scale to the slider's range 0.5..2.0 (garbage
- * degrades to the 1.0 default - the store normalizes the same way).
+ * M5: clamp and snap the overlay scale to the four RTSS font zoom levels
+ * represented by 0.5..2.0 (garbage degrades to the 1.0 default - the store
+ * normalizes the same way).
  * @param {unknown} v
  * @returns {number}
  */
 export function clampOverlayScale(v) {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : 1.0;
-  return Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+  const clamped = Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+  return Math.round(clamped / OVERLAY_SCALE_STEP) * OVERLAY_SCALE_STEP;
 }
 
 /**

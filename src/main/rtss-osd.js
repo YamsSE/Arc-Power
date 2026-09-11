@@ -74,7 +74,8 @@ function safeRtssText(value, { lineBreaks = true, backspace = false } = {}) {
 
 const SHORT_GPU_DROP_TOKENS = new Set([
   'nvidia', 'geforce', 'intel', 'arc', 'amd', 'ati', 'radeon',
-  'graphics', 'corporation', 'inc', 'r', 'tm',
+  'graphics', 'gpu', 'laptop', 'mobile', 'display', 'adapter', 'controller', 'video',
+  'corporation', 'inc', 'r', 'tm',
   'mock', 'fixture', 'fixtures', 'test', 'testing', 'sample',
 ]);
 
@@ -84,6 +85,9 @@ export function shortGpuLabel(value, fallback = 'GPU') {
     .replace(/\s+/g, ' ')
     .trim();
   if (!source) return fallback;
+  // Keep generic fallback names intact; dropping the word GPU from "GPU 2"
+  // would otherwise leave the misleading model label "2".
+  if (/^gpu\s*\d+$/i.test(source)) return fallback;
 
   // Intel Arc names are commonly decorated with a trailing "Graphics"
   // token. Prefer the stable model token so the same physical adapter is
@@ -183,17 +187,6 @@ function scaleTag(scale, theme = 'arc') {
   return `<FNT=${face},8,${weight},${Math.max(1, Math.min(4, zoom))}>`;
 }
 
-function backgroundTag(settings) {
-  if (settings?.overlayBgEnabled !== true) return '';
-  // RTSS background fills use the current color and a backspace fill marker.
-  // RTSS has no per-slot alpha channel in hypertext, so blend the configured
-  // color against black using the requested opacity before emitting it.
-  const raw = colorHex(settings.overlayBgColor, '#000000');
-  const opacity = clamp(settings.overlayBgOpacity, 0, 1, 0.5);
-  const blended = [0, 2, 4].map((offset) => Math.round(parseInt(raw.slice(offset, offset + 2), 16) * opacity).toString(16).padStart(2, '0')).join('').toUpperCase();
-  return `<C1=${blended}><C1><B=0,0>\b<C>`;
-}
-
 function valueOrNull(...values) {
   for (const value of values) if (finite(value)) return value;
   return null;
@@ -232,7 +225,10 @@ function normalizeGpu(gpu, index) {
     key: aliases[0] ?? null,
     aliases,
     name: gpu?.deviceName ?? gpu?.name ?? gpu?.label ?? `GPU ${index + 1}`,
-    util: valueOrNull(gpu?.gpuUtilPct, gpu?.utilPct, gpu?.utilization),
+    // IGCL's device-wide activity counter is the closest match to the
+    // vendor tools' total GPU-busy reading. The WMI GPUEngine aggregate is
+    // the fallback when the native counter is unavailable.
+    util: valueOrNull(gpu?.utilPct, gpu?.gpuUtilPct, gpu?.utilization),
     clock: valueOrNull(gpu?.gpuClockMhz),
     memClock: valueOrNull(gpu?.memClockMhz),
     temp: valueOrNull(gpu?.tempC, gpu?.temperatureC),
@@ -262,6 +258,17 @@ function gpuOrdinalOf(gpu, fallbackIndex, deviceOrdinals) {
   return fallbackIndex + 1;
 }
 
+function disambiguateGpuLabel(label, ordinal, seenLabels) {
+  const occurrence = seenLabels.get(label) ?? 0;
+  seenLabels.set(label, occurrence + 1);
+  if (occurrence === 0 || /^GPU\d*$/i.test(label)) return label;
+  // Two physical adapters can legitimately share the same model name. Keep
+  // the short model label for the display-driving GPU and add a readable
+  // suffix to later occurrences so RTSS never makes identical rows look like
+  // one lane. The ordinal remains the durable identity used by the VRAM row.
+  return `${label} ${occurrence === 1 ? 'Secondary' : ordinal}`;
+}
+
 function formatGpuRows(telemetry, settings, stats, deviceOrdinals = null) {
   const selected = Array.isArray(settings?.monitoredDeviceKeys)
     ? settings.monitoredDeviceKeys.filter((value) => typeof value === 'string' && value.length > 0)
@@ -278,10 +285,15 @@ function formatGpuRows(telemetry, settings, stats, deviceOrdinals = null) {
     ? selectedRows
     : source;
   const rows = [];
+  const seenLabels = new Map();
   filtered.forEach((gpu, index) => {
     const ordinal = gpuOrdinalOf(gpu, index, deviceOrdinals);
+    // The RTSS HUD keeps the existing setting semantics: chip-name mode uses
+    // a compact physical model label, while the stock mode keeps GPU1/GPU2
+    // ordinals. In neither mode can the full CIM/IGCL adapter name leak out.
+    const compactLabel = shortGpuLabel(gpu.name, `GPU${ordinal}`).slice(0, 24);
     const label = settings?.overlayChipNames === true
-      ? shortGpuLabel(gpu.name, `GPU ${index + 1}`).slice(0, 24)
+      ? disambiguateGpuLabel(compactLabel, ordinal, seenLabels).slice(0, 24)
       : `GPU${ordinal}`;
     const gpuFields = [];
     if (statEnabled(stats, 'gpu-util')) gpuFields.push(`${numberText(gpu.util)}%`);
@@ -303,7 +315,7 @@ function formatGpuRows(telemetry, settings, stats, deviceOrdinals = null) {
   return rows;
 }
 
-export function encodeRtssGraphObject({ values = [], width = -32, height = -6, margin = 1, min = 0, max = 50, flags = 0 } = {}) {
+export function encodeRtssGraphObject({ values = [], width = -32, height = -5, margin = 1, min = 0, max = 50, flags = 0 } = {}) {
   const samples = Array.from(values).filter(finite).slice(-512);
   const actual = Buffer.alloc(36 + samples.length * 4);
   const safeMin = finite(min) ? min : 0;
@@ -344,9 +356,9 @@ export function buildRtssTelemetryText({
   const fpsFields = [];
   if (statEnabled(stats, 'fps')) fpsFields.push(fps?.fps > 0 ? numberText(fps.fps) : '-');
   if (statEnabled(stats, 'fps-avg')) fpsFields.push(`AVG ${numberText(fps?.avgFps)}`);
-  if (statEnabled(stats, 'fps-1pct-low')) fpsFields.push(`1% Low ${numberText(fps?.low1Pct)}`);
-  if (statEnabled(stats, 'fps-01pct-low')) fpsFields.push(`0.1% Low ${numberText(fps?.low01Pct)}`);
-  if (statEnabled(stats, 'fps-99pct')) fpsFields.push(`99% FPS ${numberText(fps?.p99)}`);
+  if (statEnabled(stats, 'fps-1pct-low')) fpsFields.push(`1% ${numberText(fps?.low1Pct)}`);
+  if (statEnabled(stats, 'fps-01pct-low')) fpsFields.push(`0.1% ${numberText(fps?.low01Pct)}`);
+  if (statEnabled(stats, 'fps-99pct')) fpsFields.push(`99% ${numberText(fps?.p99)}`);
   addRow(row('FPS', fpsFields));
 
   const cpuFields = [];
@@ -370,7 +382,7 @@ export function buildRtssTelemetryText({
     if (api) addRow(api);
   }
   if (statEnabled(stats, 'frametime')) {
-    addRow(row('FT', [`${numberText(fps?.frameTimeMs ?? telemetry.frameTimeMs, 2)} ms`]));
+    addRow(row('Frametime', [`${numberText(fps?.frameTimeMs ?? telemetry.frameTimeMs, 2)} ms`]));
   }
 
   const body = lines.map(escapeRtssValue).join('\n');
@@ -381,9 +393,8 @@ export function buildRtssTelemetryText({
 
   const prefix = [
     positionTag(settings.position),
-    scaleTag(settings.scale, settings.theme),
+    scaleTag(settings.scale, 'classic'),
     `<C0=${colorHex(settings.color)}><C0>`,
-    settings.theme === 'classic' ? backgroundTag(settings) : '',
   ].join('');
   return `${prefix}${body}${graph}`.slice(0, RTSS_OSD_MAX_TEXT);
 }

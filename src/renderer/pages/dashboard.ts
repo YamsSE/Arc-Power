@@ -145,7 +145,7 @@ function rememberDashboardSample(lane: DashboardPulseLane, sample: TelemetrySamp
 }
 
 function pulseSampleValue(id: DashboardPulseId, sample: TelemetrySample): number | undefined {
-  if (id === 'gpu-util') return sample.gpuUtilPct ?? sample.utilPct;
+  if (id === 'gpu-util') return sample.utilPct ?? sample.gpuUtilPct ?? undefined;
   if (id === 'temperature') return sample.tempC;
   if (id === 'power') return sample.powerW;
   return typeof sample.gpuMemUsedBytes === 'number' && Number.isFinite(sample.gpuMemUsedBytes)

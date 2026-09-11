@@ -23,9 +23,11 @@ const THEMES = ['dark', 'midnight', 'light', 'red', 'yellow'];
 // src/main/ipc-core.js (keep the three in lockstep). Absent on old settings
 // files -> 'top-left'; a garbage value degrades to 'top-left' at the STORE.
 const OVERLAY_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
-// M5: the overlay scale slider's range (mirrored in pure/overlay.ts).
+// M5: the RTSS overlay scale range (mirrored in pure/overlay.ts). The
+// persisted values map to RTSS's four integer font zoom levels.
 const OVERLAY_SCALE_MIN = 0.5;
 const OVERLAY_SCALE_MAX = 2.0;
+const OVERLAY_SCALE_STEP = 0.5;
 
 // M24: the overlay THEME ids - the persisted-truth owner of the list (the
 // OVERLAY_POSITIONS pattern). The renderer mirror lives in
@@ -228,7 +230,8 @@ function defaultDataDir() {
 /** M6: clamp a scale value to the slider's range (garbage degrades to 1.0). */
 function clampOverlayScale(v) {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : 1.0;
-  return Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+  const clamped = Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+  return Math.round(clamped / OVERLAY_SCALE_STEP) * OVERLAY_SCALE_STEP;
 }
 
 /** M7b: clamp the background opacity to 0..1 (garbage degrades to the 0.5

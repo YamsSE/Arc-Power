@@ -545,8 +545,8 @@ export interface TelemetrySample {
   cpuPowerW?: number | null;
   /** M4-I: the OS GPU-utilization counter (the GPUEngine rows for the
    *  matched LUID - per (eng#, engtype) max across the process rows, sum,
-   *  cap 100). Null when the counter is unpopulated; the readout tiles
-   *  read `gpuUtilPct ?? utilPct` (the no-Intel util source). */
+   *  cap 100). Null when the counter is unpopulated; native IGCL utilPct is
+   *  preferred when present and this remains the fallback source. */
   gpuUtilPct?: number | null;
   /** M14: the system-wide USED RAM in bytes (GlobalMemoryStatusEx ->
    *  ullTotalPhys - ullAvailPhys - the Memory row's source). Composed

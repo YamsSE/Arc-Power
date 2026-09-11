@@ -324,15 +324,31 @@ function currentDisplayDevice(): OverlayDeviceIdentity | null {
   return overlayDevices.find((device) => device.id === overlayDisplayDeviceId) ?? null;
 }
 
+function distinctGpuLabels(primaryLabel: string | null, secondaryLabels: Array<string | null>): Array<string | null> {
+  const usedGpuLabels = new Set<string>();
+  if (primaryLabel) usedGpuLabels.add(primaryLabel);
+  return secondaryLabels.map((label, index) => {
+    if (!label || !usedGpuLabels.has(label)) {
+      if (label) usedGpuLabels.add(label);
+      return label;
+    }
+    // Two physical adapters may share one compact model label. Keep the
+    // display-driving GPU concise and make later rows visibly distinct.
+    const suffix = `${label} ${usedGpuLabels.has(`${label} Secondary`) ? index + 2 : 'Secondary'}`;
+    usedGpuLabels.add(suffix);
+    return suffix;
+  });
+}
+
 function projectCurrentChipLabels(resolvedPrimaryLabel?: string | null): void {
   const primary = currentDisplayDevice();
   gpuChipLabel = primary
     ? chipLabelForDevice(primary, sysinfoControllersByPnp ?? undefined, resolvedPrimaryLabel)
     : null;
-  secondaryGpuChipLabels = secondaryDeviceIds.map((deviceId) => {
+  secondaryGpuChipLabels = distinctGpuLabels(gpuChipLabel, secondaryDeviceIds.map((deviceId) => {
     const device = overlayDevices.find((candidate) => candidate.id === deviceId);
     return device ? chipLabelForDevice(device, sysinfoControllersByPnp ?? undefined) : null;
-  });
+  }));
 }
 // M6-amd2: the latest derived frame time (the value line below the strip;
 // null -> the honest '-').
@@ -932,7 +948,10 @@ async function configureOverlayDevices(
   const nextGpuChipLabel = primary
     ? chipLabelForDevice(primary, sysinfoControllersByPnp ?? undefined)
     : null;
-  const nextSecondaryGpuChipLabels = secondary.map((device) => chipLabelForDevice(device, sysinfoControllersByPnp ?? undefined));
+  const nextSecondaryGpuChipLabels = distinctGpuLabels(
+    nextGpuChipLabel,
+    secondary.map((device) => chipLabelForDevice(device, sysinfoControllersByPnp ?? undefined)),
+  );
   // Keep the existing main telemetry stream as the display lane whenever
   // possible. Start the display lane here only when the user's selection
   // excludes the main window's device (for example, GPU2-only monitoring).

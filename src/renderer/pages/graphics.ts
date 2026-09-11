@@ -569,7 +569,9 @@ export const graphicsPage: Page = {
       ]),
     ]);
     const viewToggle = el('div', { class: 'graphics-view-toggle-row' }, [
-      el('div', { class: 'oc-mode-toggle graphics-view-toggle', role: 'group', 'aria-label': 'Graphics view' }, [
+      el('div', { class: 'oc-mode-col' }, [
+        el('span', { class: 'oc-mode-label', text: 'VIEW' }),
+        el('div', { class: 'oc-mode-toggle graphics-view-toggle', role: 'group', 'aria-label': 'Graphics view' }, [
         el('button', {
           class: `oc-mode-btn graphics-view-btn${graphicsView === 'settings' ? ' active' : ''}`,
           dataset: { view: 'settings' },
@@ -582,6 +584,7 @@ export const graphicsPage: Page = {
           text: 'Display',
           onClick: () => setGraphicsView('display'),
         }),
+        ]),
       ]),
     ]);
     container.append(

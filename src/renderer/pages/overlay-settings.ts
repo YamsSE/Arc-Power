@@ -44,13 +44,9 @@ import {
   OVERLAY_COLOR_LABELS,
   OVERLAY_POLL_MS_MIN,
   OVERLAY_POLL_MS_MAX,
-  OVERLAY_THEMES,
-  OVERLAY_THEME_DEFAULT,
   isValidOverlayPosition,
   isValidOverlayColor,
-  isValidOverlayTheme,
   clampOverlayScale,
-  clampOverlayBgOpacity,
   clampOverlayPollMs,
   // M23: the ADVANCED overlay's anchored-edge mirror (pure/overlay.ts - the
   // HUD's lockstep family; the persisted-truth owner is profile-store.js).
@@ -117,15 +113,9 @@ interface PersistedOverlay {
   // M35: null means every enumerated GPU (the backwards-compatible default);
   // an explicit list contains durable device keys selected by the user.
   monitoredDeviceKeys: string[] | null;
-  // M24: the overlay THEME ('arc' the product default - the Intel-Arc
-  // harness redesign; 'classic' the original HUD, one click away via the
-  // Theme row). Persisted as settings.json 'overlayTheme'.
+  // Legacy theme fields remain in the profile store for compatibility. The
+  // RTSS settings surface is intentionally fixed to the Classic appearance.
   theme: 'classic' | 'arc';
-  // M7b (fix 4): the background box (the Appearance card's Background
-  // section) - off / black / 0.5 opacity when absent.
-  bgEnabled: boolean;
-  bgColor: string;
-  bgOpacity: number;
   // M17b: the chip-name row labels (the General card checkbox) - off =
   // the stock 'CPU '/'GPU ' prefixes.
   chipNames: boolean;
@@ -214,13 +204,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       monitoredDeviceKeys: Array.isArray(s.overlayDeviceKeys)
         ? s.overlayDeviceKeys.filter((key: unknown): key is string => typeof key === 'string' && key.length > 0)
         : null,
-      // M24: the overlay theme (absent on old files -> 'arc' - the redesign
-      // IS the product default; 'classic' stays one click away).
-      theme: isValidOverlayTheme(s.overlayTheme) ? s.overlayTheme : OVERLAY_THEME_DEFAULT,
-      // M7b (fix 4): the background box defaults (off / black / 0.5).
-      bgEnabled: s.overlayBgEnabled === true,
-      bgColor: isValidOverlayColor(s.overlayBgColor) ? s.overlayBgColor : '#000000',
-      bgOpacity: clampOverlayBgOpacity(s.overlayBgOpacity),
+      // Legacy theme/background settings stay persisted by the main process;
+      // this RTSS surface always presents Classic.
+      theme: 'classic',
       // M17b: the chip-name row labels (absent on old files -> false).
       chipNames: s.overlayChipNames === true,
       // M17e: the polling-rate (absent on old files -> the 400 ms default
@@ -288,7 +274,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         el('span', { class: 'overlay-status-dot' }),
         el('span', { class: 'overlay-status-copy' }, [
           el('strong', { text: liveOverlay ? 'Overlay active' : 'Overlay disabled' }),
-          el('small', { text: `${persisted.theme === 'arc' ? 'Arc theme' : 'Classic theme'} · ${liveHotkey ? 'HUD ready' : 'HUD hotkey unavailable'}` }),
+          el('small', { text: `Classic theme · ${liveHotkey ? 'HUD ready' : 'HUD hotkey unavailable'}` }),
         ]),
       ]),
     ]);
@@ -358,14 +344,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         el('span', { text: 'Start RTSS with Windows' }),
       ]),
     ]);
-    const rtssStartupNote = el('p', {
-      class: 'card-note boot-hint overlay-rtss-startup-note',
-      text: rtssAvailable
-        ? rtssStartupState?.registered === false && rtssStartupState?.valueExists === true
-          ? 'A stale RTSS startup entry was found. Disable it here to remove the old registration.'
-          : 'RivaTuner Statistics Server is detected. Its startup registration is managed independently from Arc Power.'
-        : 'RTSS was not detected. Install RTSS first to enable its Windows startup registration.',
-    });
     // --- General card (M6-amd3): the enable TOGGLE - moved here from the
     // Settings page (the Settings card is button-only now). The
     // .settings-checkbox[data-setting="overlayEnabled"] class + dataset
@@ -384,7 +362,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
             checked: persisted.enabled,
             onchange: (ev: Event) => void onOverlayEnabledToggle((ev.target as HTMLInputElement).checked),
           }),
-          el('span', { text: 'Show RTSS telemetry' }),
+          el('span', { text: 'Show RTSS Overlay' }),
         ]),
       ]),
       // M25: the "Show Advanced Overlay" toggle moved here from the
@@ -402,7 +380,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         ]),
       ]),
       rtssStartupRow,
-      rtssStartupNote,
       // M35: the overlay owns an independent GPU selection. Multiple checks
       // keep multiple telemetry lanes; with one checked the renderer returns
       // to the unnumbered GPU / VRAM labels.
@@ -516,24 +493,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // pattern - button[data-color-option="#..."]; the chips are
     // CLASS-driven swatch chips, CSP-safe) + the custom hex input
     // (type=color - a plain value applied via CSSOM, never an inline
-    // style) + the SIZE slider (the existing overlayScale).
-    // M24: the THEME row sits at the TOP of the card (the swatch-button
-    // pattern - two buttons button[data-overlay-theme-option="classic"|"arc"],
-    // the .active class on the persisted one). The switch saves through
-    // profiles-settings-save ({ overlayTheme }); main's onOverlaySettings
-    // then applies + pushes 'overlay:settings' so the HUD re-renders
-    // immediately (the overlayChanged loop carries the theme key).
-    const themeOptions = OVERLAY_THEMES.map((t) =>
-      el('button', {
-        type: 'button',
-        class: `theme-option overlay-theme-option${persisted.theme === t ? ' active' : ''}`,
-        dataset: { overlayThemeOption: t },
-        title: t === 'arc' ? 'The Arc Power look - the Intel Arc harness' : 'The original HUD',
-        onclick: () => void onThemeSelect(t),
-      }, [
-        el('span', { class: 'theme-option-name', text: t === 'arc' ? 'Arc' : 'Classic' }),
-      ]),
-    );
+    // style) + the SIZE slider. RTSS exposes four discrete font zoom levels,
+    // represented by the persisted 0.5x..2x scale values.
+    // Legacy theme/background values are intentionally not exposed here.
     const colorOptions = OVERLAY_COLOR_PRESETS.map((hex) =>
       el('button', {
         type: 'button',
@@ -560,26 +522,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // pattern with a live value label). Every control saves through
     // profiles-settings-save; main's onOverlaySettings then applies +
     // pushes 'overlay:settings' so the box re-renders immediately.
-    const bgColorOptions = OVERLAY_COLOR_PRESETS.map((hex) =>
-      el('button', {
-        type: 'button',
-        class: `theme-option overlay-bg-color-option${persisted.bgColor.toLowerCase() === hex ? ' active' : ''}`,
-        dataset: { bgColorOption: hex },
-        title: OVERLAY_COLOR_LABELS[hex],
-        onclick: () => void onBgColorSelect(hex),
-      }, [
-        el('span', { class: `swatch-chip overlay-swatch-${hex.replace('#', '')}` }),
-        el('span', { class: 'theme-option-name', text: OVERLAY_COLOR_LABELS[hex] }),
-      ]),
-    );
-    const customBgColor = el('input', {
-      type: 'color',
-      class: 'settings-color-input settings-bg-color-input',
-      value: persisted.bgColor,
-      title: 'Custom background color',
-      onchange: (ev: Event) => void onBgColorSelect((ev.target as HTMLInputElement).value),
-    });
-    const bgOpacityValue = el('span', { class: 'settings-bg-opacity-value', text: `${Math.round(persisted.bgOpacity * 100)}%` });
     // M9: the position select moves into the Appearance card (the
     // standalone Position card is REMOVED - the same row pattern as the
     // Size row; the .settings-position-select class survives).
@@ -594,11 +536,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const appearanceCard = el('section', { class: 'card settings-card overlay-appearance-card' }, [
       el('div', { class: 'overlay-card-heading' }, [
         el('div', {}, [el('span', { class: 'overlay-card-eyebrow', text: 'VISUAL SYSTEM' }), el('h2', { class: 'card-title', text: 'Visual System' })]),
-        el('span', { class: 'overlay-value-badge', text: persisted.theme === 'arc' ? 'ARC' : 'CLASSIC' }),
-      ]),
-      el('div', { class: 'settings-row overlay-theme-row' }, [
-        el('span', { class: 'settings-row-label', text: 'Theme' }),
-        el('div', { class: 'chips overlay-theme-options' }, themeOptions),
+        el('span', { class: 'overlay-value-badge', text: 'CLASSIC' }),
       ]),
       el('div', { class: 'overlay-color-options' }, [
         ...colorOptions,
@@ -614,11 +552,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           class: 'settings-scale-slider',
           min: 0.5,
           max: 2,
-          step: 0.05,
+          step: 0.5,
           value: String(persisted.scale),
           oninput: (ev: Event) => {
             const v = Number((ev.target as HTMLInputElement).value);
-            scaleValue.textContent = `${v.toFixed(2)}x`;
+            const stepped = Math.round(v * 2) / 2;
+            scaleValue.textContent = `${stepped.toFixed(2)}x`;
           },
           onchange: (ev: Event) => void onScaleChange(Number((ev.target as HTMLInputElement).value)),
         }),
@@ -627,44 +566,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // M7b (fix 4) / M25: the Background section - hidden when the Arc
       // theme is selected (Arc has its own built-in chrome; background box
       // is a Classic-only option).
-      ...(persisted.theme === 'classic' ? [
-        el('div', { class: 'settings-row overlay-bg-row' }, [
-          el('label', { class: 'boot-toggle' }, [
-            el('input', {
-              type: 'checkbox',
-              class: 'settings-checkbox',
-              dataset: { setting: 'overlayBgEnabled' },
-              checked: persisted.bgEnabled,
-              onchange: (ev: Event) => void onBgEnabledToggle((ev.target as HTMLInputElement).checked),
-            }),
-            el('span', { text: 'Show a background box' }),
-          ]),
-        ]),
-        el('div', { class: 'overlay-bg-options' }, [
-          ...bgColorOptions,
-          el('label', { class: 'overlay-custom-color' }, [
-            el('span', { class: 'settings-row-label', text: 'Custom' }),
-            customBgColor,
-          ]),
-        ]),
-        el('div', { class: 'settings-row overlay-bg-row' }, [
-          el('span', { class: 'settings-row-label', text: 'Opacity' }),
-          el('input', {
-            type: 'range',
-            class: 'settings-bg-opacity-slider',
-            min: 0,
-            max: 100,
-            step: 1,
-            value: String(Math.round(persisted.bgOpacity * 100)),
-            oninput: (ev: Event) => {
-              const v = Number((ev.target as HTMLInputElement).value);
-              bgOpacityValue.textContent = `${v}%`;
-            },
-            onchange: (ev: Event) => void onBgOpacityChange(Number((ev.target as HTMLInputElement).value)),
-          }),
-          bgOpacityValue,
-        ]),
-      ] : []),
     ]);
 
     // M25: the Hotkey + Advanced cards are MERGED into a single "Hotkey"
@@ -706,7 +607,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     });
     const hotkeyCard = el('section', { class: 'card settings-card overlay-hotkey-card overlay-advanced-card' }, [
       el('div', { class: 'overlay-card-heading' }, [
-        el('div', {}, [el('span', { class: 'overlay-card-eyebrow', text: 'INTERACTION LAYER' }), el('h2', { class: 'card-title', text: 'Advanced Overlay' })]),
+        el('div', {}, [el('h2', { class: 'card-title', text: 'Shortcuts and Position' })]),
         el('span', { class: 'overlay-value-badge', text: persisted.advEnabled ? 'ENABLED' : 'READY' }),
       ]),
       el('p', { class: 'overlay-card-description', text: 'Configure the RTSS HUD shortcut and the anchored interactive panel.' }),
@@ -922,30 +823,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   // M24: the theme row handler - the same profiles-settings-save pattern as
   // the color handler (toast + the .active class flip; the overlay itself
   // re-renders on the push - the save + the push are one main-side flow).
-  const syncThemeButtons = (theme: string): void => {
-    root.querySelectorAll<HTMLElement>('.overlay-theme-option').forEach((b) => {
-      b.classList.toggle('active', b.dataset.overlayThemeOption === theme);
-    });
-  };
-
-  const onThemeSelect = async (theme: string): Promise<void> => {
-    if (!isValidOverlayTheme(theme) || theme === persisted.theme) return;
-    const previous = persisted.theme;
-    syncThemeButtons(theme);
-    persisted.theme = theme;
-    try {
-      await api.profilesSettingsSave({ overlayTheme: theme });
-      toast('success', 'Overlay theme changed', theme === 'arc' ? 'The Arc look is active.' : 'The classic HUD is active.');
-    } catch (err) {
-      toast('error', 'Overlay theme could not be changed', err instanceof Error ? err.message : String(err));
-      persisted.theme = previous;
-      syncThemeButtons(previous);
-    }
-    // Classic exposes additional background controls. Rebuild the settings
-    // surface immediately so the card appears/disappears with the theme.
-    render();
-  };
-
   const onColorSelect = async (hex: string): Promise<void> => {
     if (!isValidOverlayColor(hex)) {
       toast('error', 'Overlay color', 'The color must be a 6-digit hex value (like #ffffff).');
@@ -979,68 +856,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     } catch (err) {
       toast('error', 'Overlay size could not be changed', err instanceof Error ? err.message : String(err));
       if (slider) slider.value = String(persisted.scale);
-      return;
-    }
-  };
-
-  // M7b (fix 4): the Background section handlers - the same
-  // profiles-settings-save pattern as the color/scale handlers (toast +
-  // revert on error); main's onOverlaySettings re-applies + pushes so the
-  // box re-renders immediately.
-  const onBgEnabledToggle = async (checked: boolean): Promise<void> => {
-    const box = root.querySelector<HTMLInputElement>('.settings-checkbox[data-setting="overlayBgEnabled"]');
-    try {
-      await api.profilesSettingsSave({ overlayBgEnabled: checked });
-      persisted.bgEnabled = checked;
-      toast(checked ? 'success' : 'info', checked ? 'Background box shown' : 'Background box hidden', '');
-    } catch (err) {
-      toast('error', 'Background box could not be changed', err instanceof Error ? err.message : String(err));
-      if (box) box.checked = persisted.bgEnabled;
-      return;
-    }
-  };
-
-  const syncBgColorSwatches = (hex: string): void => {
-    root.querySelectorAll<HTMLElement>('.overlay-bg-color-option').forEach((b) => {
-      b.classList.toggle('active', (b.dataset.bgColorOption ?? '').toLowerCase() === hex.toLowerCase());
-    });
-    const custom = root.querySelector<HTMLInputElement>('.settings-bg-color-input');
-    if (custom && custom.value.toLowerCase() !== hex.toLowerCase()) custom.value = hex;
-  };
-
-  const onBgColorSelect = async (hex: string): Promise<void> => {
-    if (!isValidOverlayColor(hex)) {
-      toast('error', 'Background color', 'The color must be a 6-digit hex value (like #000000).');
-      return;
-    }
-    const normalized = hex.toLowerCase();
-    if (normalized === persisted.bgColor.toLowerCase()) return;
-    const previous = persisted.bgColor;
-    syncBgColorSwatches(normalized);
-    persisted.bgColor = normalized;
-    try {
-      await api.profilesSettingsSave({ overlayBgColor: normalized });
-      toast('success', 'Background color changed', `${OVERLAY_COLOR_LABELS[normalized] ?? 'Custom'} - the box updates immediately.`);
-    } catch (err) {
-      toast('error', 'Background color could not be changed', err instanceof Error ? err.message : String(err));
-      persisted.bgColor = previous;
-      syncBgColorSwatches(previous);
-    }
-  };
-
-  const onBgOpacityChange = async (pct: number): Promise<void> => {
-    const clamped = clampOverlayBgOpacity(pct / 100);
-    if (clamped === persisted.bgOpacity) return;
-    const slider = root.querySelector<HTMLInputElement>('.settings-bg-opacity-slider');
-    const label = root.querySelector<HTMLElement>('.settings-bg-opacity-value');
-    try {
-      await api.profilesSettingsSave({ overlayBgOpacity: clamped });
-      persisted.bgOpacity = clamped;
-      toast('success', 'Background opacity changed', `${Math.round(clamped * 100)}% - the box updates immediately.`);
-    } catch (err) {
-      toast('error', 'Background opacity could not be changed', err instanceof Error ? err.message : String(err));
-      if (slider) slider.value = String(Math.round(persisted.bgOpacity * 100));
-      if (label) label.textContent = `${Math.round(persisted.bgOpacity * 100)}%`;
       return;
     }
   };

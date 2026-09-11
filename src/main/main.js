@@ -2294,13 +2294,15 @@ async function main() {
         position: initialOverlaySettings.overlayPosition,
         scale: initialOverlaySettings.overlayScale,
         color: initialOverlaySettings.overlayColor,
-        theme: initialOverlaySettings.overlayTheme,
+        // RTSS is the only telemetry surface; legacy persisted theme and
+        // background values must never alter its Classic output.
+        theme: 'classic',
         stats: initialOverlaySettings.overlayStats,
         monitoredDeviceKeys: initialOverlaySettings.overlayDeviceKeys,
-        overlayBgEnabled: initialOverlaySettings.overlayBgEnabled,
-        overlayBgColor: initialOverlaySettings.overlayBgColor,
-        overlayBgOpacity: initialOverlaySettings.overlayBgOpacity,
-        overlayChipNames: initialOverlaySettings.overlayChipNames,
+        overlayBgEnabled: false,
+        overlayBgColor: '#000000',
+        overlayBgOpacity: 0.5,
+        overlayChipNames: initialOverlaySettings.overlayChipNames === true,
         pollMs: initialOverlaySettings.overlayPollMs,
       });
       rtssOverlay.setVisible(initialOverlaySettings.overlayEnabled === true);
@@ -2986,13 +2988,15 @@ async function main() {
         position: settings.overlayPosition,
         scale: settings.overlayScale,
         color: settings.overlayColor,
-        theme: settings.overlayTheme,
+        // Keep stale profile values from reviving the removed Arc/background
+        // RTSS variants. The publisher itself enforces this too.
+        theme: 'classic',
         stats: settings.overlayStats,
         monitoredDeviceKeys: settings.overlayDeviceKeys,
-        overlayBgEnabled: settings.overlayBgEnabled,
-        overlayBgColor: settings.overlayBgColor,
-        overlayBgOpacity: settings.overlayBgOpacity,
-        overlayChipNames: settings.overlayChipNames,
+        overlayBgEnabled: false,
+        overlayBgColor: '#000000',
+        overlayBgOpacity: 0.5,
+        overlayChipNames: settings.overlayChipNames === true,
         pollMs: settings.overlayPollMs,
       });
       void rtssProfile?.apply({ enabled: settings.overlayEnabled === true });

@@ -81,7 +81,10 @@ export function filterMonitorLogSample(sample: Record<string, unknown>): Record<
     if (enabled.has(metric)) return;
     for (const key of keys) out[key] = null;
   };
-  out.utilPct = sample.gpuUtilPct ?? sample.utilPct ?? null;
+  // IGCL's device-wide activity counter is the preferred GPU utilization
+  // source when it is present. The WMI GPUEngine aggregate remains the
+  // fallback for vendor lanes and driver builds without the native counter.
+  out.utilPct = sample.utilPct ?? sample.gpuUtilPct ?? null;
   drop('gpu-util', 'utilPct', 'gpuUtilPct');
   drop('gpu-clock', 'gpuClockMhz');
   drop('gpu-voltage', 'gpuVoltageV');
