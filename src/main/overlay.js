@@ -54,6 +54,16 @@ const OVERLAY_BASE_HEIGHT = 170;
 // charts, so it needs a little more room than the single RTSS text stack.
 const CAPFRAMEX_BASE_WIDTH = 380;
 const CAPFRAMEX_BASE_HEIGHT = 390;
+// The base height includes one GPU section with the default four visible GPU
+// rows. Keep the per-section estimate in CSS pixels and scale it together
+// with the rest of the window so enabling more telemetry cannot clip the HUD.
+const CAPFRAMEX_GPU_SECTION_OVERHEAD = 24;
+const CAPFRAMEX_GPU_ROW_HEIGHT = 17;
+const CAPFRAMEX_DEFAULT_GPU_ROWS = 4;
+const CAPFRAMEX_DEFAULT_CPU_ROWS = 3;
+const CAPFRAMEX_GPU_ROW_STATS = [
+  'gpu-util', 'gpu-temp', 'gpu-voltage', 'gpu-power', 'gpu-fan', 'gpu-vram', 'gpu-vram-temp',
+];
 /** The margin from the display edge (every corner). */
 const OVERLAY_MARGIN = 8;
 
@@ -314,10 +324,28 @@ export function createOverlayWindow({ getOverlaySettings }) {
       : Math.max(1, configuredCount);
     const secondaryCount = Math.max(0, deviceCount - 1);
     const capframex = applied.renderer === 'capframex';
+    const capframexGpuRows = CAPFRAMEX_GPU_ROW_STATS.reduce(
+      (count, statId) => count + (applied.stats.includes(statId) ? 1 : 0),
+      0,
+    );
+    const capframexGpuSectionHeight = CAPFRAMEX_GPU_SECTION_OVERHEAD
+      + capframexGpuRows * CAPFRAMEX_GPU_ROW_HEIGHT;
+    const capframexDefaultGpuSectionHeight = CAPFRAMEX_GPU_SECTION_OVERHEAD
+      + CAPFRAMEX_DEFAULT_GPU_ROWS * CAPFRAMEX_GPU_ROW_HEIGHT;
+    const capframexCpuRows = (applied.stats.includes('cpu-clock') ? 1 : 0)
+      + (applied.stats.includes('cpu-util') ? 1 : 0)
+      + (applied.stats.includes('cpu-power') || applied.stats.includes('cpu-temp') ? 1 : 0);
+    const capframexCpuHeight = CAPFRAMEX_GPU_SECTION_OVERHEAD
+      + capframexCpuRows * CAPFRAMEX_GPU_ROW_HEIGHT;
+    const capframexDefaultCpuHeight = CAPFRAMEX_GPU_SECTION_OVERHEAD
+      + CAPFRAMEX_DEFAULT_CPU_ROWS * CAPFRAMEX_GPU_ROW_HEIGHT;
     return {
       width: Math.round((capframex ? CAPFRAMEX_BASE_WIDTH : OVERLAY_BASE_WIDTH) * scale),
       height: Math.round((capframex
-        ? CAPFRAMEX_BASE_HEIGHT + secondaryCount * 92
+        ? CAPFRAMEX_BASE_HEIGHT
+          + Math.max(0, capframexGpuSectionHeight - capframexDefaultGpuSectionHeight)
+          + Math.max(0, capframexCpuHeight - capframexDefaultCpuHeight)
+          + secondaryCount * capframexGpuSectionHeight
         : OVERLAY_BASE_HEIGHT + secondaryCount * 28) * scale),
     };
   };

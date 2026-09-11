@@ -39,7 +39,7 @@ import { overlayLines, normalizeOverlayStats, deriveFrameTimeMs, formatFrametime
 // derives the row labels from the sysinfo fixture/real names).
 import { chipLabelGpu, chipLabelCpu } from './pure/chip-label.ts';
 import { resolveBootDevice } from './pure/device.ts';
-import { dedupeOverlayDevices, normalizeOverlayIdentityKey as identityToken, overlayDeviceOrder, overlayIdentityAliases as identityAliases, overlaySampleMatchesDevice as sampleMatchesDevice, overlayStableDeviceKey as stableDeviceKey } from './pure/overlay-routing.ts';
+import { dedupeOverlayDevices, normalizeOverlayIdentityKey as identityToken, overlayDeviceOrder, overlayIdentityAliases as identityAliases, overlaySampleMatchesDevice as sampleMatchesDevice, overlayStableDeviceKey as stableDeviceKey, resolveOverlayMainDevice } from './pure/overlay-routing.ts';
 import { pushSeries, trimSeriesWindow, autoScale, downsample } from './pure/graph.ts';
 import type { SeriesPoint } from './pure/graph.ts';
 import type { FpsSample, OverlayRenderer, TelemetrySample } from './types.ts';
@@ -69,11 +69,13 @@ let overlayDisplayDeviceKey: string | null = null;
 let overlayDisplayOrdinal = 1;
 let mainSelectedDeviceId: number | null = null;
 let mainSelectedDeviceKey: string | null = null;
+let mainSelectedDevice: OverlayDeviceIdentity | null = null;
  // lane keeps the existing single-GPU rendering contract.
 let secondaryDeviceIds: number[] = [];
 let secondaryDeviceOrdinals: number[] = [];
- const secondarySamples = new Map<string, TelemetrySample>();
+const secondarySamples = new Map<string, TelemetrySample>();
 let overlayConfigureGeneration = 0;
+let overlayRequestGeneration = 0;
 let latestFps: number | null = null;
 // M7a: the latest percentile stats from the fps poll (null until the
 // sampler reports them - the honest '-' fields on the FPS row).
@@ -370,6 +372,7 @@ let telemetryTicks = 0;
 let theme: 'classic' | 'arc' = OVERLAY_THEME_DEFAULT;
 let overlayRenderer: OverlayRenderer = 'rtss';
 let softwareRenderer = false;
+let overlayEnabled = false;
 
 const fpsEl = document.getElementById('overlay-fps') as HTMLElement;
 const cpuEl = document.getElementById('overlay-cpu') as HTMLElement;
@@ -412,6 +415,27 @@ const capframexDisplaytimeCanvas = document.getElementById('capframex-displaytim
 const capframexFrametimeValue = document.getElementById('capframex-frametime-value');
 const capframexDisplaytimeValue = document.getElementById('capframex-displaytime-value');
 
+function hexToRgba(hex: string, opacity: number): string {
+  const value = Number.parseInt(hex.slice(1), 16);
+  if (!Number.isInteger(value)) return `rgba(10, 10, 18, ${opacity})`;
+  return `rgba(${(value >> 16) & 0xff}, ${(value >> 8) & 0xff}, ${value & 0xff}, ${opacity})`;
+}
+
+function clearOverlaySampling(): void {
+  latestFps = null;
+  latestLow1Pct = null;
+  latestP99 = null;
+  latestAvgFps = null;
+  latestLow01Pct = null;
+  latestApi = null;
+  latestFrameTime = null;
+  series = [];
+  displaySeries = [];
+  latestSample = null;
+  latestCpuSource = null;
+  secondarySamples.clear();
+}
+
 // M3: registered SYNCHRONOUSLY at script top - BEFORE any await - so the
 // initial 'overlay:settings' push (main sends it right after
 // did-finish-load) is never missed by the boot sequence.
@@ -419,8 +443,10 @@ api.onOverlaySettings((settings) => {
   const s = settings ?? {};
   scale = clampOverlayScale(s.scale);
   const previousRenderer = overlayRenderer;
+  const previousEnabled = overlayEnabled;
   overlayRenderer = isValidOverlayRenderer(s.renderer) ? s.renderer : 'rtss';
   softwareRenderer = s.softwareRenderer === true;
+  overlayEnabled = s.enabled === true;
   document.documentElement.dataset.overlayRenderer = overlayRenderer;
   if (capframexRoot) capframexRoot.setAttribute('aria-hidden', overlayRenderer === 'capframex' ? 'false' : 'true');
   // The CSSOM font-size scaling (CSP-safe): one change scales every rem
@@ -447,6 +473,12 @@ api.onOverlaySettings((settings) => {
     '--overlay-bg-opacity',
     String(clampOverlayBgOpacity(s.overlayBgOpacity)),
   );
+  const capframexBgColor = isValidOverlayColor(s.overlayBgColor) ? s.overlayBgColor : OVERLAY_BG_COLOR_DEFAULT;
+  const capframexBgOpacity = clampOverlayBgOpacity(s.overlayBgOpacity);
+  document.documentElement.style.setProperty(
+    '--capframex-bg',
+    s.overlayBgEnabled === true ? hexToRgba(capframexBgColor, capframexBgOpacity) : 'transparent',
+  );
   // M35: monitoring selection is a live setting. Refresh the inventory before
   // applying it: numeric session ids can be reassigned after a driver reset
   // or device hotplug, so reusing the boot list could route the overlay to a
@@ -456,22 +488,53 @@ api.onOverlaySettings((settings) => {
     ? s.deviceKeys.filter((key: unknown): key is string => typeof key === 'string' && key.length > 0)
     : null;
   const softwareRendererSelected = overlayRenderer === 'capframex' || softwareRenderer;
-  if (softwareRendererSelected && overlayDevices.length > 0) {
-    void api.listDevices().then((devices) => {
+  const requestGeneration = ++overlayRequestGeneration;
+  if (softwareRendererSelected && overlayEnabled) {
+    void api.listDevices().then(async (devices) => {
+      // The initial settings push can race bootNamesFetch(). If no live
+      // selection has reached this renderer yet, read the durable main-device
+      // identity before configuring lanes instead of treating the display GPU
+      // as the main owner by default.
+      let mainSelection = { deviceId: mainSelectedDeviceId ?? fpsDeviceId, deviceKey: mainSelectedDeviceKey };
+      if (mainSelectedDeviceId === null && mainSelectedDeviceKey === null) {
+        try {
+          const persistedSelection = await api.deviceGet();
+          if (requestGeneration !== overlayRequestGeneration) return;
+          const persistedId = typeof persistedSelection?.deviceId === 'number'
+            ? persistedSelection.deviceId
+            : fpsDeviceId;
+          const persistedKey = typeof persistedSelection?.deviceKey === 'string'
+            ? persistedSelection.deviceKey
+            : null;
+          mainSelectedDeviceId = persistedId;
+          mainSelectedDeviceKey = persistedKey;
+          mainSelectedDevice = null;
+          mainSelection = { deviceId: persistedId, deviceKey: persistedKey };
+        } catch {
+          // The FPS/display identity remains the compatibility fallback.
+        }
+      }
       const primary = overlayDisplayDeviceKey
         ? devices.find((device) => identityAliases(device).some((key) => key === identityToken(overlayDisplayDeviceKey)))
         : devices.find((device) => device.id === fpsDeviceId);
-      return configureOverlayDevices(primary?.id ?? fpsDeviceId, devices);
+      return configureOverlayDevices(primary?.id ?? fpsDeviceId, devices, mainSelection, requestGeneration);
     }).catch(() => {
       // Keep the last working inventory if a transient refresh fails.
-      void configureOverlayDevices(fpsDeviceId, overlayDevices);
+      void configureOverlayDevices(fpsDeviceId, overlayDevices, {
+        deviceId: mainSelectedDeviceId ?? fpsDeviceId,
+        deviceKey: mainSelectedDeviceKey,
+      }, requestGeneration);
     });
-  } else if (!softwareRendererSelected) {
+  } else {
     // RTSS owns the native HUD in this mode. Release only this renderer's
     // optional telemetry owner so the hidden Electron document does not keep
-    // sampling hardware or duplicate the RTSS lanes.
+    // sampling hardware or duplicate the RTSS lanes. The same release path is
+    // used when the optional renderer is disabled, so turning the master
+    // toggle off stops both telemetry ownership and FPS polling immediately.
+    overlayRequestGeneration += 1;
     overlayConfigureGeneration += 1;
     void api.overlayTelemetryStart({ owner: 'overlay', deviceKeys: [] }).catch(() => {});
+    if (!overlayEnabled) clearOverlaySampling();
   }
   const backdrop = document.getElementById('overlay-backdrop');
   if (backdrop) backdrop.classList.toggle('visible', s.overlayBgEnabled === true);
@@ -500,7 +563,7 @@ api.onOverlaySettings((settings) => {
   // re-arms its interval when the pushed value changes (the FPS line then
   // updates at the user's chosen rate, not the stock 1000 ms).
   applyFpsPollMs(pollMs);
-  if (previousRenderer !== overlayRenderer) armFpsLoop();
+  if (previousRenderer !== overlayRenderer || previousEnabled !== overlayEnabled) armFpsLoop();
   sizeCanvas();
   render();
 });
@@ -961,8 +1024,10 @@ api.onTelemetrySample((sample) => {
     ? overlayDevices.find((device) => identityToken(stableDeviceKey(device)) === identityToken(overlayDisplayDeviceKey)) ?? null
     : overlayDevices.find((device) => device.id === overlayDisplayDeviceId) ?? null;
   const mainDevice = mainSelectedDeviceKey
-    ? overlayDevices.find((device) => identityToken(stableDeviceKey(device)) === identityToken(mainSelectedDeviceKey)) ?? null
-    : overlayDevices.find((device) => device.id === mainSelectedDeviceId) ?? null;
+    ? overlayDevices.find((device) => identityToken(stableDeviceKey(device)) === identityToken(mainSelectedDeviceKey))
+      ?? mainSelectedDevice
+    : overlayDevices.find((device) => device.id === mainSelectedDeviceId)
+      ?? mainSelectedDevice;
   const sampleDeviceId = typeof sample.deviceId === 'number' ? sample.deviceId : null;
   const secondaryDevice = overlayDevices.find((device) => (
     secondaryDeviceIds.includes(device.id) && sampleMatchesDevice(sample, device)
@@ -1023,7 +1088,16 @@ async function resolveOverlayDeviceId(): Promise<number | null> {
 }
 
 async function bootFpsLoop(): Promise<void> {
-  fpsDeviceId = await resolveOverlayDeviceId();
+  const bootRequestGeneration = overlayRequestGeneration;
+  const resolvedDeviceId = await resolveOverlayDeviceId();
+  // A settings/selection refresh may have configured the display lane while
+  // the boot preference lookup was pending. Do not let that older read move
+  // FPS polling back to a stale numeric device id.
+  if (bootRequestGeneration !== overlayRequestGeneration || overlayDisplayDeviceId !== null) {
+    armFpsLoop();
+    return;
+  }
+  fpsDeviceId = resolvedDeviceId;
   armFpsLoop();
 }
 
@@ -1049,7 +1123,7 @@ function armFpsLoop(): void {
     fpsInterval = null;
   }
   const softwareRendererSelected = overlayRenderer === 'capframex' || softwareRenderer;
-  if (!softwareRendererSelected || fpsDeviceId === null) return;
+  if (!softwareRendererSelected || !overlayEnabled || fpsDeviceId === null) return;
   const pollMs = clampOverlayPollMs(fpsPollMs);
   fpsInterval = window.setInterval(() => {
     void (async () => {
@@ -1120,7 +1194,10 @@ const overlayFpsBoot = bootFpsLoop();
 async function configureOverlayDevices(
   primaryId: number | null,
   devices: OverlayDeviceIdentity[],
+  mainSelection: { deviceId?: number | null; deviceKey?: string | null } = {},
+  requestGeneration = overlayRequestGeneration,
 ): Promise<void> {
+  if (requestGeneration !== overlayRequestGeneration) return;
   const generation = ++overlayConfigureGeneration;
   const softwareRendererSelected = overlayRenderer === 'capframex' || softwareRenderer;
   const enrichedDevices = await Promise.all(devices.map(async (device) => {
@@ -1139,7 +1216,7 @@ async function configureOverlayDevices(
       return device;
     }
   }));
-  if (generation !== overlayConfigureGeneration) return;
+  if (requestGeneration !== overlayRequestGeneration || generation !== overlayConfigureGeneration) return;
   const orderedDevices = overlayDeviceOrder(dedupeOverlayDevices(enrichedDevices))
     .map((device, index) => ({ ...device, overlayOrdinal: index + 1 }));
   const selected = overlayDeviceKeys
@@ -1152,10 +1229,14 @@ async function configureOverlayDevices(
     ?? monitored.find((device) => device.id === primaryId)
     ?? monitored[0]
     ?? null;
-  const mainDeviceId = primaryId;
-  const mainSelected = monitored.find((device) => device.id === primaryId)
-    ?? devices.find((device) => device.id === primaryId)
-    ?? null;
+  // The main telemetry source is independent from the display-driving GPU.
+  // Settings refreshes can re-enumerate devices in a different order, so a
+  // durable identity wins over the transient numeric id. If the identity is
+  // unavailable (legacy/mock inventories), the numeric id is only used as the
+  // compatibility fallback; never select by an ordinal.
+  const mainSelected = resolveOverlayMainDevice(monitored, orderedDevices, mainSelection, primaryId);
+  const resolvedMain = mainSelected ?? primary;
+  const mainDeviceId = resolvedMain?.id ?? null;
   const displayDeviceId = primary?.id ?? null;
   const displayDeviceKey = primary ? stableDeviceKey(primary) : null;
   const displayOrdinal = primary?.overlayOrdinal ?? 1;
@@ -1176,15 +1257,22 @@ async function configureOverlayDevices(
     ? secondary
     : monitored).map((device) => stableDeviceKey(device));
   try {
-    await api.overlayTelemetryStart({ owner: 'overlay', deviceKeys: softwareRendererSelected ? overlayLaneKeys : [] });
+    await api.overlayTelemetryStart({
+      owner: 'overlay',
+      deviceKeys: softwareRendererSelected && overlayEnabled ? overlayLaneKeys : [],
+    });
   } catch { /* best effort */ }
-  if (generation !== overlayConfigureGeneration) return;
+  if (requestGeneration !== overlayRequestGeneration || generation !== overlayConfigureGeneration) return;
   // Commit the complete candidate only after telemetry startup wins the
   // generation race. This prevents an older, slower request from restoring
   // stale rows, labels, samples, routing, or geometry after a newer request.
   overlayDevices = monitored;
-  mainSelectedDeviceId = primaryId;
-  mainSelectedDeviceKey = mainSelected ? stableDeviceKey(mainSelected) : null;
+  mainSelectedDevice = resolvedMain;
+  mainSelectedDeviceId = resolvedMain?.id ?? null;
+  mainSelectedDeviceKey = resolvedMain && (
+    (typeof resolvedMain.deviceKey === 'string' && resolvedMain.deviceKey.trim().length > 0)
+    || (Array.isArray(resolvedMain.deviceKeys) && resolvedMain.deviceKeys.some((key) => typeof key === 'string' && key.trim().length > 0))
+  ) ? stableDeviceKey(resolvedMain) : null;
   overlayDisplayDeviceId = displayDeviceId;
   overlayDisplayDeviceKey = displayDeviceKey;
   overlayDisplayOrdinal = displayOrdinal;
@@ -1196,32 +1284,58 @@ async function configureOverlayDevices(
   secondaryGpuChipLabels = nextSecondaryGpuChipLabels;
   secondarySamples.clear();
   latestSample = null;
+  armFpsLoop();
   if (softwareRendererSelected) {
     try { await api.overlayResize(monitored.length); } catch { /* best effort */ }
   }
-  if (generation !== overlayConfigureGeneration) return;
+  if (requestGeneration !== overlayRequestGeneration || generation !== overlayConfigureGeneration) return;
   render();
 }
 api.onDeviceSelectionUpdated((payload) => {
-  if ((overlayRenderer !== 'capframex' && !softwareRenderer) || !payload || !Number.isInteger(payload.deviceId)) return;
+  if (!payload || !Number.isInteger(payload.deviceId)) return;
+  // Cache the main-process selection synchronously, even while RTSS owns the
+  // visible HUD. A later switch to the hook-free renderer must use the newest
+  // physical GPU, not the last selection committed by this hidden document.
+  mainSelectedDeviceId = payload.deviceId;
+  mainSelectedDeviceKey = typeof payload.deviceKey === 'string' ? payload.deviceKey : null;
+  mainSelectedDevice = null;
+  const requestGeneration = ++overlayRequestGeneration;
+  if (overlayRenderer !== 'capframex' && !softwareRenderer) return;
   void api.listDevices()
     .then((devices) => {
       const targetId = devices.find((device) => (
         typeof payload.deviceKey === 'string'
         && identityAliases(device).some((key) => key === identityToken(payload.deviceKey))
       ))?.id ?? payload.deviceId;
-      return configureOverlayDevices(targetId, devices);
+      return configureOverlayDevices(targetId, devices, {
+        deviceId: targetId,
+        deviceKey: payload.deviceKey,
+      }, requestGeneration);
     })
     .catch(() => { /* keep the last working secondary set */ });
 });
 
 async function bootNamesFetch(): Promise<void> {
+  // Reserve the boot request before any async inventory or selection read. A
+  // live main-device selection received while boot is waiting must supersede
+  // this request instead of being invalidated by a later boot generation.
+  const requestGeneration = ++overlayRequestGeneration;
   try {
     await overlayFpsBoot;
     let devices: OverlayDeviceIdentity[] = [];
     try { devices = await api.listDevices(); } catch { devices = []; }
     const primaryId = await resolveOverlayDeviceId() ?? devices[0]?.id ?? null;
-    await configureOverlayDevices(primaryId, devices);
+    let persistedSelection: { deviceId?: number | null; deviceKey?: string | null } = { deviceId: primaryId };
+    try {
+      const selection = await api.deviceGet();
+      persistedSelection = {
+        deviceId: typeof selection?.deviceId === 'number' ? selection.deviceId : primaryId,
+        deviceKey: typeof selection?.deviceKey === 'string' ? selection.deviceKey : null,
+      };
+    } catch {
+      // The resolved FPS device remains the compatibility fallback.
+    }
+    await configureOverlayDevices(primaryId, devices, persistedSelection, requestGeneration);
     const sysinfo = await api.sysinfo();
     const controllers: OverlaySysinfoController[] = Array.isArray(sysinfo?.videoControllers)
       ? sysinfo.videoControllers

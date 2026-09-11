@@ -114,3 +114,33 @@ export function resolveOverlayDevice<T extends OverlayIdentity & { id: number }>
   const matches = uniqueDevices.filter((device) => overlayIdentityAliases(device).includes(key));
   return matches.length === 1 ? matches[0] : null;
 }
+
+export interface OverlayMainSelection {
+  deviceId?: number | null;
+  deviceKey?: string | null;
+}
+
+/** Resolve the CPU/RAM telemetry owner independently from the display GPU.
+ * A durable identity is authoritative; a numeric id is only a legacy
+ * fallback. An ambiguous durable alias fails closed so a reordered inventory
+ * can never silently route the main lane to another physical adapter. */
+export function resolveOverlayMainDevice<T extends OverlayIdentity & { id: number }>(
+  monitored: readonly T[],
+  inventory: readonly T[],
+  selection: OverlayMainSelection,
+  fallbackId: number | null = null,
+): T | null {
+  const requestedKey = normalizeOverlayIdentityKey(selection.deviceKey);
+  if (requestedKey) {
+    const monitoredMatches = monitored.filter((device) => overlayIdentityAliases(device).includes(requestedKey));
+    if (monitoredMatches.length === 1) return monitoredMatches[0];
+    if (monitoredMatches.length > 1) return null;
+    const inventoryMatches = inventory.filter((device) => overlayIdentityAliases(device).includes(requestedKey));
+    return inventoryMatches.length === 1 ? inventoryMatches[0] : null;
+  }
+  const requestedId = Number.isInteger(selection.deviceId) ? selection.deviceId : fallbackId;
+  if (!Number.isInteger(requestedId)) return null;
+  return monitored.find((device) => device.id === requestedId)
+    ?? inventory.find((device) => device.id === requestedId)
+    ?? null;
+}

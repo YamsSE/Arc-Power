@@ -64,11 +64,15 @@ html[data-overlay-renderer="capframex"] #overlay-frametime-value {
   box-sizing: border-box;
   width: 100%;
   padding: 0.45rem 0.6rem 0.55rem;
-  background: rgba(10, 10, 18, 0.86);
+  background: var(--capframex-bg, rgba(10, 10, 18, 0.86));
   border: 1px solid rgba(105, 113, 148, 0.28);
   border-radius: 0.3rem;
   overflow: hidden;
 }
+
+/* The renderer toggles optional rows with the native hidden attribute. Keep
+   the display-grid declarations above from resurrecting those rows. */
+#capframex-root [hidden] { display: none !important; }
 
 .capframex-section {
   margin: 0 0 0.34rem;
@@ -152,6 +156,7 @@ html[data-overlay-renderer="capframex"] #overlay-frametime-value {
 }
 
 .capframex-chart-heading span:last-child { color: #c7cadb; }
+.capframex-chart-heading small { color: #8e93aa; font-size: 0.86em; font-weight: 500; }
 .capframex-chart { display: block; width: 100%; height: 2.25rem; margin-top: 0.12rem; }
 
 /* M7b (fix 4): the OPTIONAL background box behind the HUD (the Appearance

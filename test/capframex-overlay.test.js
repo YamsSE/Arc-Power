@@ -41,7 +41,15 @@ test('CapFrameX-style renderer is live-switchable and owns its telemetry lanes',
   assert.match(overlaySrc, /document\.documentElement\.dataset\.overlayRenderer/);
   assert.match(overlaySrc, /renderCapframex\(displaySample\)/);
   assert.match(overlaySrc, /owner: 'overlay', deviceKeys: \[\]/);
-  assert.match(overlaySrc, /softwareRendererSelected \? overlayLaneKeys : \[\]/);
+  assert.match(overlaySrc, /softwareRendererSelected && overlayEnabled \? overlayLaneKeys : \[\]/);
+  assert.match(overlaySrc, /mainSelection: \{ deviceId\?: number \| null; deviceKey\?: string \| null \}/);
+  assert.match(overlaySrc, /resolveOverlayMainDevice\(monitored, orderedDevices, mainSelection, primaryId\)/);
+  assert.match(overlaySrc, /!softwareRendererSelected \|\| !overlayEnabled \|\| fpsDeviceId === null/);
+  assert.match(overlaySrc, /mainSelectedDeviceId = payload\.deviceId/);
+  assert.match(overlaySrc, /const requestGeneration = \+\+overlayRequestGeneration/);
+  assert.match(overlaySrc, /const persistedSelection = await api\.deviceGet\(\)/);
+  assert.match(overlaySrc, /const bootRequestGeneration = overlayRequestGeneration/);
+  assert.match(overlaySrc, /bootRequestGeneration !== overlayRequestGeneration/);
   assert.match(settingsSrc, /dataset: \{ overlayRenderer: 'rtss' \}/);
   assert.match(settingsSrc, /dataset: \{ overlayRenderer: 'capframex' \}/);
   assert.match(settingsSrc, /profilesSettingsSave\(\{ overlayRenderer: nextRenderer \}\)/);
@@ -52,6 +60,10 @@ test('CapFrameX-style surface stays independent of CapFrameX native redistributi
   assert.match(overlayHtml, /does not load or\s+redistribute CapFrameX binaries/);
   assert.match(overlayCss, /data-overlay-renderer="capframex"/);
   assert.match(overlayCss, /capframex-chart/);
+  assert.match(overlayCss, /#capframex-root \[hidden\] \{ display: none !important; \}/);
+  assert.match(overlayCss, /var\(--capframex-bg/);
+  assert.match(overlayHtml, /Displaytime <small>\(shared frame interval\)<\/small>/);
+  assert.match(overlayMainSrc, /capframexGpuSectionHeight/);
   assert.doesNotMatch(overlaySrc, /CapFrameX\.OSD|RTSSSharedMemoryV2|\.dll/);
 });
 
