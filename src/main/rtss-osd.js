@@ -346,14 +346,17 @@ function defaultBindings() {
       map: (handle) => mapView(handle, RTSS_FILE_MAP_ALL_ACCESS, 0, 0, 0),
       getViewLength,
       requireViewLength: true,
-      // Koffi exposes the mapped native pointer as an ArrayBuffer. Node's
-      // Atomics operation performs the CPU compare/exchange directly against
-      // that address, so the RTSS renderer and Arc Power contend on the same
-      // shared LONG rather than a process-local JavaScript flag.
+      // Electron forbids Koffi external ArrayBuffer views. Calling
+      // `koffi.view()` here therefore aborts the Electron process before the
+      // first window can be shown. Keep the same cooperative RTSS busy-lock
+      // contract, but use Koffi's offset accessors, which work with the
+      // mapped native pointer in Electron as well as in plain Node.
       compareExchange32: (view, offset, exchange, comparand) => {
-        const mapped = koffi.view(view, offset + 4);
-        const word = new Int32Array(mapped, offset, 1);
-        return Atomics.compareExchange(word, 0, comparand | 0, exchange | 0);
+        const current = Number(koffi.decode(view, offset, 'uint32')) >>> 0;
+        if (current === (comparand >>> 0)) {
+          koffi.encode(view, offset, 'uint32', exchange >>> 0);
+        }
+        return current;
       },
       unmap: kernel32.func('UnmapViewOfFile', 'int32', ['void*']),
       close: kernel32.func('CloseHandle', 'int32', ['void*']),
