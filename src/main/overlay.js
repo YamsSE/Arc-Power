@@ -50,10 +50,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *  M16 200px bump is rolled back. */
 const OVERLAY_BASE_WIDTH = 460;
 const OVERLAY_BASE_HEIGHT = 170;
-// The hook-free renderer has a grouped, two-column layout and two compact
-// charts, so it needs a little more room than the single RTSS text stack.
-const CAPFRAMEX_BASE_WIDTH = 380;
-const CAPFRAMEX_BASE_HEIGHT = 390;
+// The hook-free renderer follows the compact 336px reference surface: a
+// grouped telemetry stack, three-line FPS summary, and two chart cards.
+// Keep this as the CSS-pixel contract at scale 1.0; the renderer's rem sizes
+// and the native window geometry both scale from the same value.
+const CAPFRAMEX_BASE_WIDTH = 336;
+const CAPFRAMEX_BASE_HEIGHT = 567;
 // The base height includes one GPU section with the default four visible GPU
 // rows. Keep the per-section estimate in CSS pixels and scale it together
 // with the rest of the window so enabling more telemetry cannot clip the HUD.
@@ -61,9 +63,11 @@ const CAPFRAMEX_GPU_SECTION_OVERHEAD = 24;
 const CAPFRAMEX_GPU_ROW_HEIGHT = 17;
 const CAPFRAMEX_DEFAULT_GPU_ROWS = 4;
 const CAPFRAMEX_DEFAULT_CPU_ROWS = 3;
+const CAPFRAMEX_DEFAULT_SUMMARY_ROWS = 3;
 const CAPFRAMEX_GPU_ROW_STATS = [
   'gpu-util', 'gpu-temp', 'gpu-voltage', 'gpu-power', 'gpu-fan', 'gpu-vram', 'gpu-vram-temp',
 ];
+const CAPFRAMEX_SUMMARY_STATS = ['fps-avg', 'fps-1pct-low', 'fps-01pct-low', 'fps-99pct', 'fps'];
 /** The margin from the display edge (every corner). */
 const OVERLAY_MARGIN = 8;
 
@@ -339,12 +343,19 @@ export function createOverlayWindow({ getOverlaySettings }) {
       + capframexCpuRows * CAPFRAMEX_GPU_ROW_HEIGHT;
     const capframexDefaultCpuHeight = CAPFRAMEX_GPU_SECTION_OVERHEAD
       + CAPFRAMEX_DEFAULT_CPU_ROWS * CAPFRAMEX_GPU_ROW_HEIGHT;
+    const capframexSummaryRows = CAPFRAMEX_SUMMARY_STATS.reduce(
+      (count, statId) => count + (applied.stats.includes(statId) ? 1 : 0),
+      0,
+    );
+    const capframexApiRows = applied.stats.includes('api') ? 1 : 0;
     return {
       width: Math.round((capframex ? CAPFRAMEX_BASE_WIDTH : OVERLAY_BASE_WIDTH) * scale),
       height: Math.round((capframex
         ? CAPFRAMEX_BASE_HEIGHT
           + Math.max(0, capframexGpuSectionHeight - capframexDefaultGpuSectionHeight)
           + Math.max(0, capframexCpuHeight - capframexDefaultCpuHeight)
+          + Math.max(0, capframexSummaryRows - CAPFRAMEX_DEFAULT_SUMMARY_ROWS) * CAPFRAMEX_GPU_ROW_HEIGHT
+          + capframexApiRows * CAPFRAMEX_GPU_ROW_HEIGHT
           + secondaryCount * capframexGpuSectionHeight
         : OVERLAY_BASE_HEIGHT + secondaryCount * 28) * scale),
     };

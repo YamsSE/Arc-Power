@@ -414,6 +414,10 @@ const capframexFrametimeCanvas = document.getElementById('capframex-frametime') 
 const capframexDisplaytimeCanvas = document.getElementById('capframex-displaytime') as HTMLCanvasElement | null;
 const capframexFrametimeValue = document.getElementById('capframex-frametime-value');
 const capframexDisplaytimeValue = document.getElementById('capframex-displaytime-value');
+const capframexFrametimeAxisTop = document.getElementById('capframex-frametime-axis-top');
+const capframexFrametimeAxisBottom = document.getElementById('capframex-frametime-axis-bottom');
+const capframexDisplaytimeAxisTop = document.getElementById('capframex-displaytime-axis-top');
+const capframexDisplaytimeAxisBottom = document.getElementById('capframex-displaytime-axis-bottom');
 
 function hexToRgba(hex: string, opacity: number): string {
   const value = Number.parseInt(hex.slice(1), 16);
@@ -475,9 +479,15 @@ api.onOverlaySettings((settings) => {
   );
   const capframexBgColor = isValidOverlayColor(s.overlayBgColor) ? s.overlayBgColor : OVERLAY_BG_COLOR_DEFAULT;
   const capframexBgOpacity = clampOverlayBgOpacity(s.overlayBgOpacity);
+  // Arc Power Overlay owns its dark surface. The legacy RTSS background
+  // toggle remains available for the native renderer, but the hook-free
+  // surface must stay readable over games even when that old toggle is off.
+  const capframexBackground = s.overlayBgEnabled === true
+    ? hexToRgba(capframexBgColor, capframexBgOpacity)
+    : 'rgba(18, 18, 27, 0.97)';
   document.documentElement.style.setProperty(
     '--capframex-bg',
-    s.overlayBgEnabled === true ? hexToRgba(capframexBgColor, capframexBgOpacity) : 'transparent',
+    capframexBackground,
   );
   // M35: monitoring selection is a live setting. Refresh the inventory before
   // applying it: numeric session ids can be reassigned after a driver reset
@@ -725,22 +735,34 @@ function capCanvasSize(canvasEl: HTMLCanvasElement | null): void {
   if (canvasEl.height !== height) canvasEl.height = height;
 }
 
-function drawCapSeries(canvasEl: HTMLCanvasElement | null, points: SeriesPoint[], stroke: string): void {
+function drawCapSeries(
+  canvasEl: HTMLCanvasElement | null,
+  points: SeriesPoint[],
+  stroke: string,
+  axisTop: HTMLElement | null,
+  axisBottom: HTMLElement | null,
+): void {
   if (!canvasEl) return;
   capCanvasSize(canvasEl);
   const ctx = canvasEl.getContext('2d');
   if (!ctx) return;
+  const setAxis = (high: number): void => {
+    if (axisTop) axisTop.textContent = `${high.toFixed(1)}ms`;
+    if (axisBottom) axisBottom.textContent = '0.0ms';
+  };
+  setAxis(25);
   ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
   if (points.length === 0) return;
   const drawn = downsample(points, 120);
   const values = drawn.map((point) => point.v).filter((value) => Number.isFinite(value));
   if (values.length === 0) return;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const spread = max - min;
-  const padding = spread > 0 ? spread * 0.12 : Math.max(0.5, min * 0.04);
-  const low = Math.max(0, min - padding);
-  const high = max + padding;
+  // Keep the Arc Power chart on a stable 0-25 ms frame-time scale until a
+  // sample exceeds it. The scale then expands in 5 ms steps and the visible
+  // axis label follows, so stutter peaks remain honest instead of vanishing
+  // outside the canvas.
+  const low = 0;
+  const high = Math.max(25, Math.ceil(Math.max(...values) / 5) * 5);
+  setAxis(high);
   const range = Math.max(0.01, high - low);
   const x = (index: number): number => drawn.length <= 1
     ? canvasEl.width / 2
@@ -805,7 +827,15 @@ function renderCapframex(displaySample: TelemetrySample | null): void {
     capframexGpuSections.append(section);
   });
 
-  if (capframexCpuTitle) capframexCpuTitle.textContent = cpuChipLabel ? `CPU Model   ${cpuChipLabel}` : 'CPU Model';
+  if (capframexCpuTitle) {
+    const cpuLabel = document.createElement('span');
+    cpuLabel.className = 'capframex-title-label';
+    cpuLabel.textContent = 'CPU Model';
+    const cpuValue = document.createElement('span');
+    cpuValue.className = 'capframex-title-value';
+    cpuValue.textContent = cpuChipLabel || '-';
+    capframexCpuTitle.replaceChildren(cpuLabel, cpuValue);
+  }
   const cpuSection = capframexCpuTitle?.parentElement;
   if (cpuSection) {
     [...cpuSection.querySelectorAll<HTMLElement>('.capframex-row')].forEach((row) => row.remove());
@@ -836,11 +866,11 @@ function renderCapframex(displaySample: TelemetrySample | null): void {
   }
   if (capframexFrametimeCard) capframexFrametimeCard.hidden = !enabled.has('frametime');
   if (capframexDisplaytimeCard) capframexDisplaytimeCard.hidden = !enabled.has('frametime');
-  drawCapSeries(capframexFrametimeCanvas, series, color);
+  drawCapSeries(capframexFrametimeCanvas, series, '#5bd5ff', capframexFrametimeAxisTop, capframexFrametimeAxisBottom);
   // RTSS supplies frame interval timing rather than a separate present-time
   // counter. Keep the second chart honest by mirroring that source until a
   // provider exposes a distinct display-time field.
-  drawCapSeries(capframexDisplaytimeCanvas, displaySeries, color);
+  drawCapSeries(capframexDisplaytimeCanvas, displaySeries, '#5bd5ff', capframexDisplaytimeAxisTop, capframexDisplaytimeAxisBottom);
 }
 
 function render(): void {

@@ -267,12 +267,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ? overlayState.available === true
       : overlayState?.exists === true);
     const liveHotkey = overlayState?.hotkeyRegistered !== false;
-    const rendererLabel = persisted.renderer === 'capframex' ? 'CapFrameX-style · hook-free' : 'RTSS · native';
+    const rendererLabel = persisted.renderer === 'capframex' ? 'Arc Power Overlay · hook-free' : 'RTSS · native';
     const hero = el('header', { class: 'overlay-settings-hero' }, [
       el('div', { class: 'overlay-hero-copy' }, [
         el('span', { class: 'overlay-section-kicker', text: 'OVERLAY CONTROL' }),
         el('h2', { class: 'overlay-hero-title', text: 'Overlay Settings' }),
-        el('p', { class: 'overlay-hero-subtitle', text: 'Choose a native RTSS HUD or an independent hook-free performance overlay.' }),
+        el('p', { class: 'overlay-hero-subtitle', text: 'Choose the native RTSS HUD or the Arc Power Overlay.' }),
       ]),
       el('div', { class: 'overlay-hero-status', dataset: { status: liveOverlay ? 'active' : 'idle' } }, [
         el('span', { class: 'overlay-status-dot' }),
@@ -360,7 +360,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         class: `theme-option overlay-renderer-option${persisted.renderer === 'capframex' ? ' active' : ''}`,
         dataset: { overlayRenderer: 'capframex' },
         onclick: () => void onRendererSelect('capframex'),
-      }, [el('strong', { text: 'CapFrameX style' }), el('small', { text: 'Hook-free' })]),
+      }, [el('strong', { text: 'Arc Power Overlay' }), el('small', { text: 'Hook-free telemetry' })]),
     ]);
     // --- General card (M6-amd3): the enable TOGGLE - moved here from the
     // Settings page (the Settings card is button-only now). The
@@ -384,7 +384,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
             checked: persisted.enabled,
             onchange: (ev: Event) => void onOverlayEnabledToggle((ev.target as HTMLInputElement).checked),
           }),
-          el('span', { text: persisted.renderer === 'capframex' ? 'Show CapFrameX-style Overlay' : 'Show RTSS Overlay' }),
+          el('span', { text: persisted.renderer === 'capframex' ? 'Show Arc Power Overlay' : 'Show RTSS Overlay' }),
         ]),
       ]),
       // M25: the "Show Advanced Overlay" toggle moved here from the

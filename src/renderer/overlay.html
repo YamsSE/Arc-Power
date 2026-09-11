@@ -51,11 +51,19 @@
         </div>
         <div class="capframex-chart-card" id="capframex-frametime-card">
           <div class="capframex-chart-heading"><span>Frametime</span><span id="capframex-frametime-value"></span></div>
-          <canvas id="capframex-frametime" class="capframex-chart"></canvas>
+          <div class="capframex-chart-plot">
+            <canvas id="capframex-frametime" class="capframex-chart"></canvas>
+            <span class="capframex-axis-label capframex-axis-top" id="capframex-frametime-axis-top">25.0ms</span>
+            <span class="capframex-axis-label capframex-axis-bottom" id="capframex-frametime-axis-bottom">0.0ms</span>
+          </div>
         </div>
         <div class="capframex-chart-card" id="capframex-displaytime-card">
           <div class="capframex-chart-heading"><span>Displaytime <small>(shared frame interval)</small></span><span id="capframex-displaytime-value"></span></div>
-          <canvas id="capframex-displaytime" class="capframex-chart"></canvas>
+          <div class="capframex-chart-plot">
+            <canvas id="capframex-displaytime" class="capframex-chart"></canvas>
+            <span class="capframex-axis-label capframex-axis-top" id="capframex-displaytime-axis-top">25.0ms</span>
+            <span class="capframex-axis-label capframex-axis-bottom" id="capframex-displaytime-axis-bottom">0.0ms</span>
+          </div>
         </div>
       </div>
     </div>

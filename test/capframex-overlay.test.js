@@ -53,6 +53,8 @@ test('CapFrameX-style renderer is live-switchable and owns its telemetry lanes',
   assert.match(settingsSrc, /dataset: \{ overlayRenderer: 'rtss' \}/);
   assert.match(settingsSrc, /dataset: \{ overlayRenderer: 'capframex' \}/);
   assert.match(settingsSrc, /profilesSettingsSave\(\{ overlayRenderer: nextRenderer \}\)/);
+  assert.match(settingsSrc, /Arc Power Overlay/);
+  assert.doesNotMatch(settingsSrc, /CapFrameX-style|CapFrameX style|Show CapFrameX/);
 });
 
 test('CapFrameX-style surface stays independent of CapFrameX native redistribution', () => {
@@ -62,7 +64,23 @@ test('CapFrameX-style surface stays independent of CapFrameX native redistributi
   assert.match(overlayCss, /capframex-chart/);
   assert.match(overlayCss, /#capframex-root \[hidden\] \{ display: none !important; \}/);
   assert.match(overlayCss, /var\(--capframex-bg/);
+  assert.match(overlayCss, /background: url\('\.\.\/assets\/ArcPowerIcon\.png'\)/);
+  assert.match(overlayCss, /grid-template-columns: 1fr;/);
+  assert.match(overlayCss, /linear-gradient\(180deg, #7fe3ff/);
+  assert.match(overlayCss, /grid-template-columns: minmax\(0, 1fr\) 5\.8rem 6\.4rem/);
+  assert.match(overlayCss, /#capframex-performance \{ grid-column: 2; \}/);
+  assert.match(overlayCss, /#capframex-performance-ft \{ grid-column: 3; \}/);
+  assert.match(overlayCss, /\.capframex-panel[\s\S]*background: transparent/);
+  assert.match(overlayHtml, /capframex-frametime-axis-top/);
+  assert.match(overlayHtml, /capframex-frametime-axis-bottom/);
+  assert.match(overlayHtml, /capframex-displaytime-axis-top/);
+  assert.match(overlayHtml, /capframex-displaytime-axis-bottom/);
   assert.match(overlayHtml, /Displaytime <small>\(shared frame interval\)<\/small>/);
+  assert.match(overlaySrc, /const low = 0/);
+  assert.match(overlaySrc, /const high = Math\.max\(25/);
+  assert.match(overlaySrc, /setAxis\(high\)/);
+  assert.match(overlayMainSrc, /CAPFRAMEX_BASE_WIDTH = 336/);
+  assert.match(overlayMainSrc, /CAPFRAMEX_BASE_HEIGHT = 567/);
   assert.match(overlayMainSrc, /capframexGpuSectionHeight/);
   assert.doesNotMatch(overlaySrc, /CapFrameX\.OSD|RTSSSharedMemoryV2|\.dll/);
 });
