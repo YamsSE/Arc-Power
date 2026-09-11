@@ -318,6 +318,52 @@ function validHandle(value) {
   return value !== null && value !== undefined && value !== 0 && value !== 0n;
 }
 
+const RTSS_COMPARE_EXCHANGE_PROTO = koffi.proto('int32 ArcPowerCompareExchange32(void *destination, int32 exchange, int32 comparand)');
+let rtssAtomicBinding = null;
+
+function createRtssAtomicBinding(kernel32) {
+  if (rtssAtomicBinding) return rtssAtomicBinding;
+  const virtualAlloc = kernel32.func('VirtualAlloc', 'void*', ['void*', 'size_t', 'uint32', 'uint32']);
+  const virtualFree = kernel32.func('VirtualFree', 'int32', ['void*', 'size_t', 'uint32']);
+  const virtualProtect = kernel32.func('VirtualProtect', 'bool', [
+    'void*', 'size_t', 'uint32', koffi.out(koffi.pointer('uint32')),
+  ]);
+  const flushInstructionCache = kernel32.func('FlushInstructionCache', 'bool', ['void*', 'void*', 'size_t']);
+  const getCurrentProcess = kernel32.func('GetCurrentProcess', 'void*', []);
+  const compareExchangeCode = Buffer.from([0x44, 0x89, 0xC0, 0xF0, 0x0F, 0xB1, 0x11, 0xC3]);
+  const compareExchangeThunk = virtualAlloc(null, compareExchangeCode.length, 0x3000, 0x04);
+  if (!validHandle(compareExchangeThunk)) throw new Error('unable to allocate RTSS atomic thunk');
+  try {
+    koffi.encode(compareExchangeThunk, 0, `uint8[${compareExchangeCode.length}]`, compareExchangeCode);
+    const oldProtection = Buffer.alloc(4);
+    if (!virtualProtect(compareExchangeThunk, compareExchangeCode.length, 0x20, oldProtection)) {
+      throw new Error('unable to make RTSS atomic thunk executable');
+    }
+    if (!flushInstructionCache(getCurrentProcess(), compareExchangeThunk, compareExchangeCode.length)) {
+      throw new Error('unable to flush RTSS atomic thunk');
+    }
+  } catch (error) {
+    try { virtualFree(compareExchangeThunk, 0, 0x8000); } catch { /* best effort */ }
+    throw error;
+  }
+  // One publisher exists per Arc Power process. Keep this tiny executable
+  // page cached for the process lifetime so repeated binding construction
+  // neither registers a duplicate Koffi prototype nor leaks another page.
+  rtssAtomicBinding = {
+    compareExchange: (view, offset, exchange, comparand) => {
+      const destination = koffi.address(view) + BigInt(offset);
+      return Number(koffi.call(
+        compareExchangeThunk,
+        RTSS_COMPARE_EXCHANGE_PROTO,
+        destination,
+        exchange | 0,
+        comparand | 0,
+      ));
+    },
+  };
+  return rtssAtomicBinding;
+}
+
 function defaultBindings() {
   if (process.platform !== 'win32') return null;
   try {
@@ -341,22 +387,24 @@ function defaultBindings() {
       const remaining = regionEnd - viewAddress;
       return remaining > BigInt(Number.MAX_SAFE_INTEGER) ? null : Number(remaining);
     };
+    // Electron forbids Koffi external ArrayBuffer views, so Atomics cannot
+    // operate on the mapped RTSS address. Use a tiny x64 compare-exchange
+    // thunk instead. The instruction is the Windows x64 ABI equivalent of
+    // InterlockedCompareExchange(Destination, Exchange, Comparand): RCX is
+    // the destination, EDX the exchange value, and R8D the comparand.
+    // Unsupported architectures fail closed in the outer binding guard;
+    // RTSS then stays unavailable without affecting normal app startup.
+    if (process.arch !== 'x64') throw new Error('RTSS atomic binding requires x64');
+    const atomic = createRtssAtomicBinding(kernel32);
     return {
       open: (access, inheritHandle, name) => open(access, inheritHandle, name),
       map: (handle) => mapView(handle, RTSS_FILE_MAP_ALL_ACCESS, 0, 0, 0),
       getViewLength,
       requireViewLength: true,
-      // Electron forbids Koffi external ArrayBuffer views. Calling
-      // `koffi.view()` here therefore aborts the Electron process before the
-      // first window can be shown. Keep the same cooperative RTSS busy-lock
-      // contract, but use Koffi's offset accessors, which work with the
-      // mapped native pointer in Electron as well as in plain Node.
+      // Keep the RTSS busy-lock operation atomic across the RTSS and Arc Power
+      // processes without asking Electron for an external ArrayBuffer view.
       compareExchange32: (view, offset, exchange, comparand) => {
-        const current = Number(koffi.decode(view, offset, 'uint32')) >>> 0;
-        if (current === (comparand >>> 0)) {
-          koffi.encode(view, offset, 'uint32', exchange >>> 0);
-        }
-        return current;
+        return atomic.compareExchange(view, offset, exchange, comparand);
       },
       unmap: kernel32.func('UnmapViewOfFile', 'int32', ['void*']),
       close: kernel32.func('CloseHandle', 'int32', ['void*']),
