@@ -7,7 +7,7 @@ const MAX_DEVICE_KEYS = 256;
 
 const GLOBAL_KEYS = [
   'theme', 'overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale',
-  'overlayColor', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor',
+  'overlayRenderer', 'overlayColor', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor',
   'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme', 'overlayRecordingPill',
   'advancedOverlayEnabled', 'advancedOverlayHotkeyLetter', 'advancedOverlayPosition',
   'activeProfileId', 'activeProfileIds',

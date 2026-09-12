@@ -18,6 +18,7 @@ import { promisify } from 'node:util';
 import { prepareArcPowerCacheSync } from './cache-lifecycle.js';
 import { isElevated } from './elevation.js';
 import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.js';
+import { detectRtssInstallation, installRtss } from './rtss-install.js';
 import {
   PRODUCT_NAME,
   INSTALLED_EXECUTABLE_NAME,
@@ -330,7 +331,13 @@ async function installArcPower(win, options = {}) {
   await mkdir(plan.installDir, { recursive: true });
   sendProgress(win, 20, 'Copying the Arc Power application');
   await copyPackagedPayload(sourceRoot, plan.installDir);
-  sendProgress(win, 68, 'Creating your Start Menu shortcut');
+  let rtss = { ok: true, installed: false, skipped: true, reason: 'not-requested' };
+  if (options.installRtss === true) {
+    sendProgress(win, 64, 'Checking the RTSS FPS provider');
+    rtss = await installRtss();
+    sendProgress(win, rtss.ok ? 70 : 68, rtss.ok ? 'RTSS FPS provider is ready' : 'RTSS was not installed; continuing with DXGI fallback');
+  }
+  sendProgress(win, 76, 'Creating your Start Menu shortcut');
   await createShortcut({
     shortcutPath: plan.startMenuShortcutPath,
     targetPath: plan.executablePath,
@@ -338,7 +345,7 @@ async function installArcPower(win, options = {}) {
     iconPath: plan.iconPath,
   });
   if (plan.createDesktopShortcut) {
-    sendProgress(win, 78, 'Creating your desktop shortcut');
+    sendProgress(win, 84, 'Creating your desktop shortcut');
     await createShortcut({
       shortcutPath: plan.desktopShortcutPath,
       targetPath: plan.executablePath,
@@ -348,7 +355,7 @@ async function installArcPower(win, options = {}) {
   } else {
     await rm(plan.desktopShortcutPath, { force: true });
   }
-  sendProgress(win, 88, 'Registering Arc Power with Windows');
+  sendProgress(win, 92, 'Registering Arc Power with Windows');
   await writeUninstallRegistration(plan, app.getVersion(), { displayIcon: `${plan.iconPath},0` });
   await refreshWindowsShellIcons();
   // The same version gate used by the launched application also runs here.
@@ -359,7 +366,7 @@ async function installArcPower(win, options = {}) {
   if (plan.launchAfterInstall) {
     await launchInstalledApp(plan.executablePath, plan.installDir);
   }
-  return { ok: true, plan, launched: plan.launchAfterInstall };
+  return { ok: true, plan, launched: plan.launchAfterInstall, rtss };
 }
 
 export function waitForProcessExit(pid, {
@@ -625,6 +632,7 @@ function registerInstallerIpc(win, mode) {
         appData: paths.appData,
         profilePath: path.join(paths.appData, 'ArcPower'),
         payloadReady: mode === 'uninstall' || (() => { try { payloadRoot(); return true; } catch { return false; } })(),
+        rtss: mode === 'uninstall' ? { installed: false, source: 'not-applicable' } : await detectRtssInstallation(),
         lastUninstallStatus: mode === 'uninstall' ? await readLastUninstallStatus(app.getPath('temp')) : null,
       };
     },

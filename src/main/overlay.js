@@ -50,6 +50,24 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *  M16 200px bump is rolled back. */
 const OVERLAY_BASE_WIDTH = 460;
 const OVERLAY_BASE_HEIGHT = 170;
+// The hook-free renderer follows the compact 336px reference surface: a
+// grouped telemetry stack, three-line FPS summary, and two chart cards.
+// Keep this as the CSS-pixel contract at scale 1.0; the renderer's rem sizes
+// and the native window geometry both scale from the same value.
+const CAPFRAMEX_BASE_WIDTH = 336;
+const CAPFRAMEX_BASE_HEIGHT = 567;
+// The base height includes one GPU section with the default four visible GPU
+// rows. Keep the per-section estimate in CSS pixels and scale it together
+// with the rest of the window so enabling more telemetry cannot clip the HUD.
+const CAPFRAMEX_GPU_SECTION_OVERHEAD = 24;
+const CAPFRAMEX_GPU_ROW_HEIGHT = 17;
+const CAPFRAMEX_DEFAULT_GPU_ROWS = 4;
+const CAPFRAMEX_DEFAULT_CPU_ROWS = 3;
+const CAPFRAMEX_DEFAULT_SUMMARY_ROWS = 3;
+const CAPFRAMEX_GPU_ROW_STATS = [
+  'gpu-util', 'gpu-temp', 'gpu-voltage', 'gpu-power', 'gpu-fan', 'gpu-vram', 'gpu-vram-temp',
+];
+const CAPFRAMEX_SUMMARY_STATS = ['fps-avg', 'fps-1pct-low', 'fps-01pct-low', 'fps-99pct', 'fps'];
 /** The margin from the display edge (every corner). */
 const OVERLAY_MARGIN = 8;
 
@@ -100,6 +118,7 @@ const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
 // stays one click away via the Overlay Settings Theme row).
 const OVERLAY_THEMES = ['classic', 'arc'];
 const OVERLAY_THEME_DEFAULT = 'arc';
+const OVERLAY_RENDERERS = ['rtss', 'capframex'];
 
 /**
  * Normalize a raw settings object into the overlay's applied shape (the
@@ -117,6 +136,7 @@ function normalizeSettings(raw = {}) {
   const hotkeyLetter = typeof raw.hotkeyLetter === 'string' && /^[A-Za-z]$/.test(raw.hotkeyLetter)
     ? raw.hotkeyLetter.toUpperCase()
     : 'O';
+  const renderer = OVERLAY_RENDERERS.includes(raw.renderer) ? raw.renderer : 'rtss';
   // M6: the text color (a /^#[0-9a-fA-F]{6}$/ hex - the stock white
   // default) + the enabled stats (known ids, deduped; absent/garbage ->
   // the DEFAULT set - M17g: the user's 11 ON / the others OFF, the same
@@ -151,6 +171,11 @@ function normalizeSettings(raw = {}) {
     : null;
   return {
     enabled: raw.enabled === true,
+    renderer,
+    // ui-verify intentionally exercises the software window even though the
+    // persisted provider default remains RTSS. This transient flag never
+    // leaves the overlay payload and is not a user setting.
+    softwareRenderer: raw.softwareRenderer === true,
     position,
     scale,
     hotkeyLetter,
@@ -213,6 +238,7 @@ export function createOverlayWindow({ getOverlaySettings }) {
   // resize are applied together, never a race).
   let applied = normalizeSettings(getOverlaySettings());
   let measuredDeviceCount = 1;
+  let hasMeasuredDeviceCount = false;
 
   const build = () => {
     if (win && !win.isDestroyed()) return win;
@@ -290,18 +316,48 @@ export function createOverlayWindow({ getOverlaySettings }) {
     return win;
   };
   const sizeFor = (scale) => {
-    // M36: each monitored secondary GPU adds a GPU + VRAM pair. Keep the
-    // stock 170px geometry unchanged until the renderer reports the actual
-    // all-devices inventory; explicit per-GPU selections are still known
-    // synchronously from the persisted keys.
+    // M36: each monitored secondary GPU adds a GPU + VRAM pair. Persisted
+    // keys are only a bootstrap hint: stale keys can survive a driver reset
+    // and must never keep the window taller after the renderer reports the
+    // live inventory count.
     const configuredCount = Array.isArray(applied.deviceKeys)
       ? applied.deviceKeys.length
       : 1;
-    const deviceCount = Math.max(configuredCount, measuredDeviceCount);
+    const deviceCount = hasMeasuredDeviceCount
+      ? measuredDeviceCount
+      : Math.max(1, configuredCount);
     const secondaryCount = Math.max(0, deviceCount - 1);
+    const capframex = applied.renderer === 'capframex';
+    const capframexGpuRows = CAPFRAMEX_GPU_ROW_STATS.reduce(
+      (count, statId) => count + (applied.stats.includes(statId) ? 1 : 0),
+      0,
+    );
+    const capframexGpuSectionHeight = CAPFRAMEX_GPU_SECTION_OVERHEAD
+      + capframexGpuRows * CAPFRAMEX_GPU_ROW_HEIGHT;
+    const capframexDefaultGpuSectionHeight = CAPFRAMEX_GPU_SECTION_OVERHEAD
+      + CAPFRAMEX_DEFAULT_GPU_ROWS * CAPFRAMEX_GPU_ROW_HEIGHT;
+    const capframexCpuRows = (applied.stats.includes('cpu-clock') ? 1 : 0)
+      + (applied.stats.includes('cpu-util') ? 1 : 0)
+      + (applied.stats.includes('cpu-power') || applied.stats.includes('cpu-temp') ? 1 : 0);
+    const capframexCpuHeight = CAPFRAMEX_GPU_SECTION_OVERHEAD
+      + capframexCpuRows * CAPFRAMEX_GPU_ROW_HEIGHT;
+    const capframexDefaultCpuHeight = CAPFRAMEX_GPU_SECTION_OVERHEAD
+      + CAPFRAMEX_DEFAULT_CPU_ROWS * CAPFRAMEX_GPU_ROW_HEIGHT;
+    const capframexSummaryRows = CAPFRAMEX_SUMMARY_STATS.reduce(
+      (count, statId) => count + (applied.stats.includes(statId) ? 1 : 0),
+      0,
+    );
+    const capframexApiRows = applied.stats.includes('api') ? 1 : 0;
     return {
-      width: Math.round(OVERLAY_BASE_WIDTH * scale),
-      height: Math.round((OVERLAY_BASE_HEIGHT + secondaryCount * 28) * scale),
+      width: Math.round((capframex ? CAPFRAMEX_BASE_WIDTH : OVERLAY_BASE_WIDTH) * scale),
+      height: Math.round((capframex
+        ? CAPFRAMEX_BASE_HEIGHT
+          + Math.max(0, capframexGpuSectionHeight - capframexDefaultGpuSectionHeight)
+          + Math.max(0, capframexCpuHeight - capframexDefaultCpuHeight)
+          + Math.max(0, capframexSummaryRows - CAPFRAMEX_DEFAULT_SUMMARY_ROWS) * CAPFRAMEX_GPU_ROW_HEIGHT
+          + capframexApiRows * CAPFRAMEX_GPU_ROW_HEIGHT
+          + secondaryCount * capframexGpuSectionHeight
+        : OVERLAY_BASE_HEIGHT + secondaryCount * 28) * scale),
     };
   };
 
@@ -320,6 +376,8 @@ export function createOverlayWindow({ getOverlaySettings }) {
   /** The payload pushed to the overlay renderer (the scale source of truth). */
   const payload = () => ({
     enabled: applied.enabled,
+    renderer: applied.renderer,
+    softwareRenderer: applied.softwareRenderer,
     position: applied.position,
     scale: applied.scale,
     hotkeyLetter: applied.hotkeyLetter,
@@ -372,6 +430,7 @@ export function createOverlayWindow({ getOverlaySettings }) {
     resize(deviceCount) {
       if (!Number.isInteger(deviceCount) || deviceCount < 1) return;
       measuredDeviceCount = Math.min(32, deviceCount);
+      hasMeasuredDeviceCount = true;
       if (!win || win.isDestroyed()) return;
       const { bounds } = screen.getPrimaryDisplay();
       const size = sizeFor(applied.scale);

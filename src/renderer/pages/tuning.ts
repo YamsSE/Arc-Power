@@ -1721,21 +1721,14 @@ export const tuningPage: Page = {
     // and the Stock/Advanced OC-mode pill at the SAME HEIGHT (identical
     // label-over-toggle columns; the ui-verify pin asserts the pills'
     // getBoundingClientRect tops are equal).
-    // M4-I (E1): the row order is View FIRST, then OC Mode, then the GPU
-    // selector, then the compact Save-as-Profile button (the plan's swap).
-    // M4-F: the compact GPU selector rides the row (a label-over-select
-    // column, same height pattern as the pills). Hidden with <= 1 device
-    // (the honest single-device degradation). The switch re-renders this
-    // page (selectDevice) - the sliders then derive from the new device's
-    // caps/state.
-    // M4-I (E2): the Save-as-Profile action is a COMPACT btn-sm button in
-    // the row, right of the selector - its own label-over-button column so
-    // its top aligns with the pills' (the pin asserts the bounding tops
-    // match). The old full-width Save-as-Profile CARD is REMOVED.
-    const deviceSelect = buildDeviceSelect(ctx.store, (id) => void selectDevice(id));
+    // M4-I (E1): the row now keeps the View/OC controls and the compact
+    // Save-as-Profile action. The focused-GPU selector moved into the hero's
+    // ACTIVE GPU rail so the adapter context and its control stay together.
+    // M4-I (E2): the Save-as-Profile action remains a COMPACT btn-sm button
+    // in the row. The old full-width Save-as-Profile CARD is REMOVED.
     const modeRow = el('div', { class: 'oc-mode-row' }, [
       el('div', { class: 'oc-mode-col' }, [
-        el('span', { class: 'oc-mode-label', text: 'View' }),
+        el('span', { class: 'oc-mode-label', text: 'VIEW' }),
         el('div', { class: 'oc-mode-toggle tuning-view-toggle', role: 'group', 'aria-label': 'Tuning view' }, [
           el('button', {
             class: `oc-mode-btn tuning-view-btn${view === 'tuning' ? ' active' : ''}`,
@@ -1771,10 +1764,6 @@ export const tuningPage: Page = {
             ]),
           ])]
         : []),
-      ...(deviceSelect ? [el('div', { class: 'oc-mode-col device-select-col' }, [
-        el('span', { class: 'oc-mode-label', text: 'GPU' }),
-        deviceSelect,
-      ])] : []),
       // M4N (C): the profile column holds the TAG ROW - the save button
       // plus the active-profile tag (a flex row; the tag is absent while no
       // profile is selected, so the row holds just the button - the
@@ -2083,25 +2072,38 @@ export const tuningPage: Page = {
       }
     };
 
+    const tuningSubtitle = view === 'fan'
+      ? 'Edit the fan curve or switch the fan mode. Changes apply on demand.'
+      : (controls.length === 0
+        ? 'This GPU does not expose any overclocking controls (locked or telemetry-only).'
+        : 'Values are clamped to the range reported by this GPU. Changes apply on demand - nothing is applied until you press Apply.');
+    // Keep focused-GPU selection in the page hero, alongside the active
+    // adapter context. The shared selector still owns stable physical-GPU
+    // routing and intentionally disappears for a single-device session.
+    const deviceSelect = buildDeviceSelect(ctx.store, (id) => void selectDevice(id));
+    const tuningHero = el('header', { class: 'arc-page-hero tuning-page-hero' }, [
+      el('div', { class: 'arc-page-hero-copy' }, [
+        el('span', { class: 'arc-section-kicker', text: 'GPU CONTROL' }),
+        el('h1', { class: 'page-title', text: 'Tuning' }),
+        el('p', { class: 'page-subtitle', text: tuningSubtitle }),
+      ]),
+      el('div', { class: 'arc-page-hero-side tuning-gpu-selector' }, [
+        el('span', { class: 'arc-hero-label', text: 'ACTIVE GPU' }),
+        ...(deviceSelect ? [deviceSelect] : [el('span', { class: 'arc-hero-value', text: 'Current adapter' })]),
+      ]),
+    ]);
+
     // M4-D2 (§8): the page shell (title + subtitle + the pill row) renders
     // once; the ACTIVE VIEW's content lives in the view container below
     // (renderView builds it - the OC controls or the fan curve editor).
     viewContainer = el('div', { class: 'tuning-view' });
     container.append(
-      el('h1', { class: 'page-title', text: 'Tuning' }),
-      el('p', {
-        class: 'page-subtitle',
-        text: view === 'fan'
-          ? 'Edit the fan curve or switch the fan mode. Changes apply on demand.'
-          : (controls.length === 0
-            ? 'This GPU does not expose any overclocking controls (locked or telemetry-only).'
-            : 'Values are clamped to the range reported by this GPU. Changes apply on demand - nothing is applied until you press Apply.'),
-      }),
+      tuningHero,
       // M4-A (correction): the waiver STATUS lives ONLY in the dashboard
       // GPU Status card - this page keeps no waiver UI beyond the apply-time
       // dialog gate (ensureWaiver above). The pill row renders for every
       // device: the Fan Curve view must stay reachable on no-OC devices.
-      modeRow,
+      el('div', { class: 'arc-page-toolbar' }, [modeRow]),
       viewContainer,
     );
     renderView();

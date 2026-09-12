@@ -55,6 +55,15 @@ export const OVERLAY_THEMES: readonly string[] = ['classic', 'arc'];
  *  persisted-truth owner is profile-store.js, keep both in lockstep). */
 export const OVERLAY_THEME_DEFAULT = 'arc';
 
+/** Optional overlay presentation providers. RTSS remains the default; the
+ * CapFrameX-style provider is Arc Power's independent hook-free renderer. */
+export const OVERLAY_RENDERERS = ['rtss', 'capframex'] as const;
+export type OverlayRenderer = typeof OVERLAY_RENDERERS[number];
+
+export function isValidOverlayRenderer(v: unknown): v is OverlayRenderer {
+  return typeof v === 'string' && (OVERLAY_RENDERERS as readonly string[]).includes(v);
+}
+
 /** M24: whether v is one of the two overlay theme ids. */
 export function isValidOverlayTheme(v: unknown): v is 'classic' | 'arc' {
   return typeof v === 'string' && (OVERLAY_THEMES as readonly string[]).includes(v);
@@ -77,9 +86,11 @@ export function isValidAdvancedOverlayPosition(v: unknown): v is 'left' | 'right
   return typeof v === 'string' && (ADVANCED_OVERLAY_POSITIONS as readonly string[]).includes(v);
 }
 
-/** The scale slider's range (mirrored in ipc-core's clamp). */
+/** The RTSS scale slider's range (mirrored in ipc-core's clamp). The
+ * persisted app-scale uses quarter-size steps from 0.5x through 2x. */
 export const OVERLAY_SCALE_MIN = 0.5;
 export const OVERLAY_SCALE_MAX = 2.0;
+export const OVERLAY_SCALE_STEP = 0.25;
 
 /** M17e: the overlay polling-rate slider's range + default (the
  *  telemetry-service default; mirrored in profile-store.js + ipc-core.js -
@@ -95,16 +106,15 @@ export const OVERLAY_POLL_MS_DEFAULT = 400;
  * like the positions). A stat off -> its field/line vanishes; the
  * frametime id is NOT a line - it drives the canvas strip visibility.
  * M7a: 'fps-1pct-low' + 'fps-99pct' ride the FPS row (right after the M12
- * AVG / 0.1% Low pair) - the 1% Low / 99% FPS percentile stats.
+ * AVG / 0.1% pair) - the 1% / 99% percentile stats.
  * M10a: 'api' (the foreground-window Graphics-API badge) rides AFTER
- * 'fps-99pct' - the tickbox renders after '99% FPS' while the ROW renders
+ * 'fps-99pct' - the tickbox renders after '99%' while the ROW renders
  * the badge in its OWN standalone line (M13: the api field LEFT the FPS
  * row - the apiLine row sits between the VRAM row and the frametime
  * strip; the row order and the tickbox order are independent - the
- * apiLine content is explicit in overlayLines). M19b: the apiLine row
- * carries the 'API' row label like the other five rows - the SIXTH
- * labeled row of the divider column).
- * M12: 'fps-avg' + 'fps-01pct-low' (the window-AVG / 0.1% Low row stats)
+ * apiLine content is explicit in overlayLines). The API value is not
+ * prefixed with a row header.
+ * M12: 'fps-avg' + 'fps-01pct-low' (the window-AVG / 0.1% row stats)
  * ride right after 'fps' (the row field order); 'memory-util' (the Memory
  * row) joins after the CPU stats; 'gpu-vram' stays where it was - it now
  * feeds the standalone VRAM row.
@@ -144,9 +154,9 @@ export const OVERLAY_STATS_DEFAULT: readonly string[] = [
 export const OVERLAY_STAT_LABELS: Record<string, string> = {
   fps: 'FPS',
   'fps-avg': 'AVG FPS',
-  'fps-01pct-low': '0.1% Low',
-  'fps-1pct-low': '1% Low',
-  'fps-99pct': '99% FPS',
+  'fps-01pct-low': '0.1%',
+  'fps-1pct-low': '1%',
+  'fps-99pct': '99%',
   api: 'Graphics API',
   'cpu-util': 'CPU Util',
   'cpu-clock': 'CPU Clock',
@@ -266,33 +276,46 @@ export function isValidOverlayStat(v: unknown): v is string {
 }
 
 /** M10a: the canonical Graphics-API field labels (the ONLY strings the api
- *  field may ever show - 'DX12' / 'Vulkan' / 'DX11' / 'DX10' / 'DX9' /
- *  'OpenGL'; the ids are the detector contract of src/main/foreground-api.js;
+ *  field may ever show - 'DX12' / 'VULKAN' / 'DX11' / 'DX10' / 'DX9' /
+ *  'OGL'; the ids are the detector contract of src/main/foreground-api.js;
  *  M10b added 'dx9' - the League-of-Legends (DirectX 9) detection; M12 added
  *  'dx10' - the DirectX-10 detection completeness).
- *  M17d (Run C, item 1e): the PresentMon-service CLASS corroboration ids -
- *  'dxgi' / 'd3d9' / 'other' (the fps-pm lane's presentRuntime field - the
- *  PM_GRAPHICS_RUNTIME class: DXGI/D3D9/Other). The badge logic is
- *  UNCHANGED: the class rides the SAME sample field the overlay already
- *  renders (apiLabelOf - the fps-poll composes it only when the module scan
- *  yields null); the FINE grain (dx11-vs-dx12, Vulkan-vs-OGL) stays
- *  module-derived (PresentMon's runtime class cannot distinguish them). */
+ *  The native RTSS provider maps legacy DirectDraw/DX8 to the stable 'other'
+ *  class; the coarse 'dxgi' / 'd3d9' / 'other' classes remain supported for
+ *  the fallback provider. The foreground module detector remains authoritative
+ *  for fine-grained labels when the provider does not expose an API id. */
 export const OVERLAY_API_LABELS: Record<string, string> = {
   dx12: 'DX12',
-  vulkan: 'Vulkan',
+  vulkan: 'VULKAN',
   dx11: 'DX11',
   dx10: 'DX10',
   dx9: 'DX9',
-  opengl: 'OpenGL',
+  opengl: 'OGL',
   dxgi: 'DXGI',
-  d3d9: 'D3D9',
-  other: 'Other',
+  d3d9: 'DX9',
+  other: 'OTHER',
 };
 
 /** M10a: the display label for a detected api id - null for null/unknown
- *  (the API row stays EMPTY - never '-', never a raw id). */
+ *  (the API row stays EMPTY - never '-', never a raw id). Input ids are
+ *  accepted case-insensitively because RTSS and legacy detectors may expose
+ *  either the lowercase internal id or an already-uppercase API token. */
 export function apiLabelOf(v: unknown): string | null {
-  return typeof v === 'string' ? (OVERLAY_API_LABELS[v] ?? null) : null;
+  if (typeof v !== 'string') return null;
+  const key = v.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const aliases: Record<string, string> = {
+    vk: 'vulkan',
+    ogl: 'opengl',
+    directx9: 'dx9',
+    directx10: 'dx10',
+    directx11: 'dx11',
+    directx12: 'dx12',
+    d3d9: 'dx9',
+    d3d12: 'dx12',
+    d3d11: 'dx11',
+    d3d10: 'dx10',
+  };
+  return OVERLAY_API_LABELS[aliases[key] ?? key] ?? null;
 }
 
 /**
@@ -326,17 +349,18 @@ export function isValidOverlayColor(v: unknown): v is string {
   return typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v);
 }
 
-/** Clamp a scale value to 0.5..2.0 (garbage degrades to 1.0 - the default). */
+/** Clamp and snap a scale value to the RTSS quarter-size grid. */
 export function clampOverlayScale(v: unknown): number {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : 1;
-  return Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+  const clamped = Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+  return Math.round(clamped / OVERLAY_SCALE_STEP) * OVERLAY_SCALE_STEP;
 }
 
 /** The telemetry fields the overlay lines read (a subset of TelemetrySample). */
 export interface OverlaySample {
   utilPct?: number | null;
-  /** M4-I: the OS GPU-utilization counter - the fallback when the device
-   *  utilPct is absent (the no-Intel shape). */
+  /** M4-I: the OS GPU-utilization counter - the fallback when the native
+   *  device-wide utilPct is absent (the no-Intel/vendor shape). */
   gpuUtilPct?: number | null;
   gpuClockMhz?: number | null;
   memClockMhz?: number | null;
@@ -381,15 +405,15 @@ export interface OverlayLines {
   vramLine: string;
   /** M13: the standalone Graphics-API row (the api field LEFT the fpsLine
    *  and now feeds this row between the VRAM row and the frametime strip).
-   *  'API   DX12' or '' - the M10a vanish rule: EMPTY when the api is
+   *  'DX12' or '' - the M10a vanish rule: EMPTY when the api is
    *  null/unknown or the api stat is off, never a '-'. */
   apiLine: string;
   /** M18/M19b: the SIX labeled-row labels (the header-divider column
    *  source). The cpu/gpu entries carry the M17b chip-name labels when
    *  enabled, the stock prefixes otherwise (the same cpuPrefix/gpuPrefix
    *  the lines render); fps/memory/vram are the fixed 'FPS' / 'RAM' /
-   *  'VRAM'; the M19b api entry is the fixed 'API' - the API row joined
-   *  the divider column as the SIXTH labeled row. The renderer measures
+   *  'VRAM'; the api entry remains the fixed 'API' label for the divider
+   *  column, while apiLine contains only its value. The renderer measures
    *  the max label length from these and sets the --overlay-label-w CSS
    *  var (in ch) per render. */
   labels: { fps: string; cpu: string; memory: string; gpu: string; vram: string; api: string };
@@ -416,10 +440,10 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
  * (M7a/M12 - the low1Pct / low01Pct / avgFps / p99 numbers from the same
  * fps poll, null until the sampler's frame floors) + the api id + the RAM
  * utilization. Every enabled field degrades honestly to '-':
- *   fpsLine: 'FPS   60  AVG 58  1% Low 52  0.1% Low 40  99% FPS 58' - the
+ *   fpsLine: 'FPS   60  AVG 58  1% 52  0.1% 40  99% 58' - the
  *     FPS field rounds like the Monitoring tile and renders 'FPS   -' for
  *     null, non-finite or <= 0 fps (0 is the DXGI no-signal shape - not a
- *     real frame rate); the AVG / 1% Low / 0.1% Low / 99% FPS fields
+ *     real frame rate); the AVG / 1% / 0.1% / 99% fields
  *     render '-' when their numbers are null (the honest degrade - never
  *     a stale value); each field vanishes with its stat; '' when all five
  *     are off (M13: the api field LEFT this row - the six FPS-row stats
@@ -443,15 +467,13 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
  *     LEADS (gpu-mem-clock), then the VRAM usage (gpu-vram via gbValue),
  *     then the VRAM temperature (gpu-vram-temp); '' when ALL three stats
  *     are off);
- *   apiLine: 'API   DX12' (M13: the standalone Graphics-API row; the api
+ *   apiLine: 'DX12' (M13: the standalone Graphics-API row; the api
  *     field LEFT the fpsLine and now renders its own row between the VRAM
  *     row and the frametime strip. EMPTY when the api is null/unknown or
  *     the api stat is off - "if it's none, it won't display anything",
  *     never a '-'; only the canonical labels ever render (apiLabelOf)).
- *     M19b: the row rides the SAME labeledRow rule - the 'API' label
- *     padded to the max label length + the two-space separator ('API   '
- *     at the stock 4ch column, 'API        ' under the M17b 9ch chip
- *     column), so its value aligns with the other five rows.
+ *     The API value has no row-label padding; labels.api remains available
+ *     for the divider column.
  * M7a (fix 3): the 'CPU '/'GPU ' row label is NOT baked into any field -
  * it is prefixed ONCE to the first field when the row is non-empty
  * ('CPU   61°C' for a temp-only row - never a bare '61°C') and padded to
@@ -475,6 +497,10 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
 export interface OverlayLinesOpts {
   /** M17b: the chip-name row labels (null/absent -> the stock prefixes). */
   chipLabels?: { cpu?: string | null; gpu?: string | null };
+  /** M154: the renderer-wide label column width. Primary and secondary GPU
+   * rows pass the same width so a long chip label cannot move the divider
+   * without moving every value column with it. */
+  labelWidth?: number;
 }
 
 export function overlayLines(sample: OverlaySample | null | undefined, fps: number | null | undefined, stats?: unknown, low1Pct?: number | null, p99?: number | null, api?: string | null, avgFps?: number | null, low01Pct?: number | null, memoryUsedBytes?: number | null, opts?: OverlayLinesOpts): OverlayLines {
@@ -494,11 +520,11 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const cpuFreqMhz = numOrNull(s.cpuFreqMhz);
   const cpuTemp = numOrNull(s.cpuTempC);
   const cpuPower = numOrNull(s.cpuPowerW);
-  // Prefer the adapter-specific GPU counter. The legacy utilPct field can be
-  // an aggregate/engine value from a different source (and was especially
-  // misleading for a selected secondary GPU); it remains the fallback for
-  // older samples that do not carry gpuUtilPct.
-  const gpuUtil = numOrNull(s.gpuUtilPct) ?? numOrNull(s.utilPct);
+  // Prefer the native device-wide activity counter. The WMI GPUEngine
+  // aggregate is useful as a fallback for vendor lanes and driver builds
+  // that do not provide utilPct, but can under-report a busy Intel adapter
+  // when it only exposes a subset of engine activity.
+  const gpuUtil = numOrNull(s.utilPct) ?? numOrNull(s.gpuUtilPct);
   const gpuClock = numOrNull(s.gpuClockMhz);
   const memClock = numOrNull(s.memClockMhz);
   const vram = numOrNull(s.gpuMemUsedBytes);
@@ -517,7 +543,7 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const memoryUsed = numOrNull(memoryUsedBytes ?? s.memoryUsedBytes);
   // M7a/M12: the FPS row builds from its FIVE enabled stats in fixed
   // order - the first field is the bare frame rate, then ' AVG <round>' +
-  // ' 1% Low <round>' + ' 0.1% Low <round>' + ' 99% FPS <round>' (each
+  // ' 1% <round>' + ' 0.1% <round>' + ' 99% <round>' (each
   // field carries its leading two-space separator, exactly like the plan
   // pins; M13: the api badge LEFT this row and renders its own standalone
   // apiLine below). The numeric fields round to whole numbers and render
@@ -532,9 +558,9 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
     fpsFields.push(fpsNum !== null && fpsNum > 0 ? `${Math.round(fpsNum)}` : '-');
   }
   if (enabled.has('fps-avg')) fpsFields.push(`AVG ${avg === null ? '-' : Math.round(avg)}`);
-  if (enabled.has('fps-1pct-low')) fpsFields.push(`1% Low ${low1 === null ? '-' : Math.round(low1)}`);
-  if (enabled.has('fps-01pct-low')) fpsFields.push(`0.1% Low ${low01 === null ? '-' : Math.round(low01)}`);
-  if (enabled.has('fps-99pct')) fpsFields.push(`99% FPS ${p99num === null ? '-' : Math.round(p99num)}`);
+  if (enabled.has('fps-1pct-low')) fpsFields.push(`1% ${low1 === null ? '-' : Math.round(low1)}`);
+  if (enabled.has('fps-01pct-low')) fpsFields.push(`0.1% ${low01 === null ? '-' : Math.round(low01)}`);
+  if (enabled.has('fps-99pct')) fpsFields.push(`99% ${p99num === null ? '-' : Math.round(p99num)}`);
   // M6: each line builds from its ENABLED stats only - a stat off -> its
   // field vanishes; ALL of a line's stats off -> the line writes '' (the
   // renderer KEEPS the fixed div and only empties it - never removed).
@@ -582,28 +608,6 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   // entry joins - the API row is the SIXTH labeled row of the divider
   // column (the M18 headerless decision REVERSED).
   const labels = { fps: 'FPS', cpu: cpuPrefix, memory: 'RAM', gpu: gpuPrefix, vram: gpuMemoryLabel(s.gpuMemorySource), api: 'API' };
-  // M19/M19b (the divider alignment - ONE rule): every NON-EMPTY row's
-  // label is padded to the max label length with a TWO-space separator
-  // after it (`label.padEnd(maxLabelLen) + '  ' + fields`), so EVERY
-  // value starts at `maxLabelLen + 2 ch` - 2ch RIGHT of the divider's
-  // left edge (the divider sits at maxLabelLen + 0.75ch, so the value-to-
-  // divider gap is ~1.25ch; the rows are white-space:pre + monospace, so
-  // space-padding is byte-exact). The empty-row degrade ('' when all
-  // fields off) stays '' - no padding on an empty line. The `labels`
-  // field itself stays UNPADDED (the renderer's --overlay-label-w column
-  // var + the divider position derive from the raw lengths).
-  const maxLabelLen = Math.max(labels.fps.length, labels.cpu.length, labels.memory.length, labels.gpu.length, labels.vram.length, labels.api.length);
-  const labeledRow = (label: string, fields: string[]): string =>
-    fields.length === 0 ? '' : `${label.padEnd(maxLabelLen)}  ${fields.join('  ')}`;
-  const fpsLine = labeledRow(labels.fps, fpsFields);
-  // M17b (2c): the chip-name label replaces the stock 'CPU ' prefix ONLY -
-  // the field order is untouched.
-  const cpuLine = labeledRow(labels.cpu, cpuFields);
-  const memoryLine = labeledRow(labels.memory, memoryFields);
-  // M17b (2c): the chip-name label replaces the stock 'GPU ' prefix ONLY -
-  // the field order is untouched.
-  const gpuLine = labeledRow(labels.gpu, gpuFields);
-  const vramLine = labeledRow(labels.vram, vramFields);
   // M13: the standalone Graphics-API row - the api field LEFT the fpsLine.
   // M19b: the row builds through the SAME labeledRow rule as the other
   // five - the 'API' label padded to the max label length + the two-space
@@ -616,7 +620,45 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
     const badge = apiLabelOf(api);
     if (badge !== null) apiFields.push(badge);
   }
-  const apiLine = labeledRow(labels.api, apiFields);
+  // M19/M19b (the divider alignment - ONE rule): every NON-EMPTY row's
+  // label is padded to the max label length with a TWO-space separator
+  // after it (`label.padEnd(maxLabelLen) + '  ' + fields`), so EVERY
+  // value starts at `maxLabelLen + 2 ch` - 2ch RIGHT of the divider's
+  // left edge (the divider sits at maxLabelLen + 0.75ch, so the value-to-
+  // divider gap is ~1.25ch; the rows are white-space:pre + monospace, so
+  // space-padding is byte-exact). The empty-row degrade ('' when all
+  // fields off) stays '' - no padding on an empty line. The `labels`
+  // field itself stays UNPADDED (the renderer's --overlay-label-w column
+  // var + the divider position derive from the raw lengths).
+  const requestedLabelWidth = typeof opts?.labelWidth === 'number' && Number.isFinite(opts.labelWidth)
+    ? Math.max(0, Math.ceil(opts.labelWidth))
+    : 0;
+  // Only rows with at least one enabled field occupy a value column. A
+  // disabled CPU/GPU row must not widen the other rows just because its
+  // optional chip label is long; the renderer passes this same width to the
+  // primary and every secondary formatter before positioning the divider.
+  const maxLabelLen = Math.max(
+    4,
+    requestedLabelWidth,
+    fpsFields.length > 0 ? labels.fps.length : 0,
+    cpuFields.length > 0 ? labels.cpu.length : 0,
+    memoryFields.length > 0 ? labels.memory.length : 0,
+    gpuFields.length > 0 ? labels.gpu.length : 0,
+    vramFields.length > 0 ? labels.vram.length : 0,
+    apiFields.length > 0 ? labels.api.length : 0,
+  );
+  const labeledRow = (label: string, fields: string[]): string =>
+    fields.length === 0 ? '' : `${label.padEnd(maxLabelLen)}  ${fields.join('  ')}`;
+  const fpsLine = labeledRow(labels.fps, fpsFields);
+  // M17b (2c): the chip-name label replaces the stock 'CPU ' prefix ONLY -
+  // the field order is untouched.
+  const cpuLine = labeledRow(labels.cpu, cpuFields);
+  const memoryLine = labeledRow(labels.memory, memoryFields);
+  // M17b (2c): the chip-name label replaces the stock 'GPU ' prefix ONLY -
+  // the field order is untouched.
+  const gpuLine = labeledRow(labels.gpu, gpuFields);
+  const vramLine = labeledRow(labels.vram, vramFields);
+  const apiLine = apiFields.join('  ');
   return { fpsLine, cpuLine, memoryLine, gpuLine, vramLine, apiLine, labels, frametimeEnabled: enabled.has('frametime') };
 }
 

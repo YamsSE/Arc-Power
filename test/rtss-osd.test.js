@@ -1,0 +1,453 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { buildRtssTelemetryText, createRtssOsdPublisher, encodeRtssGraphObject, shortGpuLabel } from '../src/main/rtss-osd.js';
+
+const makeMap = (version = 0x2000E, owner = '', busy = 0, entrySize = version >= 0x2000C ? 266752 : version >= 0x20007 ? 4608 : 512, count = 2) => {
+  const offset = 40;
+  const map = Buffer.alloc(offset + entrySize * count);
+  map.writeUInt32LE(0x52545353, 0);
+  map.writeUInt32LE(version, 4);
+  map.writeUInt32LE(0, 8); map.writeUInt32LE(0, 12); map.writeUInt32LE(0, 16);
+  map.writeUInt32LE(entrySize, 20); map.writeUInt32LE(offset, 24); map.writeUInt32LE(2, 28);
+  map.writeUInt32LE(7, 32); map.writeUInt32LE(count, 28); map.writeUInt32LE(busy, 36);
+  if (owner) map.write(owner, offset + entrySize + 256, 'ascii');
+  return { map, entrySize, offset };
+};
+
+test('formatter emits RTSS-native tags and keeps telemetry values bounded', () => {
+  const args = {
+    telemetry: {
+      t: 1,
+      deviceKey: 'pci-a',
+      deviceName: 'Intel(R) Arc(TM) B580 Graphics',
+      cpuUtilPct: 42,
+      cpuFreqMhz: 4300,
+      cpuTempC: 61,
+      cpuPowerW: 125.5,
+      memoryUsedBytes: 12_400_000_000,
+      gpuClockMhz: 2500,
+      memClockMhz: 2187,
+      tempC: 65,
+      vramTempC: 73,
+      gpuVoltageV: 0.652,
+      powerW: 38.8,
+      utilPct: 88,
+      fanRpm: [1030],
+      gpuMemUsedBytes: 4_096_000_000,
+      api: 'dx12',
+    },
+    fps: { fps: 144.4, avgFps: 140, low1Pct: 99, low01Pct: 88, p99: 101, frameTimeMs: 6.94 },
+    settings: {
+      scale: 2,
+      position: 'bottom-right',
+      color: '#12abef',
+      overlayChipNames: true,
+      stats: [
+        'fps', 'fps-avg', 'fps-1pct-low', 'fps-01pct-low', 'fps-99pct',
+        'cpu-util', 'cpu-clock', 'cpu-temp', 'cpu-power', 'memory-util',
+        'gpu-util', 'gpu-clock', 'gpu-voltage', 'gpu-temp', 'gpu-power', 'gpu-fan',
+        'gpu-mem-clock', 'gpu-vram', 'gpu-vram-temp', 'api', 'frametime',
+      ],
+    },
+  };
+  const first = buildRtssTelemetryText(args);
+  assert.equal(first, buildRtssTelemetryText(args));
+  assert.match(first, /<P8><FNT=Tahoma,16,700,1><C0=12ABEF><C0>/);
+  assert.match(first, /B580/);
+  assert.doesNotMatch(first, /Intel\(R\) Arc\(TM\)|Arc B580|Graphics/);
+  assert.match(first, /FPS 144 AVG 140 1% 99 0\.1% 88 99% 101/);
+  assert.doesNotMatch(first, /1% Low|0\.1% Low|99% FPS/);
+  assert.match(first, /CPU 42% 4\.3 GHz 61C 125\.5 W/);
+  assert.match(first, /VRAM1 2187 MHz 4GB 73C/);
+  assert.match(first, /DX12/);
+  assert.doesNotMatch(first, /API DX12/);
+  assert.match(first, /Frametime 6\.94 ms/);
+  assert.doesNotMatch(first, /\bFT\b/);
+  assert.doesNotMatch(first, /[\x00\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/);
+  assert.ok(Buffer.byteLength(first, 'ascii') <= 4095);
+});
+
+test('formatter maps every quarter-size setting to a distinct RTSS font size', () => {
+  const tags = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((scale) =>
+    buildRtssTelemetryText({ telemetry: { api: 'dx12' }, settings: { scale, stats: ['api'] } })
+      .match(/<FNT=[^>]+>/)?.[0]);
+  assert.deepEqual(tags, [
+    '<FNT=Tahoma,4,700,1>',
+    '<FNT=Tahoma,6,700,1>',
+    '<FNT=Tahoma,8,700,1>',
+    '<FNT=Tahoma,10,700,1>',
+    '<FNT=Tahoma,12,700,1>',
+    '<FNT=Tahoma,14,700,1>',
+    '<FNT=Tahoma,16,700,1>',
+  ]);
+});
+
+test('shortGpuLabel keeps concise vendor-neutral model labels', () => {
+  assert.equal(shortGpuLabel('Intel Arc A770'), 'A770');
+  assert.equal(shortGpuLabel('Intel Arc B580'), 'B580');
+  assert.equal(shortGpuLabel('Intel(R) Arc(TM) A770'), 'A770');
+  assert.equal(shortGpuLabel('NVIDIA GeForce RTX 4070'), 'RTX 4070');
+  assert.equal(shortGpuLabel('NVIDIA RTX A2000 Laptop GPU'), 'RTX A2000');
+  assert.equal(shortGpuLabel('Intel UHD Graphics 770'), 'UHD 770');
+  assert.equal(shortGpuLabel('AMD Radeon RX 7600'), 'RX7600');
+  assert.equal(shortGpuLabel('Custom Accelerator'), 'Custom Accelerator');
+  assert.equal(shortGpuLabel('\u0000\u0001', 'GPU 2'), 'GPU 2');
+});
+
+test('formatter prefers native device-wide GPU activity over the WMI fallback', () => {
+  const text = buildRtssTelemetryText({
+    telemetry: {
+      deviceName: 'Intel(R) Arc(TM) B580 Graphics',
+      utilPct: 78,
+      gpuUtilPct: 21,
+    },
+    settings: { overlayChipNames: true, stats: ['gpu-util'] },
+  });
+  assert.match(text, /B580 78%/);
+  assert.doesNotMatch(text, /B580 21%/);
+});
+
+test('formatter keeps physical GPU ordinals when a non-display adapter is selected alone', () => {
+  const text = buildRtssTelemetryText({
+    telemetry: { deviceKey: 'pci:secondary', gpuClockMhz: 2000, tempC: 60 },
+    settings: { stats: ['gpu-clock', 'gpu-temp'] },
+    deviceOrdinals: new Map([['pci:display', 1], ['pci:secondary', 2]]),
+  });
+  assert.match(text, /GPU2 2000 MHz 60C/);
+  assert.doesNotMatch(text, /GPU1 2000 MHz/);
+});
+
+test('formatter disambiguates duplicate compact GPU model labels', () => {
+  const text = buildRtssTelemetryText({
+    telemetry: {
+      gpus: [
+        { deviceKey: 'pci:display', deviceName: 'Intel(R) Arc(TM) A770 Graphics', utilPct: 80 },
+        { deviceKey: 'pci:secondary', deviceName: 'Intel(R) Arc(TM) A770 Graphics', utilPct: 60 },
+      ],
+    },
+    settings: { overlayChipNames: true, stats: ['gpu-util'] },
+    deviceOrdinals: new Map([['pci:display', 1], ['pci:secondary', 2]]),
+  });
+  assert.match(text, /A770 80%/);
+  assert.match(text, /A770 Secondary 60%/);
+});
+
+test('formatter canonicalizes RTSS API values and omits the API row label', () => {
+  for (const [input, expected] of [
+    ['vulkan', 'VULKAN'], ['opengl', 'OGL'], ['dx10', 'DX10'], ['dx11', 'DX11'],
+    ['dx12', 'DX12'], ['dx9', 'DX9'], ['dxgi', 'DXGI'], ['d3d9', 'DX9'], ['other', 'OTHER'],
+  ]) {
+    const text = buildRtssTelemetryText({ telemetry: { api: input }, settings: { stats: ['api'] } });
+    assert.equal(text, `<P0><FNT=Tahoma,8,700,1><C0=FFFFFF><C0>${expected}`);
+    assert.doesNotMatch(text, /API/);
+  }
+});
+
+test('formatter respects legacy text mode without leaking format tags', () => {
+  const text = buildRtssTelemetryText({
+    telemetry: { cpuUtilPct: 42, gpuClockMhz: 2000, tempC: 60 },
+    settings: { stats: ['cpu-util', 'gpu-clock', 'gpu-temp'] },
+    formatTagsSupported: false,
+  });
+  assert.equal(text, 'CPU 42%\nGPU1 2000 MHz 60C');
+  assert.doesNotMatch(text, /<[^>]+>/);
+});
+
+test('graph encoder bounds samples, reduces the graph height, and writes RTSS header', () => {
+  const graph = encodeRtssGraphObject({ values: Array.from({ length: 700 }, (_, index) => index) });
+  assert.equal(graph.readUInt32LE(0), 0x47523030);
+  assert.equal(graph.readUInt32LE(32), 512);
+  assert.equal(graph.readInt32LE(12), -5);
+  assert.equal(graph.readUInt32LE(20), 0);
+  assert.equal(graph.readUInt32LE(4), graph.length);
+});
+
+test('visibility cycles release and reacquire the RTSS slot', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true });
+  assert.equal(publisher.publish({ text: 'first' }), true);
+  publisher.setVisible(false);
+  assert.equal(publisher.getState().available, false);
+  publisher.setVisible(true);
+  assert.equal(publisher.publish({ text: 'second' }), true);
+});
+
+test('dead RTSS mappings are rejected and can be reopened after RTSS restarts', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true });
+  assert.equal(publisher.publish({ text: 'live' }), true);
+  fixture.map.writeUInt32LE(0x0000DEAD, 0);
+  assert.equal(publisher.publish({ text: 'dead' }), false);
+  assert.equal(publisher.getState().available, false);
+  fixture.map.writeUInt32LE(0x52545353, 0);
+  assert.equal(publisher.publish({ text: 'restarted' }), true);
+});
+
+test('busy RTSS slots retry a deferred hide and do not leave stale text behind', async () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true });
+  assert.equal(publisher.publish({ text: 'busy-hide' }), true);
+  fixture.map.writeUInt32LE(1, 36);
+  publisher.setVisible(false);
+  assert.equal(publisher.getState().available, true);
+  fixture.map.writeUInt32LE(0, 36);
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  assert.equal(publisher.getState().available, false);
+  assert.equal(fixture.map.toString('ascii', fixture.offset + fixture.entrySize + 256, fixture.offset + fixture.entrySize + 264).replaceAll('\0', ''), '');
+});
+
+test('claims reusable slot, publishes extended text, and clears only its owner', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map, unmap: () => {}, close: () => {} });
+  assert.equal(publisher.available(), true);
+  assert.equal(publisher.getState().slot, 1);
+  assert.equal(publisher.publish({ text: 'hello <P0>' }), true);
+  assert.equal(fixture.map.toString('ascii', fixture.offset + fixture.entrySize + 512, fixture.offset + fixture.entrySize + 522), 'hello <P0>');
+  assert.equal(publisher.clear(), true);
+  assert.equal(fixture.map.readUInt32LE(32), 9);
+  assert.equal(fixture.map.toString('ascii', fixture.offset + fixture.entrySize + 256, fixture.offset + fixture.entrySize + 264).replaceAll('\0', ''), '');
+});
+
+test('merges separately sampled GPUs and applies live selection/stat changes', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true, overlayChipNames: true, monitoredDeviceKeys: ['gpu-a', 'gpu-b'], stats: ['gpu-util', 'gpu-vram'] });
+  publisher.setKnownDeviceKeys(['gpu-a', 'gpu-b'], ['gpu-a', 'gpu-b']);
+  assert.equal(publisher.publish({ telemetry: { t: 1, deviceKey: 'gpu-a', deviceName: 'B580', utilPct: 88, gpuMemUsedBytes: 4_000_000_000 } }), true);
+  assert.equal(publisher.publish({ telemetry: { t: 2, deviceKey: 'gpu-b', deviceName: 'A770', utilPct: 44, gpuMemUsedBytes: 6_000_000_000 } }), true);
+  const base = fixture.offset + fixture.entrySize + 512;
+  const merged = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
+  assert.match(merged, /B580 88%/);
+  assert.match(merged, /A770 44%/);
+  assert.match(merged, /VRAM1 4GB/);
+  publisher.updateSettings({ monitoredDeviceKeys: ['gpu-a'], stats: ['gpu-temp'] });
+  assert.equal(publisher.publish({ telemetry: { t: 3, deviceKey: 'gpu-a', tempC: 65 } }), true);
+  const updated = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
+  assert.match(updated, /GPU1 -%? ?65C|GPU1 65C/);
+  assert.doesNotMatch(updated, /VRAM/);
+});
+
+test('keeps alias-only multi-GPU samples attached to their physical rows', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true, overlayChipNames: true, stats: ['cpu-util', 'cpu-power', 'gpu-util', 'gpu-power'] });
+  publisher.setKnownDeviceKeys(['pci:display', 'pci:secondary'], ['pci:display', 'pci:secondary'], [
+    ['pci:display'],
+    ['pci:secondary'],
+  ]);
+  assert.equal(publisher.publish({ telemetry: {
+    t: 1,
+    deviceKeys: ['pci:display'],
+    deviceName: 'Intel Arc B580',
+    cpuUtilPct: 22,
+    cpuPowerW: 31.5,
+    utilPct: 91,
+    powerW: 158.4,
+  } }), true);
+  assert.equal(publisher.publish({ telemetry: {
+    t: 2,
+    deviceKeys: ['pci:secondary'],
+    deviceName: 'Intel Arc A770',
+    cpuUtilPct: 88,
+    cpuPowerW: 77.7,
+    utilPct: 44,
+    powerW: 42.2,
+  } }), true);
+  const base = fixture.offset + fixture.entrySize + 512;
+  const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
+  assert.match(text, /CPU 22% 31\.5 W/);
+  assert.match(text, /B580 91% 158\.4 W/);
+  assert.match(text, /A770 44% 42\.2 W/);
+  assert.doesNotMatch(text, /B580 88%|B580 77\.7 W|A770 91%|A770 158\.4 W/);
+});
+
+test('collapses canonical and alias telemetry keys into one physical row', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true, overlayChipNames: true, stats: ['gpu-util'] });
+  publisher.setKnownDeviceKeys(
+    ['pci:display', 'pnp:display'],
+    ['pci:display', 'pnp:display'],
+    [['pci:display', 'pnp:display']],
+  );
+  assert.equal(publisher.publish({ telemetry: {
+    t: 1,
+    deviceKeys: ['pnp:display'],
+    deviceName: 'Intel Arc B580',
+    utilPct: 11,
+  } }), true);
+  assert.equal(publisher.publish({ telemetry: {
+    t: 2,
+    deviceKey: 'pci:display',
+    deviceName: 'Intel Arc B580',
+    utilPct: 91,
+  } }), true);
+  const base = fixture.offset + fixture.entrySize + 512;
+  const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
+  assert.equal((text.match(/B580 91%/g) ?? []).length, 1);
+  assert.doesNotMatch(text, /B580 11%/);
+});
+
+test('rekeys cached alias telemetry when physical GPU groups arrive late', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true, overlayChipNames: true, stats: ['gpu-util'] });
+  assert.equal(publisher.publish({ telemetry: {
+    t: 1,
+    deviceKeys: ['pnp:display'],
+    deviceName: 'Intel Arc B580',
+    utilPct: 11,
+  } }), true);
+  publisher.setKnownDeviceKeys(
+    ['pci:display', 'pnp:display', 'pci:secondary'],
+    ['pci:display', 'pci:secondary'],
+    [['pci:display', 'pnp:display'], ['pci:secondary']],
+  );
+  assert.equal(publisher.publish({ telemetry: {
+    t: 2,
+    deviceKey: 'pci:display',
+    deviceName: 'Intel Arc B580',
+    utilPct: 91,
+  } }), true);
+  assert.equal(publisher.publish({ telemetry: {
+    t: 3,
+    deviceKey: 'pci:secondary',
+    deviceName: 'Intel Arc A770',
+    utilPct: 44,
+  } }), true);
+  const base = fixture.offset + fixture.entrySize + 512;
+  const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
+  assert.equal((text.match(/B580 91%/g) ?? []).length, 1);
+  assert.doesNotMatch(text, /B580 11%/);
+});
+
+test('prunes removed physical GPU samples before the all-GPU view is rendered', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true, stats: ['gpu-util'] });
+  assert.equal(publisher.publish({ telemetry: { t: 1, deviceKey: 'gpu-a', utilPct: 88 } }), true);
+  assert.equal(publisher.publish({ telemetry: { t: 2, deviceKey: 'gpu-b', utilPct: 44 } }), true);
+  publisher.setKnownDeviceKeys(['gpu-a']);
+  assert.equal(publisher.publish({ telemetry: { t: 3, cpuUtilPct: 20 } }), true);
+  const base = fixture.offset + fixture.entrySize + 512;
+  const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
+  assert.match(text, /GPU1 88%/);
+  assert.doesNotMatch(text, /44%|GPU2/);
+});
+
+test('falls back to current GPU rows when the saved selection is stale', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true, monitoredDeviceKeys: ['removed-gpu'], stats: ['gpu-util'] });
+  publisher.setKnownDeviceKeys(['replacement-gpu']);
+  assert.equal(publisher.publish({ telemetry: { t: 1, deviceKey: 'replacement-gpu', utilPct: 72 } }), true);
+  const base = fixture.offset + fixture.entrySize + 512;
+  const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
+  assert.match(text, /GPU1 72%/);
+});
+
+test('forces classic value-only RTSS output despite stale theme/background settings', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true, theme: 'classic', overlayBgEnabled: true, overlayBgColor: '#112233', overlayBgOpacity: 1, stats: ['gpu-util'] });
+  assert.equal(publisher.publish({ telemetry: { t: 1, deviceKey: 'gpu-a', utilPct: 88 } }), true);
+  const base = fixture.offset + fixture.entrySize + 512;
+  const bytes = fixture.map.subarray(base, base + 4096);
+  const classic = bytes.toString('ascii').replaceAll('\0', '');
+  assert.match(classic, /<FNT=Tahoma,8,700,/);
+  assert.doesNotMatch(classic, /<B=0,0>|\x08/);
+  publisher.updateSettings({ theme: 'arc', overlayBgEnabled: false });
+  assert.equal(publisher.publish({ telemetry: { t: 2, deviceKey: 'gpu-a', utilPct: 77 } }), true);
+  const arc = bytes.toString('ascii').replaceAll('\0', '');
+  assert.match(arc, /<FNT=Tahoma,8,700,/);
+  assert.doesNotMatch(arc, /<B=0,0>/);
+});
+
+test('publishes embedded frametime graph when the RTSS entry supports it', () => {
+  const fixture = makeMap(0x2000E);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true, stats: ['frametime'] });
+  assert.equal(publisher.publish({ telemetry: { t: 1, deviceKey: 'gpu-a' }, fps: { frameTimeMs: 16.7 } }), true);
+  const base = fixture.offset + fixture.entrySize + 512;
+  const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
+  assert.match(text, /<OBJ=00000000>/);
+  const graph = fixture.map.subarray(fixture.offset + fixture.entrySize + 4608, fixture.offset + fixture.entrySize + 4608 + 40);
+  assert.equal(graph.readUInt32LE(0), 0x47523030);
+  assert.equal(graph.readInt32LE(12), -5);
+  assert.equal(graph.readUInt32LE(32), 1);
+  assert.ok(Math.abs(graph.readFloatLE(36) - 16.7) < 0.001);
+});
+
+test('refuses a busy mapping and never claims another owner', () => {
+  const busy = makeMap(0x2000E, '', 1, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => busy.map });
+  assert.equal(publisher.publish({ text: 'nope' }), false);
+  const occupied = makeMap(0x2000E, 'SomeoneElse', 0, 4608);
+  const other = createRtssOsdPublisher({ open: () => 1, map: () => occupied.map });
+  assert.equal(other.available(), false);
+  assert.equal(occupied.map.toString('ascii', occupied.offset + occupied.entrySize + 256, occupied.offset + occupied.entrySize + 267).replaceAll('\0', ''), 'SomeoneElse');
+});
+
+test('reuses an older ArcPower slot before claiming a new empty slot', async () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608, 3);
+  const oldBase = fixture.offset + fixture.entrySize * 2;
+  fixture.map.write('ArcPower', oldBase + 256, 'ascii');
+  fixture.map.write('old HUD', oldBase + 512, 'ascii');
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true });
+  assert.equal(publisher.available(), true);
+  assert.equal(publisher.getState().slot, 2);
+  await publisher.stop();
+  assert.equal(fixture.map.toString('ascii', oldBase + 256, oldBase + 264).replaceAll('\0', ''), '');
+  assert.equal(fixture.map.toString('ascii', fixture.offset + fixture.entrySize + 256, fixture.offset + fixture.entrySize + 264).replaceAll('\0', ''), '');
+});
+
+test('stop drains a deferred FPS read and never republishes after teardown', async () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  let releaseFps;
+  const fpsReady = new Promise((resolve) => { releaseFps = resolve; });
+  const publisher = createRtssOsdPublisher({
+    open: () => 1,
+    map: () => fixture.map,
+    getFpsSample: async () => fpsReady,
+  });
+  publisher.updateSettings({ enabled: true, stats: ['gpu-util'] });
+  assert.equal(publisher.publish({ text: 'before-stop', fps: null }), true);
+  const pending = publisher.publish({ telemetry: { t: 1, deviceKey: 'gpu-a', utilPct: 99 } });
+  await Promise.resolve();
+  const stopping = publisher.stop();
+  releaseFps({ fps: 144, frameTimeMs: 6.9 });
+  assert.equal(await pending, false);
+  await stopping;
+  assert.equal(publisher.getState().available, false);
+  assert.equal(fixture.map.toString('ascii', fixture.offset + fixture.entrySize + 256, fixture.offset + fixture.entrySize + 264).replaceAll('\0', ''), '');
+  assert.equal(publisher.publish({ text: 'after-stop' }), false);
+});
+
+test('stop retries a busy RTSS mapping before releasing its slot', async () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => fixture.map });
+  publisher.updateSettings({ enabled: true });
+  assert.equal(publisher.publish({ text: 'busy-shutdown' }), true);
+  fixture.map.writeUInt32LE(1, 36);
+  const stopping = publisher.stop();
+  setTimeout(() => fixture.map.writeUInt32LE(0, 36), 50);
+  await stopping;
+  assert.equal(fixture.map.toString('ascii', fixture.offset + fixture.entrySize + 256, fixture.offset + fixture.entrySize + 264).replaceAll('\0', ''), '');
+});
+
+test('falls back to legacy text and no-ops malformed or missing mappings', () => {
+  const old = makeMap(0x20006, '', 0, 512);
+  const publisher = createRtssOsdPublisher({ open: () => 1, map: () => old.map });
+  assert.equal(publisher.publish({ text: 'legacy' }), true);
+  assert.equal(old.map.toString('ascii', old.offset + old.entrySize, old.offset + old.entrySize + 6), 'legacy');
+  const missing = createRtssOsdPublisher({ open: () => 0, map: () => null });
+  assert.equal(missing.publish({ text: 'x' }), false);
+  const malformed = Buffer.alloc(128);
+  malformed.writeUInt32LE(0x52545353, 0); malformed.writeUInt32LE(0x2000E, 4);
+  const invalid = createRtssOsdPublisher({ open: () => 1, map: () => malformed });
+  assert.equal(invalid.available(), false);
+});

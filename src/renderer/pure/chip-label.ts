@@ -45,7 +45,13 @@
 
 /** The vendor/legal/generic GPU tokens - dropped, never part of the label.
  *  '(R)' / '(TM)' split into 'R' / 'TM' by the tokenizer. */
-const GPU_DROP_TOKENS = new Set(['nvidia', 'geforce', 'intel', 'arc', 'amd', 'radeon', 'graphics', 'r', 'tm']);
+const GPU_DROP_TOKENS = new Set([
+  'nvidia', 'geforce', 'intel', 'arc', 'amd', 'radeon', 'graphics',
+  'gpu', 'laptop', 'mobile', 'display', 'adapter', 'controller', 'video',
+  'r', 'tm',
+]);
+const GPU_DECORATION_DROP_TOKENS = new Set(['mock', 'fixture', 'fixtures', 'test', 'testing', 'sample']);
+const GPU_MEMORY_TOKEN_RE = /^\d+(?:gb|gib|mb|mib)$/i;
 
 /** The vendor/legal/tail CPU tokens - dropped, never part of the label.
  *  ('core' stays GLOBALLY dropped here - the M17b Intel pins
@@ -131,10 +137,14 @@ export function chipLabelXeonE5(name: unknown): string | null {
 export function chipLabelGpu(name: unknown): string | null {
   const s = typeof name === 'string' ? name.trim() : '';
   if (s.length === 0) return null;
+  const arcModel = s.match(/\bArc\b[\s\S]*?\b([AB]\d{3,4})\b/i);
+  if (arcModel) return arcModel[1].toUpperCase();
   const kept: string[] = [];
   const tokens = tokensOf(s);
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
+    if (GPU_MEMORY_TOKEN_RE.test(t) || /^gddr\d+$/i.test(t)) break;
+    if (GPU_DECORATION_DROP_TOKENS.has(t.toLowerCase())) continue;
     if (GPU_DROP_TOKENS.has(t.toLowerCase())) continue;
     // The RX merge: an 'RX' token + the following all-digit token -> one
     // token ('RX590'), never two ('RX 590').

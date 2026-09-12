@@ -35,12 +35,13 @@ import { pnpParts } from './gpu-inventory.js';
 import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createMockRegistryApply } from './registry-apply.js';
 import { createMockStartup } from './startup.js';
+import { createMockRtssStartup } from './rtss-startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
 import { executeApply, withCapabilityFlags, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, tempCapabilityRefusal, tempCapabilityPerControl, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED, ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
-import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT, normalizeMonitorLogMetrics, activeProfileEntries } from './store/profile-store.js';
+import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_RENDERERS, normalizeMonitorLogMetrics, activeProfileEntries } from './store/profile-store.js';
 // M17c: the vendor-telemetry lane (non-Intel GPU readouts - NVML/ADL via
 // koffi, hook = the no-device telemetry path, mock fixtures under
 // RID_MOCK_VENDOR).
@@ -207,9 +208,13 @@ const MAX_CURVE_POINTS = 32;
 // Reset read-back tolerance (canonical units; a reset must land on the
 // capability default within this).
 const RESET_VERIFY_EPS = 1e-6;
-// M5: the overlay scale slider's range (mirrored in pure/overlay.ts).
+// M5: the RTSS overlay scale range (mirrored in pure/overlay.ts). The
+// native provider has four integer font zoom levels, represented here as
+// Quarter-size increments keep the existing persisted range compatible while
+// exposing the full RTSS-style 0.5x..2x grid.
 const OVERLAY_SCALE_MIN = 0.5;
 const OVERLAY_SCALE_MAX = 2.0;
+const OVERLAY_SCALE_STEP = 0.25;
 // M17e (the user addition - the overlay polling-rate slider): the
 // telemetry push cadence range (mirrored in profile-store.js +
 // overlay-settings.ts; the telemetry-service default is 400 ms - M17g:
@@ -407,14 +412,26 @@ export function validateAdvancedOverlayPosition(v) {
 }
 
 /**
- * M5: clamp the overlay scale to the slider's range 0.5..2.0 (garbage
- * degrades to the 1.0 default - the store normalizes the same way).
+ * M5: clamp and snap the overlay scale to the RTSS quarter-size grid
+ * represented by 0.5..2.0 (garbage degrades to the 1.0 default - the store
+ * normalizes the same way).
  * @param {unknown} v
  * @returns {number}
  */
 export function clampOverlayScale(v) {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : 1.0;
-  return Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+  const clamped = Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+  return Math.round(clamped / OVERLAY_SCALE_STEP) * OVERLAY_SCALE_STEP;
+}
+
+/** The optional overlay renderer is deliberately additive: omitted/legacy
+ * settings use RTSS, while the hook-free CapFrameX-style surface is explicit.
+ */
+export function validateOverlayRenderer(v) {
+  if (typeof v !== 'string' || !OVERLAY_RENDERERS.includes(v)) {
+    throw new Error(`overlayRenderer must be one of: ${OVERLAY_RENDERERS.join(', ')}`);
+  }
+  return v;
 }
 
 /**
@@ -885,6 +902,61 @@ export async function resolvePreferredDevice(backend, devices = null) {
     })[0]?.device ?? null;
 }
 
+function overlayDisplayActiveOf(device) {
+  if (device?.displayActive === true || device?.osController?.displayActive === true) return true;
+  if (device?.displayActive === false || device?.osController?.displayActive === false) return false;
+  return null;
+}
+
+/**
+ * Order overlay presentation rows without changing device ids or routing.
+ * The adapter driving an active desktop output is always the first row; if
+ * more than one adapter is active, durable physical identity breaks the tie.
+ * Unknown display state is deliberately not guessed from enumeration order.
+ */
+export function overlayDeviceOrder(devices) {
+  return (Array.isArray(devices) ? devices : [])
+    .map((device, index) => ({ device, index }))
+    .sort((left, right) => {
+      const leftActive = overlayDisplayActiveOf(left.device);
+      const rightActive = overlayDisplayActiveOf(right.device);
+      const activeDiff = Number(rightActive === true) - Number(leftActive === true);
+      if (activeDiff !== 0) return activeDiff;
+      if (leftActive === true && rightActive === true) {
+        const leftKey = typeof left.device?.deviceKey === 'string' && left.device.deviceKey.length > 0
+          ? left.device.deviceKey : deviceHardwareKey(left.device);
+        const rightKey = typeof right.device?.deviceKey === 'string' && right.device.deviceKey.length > 0
+          ? right.device.deviceKey : deviceHardwareKey(right.device);
+        const keyDiff = leftKey.localeCompare(rightKey);
+        if (keyDiff !== 0) return keyDiff;
+      }
+      return left.index - right.index;
+    })
+    .map(({ device }) => device);
+}
+
+/** Resolve missing display flags from the adapter's own display route before
+ * assigning the user-facing GPU 1/GPU 2 labels. This is read-only and only
+ * runs for rows whose inventory did not already carry display proof. */
+export async function resolveOverlayDeviceOrder(backend, devices) {
+  const rows = Array.isArray(devices) ? devices : [];
+  if (typeof backend?.getDisplaySettings !== 'function') return overlayDeviceOrder(rows);
+  const enriched = await Promise.all(rows.map(async (device) => {
+    if (overlayDisplayActiveOf(device) !== null || !Number.isInteger(device?.id)) return device;
+    try {
+      const state = await backend.getDisplaySettings(device.id);
+      if (!Array.isArray(state?.displays)) return device;
+      return {
+        ...device,
+        displayActive: state.displays.some((display) => display?.flags?.active === true),
+      };
+    } catch {
+      return device;
+    }
+  }));
+  return overlayDeviceOrder(enriched).map((device, index) => ({ ...device, overlayOrdinal: index + 1 }));
+}
+
 /** M151: id-only convenience seam for tests and callers that need no key. */
 export async function resolvePreferredDeviceId(backend, devices = null) {
   return (await resolvePreferredDevice(backend, devices))?.id ?? null;
@@ -969,6 +1041,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   store: import('./store/profile-store.js').ProfileStore,
  *   emit: (channel: string, payload: unknown) => void,
  *   startup?: { get: () => Promise<{ valueExists: boolean, value: string | null, registration?: 'task' | 'run' }>, set: (enabled: boolean) => Promise<unknown>, registrationMode?: 'task' | 'run' },
+ *   rtssStartup?: { get: () => Promise<object>, set: (enabled: boolean) => Promise<object>, registrationMode?: 'run' },
  *   driverInfo?: { get: () => Promise<{ driverDate: string | null }> },
  *   sysinfo?: { get: () => Promise<unknown> },  // M4-D: CIM system info (CPU/RAM/video controllers)
  *   windowOps?: {                              // M4-D: injected BrowserWindow ops (title-bar buttons)
@@ -980,10 +1053,12 @@ export async function resolveBootDeviceId(backend, store) {
  *   registryCatalog?: { get: () => Promise<unknown> },  // M3-A read-side catalog
  *   registryApply?: { apply: (entryId: string, action: string) => Promise<unknown> },  // M3-B elevated apply
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null, avgFps: number | null, low1Pct: number | null, low01Pct: number | null, p99: number | null } | null>, stop?: () => Promise<void> },
- *   presentMonLane?: { poll: (deviceId: number) => Promise<object | null>, stop?: () => Promise<void> } | null,  // M17c: the ETW/PresentMon lane (the PREFERRED FPS source; M17d: wraps the pm-service + sidecar SOURCE CHAIN; null in mock/tests - the determinism seam like foregroundApi)
+ *   fpsLane?: { poll: (deviceId: number) => Promise<object | null>, stop?: () => Promise<void> } | null,  // Native RTSS foreground-process lane; null in mock/tests - the determinism seam like foregroundApi
+ *   rtssOverlay?: { publish: (payload: object) => Promise<unknown>|unknown, updateSettings?: (settings: object) => Promise<unknown>|unknown, setKnownDeviceKeys?: (keys: string[], order?: string[], groups?: string[][]) => unknown, clear?: () => Promise<unknown>|unknown, stop?: () => Promise<void> } | null,  // Native RTSS telemetry OSD publisher
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
  *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe). M17g: the emit-site composition MOVED into the sysStats adapter's FAST lane - this param is kept for call-site compatibility and is no longer consumed by the telemetry push (the fast-lane field replaces it).
  *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>, sampleFast?: () => Promise<object>, sampleSlow?: () => Promise<object>, setTarget?: (target?: object|null) => void, startSlowLane?: (cadenceMs?: number) => void, stopSlowLane?: () => void } | { current: object | null },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample). M17g: the telemetry push samples the FAST lane (sampleFast) per tick - never the slow PowerShell query; the slow lane runs on the adapter's own background timer (startSlowLane/stopSlowLane, tied to the telemetry session lifecycle). M17p: main.js may pass a MUTABLE HOLDER ({ current: null } - the sysStats block lands AFTER registerIpc; the ONE normalize at the top unwraps it per-access; a plain adapter passes through).
+ *   lhmTelemetry?: { sampleForTarget: (target?: object|null) => Promise<object|null>, close?: () => Promise<void> },  // LibreHardwareMonitor hardware source; GPU utilization is composed separately from the Windows GPU Engine counter.
  *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: log-to-file writer (monitor-YYYYMMDD.txt)
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
@@ -1049,6 +1124,7 @@ export function createIpcHandlers({
   store,
   emit,
   startup = createMockStartup(),
+  rtssStartup = createMockRtssStartup(),
   driverInfo = createMockDriverInfo(),
   driverMonitor = null,
   // M4-D: the sysinfo adapter. The DEFAULT is the MOCK fixture (never
@@ -1085,6 +1161,10 @@ export function createIpcHandlers({
   // real rolling-delta adapter in the product path. sample() is called on
   // every telemetry tick; its values ride the pushed telemetry sample.
   sysStats = createMockSysStats(),
+  // Production injects one shared LibreHardwareMonitor bridge. Tests and
+  // mock mode leave it absent so deterministic fixtures never touch
+  // privileged hardware access.
+  lhmTelemetry = null,
   // M4-D2: the log-to-file writer (monitor-YYYYMMDD.txt). The DEFAULT is a no-op (tests never
   // write to Documents); ipc.js injects the real writer in the product
   // path (dir: RID_MOCK_LOG_DIR ?? app.getPath('documents')).
@@ -1094,14 +1174,16 @@ export function createIpcHandlers({
   // product path. On this machine the real adapter may also degrade to
   // null (DXGI unavailable), so mock and product agree on 'unavailable'.
   fpsAdapter = { poll: async () => null },
-  // M17c: the ETW/PresentMon lane - the PREFERRED FPS source when it has a
-  // fresh sample (the game's own present rate via the dxgkrnl ETW stream);
-  // the fps-poll handler consults it FIRST and falls back to fpsAdapter
-  // (the DXGI desktop-presentation tier) when the lane is idle/absent.
-  // THE DETERMINISM SEAM (the foregroundApi pattern): the DEFAULT is null
-  // (tests + mock/ui-verify never run the sidecar or the foreground-pid
-  // probe); main.js wires the real lane ONLY in the non-mock product path.
-  presentMonLane = null,
+  // Native RTSS is the preferred FPS/frametime source when it has a fresh
+  // target-process sample. The handler consults it first and falls back to
+  // the DXGI desktop-presentation tier when RTSS is absent or idle.
+  // Mock/ui-verify keeps this null as the deterministic seam.
+  fpsLane = null,
+  // Product mode may inject the native RTSS telemetry OSD publisher. It is
+  // deliberately separate from the read-only FPS lane above: telemetry
+  // publishing must remain a best-effort consumer and never delay or fail a
+  // normal renderer sample.
+  rtssOverlay = null,
   // M10a: the foreground-window Graphics-API detector (the overlay's FPS-row
   // badge). The DEFAULT is the null-returning detector (tests + mock/
   // ui-verify NEVER run the real koffi probe - the determinism seam:
@@ -1269,6 +1351,7 @@ export function createIpcHandlers({
       sample: (...args) => holder.current?.sample?.(...args),
       sampleFast: (...args) => holder.current?.sampleFast?.(...args),
       sampleForTarget: (...args) => holder.current?.sampleForTarget?.(...args),
+      sampleGpuUtilForTarget: (...args) => holder.current?.sampleGpuUtilForTarget?.(...args),
       registerTarget: (...args) => holder.current?.registerTarget?.(...args),
       sampleSlow: (...args) => holder.current?.sampleSlow?.(...args),
       setTarget: (...args) => holder.current?.setTarget?.(...args),
@@ -1318,10 +1401,52 @@ export function createIpcHandlers({
   // Monitoring log toggle cannot be overwritten by an unrelated Settings,
   // Profiles, or Overlay save that started from the previous snapshot.
   let settingsSaveQueue = Promise.resolve();
+  const queueSettingsSave = (operation) => {
+    const queued = settingsSaveQueue.then(operation, operation);
+    settingsSaveQueue = queued.then(() => undefined, () => undefined);
+    return queued;
+  };
   const emitTelemetry = (payload) => {
     const key = Number.isInteger(payload?.deviceId) ? payload.deviceId : NULL_DEVICE_KEY;
     latestTelemetry.set(key, payload);
     emit('telemetry:sample', payload);
+    try {
+      void rtssOverlay?.publish?.({ telemetry: payload });
+    } catch {
+      // The RTSS OSD is an optional native consumer. A missing mapping or a
+      // transient renderer lock must never break Arc Power telemetry delivery.
+    }
+  };
+
+  // The production telemetry contract is intentionally source-specific:
+  // LibreHardwareMonitor owns CPU/RAM/GPU hardware readouts, Windows GPU
+  // Engine owns GPU utilization, and RTSS owns FPS/frametime. Removing the
+  // old IGCL/sys-stats readout fields here is important: a stale native field
+  // must never silently win when the new provider is unavailable.
+  const composeHybridTelemetry = async (target, deviceSample = null) => {
+    if (!lhmTelemetry || typeof lhmTelemetry.sampleForTarget !== 'function') return null;
+    let hardware = null;
+    try { hardware = await lhmTelemetry.sampleForTarget(target); } catch { hardware = null; }
+    let engine = { gpuUtilPct: null };
+    try {
+      engine = await sysStats.sampleGpuUtilForTarget?.(target) ?? engine;
+    } catch { /* honest null utilization */ }
+    const base = { ...(deviceSample ?? {}) };
+    for (const key of [
+      'utilPct', 'gpuUtilPct', 'gpuClockMhz', 'memClockMhz', 'tempC',
+      'vramTempC', 'gpuVoltageV', 'powerW', 'fanRpm', 'gpuMemUsedBytes',
+      'gpuMemorySource', 'cpuUtilPct', 'cpuTempC', 'cpuFreqMhz', 'cpuPowerW',
+      'memoryUsedBytes',
+    ]) delete base[key];
+    return {
+      ...base,
+      ...(hardware ?? {}),
+      gpuUtilPct: engine?.gpuUtilPct ?? null,
+      // Keep the legacy renderer contract working while making the source
+      // explicit; no IGCL utilization value reaches any consumer.
+      utilPct: engine?.gpuUtilPct ?? null,
+      gpuUtilSource: 'windows-gpu-engine',
+    };
   };
   // M151: device-preferred-get may be called concurrently by the main window
   // and either overlay. Deduplicate only the currently running probe. Do not
@@ -1370,6 +1495,13 @@ export function createIpcHandlers({
   };
   let telemetryGeneration = 0;
   let overlayTelemetryGeneration = 0;
+  // Invalidates an asynchronous RTSS inventory/settings reconciliation when
+  // the telemetry session is torn down. A boot-time settings read can finish
+  // after stopAllTelemetry(), but it must never resurrect a secondary lane.
+  let rtssOverlayLifecycle = 0;
+  // A newer settings or device-selection request supersedes an older RTSS
+  // inventory read, even while the same telemetry session remains alive.
+  let rtssOverlaySyncGeneration = 0;
   const cleanupStaleTelemetryStartup = async ({ generation, timer = null, vendor = null, service = null }) => {
     if (generation === telemetryGeneration) return false;
     clearInterval(timer);
@@ -1430,6 +1562,26 @@ export function createIpcHandlers({
       // a store read failure keeps the default cadence
     }
     if (generation !== telemetryGeneration) return;
+    if (lhmTelemetry) {
+      const sampleNow = async () => {
+        const hybrid = await composeHybridTelemetry(null);
+        if (generation !== telemetryGeneration) return false;
+        emitTelemetry({
+          t: Date.now(),
+          deviceId: null,
+          sessionGeneration: generation,
+          ...(hybrid ?? {}),
+        });
+        return true;
+      };
+      const timer = setInterval(() => { void sampleNow(); }, pollMs);
+      telemetry.set(NULL_DEVICE_KEY, {
+        stop: async () => clearInterval(timer),
+        sampleNow,
+      });
+      await sampleNow();
+      return;
+    }
     // M17c: the vendor-telemetry lane - the no-device path hook. When the
     // ACTIVE device is non-Intel, the sysinfo controller vendor selects
     // the first available of [NVML, ADL] matching it; the adapter's
@@ -1510,8 +1662,39 @@ export function createIpcHandlers({
     const target = await backend.getDeviceTarget?.(deviceId);
     if (generation !== telemetryGeneration) return;
     const telemetryAliases = Array.isArray(target?.deviceKeys) ? [...target.deviceKeys] : null;
+    // Keep a numeric id as an internal lane key only. A synthetic `id:N`
+    // deviceKey in the shared payload looks like a durable identity and makes
+    // the Advanced Overlay reject otherwise valid identity-less samples.
+    const stableDeviceKey = target?.deviceKey
+      ?? (Array.isArray(telemetryAliases) ? telemetryAliases[0] : null)
+      ?? null;
     try { await sysStats.setTarget?.(target); } catch { /* stale OS target degrades to null fields */ }
     if (generation !== telemetryGeneration) return;
+    if (lhmTelemetry) {
+      const sampleNow = async () => {
+        const hybrid = await composeHybridTelemetry(target);
+        if (generation !== telemetryGeneration) return false;
+        emitTelemetry({
+          t: Date.now(),
+          deviceId,
+          deviceKey: stableDeviceKey,
+          deviceKeys: telemetryAliases ? [...new Set([stableDeviceKey, ...telemetryAliases].filter(Boolean))] : null,
+          deviceName: target?.name ?? null,
+          sessionGeneration: generation,
+          ...(hybrid ?? {}),
+        });
+        return true;
+      };
+      const timer = setInterval(() => { void sampleNow(); }, pollMs);
+      try { await sysStats.startSlowLane?.(undefined, generation); } catch { /* best effort */ }
+      if (await cleanupStaleTelemetryStartup({ generation, timer })) return;
+      telemetry.set(deviceId, {
+        stop: async () => clearInterval(timer),
+        sampleNow,
+      });
+      await sampleNow();
+      return;
+    }
     if (target?.synthetic || target?.backendKind === 'os') {
       let vendor = null;
       try {
@@ -1532,8 +1715,9 @@ export function createIpcHandlers({
         emitTelemetry({
           t: Date.now(),
           deviceId,
-          deviceKey: target?.deviceKey ?? null,
-          deviceKeys: telemetryAliases,
+          deviceKey: stableDeviceKey,
+          deviceKeys: telemetryAliases ? [...new Set([stableDeviceKey, ...telemetryAliases].filter(Boolean))] : null,
+          deviceName: target?.name ?? null,
           sessionGeneration: generation,
           ...extra,
           ...(sample ?? {}),
@@ -1590,8 +1774,9 @@ export function createIpcHandlers({
       if (generation !== telemetryGeneration) return;
       emitTelemetry({
         deviceId,
-        deviceKey: target?.deviceKey ?? null,
-        deviceKeys: telemetryAliases,
+        deviceKey: stableDeviceKey,
+        deviceKeys: telemetryAliases ? [...new Set([stableDeviceKey, ...telemetryAliases].filter(Boolean))] : null,
+        deviceName: target?.name ?? null,
         sessionGeneration: generation,
         ...extra,
         ...sample,
@@ -1616,8 +1801,9 @@ export function createIpcHandlers({
         emitTelemetry({
           t: Date.now(),
           deviceId,
-          deviceKey: target?.deviceKey ?? null,
-          deviceKeys: telemetryAliases,
+          deviceKey: stableDeviceKey,
+          deviceKeys: telemetryAliases ? [...new Set([stableDeviceKey, ...telemetryAliases].filter(Boolean))] : null,
+          deviceName: target?.name ?? null,
           sessionGeneration: generation,
           ...extra,
         });
@@ -1702,11 +1888,52 @@ export function createIpcHandlers({
       const device = devices.find((entry) => entry.id === deviceId);
       const target = await backend.getDeviceTarget?.(deviceId);
       if (generation !== overlayTelemetryGeneration) return;
+      const telemetryDeviceKey = target?.deviceKey
+        ?? (Array.isArray(target?.deviceKeys) ? target.deviceKeys[0] : null)
+        ?? device?.deviceKey
+        ?? (Array.isArray(device?.deviceKeys) ? device.deviceKeys[0] : null)
+        ?? deviceHardwareKey(device)
+        ?? null;
+      const telemetryDeviceKeys = [...new Set([
+        telemetryDeviceKey,
+        ...(Array.isArray(target?.deviceKeys) ? target.deviceKeys : []),
+        ...(Array.isArray(device?.deviceKeys) ? device.deviceKeys : []),
+      ].filter((key) => typeof key === 'string' && key.length > 0))];
+      const telemetryDeviceAliases = telemetryDeviceKeys.length > 0 ? telemetryDeviceKeys : null;
       // Register every physical target before choosing its telemetry source.
       // Synthetic AMD/NVIDIA lanes use vendor samples for vendor-specific
       // fields, but generic VRAM/utilization counters still come from the
       // per-adapter sysStats record.
       try { sysStats.registerTarget?.(target); } catch { /* per-target stats registration is best effort */ }
+      if (lhmTelemetry) {
+        const sampleNow = async () => {
+          if (generation !== overlayTelemetryGeneration) return false;
+          const hybrid = await composeHybridTelemetry(target);
+          if (generation !== overlayTelemetryGeneration) return false;
+          emitTelemetry({
+            t: Date.now(),
+            deviceId,
+            deviceKey: telemetryDeviceKey,
+            deviceKeys: telemetryDeviceAliases,
+            deviceName: target?.name ?? device?.name ?? null,
+            sessionGeneration: telemetryGeneration,
+            ...(hybrid ?? {}),
+          });
+          return true;
+        };
+        const timer = setInterval(() => { void sampleNow(); }, pollMs);
+        try { await sysStats.startSlowLane?.(undefined, telemetryGeneration); } catch { /* best effort */ }
+        if (generation !== overlayTelemetryGeneration) {
+          clearInterval(timer);
+          return;
+        }
+        overlayTelemetry.set(deviceId, {
+          stop: async () => clearInterval(timer),
+          sampleNow,
+        });
+        await sampleNow();
+        continue;
+      }
       if (target?.synthetic || target?.backendKind === 'os') {
         // renderer's vendor singleton must never be rebound by this lane.
         const vendorLane = typeof vendorTelemetryFactory === 'function'
@@ -1743,10 +1970,9 @@ export function createIpcHandlers({
             emitTelemetry({
               t: Date.now(),
               deviceId,
-              deviceKey: target?.deviceKey ?? device?.deviceKey ?? deviceHardwareKey(device) ?? null,
-              deviceKeys: Array.isArray(target?.deviceKeys)
-                ? [...target.deviceKeys]
-                : Array.isArray(device?.deviceKeys) ? [...device.deviceKeys] : null,
+              deviceKey: telemetryDeviceKey,
+              deviceKeys: telemetryDeviceAliases,
+              deviceName: target?.name ?? device?.name ?? null,
               sessionGeneration: telemetryGeneration,
               ...merged,
             });
@@ -1770,10 +1996,9 @@ export function createIpcHandlers({
         if (generation !== overlayTelemetryGeneration) return;
         emitTelemetry({
           deviceId,
-          deviceKey: target?.deviceKey ?? device?.deviceKey ?? deviceHardwareKey(device) ?? null,
-          deviceKeys: Array.isArray(target?.deviceKeys)
-            ? [...target.deviceKeys]
-            : Array.isArray(device?.deviceKeys) ? [...device.deviceKeys] : null,
+          deviceKey: telemetryDeviceKey,
+          deviceKeys: telemetryDeviceAliases,
+          deviceName: target?.name ?? device?.name ?? null,
           sessionGeneration: telemetryGeneration,
           ...extra,
           ...sample,
@@ -1831,6 +2056,86 @@ export function createIpcHandlers({
     return reconcile;
   };
 
+  // The RTSS HUD has no renderer that can request its secondary GPU lanes.
+  // Keep the old owner/reconciliation mechanism as the single lane manager,
+  // but drive it from the persisted RTSS selection whenever the HUD is on.
+  // The main selected GPU is intentionally left to its normal telemetry lane
+  // so the native publisher never creates a duplicate service for it.
+  const syncRtssOverlayTelemetry = async (settings, lifecycle = rtssOverlayLifecycle, syncGeneration = rtssOverlaySyncGeneration) => {
+    if (!rtssOverlay
+      || lifecycle !== rtssOverlayLifecycle
+      || syncGeneration !== rtssOverlaySyncGeneration) return;
+    const aliasesOf = (device) => [
+      device?.deviceKey,
+      ...(Array.isArray(device?.deviceKeys) ? device.deviceKeys : []),
+      deviceHardwareKey(device),
+      Number.isInteger(device?.id) ? `id:${device.id}` : null,
+    ].filter((key) => typeof key === 'string' && key.length > 0);
+    let devices = null;
+    try {
+      devices = await backend.listDevices();
+      if (!Array.isArray(devices)) devices = [];
+    } catch {
+      // Keep the currently running native lanes when inventory is transiently
+      // unavailable; a failed read must not erase valid OSD telemetry.
+    }
+    if (lifecycle !== rtssOverlayLifecycle || syncGeneration !== rtssOverlaySyncGeneration) return;
+    if (Array.isArray(devices)) {
+      try {
+        devices = await resolveOverlayDeviceOrder(backend, devices);
+      } catch {
+        // A display probe is optional. Keep the inventory order if the probe
+        // itself fails; telemetry identity and routing remain unchanged.
+      }
+      if (lifecycle !== rtssOverlayLifecycle || syncGeneration !== rtssOverlaySyncGeneration) return;
+      const knownOrder = devices.flatMap(aliasesOf);
+      const knownGroups = devices.map(aliasesOf);
+      rtssOverlay.setKnownDeviceKeys?.([...new Set(knownOrder)], knownOrder, knownGroups);
+    }
+    if (settings?.overlayEnabled !== true || settings?.overlayRenderer === 'capframex') {
+      overlayTelemetryOwners.delete('rtss');
+    } else {
+      if (!Array.isArray(devices)) return;
+      const requested = Array.isArray(settings.overlayDeviceKeys)
+        ? settings.overlayDeviceKeys.filter((key) => typeof key === 'string' && key.length > 0)
+        : null;
+      let selected = requested && requested.length > 0
+        ? devices.filter((device) => {
+            return aliasesOf(device).some((key) => requested.includes(key));
+          })
+        : devices;
+      // Match the renderer's stale-key behavior: an explicit selection that
+      // no longer matches inventory falls back to all currently visible GPUs.
+      if (selected.length === 0) selected = devices;
+      // Durable identity wins over the session id. The numeric id can be
+      // reused after an inventory refresh, which previously caused the main
+      // lane to be excluded from the wrong GPU's RTSS reconciliation and
+      // made GPU1/GPU2 values appear to swap.
+      const mainDeviceByKey = typeof settings.deviceKey === 'string' && settings.deviceKey.length > 0
+        ? devices.find((device) => aliasesOf(device).includes(settings.deviceKey))
+        : null;
+      const mainDevice = mainDeviceByKey ?? devices.find((device) => (
+        Number.isInteger(settings.deviceId) && device?.id === settings.deviceId
+      )) ?? null;
+      const keys = selected
+        .filter((device) => !mainDevice || device?.id !== mainDevice.id)
+        .map((device) => device?.deviceKey
+          ?? (Array.isArray(device?.deviceKeys) ? device.deviceKeys[0] : null)
+          ?? deviceHardwareKey(device) ?? (
+          Number.isInteger(device?.id) ? `id:${device.id}` : null
+        ))
+        .filter((key) => typeof key === 'string' && key.length > 0);
+      overlayTelemetryOwners.set('rtss', [...new Set(keys)]);
+    }
+    if (lifecycle !== rtssOverlayLifecycle || syncGeneration !== rtssOverlaySyncGeneration) return;
+    const union = [...new Set([...overlayTelemetryOwners.values()].flat())];
+    await startOverlayTelemetry(union);
+  };
+  const requestRtssOverlaySync = (settings) => {
+    const syncGeneration = ++rtssOverlaySyncGeneration;
+    return syncRtssOverlayTelemetry(settings, rtssOverlayLifecycle, syncGeneration);
+  };
+
   // M152: the main process assigns the holder after IPC registration. If a
   // renderer starts a lane during that window, its initial optional calls are
   // intentionally empty; once the adapter lands, reconcile the live session
@@ -1844,6 +2149,8 @@ export function createIpcHandlers({
   };
 
   const stopAllTelemetry = async () => {
+    rtssOverlayLifecycle += 1;
+    rtssOverlaySyncGeneration += 1;
     try { await stabilityService?.stop?.(); } catch { /* close the run honestly on teardown */ }
     telemetryGeneration += 1;
     overlayTelemetryGeneration += 1;
@@ -2092,7 +2399,7 @@ export function createIpcHandlers({
         const receivedAtMs = Date.now();
         let fpsSample = null;
         try {
-          const laneSample = presentMonLane ? await presentMonLane.poll(target.id) : null;
+          const laneSample = fpsLane ? await fpsLane.poll(target.id) : null;
           fpsSample = laneSample !== null ? laneSample : await fpsAdapter.poll(target.id);
         } catch { fpsSample = null; }
         let foregroundProcess = null;
@@ -2180,6 +2487,11 @@ export function createIpcHandlers({
           throw new Error(`device key mismatch for device id ${deviceId}`);
         }
         await store.saveSettings({ ...cur, deviceId, deviceKey });
+        try {
+          await requestRtssOverlaySync({ ...cur, deviceId, deviceKey });
+        } catch (err) {
+          console.log(`[rtss-overlay] device selection sync failed: ${err.message}`);
+        }
         return { deviceId, deviceKey };
       },
       // M31: panel selection requests are explicit and durable-key based.
@@ -2928,6 +3240,26 @@ export function createIpcHandlers({
         return handlers['startup-get']();
       },
 
+      // RTSS has an independent per-user Run value. Unlike Arc Power startup,
+      // this path never elevates and enabling is persisted only after the
+      // adapter has verified the registry write.
+      'rtssStartupGet': async (...args) => {
+        assertNoPayload(args, 'rtssStartupGet');
+        await settingsSaveQueue;
+        const state = await rtssStartup.get();
+        const settings = await store.loadSettings();
+        return { ...state, rtssOnBoot: settings.rtssOnBoot === true };
+      },
+      'rtssStartupSet': async (enabled) => {
+        if (typeof enabled !== 'boolean') throw new Error('rtssStartupSet: enabled must be a boolean');
+        return queueSettingsSave(async () => {
+          const current = await store.loadSettings();
+          const state = await rtssStartup.set(enabled);
+          await store.saveSettings({ ...current, rtssOnBoot: enabled });
+          return { ...state, rtssOnBoot: enabled };
+        });
+      },
+
       // M4-D: the system-info read (CPU card + the VRAM enrichment
       // source). Read-side only, cached at boot in the product path; the
       // default adapter is the MOCK fixture (tests/--ui-verify never spawn
@@ -3145,16 +3477,10 @@ export function createIpcHandlers({
         await installUpdate(filePath, { buildKind, portableWrapperPath });
       },
 
-      // FPS via DXGI GetFrameStatistics (M4-D2 - replaced PresentMon). The
-      // default adapter is the mock (always null); the product path injects
-      // the real DXGI adapter, which itself degrades to null when DXGI is
-      // unavailable. Never throws.
-      // M17c: the ETW/PresentMon lane is the PREFERRED source when it has a
-      // fresh sample (the game's per-frame present rate - RTSS-class
-      // accuracy); the DXGI adapter remains the fallback tier (the
-      // desktop-presentation rate) when the lane is idle/absent. The lane
-      // is null in mock/tests - the composition is a no-op there and every
-      // existing pin stays green.
+      // FPS/frametime via native RTSS shared memory. The default adapter is
+      // the mock (always null); the product path injects the RTSS lane first
+      // and the DXGI adapter remains the honest fallback when RTSS is absent
+      // or a target process is not hooked. Never throws.
       // M10a: the sample COMPOSES the foreground-window Graphics-API badge -
       // the fpsAdapter's own api field (the RID_MOCK_API=1 mock fixture)
       // wins, otherwise the injected detector answers (the DEFAULT is the
@@ -3162,7 +3488,7 @@ export function createIpcHandlers({
       // probe runs only in the product path).
       'fps-poll': async (deviceId) => {
         assertValidDeviceId(deviceId);
-        const laneSample = presentMonLane ? await presentMonLane.poll(deviceId) : null;
+        const laneSample = fpsLane ? await fpsLane.poll(deviceId) : null;
         const sample = laneSample !== null ? laneSample : await fpsAdapter.poll(deviceId);
         if (sample === null || typeof sample !== 'object') return null;
         // M10a: the foreground-window Graphics-API badge composition. The
@@ -3170,14 +3496,10 @@ export function createIpcHandlers({
         // answers (the DEFAULT is the null-returning detector - the
         // determinism seam; the real koffi probe runs only in the product
         // path).
-        // M17d (Run C, item 1e): the PresentMon-service CLASS corroboration
-        // - when the module scan yields null, the lane's presentRuntime
-        // class ('dxgi'/'d3d9'/'other' - the PM_GRAPHICS_RUNTIME class the
-        // overlay labels DXGI/D3D9/Other) answers through the SAME api
-        // field; a module-scan verdict ALWAYS wins (the fine grain stays
-        // module-derived). Absent presentRuntime -> null (the overlay row
-        // stays empty - the honest degrade).
-        const api = sample.api ?? (await foregroundApi.detect()) ?? (typeof sample.presentRuntime === 'string' ? sample.presentRuntime : null);
+        // RTSS supplies a native API id when its v2.10+ flags are available;
+        // otherwise the foreground module detector remains the fine-grained
+        // fallback. Unknown values leave the overlay API row empty.
+        const api = sample.api ?? (await foregroundApi.detect()) ?? null;
         return { ...sample, api };
       },
 
@@ -3835,6 +4157,16 @@ export function createIpcHandlers({
           startWithWindows: patch.startWithWindows === undefined
             ? cur.startWithWindows
             : patch.startWithWindows === true,
+          // RTSS startup is a separate preference, but this channel is a
+          // read-modify-write of the same settings file. Preserve it so an
+          // unrelated Settings/Profiles save cannot erase the user's choice.
+          ...(patch.rtssOnBoot !== undefined || cur.rtssOnBoot !== undefined
+            ? {
+                rtssOnBoot: patch.rtssOnBoot === undefined
+                  ? cur.rtssOnBoot === true
+                  : patch.rtssOnBoot === true,
+              }
+            : {}),
           startMinimized: patch.startMinimized === undefined
             ? cur.startMinimized
             : patch.startMinimized === true,
@@ -3886,6 +4218,13 @@ export function createIpcHandlers({
           overlayPosition: patch.overlayPosition === undefined
             ? cur.overlayPosition
             : validateOverlayPosition(patch.overlayPosition),
+          ...(patch.overlayRenderer !== undefined || cur.overlayRenderer !== undefined
+            ? {
+                overlayRenderer: patch.overlayRenderer === undefined
+                  ? cur.overlayRenderer
+                  : validateOverlayRenderer(patch.overlayRenderer),
+              }
+            : {}),
           overlayScale: patch.overlayScale === undefined
             ? cur.overlayScale
             : clampOverlayScale(patch.overlayScale),
@@ -4042,7 +4381,7 @@ export function createIpcHandlers({
         // persists but onOverlaySettings never fires and the HUD never
         // re-renders (the switch would only apply on the next boot).
         const overlayChanged = {};
-        for (const key of ['overlayEnabled', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme', 'overlayRecordingPill']) {
+        for (const key of ['overlayEnabled', 'overlayRenderer', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme', 'overlayRecordingPill']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) overlayChanged[key] = next[key];
         }
         if (Object.keys(overlayChanged).length > 0) {
@@ -4050,6 +4389,15 @@ export function createIpcHandlers({
             await onOverlaySettings(overlayChanged);
           } catch (err) {
             console.log(`[overlay] settings reaction failed: ${err.message}`);
+          }
+          const rtssLaneChanged = ['overlayEnabled', 'overlayRenderer', 'overlayDeviceKeys', 'overlayPollMs']
+            .some((key) => overlayChanged[key] !== undefined);
+          if (rtssLaneChanged) {
+            try {
+              await requestRtssOverlaySync(next);
+            } catch (err) {
+              console.log(`[rtss-overlay] telemetry lane sync failed: ${err.message}`);
+            }
           }
         }
         // M23: the ADVANCED-overlay reaction (the onOverlaySettings
@@ -4098,9 +4446,7 @@ export function createIpcHandlers({
         }
         return next;
         };
-        const queued = settingsSaveQueue.then(save, save);
-        settingsSaveQueue = queued.then(() => undefined, () => undefined);
-        return queued;
+        return queueSettingsSave(save);
       },
 
       // M3-C-E/M157: the OC mode is persisted per physical GPU. The scalar
@@ -4210,6 +4556,18 @@ export function createIpcHandlers({
           return mock.bootApplyLog();
         };
       }
+    }
+
+    // Seed the RTSS owner once at boot. The normal dashboard lane is still
+    // responsible for the persisted primary GPU; this starts only the other
+    // selected physical adapters so the native OSD is multi-GPU from its
+    // first sample, even when no legacy HUD renderer exists.
+    if (rtssOverlay) {
+      const lifecycle = rtssOverlayLifecycle;
+      const syncGeneration = ++rtssOverlaySyncGeneration;
+      void store.loadSettings()
+        .then((settings) => syncRtssOverlayTelemetry(settings, lifecycle, syncGeneration))
+        .catch((err) => console.log(`[rtss-overlay] initial telemetry sync failed: ${err.message}`));
     }
 
     return { handlers, stopAllTelemetry };

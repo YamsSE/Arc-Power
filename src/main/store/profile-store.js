@@ -23,9 +23,11 @@ const THEMES = ['dark', 'midnight', 'light', 'red', 'yellow'];
 // src/main/ipc-core.js (keep the three in lockstep). Absent on old settings
 // files -> 'top-left'; a garbage value degrades to 'top-left' at the STORE.
 const OVERLAY_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
-// M5: the overlay scale slider's range (mirrored in pure/overlay.ts).
+// M5: the RTSS overlay scale range (mirrored in pure/overlay.ts). The
+// persisted values map to RTSS's quarter-size font grid.
 const OVERLAY_SCALE_MIN = 0.5;
 const OVERLAY_SCALE_MAX = 2.0;
+const OVERLAY_SCALE_STEP = 0.25;
 
 // M24: the overlay THEME ids - the persisted-truth owner of the list (the
 // OVERLAY_POSITIONS pattern). The renderer mirror lives in
@@ -36,6 +38,11 @@ const OVERLAY_SCALE_MAX = 2.0;
 // row); a garbage value degrades to 'arc' at the STORE.
 const OVERLAY_THEMES = ['classic', 'arc'];
 const OVERLAY_THEME_DEFAULT = 'arc';
+
+// The overlay renderer is additive so older settings files keep their
+// existing envelope. Missing values intentionally resolve to the native RTSS
+// path everywhere; the hook-free renderer is opt-in.
+export const OVERLAY_RENDERERS = ['rtss', 'capframex'];
 
 // M23: the ADVANCED overlay's anchored-edge ids - the persisted-truth owner
 // of the list (the OVERLAY_POSITIONS pattern). The renderer mirror lives in
@@ -228,7 +235,8 @@ function defaultDataDir() {
 /** M6: clamp a scale value to the slider's range (garbage degrades to 1.0). */
 function clampOverlayScale(v) {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : 1.0;
-  return Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+  const clamped = Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, n));
+  return Math.round(clamped / OVERLAY_SCALE_STEP) * OVERLAY_SCALE_STEP;
 }
 
 /** M7b: clamp the background opacity to 0..1 (garbage degrades to the 0.5
@@ -430,7 +438,7 @@ export class ProfileStore {
    * files -> the defaults (off / 'P' / 'right'; the M5 overlaySettings
    * pattern, NO schema bump - NO scale key, the panel is a fixed compact
    * size).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, monitorLogMetrics?: string[], deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, rtssOnBoot?: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, monitorLogMetrics?: string[], deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -599,11 +607,20 @@ export class ProfileStore {
     // Monitoring log selection is additive for the same reason: old settings
     // default to every field, while an explicit [] means log nothing.
     if (data.monitorLogMetrics !== undefined) out.monitorLogMetrics = normalizeMonitorLogMetrics(data.monitorLogMetrics);
+    // RTSS startup is additive. Keep the field absent for legacy settings
+    // envelopes until the user explicitly changes the new setting, while
+    // every consumer treats an absent value as disabled.
+    if (data.rtssOnBoot !== undefined) out.rtssOnBoot = data.rtssOnBoot === true;
+    if (data.overlayRenderer !== undefined) {
+      out.overlayRenderer = OVERLAY_RENDERERS.includes(data.overlayRenderer)
+        ? data.overlayRenderer
+        : 'rtss';
+    }
     return out;
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, monitorLogMetrics?: string[], deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, rtssOnBoot?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, monitorLogMetrics?: string[], deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
   async saveSettings(settings) {
     const persisted = {
@@ -704,6 +721,14 @@ export class ProfileStore {
       ? normalizeOcModes(settings.ocModes)
       : this._settingsCache?.ocModes;
     if (ocModeMap !== undefined) persisted.ocModes = normalizeOcModes(ocModeMap);
+    const rtssOnBoot = settings.rtssOnBoot !== undefined
+      ? settings.rtssOnBoot === true
+      : this._settingsCache?.rtssOnBoot;
+    if (rtssOnBoot !== undefined) persisted.rtssOnBoot = rtssOnBoot === true;
+    const overlayRenderer = settings.overlayRenderer !== undefined
+      ? (OVERLAY_RENDERERS.includes(settings.overlayRenderer) ? settings.overlayRenderer : 'rtss')
+      : this._settingsCache?.overlayRenderer;
+    if (overlayRenderer !== undefined) persisted.overlayRenderer = overlayRenderer;
     this._writeAtomic(this.settingsPath, persisted);
     // M4-D2: keep the sync cache in lockstep with the persisted write - the
     // close handler must see the very toggle it just persisted.
@@ -712,6 +737,8 @@ export class ProfileStore {
       ...(activeProfileMap !== undefined ? { activeProfileIds: activeProfileMap } : {}),
       ...(ocModeMap !== undefined ? { ocModes: ocModeMap } : {}),
       ...(monitorLogMetrics !== undefined ? { monitorLogMetrics } : {}),
+      ...(rtssOnBoot !== undefined ? { rtssOnBoot } : {}),
+      ...(overlayRenderer !== undefined ? { overlayRenderer } : {}),
       schemaVersion: SCHEMA_VERSION,
     });
   }

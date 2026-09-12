@@ -1,8 +1,8 @@
 // Arc Power - M4-D2 FPS adapter: DXGI GetFrameStatistics via koffi.
 //
-// Replaces the PresentMon wiring (the ETW metrics are unexported on this
-// machine - dead code). DXGI is unelevated, system-wide and needs no
-// service: CreateDXGIFactory1 (dxgi.dll export) → IDXGIFactory1 vtable →
+// Provides the fallback behind the native RTSS wiring. DXGI is unelevated,
+// system-wide, and needs no service: CreateDXGIFactory1 (dxgi.dll export) →
+// IDXGIFactory1 vtable →
 // EnumAdapters1 → IDXGIAdapter vtable → EnumOutputs → IDXGIOutput vtable
 // → GetFrameStatistics. The PresentCount delta of every output of every
 // adapter is summed and divided by the wall-clock delta - the system-wide
@@ -387,7 +387,7 @@ export function wrappedDelta(curr, base) {
 
 /**
  * The DXGI FPS adapter + the adapter-LUID link. Interface (mirrors the old
- * PresentMon adapter): poll(deviceId) → sample|null, stop(), and the
+ * FPS-provider adapter): poll(deviceId) → sample|null, stop(), and the
  * M4-D2 addition adapterLuidOf(deviceIdHex) for sys-stats.
  * M7a/M12: poll() no longer reads the counters itself - the internal
  * 200 ms sampler does (started lazily on the FIRST poll, cleared in

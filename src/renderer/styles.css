@@ -869,29 +869,6 @@ html, body {
 .dashboard-pulse-inline-value { display: inline-flex; align-items: baseline; gap: 4px; flex: 0 0 auto; }
 .dashboard-pulse-value { color: var(--text); font-family: var(--font-display); font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .dashboard-sparkline { display: block; width: 100%; height: 25px; margin-top: 4px; overflow: visible; opacity: .9; }
-.dashboard-pulse-metric { overflow: visible; }
-.dashboard-sparkline-layout { width: calc(100% + 24px); min-width: 0; margin-left: -24px; display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 4px; align-items: stretch; }
-.dashboard-sparkline-axis-rail { position: relative; min-width: 0; height: 25px; overflow: hidden; }
-.dashboard-sparkline-surface { position: relative; min-width: 0; height: 25px; overflow: visible; }
-.dashboard-sparkline-grid { position: absolute; top: 18.75%; right: 0; bottom: 12.5%; left: 0; z-index: 0; pointer-events: none; }
-.dashboard-sparkline-grid-line { position: absolute; display: block; background: color-mix(in srgb, var(--border) 42%, transparent); }
-.dashboard-sparkline-grid-h { right: 0; left: 0; height: 1px; }
-.dashboard-sparkline-grid-top { top: 0; }
-.dashboard-sparkline-grid-mid { top: 50%; }
-.dashboard-sparkline-grid-bottom { bottom: 0; }
-.dashboard-sparkline-grid-v { top: 0; bottom: 0; width: 1px; }
-.dashboard-sparkline-grid-left { left: 0; }
-.dashboard-sparkline-grid-quarter { left: 25%; }
-.dashboard-sparkline-grid-half { left: 50%; }
-.dashboard-sparkline-grid-three-quarter { left: 75%; }
-.dashboard-sparkline-grid-right { right: 0; }
-.dashboard-sparkline-surface > .dashboard-sparkline { position: relative; z-index: 1; }
-.dashboard-sparkline-axis-label { position: absolute; left: 0; right: 0; z-index: 3; max-width: 100%; overflow: hidden; color: #38c5ff; font: 550 8px var(--mono); line-height: 1; pointer-events: none; text-align: right; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(4, 7, 14, .9); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.dashboard-sparkline-axis-label[hidden], .dashboard-sparkline-crosshair[hidden], .dashboard-sparkline-hover[hidden] { display: none; }
-.dashboard-sparkline-axis-y-max { top: 1px; }
-.dashboard-sparkline-axis-y-min { bottom: 2px; }
-.dashboard-sparkline-crosshair { position: absolute; top: 18.75%; bottom: 12.5%; z-index: 2; width: 1px; transform: translateX(-.5px); border-left: 1px dashed color-mix(in srgb, #38c5ff 76%, transparent); box-shadow: 0 0 6px rgba(56, 197, 255, .35); pointer-events: none; }
-.dashboard-sparkline-hover { position: absolute; top: 2px; z-index: 5; max-width: calc(100% - 4px); overflow: hidden; padding: 0; border: 0; border-radius: 0; background: transparent; color: #38c5ff; font: 550 8px var(--mono); line-height: 1; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(4, 7, 14, .9); white-space: nowrap; pointer-events: none; }
 .dashboard-sparkline-range, .telemetry-graph-range { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-dim); font: 500 9px var(--mono); line-height: 1.15; font-variant-numeric: tabular-nums; }
 .dashboard-sparkline-range { margin-top: 2px; }
 .dashboard-sparkline-range > span, .telemetry-graph-range > span { min-width: 0; display: inline-flex; align-items: baseline; gap: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2238,6 +2215,7 @@ input[type="number"] {
 /* Graphics | Display segmented view and compact IGS-style Display rows. */
 .graphics-view-toolbar { margin: 2px 0 14px; display: flex; flex-direction: column; align-items: flex-start; }
 .graphics-view-toolbar .graphics-view-toggle-row { margin: 0 0 8px; justify-content: flex-start; }
+.graphics-view-toggle-row, .mon-view-toggle-row { display: flex; max-width: 100%; }
 .graphics-view { min-width: 0; }
 .display-stack { display: flex; flex-direction: column; gap: 12px; }
 .display-group {
@@ -2322,6 +2300,9 @@ input[type="number"] {
    (the .oc-mode-toggle / .oc-mode-btn classes carry the segmented styling;
    this row just keeps the same page-top spacing). */
 .mon-view-toggle-row { margin: 2px 0 14px; }
+.mon-view-toggle-row .oc-mode-col, .graphics-view-toggle-row .oc-mode-col { min-width: 0; }
+.mon-view-toggle, .graphics-view-toggle { max-width: 100%; }
+.mon-view-toggle .oc-mode-btn, .graphics-view-toggle .oc-mode-btn { min-width: 0; }
 
 /* M9: the Overlay Settings sub-view heading (inside the Monitoring page's
    Overlay view - the old page-title became the sub-view's heading). */
@@ -2625,10 +2606,11 @@ input[type="number"] {
    recessed setting-row treatment: labels remain readable on the left while
    their controls sit in a consistent right-hand control rail. */
 .settings-root {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  max-width: 680px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 14px;
+  max-width: 1060px;
 }
 
 .settings-card {
@@ -3035,6 +3017,410 @@ input[type="number"] {
   min-width: 38px;
 }
 
+/* Overlay Settings refresh: Arc glass workspace. All selectors below are
+   scoped to the overlay root so shared settings controls keep their existing
+   behavior everywhere else in the app. */
+.overlay-settings-root {
+  position: relative;
+  width: 100%;
+  max-width: 1060px;
+  gap: 14px;
+}
+.overlay-settings-hero {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  overflow: hidden;
+  min-height: 112px;
+  padding: 22px 24px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: var(--radius);
+  background: linear-gradient(115deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 8%), color-mix(in srgb, var(--bg) 88%, var(--accent) 4%));
+  box-shadow: inset 3px 0 0 var(--accent), 0 12px 34px rgba(0, 0, 0, .2);
+}
+.overlay-settings-hero::after {
+  position: absolute;
+  right: -80px;
+  top: -110px;
+  width: 280px;
+  height: 280px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 24px color-mix(in srgb, var(--accent) 3%, transparent), 0 0 42px color-mix(in srgb, var(--accent) 12%, transparent);
+  content: '';
+  pointer-events: none;
+}
+.overlay-hero-copy, .overlay-hero-status { position: relative; z-index: 1; }
+.overlay-section-kicker, .overlay-card-eyebrow, .overlay-subsection-label {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.overlay-hero-title { margin: 5px 0 3px; color: var(--text); font-size: 25px; letter-spacing: -.02em; }
+.overlay-hero-subtitle { margin: 0; color: var(--text-dim); font-size: 13px; }
+.overlay-hero-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 170px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-inset) 78%, transparent);
+}
+.overlay-status-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--text-dim); }
+.overlay-hero-status[data-status="active"] .overlay-status-dot { background: var(--accent); box-shadow: 0 0 12px var(--accent); }
+.overlay-status-copy { display: flex; flex-direction: column; gap: 2px; }
+.overlay-status-copy strong { color: var(--text); font-size: 12px; }
+.overlay-status-copy small { color: var(--text-dim); font-size: 10px; }
+.overlay-settings-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.04fr) minmax(0, .96fr);
+  align-items: start;
+  gap: 14px;
+}
+.overlay-workspace-column { display: flex; min-width: 0; flex-direction: column; gap: 14px; }
+.overlay-settings-root .settings-card {
+  padding: 16px 18px;
+  border-color: rgba(94, 136, 175, .3);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), color-mix(in srgb, var(--bg-inset) 92%, var(--bg-elev)));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent), 0 9px 24px color-mix(in srgb, #000 14%, transparent);
+}
+.overlay-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.overlay-card-heading .card-title { margin: 3px 0 0; font-size: 16px; letter-spacing: -.01em; }
+.overlay-value-badge {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border: 1px solid rgba(0, 213, 255, .3);
+  border-radius: 999px;
+  color: var(--accent);
+  font: 700 10px/1 Consolas, 'Courier New', monospace;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.overlay-card-description { margin: -5px 0 12px; color: var(--text-dim); font-size: 12px; line-height: 1.45; }
+.overlay-subsection-label { margin: 13px 0 7px; color: var(--text-dim); font-size: 10px; letter-spacing: .1em; }
+.overlay-settings-root .settings-row { min-height: 32px; }
+.overlay-renderer-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: start; gap: 10px; margin: 0 0 9px; }
+.overlay-renderer-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; min-width: 0; }
+.overlay-renderer-option { display: flex; min-width: 0; min-height: 48px; flex-direction: column; align-items: flex-start; justify-content: center; gap: 3px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--bg-inset) 82%, var(--bg-elev)); color: var(--text-dim); text-align: left; }
+.overlay-renderer-option strong { overflow: hidden; max-width: 100%; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.overlay-renderer-option small { color: var(--text-dim); font-size: 10px; }
+.overlay-renderer-option.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, var(--bg-elev)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent); }
+.overlay-renderer-option:hover { border-color: color-mix(in srgb, var(--accent) 70%, var(--border)); }
+.overlay-settings-root .overlay-stats-card { grid-column: 1 / -1; }
+.overlay-telemetry-lanes { width: 100%; }
+.overlay-telemetry-lanes .overlay-stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px 18px; }
+.overlay-telemetry-lanes .overlay-stat-toggle { padding: 5px 7px; border: 1px solid transparent; border-radius: 6px; background: rgba(255, 255, 255, .018); }
+.overlay-telemetry-lanes .overlay-stat-toggle:has(input:checked) { border-color: rgba(0, 213, 255, .16); background: rgba(0, 213, 255, .055); }
+.overlay-settings-root .overlay-device-monitoring { align-items: flex-start; padding: 10px 11px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.overlay-settings-root .overlay-device-options { flex: 1; }
+.overlay-settings-root input[type="range"] { accent-color: var(--accent); }
+
+@media (max-width: 760px) {
+  .overlay-settings-workspace { grid-template-columns: 1fr; }
+  .overlay-telemetry-lanes .overlay-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 520px) {
+  .overlay-settings-hero { align-items: flex-start; flex-direction: column; padding: 18px; }
+  .overlay-hero-status { width: 100%; }
+  .overlay-telemetry-lanes .overlay-stat-grid { grid-template-columns: 1fr; }
+  .overlay-renderer-row { grid-template-columns: 1fr; gap: 6px; }
+}
+
+/* Shared Arc control surface. The Overlay Settings hero is the visual
+   reference for the control pages: a restrained navy glass panel, cyan edge
+   light, compact kicker, and a small live-status rail. These classes are
+   presentation-only; the existing page hooks and control data attributes
+   remain unchanged. */
+.arc-page-hero {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 112px;
+  padding: 22px 24px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: var(--radius);
+  background: linear-gradient(115deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 8%), color-mix(in srgb, var(--bg) 88%, var(--accent) 4%));
+  box-shadow: inset 3px 0 0 var(--accent), 0 12px 34px rgba(0, 0, 0, .2);
+}
+.arc-page-hero::after {
+  position: absolute;
+  right: -80px;
+  top: -110px;
+  width: 280px;
+  height: 280px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 24px color-mix(in srgb, var(--accent) 3%, transparent), 0 0 42px color-mix(in srgb, var(--accent) 12%, transparent);
+  content: '';
+  pointer-events: none;
+}
+.arc-page-hero-copy,
+.arc-page-hero-side,
+.arc-page-hero-status { position: relative; z-index: 1; min-width: 0; }
+.arc-page-hero-copy { flex: 1 1 auto; }
+.arc-section-kicker,
+.arc-hero-label {
+  display: block;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+.arc-page-hero .page-title {
+  margin: 5px 0 3px;
+  color: var(--text);
+  font-size: 25px;
+  letter-spacing: -.02em;
+}
+.arc-page-hero .page-subtitle { margin: 0; max-width: 680px; color: var(--text-dim); font-size: 13px; line-height: 1.45; }
+.arc-page-hero-status,
+.arc-page-hero-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 1 300px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-inset) 78%, transparent);
+}
+.arc-page-hero-side { align-items: stretch; flex-direction: column; gap: 6px; }
+.arc-page-hero-side .device-select,
+.arc-page-hero-side .graphics-select { min-width: 0; width: 100%; }
+.arc-hero-value { color: var(--text); font-size: 12px; }
+.arc-status-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--accent); box-shadow: 0 0 12px var(--accent); }
+.arc-status-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.arc-status-copy strong { overflow: hidden; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.arc-status-copy small { color: var(--text-dim); font-size: 10px; }
+
+.arc-page-toolbar {
+  width: fit-content;
+  max-width: 100%;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius: 10px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 86%, var(--accent) 4%), var(--bg-inset));
+}
+.arc-page-toolbar .oc-mode-row { margin: 0; }
+
+.arc-surface-card {
+  position: relative;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), color-mix(in srgb, var(--bg-inset) 92%, var(--bg-elev)));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent), 0 9px 24px color-mix(in srgb, #000 14%, transparent);
+}
+.arc-surface-card::after {
+  position: absolute;
+  right: -80px;
+  bottom: -120px;
+  width: 230px;
+  height: 230px;
+  border: 1px solid color-mix(in srgb, var(--accent) 9%, transparent);
+  border-radius: 50%;
+  content: '';
+  pointer-events: none;
+}
+.arc-card-heading { position: relative; z-index: 1; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; margin-bottom: 14px; }
+.arc-card-copy { min-width: 0; }
+.arc-card-copy .card-title { margin: 4px 0 3px; font-size: 16px; letter-spacing: -.01em; }
+.arc-card-subtitle { margin: 0; color: var(--text-dim); font-size: 12px; line-height: 1.4; }
+.arc-card-status {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font: 700 10px/1 Consolas, 'Courier New', monospace;
+  letter-spacing: .05em;
+}
+.arc-card-status.is-active { border-color: color-mix(in srgb, var(--success) 52%, var(--border)); color: var(--success); }
+.arc-boot-heading { align-items: flex-start; }
+.boot-card .arc-setting-row { position: relative; z-index: 1; justify-content: flex-start; }
+.boot-card .arc-setting-row .boot-toggle { width: 100%; justify-content: space-between; }
+.boot-card > .card-note { position: relative; z-index: 1; }
+
+/* The compact control cards share the same Arc surface, while each existing
+   card-specific layout still owns its controls and action buttons. */
+.oc-card,
+.graphics-card,
+.display-group,
+.boot-card,
+.profile-list-card {
+  position: relative;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 4%), var(--bg-elev));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025), var(--shadow);
+}
+.oc-card:hover,
+.graphics-card:hover,
+.display-group:hover,
+.boot-card:hover,
+.profile-list-card:hover { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); }
+.oc-card::after,
+.graphics-card::after,
+.display-group::after {
+  position: absolute;
+  right: -70px;
+  bottom: -110px;
+  width: 210px;
+  height: 210px;
+  border: 1px solid rgba(0, 213, 255, .07);
+  border-radius: 50%;
+  content: '';
+  pointer-events: none;
+}
+.oc-card-head,
+.graphics-card-heading,
+.display-group-toggle { min-width: 0; }
+.oc-card-head > *,
+.graphics-card-heading > *,
+.display-group-toggle > * { min-width: 0; }
+.oc-card-head-meta { overflow: hidden; }
+.oc-card-head-meta > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.graphics-card-heading { grid-template-columns: minmax(0, 1fr) minmax(180px, 42%); }
+.display-group-toggle .card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graphics-general-actions,
+.display-general-actions { padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border)); border-radius: 9px; background: color-mix(in srgb, var(--bg-inset) 78%, var(--bg-elev)); }
+
+/* The page shells use a two-column control grid while their small action
+   surfaces and search row stay content-sized. */
+.settings-root > .arc-page-hero,
+.settings-root > .settings-toolbar,
+.settings-root > .overlay-card,
+.settings-root > .maintenance-card,
+.settings-root > .theme-card { grid-column: 1 / -1; }
+.settings-root > .settings-toolbar { justify-self: start; margin: 0; }
+.settings-root > .settings-card { min-width: 0; }
+.settings-root .settings-card {
+  position: relative;
+  overflow: hidden;
+  padding: 16px 18px;
+  border-color: rgba(94, 136, 175, .34);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), color-mix(in srgb, var(--bg-inset) 92%, var(--bg-elev)));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent), 0 9px 24px color-mix(in srgb, #000 14%, transparent);
+}
+.settings-root .settings-card .card-title { margin: 0 0 12px; padding: 0; font-size: 16px; letter-spacing: -.01em; }
+.settings-root .settings-card .settings-row { min-height: 44px; border-color: color-mix(in srgb, var(--accent) 18%, var(--border)); background: color-mix(in srgb, var(--bg-inset) 74%, var(--bg-elev)); }
+.settings-root .settings-card > .card-note { margin-left: 0; margin-right: 0; line-height: 1.45; }
+
+/* Give the compact tuning/graphics/display surfaces the same visual weight
+   as the Arc hero: clearer card rhythm, calmer inset controls, and an action
+   footer that does not blend into the body copy. */
+.oc-stack,
+.graphics-stack { gap: 12px; }
+.oc-card,
+.graphics-card { padding: 14px 16px; }
+.oc-card-head { margin-bottom: 8px; }
+.oc-card .card-title,
+.graphics-card .card-title { font-size: 15px; letter-spacing: -.01em; }
+.oc-card-head-meta { gap: 14px; }
+.oc-slider-row { min-height: 34px; gap: 14px; }
+.oc-meta { margin-top: 9px; }
+.oc-card-actions,
+.graphics-card-actions { margin-top: 12px; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent); }
+.graphics-card .card-note { margin-top: 8px; line-height: 1.45; }
+.graphics-card-heading { min-height: 36px; }
+.display-stack { gap: 14px; }
+.display-group-toggle { padding: 14px 16px; }
+.display-group-body-inner { padding: 14px 16px 16px; }
+.display-control,
+.display-note-row { border-color: color-mix(in srgb, var(--accent) 18%, var(--border)); background: color-mix(in srgb, var(--bg-inset) 74%, var(--bg-elev)); }
+
+/* Overlay Settings: explicit tracks prevent long GPU labels and sliders from
+   stealing the space reserved for neighboring controls. */
+.overlay-settings-root .overlay-card-heading > div:first-child { min-width: 0; flex: 1 1 auto; }
+.overlay-settings-root .overlay-card-heading .card-title { overflow-wrap: anywhere; }
+.overlay-settings-root .settings-row,
+.overlay-settings-root .settings-row > * { box-sizing: border-box; min-width: 0; }
+.overlay-settings-root .settings-row > .boot-toggle { flex: 1 1 100%; }
+.overlay-settings-root .overlay-device-monitoring {
+  display: grid;
+  grid-template-columns: minmax(108px, .34fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+.overlay-settings-root .overlay-monitor-label { min-width: 0; padding-top: 5px; white-space: nowrap; }
+.overlay-settings-root .overlay-device-options { min-width: 0; margin-left: 0; justify-content: flex-start; width: 100%; }
+.overlay-settings-root .overlay-device-toggle { min-width: 0; max-width: 100%; }
+.overlay-settings-root .overlay-device-toggle span { overflow-wrap: anywhere; }
+.overlay-settings-root .overlay-scale-row,
+.overlay-settings-root .overlay-poll-ms-row,
+.overlay-settings-root .overlay-bg-row:has(.settings-bg-opacity-slider) {
+  display: grid;
+  grid-template-columns: minmax(84px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+.overlay-settings-root .settings-scale-slider,
+.overlay-settings-root .settings-poll-ms-slider,
+.overlay-settings-root .settings-bg-opacity-slider { width: 100%; min-width: 0; max-width: none; }
+.overlay-settings-root .settings-scale-value,
+.overlay-settings-root .settings-bg-opacity-value,
+.overlay-settings-root .settings-poll-ms-value { text-align: right; }
+.overlay-settings-root .overlay-color-options,
+.overlay-settings-root .overlay-bg-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); align-items: stretch; }
+.overlay-settings-root .overlay-color-options > *,
+.overlay-settings-root .overlay-bg-options > * { min-width: 0; }
+.overlay-settings-root .overlay-color-option,
+.overlay-settings-root .overlay-bg-color-option { min-width: 0; justify-content: flex-start; overflow: hidden; }
+.overlay-settings-root .overlay-color-option .theme-option-name,
+.overlay-settings-root .overlay-bg-color-option .theme-option-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overlay-settings-root .overlay-stat-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.overlay-settings-root .overlay-stat-group { min-width: 0; padding: 10px; border: 1px solid color-mix(in srgb, var(--border) 82%, var(--accent)); border-radius: 9px; background: color-mix(in srgb, var(--bg-inset) 72%, var(--bg-elev)); }
+.overlay-settings-root .overlay-stat-group-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; margin-bottom: 7px; }
+.overlay-settings-root .overlay-stat-group-copy { min-width: 0; }
+.overlay-settings-root .overlay-stat-group-title { margin: 0; color: var(--text); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+.overlay-settings-root .overlay-stat-group-note { margin: 3px 0 0; color: var(--text-dim); font-size: 10px; line-height: 1.35; }
+.overlay-settings-root .overlay-stat-group-count { flex: 0 0 auto; color: var(--accent); font: 650 10px var(--mono); }
+.overlay-settings-root .overlay-stat-grid { grid-template-columns: 1fr; gap: 3px; }
+
+@media (max-width: 760px) {
+  .arc-page-hero { align-items: flex-start; flex-direction: column; padding: 18px; }
+  .arc-page-hero-status,
+  .arc-page-hero-side { width: 100%; max-width: none; flex-basis: auto; }
+  .settings-root { grid-template-columns: 1fr; }
+  .overlay-settings-root .overlay-stat-groups { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .overlay-settings-root .overlay-device-monitoring,
+  .overlay-settings-root .overlay-scale-row,
+  .overlay-settings-root .overlay-poll-ms-row,
+  .overlay-settings-root .overlay-bg-row:has(.settings-bg-opacity-slider) { grid-template-columns: 1fr; gap: 6px; }
+  .overlay-settings-root .settings-scale-value,
+  .overlay-settings-root .settings-bg-opacity-value,
+  .overlay-settings-root .settings-poll-ms-value { text-align: left; }
+}
+@media (max-width: 680px) {
+  /* Keep the existing compact card breakpoint stronger than the shared Arc
+     desktop polish. Long titles and their controls must stack, never squeeze
+     into the same track. */
+  .graphics-card-heading,
+  .graphics-endurance-preset-row,
+  .display-control-heading { grid-template-columns: 1fr; gap: 8px; }
+  .graphics-inline-control,
+  .display-inline-control {
+    width: 100%;
+    padding-top: 8px;
+    padding-left: 0;
+    border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+    border-left: 0;
+    justify-self: stretch;
+  }
+}
+
 .profile-list { display: flex; flex-direction: column; gap: 8px; }
 
 /* D2: screenshot-inspired profile browser and detail surface. The legacy
@@ -3222,12 +3608,53 @@ input[type="number"] {
 .btn-danger-text { color: var(--error); }
 .btn-danger-text:hover { border-color: var(--error); }
 
-.graphics-general-actions {
+/* Profiles use the same Arc control language as the tuning, graphics, and
+   display pages. Keep the legacy row hooks intact while giving the browser
+   and boot surfaces the same inset rhythm and cyan edge treatment. */
+.profiles-root { min-width: 0; }
+.boot-card,
+.profile-list-card { padding: 16px 18px; }
+.boot-card .boot-row {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-inset) 74%, var(--bg-elev));
+}
+.boot-card .card-note { margin-top: 10px; }
+.profile-list-card .profile-browser-head { align-items: flex-start; }
+.profile-list-card .profile-browser-title .card-title { margin: 0 0 3px; font-size: 16px; }
+.profile-list-card .profile-browser-toolbar {
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-inset) 74%, var(--bg-elev));
+}
+.profile-list-card .profile-row {
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 4%), var(--bg-elev));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025);
+}
+.profile-list-card .profile-row.profile-active {
+  border-color: color-mix(in srgb, var(--accent) 68%, var(--border));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--accent-soft) 76%, var(--bg-elev)), var(--bg-elev));
+}
+
+.graphics-general-actions,
+.display-general-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
   margin: 0 0 10px;
+}
+
+.graphics-view .graphics-general-actions,
+.graphics-view .display-general-actions {
+  width: fit-content;
+  max-width: 100%;
+  align-self: flex-start;
 }
 .graphics-general-actions .floating-apply,
 .graphics-general-actions .adv-floating-apply {

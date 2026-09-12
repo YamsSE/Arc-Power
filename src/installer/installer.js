@@ -5,9 +5,13 @@ const mode = params.get('mode') === 'uninstall' ? 'uninstall' : 'install';
 const $ = (id) => document.getElementById(id);
 const installForm = $('install-form');
 const installDirectory = $('install-directory');
+const initialInstallDirectory = installDirectory.value;
 const browseButton = $('browse-button');
 const desktopShortcut = $('desktop-shortcut');
 const launchAfter = $('launch-after');
+const rtssRow = $('rtss-row');
+const installRtss = $('install-rtss');
+const rtssInstalledNote = $('rtss-installed-note');
 const progressArea = $('progress-area');
 const progressMessage = $('progress-message');
 const progressPercent = $('progress-percent');
@@ -55,19 +59,28 @@ function setBusy(value) {
   installDirectory.disabled = value;
   desktopShortcut.disabled = value;
   launchAfter.disabled = value;
+  installRtss.disabled = value;
   $('actions').hidden = value && !completed;
 }
 
-function showComplete({ uninstall = false, launched = false } = {}) {
+function showComplete({ uninstall = false, launched = false, rtss = null } = {}) {
   completed = true;
   setBusy(false);
   setView('complete');
   installForm.hidden = true;
   statusCard.hidden = false;
   statusTitle.textContent = uninstall ? 'Arc Power removal is in progress' : 'Arc Power is ready';
-  statusDetail.textContent = uninstall
-    ? 'Your profiles are kept. This window is closing while the application files and Windows registration are cleaned up.'
-    : (launched ? 'The Arc Power control panel is opening now.' : 'You can launch Arc Power from the Start Menu any time.');
+  if (uninstall) {
+    statusDetail.textContent = 'Your profiles are kept. This window is closing while the application files and Windows registration are cleaned up.';
+  } else {
+    const launchText = launched ? 'The Arc Power control panel is opening now.' : 'You can launch Arc Power from the Start Menu any time.';
+    const rtssText = rtss?.installed
+      ? ' RTSS is ready for native FPS and frametime values.'
+      : rtss?.reason === 'not-requested'
+        ? ' RTSS was skipped; Arc Power will use its DXGI fallback until RTSS is installed.'
+        : ' RTSS could not be installed automatically; Arc Power will use its DXGI fallback until RTSS is installed.';
+    statusDetail.textContent = `${launchText}${rtssText}`;
+  }
   primaryButton.textContent = uninstall ? 'CLOSE' : 'CLOSE SETUP';
   cancelButton.hidden = true;
   progressArea.hidden = false;
@@ -90,8 +103,9 @@ async function runInstall() {
       installDir: installDirectory.value.trim(),
       createDesktopShortcut: desktopShortcut.checked,
       launchAfterInstall: launchAfter.checked,
+      installRtss: installRtss.checked,
     });
-    showComplete({ launched: result.launched });
+    showComplete({ launched: result.launched, rtss: result.rtss });
   } catch (cause) {
     setBusy(false);
     setView('idle');
@@ -152,7 +166,13 @@ api.getState().then((state) => {
     }
     return;
   }
-  installDirectory.value = state.installDir;
+  if (!installDirectory.value.trim() || installDirectory.value === initialInstallDirectory) {
+    installDirectory.value = state.installDir;
+  }
   $('version-label').textContent = `VERSION ${state.version}`;
+  if (state.rtss?.installed) {
+    rtssRow.hidden = true;
+    rtssInstalledNote.hidden = false;
+  }
   if (!state.payloadReady) setError('The packaged application payload is unavailable. Rebuild the installer before installing.');
 }).catch((cause) => setError(cause?.message || 'Setup could not read its installation state.'));

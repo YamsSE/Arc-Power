@@ -14,6 +14,9 @@ body {
   overflow: hidden;
   /* The base size - overlay.ts scales this via CSSOM (14px * scale). */
   font-size: 14px;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  font-synthesis: none;
   -webkit-user-select: none;
   user-select: none;
 }
@@ -22,6 +25,184 @@ body {
   position: relative;
   padding: 0.25rem 0.4rem;
 }
+
+/* -------------------------------------------------------------------------
+   Independent hook-free renderer. The layout borrows the useful visual
+   language of modern performance HUDs (grouped labels, right-aligned values,
+   compact charts) but is Arc Power markup and styling, with no CapFrameX
+   binary or asset dependency. */
+#capframex-root {
+  display: none;
+  position: relative;
+  width: 100%;
+  min-height: 100%;
+  color: #f3f6ff;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', Arial, sans-serif;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-shadow: none;
+}
+
+html[data-overlay-renderer="capframex"] #capframex-root { display: block; }
+html[data-overlay-renderer="capframex"] #overlay-root {
+  background: var(--capframex-bg, #1b1d2e);
+}
+html[data-overlay-renderer="capframex"] #overlay-backdrop,
+html[data-overlay-renderer="capframex"] #overlay-divider,
+html[data-overlay-renderer="capframex"] #overlay-fps,
+html[data-overlay-renderer="capframex"] #overlay-cpu,
+html[data-overlay-renderer="capframex"] #overlay-memory,
+html[data-overlay-renderer="capframex"] #overlay-gpu,
+html[data-overlay-renderer="capframex"] #overlay-vram,
+html[data-overlay-renderer="capframex"] #overlay-gpu2,
+html[data-overlay-renderer="capframex"] #overlay-vram2,
+html[data-overlay-renderer="capframex"] #overlay-secondary-rows,
+html[data-overlay-renderer="capframex"] #overlay-api,
+html[data-overlay-renderer="capframex"] #overlay-frametime,
+html[data-overlay-renderer="capframex"] #overlay-frametime-value {
+  display: none !important;
+}
+
+.capframex-panel {
+  box-sizing: border-box;
+  position: relative;
+  width: 100%;
+  padding: 0.2rem 0.5rem 0.3rem;
+  background: transparent;
+  border: 1px solid rgba(70, 191, 255, 0.25);
+  border-radius: 0.45rem;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025), 0 0 1.4rem rgba(0, 167, 255, 0.08);
+  overflow: hidden;
+}
+
+.capframex-panel::before {
+  position: absolute;
+  inset: 0;
+  content: '';
+  background: url('../assets/ArcPowerIcon.png') center 43% / min(46%, 13rem) auto no-repeat;
+  opacity: 0.025;
+  pointer-events: none;
+}
+
+.capframex-panel::after {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  content: '';
+  background: linear-gradient(180deg, #7fe3ff, #2b8dff 55%, #735bff);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.capframex-panel > * { position: relative; z-index: 1; }
+
+/* The renderer toggles optional rows with the native hidden attribute. Keep
+   the display-grid declarations above from resurrecting those rows. */
+#capframex-root [hidden] { display: none !important; }
+
+.capframex-section {
+  margin: 0 0 0.48rem;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.capframex-section-title,
+.capframex-gpu-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5.8rem 6.4rem;
+  align-items: baseline;
+  gap: 0.85rem;
+  min-width: 0;
+  margin-bottom: 0.08rem;
+  color: #c5a3ff;
+  font-size: 0.94rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.capframex-gpu-title span:first-child,
+.capframex-cpu-title span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.capframex-cpu-title .capframex-title-value { grid-column: 3; color: #f1f2f8; text-align: right; }
+.capframex-displaytime-card .capframex-chart-heading span:first-child { color: #a8ed00; }
+
+.capframex-gpu-title .capframex-clock,
+.capframex-gpu-title .capframex-memory-clock {
+  color: #ffe800;
+  font-weight: 700;
+}
+
+.capframex-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5.8rem 6.4rem;
+  align-items: baseline;
+  column-gap: 0.85rem;
+  min-height: 1.45rem;
+  font-size: 0.9rem;
+  line-height: 1.18;
+}
+
+.capframex-label { overflow: hidden; color: #b17cff; text-overflow: ellipsis; white-space: nowrap; }
+.capframex-row > span:not(.capframex-label) { grid-column: 3; color: #ffe800; font-weight: 700; white-space: nowrap; text-align: right; }
+.capframex-row > span:not(.capframex-label):nth-child(2):not(:last-child) { grid-column: 2; }
+.capframex-cpu-title { color: #ff3d48; }
+.capframex-cpu-section .capframex-label { color: #ff5057; }
+.capframex-cpu-section .capframex-row > span:not(.capframex-label) { color: #f1f2f8; }
+.capframex-memory-row { margin: 0.2rem 0 0.34rem; }
+.capframex-memory-row .capframex-label { color: #91d9ee; }
+.capframex-api-row { margin: 0.02rem 0 0.3rem; color: var(--capframex-accent, #ffffff); font-size: 0.9rem; font-weight: 700; text-align: right; }
+
+.capframex-summary {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+  margin: 0.18rem 0 0.42rem;
+  padding: 0;
+  border-top: 0;
+  border-bottom: 0;
+}
+
+.capframex-summary > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5.8rem 6.4rem;
+  align-items: baseline;
+  min-width: 0;
+  min-height: 1.45rem;
+  font-size: 0.9rem;
+  line-height: 1.18;
+}
+.capframex-summary-label { grid-column: 1; display: block; color: #5bd5ff; font-size: 0.9rem; white-space: nowrap; }
+.capframex-summary strong,
+.capframex-summary span:last-child { color: var(--capframex-accent, #5bd5ff); font-size: 0.9rem; font-weight: 700; white-space: nowrap; }
+.capframex-summary strong { grid-column: 3; margin-right: 0.25rem; color: var(--capframex-accent, #5bd5ff); font-size: 0.9rem; font-weight: 700; text-align: right; white-space: nowrap; }
+/* Single FPS metrics terminate in the right value track. Performance is the
+   one intentional two-value row: FPS occupies the middle track and its
+   paired frametime occupies the right track, matching the Arc HUD grammar. */
+#capframex-performance { grid-column: 2; }
+#capframex-performance-ft { grid-column: 3; }
+.capframex-summary [hidden] { display: none; }
+
+.capframex-chart-card {
+  margin-top: 0.25rem;
+  padding: 0.25rem 0.35rem 0.28rem;
+  background: #0d0d15;
+  border: 1px solid rgba(112, 117, 143, 0.27);
+  border-radius: 0.28rem;
+}
+
+.capframex-chart-heading {
+  display: flex;
+  justify-content: space-between;
+  color: #b9bdcf;
+  font-size: 0.72rem;
+}
+
+.capframex-chart-heading span:last-child { color: #5bd5ff; font-weight: 700; }
+.capframex-chart-heading small { color: #8e93aa; font-size: 0.86em; font-weight: 500; }
+.capframex-chart-plot { position: relative; height: 3.15rem; margin-top: 0.1rem; }
+.capframex-chart { display: block; width: 100%; height: 100%; }
+.capframex-axis-label { position: absolute; right: 0; color: #8294aa; font-size: 0.64rem; line-height: 1; pointer-events: none; }
+.capframex-axis-top { top: 0; }
+.capframex-axis-bottom { bottom: 0; }
 
 /* M7b (fix 4): the OPTIONAL background box behind the HUD (the Appearance
    card's Background section). Hidden by default; overlay.ts toggles the
@@ -93,6 +274,13 @@ body {
  #overlay-frametime-value {
   position: relative;
   z-index: 1;
+}
+
+/* The API row deliberately has no visible "API" header. Keep its value in
+   the shared value column so the divider never crosses DX12/VULKAN/OGL at
+   any overlay scale. */
+#overlay-api {
+  text-indent: calc(var(--overlay-label-w, 4ch) + 2ch);
 }
 
 /* ---------------------------------------------------------------------------
@@ -177,7 +365,7 @@ html[data-overlay-theme="arc"] .overlay-line {
 .overlay-frametime {
   display: block;
   width: 31rem;
-  height: 1.6rem;
+  height: 1.5rem;
   margin-top: 0.2rem;
 }
 

@@ -53,7 +53,7 @@
 //                      no conversion). The class is often ABSENT on
 //                      desktops (no power-metering hardware), so it
 //                      honestly degrades to null ('-' in the UI).
-//   gpuUtilPct        - M4-I: the OS GPU-utilization counter - the
+//   gpuUtilPct        - M4-I: the OS GPU-utilization fallback counter - the
 //                      Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine
 //                      rows for the matched LUID (aggregate: per (eng#,
 //                      engtype) the MAX across the process rows, then SUM,
@@ -937,6 +937,19 @@ export function createSysStats(deps = {}) {
       return sampleFastForRecord(record);
     },
 
+    /**
+     * Hybrid telemetry seam: the Windows GPU Engine counter is the only
+     * legacy system-stat field that remains authoritative after the
+     * LibreHardwareMonitor migration. Keep the rest of the old sys-stats
+     * sample private so it cannot silently become a hardware-readout
+     * fallback when LHM is active.
+     */
+    async sampleGpuUtilForTarget(target = null) {
+      if (targetKeyOf(target) === 'default') return { gpuUtilPct: null };
+      const record = ensureTargetRecord(target);
+      return { gpuUtilPct: record.cache?.gpuUtilPct ?? null };
+    },
+
     registerTarget(target = null) {
       return ensureTargetRecord(target).key;
     },
@@ -1076,6 +1089,7 @@ export function createMockSysStats(overrides = {}) {
     // determinism pins stay - no GetSystemTimes baseline tick here).
     async sampleFast() { return sampleOf(); },
     async sampleForTarget() { return sampleOf(); },
+    async sampleGpuUtilForTarget() { return { gpuUtilPct: base.gpuUtilPct }; },
     registerTarget() {},
     async sampleSlow() { return sampleOf(); },
     async sample() { return sampleOf(); },

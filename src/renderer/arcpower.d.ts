@@ -34,6 +34,7 @@ import type {
   VoltageOffsetRead,
   RegistryCatalogResponse,
   RegistryApplyResponse,
+  RtssStartupState,
   RecordingClip,
   RecordingMarker,
   RecordingClipDeleteResult,
@@ -163,6 +164,8 @@ export interface ArcPowerApi {
    *  Windows and start-at-boot. Packaged Windows uses one explicit elevated
    *  task; dev/mock retains the HKCU Run adapter. */
   startupSet(enabled: boolean): Promise<StartupGetState>;
+  rtssStartupGet(): Promise<RtssStartupState>;
+  rtssStartupSet(enabled: boolean): Promise<RtssStartupState>;
   /** M4-D: the CIM system info (CPU/RAM/video controllers) - the dashboard
    *  CPU card + the real-GPU VRAM suffix source. */
   sysinfo(): Promise<SysInfo>;

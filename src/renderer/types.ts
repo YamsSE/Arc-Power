@@ -421,6 +421,16 @@ export interface StartupGetState {
   registration?: 'task' | 'run';
 }
 
+/** Independent RTSS per-user startup registration state. */
+export interface RtssStartupState {
+  capable: boolean;
+  executablePath: string | null;
+  valueExists: boolean;
+  registeredPath: string | null;
+  registered: boolean;
+  rtssOnBoot: boolean;
+}
+
 /** M4-D: one Win32_VideoController row (AdapterRAM already degraded). */
 export interface VideoControllerInfo {
   name: string | null;
@@ -498,6 +508,8 @@ export interface TelemetrySample {
   /** Main-process session identity; stale handover samples are ignored. */
   deviceId?: number | null;
   deviceKey?: string | null;
+  /** Human-readable physical adapter name for native RTSS rows. */
+  deviceName?: string | null;
   /** Physical identity aliases retained across inventory enrichment. */
   deviceKeys?: string[] | null;
   sessionGeneration?: number;
@@ -533,8 +545,8 @@ export interface TelemetrySample {
   cpuPowerW?: number | null;
   /** M4-I: the OS GPU-utilization counter (the GPUEngine rows for the
    *  matched LUID - per (eng#, engtype) max across the process rows, sum,
-   *  cap 100). Null when the counter is unpopulated; the readout tiles
-   *  read `gpuUtilPct ?? utilPct` (the no-Intel util source). */
+   *  cap 100). Null when the counter is unpopulated; native IGCL utilPct is
+   *  preferred when present and this remains the fallback source. */
   gpuUtilPct?: number | null;
   /** M14: the system-wide USED RAM in bytes (GlobalMemoryStatusEx ->
    *  ullTotalPhys - ullAvailPhys - the Memory row's source). Composed
@@ -651,9 +663,16 @@ export interface Profile {
 /** M5: the 4 overlay corners (mirrors profile-store.js + pure/overlay.ts). */
 export type OverlayPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 
+/** Optional overlay presentation provider. Missing persisted values resolve to
+ * the native RTSS path for backwards compatibility. */
+export type OverlayRenderer = 'rtss' | 'capframex';
+
 /** M5: the persisted overlay settings (absent on old files -> the defaults). */
 export interface OverlaySettings {
   enabled: boolean;
+  renderer?: OverlayRenderer;
+  /** Test-only transient flag; the persisted provider remains RTSS by default. */
+  softwareRenderer?: boolean;
   hotkeyLetter: string;
   position: OverlayPosition;
   scale: number;
@@ -705,6 +724,10 @@ export interface OverlayState {
   /** LIVE-derived from the current globalShortcut registration (a failed
    *  register - the accelerator taken by another app - reads false). */
   hotkeyRegistered: boolean;
+  /** Native RTSS mapping capability/state for the product telemetry HUD. */
+  available?: boolean;
+  provider?: 'rtss' | 'electron';
+  renderer?: OverlayRenderer;
 }
 
 /** M23/M51: the ADVANCED-overlay settings push payload. Software theme
@@ -743,6 +766,8 @@ export interface ProfileSettingsState {
   advancedModeAccepted: boolean;
   /** M4-D: the Settings-tab fields (absent on old files -> false). */
   startWithWindows: boolean;
+  /** Independent RTSS startup preference (absent on old files -> false). */
+  rtssOnBoot?: boolean;
   startMinimized: boolean;
   /** M4-D: closing the window hides it to the tray instead of quitting. */
   closeToTray: boolean;
@@ -758,6 +783,8 @@ export interface ProfileSettingsState {
   theme: Theme;
   /** M5: software overlay settings. */
   overlayEnabled: boolean;
+  /** Optional overlay renderer; absent legacy values mean RTSS. */
+  overlayRenderer?: OverlayRenderer;
   overlayHotkeyLetter: string;
   overlayPosition: OverlayPosition;
   overlayScale: number;
