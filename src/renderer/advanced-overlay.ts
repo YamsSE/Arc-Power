@@ -143,7 +143,7 @@ const EMPTY_RECORDING_STATUS: RecordingEngineState = {
   running: false,
   mode: null,
   startedAt: null,
-  error: 'Loading recording engine…',
+  error: 'Capture engine idle until recording is requested',
   encoders: [],
   audioInputs: [],
   audioOutputs: [],
@@ -166,6 +166,12 @@ let streamQuickStatus: StreamStatus = { state: 'disconnected', connected: false 
 let streamQuickScenes: StreamScene[] = [];
 let streamQuickSceneId: string | null = null;
 let streamQuickBusy = false;
+const CAPTURE_ENGINE_IDLE_MESSAGE = 'Capture engine idle until recording is requested';
+
+function recordingQuickActionAvailable(): boolean {
+  return recordingQuickStatus.available === true
+    || (recordingQuickStatus.probeComplete !== true && recordingQuickStatus.error === CAPTURE_ENGINE_IDLE_MESSAGE);
+}
 
 function cloneRecordingQuickSettings(value: RecordingSettings): RecordingSettings {
   return {
@@ -1235,7 +1241,7 @@ async function applyRecordingQuickSettings(): Promise<void> {
 }
 
 async function runRecordingQuickAction(action: 'record' | 'replay' | 'stop-video' | 'stop-replay' | 'save-instant-replay'): Promise<void> {
-  if (recordingQuickActionBusy || !recordingQuickSettings || !recordingQuickStatus.available) return;
+  if (recordingQuickActionBusy || !recordingQuickSettings || !recordingQuickActionAvailable()) return;
   if (action === 'save-instant-replay' && recordingQuickStatus.instantReplaySave?.status === 'saving') return;
   if (recordingQuickDirty || recordingQuickApplying) {
     toast('info', 'Apply settings first', 'Apply your recording changes before starting a capture.');
@@ -1294,11 +1300,11 @@ function renderRecordingQuickActions(): HTMLElement {
       el('span', { class: `adv-recording-status-dot${video || replay ? ' is-live' : ''}`, 'aria-hidden': 'true' }),
     ]),
     el('p', { class: 'adv-recording-panel-note', text: recordingQuickSettings
-      ? `${recordingQuickSettings.replayLengthSec}-second Instant Replay window · ${recordingQuickStatus.available ? 'ready' : 'runtime unavailable'}`
+      ? `${recordingQuickSettings.replayLengthSec}-second Instant Replay window · ${recordingQuickActionAvailable() ? 'ready when started' : 'runtime unavailable'}`
       : 'Loading recording profile…' }),
     el('div', { class: 'adv-recording-actions' }, [
-      recordingQuickButton(video ? 'Stop Recording' : 'Record', () => void runRecordingQuickAction(video ? 'stop-video' : 'record'), `btn ${video ? 'btn-recording-stop' : 'btn-primary'}`, !recordingQuickStatus.available || recordingQuickActionBusy || (!video && disabled)),
-      recordingQuickButton(replay ? 'Stop Instant Replay' : 'Start Instant Replay', () => void runRecordingQuickAction(replay ? 'stop-replay' : 'replay'), `btn ${replay ? 'btn-recording-stop' : 'btn-secondary'}`, !recordingQuickStatus.available || recordingQuickActionBusy || (!replay && disabled)),
+      recordingQuickButton(video ? 'Stop Recording' : 'Record', () => void runRecordingQuickAction(video ? 'stop-video' : 'record'), `btn ${video ? 'btn-recording-stop' : 'btn-primary'}`, !recordingQuickActionAvailable() || recordingQuickActionBusy || (!video && disabled)),
+      recordingQuickButton(replay ? 'Stop Instant Replay' : 'Start Instant Replay', () => void runRecordingQuickAction(replay ? 'stop-replay' : 'replay'), `btn ${replay ? 'btn-recording-stop' : 'btn-secondary'}`, !recordingQuickActionAvailable() || recordingQuickActionBusy || (!replay && disabled)),
       recordingQuickButton(instantReplaySaving ? 'Saving Instant Replay…' : 'Save Instant Replay', () => void runRecordingQuickAction('save-instant-replay'), 'btn btn-secondary', !recordingQuickStatus.available || recordingQuickActionBusy || !replay || instantReplaySaving),
     ]),
     instantReplaySaving ? el('p', { class: 'adv-recording-warning', text: 'Instant Replay is being saved…' }) : null,

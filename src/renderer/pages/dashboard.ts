@@ -99,6 +99,12 @@ type DashboardCaptureActionKind = 'recording' | 'replay';
 const controlCaptureActionNodes = new Map<DashboardCaptureActionKind, { button: HTMLButtonElement; label: HTMLElement; note: HTMLElement }>();
 let dashboardCaptureActionBusy = false;
 let controlCenterContext: PageContext | null = null;
+const CAPTURE_ENGINE_IDLE_MESSAGE = 'Capture engine idle until recording is requested';
+
+function recordingActionAvailable(status: AppState['recordingStatus']): boolean {
+  return status?.available === true
+    || (status?.probeComplete !== true && status?.error === CAPTURE_ENGINE_IDLE_MESSAGE);
+}
 let controlCenterLoadPromise: Promise<void> | null = null;
 let controlCenterRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let controlCenterGeneration = 0;
@@ -434,7 +440,7 @@ function dashboardAction(label: string, hash: string, description: string, kind:
   const action = el(captureAction ? 'button' : 'a', captureAction ? {
     class: `dashboard-hub-action dashboard-hub-action-${kind}${primary ? ' dashboard-hub-action-primary' : ''}`,
     type: 'button',
-    disabled: dashboardCaptureActionBusy || controlCenterContext?.store.get().recordingStatus?.available !== true,
+    disabled: dashboardCaptureActionBusy || !recordingActionAvailable(controlCenterContext?.store.get().recordingStatus ?? null),
     title: copy.label,
     'aria-label': copy.label,
     onClick: () => void toggleDashboardCapture(captureMode as DashboardCaptureActionKind),
@@ -465,7 +471,7 @@ function updateDashboardCaptureActions(status: AppState['recordingStatus']): voi
     const copy = dashboardCaptureActionCopy(kind, running);
     nodes.label.textContent = copy.label;
     nodes.note.textContent = copy.description;
-    nodes.button.disabled = dashboardCaptureActionBusy || status?.available !== true;
+    nodes.button.disabled = dashboardCaptureActionBusy || !recordingActionAvailable(status);
     nodes.button.title = copy.label;
     nodes.button.setAttribute('aria-label', copy.label);
   }
@@ -475,7 +481,7 @@ async function toggleDashboardCapture(mode: DashboardCaptureActionKind): Promise
   const ctx = controlCenterContext;
   if (!ctx || dashboardCaptureActionBusy) return;
   const status = ctx.store.get().recordingStatus;
-  if (status?.available !== true) {
+  if (!recordingActionAvailable(status)) {
     toast('error', 'Capture unavailable', 'Arc Capture is not ready yet.');
     return;
   }
@@ -643,6 +649,9 @@ function snapshotCaptureState(status: AppState['recordingStatus']): { value: str
       : { value: 'Recording', note: 'Arc Capture is active' };
   }
   if (status.available) return { value: 'Ready', note: 'Ready when you are' };
+  if (status.probeComplete !== true && status.error === CAPTURE_ENGINE_IDLE_MESSAGE) {
+    return { value: 'Not loaded', note: 'Open Recording or start a capture' };
+  }
   return { value: 'Unavailable', note: 'Capture engine is unavailable' };
 }
 

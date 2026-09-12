@@ -42,15 +42,17 @@ const PAGES: Record<PageId, Page> = {
 
 const store = new Store();
 
+const CAPTURE_ENGINE_IDLE_MESSAGE = 'Capture engine idle until recording is requested';
 const INITIAL_RECORDING_STATUS: RecordingEngineState = {
   available: false,
   running: false,
   mode: null,
   startedAt: null,
-  error: 'Loading capture engine…',
+  error: CAPTURE_ENGINE_IDLE_MESSAGE,
   encoders: [],
   audioInputs: [],
   audioOutputs: [],
+  probeComplete: false,
   hotkeys: { registered: {}, conflicts: {}, error: null },
   instantReplaySave: { status: 'idle', error: null, outputPath: null, updatedAt: null },
 };
@@ -72,7 +74,8 @@ function updateGlobalRecordingWidget(target?: HTMLElement): void {
   if (!root) return;
   const running = globalRecordingStatus.running === true;
   const loading = !globalRecordingStatus.probeComplete && globalRecordingStatus.error === 'Loading capture engine…';
-  const state = running ? 'live' : loading ? 'loading' : globalRecordingStatus.available ? 'ready' : 'offline';
+  const idle = !globalRecordingStatus.probeComplete && globalRecordingStatus.error === CAPTURE_ENGINE_IDLE_MESSAGE;
+  const state = running ? 'live' : loading ? 'loading' : idle ? 'idle' : globalRecordingStatus.available ? 'ready' : 'offline';
   const mode = globalRecordingStatus.mode;
   const replaySaveStatus = globalRecordingStatus.instantReplaySave?.status;
   const replaySaving = replaySaveStatus === 'saving';
@@ -81,8 +84,8 @@ function updateGlobalRecordingWidget(target?: HTMLElement): void {
   const detail = root.querySelector<HTMLElement>('[data-recording-status-detail]');
   const timer = root.querySelector<HTMLElement>('[data-recording-timer]');
   const dot = root.querySelector<HTMLElement>('[data-recording-status-dot]');
-  if (title) title.textContent = replaySaving ? 'Saving Instant Replay' : replayFailed ? 'Instant Replay failed' : running ? mode === 'replay' ? 'Instant Replay' : 'Recording' : loading ? 'Starting capture engine' : globalRecordingStatus.available ? 'Ready to capture' : 'Capture offline';
-  if (detail) detail.textContent = replaySaving ? 'Writing the latest moments to disk' : replayFailed ? (globalRecordingStatus.instantReplaySave?.error ?? 'Try saving again') : running ? 'Arc Capture is running' : loading ? 'Checking the bundled capture runtime' : globalRecordingStatus.available ? 'Ready when you are' : (globalRecordingStatus.error || 'Capture engine unavailable');
+  if (title) title.textContent = replaySaving ? 'Saving Instant Replay' : replayFailed ? 'Instant Replay failed' : running ? mode === 'replay' ? 'Instant Replay' : 'Recording' : loading ? 'Starting capture engine' : idle ? 'Capture engine idle' : globalRecordingStatus.available ? 'Ready to capture' : 'Capture offline';
+  if (detail) detail.textContent = replaySaving ? 'Writing the latest moments to disk' : replayFailed ? (globalRecordingStatus.instantReplaySave?.error ?? 'Try saving again') : running ? 'Arc Capture is running' : loading ? 'Checking the bundled capture runtime' : idle ? 'Open Recording or start a capture to load it' : globalRecordingStatus.available ? 'Ready when you are' : (globalRecordingStatus.error || 'Capture engine unavailable');
   if (timer) {
     timer.textContent = running ? recordingElapsed(globalRecordingStatus.startedAt) : '';
     timer.hidden = !running;
@@ -91,6 +94,7 @@ function updateGlobalRecordingWidget(target?: HTMLElement): void {
   root.classList.toggle('is-live', state === 'live');
   root.classList.toggle('is-ready', state === 'ready');
   root.classList.toggle('is-loading', state === 'loading');
+  root.classList.toggle('is-idle', state === 'idle');
   root.classList.toggle('is-offline', state === 'offline');
   root.dataset.state = state;
   root.dataset.mode = mode ?? 'idle';
@@ -477,15 +481,8 @@ async function boot() {
   }
   void api.recordingStatus().then((next) => {
     setGlobalRecordingStatus(next);
-    // A cold packaged launch can lose the first native probe while the
-    // elevated runtime is still starting. Retry once from the renderer after
-    // the initial state is visible so a transient startup race cannot leave
-    // the desktop widget offline for the entire session.
-    if (!next.available && next.error !== 'Loading capture engine…' && next.probeComplete !== true) {
-      void api.recordingRuntimeProbe().catch(() => { /* the main process publishes the final error */ });
-    }
   }).catch(() => {
-    // The widget already starts in a truthful offline/loading state.
+    // The widget already starts in a truthful idle state.
   });
 
   store.subscribe(() => {

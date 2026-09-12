@@ -1272,6 +1272,9 @@ export function createIpcHandlers({
   recordingStore = null,
   recordingCopyFile = async () => false,
   recordingEngine = null,
+  recordingRuntimeAcquire = async () => recordingEngine?.getState?.() ?? null,
+  recordingRuntimeRelease = async () => recordingEngine?.getState?.() ?? null,
+  recordingRuntimeShutdownIfIdle = async () => recordingEngine?.shutdownIfIdle?.() ?? null,
   recordingLifecycle = null,
   recordingEditor = null,
   chooseRecordingDirectory = async () => null,
@@ -3535,6 +3538,14 @@ export function createIpcHandlers({
         if (!recordingEngine?.probe) return { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [], hotkeys: getRecordingHotkeyState() };
         return { ...(await recordingEngine.probe()), hotkeys: getRecordingHotkeyState() };
       },
+      'recording-runtime-acquire': async (...args) => {
+        assertNoPayload(args, 'recording-runtime-acquire');
+        return recordingRuntimeAcquire();
+      },
+      'recording-runtime-release': async (...args) => {
+        assertNoPayload(args, 'recording-runtime-release');
+        return recordingRuntimeRelease();
+      },
       'recording-status': async (...args) => {
         assertNoPayload(args, 'recording-status');
         return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [] }), hotkeys: getRecordingHotkeyState() };
@@ -3542,57 +3553,83 @@ export function createIpcHandlers({
       'recording-start': async (...args) => {
         assertNoPayload(args, 'recording-start');
         if (!recordingEngine?.startRecording || !recordingStore) throw new Error('Recording engine is not available');
-        const settings = await recordingStore.settings();
-        const location = recordingAbsolutePath(settings.location, 'location');
-        fs.mkdirSync(location, { recursive: true });
-        const outputPath = collisionSafeRecordingPath(location, 'recording', { exists: (candidate) => fs.existsSync(candidate) });
-        const state = await recordingEngine.startRecording({ ...settings, outputPath });
-        return { state, outputPath: path.basename(outputPath) };
+        try {
+          const settings = await recordingStore.settings();
+          const location = recordingAbsolutePath(settings.location, 'location');
+          fs.mkdirSync(location, { recursive: true });
+          const outputPath = collisionSafeRecordingPath(location, 'recording', { exists: (candidate) => fs.existsSync(candidate) });
+          const state = await recordingEngine.startRecording({ ...settings, outputPath });
+          return { state, outputPath: path.basename(outputPath) };
+        } catch (error) {
+          await Promise.resolve(recordingRuntimeShutdownIfIdle()).catch(() => {});
+          throw error;
+        }
       },
       'recording-stop': async (...args) => {
         if (args.length > 1 || (args.length === 1 && args[0] !== undefined && args[0] !== null && args[0] !== 'video' && args[0] !== 'replay')) throw new Error('recording-stop: mode must be video or replay');
         if (!recordingEngine?.stop) throw new Error('Recording engine is not available');
         const state = await recordingEngine.stop(args[0] ?? null);
-        if (args[0] === 'replay') return state;
+        if (args[0] === 'replay') {
+          await Promise.resolve(recordingRuntimeShutdownIfIdle()).catch(() => {});
+          return state;
+        }
         // Ordinary recordings finish through STOP rather than the replay-save
         // channel. Consume the bounded APM completion envelope here so those
         // clips get the same editor telemetry as Instant Replay clips.
         const completed = recordingEngine.takeCompletedCapture?.('video');
-        if (!completed || !recordingStore?.recordClip) return state;
+        if (!completed || !recordingStore?.recordClip) {
+          await Promise.resolve(recordingRuntimeShutdownIfIdle()).catch(() => {});
+          return state;
+        }
         try {
           const settings = await recordingStore.settings();
           const location = recordingAbsolutePath(settings.location, 'location');
           const outputPath = path.resolve(completed.outputPath);
-          if (path.dirname(outputPath) !== path.resolve(location)) return state;
+          if (path.dirname(outputPath) !== path.resolve(location)) {
+            await Promise.resolve(recordingRuntimeShutdownIfIdle()).catch(() => {});
+            return state;
+          }
           const metadata = await persistReplayClipMetadata({
             recordingStore,
             recordingRoot: location,
             outputPath,
             readyPayload: completed,
           });
-          return { ...state, completedClip: metadata.clip ?? null };
+          const result = { ...state, completedClip: metadata.clip ?? null };
+          await Promise.resolve(recordingRuntimeShutdownIfIdle()).catch(() => {});
+          return result;
         } catch {
           // Stopping a recording remains successful even when the optional
           // metadata write is unavailable; the file is still in the library.
+          await Promise.resolve(recordingRuntimeShutdownIfIdle()).catch(() => {});
           return state;
         }
       },
       'recording-replay-start': async (...args) => {
         assertNoPayload(args, 'recording-replay-start');
         if (!recordingEngine?.startReplay || !recordingStore) throw new Error('Recording engine is not available');
-        const settings = await recordingStore.settings();
-        const location = recordingAbsolutePath(settings.location, 'location');
-        fs.mkdirSync(location, { recursive: true });
-        // Replay mode keeps only the rolling buffer. It must not receive a
-        // normal file-output path, otherwise stopping the buffer can create a
-        // full-session recording alongside the intended clips.
-        const state = await recordingEngine.startReplay({ ...settings });
-        return { state, outputPath: null };
+        try {
+          const settings = await recordingStore.settings();
+          const location = recordingAbsolutePath(settings.location, 'location');
+          fs.mkdirSync(location, { recursive: true });
+          // Replay mode keeps only the rolling buffer. It must not receive a
+          // normal file-output path, otherwise stopping the buffer can create a
+          // full-session recording alongside the intended clips.
+          const state = await recordingEngine.startReplay({ ...settings });
+          return { state, outputPath: null };
+        } catch (error) {
+          await Promise.resolve(recordingRuntimeShutdownIfIdle()).catch(() => {});
+          throw error;
+        }
       },
       'recording-auto-start': async (...args) => {
         assertNoPayload(args, 'recording-auto-start');
         if (!recordingLifecycle?.autoStartInstantReplay) return { started: false, reason: 'unavailable', state: recordingEngine?.getState?.() ?? null };
-        return recordingLifecycle.autoStartInstantReplay();
+        try {
+          return await recordingLifecycle.autoStartInstantReplay();
+        } finally {
+          await Promise.resolve(recordingRuntimeShutdownIfIdle()).catch(() => {});
+        }
       },
       'recording-clip-save': async (payload = {}) => {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('recording-clip-save: payload must be an object');

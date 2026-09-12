@@ -3,7 +3,7 @@
 // module only binds the map to ipcMain.handle.
 
 import { app, ipcMain } from 'electron';
-import { createIpcHandlers, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, RECORDING_SETTINGS_CHANNEL, RECORDING_PILL_SETTINGS_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL } from './ipc-core.js';
+import { createIpcHandlers, assertNoPayload, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, RECORDING_SETTINGS_CHANNEL, RECORDING_PILL_SETTINGS_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL } from './ipc-core.js';
 import { createDriverInfo } from './driver-info.js';
 import { createRegistryCatalog, REGISTRY_CATALOG } from './registry-catalog.js';
 import { createRegistryApply } from './registry-apply.js';
@@ -64,7 +64,10 @@ import { createRtssStartup } from './rtss-startup.js';
  *   gameArtwork?: (exePath: string) => Promise<string|null|{ artwork?: string|null, banner?: string|null }>,
  *   recordingStore?: import('./store/recording-store.js').RecordingStore,
  *   recordingCopyFile?: (filePath: string) => Promise<boolean>,
- *   recordingEngine?: { getState: () => object, probe: () => Promise<object>, startRecording: (settings: object) => Promise<object>, startReplay: (settings: object) => Promise<object>, stop: () => Promise<object>, saveReplayClip: (request: object) => Promise<object>, shutdown: () => Promise<object>, subscribe?: (cb: (state: object) => void) => () => void },
+ *   recordingEngine?: { getState: () => object, probe: () => Promise<object>, startRecording: (settings: object) => Promise<object>, startReplay: (settings: object) => Promise<object>, stop: () => Promise<object>, saveReplayClip: (request: object) => Promise<object>, shutdownIfIdle?: () => Promise<object>, shutdown: () => Promise<object>, subscribe?: (cb: (state: object) => void) => () => void },
+ *   recordingRuntimeAcquire?: (event?: object) => Promise<object>|object,
+ *   recordingRuntimeRelease?: (event?: object) => Promise<object>|object,
+ *   recordingRuntimeShutdownIfIdle?: () => Promise<object>|object,
  *   chooseRecordingDirectory?: () => Promise<string|null>,
  *   openRecordingFolder?: (directory: string) => Promise<unknown>,
  *   recordingCaptureTargets?: (refresh?: boolean) => Promise<{ displays: object[], windows: object[] }>,
@@ -85,6 +88,12 @@ import { createRtssStartup } from './rtss-startup.js';
  */
 export function registerIpc({ backend, store, getWindow, startup = createStartup(), rtssStartup = createRtssStartup(), driverInfo = createDriverInfo(), driverMonitor = null, sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), fpsLane = null, rtssOverlay = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null, recordingStore = null, recordingCopyFile = async () => false, recordingEngine = null, recordingLifecycle = null, recordingEditor = null, stabilityLab = null, stabilityStore = null, stabilityWorkload = null, overlayLayoutStore = null, obsStream = null, applyOverlayLayout = async () => {}, chooseRecordingDirectory = async () => null, openRecordingFolder = async () => {}, refreshRecordingHotkeys = async () => null, getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }), recordingCaptureTargets = null, onRecordingActionResult = () => {}, onRecordingState = () => {} }) {
   const wheaMonitor = arguments[0]?.wheaMonitor ?? null;
+  const recordingRuntimeAcquire = arguments[0]?.recordingRuntimeAcquire
+    ?? (async () => recordingEngine?.getState?.() ?? null);
+  const recordingRuntimeRelease = arguments[0]?.recordingRuntimeRelease
+    ?? (async () => recordingEngine?.getState?.() ?? null);
+  const recordingRuntimeShutdownIfIdle = arguments[0]?.recordingRuntimeShutdownIfIdle
+    ?? (async () => recordingEngine?.shutdownIfIdle?.() ?? null);
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -129,6 +138,9 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     recordingStore,
     recordingCopyFile,
     recordingEngine,
+    recordingRuntimeAcquire,
+    recordingRuntimeRelease,
+    recordingRuntimeShutdownIfIdle,
     recordingLifecycle,
     recordingEditor,
     stabilityLab,
@@ -246,7 +258,14 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       const previousRecordingState = recordingAction?.action === 'stop' ? recordingEngine?.getState?.() : null;
       let out;
       try {
-        out = await fn(...args);
+        if (channel === 'recording-runtime-acquire') {
+          assertNoPayload(args, channel);
+          out = await recordingRuntimeAcquire(event);
+        } else if (channel === 'recording-runtime-release') {
+          assertNoPayload(args, channel);
+          out = await recordingRuntimeRelease(event);
+        }
+        else out = await fn(...args);
       } catch (error) {
         if (recordingAction) {
           publishRecordingActionResult({

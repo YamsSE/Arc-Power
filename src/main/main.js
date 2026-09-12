@@ -1753,7 +1753,12 @@ async function main() {
     cacheDir: path.join(app.getPath('userData'), 'recording-thumbnails'),
     resolveFfmpegPath: resolveRecordingFfmpegPath,
   });
+  // The page lease keeps Ascent warm while Recording is open. Active video
+  // or Instant Replay captures are an implicit demand of their own; once
+  // neither exists, the engine can close its child again.
+  let recordingRuntimeDemand = 0;
   const recordingEngine = createAscentEngine({
+    getRuntimeDemand: () => recordingRuntimeDemand,
     onEncoderDemoted: (encoderId, _error, context = {}) => recordingStore.demoteEncoder(
       context.selectionId ?? encoderId,
       context.adapterTarget ?? null,
@@ -1884,6 +1889,45 @@ async function main() {
         devPath: app.isPackaged ? null : path.join(__dirname, '..', '..'),
       });
     },
+  });
+  // Serialize page-lease transitions with idle shutdown. Without this queue,
+  // a Recording page could re-enter while the previous page's Ascent child
+  // was still closing, receive the old ready state, and skip its new probe.
+  let recordingRuntimeTransition = Promise.resolve();
+  const recordingRuntimeLeases = new Set();
+  const enqueueRecordingRuntimeTransition = (operation) => {
+    const next = recordingRuntimeTransition.then(operation, operation);
+    recordingRuntimeTransition = next.catch(() => {});
+    return next;
+  };
+  const recordingRuntimeLeaseKey = (event) => {
+    const senderId = Number.isInteger(event?.sender?.id) ? event.sender.id : 'unknown';
+    const frameId = Number.isInteger(event?.senderFrame?.routingId) ? event.senderFrame.routingId : 'main';
+    return `${senderId}:${frameId}`;
+  };
+  const acquireRecordingRuntime = (event) => enqueueRecordingRuntimeTransition(() => {
+    recordingRuntimeLeases.add(recordingRuntimeLeaseKey(event));
+    recordingRuntimeDemand = recordingRuntimeLeases.size;
+    return recordingEngine.getState();
+  });
+  const releaseRecordingRuntime = (event) => enqueueRecordingRuntimeTransition(async () => {
+    recordingRuntimeLeases.delete(recordingRuntimeLeaseKey(event));
+    recordingRuntimeDemand = recordingRuntimeLeases.size;
+    await recordingEngine.shutdownIfIdle?.();
+    return recordingEngine.getState();
+  });
+  const clearRecordingRuntimeDemand = () => enqueueRecordingRuntimeTransition(async () => {
+    const hadPageDemand = recordingRuntimeLeases.size > 0;
+    recordingRuntimeLeases.clear();
+    recordingRuntimeDemand = 0;
+    // The first renderer load can overlap explicit Instant Replay auto-start;
+    // with no page lease to clear, do not tear down that boot-time capture.
+    if (hadPageDemand) await recordingEngine.shutdownIfIdle?.();
+    return recordingEngine.getState();
+  });
+  const shutdownRecordingRuntimeIfIdle = () => enqueueRecordingRuntimeTransition(async () => {
+    await recordingEngine.shutdownIfIdle?.();
+    return recordingEngine.getState();
   });
   const recordingLifecycle = createRecordingLifecycleService({ recordingStore, recordingEngine });
   const mockGameDir = mock && process.env.RID_MOCK_GAME_SCAN === '1'
@@ -2788,6 +2832,16 @@ async function main() {
   const win = createWindow(windowBackground, holdMainWindowForSplash ? false : !startMinimizedAtBoot);
   stealthVerifyWindow(win);
   windowForInstance = win;
+  // A renderer reload, navigation, crash, or destruction can strand the
+  // page-owned lease before its finally/leave hook runs. Clear that lease at
+  // the BrowserWindow boundary so a dead renderer cannot keep Ascent warm.
+  const releaseRecordingRuntimeOnRendererLifecycle = () => {
+    void clearRecordingRuntimeDemand().catch(() => {});
+  };
+  win.webContents.on('did-start-loading', releaseRecordingRuntimeOnRendererLifecycle);
+  win.webContents.on('will-navigate', releaseRecordingRuntimeOnRendererLifecycle);
+  win.webContents.on('render-process-gone', releaseRecordingRuntimeOnRendererLifecycle);
+  win.webContents.on('destroyed', releaseRecordingRuntimeOnRendererLifecycle);
   if (pendingSecondInstance) {
     pendingSecondInstance = false;
     focusExistingWindow(win);
@@ -2866,6 +2920,7 @@ async function main() {
   // hotkey (the pre-M5 exit behavior is preserved); will-quit closes both
   // (the tray-Quit path already works via app.quit).
   win.on('closed', () => {
+    releaseRecordingRuntimeOnRendererLifecycle();
     overlayHandle?.destroy();
     void rtssOverlay?.stop?.();
     unregisterOverlayHotkey();
@@ -2887,8 +2942,8 @@ async function main() {
 
   // --- M5: the software overlay / RTSS telemetry HUD ----------------------
   // The product path can publish the native RTSS HUD or the independent,
-  // hook-free CapFrameX-style renderer. The renderer window stays available
-  // for a live provider switch, but is hidden whenever RTSS owns the HUD.
+  // hook-free CapFrameX-style renderer. The optional Chromium renderer is
+  // created only by its shortcut (and released again when hidden).
   // M7b (fix 5): the hotkey/shortcut NEVER shows the HUD while the master
   // overlayEnabled is OFF.
   let overlayHandle = null;
@@ -2993,9 +3048,18 @@ async function main() {
     const electronSelected = renderer === 'capframex' || uiVerify;
     if (overlayHandle && electronSelected) {
       applyOverlaySettings({ preserveVisibility: !masterChanged && !rendererChanged });
+      // The software HUD is an optional Chromium renderer.  Release it when
+      // it is disabled so switching back to RTSS, or simply turning the HUD
+      // off, immediately gives the memory back to Windows.  ui-verify keeps
+      // its real sibling window alive because the verifier exercises the
+      // disable/re-enable lifecycle in one session.
+      if (!uiVerify && !(renderer === 'capframex' && settings.overlayEnabled === true)) {
+        overlayHandle.destroy();
+      }
     } else if (overlayHandle && (rendererChanged || masterChanged)) {
-      // Keep the inactive renderer hidden while the selected provider owns
-      // visibility. Its window stays alive so switching back is immediate.
+      // Keep the inactive renderer out of the way while the selected
+      // provider owns visibility, then release its Chromium window in the
+      // product path so the inactive provider cannot retain its RAM.
       overlayHandle.apply({
         enabled: false,
         renderer: 'rtss',
@@ -3008,6 +3072,7 @@ async function main() {
         overlayPollMs: settings.overlayPollMs,
         theme: settings.overlayTheme,
       }, { preserveVisibility: false });
+      if (!uiVerify) overlayHandle.destroy();
     }
     if (patch && typeof patch.overlayHotkeyLetter === 'string') {
       registerOverlayHotkey(patch.overlayHotkeyLetter);
@@ -3120,22 +3185,14 @@ async function main() {
           return {};
         }
       },
+      // Keep the optional software HUD out of the product process tree until
+      // its shortcut is actually pressed. The handle still owns settings,
+      // hotkey state, and the first-use build.
+      deferBuild: !uiVerify,
     });
     // M23: the harness must not flash the HUD overlay on the user's screen.
     if (uiVerify) stealthVerifyWindow(overlayHandle.getWindow?.() ?? null);
     applyOverlaySettings();
-    // RTSS is visible as soon as its native profile is enabled. Keep the
-    // optional CapFrameX-style provider equivalent on a normal product boot;
-    // the ui-verify harness retains the software renderer's no-flash boot
-    // contract above.
-    if (!uiVerify) {
-      try {
-        const bootSettings = store.loadSettingsSync() ?? {};
-        if (overlayRendererOf(bootSettings) === 'capframex' && bootSettings.overlayEnabled === true) {
-          applyOverlaySettings();
-        }
-      } catch { /* the initial hidden apply remains the safe fallback */ }
-    }
     // Boot the hotkey with the persisted letter (default 'O').
     let bootLetter = 'O';
     try {
@@ -3769,6 +3826,9 @@ async function main() {
     recordingStore,
     recordingCopyFile: async (filePath) => copyFileToWindowsClipboard(filePath),
     recordingEngine,
+    recordingRuntimeAcquire: acquireRecordingRuntime,
+    recordingRuntimeRelease: releaseRecordingRuntime,
+    recordingRuntimeShutdownIfIdle: shutdownRecordingRuntimeIfIdle,
     recordingLifecycle,
     recordingEditor,
     stabilityStore,
@@ -3855,9 +3915,16 @@ async function main() {
   recordingActionHandler = createRecordingActionHandler({
     getSettings: () => recordingStore.settings(),
     recordingEngine,
+    shutdownRecordingRuntimeIfIdle,
     addMarker: (payload) => recordingLifecycle.addReplayMarker(payload),
     saveReplayClip: saveReplayClipForAction,
-    onCaptureStopped: persistCompletedVideoCapture,
+    onCaptureStopped: async (mode) => {
+      try {
+        return await persistCompletedVideoCapture(mode);
+      } finally {
+        await shutdownRecordingRuntimeIfIdle();
+      }
+    },
     captureScreenshot,
     onActionResult: (result) => {
       pushRecordingActionResult({ getWindow: () => win, result });
@@ -3866,11 +3933,12 @@ async function main() {
   });
   await recordingHotkeys.register();
 
-  // Start the bundled capture runtime after IPC subscribes to engine state.
-  // This remains fire-and-forget so the renderer paints immediately, while
-  // the probe result is pushed to the renderer and global capture widget
-  // instead of being lost before their subscriptions exist.
-  // The engine owns the child and reuses it for later probes/actions.
+  // Keep the bundled capture runtime out of the idle process tree.  A normal
+  // launch only needs the lightweight recording store; probing Ascent starts
+  // a separate OBS-based process that can cost hundreds of megabytes.  The
+  // only boot-time exception is an explicit Instant Replay auto-start, which
+  // must preserve its existing behavior. Manual capture and the Recording
+  // page call the same probe lazily on demand.
   if (!mock && !uiVerify) {
     const probeWithRetry = async () => {
       let lastError = null;
@@ -3883,15 +3951,26 @@ async function main() {
       }
       throw lastError ?? new Error('Recording runtime probe failed');
     };
-    void probeWithRetry().catch((error) => {
-      console.log(`[recording] startup probe unavailable after retries: ${error?.message ?? String(error)}`);
-      return null;
+    void recordingStore.settings().then((settings) => {
+      if (settings?.instantReplayAutoStart !== true) return null;
+      return probeWithRetry().catch((error) => {
+        console.log(`[recording] auto-start probe unavailable after retries: ${error?.message ?? String(error)}`);
+        return Promise.resolve(shutdownRecordingRuntimeIfIdle()).then(() => null).catch(() => null);
+      });
     }).then((probeState) => {
       if (!probeState) return null;
       return recordingLifecycle.autoStartInstantReplay().catch((error) => {
         console.log(`[recording] Instant Replay auto-start unavailable: ${error?.message ?? String(error)}`);
-        return null;
+        return Promise.resolve(shutdownRecordingRuntimeIfIdle()).then(() => null).catch(() => null);
       });
+    }).catch((error) => {
+      console.log(`[recording] auto-start settings check unavailable: ${error?.message ?? String(error)}`);
+      return null;
+    }).finally(() => {
+      // A probe can finish after the setting is disabled.  autoStart may
+      // then return its successful "disabled" no-op, so clean up every
+      // completed boot attempt and let active replay/page demand veto close.
+      return Promise.resolve(shutdownRecordingRuntimeIfIdle()).catch(() => null);
     });
   }
   if (!uiVerify) {

@@ -137,6 +137,8 @@ contextBridge.exposeInMainWorld('arcPower', {
   // opaque id resolved by the privileged arc-power-media protocol.
   recordingSettingsGet: () => ipcRenderer.invoke('recording-settings-get'),
   recordingSettingsSave: (patch) => ipcRenderer.invoke('recording-settings-save', patch),
+  recordingRuntimeAcquire: () => ipcRenderer.invoke('recording-runtime-acquire'),
+  recordingRuntimeRelease: () => ipcRenderer.invoke('recording-runtime-release'),
   recordingRuntimeProbe: () => ipcRenderer.invoke('recording-runtime-probe'),
   recordingStatus: () => ipcRenderer.invoke('recording-status'),
   recordingStart: () => ipcRenderer.invoke('recording-start'),

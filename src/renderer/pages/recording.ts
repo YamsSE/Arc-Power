@@ -27,6 +27,7 @@ const RESOLUTIONS: Array<[RecordingResolution, string]> = [
   ['4k', '4K'],
 ];
 const DEFAULT_REPLAY_LENGTH_SEC = 30;
+const CAPTURE_ENGINE_IDLE_MESSAGE = 'Capture engine idle until recording is requested';
 const RECORDING_FPS_PRESETS = new Set([30, 60, 120]);
 const RECORDING_FPS_MIN = 1;
 const RECORDING_FPS_MAX = 360;
@@ -43,7 +44,7 @@ let status: RecordingEngineState = {
   running: false,
   mode: null,
   startedAt: null,
-  error: 'Loading recording engine…',
+  error: CAPTURE_ENGINE_IDLE_MESSAGE,
   encoders: [],
   audioInputs: [],
   audioOutputs: [],
@@ -77,6 +78,10 @@ let clipLibrarySort: ClipLibrarySort = 'newest';
 let recordingPillEnabled = false;
 let recordingDevices: DeviceInfo[] = [];
 let editorPollTimer: number | null = null;
+let recordingRuntimeLeaseState: 'none' | 'acquiring' | 'held' = 'none';
+let recordingRuntimeLeaseWanted = false;
+let recordingRuntimeLeasePromise: Promise<void> | null = null;
+let recordingRuntimeProbePromise: Promise<void> | null = null;
 
 function recordingClipKind(clip: RecordingClip): 'recording' | 'clip' {
   return /^Arc Recording \d+\.mp4$/i.test(clip.fileName) ? 'recording' : 'clip';
@@ -94,6 +99,53 @@ function setStatus(next: RecordingEngineState): void {
     : null;
   status = { ...previous, ...incoming, hotkeys: incoming.hotkeys ?? previous.hotkeys, startedAt };
   recordingStateRevision += 1;
+}
+
+async function releaseRecordingRuntimeLease(): Promise<void> {
+  recordingRuntimeLeaseWanted = false;
+  if (recordingRuntimeLeaseState === 'acquiring') return;
+  if (recordingRuntimeLeaseState !== 'held') return;
+  recordingRuntimeLeaseState = 'none';
+  try {
+    const next = await api.recordingRuntimeRelease();
+    if (next && typeof next === 'object') setStatus(next);
+  } catch {
+    // Navigation must never be blocked by an idle-runtime cleanup failure.
+  }
+}
+
+async function ensureRecordingRuntime(): Promise<void> {
+  recordingRuntimeLeaseWanted = true;
+  if (recordingRuntimeLeaseState === 'none') {
+    recordingRuntimeLeaseState = 'acquiring';
+    const request = api.recordingRuntimeAcquire().then(async (next) => {
+      recordingRuntimeLeaseState = 'held';
+      if (next && typeof next === 'object') {
+        setStatus(next);
+        if (renderContainer) render();
+      }
+      if (!recordingRuntimeLeaseWanted) await releaseRecordingRuntimeLease();
+    }).catch((error) => {
+      recordingRuntimeLeaseState = 'none';
+      throw error;
+    });
+    recordingRuntimeLeasePromise = request;
+  }
+  if (recordingRuntimeLeasePromise) await recordingRuntimeLeasePromise;
+  if (!recordingRuntimeLeaseWanted) return;
+  if (status.probeComplete === true || status.available === true) return;
+  if (!recordingRuntimeProbePromise) {
+    const probe = api.recordingRuntimeProbe().then((next) => {
+      setStatus(next);
+      if (renderContainer) render();
+    }).catch((error) => {
+      status = { ...status, error: messageOf(error) };
+      if (renderContainer) render();
+    });
+    recordingRuntimeProbePromise = probe;
+  }
+  await recordingRuntimeProbePromise;
+  recordingRuntimeProbePromise = null;
 }
 
 const messageOf = recordingMessage;
@@ -2042,7 +2094,7 @@ async function load(): Promise<void> {
     draftSettings = cloneRecordingSettings(loadedSettings);
     fpsCustomEditing = false;
     settingsDirty = false;
-    // The startup probe and the page load run concurrently. If the probe
+    // The page-owned probe and the page load run concurrently. If the probe
     // pushed a newer encoder list while the clip/settings reads were still
     // pending, never restore the older status snapshot returned by the
     // initial recordingStatus request.
@@ -2212,10 +2264,15 @@ export const recordingPage: Page = {
         if (renderContainer === container) render();
       });
     }
-    // Do not make first paint wait for settings, clip scanning, or an engine
-    // probe. Startup owns the runtime probe; this page refreshes its cached
-    // state asynchronously after the shell and controls are visible.
+    // Do not make first paint wait for settings, clip scanning, or the
+    // runtime probe. Opening this page is an explicit demand signal, so the
+    // bundled Ascent process is started only after the first controls are
+    // visible and released again when the page is left.
     render();
+    void ensureRecordingRuntime().catch((err) => {
+      status = { ...status, error: messageOf(err) };
+      if (renderContainer === container) render();
+    });
     void load();
     void refreshRecordingCaptureTargets();
   },
@@ -2227,6 +2284,7 @@ export const recordingPage: Page = {
     }
   },
   leave(): void {
+    void releaseRecordingRuntimeLease();
     unsubscribeRecordingState?.();
     unsubscribeRecordingState = null;
     unsubscribeRecordingSettings?.();

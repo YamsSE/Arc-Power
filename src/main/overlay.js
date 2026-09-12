@@ -211,6 +211,8 @@ function normalizeSettings(raw = {}) {
  * @param {{
  *   getOverlaySettings: () => object,   // the CURRENT persisted settings
  *                                       // (main.js: store.loadSettingsSync)
+ *   deferBuild?: boolean,               // do not create Chromium content for
+ *                                       // an inactive provider on product boot
  * }} deps
  * @returns {{
  *   getWindow: () => import('electron').BrowserWindow | null,
@@ -224,7 +226,7 @@ function normalizeSettings(raw = {}) {
  *   destroy: () => void,
  * }}
  */
-export function createOverlayWindow({ getOverlaySettings }) {
+export function createOverlayWindow({ getOverlaySettings, deferBuild = false }) {
   let win = null;
   let visible = false;
   let hotkeyRegistered = false;
@@ -450,7 +452,19 @@ export function createOverlayWindow({ getOverlaySettings }) {
      */
     apply(rawSettings, { preserveVisibility = false } = {}) {
       applied = normalizeSettings(rawSettings);
-      if (!win) build();
+      // Keep the product's Chromium HUD absent until the user invokes the
+      // shortcut. The settings envelope is still retained in this handle so
+      // the first shortcut can build the window with the latest geometry and
+      // provider state. ui-verify and direct callers retain the historical
+      // eager-build behavior by leaving deferBuild at its default false.
+      const shouldBuild = !deferBuild;
+      if (!win && shouldBuild) build();
+      if (!win && bootApply) {
+        // The initial settings envelope has been consumed even when no
+        // window was needed.  A later user enable must be treated as a live
+        // settings change and show the newly created software HUD.
+        bootApply = false;
+      }
       if (win && !win.isDestroyed()) {
         const { bounds } = screen.getPrimaryDisplay();
         const size = sizeFor(applied.scale);
@@ -502,6 +516,20 @@ export function createOverlayWindow({ getOverlaySettings }) {
      */
     async toggle() {
       if (!applied.enabled) return;
+      // Product startup deliberately keeps the software HUD out of the
+      // process tree. The shortcut is the explicit demand signal that is
+      // allowed to create it.
+      if (!win || win.isDestroyed()) {
+        build();
+        visible = true;
+        win.show();
+        try {
+          win.setAlwaysOnTop(true, 'screen-saver');
+        } catch {
+          // never throw through the shortcut path
+        }
+        return;
+      }
       const next = !visible;
       const alive = win && !win.isDestroyed();
       if (alive) {
@@ -509,6 +537,12 @@ export function createOverlayWindow({ getOverlaySettings }) {
         else win.hide();
       }
       visible = next;
+      if (!next && deferBuild) {
+        // A hidden HUD no longer has an active user-facing purpose. Release
+        // Chromium now; the next shortcut rebuilds it from `applied`.
+        if (win && !win.isDestroyed()) win.destroy();
+        win = null;
+      }
     },
 
     /** The hotkey seam's live flag (main.js product: register's return;

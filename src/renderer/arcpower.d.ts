@@ -238,6 +238,8 @@ export interface ArcPowerApi {
   trayRebuild(): Promise<{ ok: boolean }>;
   recordingSettingsGet(): Promise<RecordingSettings>;
   recordingSettingsSave(patch: RecordingSettingsPatch): Promise<RecordingSettingsSaveResult>;
+  recordingRuntimeAcquire(): Promise<RecordingEngineState>;
+  recordingRuntimeRelease(): Promise<RecordingEngineState>;
   recordingRuntimeProbe(): Promise<RecordingEngineState>;
   recordingStatus(): Promise<RecordingEngineState>;
   recordingStart(): Promise<{ state: RecordingEngineState; outputPath: string }>;
