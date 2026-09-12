@@ -201,7 +201,7 @@ export function mapLibreHardwareMonitorSnapshot(payload, target = null) {
     sensorTypeOf(sensor) === 'temperature' && /gpu core|gpu package|gpu/i.test(sensorNameOf(sensor))
   ));
   out.vramTempC = firstValue(sensors, (sensor) => (
-    sensorTypeOf(sensor) === 'temperature' && /memory|vram|hot spot|junction/i.test(sensorNameOf(sensor))
+    sensorTypeOf(sensor) === 'temperature' && /vram|gpu memory|memory junction/i.test(sensorNameOf(sensor))
   ));
   out.gpuVoltageV = firstValue(sensors, (sensor) => (
     sensorTypeOf(sensor) === 'voltage' && /gpu core|gpu/i.test(sensorNameOf(sensor))

@@ -57,6 +57,11 @@ test('CapFrameX-style renderer is live-switchable and owns its telemetry lanes',
   assert.doesNotMatch(settingsSrc, /CapFrameX-style|CapFrameX style|Show CapFrameX/);
 });
 
+test('Arc Power Overlay labels averaged CPU frequency as CPU Clock', () => {
+  assert.doesNotMatch(overlaySrc, /'CPU Max'/);
+  assert.match(overlaySrc, /capStatRow\(cpuSection, enabled, 'cpu-clock', 'CPU Clock'/);
+});
+
 test('CapFrameX-style surface stays independent of CapFrameX native redistribution', () => {
   assert.match(overlayHtml, /Independent hook-free provider/);
   assert.match(overlayHtml, /does not load or\s+redistribute CapFrameX binaries/);

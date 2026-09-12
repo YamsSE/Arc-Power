@@ -835,7 +835,7 @@ function renderCapframex(displaySample: TelemetrySample | null): void {
   const cpuSection = capframexCpuTitle?.parentElement;
   if (cpuSection) {
     [...cpuSection.querySelectorAll<HTMLElement>('.capframex-row')].forEach((row) => row.remove());
-    capStatRow(cpuSection, enabled, 'cpu-clock', 'CPU Max', [capValue(displaySample?.cpuFreqMhz, ' MHz')]);
+    capStatRow(cpuSection, enabled, 'cpu-clock', 'CPU Clock', [capValue(displaySample?.cpuFreqMhz, ' MHz')]);
     capStatRow(cpuSection, enabled, 'cpu-util', 'CPU Total', [capValue(displaySample?.cpuUtilPct, ' %')]);
     const packageValues = [capValue(displaySample?.cpuPowerW, ' W', 1)];
     if (enabled.has('cpu-temp')) packageValues.push(capValue(displaySample?.cpuTempC, ' °C'));
