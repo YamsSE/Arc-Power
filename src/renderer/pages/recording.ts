@@ -9,7 +9,7 @@ import { showRecordingClipDeleteConfirm } from '../components/recording-delete-d
 import { showRecordingShareDialog, type RecordingShareDialogHandle } from '../components/recording-share-dialog.ts';
 import { showRecordingHotkeyDialog } from '../components/recording-hotkey-dialog.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
-import { parseRecordingEncoderSelection, recordingAdapterTargetOf, recordingBitrateRange, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage } from '../pure/recording.ts';
+import { recordingBitrateRange, recordingEncoderNameForId, recordingEncoderSelectionLabel, recordingGlobalEncoderOptions, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage } from '../pure/recording.ts';
 import { clampRecordingEditorRange, normalizeRecordingEditorClipName, recordingEditorResumePosition, recordingEditorSelectionFromRatios, recordingEditorSeekTargetMs, recordingEditorTimelineMsFromRatio } from '../pure/recording-editor.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
@@ -31,7 +31,6 @@ const CAPTURE_ENGINE_IDLE_MESSAGE = 'Capture engine idle until recording is requ
 const RECORDING_FPS_PRESETS = new Set([30, 60, 120]);
 const RECORDING_FPS_MIN = 1;
 const RECORDING_FPS_MAX = 360;
-const INTEL_QSV_ENCODERS = new Set(['obs_qsv11_v2', 'obs_qsv11_hevc', 'obs_qsv11_av1']);
 const PLAYBACK_SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 const PLAYBACK_SPEED_MIN = 0.1;
 const PLAYBACK_SPEED_MAX = 4;
@@ -278,25 +277,9 @@ function compactPath(value: string): string {
 
 function selectedEncoderLabel(id: string): string {
   if (id === 'automatic') return 'Automatic';
-  const selection = parseRecordingEncoderSelection(id);
-  if (selection) {
-    const concrete = recordingGpuEncoderOptions(recordingDevices, status.encoders).find(([optionId]) => optionId === id);
-    if (concrete) return concrete[1];
-    const matchingDevice = recordingDevices.find((device) => {
-      const target = recordingAdapterTargetOf(device);
-      if (!target) return false;
-      if (selection.target.deviceKey && target.deviceKey) return selection.target.deviceKey === target.deviceKey;
-      if (selection.target.bdf && target.bdf) return JSON.stringify(selection.target.bdf) === JSON.stringify(target.bdf);
-      return Boolean(selection.target.luid && target.luid && selection.target.luid === target.luid);
-    });
-    const name = matchingDevice?.name ?? selection.deviceName ?? 'GPU';
-    const sku = name.match(/\b[AB]\d{3}\b/i)?.[0]?.toUpperCase();
-    const codec = selection.codec === 'obs_qsv11_av1' ? 'AV1' : selection.codec === 'obs_qsv11_hevc' ? 'HEVC' : 'H264';
-    return `${sku ?? name} ${codec}`;
-  }
-  const encoder = status.encoders.find((candidate) => candidate.type === id);
-  if (encoder) return encoderLabel(encoder);
-  return ({ obs_qsv11_v2: 'Intel H264', obs_qsv11_hevc: 'Intel HEVC', obs_qsv11_av1: 'Intel AV1' } as Record<string, string>)[id] ?? id;
+  const selectionLabel = recordingEncoderSelectionLabel(id, recordingDevices, status.encoders);
+  if (selectionLabel) return selectionLabel;
+  return recordingEncoderNameForId(id, status.encoders) ?? 'Automatic';
 }
 
 function captureProfileLabel(value: RecordingSettings): string {
@@ -375,47 +358,29 @@ async function applyRecordingSettings(): Promise<void> {
   }
 }
 
-function encoderLabel(encoder: RecordingEngineState['encoders'][number]): string {
-  const source = `${encoder.type} ${encoder.description}`.toLowerCase();
-  const intel = INTEL_QSV_ENCODERS.has(encoder.type) || source.includes('quick sync') || source.includes('qsv') || source.includes('intel');
-  if (source.includes('av1')) return intel ? 'Intel AV1' : 'AV1';
-  if (source.includes('hevc') || source.includes('h.265') || source.includes('h265')) return intel ? 'Intel HEVC' : 'HEVC';
-  if (source.includes('h264') || source.includes('h.264') || source.includes('avc') || encoder.type === 'obs_qsv11_v2') return intel ? 'Intel H264' : 'H264';
-  return encoder.description || encoder.type;
-}
-
 function encoderOptions(selectedId: string): Array<[string, string]> {
   const options: Array<[string, string]> = [['automatic', 'Automatic']];
-  const known = new Map(status.encoders.filter((encoder) => INTEL_QSV_ENCODERS.has(encoder.type)).map((encoder) => [encoder.type, encoder]));
   const concrete = recordingGpuEncoderOptions(recordingDevices, status.encoders);
-  options.push(...concrete);
-  const checking = status.probeComplete !== true && status.encoders.length === 0
-    && (!status.error || /^Loading recording engine/i.test(status.error));
-  for (const [id, label] of [['obs_qsv11_v2', 'Intel H264'], ['obs_qsv11_hevc', 'Intel HEVC'], ['obs_qsv11_av1', 'Intel AV1']] as const) {
-    // Once concrete choices exist, keep the dropdown focused on physical
-    // GPU+codec pairs. A legacy global ID is retained only when it is the
-    // persisted selection, so old settings remain representable and usable.
-    if (concrete.length && id !== selectedId) continue;
-    const encoder = known.get(id);
-    const unavailable = !encoder
-      ? checking ? ' — checking…' : ' — unavailable'
-      : (encoder.startTested && !encoder.startSupported) || encoder.probeValid !== true ? ' — unavailable' : '';
-    options.push([id, `${encoder ? encoderLabel(encoder) : label}${concrete.length ? ' (legacy)' : ''}${unavailable}`]);
+  const addOption = (option: [string, string]): void => {
+    if (!options.some(([id]) => id === option[0])) options.push(option);
+  };
+  concrete.forEach(addOption);
+  for (const option of recordingGlobalEncoderOptions(status.encoders)) {
+    if (!concrete.length || option[0] === selectedId) addOption(option);
   }
-  // Keep an older persisted global ID visible even if a future renderer
-  // cannot currently enumerate a stable physical target for it.
-  if (selectedId && !options.some(([id]) => id === selectedId)) options.push([selectedId, selectedEncoderLabel(selectedId)]);
+  if (selectedId && !options.some(([id]) => id === selectedId)) {
+    const label = selectedEncoderLabel(selectedId);
+    if (label !== 'Automatic') addOption([selectedId, label]);
+  }
   return options;
 }
 
 function renderGpuEncoderInventory(): HTMLElement {
   const rows = recordingGpuEncoderRows(recordingDevices, status.encoders);
-  const body = rows.length
-    ? rows.map((row) => el('div', { class: 'recording-encoder-row' }, [
-      el('span', { class: 'recording-encoder-device', text: row.deviceName }),
-      el('strong', { class: 'recording-encoder-codecs', text: row.encoderLabels.join(' · ') }),
-    ]))
-    : [el('p', { class: 'recording-encoder-empty', text: status.probeComplete === true ? 'No GPU encoders were verified.' : 'Checking encoder availability…' })];
+  const body = rows.map((row) => el('div', { class: 'recording-encoder-row' }, [
+    el('span', { class: 'recording-encoder-device', text: row.deviceName }),
+    el('strong', { class: 'recording-encoder-codecs', text: row.encoderLabels.join(' · ') }),
+  ]));
   return el('div', { class: 'recording-encoder-inventory' }, [
     el('div', { class: 'recording-encoder-heading' }, [
       el('span', { class: 'recording-field-label', text: 'GPU encoder inventory' }),

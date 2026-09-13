@@ -90,7 +90,7 @@ import {
 import { isValidTheme } from './pure/theme.ts';
 import { formatGpuMemoryGb, gpuMemoryLabel } from './pure/gpu-memory.ts';
 import { normalizeOverlayStats } from './pure/overlay.ts';
-import { recordingBitrateRange, recordingGpuEncoderOptions } from './pure/recording.ts';
+import { recordingBitrateRange, recordingEncoderNameForId, recordingEncoderSelectionLabel, recordingGlobalEncoderOptions, recordingGpuEncoderOptions } from './pure/recording.ts';
 import { isAlchemistGpuName } from './pure/hardware-icons.ts';
 import { showAdvancedModeConfirm } from './components/confirm-dialog.ts';
 
@@ -1323,8 +1323,19 @@ function recordingQuickTargetFromValue(value: string): RecordingCaptureTarget | 
 
 function recordingQuickEncoderOptions(selected: string): Array<[string, string]> {
   const options: Array<[string, string]> = [['automatic', 'Automatic']];
-  options.push(...recordingGpuEncoderOptions(store.get().devices, recordingQuickStatus.encoders));
-  if (selected && !options.some(([id]) => id === selected)) options.push([selected, `${selected} (saved)`]);
+  const concrete = recordingGpuEncoderOptions(store.get().devices, recordingQuickStatus.encoders);
+  const addOption = (option: [string, string]): void => {
+    if (!options.some(([id]) => id === option[0])) options.push(option);
+  };
+  concrete.forEach(addOption);
+  for (const option of recordingGlobalEncoderOptions(recordingQuickStatus.encoders)) {
+    if (!concrete.length || option[0] === selected) addOption(option);
+  }
+  if (selected && !options.some(([id]) => id === selected)) {
+    const label = recordingEncoderSelectionLabel(selected, store.get().devices, recordingQuickStatus.encoders)
+      ?? recordingEncoderNameForId(selected, recordingQuickStatus.encoders);
+    if (label) addOption([selected, label]);
+  }
   return options;
 }
 
