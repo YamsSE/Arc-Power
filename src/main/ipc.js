@@ -365,12 +365,16 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         const advancedOverlayWin = getAdvancedOverlayWindow();
         if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(RECORDING_SETTINGS_CHANNEL, payload);
       }
-      // The Recording Pill is persisted with profile settings rather than the
-      // recording profile. Broadcast its normalized value to both renderer
-      // surfaces so the main Recording page and Advanced Overlay checkbox
-      // remain live when either one changes it.
-      if (channel === 'profiles-settings-save' && out && typeof out.overlayRecordingPill === 'boolean') {
-        const payload = { enabled: out.overlayRecordingPill };
+      // The Recording Pill and desktop-toast preferences are persisted with
+      // profile settings rather than the recording profile. Broadcast their
+      // normalized values to both renderer surfaces so a profile-settings
+      // save cannot leave the Recording page or Advanced Overlay stale.
+      if (channel === 'profiles-settings-save' && out
+        && (typeof out.overlayRecordingPill === 'boolean' || typeof out.recordingToastsEnabled === 'boolean')) {
+        const payload = {
+          ...(typeof out.overlayRecordingPill === 'boolean' ? { enabled: out.overlayRecordingPill } : {}),
+          ...(typeof out.recordingToastsEnabled === 'boolean' ? { toastsEnabled: out.recordingToastsEnabled } : {}),
+        };
         const win = getWindow();
         if (win && !win.isDestroyed()) win.webContents.send(RECORDING_PILL_SETTINGS_CHANNEL, payload);
         const advancedOverlayWin = getAdvancedOverlayWindow();

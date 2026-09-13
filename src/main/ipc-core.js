@@ -4322,6 +4322,11 @@ export function createIpcHandlers({
           overlayRecordingPill: patch.overlayRecordingPill === undefined
             ? cur.overlayRecordingPill
             : patch.overlayRecordingPill === true,
+          // Recording/Instant Replay desktop toasts are a separate boolean
+          // preference; absent keeps the current opt-in value.
+          recordingToastsEnabled: patch.recordingToastsEnabled === undefined
+            ? cur.recordingToastsEnabled === true
+            : patch.recordingToastsEnabled === true,
           // M23: the ADVANCED-overlay fields (the Overlay view's Advanced
           // card persists them through this channel - the M5 overlaySettings
           // pattern, new keys). The letter REJECTS with an honest error when

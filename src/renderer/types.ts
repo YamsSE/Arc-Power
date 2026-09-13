@@ -47,6 +47,8 @@ export interface Settings {
   overlayPollMs?: number;
   /** M143: the persisted Overlay recording/replay status pill preference. */
   overlayRecordingPill?: boolean;
+  /** The separate Recording/Instant Replay desktop-toast preference. */
+  recordingToastsEnabled?: boolean;
 }
 
 /** Read-back of the device's current state (all supported controls resolved). */
@@ -824,6 +826,8 @@ export interface ProfileSettingsState {
   overlayTheme: 'classic' | 'arc';
   /** M143: the Overlay recording/replay status pill preference. */
   overlayRecordingPill: boolean;
+  /** Recording/Instant Replay desktop toasts are opt-in; stock is off. */
+  recordingToastsEnabled: boolean;
   /** M23: the ADVANCED overlay (the AMD-Adrenaline-style interactive side
    *  panel - CONTROL + <letter>, stock P; absent on old files -> the
    *  defaults: off / 'P' / 'right' - the same absent-field mechanism, NO

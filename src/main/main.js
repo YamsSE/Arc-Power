@@ -380,7 +380,7 @@ let bootWindowTheme = 'dark';
 // Bump the shell identity after the earlier desktop identity was observed
 // cached with Windows' generic document icon. Keeping this value stable for
 // the repaired release lets the shell reuse the branded resource thereafter.
-const APP_USER_MODEL_ID = 'com.rid.arcpower.desktop.v3';
+const APP_USER_MODEL_ID = 'com.rid.arcpower.desktop.v4';
 // Set the Windows identity while this module is loading, before Electron can
 // create the startup splash or the main window. Keeping this at the earliest
 // possible point prevents the shell from briefly assigning the default
@@ -3648,10 +3648,16 @@ async function main() {
   const openExternal = uiVerify
     ? async () => { openExternalCount += 1; }
     : async (url) => { await shell.openExternal(url); };
+  const recordingToastsEnabled = () => {
+    try { return store.loadSettingsSync()?.recordingToastsEnabled === true; } catch { return false; }
+  };
   const showRecordingActionToast = (result) => {
     if (!result || typeof result !== 'object') return;
     const action = result.action;
     const replay = result.requestedMode === 'replay' || result.preActionMode === 'replay';
+    // Screenshot notifications remain independent. Recording and Instant
+    // Replay notifications are an explicit opt-in and stay silent by stock.
+    if (!recordingToastsEnabled() && action !== 'screenshot') return;
     if (!result.ok) {
       const title = action === 'saveClip'
         ? 'Save Instant Replay failed'
@@ -3690,6 +3696,7 @@ async function main() {
     try { trayRef?.setRecordingState?.(state); } catch { /* tray status is best effort */ }
     try { recordingStatusPillHandle?.setRecordingState?.(state); } catch { /* status pill is best effort */ }
     if (!state || !previous) return;
+    if (!recordingToastsEnabled()) return;
     const previousModes = previous.activeModes ?? { video: previous.mode === 'video' && previous.running === true, replay: previous.mode === 'replay' && previous.running === true };
     const stateModes = state.activeModes ?? { video: state.mode === 'video' && state.running === true, replay: state.mode === 'replay' && state.running === true };
     for (const mode of ['video', 'replay']) {

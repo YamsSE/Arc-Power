@@ -43,6 +43,34 @@ const RECORDING_QSV_ENCODER_LABELS: Record<typeof RECORDING_QSV_ENCODER_IDS[numb
   obs_qsv11_v2: 'Intel H264',
 };
 
+/** Return true for the generic QSV choices that are only a fallback when no
+ * physical Intel GPU encoder can be identified. */
+export function recordingEncoderIdIsGlobal(id: string): boolean {
+  return RECORDING_QSV_ENCODER_IDS.includes(String(id ?? '').trim() as typeof RECORDING_QSV_ENCODER_IDS[number]);
+}
+
+/**
+ * Map a legacy global QSV choice to the first matching physical GPU choice
+ * once the adapter inventory is known. The runtime still receives the same
+ * codec, but the persisted selection now carries the stable adapter identity
+ * required by the dedicated-card menu.
+ */
+export function recordingPhysicalSelectionForId(
+  id: string,
+  devices: RecordingGpuLike[] = [],
+  encoders: RecordingEncoderLike[] = [],
+): string | null {
+  if (!recordingEncoderIdIsGlobal(id)) return null;
+  const normalized = String(id ?? '').trim();
+  const codecLabel = normalized === 'obs_qsv11_av1'
+    ? 'AV1'
+    : normalized === 'obs_qsv11_hevc'
+      ? 'HEVC'
+      : 'H264';
+  return recordingGpuEncoderOptions(devices, encoders)
+    .find(([, label]) => label.endsWith(` ${codecLabel}`))?.[0] ?? null;
+}
+
 export interface RecordingAdapterBdf {
   domain: number;
   bus: number;

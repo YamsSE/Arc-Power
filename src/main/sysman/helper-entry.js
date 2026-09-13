@@ -31,6 +31,7 @@ const helperLog = createSysmanHelperLogFileWriter();
 // parent Electron process's AppUserModelId is not inherited. Set the same
 // Windows identity locally so Task Manager groups this required Sysman child
 // under Arc Power without changing its proven plain-Node startup contract.
+try { process.title = 'Arc Power'; } catch { /* best effort on constrained hosts */ }
 const processIdentity = setWindowsProcessIdentity();
 if (!processIdentity.ok && !processIdentity.skipped) {
   helperLog('[identity] could not set the Arc Power Windows process identity');

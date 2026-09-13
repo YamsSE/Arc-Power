@@ -3707,6 +3707,9 @@ input[type="number"] {
 .recording-profile-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .recording-profile-copy strong { overflow: hidden; color: var(--text); font: 650 12px var(--font); text-overflow: ellipsis; white-space: nowrap; }
 .recording-pill-setting { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 10px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--accent) 23%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--bg-inset) 70%, transparent); }
+.recording-pill-setting-stack { display: flex; flex-direction: column; gap: 10px; }
+.recording-pill-setting-stack.recording-pill-setting { align-items: stretch; margin-top: 10px; padding: 0; border: 0; background: transparent; }
+.recording-pill-setting-stack .recording-pill-setting { margin-top: 0; }
 .recording-pill-setting-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .recording-pill-setting-copy strong { color: var(--text); font: 650 12px var(--font); }
 .recording-pill-setting .recording-check-row { flex: 0 0 auto; white-space: nowrap; }

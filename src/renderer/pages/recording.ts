@@ -9,7 +9,7 @@ import { showRecordingClipDeleteConfirm } from '../components/recording-delete-d
 import { showRecordingShareDialog, type RecordingShareDialogHandle } from '../components/recording-share-dialog.ts';
 import { showRecordingHotkeyDialog } from '../components/recording-hotkey-dialog.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
-import { recordingBitrateRange, recordingEncoderNameForId, recordingEncoderSelectionLabel, recordingGlobalEncoderOptions, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage } from '../pure/recording.ts';
+import { recordingBitrateRange, recordingEncoderIdIsGlobal, recordingEncoderNameForId, recordingEncoderSelectionLabel, recordingGlobalEncoderOptions, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage, recordingPhysicalSelectionForId } from '../pure/recording.ts';
 import { clampRecordingEditorRange, normalizeRecordingEditorClipName, recordingEditorResumePosition, recordingEditorSelectionFromRatios, recordingEditorSeekTargetMs, recordingEditorTimelineMsFromRatio } from '../pure/recording-editor.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
@@ -75,7 +75,10 @@ let recordingStateRevision = 0;
 let clipLibraryFilter: ClipLibraryFilter = 'all';
 let clipLibrarySort: ClipLibrarySort = 'newest';
 let recordingPillEnabled = false;
+let recordingToastsEnabled = false;
 let recordingDevices: DeviceInfo[] = [];
+let recordingEncoderMigrationId: string | null = null;
+let recordingSettingsRevision = 0;
 let editorPollTimer: number | null = null;
 let recordingRuntimeLeaseState: 'none' | 'acquiring' | 'held' = 'none';
 let recordingRuntimeLeaseWanted = false;
@@ -98,6 +101,7 @@ function setStatus(next: RecordingEngineState): void {
     : null;
   status = { ...previous, ...incoming, hotkeys: incoming.hotkeys ?? previous.hotkeys, startedAt };
   recordingStateRevision += 1;
+  migrateLegacyEncoderSelection();
 }
 
 async function releaseRecordingRuntimeLease(): Promise<void> {
@@ -276,10 +280,11 @@ function compactPath(value: string): string {
 }
 
 function selectedEncoderLabel(id: string): string {
-  if (id === 'automatic') return 'Automatic';
-  const selectionLabel = recordingEncoderSelectionLabel(id, recordingDevices, status.encoders);
+  const effectiveId = recordingPhysicalSelectionForId(id, recordingDevices, status.encoders) ?? id;
+  if (effectiveId === 'automatic') return 'Automatic';
+  const selectionLabel = recordingEncoderSelectionLabel(effectiveId, recordingDevices, status.encoders);
   if (selectionLabel) return selectionLabel;
-  return recordingEncoderNameForId(id, status.encoders) ?? 'Automatic';
+  return recordingEncoderNameForId(effectiveId, status.encoders) ?? 'Automatic';
 }
 
 function captureProfileLabel(value: RecordingSettings): string {
@@ -339,10 +344,13 @@ function recordingSettingsPatchFrom(value: RecordingSettings): RecordingSettings
 
 async function applyRecordingSettings(): Promise<void> {
   if (applyingSettings || !settingsDirty || !draftSettings) return;
+  recordingSettingsRevision += 1;
   applyingSettings = true;
   updateRecordingApplyButton();
   try {
-    const result = await api.recordingSettingsSave(recordingSettingsPatchFrom(draftSettings));
+    const patch = recordingSettingsPatchFrom(draftSettings);
+    patch.encoderId = recordingPhysicalSelectionForId(patch.encoderId ?? 'automatic', recordingDevices, status.encoders) ?? patch.encoderId;
+    const result = await api.recordingSettingsSave(patch);
     settings = result.settings;
     draftSettings = cloneRecordingSettings(result.settings);
     settingsDirty = false;
@@ -358,19 +366,52 @@ async function applyRecordingSettings(): Promise<void> {
   }
 }
 
+function migrateLegacyEncoderSelection(): void {
+  if (!renderContainer || !settings || settingsDirty || applyingSettings) return;
+  const currentId = settings.encoderId;
+  const normalized = recordingPhysicalSelectionForId(currentId, recordingDevices, status.encoders);
+  if (!normalized || normalized === currentId || recordingEncoderMigrationId === normalized) return;
+  const originalId = currentId;
+  const migrationRevision = ++recordingSettingsRevision;
+  recordingEncoderMigrationId = normalized;
+  settings = { ...settings, encoderId: normalized };
+  draftSettings = cloneRecordingSettings(settings);
+  render();
+  void api.recordingSettingsSave({ encoderId: normalized }).then((result) => {
+    if (migrationRevision === recordingSettingsRevision
+      && !settingsDirty && !applyingSettings && settings?.encoderId === normalized) {
+      settings = result.settings;
+      draftSettings = cloneRecordingSettings(result.settings);
+    }
+  }).catch((err) => {
+    if (migrationRevision === recordingSettingsRevision
+      && !settingsDirty && !applyingSettings && settings?.encoderId === normalized) {
+      settings = { ...settings, encoderId: originalId };
+      draftSettings = cloneRecordingSettings(settings);
+    }
+    toast('error', 'Recording settings', `The dedicated encoder selection could not be saved: ${messageOf(err)}`);
+  }).finally(() => {
+    if (recordingEncoderMigrationId === normalized) recordingEncoderMigrationId = null;
+    if (renderContainer) render();
+  });
+}
+
 function encoderOptions(selectedId: string): Array<[string, string]> {
   const options: Array<[string, string]> = [['automatic', 'Automatic']];
   const concrete = recordingGpuEncoderOptions(recordingDevices, status.encoders);
+  const effectiveSelectedId = recordingPhysicalSelectionForId(selectedId, recordingDevices, status.encoders) ?? selectedId;
   const addOption = (option: [string, string]): void => {
     if (!options.some(([id]) => id === option[0])) options.push(option);
   };
   concrete.forEach(addOption);
-  for (const option of recordingGlobalEncoderOptions(status.encoders)) {
-    if (!concrete.length || option[0] === selectedId) addOption(option);
+  if (!concrete.length) {
+    for (const option of recordingGlobalEncoderOptions(status.encoders)) {
+      addOption(option);
+    }
   }
-  if (selectedId && !options.some(([id]) => id === selectedId)) {
-    const label = selectedEncoderLabel(selectedId);
-    if (label !== 'Automatic') addOption([selectedId, label]);
+  if (effectiveSelectedId && !options.some(([id]) => id === effectiveSelectedId) && !recordingEncoderIdIsGlobal(effectiveSelectedId)) {
+    const label = selectedEncoderLabel(effectiveSelectedId);
+    if (label !== 'Automatic') addOption([effectiveSelectedId, label]);
   }
   return options;
 }
@@ -436,22 +477,40 @@ function renderCaptureActions(): HTMLElement {
 }
 
 function renderRecordingPillSetting(): HTMLElement {
-  return el('div', { class: 'recording-pill-setting' }, [
+  const settingRow = (label: string, title: string, note: string, setting: string, checked: boolean, onChange: (event: Event) => void) => el('div', { class: 'recording-pill-setting' }, [
     el('div', { class: 'recording-pill-setting-copy' }, [
-      el('span', { class: 'recording-field-label', text: 'On-screen indicator' }),
-      el('strong', { text: 'Recording Pill' }),
-      el('span', { class: 'recording-field-note', text: 'Shows the Arc Power icon with a red or blue status pill while capture is active.' }),
+      el('span', { class: 'recording-field-label', text: label }),
+      el('strong', { text: title }),
+      el('span', { class: 'recording-field-note', text: note }),
     ]),
     el('label', { class: 'recording-check-row' }, [
       el('input', {
         type: 'checkbox',
         class: 'settings-checkbox',
-        dataset: { setting: 'overlayRecordingPill' },
-        'aria-label': 'Recording Pill overlay',
-        checked: recordingPillEnabled,
-        onchange: (ev: Event) => void onRecordingPillToggle((ev.target as HTMLInputElement).checked),
+        dataset: { setting },
+        'aria-label': title,
+        checked,
+        onchange: onChange,
       }),
     ]),
+  ]);
+  return el('div', { class: 'recording-pill-setting-stack recording-pill-setting' }, [
+    settingRow(
+      'On-screen indicator',
+      'Recording Pill',
+      'Shows the Arc Power icon with a red or blue status pill while capture is active.',
+      'overlayRecordingPill',
+      recordingPillEnabled,
+      (event) => void onRecordingPillToggle((event.target as HTMLInputElement).checked),
+    ),
+    settingRow(
+      'Desktop notifications',
+      'Recording / Instant Replay Toasts',
+      'Shows a desktop toast when Recording or Instant Replay starts, stops, saves, or fails.',
+      'recordingToastsEnabled',
+      recordingToastsEnabled,
+      (event) => void onRecordingToastsToggle((event.target as HTMLInputElement).checked),
+    ),
   ]);
 }
 
@@ -492,6 +551,21 @@ async function onRecordingPillToggle(checked: boolean): Promise<void> {
   } catch (err) {
     recordingPillEnabled = previous;
     toast('error', 'Recording Pill could not be changed', messageOf(err));
+  }
+  render();
+}
+
+async function onRecordingToastsToggle(checked: boolean): Promise<void> {
+  const previous = recordingToastsEnabled;
+  recordingToastsEnabled = checked;
+  render();
+  try {
+    const result = await api.profilesSettingsSave({ recordingToastsEnabled: checked });
+    recordingToastsEnabled = result.recordingToastsEnabled === true;
+    toast(checked ? 'success' : 'info', checked ? 'Recording toasts enabled' : 'Recording toasts disabled', '');
+  } catch (err) {
+    recordingToastsEnabled = previous;
+    toast('error', 'Recording toasts could not be changed', messageOf(err));
   }
   render();
 }
@@ -679,7 +753,9 @@ function renderQualitySettings(): HTMLElement {
     const value = Number(bitrate.value);
     if (Number.isFinite(value) && value > 0) stagePatch({ bitrateKbps: value }, false);
   });
-  const selectedEncoder = working?.encoderId ?? 'automatic';
+  const selectedEncoder = recordingPhysicalSelectionForId(working?.encoderId ?? 'automatic', recordingDevices, status.encoders)
+    ?? working?.encoderId
+    ?? 'automatic';
   const encoder = select(selectedEncoder, encoderOptions(selectedEncoder), 'Encoder', (value) => stagePatch({ encoderId: value }));
   const resolution = select(selectedResolution, RESOLUTIONS, 'Resolution', (value) => stagePatch({ resolution: value }));
   return el('section', { class: 'recording-panel' }, [
@@ -2056,6 +2132,7 @@ async function load(): Promise<void> {
       api.profilesList().catch(() => null),
     ]);
     settings = loadedSettings;
+    recordingSettingsRevision += 1;
     draftSettings = cloneRecordingSettings(loadedSettings);
     fpsCustomEditing = false;
     settingsDirty = false;
@@ -2064,9 +2141,14 @@ async function load(): Promise<void> {
     // pending, never restore the older status snapshot returned by the
     // initial recordingStatus request.
     if (recordingStateRevision === loadStateRevision) setStatus(loadedStatus);
+    // The runtime probe can finish before the settings request. In that
+    // ordering setStatus() had no profile to migrate, so reconcile once the
+    // loaded settings and the newest status are both present.
+    migrateLegacyEncoderSelection();
     clips = loadedClips;
     storageInfo = loadedStorage;
     recordingPillEnabled = profileEnvelope?.settings?.overlayRecordingPill === true;
+    recordingToastsEnabled = profileEnvelope?.settings?.recordingToastsEnabled === true;
     activeTab = tabForMode(settings.mode);
     const canonicalMode = modeForTab(activeTab) ?? 'manual';
     if (settings.mode !== canonicalMode) {
@@ -2215,17 +2297,20 @@ export const recordingPage: Page = {
     if (!unsubscribeRecordingSettings) {
       unsubscribeRecordingSettings = api.onRecordingSettingsUpdated((next) => {
         if (!next || typeof next !== 'object') return;
+        recordingSettingsRevision += 1;
         settings = next;
         // Preserve a local unsaved draft, but adopt the pushed settings as
         // the clean base so the page and the Advanced Overlay stay aligned.
         if (!settingsDirty && !applyingSettings) draftSettings = cloneRecordingSettings(next);
+        migrateLegacyEncoderSelection();
         if (renderContainer === container) render();
       });
     }
     if (!unsubscribeRecordingPillSettings) {
       unsubscribeRecordingPillSettings = api.onRecordingPillSettingsUpdated((next) => {
-        if (!next || typeof next.enabled !== 'boolean') return;
-        recordingPillEnabled = next.enabled;
+        if (!next || (typeof next.enabled !== 'boolean' && typeof next.toastsEnabled !== 'boolean')) return;
+        if (typeof next.enabled === 'boolean') recordingPillEnabled = next.enabled;
+        if (typeof next.toastsEnabled === 'boolean') recordingToastsEnabled = next.toastsEnabled;
         if (renderContainer === container) render();
       });
     }
@@ -2245,6 +2330,7 @@ export const recordingPage: Page = {
     const devices = context.store.get().devices;
     if (devices !== recordingDevices) {
       recordingDevices = devices;
+      migrateLegacyEncoderSelection();
       if (renderContainer === container) render();
     }
   },
@@ -2264,7 +2350,9 @@ export const recordingPage: Page = {
     fpsCustomEditing = false;
     storageInfo = null;
     recordingPillEnabled = false;
+    recordingToastsEnabled = false;
     recordingDevices = [];
+    recordingEncoderMigrationId = null;
     recordingTargets = { displays: [], windows: [] };
     recordingTargetsBusy = false;
     renderContainer = null;

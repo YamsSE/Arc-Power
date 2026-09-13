@@ -90,7 +90,7 @@ import {
 import { isValidTheme } from './pure/theme.ts';
 import { formatGpuMemoryGb, gpuMemoryLabel } from './pure/gpu-memory.ts';
 import { normalizeOverlayStats } from './pure/overlay.ts';
-import { recordingBitrateRange, recordingEncoderNameForId, recordingEncoderSelectionLabel, recordingGlobalEncoderOptions, recordingGpuEncoderOptions } from './pure/recording.ts';
+import { recordingBitrateRange, recordingEncoderIdIsGlobal, recordingEncoderNameForId, recordingEncoderSelectionLabel, recordingGlobalEncoderOptions, recordingGpuEncoderOptions, recordingPhysicalSelectionForId } from './pure/recording.ts';
 import { isAlchemistGpuName } from './pure/hardware-icons.ts';
 import { showAdvancedModeConfirm } from './components/confirm-dialog.ts';
 
@@ -158,6 +158,8 @@ let recordingQuickDraft: RecordingSettings | null = null;
 let recordingQuickStatus: RecordingEngineState = EMPTY_RECORDING_STATUS;
 let recordingQuickTargets: RecordingCaptureTargets = { displays: [], windows: [] };
 let recordingQuickPillEnabled = false;
+let recordingQuickEncoderMigrationId: string | null = null;
+let recordingQuickSettingsRevision = 0;
 let recordingQuickInitialized = false;
 let recordingQuickLoading = false;
 let recordingQuickActionBusy = false;
@@ -190,6 +192,7 @@ function cloneRecordingQuickSettings(value: RecordingSettings): RecordingSetting
 }
 
 function syncRecordingSettings(next: RecordingSettings): void {
+  recordingQuickSettingsRevision += 1;
   // Keep the normalized push as the clean base even when Recording is not the
   // visible tab. This prevents the one-time quick-settings load from bringing
   // back values that were changed in the main Recording page meanwhile.
@@ -197,6 +200,7 @@ function syncRecordingSettings(next: RecordingSettings): void {
   if (!recordingQuickDirty && !recordingQuickApplying) {
     recordingQuickDraft = cloneRecordingQuickSettings(next);
   }
+  migrateLegacyRecordingQuickEncoderSelection();
   if (activeTab === 'recording') renderRecording();
 }
 
@@ -357,6 +361,7 @@ api.onRecordingStateUpdated((next) => {
     hotkeys: next.hotkeys ?? recordingQuickStatus.hotkeys,
     activeModes: next.activeModes ?? recordingQuickStatus.activeModes,
   };
+  migrateLegacyRecordingQuickEncoderSelection();
   if (activeTab === 'recording') renderRecording();
 });
 // M31: one atomic main-owned selection push updates the panel's current
@@ -1323,20 +1328,56 @@ function recordingQuickTargetFromValue(value: string): RecordingCaptureTarget | 
 
 function recordingQuickEncoderOptions(selected: string): Array<[string, string]> {
   const options: Array<[string, string]> = [['automatic', 'Automatic']];
-  const concrete = recordingGpuEncoderOptions(store.get().devices, recordingQuickStatus.encoders);
+  const devices = store.get().devices;
+  const concrete = recordingGpuEncoderOptions(devices, recordingQuickStatus.encoders);
+  const effectiveSelected = recordingPhysicalSelectionForId(selected, devices, recordingQuickStatus.encoders) ?? selected;
   const addOption = (option: [string, string]): void => {
     if (!options.some(([id]) => id === option[0])) options.push(option);
   };
   concrete.forEach(addOption);
-  for (const option of recordingGlobalEncoderOptions(recordingQuickStatus.encoders)) {
-    if (!concrete.length || option[0] === selected) addOption(option);
+  if (!concrete.length) {
+    for (const option of recordingGlobalEncoderOptions(recordingQuickStatus.encoders)) {
+      addOption(option);
+    }
   }
-  if (selected && !options.some(([id]) => id === selected)) {
-    const label = recordingEncoderSelectionLabel(selected, store.get().devices, recordingQuickStatus.encoders)
-      ?? recordingEncoderNameForId(selected, recordingQuickStatus.encoders);
-    if (label) addOption([selected, label]);
+  if (effectiveSelected && !options.some(([id]) => id === effectiveSelected) && !recordingEncoderIdIsGlobal(effectiveSelected)) {
+    const label = recordingEncoderSelectionLabel(effectiveSelected, devices, recordingQuickStatus.encoders)
+      ?? recordingEncoderNameForId(effectiveSelected, recordingQuickStatus.encoders);
+    if (label) addOption([effectiveSelected, label]);
   }
   return options;
+}
+
+function migrateLegacyRecordingQuickEncoderSelection(): void {
+  if (activeTab !== 'recording' || !recordingQuickSettings || recordingQuickDirty || recordingQuickApplying) return;
+  const currentId = recordingQuickSettings.encoderId;
+  const devices = store.get().devices;
+  const normalized = recordingPhysicalSelectionForId(currentId, devices, recordingQuickStatus.encoders);
+  if (!normalized || normalized === currentId || recordingQuickEncoderMigrationId === normalized) return;
+  const originalId = currentId;
+  const migrationRevision = ++recordingQuickSettingsRevision;
+  recordingQuickEncoderMigrationId = normalized;
+  recordingQuickSettings = { ...recordingQuickSettings, encoderId: normalized };
+  recordingQuickDraft = cloneRecordingQuickSettings(recordingQuickSettings);
+  recordingQuickDirty = false;
+  renderRecording();
+  void api.recordingSettingsSave({ encoderId: normalized }).then((result) => {
+    if (migrationRevision === recordingQuickSettingsRevision
+      && !recordingQuickDirty && !recordingQuickApplying && recordingQuickSettings?.encoderId === normalized) {
+      recordingQuickSettings = result.settings;
+      recordingQuickDraft = cloneRecordingQuickSettings(result.settings);
+    }
+  }).catch((err) => {
+    if (migrationRevision === recordingQuickSettingsRevision
+      && !recordingQuickDirty && !recordingQuickApplying && recordingQuickSettings?.encoderId === normalized) {
+      recordingQuickSettings = { ...recordingQuickSettings, encoderId: originalId };
+      recordingQuickDraft = cloneRecordingQuickSettings(recordingQuickSettings);
+    }
+    toast('error', 'Recording settings', `The dedicated encoder selection could not be saved: ${err instanceof Error ? err.message : String(err)}`);
+  }).finally(() => {
+    if (recordingQuickEncoderMigrationId === normalized) recordingQuickEncoderMigrationId = null;
+    if (activeTab === 'recording') renderRecording();
+  });
 }
 
 function normalizeRecordingQuickStatus(value: RecordingEngineState | null | undefined): RecordingEngineState {
@@ -1362,10 +1403,12 @@ async function loadRecordingQuick(): Promise<void> {
     // that normalized value as the authoritative quick-settings base while
     // still loading the status, targets, and profile-backed pill state.
     if (!recordingQuickSettings) {
+      recordingQuickSettingsRevision += 1;
       recordingQuickSettings = loadedSettings;
       recordingQuickDraft = cloneRecordingQuickSettings(loadedSettings);
     }
     recordingQuickStatus = normalizeRecordingQuickStatus(loadedStatus);
+    migrateLegacyRecordingQuickEncoderSelection();
     const [targets, profileEnvelope] = await Promise.all([
       api.recordingCaptureTargets().catch(() => ({ displays: [], windows: [] })),
       api.profilesList().catch(() => null),
@@ -1404,10 +1447,13 @@ function recordingQuickPatchFrom(value: RecordingSettings): RecordingSettingsPat
 
 async function applyRecordingQuickSettings(): Promise<void> {
   if (recordingQuickApplying || !recordingQuickDirty || !recordingQuickDraft) return;
+  recordingQuickSettingsRevision += 1;
   recordingQuickApplying = true;
   renderRecording();
   try {
-    const result = await api.recordingSettingsSave(recordingQuickPatchFrom(recordingQuickDraft));
+    const patch = recordingQuickPatchFrom(recordingQuickDraft);
+    patch.encoderId = recordingPhysicalSelectionForId(patch.encoderId ?? 'automatic', store.get().devices, recordingQuickStatus.encoders) ?? patch.encoderId;
+    const result = await api.recordingSettingsSave(patch);
     recordingQuickSettings = result.settings;
     recordingQuickDraft = cloneRecordingQuickSettings(result.settings);
     recordingQuickStatus = { ...recordingQuickStatus, hotkeys: result.hotkeys };
@@ -1512,7 +1558,9 @@ function renderRecordingQuickSettings(): HTMLElement {
     recordingQuickPatch({ resolution: value });
     renderRecording();
   }, 'Resolution');
-  const encoder = recordingQuickSelect(working.encoderId, recordingQuickEncoderOptions(working.encoderId), (value) => {
+  const selectedEncoder = recordingPhysicalSelectionForId(working.encoderId, store.get().devices, recordingQuickStatus.encoders)
+    ?? working.encoderId;
+  const encoder = recordingQuickSelect(selectedEncoder, recordingQuickEncoderOptions(selectedEncoder), (value) => {
     recordingQuickPatch({ encoderId: value });
     renderRecording();
   }, 'Encoder');

@@ -128,6 +128,9 @@ const OVERLAY_BG_OPACITY_DEFAULT = 0.5;
 // M145: the ReLive/Shadowplay-style recording status pill is opt-in. A stock
 // profile starts with it off; an explicit saved true remains enabled.
 const OVERLAY_RECORDING_PILL_DEFAULT = false;
+// Recording/Instant Replay desktop toasts are a separate opt-in surface.
+// Keep the stock profile quiet until the user explicitly enables them.
+const RECORDING_TOASTS_DEFAULT = false;
 // M17e (the user addition - the overlay polling-rate slider): the
 // telemetry push cadence range + default (100-2000 ms, step 50, default
 // 400 - M17g: the user's stock polling rate FLIPS 500 -> 400). The
@@ -438,7 +441,7 @@ export class ProfileStore {
    * files -> the defaults (off / 'P' / 'right'; the M5 overlaySettings
    * pattern, NO schema bump - NO scale key, the panel is a fixed compact
    * size).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, rtssOnBoot?: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, monitorLogMetrics?: string[], deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, rtssOnBoot?: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, monitorLogMetrics?: string[], deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, recordingToastsEnabled: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -507,6 +510,7 @@ export class ProfileStore {
         // M145: absent on old settings files -> disabled; users opt in from the
         // recording/replay indicator without changing any capture behavior.
         overlayRecordingPill: OVERLAY_RECORDING_PILL_DEFAULT,
+        recordingToastsEnabled: RECORDING_TOASTS_DEFAULT,
         // M23: the ADVANCED overlay - absent -> off, the letter 'P' (the
         // stock Adrenaline shortcut), anchored right (the same absent-field
         // mechanism, NO schema bump; NO scale key - the panel is a fixed
@@ -583,6 +587,9 @@ export class ProfileStore {
       // M145: the status pill is on only when explicitly enabled; missing or
       // garbage values keep the stock opt-in default off.
       overlayRecordingPill: data.overlayRecordingPill === true,
+      // Recording/Instant Replay desktop toasts are independently opt-in;
+      // absent or garbage values keep the stock default off.
+      recordingToastsEnabled: data.recordingToastsEnabled === true,
       // M23: the ADVANCED overlay (the M5 overlaySettings pattern, NO
       // schema bump): enabled off when absent, the letter 'P', anchored
       // 'right'; a garbage value degrades to the default - never a crash.
@@ -620,7 +627,7 @@ export class ProfileStore {
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, rtssOnBoot?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, monitorLogMetrics?: string[], deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, rtssOnBoot?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, monitorLogMetrics?: string[], deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, recordingToastsEnabled?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
   async saveSettings(settings) {
     const persisted = {
@@ -725,6 +732,10 @@ export class ProfileStore {
       ? settings.rtssOnBoot === true
       : this._settingsCache?.rtssOnBoot;
     if (rtssOnBoot !== undefined) persisted.rtssOnBoot = rtssOnBoot === true;
+    const recordingToastsEnabled = settings.recordingToastsEnabled !== undefined
+      ? settings.recordingToastsEnabled === true
+      : this._settingsCache?.recordingToastsEnabled;
+    if (recordingToastsEnabled !== undefined) persisted.recordingToastsEnabled = recordingToastsEnabled === true;
     const overlayRenderer = settings.overlayRenderer !== undefined
       ? (OVERLAY_RENDERERS.includes(settings.overlayRenderer) ? settings.overlayRenderer : 'rtss')
       : this._settingsCache?.overlayRenderer;

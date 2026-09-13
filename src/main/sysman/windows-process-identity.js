@@ -2,7 +2,7 @@
 
 import koffi from 'koffi';
 
-export const ARC_POWER_APP_USER_MODEL_ID = 'com.rid.arcpower.desktop.v3';
+export const ARC_POWER_APP_USER_MODEL_ID = 'com.rid.arcpower.desktop.v4';
 
 /**
  * Set the process AppUserModelId when running on Windows.
