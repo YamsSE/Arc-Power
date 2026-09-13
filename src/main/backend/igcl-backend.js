@@ -477,10 +477,9 @@ const DISPLAY_SCALING_MODE_FROM_IGCL = { 1: 'identity', 2: 'centered', 4: 'stret
 // with Version 1 for every scaling mode. Older drivers may reject that
 // version, so retain a narrowly-scoped Version 0 compatibility fallback. A
 // successful setter is still not reported as applied until fresh scaling
-// read-back agrees. Raw compatibility writes use the virtual-modeset path;
-// the explicit GPU-method alias requests the physical modeset/black-screen
-// transition used by IGS. Custom scaling remains caller-controlled because
-// it may need the physical display transition exposed by IGS.
+// read-back agrees. Ordinary Display/GPU writes use the virtual-modeset path
+// used by IGS; Custom scaling remains caller-controlled because it may need
+// the physical display transition exposed by IGS.
 function setScalingWithCompatibility(lib, handle, { flag, custom, hardwareModeSet = false }) {
   const versions = [1, 0];
   let lastResult = CTL_RESULT.ERROR_INVALID_ARGUMENT;
@@ -4087,8 +4086,8 @@ export class IgclBackend {
    * The error mapping reuses igclErrorCode; the 0x60000000-range display
    * codes fall through to the honest 'io-failed' fallback (never raw hex
    * in the UI). The scaling entry carries the honest modeset-flash warning
-   * (the probe skipped the scaling SET by design - a scaling change is a
-   * PHYSICAL MODESET = a screen flash).
+   * (the probe skipped the scaling SET by design; scaling changes may flash
+   * the screen while the driver applies the new output state).
    * @param {number} deviceId
    * @param {{ deviceKey: string, displayKey: string, patch: import('./backend.interface.js').DisplaySettings }} request
    * @returns {Promise<import('./backend.interface.js').ApplyResult>}
@@ -4344,18 +4343,24 @@ export class IgclBackend {
               y: Math.max(0, Math.min(100, Math.round(patch.scalingCustom.y))),
               hardwareModeSet: patch.scalingCustom.hardwareModeSet !== false,
             } : null;
+          // Capture the Version 1 preference from the same verified output
+          // snapshot used to resolve the write target. A post-write
+          // preferred flag is only evidence of a transition when it was not
+          // already present before the setter ran.
+          const preferredBefore = !custom && selectedDisplay?.preferredScalingMode
+            ? (DISPLAY_SCALING_MODE_TO_IGCL[selectedDisplay.preferredScalingMode] ?? null)
+            : null;
           if (flag === DISPLAY_SCALING_MODE_TO_IGCL.custom && patch.scalingCustom !== undefined && !custom) {
             fail('scalingMode', 'out-of-range', 'custom scaling percentages must be finite values from 0 to 100');
           } else {
           // The M10b-fix lesson: NO SupportedScaling pre-gate - the caps
           // bitmask stays a UI hint (the supportedOptions list); the set
           // reaches the driver and the driver's ACTUAL result decides.
-          // ScalingType is a FLAG value in the struct (1/2/4/8/16). The
-          // renderer includes the coupled GPU-method alias for IGS-style
-          // method changes; that is the signal for a physical modeset.
-          const gpuMethodRequested = patch.displayScalingMethod === 'centered'
-            || patch.displayScalingMethod === 'stretched'
-            || patch.displayScalingMethod === 'aspect-ratio-centered-max';
+          // ScalingType is a FLAG value in the struct (1/2/4/8/16). Keep
+          // ordinary Display/GPU mode changes on IGCL's virtual-modeset path,
+          // exactly like Intel Graphics Software. HardwareModeSet=true is
+          // reserved for the explicit Custom-scaling path, where the caller
+          // has requested a physical display transition.
           const registryWriterAvailable = !custom && typeof this._vrrRegistry?.setScalingState === 'function';
           const registryReaderAvailable = registryWriterAvailable && typeof this._vrrRegistry?.getScalingState === 'function';
           const registryValue = patch.scalingMode === 'identity' ? SCALING_STATE_DISPLAY : SCALING_STATE_GPU;
@@ -4402,7 +4407,7 @@ export class IgclBackend {
             ({ setResult } = setScalingWithCompatibility(lib, handle, {
               flag,
               custom,
-              hardwareModeSet: gpuMethodRequested,
+              hardwareModeSet: false,
             }));
           }
 
@@ -4426,10 +4431,9 @@ export class IgclBackend {
             };
             result.ok = false;
           } else {
-            // The probe never set-tested scaling (the physical-modeset
-            // flash); the read-back gets a short settle - a scaling change
-            // is a real modeset and the driver may need a beat to report
-            // the new state.
+            // The probe never set-tested scaling; the read-back gets a short
+            // settle because the driver may need a beat to report the new
+            // output state.
             await new Promise((r) => setTimeout(r, 400));
             // Version 1 includes PreferredScalingType, the persisted IGS
             // selection. Version 0 can only prove the active/native scaler.
@@ -4450,12 +4454,33 @@ export class IgclBackend {
               preferredReadBackEqual = current.version === 1 && !custom && got.preferredScalingType === flag;
               message = activeReadBackEqual ? undefined : `read-back ${JSON.stringify(got)} != requested ${JSON.stringify({ scalingType: flag, ...custom })}`;
             }
-            // A persisted PreferredScalingType or registry value alone cannot
-            // prove that the selected output scaler changed. Every GPU
-            // request must therefore read back the requested active scaler;
-            // otherwise the driver accepted a preference but left stock
-            // Display Scaling in effect.
-            const nativeReadBackEqual = activeReadBackEqual;
+            // Some Version 1 drivers persist a GPU preference while leaving
+            // the active scaler at Identity. That is a successful persisted
+            // GPU preference, but only when the preferred flag is the one
+            // requested; an unchanged preference remains a true no-op.
+            const preferredOnly = current.version === 1
+              && !custom
+              && flag !== DISPLAY_SCALING_MODE_TO_IGCL.identity
+              && preferredBefore !== null
+              && preferredBefore !== flag
+              && got?.enable === true
+              && got.scalingType === DISPLAY_SCALING_MODE_TO_IGCL.identity
+              && preferredReadBackEqual;
+            const preferenceAlreadyApplied = current.version === 1
+              && !custom
+              && flag !== DISPLAY_SCALING_MODE_TO_IGCL.identity
+              && (!registryWriterAvailable
+                || (registryScalingState?.ok === true && registryScalingState.value === registryValue))
+              && preferredBefore === flag
+              && got?.enable === true
+              && got.scalingType === DISPLAY_SCALING_MODE_TO_IGCL.identity
+              && preferredReadBackEqual;
+            const nativeReadBackEqual = activeReadBackEqual || preferredOnly || preferenceAlreadyApplied;
+            if (preferredOnly) {
+              message = 'GPU Scaling preference was saved; the driver reports Display Scaling as active at the current desktop resolution. GPU Scaling will be used when the output requires scaling.';
+            } else if (preferenceAlreadyApplied) {
+              message = 'GPU Scaling preference was already saved; the driver reports Display Scaling as active at the current desktop resolution. GPU Scaling will be used when the output requires scaling.';
+            }
             const registryAvailable = registryWriterAvailable;
             let registryReadBackEqual = false;
             // Do not persist a new IGS preference after a native silent no-op.
@@ -4489,6 +4514,8 @@ export class IgclBackend {
               readBackEqual,
               activeReadBackEqual,
               preferredReadBackEqual,
+              preferredOnly,
+              preferenceAlreadyApplied,
               registryReadBackEqual,
               ...(registryFallback?.ok === true ? { writeTransport: 'registry' } : {}),
               silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
@@ -4511,7 +4538,7 @@ export class IgclBackend {
       const retroMethodAlias = patch.displayScalingMethod === 'integer' || patch.displayScalingMethod === 'nearest-neighbour';
       // The renderer sends the method together with the coupled raw scaling
       // type when Custom is selected. Reusing the result of that write is
-      // important: two back-to-back physical scaling writes can race the
+      // important: two back-to-back output-scaling writes can race the
       // driver's read-back and make a valid Custom request look like a
       // silent no-op.
       if ((gpuMethodAlias && patch.scalingMode !== patch.displayScalingMethod)
@@ -4543,7 +4570,7 @@ export class IgclBackend {
             const { setResult } = setScalingWithCompatibility(lib, handle, {
               flag,
               custom,
-              hardwareModeSet: gpuMethodAlias,
+              hardwareModeSet: false,
             });
             if (setResult !== CTL_RESULT.SUCCESS) {
               fail('displayScalingMethod', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);

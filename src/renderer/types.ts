@@ -166,8 +166,12 @@ export interface PerControlResult {
   readBackEqual?: boolean;
   /** F3: the driver returned SUCCESS but the read-back did not change (silent no-op - must NOT be reported as applied). */
   silentNoop?: boolean;
-  /** M10b: the honest modeset-flash note the scaling apply carries (the
-   *  physical-modeset warning surfaced via the apply-result toast). */
+  /** The driver saved the requested GPU scaler preference while the active
+   * output scaler remains Identity at the current desktop timing. */
+  preferredOnly?: boolean;
+  /** The requested GPU preference was already present before the setter ran. */
+  preferenceAlreadyApplied?: boolean;
+  /** M10b: the honest display-flash note the scaling apply carries. */
   warning?: string;
   /** Backend-only companion write; keep it out of the user-facing toast. */
   internal?: boolean;
@@ -1116,8 +1120,9 @@ export interface DisplayState {
     colorFormat: string | null;
     quantizationRange: 'default' | 'limited' | 'full' | null;
     scalingMode: string | null;
-    /** Active/native scaler state. The IGS-style selector uses the persisted
-     * preference below when the driver reports an identity active mode. */
+    /** Active/native scaler state. The renderer keeps the persisted preference
+     * below separate and does not treat it as active when the driver reports
+     * Identity. */
     preferredScalingMode?: string | null;
     /** Adapter-level GPU-vs-Display preference when the native surface cannot
      * identify the exact GPU scaler method. */

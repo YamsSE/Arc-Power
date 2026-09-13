@@ -161,6 +161,15 @@ const IGS_SCALING_METHOD_LABELS: Record<string, string> = {
   integer: 'Integer Scaling',
   'nearest-neighbour': 'Nearest Neighbour',
 };
+
+function scalingStateNoteOf(display: DisplayState['displays'][number] | null): string {
+  const preferred = display?.preferredScalingMode;
+  const gpuPreferred = preferred === 'centered' || preferred === 'stretched' || preferred === 'aspect-ratio-centered-max';
+  if (display?.scalingMode === 'identity' && gpuPreferred) {
+    return `Saved preference: GPU Scaling (${IGS_SCALING_METHOD_LABELS[preferred]}). Active scaler: Display Scaling at the current desktop resolution. ${DISPLAY_SCALING_NOTE}`;
+  }
+  return DISPLAY_SCALING_NOTE;
+}
 const GLOBAL_VRR_LABELS: Record<string, string> = {
   fullscreen: 'Fullscreen',
   'fullscreen-windowed': 'Fullscreen & Windowed',
@@ -1476,7 +1485,7 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
       el('h3', { class: 'display-control-title', text: 'Scaling Mode' }),
       el('div', { class: 'graphics-control display-inline-control' }, [select]),
     ]),
-    el('p', { class: 'card-note', text: DISPLAY_SCALING_NOTE }),
+    el('p', { class: 'card-note', text: scalingStateNoteOf(display) }),
     el('div', { class: 'graphics-card-actions' }, [
       el('span', { class: 'chip oc-chip-status', hidden: true }),
       el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'scalingMode'); } }),
@@ -2081,8 +2090,8 @@ function displayPayloadForControl(only: string, display: DisplayState['displays'
       if (displayScalingViewDraft === 'gpu-scaling') {
         payload.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
         // Keep the IGS method identity alongside the raw IGCL flag. The
-        // backend uses this explicit alias to request the physical modeset
-        // path, which makes GPU method changes visibly transition the display.
+        // backend uses this explicit alias to keep the raw and user-facing
+        // GPU method selections coupled in one output-scaling transaction.
         payload.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
       } else if (displayScalingViewDraft === 'display-scaling') {
         payload.scalingMode = raw;
@@ -2207,10 +2216,13 @@ async function applyDisplay(ctx: PageContext, only: string) {
         } else {
           (displayApplied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
         }
-        toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
-        // The scaling card's honest modeset note rides the apply result
-        // (the M10b probe skipped the scaling SET by design - a scaling
-        // change is a PHYSICAL MODESET = a screen flash).
+        if (per.preferredOnly || per.preferenceAlreadyApplied) {
+          toast('info', `${CONTROL_LABELS[key] ?? key} preference ${per.preferenceAlreadyApplied ? 'already saved' : 'saved'}`, per.message
+            ?? 'The driver will use GPU Scaling when the output requires scaling.');
+        } else {
+          toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
+        }
+        // The scaling card's honest display-flash note rides the apply result.
         if (per.warning && !per.internal) toast('warn', 'Screen flash expected', per.warning);
       } else {
         toast('error', `${CONTROL_LABELS[key] ?? key} failed`, per.message ?? errorMessage(per.errorCode, key));

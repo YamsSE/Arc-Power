@@ -369,7 +369,7 @@ export const DISPLAY_GLOBAL_VRR_MODE_OPTIONS = ['fullscreen', 'fullscreen-window
  * scaling). Shared by the real backend's ApplyResult entry and the mock.
  * @type {string}
  */
-export const DISPLAY_SCALING_FLASH_WARNING = 'Changing the scaling mode causes a brief screen flash (a physical modeset).';
+export const DISPLAY_SCALING_FLASH_WARNING = 'Changing the scaling mode may briefly flash the display while the driver applies the output state.';
 
 /**
  * Map an IGCL ctl_result_t code to a canonical OcErrorCode (or null when

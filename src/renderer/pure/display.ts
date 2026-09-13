@@ -56,9 +56,9 @@ function isExplicitScalingPreference(value: unknown): value is 'gpu-scaling' | '
 
 /** Resolve the raw mode used by the compact scaling controls. The active
  * native scaler is authoritative when it is available: Identity is the stock
- * Display Scaling state, even when a driver leaves a stale GPU preference in
- * PreferredScalingType or NNScalingState. Preferred/registry values are only
- * fallbacks when the active native read-back is unavailable. */
+ * Display Scaling state, even when a driver reports a separate GPU preference
+ * in PreferredScalingType or NNScalingState. Preferred/registry values are
+ * only fallbacks when the active native read-back is unavailable. */
 export function effectiveScalingModeOf(display: Display | null | undefined): string | null {
   if (!display) return null;
   const active = display.scalingMode;
