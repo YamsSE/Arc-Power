@@ -3,7 +3,8 @@
 // This is intentionally a sibling of the telemetry HUD. It has its own small
 // transparent window so the status pill stays in the top-right display corner
 // regardless of where the telemetry HUD is positioned, and never covers HUD
-// rows or takes focus from a game.
+// rows or takes focus from a game. Product mode keeps this window absent until
+// a capture is active; the settings switch alone must not add a renderer.
 
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
@@ -26,6 +27,7 @@ function isCaptureActive(state) {
 export function createRecordingStatusPillWindow({
   getAnchorWindow = () => null,
   getRecordingState = () => null,
+  deferBuild = false,
 } = {}) {
   let win = null;
   let enabled = false;
@@ -82,6 +84,14 @@ export function createRecordingStatusPillWindow({
     try { win.showInactive(); } catch { try { win.show(); } catch { /* shutdown race */ } }
   };
 
+  const destroyWindow = () => {
+    if (topmostTimer) clearInterval(topmostTimer);
+    topmostTimer = null;
+    queuedState = null;
+    if (win && !win.isDestroyed()) win.destroy();
+    win = null;
+  };
+
   const build = () => {
     if (win && !win.isDestroyed()) return win;
     win = new BrowserWindow({
@@ -128,6 +138,13 @@ export function createRecordingStatusPillWindow({
     enabled = nextEnabled === true;
     if (!enabled) {
       if (win && !win.isDestroyed() && win.isVisible()) win.hide();
+      if (deferBuild) destroyWindow();
+      return;
+    }
+    // In product mode the pill is useful only while capture is active. Keep
+    // the option enabled without paying for a hidden Chromium renderer.
+    if (deferBuild && !isCaptureActive(recordingState)) {
+      destroyWindow();
       return;
     }
     build();
@@ -141,17 +158,17 @@ export function createRecordingStatusPillWindow({
   const setRecordingState = (state) => {
     recordingState = state && typeof state === 'object' ? state : null;
     if (!enabled) return;
+    if (deferBuild && !isCaptureActive(recordingState)) {
+      destroyWindow();
+      return;
+    }
     if (!win || win.isDestroyed()) build();
     sendState();
     updateVisibility();
   };
 
   const destroy = () => {
-    if (topmostTimer) clearInterval(topmostTimer);
-    topmostTimer = null;
-    queuedState = null;
-    if (win && !win.isDestroyed()) win.destroy();
-    win = null;
+    destroyWindow();
   };
 
   return {

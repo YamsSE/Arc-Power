@@ -3214,9 +3214,9 @@ async function main() {
   }
 
   // M143: the recording status pill is a separate, click-through desktop
-  // overlay. Product builds create it hidden; ui-verify creates it only in
-  // the overlay variant and immediately stealths it so verification cannot
-  // flash a window over the user's desktop.
+  // overlay. Product builds keep its Chromium window absent until recording
+  // or Instant Replay is active; ui-verify keeps the eager sibling window and
+  // immediately stealths it so verification cannot flash the desktop.
   const shouldCreateRecordingStatusPill = uiVerify
     ? process.env.RID_MOCK_OVERLAY === '1'
     : true;
@@ -3230,6 +3230,7 @@ async function main() {
     recordingStatusPillHandle = createRecordingStatusPillWindow({
       getAnchorWindow: () => win,
       getRecordingState: () => recordingEngine.getState(),
+      deferBuild: !uiVerify,
     });
     // M145: keep the verifier's sibling window available even though the
     // product default is OFF; the hidden window lets the harness prove the

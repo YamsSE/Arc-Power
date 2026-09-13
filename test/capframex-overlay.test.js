@@ -17,6 +17,7 @@ const storeSrc = read('src/main/store/profile-store.js');
 const ipcSrc = read('src/main/ipc-core.js');
 const mainSrc = read('src/main/main.js');
 const overlayMainSrc = read('src/main/overlay.js');
+const recordingPillSrc = read('src/main/recording-status-pill.js');
 const settingsSrc = read('src/renderer/pages/overlay-settings.ts');
 const overlaySrc = read('src/renderer/overlay.ts');
 const overlayHtml = read('src/renderer/overlay.html');
@@ -205,6 +206,88 @@ function loadAdvancedOverlayFactory() {
   };
 }
 
+function loadRecordingPillFactory() {
+  const source = read('src/main/recording-status-pill.js')
+    .replace(/^import .*\r?\n/gm, '')
+    .replace('const __dirname = path.dirname(fileURLToPath(import.meta.url));', "const __dirname = '.';")
+    .replace('export function createRecordingStatusPillWindow', 'function createRecordingStatusPillWindow');
+
+  return ({ initialState = null, deferBuild = true, windows }) => {
+    const screen = {
+      getPrimaryDisplay: () => ({ bounds: { x: 0, y: 0, width: 1920, height: 1080 } }),
+    };
+    class FakeBrowserWindow {
+      constructor(options) {
+        this.destroyed = false;
+        this.visible = options.show === true;
+        this.loading = true;
+        this.bounds = { x: options.x, y: options.y, width: options.width, height: options.height };
+        this.handlers = new Map();
+        this.messages = [];
+        this.webContents = {
+          handlers: new Map(),
+          isLoading: () => this.loading,
+          on: (event, handler) => this.webContents.handlers.set(event, handler),
+          send: (channel, payload) => this.messages.push({ channel, payload }),
+        };
+        windows.push(this);
+      }
+
+      on(event, handler) { this.handlers.set(event, handler); }
+      isDestroyed() { return this.destroyed; }
+      isVisible() { return this.visible; }
+      show() { this.visible = true; }
+      showInactive() { this.visible = true; }
+      hide() { this.visible = false; }
+      destroy() {
+        this.destroyed = true;
+        this.visible = false;
+        this.handlers.get('closed')?.();
+      }
+      setAlwaysOnTop() {}
+      setBounds(bounds) { this.bounds = { ...this.bounds, ...bounds }; }
+      getBounds() { return { ...this.bounds }; }
+      setIgnoreMouseEvents() {}
+      loadFile() {}
+      finishLoad() {
+        this.loading = false;
+        this.webContents.handlers.get('did-finish-load')?.();
+      }
+    }
+
+    const factory = new Function(
+      'BrowserWindow',
+      'screen',
+      'path',
+      'fileURLToPath',
+      'applyWindowIconLifecycle',
+      'resolveWindowIconPath',
+      `${source}; return createRecordingStatusPillWindow;`,
+    );
+    let state = initialState;
+    const handle = factory(
+      FakeBrowserWindow,
+      screen,
+      path,
+      fileURLToPath,
+      () => {},
+      () => undefined,
+    )({
+      getAnchorWindow: () => null,
+      getRecordingState: () => state,
+      deferBuild,
+    });
+    return {
+      handle,
+      windows,
+      setState(next) {
+        state = next;
+        handle.setRecordingState(next);
+      },
+    };
+  };
+}
+
 test('advanced overlay product mode builds on demand, clamps, and releases the renderer', async () => {
   const windows = [];
   const create = loadAdvancedOverlayFactory()({ displayHeight: 540, windows });
@@ -239,4 +322,43 @@ test('advanced overlay eager mode keeps the verifier window contract', () => {
   assert.equal(handle.getState().exists, true);
   assert.equal(handle.getState().visible, false, 'eager verifier mode still starts hidden');
   handle.destroy();
+});
+
+test('recording status pill is demand-built for product capture only', () => {
+  assert.match(recordingPillSrc, /deferBuild = false/);
+  assert.match(recordingPillSrc, /if \(deferBuild && !isCaptureActive\(recordingState\)\) \{[\s\S]*?destroyWindow\(\);/);
+  assert.match(recordingPillSrc, /const setRecordingState = \(state\) => \{[\s\S]*?if \(!enabled\) return;[\s\S]*?if \(deferBuild && !isCaptureActive\(recordingState\)\) \{[\s\S]*?destroyWindow\(\);/);
+  assert.match(mainSrc, /getRecordingState: \(\) => recordingEngine\.getState\(\),\s*deferBuild: !uiVerify,/);
+});
+
+test('recording status pill releases and rebuilds around capture transitions', () => {
+  const windows = [];
+  const harness = loadRecordingPillFactory()({
+    initialState: { activeModes: { video: false, replay: false } },
+    windows,
+  });
+
+  harness.handle.apply(true);
+  assert.equal(windows.length, 0, 'enabled idle product mode must not build a renderer');
+
+  harness.setState({ activeModes: { video: true, replay: true } });
+  assert.equal(windows.length, 1, 'active capture must build one renderer');
+  assert.equal(windows[0].visible, true);
+  windows[0].finishLoad();
+  assert.ok(windows[0].messages.some(({ channel }) => channel === 'recording:state'));
+
+  harness.setState({ activeModes: { video: false, replay: false } });
+  assert.equal(windows[0].destroyed, true, 'capture stop must release the renderer');
+
+  harness.setState({ activeModes: { video: false, replay: true } });
+  assert.equal(windows.length, 2, 'a later replay must rebuild the renderer');
+  harness.handle.apply(false);
+  assert.equal(windows[1].destroyed, true, 'disabling the pill must release an active renderer');
+  harness.handle.destroy();
+});
+
+test('recording toast releases its transient renderer after expiry', () => {
+  const toastSrc = read('src/main/recording-toast.js');
+  assert.match(toastSrc, /const destroyWindow = \(\) =>/);
+  assert.match(toastSrc, /hideTimer = setTimeout\(\(\) => \{[\s\S]*?destroyWindow\(\);/);
 });

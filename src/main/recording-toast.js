@@ -60,6 +60,14 @@ export function createRecordingToastWindow({ getAnchorWindow = () => null } = {}
     try { win.setAlwaysOnTop(true, 'screen-saver'); } catch { /* best effort during shutdown */ }
   };
 
+  const destroyWindow = () => {
+    if (topmostTimer) clearInterval(topmostTimer);
+    topmostTimer = null;
+    queued = null;
+    if (win && !win.isDestroyed()) win.destroy();
+    win = null;
+  };
+
   const build = () => {
     if (win && !win.isDestroyed()) return win;
     win = new BrowserWindow({
@@ -110,19 +118,18 @@ export function createRecordingToastWindow({ getAnchorWindow = () => null } = {}
     try { target.showInactive(); } catch { try { target.show(); } catch { return; } }
     if (hideTimer) clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
-      if (win && !win.isDestroyed()) win.hide();
       hideTimer = null;
+      // A notification is a transient event, not a resident desktop
+      // surface. Releasing the renderer after it expires prevents the first
+      // recording/capture toast from permanently adding a Chromium process.
+      destroyWindow();
     }, payload.durationMs);
   };
 
   const destroy = () => {
     if (hideTimer) clearTimeout(hideTimer);
     hideTimer = null;
-    if (topmostTimer) clearInterval(topmostTimer);
-    topmostTimer = null;
-    queued = null;
-    if (win && !win.isDestroyed()) win.destroy();
-    win = null;
+    destroyWindow();
   };
 
   return {
