@@ -43,7 +43,7 @@ import { buildDropdown, closeDropdownMenus, type DropdownElement } from './compo
 import { ensureWaiver } from './components/waiver-dialog.ts';
 import { Store } from './router.ts';
 import type { PageContext } from './router.ts';
-import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, OcMode, RecordingCaptureTarget, RecordingCaptureTargets, RecordingEngineState, RecordingResolution, RecordingSettings, RecordingSettingsPatch, StreamScene, StreamStatus, TelemetrySample } from './types.ts';
+import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, OcMode, RecordingCaptureTarget, RecordingCaptureTargets, RecordingEngineState, RecordingResolution, RecordingSettings, RecordingSettingsPatch, StreamScene, StreamStatus, TelemetrySample, VoltageOffsetRead } from './types.ts';
 import {
   snapToRange,
   normalizedPosition,
@@ -105,6 +105,7 @@ let activeTab: 'tuning' | 'fan' | 'graphics' | 'recording' = 'tuning';
 // panel is open; keeping these closures next to the tab renderers lets each
 // surface refresh its existing controls without requiring a tab switch.
 let tuningStateSync: ((state: DeviceState) => void) | null = null;
+let refreshAdvancedOverlayVoltageOffset: (() => void) | null = null;
 let fanStateSync: (() => void) | null = null;
 let graphicsStateSync: ((state: GraphicsState) => void) | null = null;
 let recordingSettingsSync: ((settings: RecordingSettings) => void) | null = null;
@@ -160,6 +161,7 @@ let recordingQuickTargets: RecordingCaptureTargets = { displays: [], windows: []
 let recordingQuickPillEnabled = false;
 let recordingQuickEncoderMigrationId: string | null = null;
 let recordingQuickSettingsRevision = 0;
+let recordingQuickStateRevision = 0;
 let recordingQuickInitialized = false;
 let recordingQuickLoading = false;
 let recordingQuickActionBusy = false;
@@ -330,8 +332,12 @@ api.onStateUpdated((payload) => {
   // State pushes carry the originating session id; never let a read-back from
   // another device overwrite the selected device's state.
   if (!payload || !payload.state || payload.deviceId !== live.deviceId) return;
+  if (activeTab === 'tuning') invalidateAdvancedOverlayVoltageRefresh();
   store.set({ state: payload.state });
-  if (activeTab === 'tuning') tuningStateSync?.(payload.state);
+  if (activeTab === 'tuning') {
+    tuningStateSync?.(payload.state);
+    refreshAdvancedOverlayVoltageOffset?.();
+  }
   else if (activeTab === 'fan') fanStateSync?.();
 });
 
@@ -355,6 +361,7 @@ api.onRecordingPillSettingsUpdated((next) => {
 // click in the main Recording page.
 api.onRecordingStateUpdated((next) => {
   if (!next || typeof next !== 'object') return;
+  recordingQuickStateRevision += 1;
   recordingQuickStatus = {
     ...recordingQuickStatus,
     ...next,
@@ -617,6 +624,8 @@ async function boot(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function renderTab(): void {
+  invalidateAdvancedOverlayVoltageRefresh();
+  refreshAdvancedOverlayVoltageOffset = null;
   tuningStateSync = null;
   fanStateSync = null;
   graphicsStateSync = null;
@@ -665,14 +674,21 @@ const SCALAR_CONTROLS = ['powerLimitW', 'gpuFreqOffsetMhz', 'gpuVoltOffsetV', 't
 let values: Record<string, number> = {};
 let applied: Record<string, number> = {};
 let hiddenNegativeControls = new Set<string>();
+let advancedOverlayVoltageRefreshGeneration = 0;
 let applying = false;
 let tuningApplyBtn: HTMLButtonElement | null = null;
+
+function invalidateAdvancedOverlayVoltageRefresh(): void {
+  advancedOverlayVoltageRefreshGeneration += 1;
+}
 // Mode changes can outlive a Tuning-tab render. Keep the transaction guard at
 // module scope so switching to another tab and back cannot start a second
 // write against the same physical GPU.
 let ocModeChangeBusy = false;
 
 async function renderTuning(): Promise<void> {
+  invalidateAdvancedOverlayVoltageRefresh();
+  refreshAdvancedOverlayVoltageOffset = null;
   closeOpenAdvancedMenu();
   clear(contentEl);
   const s = store.get();
@@ -712,6 +728,11 @@ async function renderTuning(): Promise<void> {
   // refreshes it from the envelope so the driver readouts + the chips never
   // go stale in place.
   let currentState: DeviceState = state;
+  let voltageLocalDraft = false;
+  let voltageBaseline: number | null = null;
+  const voltageDeviceId = s.deviceId;
+  const voltageDeviceKey = selectedDeviceKey(s);
+  const voltageGeneration = panelGeneration;
 
   // Gated on the RANGE presence (the main Tuning page's supportedScalars
   // convention - caps.controls keys are the plain CONTROL names
@@ -729,6 +750,13 @@ async function renderTuning(): Promise<void> {
     if (!range) continue;
     values[key] = snapToRange(typeof cur === 'number' ? cur : range.default, range);
   }
+  if (controls.includes('gpuVoltOffsetV')) voltageBaseline = values.gpuVoltOffsetV;
+
+  const syncVoltageDraft = (): void => {
+    if (!controls.includes('gpuVoltOffsetV')) return;
+    const value = values.gpuVoltOffsetV;
+    voltageLocalDraft = voltageBaseline === null || value !== voltageBaseline;
+  };
 
   // Keep the Advanced Overlay's Alchemist mode switch on the same IPC and
   // confirmation contract as the main Tuning page. A mode change invalidates
@@ -759,6 +787,7 @@ async function renderTuning(): Promise<void> {
     const generation = panelGeneration;
     if (mode === previousMode || deviceId === null || ocModeChangeBusy) return;
     ocModeChangeBusy = true;
+    invalidateAdvancedOverlayVoltageRefresh();
     syncModeButtons();
     try {
       if (mode === 'advanced') {
@@ -770,7 +799,10 @@ async function renderTuning(): Promise<void> {
         }
         if (accepted !== true) {
           const confirmed = await showAdvancedModeConfirm(caps.deviceName || 'this GPU');
-          if (!confirmed) return;
+          if (!confirmed) {
+            refreshAdvancedOverlayVoltageOffset?.();
+            return;
+          }
           try {
             await api.advancedModeAcceptedSet();
           } catch {
@@ -889,6 +921,7 @@ async function renderTuning(): Promise<void> {
         if (!Number.isFinite(visible)) return;
         hiddenNegativeControls.delete(key);
         values[key] = snapToRange(controlValueFromDisplay(visible, key, range, caps.deviceName), range);
+        if (key === 'gpuVoltOffsetV') syncVoltageDraft();
         const shown = visibleValue();
         valueInput.value = editableNumber(shown, displayRange);
         valueNode.textContent = formatValue(shown, display.units, display.decimals);
@@ -919,6 +952,7 @@ async function renderTuning(): Promise<void> {
         const v = snapToRange(controlValueFromDisplay(visible, key, range, caps.deviceName), range);
         hiddenNegativeControls.delete(key);
         values[key] = v;
+        if (key === 'gpuVoltOffsetV') syncVoltageDraft();
         const shown = controlValueToDisplay(v, key, range, caps.deviceName);
         valueNode.textContent = formatValue(shown, display.units, display.decimals);
         valueInput.value = editableNumber(shown, displayRange);
@@ -1007,6 +1041,7 @@ async function renderTuning(): Promise<void> {
         const range = cardSliderRange(caps, key);
         if (range) values[key] = snapToRange(range.default, range);
       }
+      if (controls.includes('gpuVoltOffsetV')) syncVoltageDraft();
       renderTuningInPlace();
       updateFloating();
     },
@@ -1052,6 +1087,7 @@ async function renderTuning(): Promise<void> {
       // A driver write is intentionally not cancelled, but its response is
       // ignored once the panel moved to another device/generation.
       if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
+      invalidateAdvancedOverlayVoltageRefresh();
       // M24 (fix): set the applied reference BEFORE store.set - the M24
       // sync push fires onStateUpdated → renderTuning() which clears +
       // rebuilds the DOM; if applied is not yet set, the rebuilt chips
@@ -1060,6 +1096,11 @@ async function renderTuning(): Promise<void> {
         if (per.ok) {
           const wanted = (settings as Record<string, unknown>)[key];
           if (typeof wanted === 'number') applied[key] = wanted;
+          if (key === 'gpuVoltOffsetV') {
+            const range = cardSliderRange(caps, key);
+            voltageBaseline = range && typeof wanted === 'number' ? snapToRange(wanted, range) : values[key];
+            syncVoltageDraft();
+          }
         }
       }
       if (fresh) {
@@ -1077,6 +1118,7 @@ async function renderTuning(): Promise<void> {
         }
       }
       if (fresh) renderTuningInPlace();
+      refreshAdvancedOverlayVoltageOffset?.();
     } catch (err) {
       if (panelIdentityMatches(deviceId, deviceKey, generation)) {
         toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
@@ -1135,6 +1177,38 @@ async function renderTuning(): Promise<void> {
     updateFloating();
   };
 
+  const refreshSysmanVoltageOffset = async (): Promise<void> => {
+    const range = cardSliderRange(caps, 'gpuVoltOffsetV');
+    if (!isAlchemistGpuName(caps.deviceName, caps) || voltageDeviceId === null
+      || !range || range.units !== 'V') return;
+    const voltageRefreshGeneration = advancedOverlayVoltageRefreshGeneration;
+    let result: VoltageOffsetRead | null = null;
+    try {
+      result = await api.voltageOffsetRead(voltageDeviceId);
+    } catch {
+      result = null;
+    }
+    if (voltageRefreshGeneration !== advancedOverlayVoltageRefreshGeneration
+      || activeTab !== 'tuning'
+      || !panelIdentityMatches(voltageDeviceId, voltageDeviceKey, voltageGeneration)) return;
+    if (result?.ok !== true || typeof result.offsetV !== 'number' || !Number.isFinite(result.offsetV)) return;
+    const latest = store.get();
+    const latestState = latest.state;
+    if (!latestState || latest.deviceId !== voltageDeviceId
+      || (typeof latestState.gpuVoltOffsetV === 'number'
+        && Number.isFinite(latestState.gpuVoltOffsetV)
+        && latestState.gpuVoltOffsetV > 0.0005)) return;
+    if (voltageLocalDraft) return;
+    currentState = { ...latestState, gpuVoltOffsetV: result.offsetV };
+    hiddenNegativeControls.delete('gpuVoltOffsetV');
+    values.gpuVoltOffsetV = snapToRange(result.offsetV, range);
+    voltageBaseline = values.gpuVoltOffsetV;
+    voltageLocalDraft = false;
+    if ('gpuVoltOffsetV' in applied) applied.gpuVoltOffsetV = values.gpuVoltOffsetV;
+    store.set({ state: currentState });
+    renderTuningInPlace();
+  };
+
   // Main-window, tray, and profile applies all arrive through the shared
   // device-state push. Keep the panel's active Tuning controls in place while
   // preserving only a genuinely unsaved local draft. A clean control with an
@@ -1146,13 +1220,16 @@ async function renderTuning(): Promise<void> {
       const range = cardSliderRange(caps, key);
       if (!range) continue;
       const previous = previousState[key as keyof DeviceState];
-      const hasLocalDraft = key in applied
-        ? values[key] !== applied[key]
-        : typeof previous === 'number' && values[key] !== snapToRange(previous, range);
+      const hasLocalDraft = key === 'gpuVoltOffsetV' && voltageLocalDraft
+        ? true
+        : key in applied
+          ? values[key] !== applied[key]
+          : typeof previous === 'number' && values[key] !== snapToRange(previous, range);
       if (hasLocalDraft) continue;
       const raw = nextState[key as keyof DeviceState];
       if (typeof raw === 'number' && Number.isFinite(raw)) {
         values[key] = snapToRange(raw, range);
+        if (key === 'gpuVoltOffsetV' && !voltageLocalDraft) voltageBaseline = values[key];
         if (key in applied) applied[key] = values[key];
       }
     }
@@ -1166,6 +1243,8 @@ async function renderTuning(): Promise<void> {
   );
   contentEl.append(view);
   view.append(tuningHeading, ...(modeRow ? [modeRow] : []), stack);
+  refreshAdvancedOverlayVoltageOffset = () => { void refreshSysmanVoltageOffset(); };
+  refreshAdvancedOverlayVoltageOffset();
 }
 
 // ---------------------------------------------------------------------------
@@ -1392,6 +1471,7 @@ function normalizeRecordingQuickStatus(value: RecordingEngineState | null | unde
 async function loadRecordingQuick(): Promise<void> {
   if (recordingQuickLoading || recordingQuickInitialized) return;
   recordingQuickLoading = true;
+  const loadStateRevision = recordingQuickStateRevision;
   recordingQuickError = null;
   renderRecording();
   try {
@@ -1407,7 +1487,9 @@ async function loadRecordingQuick(): Promise<void> {
       recordingQuickSettings = loadedSettings;
       recordingQuickDraft = cloneRecordingQuickSettings(loadedSettings);
     }
-    recordingQuickStatus = normalizeRecordingQuickStatus(loadedStatus);
+    if (recordingQuickStateRevision === loadStateRevision) {
+      recordingQuickStatus = normalizeRecordingQuickStatus(loadedStatus);
+    }
     migrateLegacyRecordingQuickEncoderSelection();
     const [targets, profileEnvelope] = await Promise.all([
       api.recordingCaptureTargets().catch(() => ({ displays: [], windows: [] })),

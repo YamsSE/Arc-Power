@@ -531,6 +531,7 @@ html, body {
 }
 .sidebar-recording-status.is-loading { border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); }
 .sidebar-recording-status.is-ready { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
+.sidebar-recording-status.is-idle { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); background: color-mix(in srgb, var(--warn) 10%, var(--control-bg)); }
 .sidebar-recording-status.is-offline { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
 
 .sidebar-recording-dot {
@@ -547,6 +548,7 @@ html, body {
 }
 .sidebar-recording-dot.is-loading { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); animation: sidebar-recording-pulse 1.25s ease-in-out infinite; }
 .sidebar-recording-dot.is-ready { background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 16%, transparent); }
+.sidebar-recording-dot.is-idle { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 16%, transparent); }
 .sidebar-recording-dot.is-offline { background: var(--warn); }
 
 @keyframes sidebar-recording-pulse {

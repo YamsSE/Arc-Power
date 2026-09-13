@@ -56,10 +56,13 @@ export function effectiveScalingModeOf(display: Display | null | undefined): str
 export function scalingViewOf(display: Display | null | undefined): DisplayScalingView {
   if (!display) return 'display-scaling';
   if (display.scalingMethod?.value?.enabled === true) return 'retro-scaling';
-  if (display.scalingPreference === 'gpu-scaling' || display.scalingPreference === 'display-scaling') {
+  const raw = effectiveScalingModeOf(display);
+  // A known per-display native mode is authoritative. The registry only
+  // distinguishes Display-vs-GPU scaling and is therefore a fallback when
+  // neither native preferred nor active scaling readback is available.
+  if (raw === null && (display.scalingPreference === 'gpu-scaling' || display.scalingPreference === 'display-scaling')) {
     return display.scalingPreference;
   }
-  const raw = effectiveScalingModeOf(display);
   // IGCL's Custom flag belongs to IGS Display Scaling > Scaling Method; it
   // must not be mistaken for one of the GPU scaler modes.
   return raw && raw !== 'identity' && raw !== 'custom'

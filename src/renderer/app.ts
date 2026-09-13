@@ -84,7 +84,7 @@ function updateGlobalRecordingWidget(target?: HTMLElement): void {
   const detail = root.querySelector<HTMLElement>('[data-recording-status-detail]');
   const timer = root.querySelector<HTMLElement>('[data-recording-timer]');
   const dot = root.querySelector<HTMLElement>('[data-recording-status-dot]');
-  if (title) title.textContent = replaySaving ? 'Saving Instant Replay' : replayFailed ? 'Instant Replay failed' : running ? mode === 'replay' ? 'Instant Replay' : 'Recording' : loading ? 'Starting capture engine' : idle ? 'Capture engine idle' : globalRecordingStatus.available ? 'Ready to capture' : 'Capture offline';
+  if (title) title.textContent = replaySaving ? 'Saving Instant Replay' : replayFailed ? 'Instant Replay failed' : running ? mode === 'replay' ? 'Instant Replay' : 'Recording' : loading ? 'Starting capture engine' : idle ? 'Memory Saving Mode' : globalRecordingStatus.available ? 'Ready to capture' : 'Capture offline';
   if (detail) detail.textContent = replaySaving ? 'Writing the latest moments to disk' : replayFailed ? (globalRecordingStatus.instantReplaySave?.error ?? 'Try saving again') : running ? 'Arc Capture is running' : loading ? 'Checking the bundled capture runtime' : idle ? 'Open Recording or start a capture to load it' : globalRecordingStatus.available ? 'Ready when you are' : (globalRecordingStatus.error || 'Capture engine unavailable');
   if (timer) {
     timer.textContent = running ? recordingElapsed(globalRecordingStatus.startedAt) : '';
