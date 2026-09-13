@@ -3348,6 +3348,10 @@ async function main() {
           return {};
         }
       },
+      // The product shortcut owns the advanced panel's Chromium lifetime.
+      // ui-verify keeps the eager build so its existing window contract stays
+      // deterministic for the harness.
+      deferBuild: !uiVerify,
     });
     // M23: the harness must not flash the advanced panel on the user's screen.
     stealthVerifyWindow(advancedOverlayHandle.getWindow?.() ?? null);
@@ -3384,8 +3388,10 @@ async function main() {
   };
 
   // The advanced-overlay settings reaction (the onOverlaySettings pattern):
-  // create/destroy the renderer with the master switch, re-apply geometry
-  // from the FRESH store, and re-register the hotkey on a letter change.
+  // create the handle with the master switch, re-apply geometry from the
+  // FRESH store, and re-register the hotkey on a letter change. In product
+  // mode the handle can remain lightweight while its Chromium panel is
+  // demand-built and released by the shortcut/close lifecycle.
   // 'advanced-overlay:settings' is NOT an ipc-core push - the advanced-overlay
   // module sends it DIRECTLY to the panel window (webContents.send).
   const onAdvancedOverlaySettings = async (patch) => {
@@ -3414,10 +3420,10 @@ async function main() {
     }
     if (masterChanged && !enabled) {
       unregisterAdvancedOverlayHotkey();
-      // Keep an already-used panel cached while the user toggles the master
-      // switch; the panel module owns the hide and the next enable can show it
-      // immediately. The important memory saving is avoiding this renderer
-      // entirely on startup when the feature has never been enabled.
+      // The panel module hides and releases its renderer in product mode;
+      // destroy explicitly as well so disabling the master switch always
+      // returns the memory even if no panel was visible at the time.
+      if (!uiVerify) advancedOverlayHandle.destroy();
     }
   };
   // The dedicated panel-close op (the 'advanced-overlay:close' channel's

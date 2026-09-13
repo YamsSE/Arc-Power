@@ -108,3 +108,135 @@ test('overlay provider selection round-trips without changing legacy defaults', 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+function loadAdvancedOverlayFactory() {
+  const source = read('src/main/advanced-overlay.js')
+    .replace(/^import .*\r?\n/gm, '')
+    .replace('const __dirname = path.dirname(fileURLToPath(import.meta.url));', "const __dirname = '.';")
+    .replace('export function createAdvancedOverlayWindow', 'function createAdvancedOverlayWindow');
+
+  return ({ displayHeight = 1080, deferBuild = true, windows }) => {
+    const screen = {
+      getPrimaryDisplay: () => ({
+        bounds: { x: 0, y: 0, width: 1920, height: displayHeight },
+      }),
+    };
+    class FakeBrowserWindow {
+      constructor(options) {
+        this.options = options;
+        this.destroyed = false;
+        this.visible = options.show === true;
+        this.bounds = {
+          x: options.x,
+          y: options.y,
+          width: options.width,
+          height: options.height,
+        };
+        this.handlers = new Map();
+        this.webContents = {
+          handlers: new Map(),
+          on: (event, handler) => this.webContents.handlers.set(event, handler),
+          send: () => {},
+        };
+        windows.push(this);
+      }
+
+      on(event, handler) {
+        this.handlers.set(event, handler);
+      }
+
+      isDestroyed() {
+        return this.destroyed;
+      }
+
+      isVisible() {
+        return this.visible;
+      }
+
+      show() {
+        this.visible = true;
+      }
+
+      hide() {
+        this.visible = false;
+      }
+
+      destroy() {
+        this.destroyed = true;
+        this.visible = false;
+        this.handlers.get('closed')?.();
+      }
+
+      setAlwaysOnTop() {}
+      setBackgroundColor() {}
+      setBounds(bounds) { this.bounds = { ...this.bounds, ...bounds }; }
+      getBounds() { return { ...this.bounds }; }
+      loadFile() {}
+    }
+
+    const factory = new Function(
+      'BrowserWindow',
+      'screen',
+      'path',
+      'fileURLToPath',
+      'normalizeTheme',
+      'themeBackground',
+      'OVERLAY_STAT_IDS',
+      'OVERLAY_STATS_DEFAULT',
+      'applyWindowIconLifecycle',
+      'resolveWindowIconPath',
+      `${source}; return createAdvancedOverlayWindow;`,
+    );
+    return factory(
+      FakeBrowserWindow,
+      screen,
+      path,
+      fileURLToPath,
+      (theme) => theme ?? 'arc',
+      () => '#000000',
+      ['fps'],
+      ['fps'],
+      () => {},
+      () => undefined,
+    )({
+      getOverlaySettings: () => ({ enabled: true, position: 'right', hotkeyLetter: 'P', stats: ['fps'] }),
+      deferBuild,
+    });
+  };
+}
+
+test('advanced overlay product mode builds on demand, clamps, and releases the renderer', async () => {
+  const windows = [];
+  const create = loadAdvancedOverlayFactory()({ displayHeight: 540, windows });
+  const handle = create;
+
+  handle.apply({ enabled: true, position: 'right', hotkeyLetter: 'P', stats: ['fps'] });
+  assert.equal(handle.getState().exists, false, 'idle product mode must not create a renderer');
+  assert.equal(windows.length, 0);
+
+  await handle.toggle();
+  assert.equal(windows.length, 1, 'the shortcut must build the renderer');
+  assert.equal(handle.getState().visible, true);
+  assert.equal(windows[0].bounds.height, 524, 'shortcut creation must clamp to a short display');
+
+  await handle.toggle();
+  assert.equal(windows[0].destroyed, true, 'hiding must release the product renderer');
+  assert.equal(handle.getState().exists, false);
+
+  await handle.toggle();
+  assert.equal(windows.length, 2, 'a later shortcut must rebuild the renderer');
+  await handle.closePanel();
+  assert.equal(windows[1].destroyed, true, 'panel close must release the rebuilt renderer');
+  assert.equal(handle.getState().exists, false);
+});
+
+test('advanced overlay eager mode keeps the verifier window contract', () => {
+  const windows = [];
+  const handle = loadAdvancedOverlayFactory()({ deferBuild: false, windows });
+
+  handle.apply({ enabled: true, position: 'right', hotkeyLetter: 'P', stats: ['fps'] });
+  assert.equal(windows.length, 1);
+  assert.equal(handle.getState().exists, true);
+  assert.equal(handle.getState().visible, false, 'eager verifier mode still starts hidden');
+  handle.destroy();
+});

@@ -33,8 +33,8 @@
 //     destroys it regardless) - the destroy-unregister pair lives with the
 //     main window.
 //
-// The window is created lazily on the product window path, only when
-// advancedOverlayEnabled is true. A disabled feature therefore does not keep a
+// The window is created lazily on the product window path, only when the
+// shortcut is pressed. A merely enabled feature therefore does not keep a
 // hidden Chromium renderer alive. NEVER in headless/boot-apply/apply-profile
 // modes; ui-verify creates it only under RID_MOCK_ADV_OVERLAY=1.
 
@@ -94,6 +94,8 @@ function normalizeSettings(raw = {}) {
  * @param {{
  *   getOverlaySettings: () => object,   // the CURRENT persisted settings
  *                                       // (main.js: store.loadSettingsSync)
+ *   deferBuild?: boolean,               // do not create Chromium content
+ *                                       // until the shortcut demands it
  *   close: () => Promise<unknown> | unknown,  // the injected panel-close op
  *                                       // (the DEDICATED advanced-overlay
  *                                       // close channel - the main window is
@@ -111,7 +113,7 @@ function normalizeSettings(raw = {}) {
  *   destroy: () => void,
  * }}
  */
-export function createAdvancedOverlayWindow({ getOverlaySettings }) {
+export function createAdvancedOverlayWindow({ getOverlaySettings, deferBuild = false }) {
   let win = null;
   let visible = false;
   let hotkeyRegistered = false;
@@ -128,7 +130,9 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
     const geom = geometryFor(applied.position, bounds);
     win = new BrowserWindow({
       width: PANEL_WIDTH,
-      height: PANEL_HEIGHT,
+      // Product mode builds directly from the shortcut, so apply() does not
+      // get a chance to perform the display-height clamp first.
+      height: geom.height,
       x: geom.x,
       y: geom.y,
       icon: resolveWindowIconPath(),
@@ -241,7 +245,12 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
     apply(rawSettings, { preserveVisibility = false } = {}) {
       applied = normalizeSettings(rawSettings);
       if (win && !win.isDestroyed()) win.setBackgroundColor(themeBackground(applied.theme));
-      if (!win) build();
+      // Keep the product panel's Chromium renderer absent until the shortcut
+      // is pressed. ui-verify and direct callers retain the historical
+      // eager-build behavior by leaving deferBuild at its default false.
+      const shouldBuild = !deferBuild;
+      if (!win && shouldBuild) build();
+      if (!win && bootApply) bootApply = false;
       if (win && !win.isDestroyed()) {
         const { bounds } = screen.getPrimaryDisplay();
         const geom = geometryFor(applied.position, bounds);
@@ -290,6 +299,17 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
      */
     async toggle() {
       if (!applied.enabled) return;
+      if (!win || win.isDestroyed()) {
+        build();
+        visible = true;
+        win.show();
+        try {
+          win.setAlwaysOnTop(true, 'screen-saver');
+        } catch {
+          // never throw through the shortcut path
+        }
+        return;
+      }
       const next = !visible;
       const alive = win && !win.isDestroyed();
       if (alive) {
@@ -297,6 +317,12 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
         else win.hide();
       }
       visible = next;
+      if (!next && deferBuild) {
+        // A hidden panel no longer has an active user-facing purpose. Release
+        // Chromium now; the next shortcut rebuilds it from `applied`.
+        if (win && !win.isDestroyed()) win.destroy();
+        win = null;
+      }
     },
 
     /** M23 (step-4 S1): the panel's custom close button - a SESSION hide.
@@ -308,6 +334,10 @@ export function createAdvancedOverlayWindow({ getOverlaySettings }) {
       const alive = win && !win.isDestroyed();
       if (alive) win.hide();
       visible = false;
+      if (deferBuild) {
+        if (win && !win.isDestroyed()) win.destroy();
+        win = null;
+      }
     },
 
     /** The hotkey seam's live flag (main.js product: register's return;
