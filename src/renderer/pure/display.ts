@@ -46,22 +46,36 @@ export const DISPLAY_COLOR_CONTROLS = ['hue', 'saturation', 'brightness', 'contr
 
 export type DisplayScalingView = 'gpu-scaling' | 'display-scaling' | 'retro-scaling';
 
-/** The active scaler can be reported as Identity while IGS has selected a
- * persisted GPU/Display preference. Prefer that persisted value for the
- * user-facing view, while retaining `scalingMode` as the native active mode. */
+function isGpuScalingMode(value: unknown): value is NonNullable<DisplaySettings['scalingMode']> {
+  return DISPLAY_GPU_SCALING_METHOD_OPTIONS.includes(value as NonNullable<DisplaySettings['scalingMode']>);
+}
+
+function isExplicitScalingPreference(value: unknown): value is 'gpu-scaling' | 'display-scaling' {
+  return value === 'gpu-scaling' || value === 'display-scaling';
+}
+
+/** Resolve the raw mode used by the compact scaling controls. Active native
+ * read-back is authoritative: an active Identity output is Display Scaling,
+ * even when the driver leaves an older GPU method in its preferred/registry
+ * fields. Preferred and registry values are fallbacks only when active
+ * read-back is unavailable. The driver's explicit Custom preference remains
+ * the Display Scaling method while the active mode is Identity. */
 export function effectiveScalingModeOf(display: Display | null | undefined): string | null {
-  return display?.preferredScalingMode ?? display?.scalingMode ?? null;
+  if (!display) return null;
+  const active = display.scalingMode;
+  const preferred = display.preferredScalingMode;
+  if (active === 'identity' && preferred === 'custom') return 'custom';
+  if (active !== null && active !== undefined) return active;
+  return preferred ?? null;
 }
 
 export function scalingViewOf(display: Display | null | undefined): DisplayScalingView {
   if (!display) return 'display-scaling';
   if (display.scalingMethod?.value?.enabled === true) return 'retro-scaling';
   const raw = effectiveScalingModeOf(display);
-  // A known per-display native mode is authoritative. The registry only
-  // distinguishes Display-vs-GPU scaling and is therefore a fallback when
-  // neither native preferred nor active scaling readback is available.
-  if (raw === null && (display.scalingPreference === 'gpu-scaling' || display.scalingPreference === 'display-scaling')) {
-    return display.scalingPreference;
+  if (display.scalingMode === null || display.scalingMode === undefined) {
+    if (raw === null && isExplicitScalingPreference(display.scalingPreference)) return display.scalingPreference;
+    if (isGpuScalingMode(raw)) return 'gpu-scaling';
   }
   // IGCL's Custom flag belongs to IGS Display Scaling > Scaling Method; it
   // must not be mistaken for one of the GPU scaler modes.
