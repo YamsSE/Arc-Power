@@ -1588,7 +1588,7 @@ export const tuningPage: Page = {
         }
       }
       try {
-        await api.ocModeSet(mode, deviceId);
+        await api.ocModeSet(mode, deviceId, deviceKey);
         // Mode changes invalidate both capability ranges and the live
         // read-back. Pair them from the same device before rendering.
         const [freshCaps, freshState] = await Promise.all([
@@ -1611,7 +1611,7 @@ export const tuningPage: Page = {
         // not silently disagree about the active mode.
         let rolledBack = false;
         try {
-          await api.ocModeSet(previousMode, deviceId);
+          await api.ocModeSet(previousMode, deviceId, deviceKey, mode);
           rolledBack = true;
         } catch {
           // Keep the honest failure toast below; the backend may need a fresh
@@ -2111,6 +2111,35 @@ export const tuningPage: Page = {
 
   onUpdate(container: HTMLElement, ctx: PageContext) {
     const s = ctx.store.get();
+    // M4-D2 (§8): the fan sub-view only tracks the RPM marker + readout on
+    // telemetry ticks (the editor's own redraw handles its content - same
+    // contract as the removed Fan page's onUpdate). Handle it BEFORE the
+    // capability-surface branch: an OC-mode refresh changes the scalar
+    // ranges, but must not rebuild an unapplied fan-curve draft.
+    if (view === 'fan') {
+      const s2 = ctx.store.get();
+      const fanSnapshotUnavailable = !s2.caps || !s2.state;
+      if (viewContainer) {
+        viewContainer.toggleAttribute('inert', fanSnapshotUnavailable);
+        viewContainer.setAttribute('aria-busy', String(fanSnapshotUnavailable));
+        viewContainer.style.opacity = fanSnapshotUnavailable ? '0.65' : '';
+      }
+      // Preserve the editor's draft while the mode-refresh readback is
+      // unavailable, but make the stale controls inert until recovery.
+      if (fanSnapshotUnavailable) return;
+      updateFanReadout(container, ctx);
+      // M24: an external fan-state push changed the store -> re-render the
+      // fan editor (the editor is rebuilt from the fresh store). The user's
+      // own apply finds them equal -> no re-render (the signature is
+      // refreshed inside applyFan BEFORE the store.set).
+      const currentSig = currentFanSignature();
+      const storeSig = fanStateSignature(s2.state);
+      if (currentSig !== null && currentSig !== storeSig && viewContainer) {
+        clear(viewContainer);
+        renderFanEditor(viewContainer, ctx);
+      }
+      return;
+    }
     // M3-C-F: a mode toggle / featureset swap changed the capability
     // SURFACE - full re-render (ranges/units change; the in-place refresh
     // cannot). Content comparison: the page's own post-apply caps re-set
@@ -2118,24 +2147,6 @@ export const tuningPage: Page = {
     // keeps the current sub-view (module-level `view`).
     if (ocCapsChanged(lastRenderedCaps, s.caps)) {
       tuningPage.render(container, ctx);
-      return;
-    }
-    // M4-D2 (§8): the fan sub-view only tracks the RPM marker + readout on
-    // telemetry ticks (the editor's own redraw handles its content - same
-    // contract as the removed Fan page's onUpdate).
-    if (view === 'fan') {
-      updateFanReadout(container, ctx);
-      // M24: an external fan-state push changed the store -> re-render the
-      // fan editor (the editor is rebuilt from the fresh store). The user's
-      // own apply finds them equal -> no re-render (the signature is
-      // refreshed inside applyFan BEFORE the store.set).
-      const s2 = ctx.store.get();
-      const currentSig = currentFanSignature();
-      const storeSig = fanStateSignature(s2.state);
-      if (currentSig !== null && currentSig !== storeSig && viewContainer) {
-        clear(viewContainer);
-        renderFanEditor(viewContainer, ctx);
-      }
       return;
     }
     // M3-C-F: refresh the cards IN PLACE when the store's state slot changed

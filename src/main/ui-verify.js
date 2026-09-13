@@ -9675,6 +9675,45 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   }
   const sliderOk = await ojs(`Array.from(document.querySelectorAll('.adv-view .oc-card[data-control] input[type="range"]')).length >= 3`);
   if (!sliderOk) fail('M23: the a770 Tuning tab must render at least three slider cards with range inputs');
+  // M3-C-E: the Alchemist-only Stock/Advanced mode control lives in the
+  // panel as well as the main Tuning page. Exercise both directions through
+  // the real renderer IPC, including the first-run confirmation modal, and
+  // verify the selected state is exposed to assistive technology.
+  const ocModeState = await ojs(`(() => Array.from(document.querySelectorAll('.adv-oc-mode-btn')).map((button) => ({
+    mode: button.dataset.ocMode,
+    active: button.classList.contains('active'),
+    pressed: button.getAttribute('aria-pressed'),
+  })))()`);
+  if (ocModeState.length !== 2
+    || !ocModeState.some((button) => button.mode === 'stock')
+    || !ocModeState.some((button) => button.mode === 'advanced')
+    || !ocModeState.some((button) => button.mode === 'advanced' && button.active && button.pressed === 'true')) {
+    fail(`M3-C-E: the Alchemist Stock/Advanced control did not boot with Advanced selected and aria-pressed state (${JSON.stringify(ocModeState)})`);
+  }
+  await ojs(`document.querySelector('.adv-oc-mode-btn[data-oc-mode="stock"]')?.click()`);
+  if (!(await waitFor(panelWin, `(() => {
+    const button = document.querySelector('.adv-oc-mode-btn[data-oc-mode="stock"]');
+    return !!button && button.classList.contains('active') && button.getAttribute('aria-pressed') === 'true';
+  })()`, 8000))) {
+    fail('M3-C-E: the Advanced Overlay Stock click did not update the selected button');
+  }
+  if (!(await waitFor(panelWin, `window.arcPower.ocModeGet(0).then((m) => m.ocMode === 'stock')`, 8000))) {
+    fail('M3-C-E: the Advanced Overlay Stock click did not reach the keyed backend mode');
+  }
+  await ojs(`document.querySelector('.adv-oc-mode-btn[data-oc-mode="advanced"]')?.click()`);
+  if (await waitFor(panelWin, `!!document.querySelector('.modal-overlay')`, 2000)) {
+    await ojs(`document.querySelector('.modal-actions .btn-danger')?.click()`);
+  }
+  if (!(await waitFor(panelWin, `(() => {
+    const button = document.querySelector('.adv-oc-mode-btn[data-oc-mode="advanced"]');
+    return !!button && button.classList.contains('active') && button.getAttribute('aria-pressed') === 'true';
+  })()`, 8000))) {
+    fail('M3-C-E: the Advanced Overlay Advanced click did not update the selected button');
+  }
+  if (!(await waitFor(panelWin, `window.arcPower.ocModeGet(0).then((m) => m.ocMode === 'advanced')`, 8000))) {
+    fail('M3-C-E: the Advanced Overlay Advanced click did not reach the keyed backend mode');
+  }
+  step('m3c-advanced-overlay-mode', 'M3-C-E: the Advanced Overlay exposed the Alchemist Stock/Advanced toggle; both mode writes, capability refresh, confirmation path, and aria-pressed selection state round-tripped');
   // M31/user: in a multi-device session the panel's shared GPU selector uses
   // the same compact Intel-Arc pill treatment as Dashboard and Tuning. Its
   // focused state must stay in the Arc palette, not the warm Windows ring.

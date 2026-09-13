@@ -43,7 +43,7 @@ import { buildDropdown, closeDropdownMenus, type DropdownElement } from './compo
 import { ensureWaiver } from './components/waiver-dialog.ts';
 import { Store } from './router.ts';
 import type { PageContext } from './router.ts';
-import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, RecordingCaptureTarget, RecordingCaptureTargets, RecordingEngineState, RecordingResolution, RecordingSettings, RecordingSettingsPatch, StreamScene, StreamStatus, TelemetrySample } from './types.ts';
+import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, OcMode, RecordingCaptureTarget, RecordingCaptureTargets, RecordingEngineState, RecordingResolution, RecordingSettings, RecordingSettingsPatch, StreamScene, StreamStatus, TelemetrySample } from './types.ts';
 import {
   snapToRange,
   normalizedPosition,
@@ -91,6 +91,8 @@ import { isValidTheme } from './pure/theme.ts';
 import { formatGpuMemoryGb, gpuMemoryLabel } from './pure/gpu-memory.ts';
 import { normalizeOverlayStats } from './pure/overlay.ts';
 import { recordingBitrateRange, recordingGpuEncoderOptions } from './pure/recording.ts';
+import { isAlchemistGpuName } from './pure/hardware-icons.ts';
+import { showAdvancedModeConfirm } from './components/confirm-dialog.ts';
 
 // ---------------------------------------------------------------------------
 // The panel store + boot state
@@ -374,6 +376,9 @@ function applyDeviceSelectionPush(payload: PanelSelection, devices: DeviceInfo[]
     deviceId: target.id,
     caps: payload.caps,
     state: payload.state,
+    ocMode: payload.caps.ocMode === 'advanced' || payload.caps.ocMode === 'stock'
+      ? payload.caps.ocMode
+      : live.ocMode,
     latestSample: null,
   });
   deviceEl.textContent = payload.caps.deviceName || target.name || 'Unknown GPU';
@@ -420,6 +425,41 @@ api.onDeviceSelectionUpdated((payload) => {
     if (serial !== selectionPushSerial) return;
     if (applyDeviceSelectionPush(payload, devices) && pendingSelection === payload) pendingSelection = null;
   }).catch(() => { /* retain pendingSelection for the boot handshake */ });
+});
+
+const ocModeRefreshRevisions = new Map<string, number>();
+api.onOcModeUpdated((payload) => {
+  if (!payload || !Number.isInteger(payload.deviceId)
+    || (payload.ocMode !== 'stock' && payload.ocMode !== 'advanced')
+    || !Number.isInteger(payload.revision)) return;
+  const live = store.get();
+  const target = live.devices.find((device) => device.id === payload.deviceId
+    && (device.deviceKey ?? null) === payload.deviceKey);
+  const revisionKey = payload.deviceKey ?? `id:${payload.deviceId}`;
+  const lastRevision = ocModeRefreshRevisions.get(revisionKey) ?? 0;
+  if (payload.revision <= lastRevision) return;
+  // Record every delivered revision, even when its GPU is not focused. If
+  // the user returns to that GPU later, an already-consumed refresh must not
+  // be mistaken for a new one.
+  ocModeRefreshRevisions.set(revisionKey, payload.revision);
+  // Mode refreshes update only the currently focused physical GPU. They must
+  // never reuse the selection-push path, which is allowed to change focus.
+  if (!target || live.deviceId !== payload.deviceId
+    || selectedDeviceKey(live) !== normalizeDeviceKey(payload.deviceKey)) return;
+  store.set({
+    caps: payload.caps,
+    state: payload.state,
+    ocMode: payload.ocMode,
+  });
+  // Fan/Graphics/Recording drafts must survive a mode refresh. The mode only
+  // invalidates the Tuning ranges; Tuning will be rebuilt when it is active.
+  if (activeTab === 'tuning') {
+    values = {};
+    applied = {};
+    applying = false;
+    tuningApplyBtn = null;
+    renderTab();
+  }
 });
 
 // M24 (Part B): pushed POST-APPLY GRAPHICS read-backs (the twin of
@@ -523,6 +563,7 @@ async function boot(): Promise<void> {
       deviceId: pushedTarget.id,
       caps: pushed.caps,
       state: pushed.state,
+      ocMode: pushed.caps.ocMode === 'advanced' ? 'advanced' : 'stock',
     });
     deviceEl.textContent = pushed.caps.deviceName || pushedTarget.name || 'Unknown GPU';
     renderTab();
@@ -555,7 +596,11 @@ async function boot(): Promise<void> {
     state = null;
   }
   if (!panelIdentityMatches(deviceId, deviceKey, bootGeneration)) return;
-  store.set({ caps, state });
+  store.set({
+    caps,
+    state,
+    ocMode: caps?.ocMode === 'advanced' ? 'advanced' : 'stock',
+  });
   deviceEl.textContent = caps?.deviceName || 'Unknown GPU';
   renderTab();
   await syncLatestTelemetry(deviceId, bootGeneration);
@@ -617,6 +662,10 @@ let applied: Record<string, number> = {};
 let hiddenNegativeControls = new Set<string>();
 let applying = false;
 let tuningApplyBtn: HTMLButtonElement | null = null;
+// Mode changes can outlive a Tuning-tab render. Keep the transaction guard at
+// module scope so switching to another tab and back cannot start a second
+// write against the same physical GPU.
+let ocModeChangeBusy = false;
 
 async function renderTuning(): Promise<void> {
   closeOpenAdvancedMenu();
@@ -675,6 +724,127 @@ async function renderTuning(): Promise<void> {
     if (!range) continue;
     values[key] = snapToRange(typeof cur === 'number' ? cur : range.default, range);
   }
+
+  // Keep the Advanced Overlay's Alchemist mode switch on the same IPC and
+  // confirmation contract as the main Tuning page. A mode change invalidates
+  // the capability ranges, so the fresh caps/state pair is loaded before the
+  // panel rebuilds its sliders.
+  const showOcModeToggle = isAlchemistGpuName(caps.deviceName, caps);
+  let modeButtons: HTMLButtonElement[] = [];
+  const syncModeButtons = (): void => {
+    const mode = store.get().ocMode;
+    // A mode transaction can finish after renderTab() replaced the original
+    // button nodes. Prefer the currently mounted controls so cancellation,
+    // stale-device returns, and readback failures never leave a rebuilt row
+    // disabled forever.
+    const mountedButtons = Array.from(contentEl.querySelectorAll<HTMLButtonElement>('.adv-oc-mode-btn'));
+    const buttons = mountedButtons.length > 0 ? mountedButtons : modeButtons;
+    for (const button of buttons) {
+      const selected = button.dataset.ocMode === mode;
+      button.classList.toggle('active', selected);
+      button.disabled = ocModeChangeBusy;
+      button.setAttribute('aria-pressed', String(selected));
+    }
+  };
+  const setMode = async (mode: OcMode): Promise<void> => {
+    const live = store.get();
+    let previousMode: OcMode = live.ocMode === 'advanced' ? 'advanced' : 'stock';
+    const deviceId = live.deviceId;
+    const deviceKey = selectedDeviceKey(live);
+    const generation = panelGeneration;
+    if (mode === previousMode || deviceId === null || ocModeChangeBusy) return;
+    ocModeChangeBusy = true;
+    syncModeButtons();
+    try {
+      if (mode === 'advanced') {
+        let accepted = false;
+        try {
+          ({ accepted } = await api.advancedModeAcceptedGet());
+        } catch {
+          accepted = false;
+        }
+        if (accepted !== true) {
+          const confirmed = await showAdvancedModeConfirm(caps.deviceName || 'this GPU');
+          if (!confirmed) return;
+          try {
+            await api.advancedModeAcceptedSet();
+          } catch {
+            toast('warn', 'Advanced OC Mode', 'The confirmation could not be saved - it will be asked again.');
+          }
+        }
+      }
+      // The confirmation can be open while the main window changes the
+      // focused adapter. Never let a delayed dialog response write to the old
+      // session id (or to a reused id belonging to another physical GPU).
+      if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
+      const current = store.get();
+      if (current.ocMode === mode) return;
+      previousMode = current.ocMode === 'advanced' ? 'advanced' : 'stock';
+      await api.ocModeSet(mode, deviceId, deviceKey);
+      const [freshCaps, freshState] = await Promise.all([
+        api.getCapabilities(deviceId),
+        api.getCurrentSettings(deviceId),
+      ]);
+      if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
+      const appliedMode = freshCaps.ocMode === 'advanced' || freshCaps.ocMode === 'stock'
+        ? freshCaps.ocMode
+        : null;
+      if (appliedMode === null) {
+        throw new Error('the GPU did not report a valid OC mode after the change');
+      }
+      store.set({
+        ocMode: appliedMode,
+        caps: freshCaps,
+        state: freshState,
+      });
+      if (appliedMode === 'advanced') {
+        toast('info', 'Advanced OC Mode enabled', 'Extended power/temperature limits are now available.');
+      } else {
+        toast('info', 'Advanced OC Mode disabled', 'Only Intel-standard limits are available.');
+      }
+      values = {};
+      applied = {};
+      applying = false;
+      tuningApplyBtn = null;
+      ocModeChangeBusy = false;
+      if (activeTab === 'tuning' && panelIdentityMatches(deviceId, deviceKey, generation)) {
+        void renderTuning();
+      }
+    } catch (err) {
+      let rolledBack = false;
+      try {
+        await api.ocModeSet(previousMode, deviceId, deviceKey, mode);
+        rolledBack = true;
+      } catch {
+        // Keep the honest failure toast below; the backend may need a fresh
+        // mode read on the next panel open.
+      }
+      const detail = err instanceof Error ? err.message : String(err);
+      toast('error', 'OC mode could not be changed', rolledBack
+        ? `${detail} (the previous mode was restored)`
+        : `${detail} (the previous mode could not be restored)`);
+    } finally {
+      ocModeChangeBusy = false;
+      syncModeButtons();
+    }
+  };
+  const modeRow = showOcModeToggle ? el('div', { class: 'adv-oc-mode-row' }, [
+    el('span', { class: 'adv-oc-mode-label', text: 'OC mode' }),
+    el('div', { class: 'adv-oc-mode-toggle', role: 'group', 'aria-label': 'OC mode' }, [
+      ...(['stock', 'advanced'] as OcMode[]).map((mode) => {
+        const button = el('button', {
+          class: 'adv-oc-mode-btn',
+          dataset: { ocMode: mode },
+          text: mode === 'stock' ? 'Stock' : 'Advanced',
+          type: 'button',
+          onClick: () => { void setMode(mode); },
+        }) as HTMLButtonElement;
+        modeButtons.push(button);
+        return button;
+      }),
+    ]),
+  ]) : null;
+  syncModeButtons();
 
   const stack = el('div', { class: 'card-stack oc-stack' });
 
@@ -990,7 +1160,7 @@ async function renderTuning(): Promise<void> {
     tuningActions,
   );
   contentEl.append(view);
-  view.append(tuningHeading, stack);
+  view.append(tuningHeading, ...(modeRow ? [modeRow] : []), stack);
 }
 
 // ---------------------------------------------------------------------------

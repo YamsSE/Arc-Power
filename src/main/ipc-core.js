@@ -183,6 +183,8 @@ export const RECORDING_ACTION_CHANNEL = 'recording:action';
 /** M31: explicit panel request and main-owned atomic selection push channels. */
 export const DEVICE_SELECTION_REQUEST_CHANNEL = 'device-selection:request';
 export const DEVICE_SELECTION_UPDATED_CHANNEL = 'device-selection:updated';
+/** M3-C-E: keyed capability/state refresh after a Stock/Advanced write. */
+export const OC_MODE_UPDATED_CHANNEL = 'oc-mode:updated';
 
 export function pushRecordingState({ getWindow, state, getHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }) }) {
   const win = getWindow?.();
@@ -4502,16 +4504,33 @@ export function createIpcHandlers({
         return { ocMode: OC_MODES.includes(saved) ? saved : s.ocMode, deviceKey };
       },
 
-      'oc-mode-set': async (ocMode, deviceId = null) => {
+      'oc-mode-set': async (ocMode, deviceId = null, expectedDeviceKey = null, expectedCurrentMode = null) => {
         if (!OC_MODES.includes(ocMode)) {
           throw new Error(`oc-mode-set: ocMode must be one of ${OC_MODES.join(', ')}`);
         }
         if (deviceId !== null) assertValidDeviceId(deviceId);
+        if (expectedDeviceKey !== null
+          && (typeof expectedDeviceKey !== 'string' || expectedDeviceKey.length === 0)) {
+          throw new Error('oc-mode-set: expected device key must be a non-empty string or null');
+        }
+        if (expectedCurrentMode !== null && !OC_MODES.includes(expectedCurrentMode)) {
+          throw new Error(`oc-mode-set: expected current mode must be one of ${OC_MODES.join(', ')} or null`);
+        }
         const cur = await store.loadSettings();
         let deviceKey = null;
         if (deviceId !== null) {
           const target = await modeTarget(deviceId);
           deviceKey = typeof target?.deviceKey === 'string' ? target.deviceKey : null;
+          if (expectedDeviceKey !== null && deviceKey !== expectedDeviceKey) {
+            throw new Error('oc-mode-set: device key mismatch');
+          }
+          const savedMode = deviceKey && cur.ocModes && typeof cur.ocModes === 'object'
+            ? cur.ocModes[deviceKey]
+            : null;
+          const currentMode = OC_MODES.includes(savedMode) ? savedMode : cur.ocMode;
+          if (expectedCurrentMode !== null && currentMode !== expectedCurrentMode) {
+            throw new Error('oc-mode-set: current mode changed');
+          }
         }
         const ocModes = deviceKey
           ? { ...(cur.ocModes ?? {}), [deviceKey]: ocMode }

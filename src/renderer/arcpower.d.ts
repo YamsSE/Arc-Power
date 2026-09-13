@@ -49,6 +49,7 @@ import type {
   RecordingEditorJob,
   ResetResponse,
   Settings,
+  OcMode,
   StartupGetState,
   SysInfo,
   TelemetrySample,
@@ -68,6 +69,17 @@ export interface DeviceSelectionPayload {
   selectionGeneration?: number;
   caps: Capabilities;
   state: DeviceState;
+}
+
+/** M3-C-E: keyed capability/state refresh after an OC-mode write. A null
+ * pair is an explicit invalidation when the mode changed but readback failed. */
+export interface OcModeUpdatedPayload {
+  deviceId: number;
+  deviceKey: string | null;
+  ocMode: OcMode;
+  caps: Capabilities | null;
+  state: DeviceState | null;
+  revision: number;
 }
 
 export interface ArcPowerApi {
@@ -202,7 +214,7 @@ export interface ArcPowerApi {
   ocModeGet(deviceId?: number | null): Promise<{ ocMode: 'stock' | 'advanced'; deviceKey?: string | null }>;
   /** M3-C-E/M157: persist + activate the mode for one physical GPU; the
    * renderer re-fetches that GPU's caps after the toggle. */
-  ocModeSet(ocMode: 'stock' | 'advanced', deviceId?: number | null): Promise<{ ocMode: 'stock' | 'advanced'; deviceKey?: string | null }>;
+  ocModeSet(ocMode: 'stock' | 'advanced', deviceId?: number | null, deviceKey?: string | null, expectedCurrentMode?: 'stock' | 'advanced' | null): Promise<{ ocMode: 'stock' | 'advanced'; deviceKey?: string | null }>;
   /** M4-B: whether the Advanced OC Mode warning was already accepted
    *  (persisted - a re-boot must not re-ask). */
   advancedModeAcceptedGet(): Promise<{ accepted: boolean }>;
@@ -283,6 +295,8 @@ export interface ArcPowerApi {
   onDeviceSelectionRequested(cb: (payload: { deviceKey: string }) => void): () => void;
   /** M31: main-owned durable selection/caps/state push delivered to both renderers. */
   onDeviceSelectionUpdated(cb: (payload: DeviceSelectionPayload) => void): () => void;
+  /** M3-C-E: mode refresh delivered without changing the selected GPU. */
+  onOcModeUpdated(cb: (payload: OcModeUpdatedPayload) => void): () => void;
   /** M4-D2 (mock mode only): run the REAL window-path boot-apply code path
    *  (applyRunner-less, defaults-fallback skipped) and record the attempt
    *  in the session mock apply log. */

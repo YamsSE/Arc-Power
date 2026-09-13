@@ -106,7 +106,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   bootApplyOutcome: () => ipcRenderer.invoke('boot-apply-outcome'),
   appElevated: () => ipcRenderer.invoke('app-elevated'),
   ocModeGet: (deviceId) => ipcRenderer.invoke('oc-mode-get', deviceId),
-  ocModeSet: (ocMode, deviceId) => ipcRenderer.invoke('oc-mode-set', ocMode, deviceId),
+  ocModeSet: (ocMode, deviceId, deviceKey, expectedCurrentMode) => ipcRenderer.invoke('oc-mode-set', ocMode, deviceId, deviceKey, expectedCurrentMode),
   advancedModeAcceptedGet: () => ipcRenderer.invoke('advanced-mode-accepted-get'),
   advancedModeAcceptedSet: () => ipcRenderer.invoke('advanced-mode-accepted-set'),
   fpsPoll: (deviceId) => ipcRenderer.invoke('fps-poll', deviceId),
@@ -185,6 +185,11 @@ contextBridge.exposeInMainWorld('arcPower', {
     const listener = (_event, payload) => cb(payload);
     ipcRenderer.on('device-selection:updated', listener);
     return () => ipcRenderer.removeListener('device-selection:updated', listener);
+  },
+  onOcModeUpdated: (cb) => {
+    const listener = (_event, payload) => cb(payload);
+    ipcRenderer.on('oc-mode:updated', listener);
+    return () => ipcRenderer.removeListener('oc-mode:updated', listener);
   },
   onTelemetrySample: (cb) => {
     const listener = (_event, sample) => cb(sample);

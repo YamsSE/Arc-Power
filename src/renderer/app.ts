@@ -373,11 +373,40 @@ api.onDeviceSelectionUpdated((payload) => {
     deviceId: payload.deviceId,
     caps: payload.caps,
     state: payload.state,
+    ocMode: payload.caps.ocMode === 'advanced' || payload.caps.ocMode === 'stock'
+      ? payload.caps.ocMode
+      : live.ocMode,
     latestSample: live.latestSamples[target.deviceKey ?? deviceHardwareKey(target)] ?? null,
     lastApply: null,
     osGpu: target.osController ?? null,
   });
   renderPage(currentPage());
+});
+const ocModeRefreshRevisions = new Map<string, number>();
+api.onOcModeUpdated((payload) => {
+  if (!payload || !Number.isInteger(payload.deviceId)
+    || (payload.ocMode !== 'stock' && payload.ocMode !== 'advanced')
+    || !Number.isInteger(payload.revision)) return;
+  const live = store.get();
+  const target = live.devices.find((device) => device.id === payload.deviceId
+    && (device.deviceKey ?? null) === payload.deviceKey);
+  const revisionKey = payload.deviceKey ?? `id:${payload.deviceId}`;
+  const lastRevision = ocModeRefreshRevisions.get(revisionKey) ?? 0;
+  if (payload.revision <= lastRevision) return;
+  // Record every delivered revision, even when its GPU is not focused. If
+  // the user returns to that GPU later, an already-consumed refresh must not
+  // be mistaken for a new one.
+  ocModeRefreshRevisions.set(revisionKey, payload.revision);
+  // A mode readback is not a selection request. Ignore a late response for a
+  // GPU that is no longer focused, even if its numeric session id is reused.
+  const selected = live.devices.find((device) => device.id === live.deviceId);
+  if (!target || live.deviceId !== payload.deviceId
+    || (selected?.deviceKey ?? null) !== payload.deviceKey) return;
+  store.set({
+    caps: payload.caps,
+    state: payload.state,
+    ocMode: payload.ocMode,
+  });
 });
 let current: Page | null = null;
 

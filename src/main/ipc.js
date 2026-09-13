@@ -3,7 +3,7 @@
 // module only binds the map to ipcMain.handle.
 
 import { app, ipcMain } from 'electron';
-import { createIpcHandlers, assertNoPayload, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, RECORDING_SETTINGS_CHANNEL, RECORDING_PILL_SETTINGS_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL } from './ipc-core.js';
+import { createIpcHandlers, assertNoPayload, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, RECORDING_SETTINGS_CHANNEL, RECORDING_PILL_SETTINGS_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL, OC_MODE_UPDATED_CHANNEL } from './ipc-core.js';
 import { createDriverInfo } from './driver-info.js';
 import { createRegistryCatalog, REGISTRY_CATALOG } from './registry-catalog.js';
 import { createRegistryApply } from './registry-apply.js';
@@ -246,6 +246,12 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     pushRecordingActionResult({ getWindow, result: enriched });
     try { onRecordingActionResult(enriched); } catch { /* desktop notifications are best effort */ }
   };
+  // M3-C-E: serialize OC-mode writes across the main renderer and the
+  // Advanced Overlay. Without this, two windows can race their persistence
+  // and one window can broadcast a stale capability snapshot after the other
+  // has already changed the same physical GPU.
+  let ocModeSetQueue = Promise.resolve();
+  let nextOcModeRevision = 0;
   for (const [channel, fn] of Object.entries(handlers)) {
     ipcMain.handle(channel, async (event, ...args) => {
       if (channel === 'device-selection-push') {
@@ -256,6 +262,13 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       }
       const recordingAction = recordingInvokeActions[channel];
       const previousRecordingState = recordingAction?.action === 'stop' ? recordingEngine?.getState?.() : null;
+      let releaseOcModeSet = null;
+      let ocModeRevision = null;
+      if (channel === 'oc-mode-set') {
+        const previousOcModeSet = ocModeSetQueue;
+        ocModeSetQueue = new Promise((resolve) => { releaseOcModeSet = resolve; });
+        await previousOcModeSet;
+      }
       let out;
       try {
         if (channel === 'recording-runtime-acquire') {
@@ -264,9 +277,15 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         } else if (channel === 'recording-runtime-release') {
           assertNoPayload(args, channel);
           out = await recordingRuntimeRelease(event);
+        } else {
+          out = await fn(...args);
+          if (channel === 'oc-mode-set') ocModeRevision = ++nextOcModeRevision;
         }
-        else out = await fn(...args);
       } catch (error) {
+        if (releaseOcModeSet) {
+          releaseOcModeSet();
+          releaseOcModeSet = null;
+        }
         if (recordingAction) {
           publishRecordingActionResult({
             action: recordingAction.action,
@@ -289,6 +308,52 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
           error: null,
           state: recordingEngine?.getState?.() ?? null,
         });
+      }
+      // M3-C-E: a Stock/Advanced mode change invalidates the selected
+      // adapter's capability ranges. The initiating renderer refreshes its
+      // own pair, but the other renderer must receive the same keyed
+      // caps/state snapshot or its tuning controls keep stale ranges. This
+      // has its own channel: a delayed mode readback must never look like a
+      // new device selection and pull the UI back to an older adapter.
+      if (channel === 'oc-mode-set') {
+        try {
+          if (Number.isInteger(args[1]) && out?.ocMode) {
+            let caps = null;
+            let state = null;
+            try {
+              const deviceId = args[1];
+              [caps, state] = await Promise.all([
+                handlers['get-capabilities'](deviceId),
+                handlers['get-current-settings'](deviceId),
+              ]);
+            } catch {
+              // Still publish an explicit invalidation below. This matters when a
+              // caller rolls back after a successful write whose readback failed:
+              // both renderers must stop displaying the old capability ranges.
+              caps = null;
+              state = null;
+            }
+            const payload = {
+              deviceId: args[1],
+              deviceKey: typeof out.deviceKey === 'string' ? out.deviceKey : null,
+              ocMode: out.ocMode,
+              caps,
+              state,
+              revision: ocModeRevision,
+            };
+            for (const target of [getWindow(), getAdvancedOverlayWindow?.()]) {
+              if (target && !target.isDestroyed()) target.webContents.send(OC_MODE_UPDATED_CHANNEL, payload);
+            }
+          }
+        } finally {
+          // Keep this release outside the integer-device-id branch: legacy
+          // global oc-mode-set calls do not broadcast, but they still own the
+          // serialized queue and must unblock the next writer.
+          if (releaseOcModeSet) {
+            releaseOcModeSet();
+            releaseOcModeSet = null;
+          }
+        }
       }
       // Recording settings are shared by the main Recording page and the
       // Advanced Overlay quick-controls. Broadcast the normalized result to
