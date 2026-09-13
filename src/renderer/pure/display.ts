@@ -55,16 +55,23 @@ function isExplicitScalingPreference(value: unknown): value is 'gpu-scaling' | '
 }
 
 /** Resolve the raw mode used by the compact scaling controls. Active native
- * read-back is authoritative: an active Identity output is Display Scaling,
- * even when the driver leaves an older GPU method in its preferred/registry
- * fields. Preferred and registry values are fallbacks only when active
- * read-back is unavailable. The driver's explicit Custom preference remains
- * the Display Scaling method while the active mode is Identity. */
+ * read-back is authoritative unless it is Identity and the driver supplies
+ * the explicit GPU-vs-Display preference: the registry selects that view and
+ * the version-1 preferred field supplies the exact supported GPU method.
+ * Without that explicit GPU preference, an Identity read-back remains
+ * Display Scaling, even if an older preferred GPU method is left behind. */
 export function effectiveScalingModeOf(display: Display | null | undefined): string | null {
   if (!display) return null;
   const active = display.scalingMode;
   const preferred = display.preferredScalingMode;
-  if (active === 'identity' && preferred === 'custom') return 'custom';
+  if (active === 'identity') {
+    const supported = display.supportedOptions?.scalingModes ?? [];
+    if (display.scalingPreference === 'gpu-scaling'
+      && isGpuScalingMode(preferred)
+      && supported.includes(preferred)) return preferred;
+    if (preferred === 'custom') return 'custom';
+    return 'identity';
+  }
   if (active !== null && active !== undefined) return active;
   return preferred ?? null;
 }
@@ -73,6 +80,9 @@ export function scalingViewOf(display: Display | null | undefined): DisplayScali
   if (!display) return 'display-scaling';
   if (display.scalingMethod?.value?.enabled === true) return 'retro-scaling';
   const raw = effectiveScalingModeOf(display);
+  if (display.scalingMode === 'identity') {
+    return raw && raw !== 'identity' && raw !== 'custom' ? 'gpu-scaling' : 'display-scaling';
+  }
   if (display.scalingMode === null || display.scalingMode === undefined) {
     if (raw === null && isExplicitScalingPreference(display.scalingPreference)) return display.scalingPreference;
     if (isGpuScalingMode(raw)) return 'gpu-scaling';
