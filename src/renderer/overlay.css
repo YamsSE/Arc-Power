@@ -45,7 +45,7 @@ body {
 
 html[data-overlay-renderer="capframex"] #capframex-root { display: block; }
 html[data-overlay-renderer="capframex"] #overlay-root {
-  background: var(--capframex-bg, #1b1d2e);
+  background: transparent;
 }
 html[data-overlay-renderer="capframex"] #overlay-backdrop,
 html[data-overlay-renderer="capframex"] #overlay-divider,
@@ -68,7 +68,7 @@ html[data-overlay-renderer="capframex"] #overlay-frametime-value {
   position: relative;
   width: 100%;
   padding: 0.2rem 0.5rem 0.3rem;
-  background: transparent;
+  background: color-mix(in srgb, var(--capframex-bg, transparent) var(--capframex-bg-opacity, 50%), transparent);
   border: 1px solid rgba(70, 191, 255, 0.25);
   border-radius: 0.45rem;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025), 0 0 1.4rem rgba(0, 167, 255, 0.08);
@@ -111,7 +111,8 @@ html[data-overlay-renderer="capframex"] #overlay-frametime-value {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 5.8rem 6.4rem;
   align-items: baseline;
-  gap: 0.85rem;
+  column-gap: 0.85rem;
+  row-gap: 0;
   min-width: 0;
   margin-bottom: 0.08rem;
   color: #c5a3ff;
@@ -122,8 +123,11 @@ html[data-overlay-renderer="capframex"] #overlay-frametime-value {
 
 .capframex-gpu-title span:first-child,
 .capframex-cpu-title span:first-child { overflow: hidden; text-overflow: ellipsis; }
-.capframex-cpu-title .capframex-title-value { grid-column: 3; color: #f1f2f8; text-align: right; }
-.capframex-displaytime-card .capframex-chart-heading span:first-child { color: #a8ed00; }
+.capframex-gpu-title > .capframex-title-label,
+.capframex-cpu-title > .capframex-title-label { grid-column: 1 / -1; min-width: 0; }
+.capframex-cpu-title { grid-template-columns: minmax(0, 1fr); }
+.capframex-gpu-title .capframex-clock { grid-column: 2; grid-row: 2; }
+.capframex-gpu-title .capframex-memory-clock { grid-column: 3; grid-row: 2; }
 
 .capframex-gpu-title .capframex-clock,
 .capframex-gpu-title .capframex-memory-clock {
@@ -174,17 +178,14 @@ html[data-overlay-renderer="capframex"] #overlay-frametime-value {
 .capframex-summary strong,
 .capframex-summary span:last-child { color: var(--capframex-accent, #5bd5ff); font-size: 0.9rem; font-weight: 700; white-space: nowrap; }
 .capframex-summary strong { grid-column: 3; margin-right: 0.25rem; color: var(--capframex-accent, #5bd5ff); font-size: 0.9rem; font-weight: 700; text-align: right; white-space: nowrap; }
-/* Single FPS metrics terminate in the right value track. Performance is the
-   one intentional two-value row: FPS occupies the middle track and its
-   paired frametime occupies the right track, matching the Arc HUD grammar. */
-#capframex-performance { grid-column: 2; }
-#capframex-performance-ft { grid-column: 3; }
+/* Single FPS metrics terminate in the right value track. */
+#capframex-performance { grid-column: 3; }
 .capframex-summary [hidden] { display: none; }
 
 .capframex-chart-card {
   margin-top: 0.25rem;
   padding: 0.25rem 0.35rem 0.28rem;
-  background: #0d0d15;
+  background: color-mix(in srgb, var(--capframex-bg, transparent) var(--capframex-bg-opacity, 50%), transparent);
   border: 1px solid rgba(112, 117, 143, 0.27);
   border-radius: 0.28rem;
 }

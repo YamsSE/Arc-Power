@@ -55,15 +55,15 @@ const OVERLAY_BASE_HEIGHT = 170;
 // Keep this as the CSS-pixel contract at scale 1.0; the renderer's rem sizes
 // and the native window geometry both scale from the same value.
 const CAPFRAMEX_BASE_WIDTH = 336;
-const CAPFRAMEX_BASE_HEIGHT = 567;
+const CAPFRAMEX_BASE_HEIGHT = 426;
 // The base height includes one GPU section with the default four visible GPU
 // rows. Keep the per-section estimate in CSS pixels and scale it together
 // with the rest of the window so enabling more telemetry cannot clip the HUD.
 const CAPFRAMEX_GPU_SECTION_OVERHEAD = 24;
-const CAPFRAMEX_GPU_ROW_HEIGHT = 17;
+const CAPFRAMEX_GPU_ROW_HEIGHT = 21;
 const CAPFRAMEX_DEFAULT_GPU_ROWS = 4;
 const CAPFRAMEX_DEFAULT_CPU_ROWS = 3;
-const CAPFRAMEX_DEFAULT_SUMMARY_ROWS = 3;
+const CAPFRAMEX_DEFAULT_SUMMARY_ROWS = 5;
 const CAPFRAMEX_GPU_ROW_STATS = [
   'gpu-util', 'gpu-temp', 'gpu-voltage', 'gpu-power', 'gpu-fan', 'gpu-vram', 'gpu-vram-temp',
 ];
@@ -334,8 +334,9 @@ export function createOverlayWindow({ getOverlaySettings, deferBuild = false }) 
       (count, statId) => count + (applied.stats.includes(statId) ? 1 : 0),
       0,
     );
+    const capframexGpuTitleRows = (applied.stats.includes('gpu-clock') || applied.stats.includes('gpu-mem-clock')) ? 1 : 0;
     const capframexGpuSectionHeight = CAPFRAMEX_GPU_SECTION_OVERHEAD
-      + capframexGpuRows * CAPFRAMEX_GPU_ROW_HEIGHT;
+      + (capframexGpuRows + capframexGpuTitleRows) * CAPFRAMEX_GPU_ROW_HEIGHT;
     const capframexDefaultGpuSectionHeight = CAPFRAMEX_GPU_SECTION_OVERHEAD
       + CAPFRAMEX_DEFAULT_GPU_ROWS * CAPFRAMEX_GPU_ROW_HEIGHT;
     const capframexCpuRows = (applied.stats.includes('cpu-clock') ? 1 : 0)

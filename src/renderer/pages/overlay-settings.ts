@@ -49,6 +49,8 @@ import {
   isValidOverlayRenderer,
   clampOverlayScale,
   clampOverlayPollMs,
+  clampOverlayBgOpacity,
+  OVERLAY_BG_COLOR_DEFAULT,
   // M23: the ADVANCED overlay's anchored-edge mirror (pure/overlay.ts - the
   // HUD's lockstep family; the persisted-truth owner is profile-store.js).
   ADVANCED_OVERLAY_POSITIONS,
@@ -111,6 +113,9 @@ interface PersistedOverlay {
   position: OverlayPosition;
   scale: number;
   color: string;
+  backgroundEnabled: boolean;
+  backgroundColor: string;
+  backgroundOpacity: number;
   stats: string[];
   // M35: null means every enumerated GPU (the backwards-compatible default);
   // an explicit list contains durable device keys selected by the user.
@@ -201,6 +206,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       position: isValidOverlayPosition(s.overlayPosition) ? s.overlayPosition : 'top-left',
       scale: clampOverlayScale(s.overlayScale),
       color: isValidOverlayColor(s.overlayColor) ? s.overlayColor : '#ffffff',
+      backgroundEnabled: s.overlayBgEnabled === true,
+      backgroundColor: isValidOverlayColor(s.overlayBgColor) ? s.overlayBgColor : OVERLAY_BG_COLOR_DEFAULT,
+      backgroundOpacity: clampOverlayBgOpacity(s.overlayBgOpacity),
       stats: Array.isArray(s.overlayStats) ? s.overlayStats : [...OVERLAY_STATS_DEFAULT],
       // M35: an absent list preserves the all-GPU default; an explicit list
       // contains durable device keys, never transient enumeration indexes.
@@ -517,7 +525,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // (type=color - a plain value applied via CSSOM, never an inline
     // style) + the SIZE slider. RTSS exposes the persisted 0.5x..2x scale
     // values in quarter-size steps.
-    // Legacy theme/background values are intentionally not exposed here.
+    // Arc Power additionally owns its optional background controls; the RTSS
+    // provider does not expose those controls.
     const colorOptions = OVERLAY_COLOR_PRESETS.map((hex) =>
       el('button', {
         type: 'button',
@@ -539,6 +548,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     });
     const formatScale = (value: number) => `${Number(value.toFixed(2))}x`;
     const scaleValue = el('span', { class: 'settings-scale-value', text: formatScale(persisted.scale) });
+    const bgOpacityValue = el('span', { class: 'settings-scale-value', text: `${Math.round(persisted.backgroundOpacity * 100)}%` });
     // M7b (fix 4): the Background section - the box toggle, the color
     // swatches + custom hex (the overlay-color-option pattern, but
     // data-bg-color-option) + the 0-100 opacity slider (the scale-slider
@@ -556,10 +566,28 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ariaLabel: 'Overlay position',
       onChange: (value) => void onPositionChange(value),
     });
+    const backgroundControls = persisted.renderer === 'capframex' ? [
+      el('div', { class: 'settings-row overlay-background-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Background' }),
+        el('label', { class: 'boot-toggle overlay-background-toggle-label', title: 'Show a colored background behind the Arc Power Overlay.' }, [
+          el('input', { type: 'checkbox', class: 'settings-checkbox overlay-background-toggle', dataset: { setting: 'overlayBgEnabled' }, checked: persisted.backgroundEnabled, onchange: (ev: Event) => void onBackgroundEnabledToggle((ev.target as HTMLInputElement).checked) }),
+          el('span', { text: 'Show background' }),
+        ]),
+      ]),
+      el('div', { class: 'settings-row overlay-background-color-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Background color' }),
+        el('input', { type: 'color', class: 'settings-color-input settings-background-color-input', value: persisted.backgroundColor, onchange: (ev: Event) => void onBackgroundColorChange((ev.target as HTMLInputElement).value) }),
+      ]),
+      el('div', { class: 'settings-row overlay-background-opacity-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Opacity' }),
+        el('input', { type: 'range', class: 'settings-background-opacity-slider', min: 0, max: 100, step: 1, value: String(Math.round(persisted.backgroundOpacity * 100)), oninput: (ev: Event) => { bgOpacityValue.textContent = `${(ev.target as HTMLInputElement).value}%`; }, onchange: (ev: Event) => void onBackgroundOpacityChange(Number((ev.target as HTMLInputElement).value)) }),
+        bgOpacityValue,
+      ]),
+    ] : [];
     const appearanceCard = el('section', { class: 'card settings-card overlay-appearance-card' }, [
       el('div', { class: 'overlay-card-heading' }, [
         el('div', {}, [el('span', { class: 'overlay-card-eyebrow', text: 'VISUAL SYSTEM' }), el('h2', { class: 'card-title', text: 'Visual System' })]),
-        el('span', { class: 'overlay-value-badge', text: 'CLASSIC' }),
+        el('span', { class: 'overlay-value-badge', text: persisted.renderer === 'capframex' ? 'ARC POWER' : 'CLASSIC' }),
       ]),
       el('div', { class: 'overlay-color-options' }, [
         ...colorOptions,
@@ -586,9 +614,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         }),
         scaleValue,
       ]),
-      // M7b (fix 4) / M25: the Background section - hidden when the Arc
-      // theme is selected (Arc has its own built-in chrome; background box
-      // is a Classic-only option).
+      ...backgroundControls,
     ]);
 
     // M25: the Hotkey + Advanced cards are MERGED into a single "Hotkey"
@@ -898,6 +924,43 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast('error', 'Overlay size could not be changed', err instanceof Error ? err.message : String(err));
       if (slider) slider.value = String(persisted.scale);
       return;
+    }
+  };
+
+  const onBackgroundEnabledToggle = async (checked: boolean): Promise<void> => {
+    const box = root.querySelector<HTMLInputElement>('.overlay-background-toggle');
+    try {
+      await api.profilesSettingsSave({ overlayBgEnabled: checked });
+      persisted.backgroundEnabled = checked;
+    } catch (err) {
+      if (box) box.checked = persisted.backgroundEnabled;
+      toast('error', 'Overlay background could not be changed', err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const onBackgroundColorChange = async (color: string): Promise<void> => {
+    if (!isValidOverlayColor(color)) return;
+    const input = root.querySelector<HTMLInputElement>('.settings-background-color-input');
+    const previous = persisted.backgroundColor;
+    persisted.backgroundColor = color.toLowerCase();
+    try {
+      await api.profilesSettingsSave({ overlayBgColor: persisted.backgroundColor });
+    } catch (err) {
+      persisted.backgroundColor = previous;
+      if (input) input.value = previous;
+      toast('error', 'Overlay background color could not be changed', err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const onBackgroundOpacityChange = async (percent: number): Promise<void> => {
+    const value = clampOverlayBgOpacity(percent / 100);
+    const slider = root.querySelector<HTMLInputElement>('.settings-background-opacity-slider');
+    try {
+      await api.profilesSettingsSave({ overlayBgOpacity: value });
+      persisted.backgroundOpacity = value;
+    } catch (err) {
+      if (slider) slider.value = String(Math.round(persisted.backgroundOpacity * 100));
+      toast('error', 'Overlay background opacity could not be changed', err instanceof Error ? err.message : String(err));
     }
   };
 

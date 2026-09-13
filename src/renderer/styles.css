@@ -2907,6 +2907,19 @@ input[type="number"] {
   color: var(--text);
   min-width: 38px;
 }
+.overlay-settings-root .overlay-background-row,
+.overlay-settings-root .overlay-background-color-row,
+.overlay-settings-root .overlay-background-opacity-row {
+  display: grid;
+  grid-template-columns: minmax(108px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+.overlay-settings-root .overlay-background-row { grid-template-columns: minmax(108px, auto) minmax(0, 1fr); }
+.overlay-background-toggle-label { min-width: 0; }
+.settings-background-color-input { justify-self: start; }
+.settings-background-opacity-slider { width: 100%; min-width: 0; max-width: none; accent-color: var(--accent-strong); }
+.overlay-background-opacity-row .settings-scale-value { text-align: right; }
 .overlay-note { font-size: 12px; }
 .overlay-hotkey-fail { font-weight: 600; }
 
@@ -3400,6 +3413,9 @@ input[type="number"] {
   .overlay-settings-root .overlay-device-monitoring,
   .overlay-settings-root .overlay-scale-row,
   .overlay-settings-root .overlay-poll-ms-row,
+  .overlay-settings-root .overlay-background-row,
+  .overlay-settings-root .overlay-background-color-row,
+  .overlay-settings-root .overlay-background-opacity-row,
   .overlay-settings-root .overlay-bg-row:has(.settings-bg-opacity-slider) { grid-template-columns: 1fr; gap: 6px; }
   .overlay-settings-root .settings-scale-value,
   .overlay-settings-root .settings-bg-opacity-value,
