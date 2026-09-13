@@ -4356,29 +4356,60 @@ export class IgclBackend {
           const gpuMethodRequested = patch.displayScalingMethod === 'centered'
             || patch.displayScalingMethod === 'stretched'
             || patch.displayScalingMethod === 'aspect-ratio-centered-max';
-          const { setResult } = setScalingWithCompatibility(lib, handle, {
-            flag,
-            custom,
-            hardwareModeSet: gpuMethodRequested,
-          });
-          // NNScalingState only distinguishes the Display-vs-GPU preference;
-          // it cannot prove which exact GPU method was accepted. Use it as a
-          // fallback for Display Scaling (identity) only, never as a false
-          // success for Centered/Stretch/Aspect Ratio.
-          const registryFallbackAllowed = (setResult === CTL_RESULT.ERROR_INVALID_ARGUMENT
-            || setResult === CTL_RESULT.ERROR_UNSUPPORTED_VERSION)
-            && patch.scalingMode === 'identity';
+          const registryWriterAvailable = !custom && typeof this._vrrRegistry?.setScalingState === 'function';
+          const registryReaderAvailable = registryWriterAvailable && typeof this._vrrRegistry?.getScalingState === 'function';
+          const registryValue = patch.scalingMode === 'identity' ? SCALING_STATE_DISPLAY : SCALING_STATE_GPU;
+          const registryNeedsSync = registryWriterAvailable
+            && registryScalingState?.ok === true
+            && registryScalingState.value !== registryValue;
           let registryFallback = null;
-          if (setResult !== CTL_RESULT.SUCCESS && !custom && registryFallbackAllowed && typeof this._vrrRegistry?.setScalingState === 'function') {
-            // IGS persists ordinary GPU/Display selection in NNScalingState
-            // on driver builds that reject the versioned native payload. The
-            // registry adapter resolves the exact PCI/subsystem entry and
-            // verifies the binary read-back, but this never substitutes for
-            // a successful native scaling transition.
-            const registryValue = patch.scalingMode === 'identity' ? SCALING_STATE_DISPLAY : SCALING_STATE_GPU;
+          let setResult = null;
+          let registryRestoreAttempted = false;
+          let registryRestoreOk = true;
+
+          const restorePreviousRegistryState = async () => {
+            if (registryRestoreAttempted) return registryRestoreOk;
+            registryRestoreAttempted = true;
+            if (!registryNeedsSync || registryScalingState?.ok !== true) return true;
+            const restored = await this._vrrRegistry.setScalingState(dev, registryScalingState.value).catch(() => null);
+            registryRestoreOk = restored?.ok === true;
+            return registryRestoreOk;
+          };
+
+          // Intel Graphics Software's Display-vs-GPU selector is persisted in
+          // NNScalingState. Synchronize that selector before the native
+          // modeset: some driver builds consult it while accepting the
+          // ctl_scaling_settings_t request. Writing it only after the native
+          // call can leave a successful-looking GPU request at stock Display
+          // Scaling, which is the exact failure mode this path must avoid.
+          if (registryNeedsSync) {
             registryFallback = await this._vrrRegistry.setScalingState(dev, registryValue).catch(() => null);
           }
-          if (setResult !== CTL_RESULT.SUCCESS) {
+          if (registryNeedsSync && registryFallback?.ok !== true) {
+            const restored = await restorePreviousRegistryState();
+            result.perControl.scalingMode = {
+              ok: false,
+              errorCode: registryFallback?.errorCode ?? 'registry-write-failed',
+              message: `${registryFallback?.message ?? 'The IGS Display/GPU scaling preference could not be synchronized before the native scaling request; no display mode was changed.'}${restored ? '' : ' The previous IGS scaling preference could not be restored.'}`,
+              readBackEqual: false,
+              activeReadBackEqual: false,
+              preferredReadBackEqual: false,
+              registryReadBackEqual: false,
+              silentNoop: false,
+            };
+            result.ok = false;
+          } else {
+            ({ setResult } = setScalingWithCompatibility(lib, handle, {
+              flag,
+              custom,
+              hardwareModeSet: gpuMethodRequested,
+            }));
+          }
+
+          if (setResult === null) {
+            // The preflight failure above already populated the honest result.
+          } else if (setResult !== CTL_RESULT.SUCCESS) {
+            const restored = await restorePreviousRegistryState();
             // NNScalingState is only a persisted preference. It is useful as
             // a compatibility write, but it is never evidence that the
             // native output scaler changed. In particular, do not surface
@@ -4386,11 +4417,11 @@ export class IgclBackend {
             result.perControl.scalingMode = {
               ok: false,
               errorCode: igclErrorCode(setResult) ?? 'io-failed',
-              message: `IGCL ${describeResult(setResult)}${registryFallback?.ok === true ? '; registry preference persisted, but the native scaling transition was refused' : ''}`,
+              message: `IGCL ${describeResult(setResult)}${registryFallback?.ok === true && restored ? '; the registry preference was rolled back because the native scaling transition was refused' : ''}${!restored ? '; the previous IGS scaling preference could not be restored' : ''}`,
               readBackEqual: false,
               activeReadBackEqual: false,
               preferredReadBackEqual: false,
-              registryReadBackEqual: registryFallback?.ok === true,
+              registryReadBackEqual: false,
               silentNoop: false,
             };
             result.ok = false;
@@ -4419,42 +4450,37 @@ export class IgclBackend {
               preferredReadBackEqual = current.version === 1 && !custom && got.preferredScalingType === flag;
               message = activeReadBackEqual ? undefined : `read-back ${JSON.stringify(got)} != requested ${JSON.stringify({ scalingType: flag, ...custom })}`;
             }
-            const registryWriterAvailable = !custom && typeof this._vrrRegistry?.setScalingState === 'function';
-            const registryReaderAvailable = registryWriterAvailable && typeof this._vrrRegistry?.getScalingState === 'function';
+            // A persisted PreferredScalingType or registry value alone cannot
+            // prove that the selected output scaler changed. Every GPU
+            // request must therefore read back the requested active scaler;
+            // otherwise the driver accepted a preference but left stock
+            // Display Scaling in effect.
+            const nativeReadBackEqual = activeReadBackEqual;
             const registryAvailable = registryWriterAvailable;
             let registryReadBackEqual = false;
-            if (registryAvailable) {
-              const registryValue = patch.scalingMode === 'identity' ? SCALING_STATE_DISPLAY : SCALING_STATE_GPU;
-              const registryNeedsSync = registryScalingState?.ok !== true || registryScalingState.value !== registryValue;
-              if (registryNeedsSync && registryFallback?.ok !== true) registryFallback = await this._vrrRegistry.setScalingState(dev, registryValue).catch(() => null);
+            // Do not persist a new IGS preference after a native silent no-op.
+            // For a known old value the preflight write can be rolled back;
+            // when the old value was unavailable, wait until native proof
+            // exists before creating a new registry value.
+            if (registryAvailable && nativeReadBackEqual) {
+              const registryNeedsPostSync = registryScalingState?.ok !== true || registryScalingState.value !== registryValue;
+              if (registryNeedsPostSync && registryFallback?.ok !== true) registryFallback = await this._vrrRegistry.setScalingState(dev, registryValue).catch(() => null);
               const postRegistry = registryReaderAvailable
                 ? await this._vrrRegistry.getScalingState(dev).catch(() => null)
                 : null;
               registryReadBackEqual = postRegistry?.ok === true
                 ? postRegistry.value === registryValue
-                : registryFallback?.ok === true || (!registryNeedsSync && registryScalingState?.value === registryValue);
+                : registryFallback?.ok === true || (!registryNeedsPostSync && registryScalingState?.value === registryValue);
             }
-            // A registry preference alone cannot prove that the selected
-            // output scaler changed. For ordinary GPU methods, however, IGCL
-            // can legitimately keep the active output at Identity while the
-            // version-1 PreferredScalingType records the requested GPU
-            // method. That is the same active/preferred split used by IGS;
-            // accept it only when the native preferred field matches the
-            // exact requested flag. Registry state remains persistence
-            // support, never proof of the method itself.
-            const preferredGpuMethodReadBackEqual = !custom
-              && flag !== DISPLAY_SCALING_MODE_TO_IGCL.identity
-              && current.version === 1
-              && got?.scalingType === DISPLAY_SCALING_MODE_TO_IGCL.identity
-              && preferredReadBackEqual;
-            const nativeReadBackEqual = activeReadBackEqual || preferredGpuMethodReadBackEqual;
             const persistedReadBackEqual = custom !== null || !registryAvailable || registryReadBackEqual;
             readBackEqual = nativeReadBackEqual && persistedReadBackEqual;
-            if (preferredGpuMethodReadBackEqual) {
-              message = 'preferred GPU scaling method verified; the active output remains Identity for the current display timing';
-            }
             if (!readBackEqual && !message) {
               message = `scaling read-back did not prove the requested active and persisted mode (active=${activeReadBackEqual}, preferred=${preferredReadBackEqual}, registry=${registryReadBackEqual})`;
+            }
+            if (!readBackEqual) {
+              const restored = await restorePreviousRegistryState();
+              if (registryRestoreAttempted) registryReadBackEqual = false;
+              if (!restored) message = `${message ?? 'scaling read-back did not prove the requested active and persisted mode'}; the previous IGS scaling preference could not be restored`;
             }
             result.perControl.scalingMode = {
               ok: readBackEqual,
