@@ -164,9 +164,15 @@ const IGS_SCALING_METHOD_LABELS: Record<string, string> = {
 
 function scalingStateNoteOf(display: DisplayState['displays'][number] | null): string {
   const preferred = display?.preferredScalingMode;
-  const gpuPreferred = preferred === 'centered' || preferred === 'stretched' || preferred === 'aspect-ratio-centered-max';
+  const preferredLabel = preferred === 'centered' || preferred === 'stretched' || preferred === 'aspect-ratio-centered-max'
+    ? IGS_SCALING_METHOD_LABELS[preferred]
+    : undefined;
+  const gpuPreferred = display?.scalingPreference !== 'display-scaling'
+    && (preferredLabel !== undefined
+    || display?.scalingPreference === 'gpu-scaling');
   if (display?.scalingMode === 'identity' && gpuPreferred) {
-    return `Saved preference: GPU Scaling (${IGS_SCALING_METHOD_LABELS[preferred]}). Active scaler: Display Scaling at the current desktop resolution. ${DISPLAY_SCALING_NOTE}`;
+    const method = preferredLabel ? ` (${preferredLabel})` : '';
+    return `Saved preference: GPU Scaling${method}. Active scaler: Display Scaling at the current desktop resolution. ${DISPLAY_SCALING_NOTE}`;
   }
   return DISPLAY_SCALING_NOTE;
 }
@@ -2258,9 +2264,9 @@ async function applyDisplay(ctx: PageContext, only: string) {
       // only replace an unchanged draft with native read-back.
       const scalingDraftChangedWhileApplying = displayScalingDraftRevision !== scalingDraftRevisionAtStart;
       if (!scalingDraftChangedWhileApplying) {
-        // Active/native readback is authoritative. In particular, a
-        // preference-only GPU result must not keep the selector on GPU
-        // Scaling while the driver still reports Display Scaling.
+        // Keep the raw active/native state truthful, while the compact
+        // selector may remain on a saved GPU preference when the driver is
+        // currently forced to Identity by an equal source/target mode.
         syncDisplayScalingDraftFromReadback(freshDisplay);
       }
       if (graphicsView === 'display' && viewContainer?.isConnected) renderDisplayCards(viewContainer, ctx);

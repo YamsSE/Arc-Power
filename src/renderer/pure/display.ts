@@ -54,11 +54,10 @@ function isExplicitScalingPreference(value: unknown): value is 'gpu-scaling' | '
   return value === 'gpu-scaling' || value === 'display-scaling';
 }
 
-/** Resolve the raw mode used by the compact scaling controls. The active
- * native scaler is authoritative when it is available: Identity is the stock
- * Display Scaling state, even when a driver reports a separate GPU preference
- * in PreferredScalingType or NNScalingState. Preferred/registry values are
- * only fallbacks when the active native read-back is unavailable. */
+/** Resolve the raw mode used by payload construction. The active native scaler
+ * remains authoritative here; the compact selector is resolved separately so
+ * a saved GPU preference can stay visible while Windows is temporarily using
+ * Identity for an equal source/target mode. */
 export function effectiveScalingModeOf(display: Display | null | undefined): string | null {
   if (!display) return null;
   const active = display.scalingMode;
@@ -68,9 +67,20 @@ export function effectiveScalingModeOf(display: Display | null | undefined): str
   return preferred ?? null;
 }
 
+/** A native Identity read-back can coexist with a saved GPU preference when
+ * the desktop and panel are currently running at the same resolution. Keep
+ * that preference visible in the IGS-style selector without relabeling the
+ * active scaler; scalingStateNoteOf() explains the distinction to the user. */
+function hasDeferredGpuPreference(display: Display | null | undefined): boolean {
+  if (!display || display.scalingMode !== 'identity') return false;
+  if (display.scalingPreference === 'display-scaling') return false;
+  return display.scalingPreference === 'gpu-scaling' || isGpuScalingMode(display.preferredScalingMode);
+}
+
 export function scalingViewOf(display: Display | null | undefined): DisplayScalingView {
   if (!display) return 'display-scaling';
   if (display.scalingMethod?.value?.enabled === true) return 'retro-scaling';
+  if (hasDeferredGpuPreference(display)) return 'gpu-scaling';
   const raw = effectiveScalingModeOf(display);
   if (display.scalingMode === null || display.scalingMode === undefined) {
     if (raw === null && isExplicitScalingPreference(display.scalingPreference)) return display.scalingPreference;
@@ -107,6 +117,10 @@ export function scalingMethodViewOf(display: Display | null | undefined): string
   const raw = effectiveScalingModeOf(display);
   if (view === 'gpu-scaling') {
     const options = scalingMethodOptionsForView(display, view);
+    const preferred = display?.preferredScalingMode;
+    if (hasDeferredGpuPreference(display)
+      && isGpuScalingMode(preferred)
+      && options.includes(preferred)) return preferred;
     return raw && options.includes(raw) ? raw : options[0];
   }
   return raw === 'custom' ? 'custom' : 'maintain-display-scaling';
