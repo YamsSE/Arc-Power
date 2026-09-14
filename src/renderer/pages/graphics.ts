@@ -2257,26 +2257,11 @@ async function applyDisplay(ctx: PageContext, only: string) {
       // was in flight. Keep that newer intent for the queued transaction;
       // only replace an unchanged draft with native read-back.
       const scalingDraftChangedWhileApplying = displayScalingDraftRevision !== scalingDraftRevisionAtStart;
-      const scalingResult = out.perControl.scalingMode;
-      const requestedGpuMethod = payload.scalingMode === 'centered' || payload.scalingMode === 'stretched' || payload.scalingMode === 'aspect-ratio-centered-max'
-        ? payload.scalingMode
-        : null;
-      const preserveGpuPreference = scalingResult?.ok === true
-        && (scalingResult.preferredOnly === true || scalingResult.preferenceAlreadyApplied === true)
-        && requestedGpuMethod !== null;
       if (!scalingDraftChangedWhileApplying) {
-        if (preserveGpuPreference) {
-          displayScalingViewDraft = 'gpu-scaling';
-          displayScalingMethodDraft = requestedGpuMethod;
-          displayDraft.scalingMode = requestedGpuMethod;
-          displayDraft.displayScalingMethod = payload.displayScalingMethod ?? requestedGpuMethod;
-          delete displayDraft.scalingCustom;
-          delete displayDraft.scalingMethod;
-          (displayApplied as Record<string, unknown>).scalingMode = 'gpu-scaling';
-          (displayApplied as Record<string, unknown>).displayScalingMethod = displayScalingMethodDraft;
-        } else {
-          syncDisplayScalingDraftFromReadback(freshDisplay);
-        }
+        // Active/native readback is authoritative. In particular, a
+        // preference-only GPU result must not keep the selector on GPU
+        // Scaling while the driver still reports Display Scaling.
+        syncDisplayScalingDraftFromReadback(freshDisplay);
       }
       if (graphicsView === 'display' && viewContainer?.isConnected) renderDisplayCards(viewContainer, ctx);
     }

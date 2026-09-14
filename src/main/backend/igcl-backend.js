@@ -477,9 +477,9 @@ const DISPLAY_SCALING_MODE_FROM_IGCL = { 1: 'identity', 2: 'centered', 4: 'stret
 // with Version 1 for every scaling mode. Older drivers may reject that
 // version, so retain a narrowly-scoped Version 0 compatibility fallback. A
 // successful setter is still not reported as applied until fresh scaling
-// read-back agrees. Ordinary Display/GPU writes use the virtual-modeset path
-// used by IGS; Custom scaling remains caller-controlled because it may need
-// the physical display transition exposed by IGS.
+// read-back agrees. Explicit GPU writes request a hardware transition;
+// Display identity stays on the ordinary path, and Custom scaling remains
+// caller-controlled because it may need a physical display transition.
 function setScalingWithCompatibility(lib, handle, { flag, custom, hardwareModeSet = false }) {
   const versions = [1, 0];
   let lastResult = CTL_RESULT.ERROR_INVALID_ARGUMENT;
@@ -4357,10 +4357,16 @@ export class IgclBackend {
           // bitmask stays a UI hint (the supportedOptions list); the set
           // reaches the driver and the driver's ACTUAL result decides.
           // ScalingType is a FLAG value in the struct (1/2/4/8/16). Keep
-          // ordinary Display/GPU mode changes on IGCL's virtual-modeset path,
-          // exactly like Intel Graphics Software. HardwareModeSet=true is
-          // reserved for the explicit Custom-scaling path, where the caller
-          // has requested a physical display transition.
+          // Only the explicit coupled GPU selector requests the driver's
+          // hardware transition; a preference-only write can otherwise leave
+          // the active scaler at Display Scaling while the preference appears
+          // to have succeeded. Raw compatibility calls keep their existing
+          // virtual-modeset behavior, while Custom remains caller-controlled.
+          const explicitGpuMethodRequested = !custom
+            && (patch.displayScalingMethod === 'centered'
+              || patch.displayScalingMethod === 'stretched'
+              || patch.displayScalingMethod === 'aspect-ratio-centered-max')
+            && patch.scalingMode === patch.displayScalingMethod;
           const registryWriterAvailable = !custom && typeof this._vrrRegistry?.setScalingState === 'function';
           const registryReaderAvailable = registryWriterAvailable && typeof this._vrrRegistry?.getScalingState === 'function';
           const registryValue = patch.scalingMode === 'identity' ? SCALING_STATE_DISPLAY : SCALING_STATE_GPU;
@@ -4407,7 +4413,7 @@ export class IgclBackend {
             ({ setResult } = setScalingWithCompatibility(lib, handle, {
               flag,
               custom,
-              hardwareModeSet: false,
+              hardwareModeSet: explicitGpuMethodRequested,
             }));
           }
 
@@ -4454,10 +4460,10 @@ export class IgclBackend {
               preferredReadBackEqual = current.version === 1 && !custom && got.preferredScalingType === flag;
               message = activeReadBackEqual ? undefined : `read-back ${JSON.stringify(got)} != requested ${JSON.stringify({ scalingType: flag, ...custom })}`;
             }
-            // Some Version 1 drivers persist a GPU preference while leaving
-            // the active scaler at Identity. That is a successful persisted
-            // GPU preference, but only when the preferred flag is the one
-            // requested; an unchanged preference remains a true no-op.
+            // A Version 1 driver may persist a GPU preference while leaving
+            // the active scaler at Identity. That is not proof of the
+            // requested hardware transition, even when the preference is new
+            // or already matched before the setter ran.
             const preferredOnly = current.version === 1
               && !custom
               && flag !== DISPLAY_SCALING_MODE_TO_IGCL.identity
@@ -4475,11 +4481,11 @@ export class IgclBackend {
               && got?.enable === true
               && got.scalingType === DISPLAY_SCALING_MODE_TO_IGCL.identity
               && preferredReadBackEqual;
-            const nativeReadBackEqual = activeReadBackEqual || preferredOnly || preferenceAlreadyApplied;
+            const nativeReadBackEqual = activeReadBackEqual;
             if (preferredOnly) {
-              message = 'GPU Scaling preference was saved; the driver reports Display Scaling as active at the current desktop resolution. GPU Scaling will be used when the output requires scaling.';
+              message = 'GPU Scaling preference was saved, but the driver reports Display Scaling as active; the requested GPU transition was not applied.';
             } else if (preferenceAlreadyApplied) {
-              message = 'GPU Scaling preference was already saved; the driver reports Display Scaling as active at the current desktop resolution. GPU Scaling will be used when the output requires scaling.';
+              message = 'GPU Scaling preference was already saved, but the driver reports Display Scaling as active; the requested GPU transition was not applied.';
             }
             const registryAvailable = registryWriterAvailable;
             let registryReadBackEqual = false;
