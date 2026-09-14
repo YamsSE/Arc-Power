@@ -11,6 +11,7 @@ const desktopShortcut = $('desktop-shortcut');
 const launchAfter = $('launch-after');
 const rtssRow = $('rtss-row');
 const installRtss = $('install-rtss');
+const rtssNote = $('rtss-note');
 const rtssInstalledNote = $('rtss-installed-note');
 const progressArea = $('progress-area');
 const progressMessage = $('progress-message');
@@ -75,10 +76,10 @@ function showComplete({ uninstall = false, launched = false, rtss = null } = {})
   } else {
     const launchText = launched ? 'The Arc Power control panel is opening now.' : 'You can launch Arc Power from the Start Menu any time.';
     const rtssText = rtss?.installed
-      ? ' RTSS is ready for native FPS and frametime values.'
+      ? ' RTSS Overlay is ready for native FPS and frametime values.'
       : rtss?.reason === 'not-requested'
-        ? ' RTSS was skipped; Arc Power will use its DXGI fallback until RTSS is installed.'
-        : ' RTSS could not be installed automatically; Arc Power will use its DXGI fallback until RTSS is installed.';
+        ? ' RTSS was skipped (optional); there is no RTSS Overlay, and FPS tracking will use the DXGI fallback with less complete results.'
+        : ' RTSS could not be installed automatically; there is no RTSS Overlay, and FPS tracking will use the DXGI fallback with less complete results.';
     statusDetail.textContent = `${launchText}${rtssText}`;
   }
   primaryButton.textContent = uninstall ? 'CLOSE' : 'CLOSE SETUP';
@@ -172,6 +173,7 @@ api.getState().then((state) => {
   $('version-label').textContent = `VERSION ${state.version}`;
   if (state.rtss?.installed) {
     rtssRow.hidden = true;
+    rtssNote.hidden = true;
     rtssInstalledNote.hidden = false;
   }
   if (!state.payloadReady) setError('The packaged application payload is unavailable. Rebuild the installer before installing.');

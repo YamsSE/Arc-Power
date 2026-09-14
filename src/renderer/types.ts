@@ -47,6 +47,8 @@ export interface Settings {
   overlayPollMs?: number;
   /** M143: the persisted Overlay recording/replay status pill preference. */
   overlayRecordingPill?: boolean;
+  /** The separate Recording/Instant Replay desktop-toast preference. */
+  recordingToastsEnabled?: boolean;
 }
 
 /** Read-back of the device's current state (all supported controls resolved). */
@@ -164,8 +166,12 @@ export interface PerControlResult {
   readBackEqual?: boolean;
   /** F3: the driver returned SUCCESS but the read-back did not change (silent no-op - must NOT be reported as applied). */
   silentNoop?: boolean;
-  /** M10b: the honest modeset-flash note the scaling apply carries (the
-   *  physical-modeset warning surfaced via the apply-result toast). */
+  /** The driver saved the requested GPU scaler preference while the active
+   * output scaler remains Identity at the current desktop timing. */
+  preferredOnly?: boolean;
+  /** The requested GPU preference was already present before the setter ran. */
+  preferenceAlreadyApplied?: boolean;
+  /** M10b: the honest display-flash note the scaling apply carries. */
   warning?: string;
   /** Backend-only companion write; keep it out of the user-facing toast. */
   internal?: boolean;
@@ -824,6 +830,8 @@ export interface ProfileSettingsState {
   overlayTheme: 'classic' | 'arc';
   /** M143: the Overlay recording/replay status pill preference. */
   overlayRecordingPill: boolean;
+  /** Recording/Instant Replay desktop toasts are opt-in; stock is off. */
+  recordingToastsEnabled: boolean;
   /** M23: the ADVANCED overlay (the AMD-Adrenaline-style interactive side
    *  panel - CONTROL + <letter>, stock P; absent on old files -> the
    *  defaults: off / 'P' / 'right' - the same absent-field mechanism, NO
@@ -1112,8 +1120,9 @@ export interface DisplayState {
     colorFormat: string | null;
     quantizationRange: 'default' | 'limited' | 'full' | null;
     scalingMode: string | null;
-    /** Active/native scaler state. The IGS-style selector uses the persisted
-     * preference below when the driver reports an identity active mode. */
+    /** Active/native scaler state. The renderer keeps the persisted preference
+     * below separate and does not treat it as active when the driver reports
+     * Identity. */
     preferredScalingMode?: string | null;
     /** Adapter-level GPU-vs-Display preference when the native surface cannot
      * identify the exact GPU scaler method. */

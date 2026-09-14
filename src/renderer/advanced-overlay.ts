@@ -43,7 +43,7 @@ import { buildDropdown, closeDropdownMenus, type DropdownElement } from './compo
 import { ensureWaiver } from './components/waiver-dialog.ts';
 import { Store } from './router.ts';
 import type { PageContext } from './router.ts';
-import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, RecordingCaptureTarget, RecordingCaptureTargets, RecordingEngineState, RecordingResolution, RecordingSettings, RecordingSettingsPatch, StreamScene, StreamStatus, TelemetrySample } from './types.ts';
+import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, OcMode, RecordingCaptureTarget, RecordingCaptureTargets, RecordingEngineState, RecordingResolution, RecordingSettings, RecordingSettingsPatch, StreamScene, StreamStatus, TelemetrySample, VoltageOffsetRead } from './types.ts';
 import {
   snapToRange,
   normalizedPosition,
@@ -90,7 +90,9 @@ import {
 import { isValidTheme } from './pure/theme.ts';
 import { formatGpuMemoryGb, gpuMemoryLabel } from './pure/gpu-memory.ts';
 import { normalizeOverlayStats } from './pure/overlay.ts';
-import { recordingBitrateRange, recordingGpuEncoderOptions } from './pure/recording.ts';
+import { recordingBitrateRange, recordingEncoderIdIsGlobal, recordingEncoderNameForId, recordingEncoderSelectionLabel, recordingGlobalEncoderOptions, recordingGpuEncoderOptions, recordingPhysicalSelectionForId } from './pure/recording.ts';
+import { isAlchemistGpuName } from './pure/hardware-icons.ts';
+import { showAdvancedModeConfirm } from './components/confirm-dialog.ts';
 
 // ---------------------------------------------------------------------------
 // The panel store + boot state
@@ -103,6 +105,7 @@ let activeTab: 'tuning' | 'fan' | 'graphics' | 'recording' = 'tuning';
 // panel is open; keeping these closures next to the tab renderers lets each
 // surface refresh its existing controls without requiring a tab switch.
 let tuningStateSync: ((state: DeviceState) => void) | null = null;
+let refreshAdvancedOverlayVoltageOffset: (() => void) | null = null;
 let fanStateSync: (() => void) | null = null;
 let graphicsStateSync: ((state: GraphicsState) => void) | null = null;
 let recordingSettingsSync: ((settings: RecordingSettings) => void) | null = null;
@@ -143,7 +146,7 @@ const EMPTY_RECORDING_STATUS: RecordingEngineState = {
   running: false,
   mode: null,
   startedAt: null,
-  error: 'Loading recording engine…',
+  error: 'Capture engine idle until recording is requested',
   encoders: [],
   audioInputs: [],
   audioOutputs: [],
@@ -156,6 +159,9 @@ let recordingQuickDraft: RecordingSettings | null = null;
 let recordingQuickStatus: RecordingEngineState = EMPTY_RECORDING_STATUS;
 let recordingQuickTargets: RecordingCaptureTargets = { displays: [], windows: [] };
 let recordingQuickPillEnabled = false;
+let recordingQuickEncoderMigrationId: string | null = null;
+let recordingQuickSettingsRevision = 0;
+let recordingQuickStateRevision = 0;
 let recordingQuickInitialized = false;
 let recordingQuickLoading = false;
 let recordingQuickActionBusy = false;
@@ -166,6 +172,12 @@ let streamQuickStatus: StreamStatus = { state: 'disconnected', connected: false 
 let streamQuickScenes: StreamScene[] = [];
 let streamQuickSceneId: string | null = null;
 let streamQuickBusy = false;
+const CAPTURE_ENGINE_IDLE_MESSAGE = 'Capture engine idle until recording is requested';
+
+function recordingQuickActionAvailable(): boolean {
+  return recordingQuickStatus.available === true
+    || (recordingQuickStatus.probeComplete !== true && recordingQuickStatus.error === CAPTURE_ENGINE_IDLE_MESSAGE);
+}
 
 function cloneRecordingQuickSettings(value: RecordingSettings): RecordingSettings {
   return {
@@ -182,6 +194,7 @@ function cloneRecordingQuickSettings(value: RecordingSettings): RecordingSetting
 }
 
 function syncRecordingSettings(next: RecordingSettings): void {
+  recordingQuickSettingsRevision += 1;
   // Keep the normalized push as the clean base even when Recording is not the
   // visible tab. This prevents the one-time quick-settings load from bringing
   // back values that were changed in the main Recording page meanwhile.
@@ -189,6 +202,7 @@ function syncRecordingSettings(next: RecordingSettings): void {
   if (!recordingQuickDirty && !recordingQuickApplying) {
     recordingQuickDraft = cloneRecordingQuickSettings(next);
   }
+  migrateLegacyRecordingQuickEncoderSelection();
   if (activeTab === 'recording') renderRecording();
 }
 
@@ -318,8 +332,12 @@ api.onStateUpdated((payload) => {
   // State pushes carry the originating session id; never let a read-back from
   // another device overwrite the selected device's state.
   if (!payload || !payload.state || payload.deviceId !== live.deviceId) return;
+  if (activeTab === 'tuning') invalidateAdvancedOverlayVoltageRefresh();
   store.set({ state: payload.state });
-  if (activeTab === 'tuning') tuningStateSync?.(payload.state);
+  if (activeTab === 'tuning') {
+    tuningStateSync?.(payload.state);
+    refreshAdvancedOverlayVoltageOffset?.();
+  }
   else if (activeTab === 'fan') fanStateSync?.();
 });
 
@@ -343,12 +361,14 @@ api.onRecordingPillSettingsUpdated((next) => {
 // click in the main Recording page.
 api.onRecordingStateUpdated((next) => {
   if (!next || typeof next !== 'object') return;
+  recordingQuickStateRevision += 1;
   recordingQuickStatus = {
     ...recordingQuickStatus,
     ...next,
     hotkeys: next.hotkeys ?? recordingQuickStatus.hotkeys,
     activeModes: next.activeModes ?? recordingQuickStatus.activeModes,
   };
+  migrateLegacyRecordingQuickEncoderSelection();
   if (activeTab === 'recording') renderRecording();
 });
 // M31: one atomic main-owned selection push updates the panel's current
@@ -368,6 +388,9 @@ function applyDeviceSelectionPush(payload: PanelSelection, devices: DeviceInfo[]
     deviceId: target.id,
     caps: payload.caps,
     state: payload.state,
+    ocMode: payload.caps.ocMode === 'advanced' || payload.caps.ocMode === 'stock'
+      ? payload.caps.ocMode
+      : live.ocMode,
     latestSample: null,
   });
   deviceEl.textContent = payload.caps.deviceName || target.name || 'Unknown GPU';
@@ -414,6 +437,41 @@ api.onDeviceSelectionUpdated((payload) => {
     if (serial !== selectionPushSerial) return;
     if (applyDeviceSelectionPush(payload, devices) && pendingSelection === payload) pendingSelection = null;
   }).catch(() => { /* retain pendingSelection for the boot handshake */ });
+});
+
+const ocModeRefreshRevisions = new Map<string, number>();
+api.onOcModeUpdated((payload) => {
+  if (!payload || !Number.isInteger(payload.deviceId)
+    || (payload.ocMode !== 'stock' && payload.ocMode !== 'advanced')
+    || !Number.isInteger(payload.revision)) return;
+  const live = store.get();
+  const target = live.devices.find((device) => device.id === payload.deviceId
+    && (device.deviceKey ?? null) === payload.deviceKey);
+  const revisionKey = payload.deviceKey ?? `id:${payload.deviceId}`;
+  const lastRevision = ocModeRefreshRevisions.get(revisionKey) ?? 0;
+  if (payload.revision <= lastRevision) return;
+  // Record every delivered revision, even when its GPU is not focused. If
+  // the user returns to that GPU later, an already-consumed refresh must not
+  // be mistaken for a new one.
+  ocModeRefreshRevisions.set(revisionKey, payload.revision);
+  // Mode refreshes update only the currently focused physical GPU. They must
+  // never reuse the selection-push path, which is allowed to change focus.
+  if (!target || live.deviceId !== payload.deviceId
+    || selectedDeviceKey(live) !== normalizeDeviceKey(payload.deviceKey)) return;
+  store.set({
+    caps: payload.caps,
+    state: payload.state,
+    ocMode: payload.ocMode,
+  });
+  // Fan/Graphics/Recording drafts must survive a mode refresh. The mode only
+  // invalidates the Tuning ranges; Tuning will be rebuilt when it is active.
+  if (activeTab === 'tuning') {
+    values = {};
+    applied = {};
+    applying = false;
+    tuningApplyBtn = null;
+    renderTab();
+  }
 });
 
 // M24 (Part B): pushed POST-APPLY GRAPHICS read-backs (the twin of
@@ -517,6 +575,7 @@ async function boot(): Promise<void> {
       deviceId: pushedTarget.id,
       caps: pushed.caps,
       state: pushed.state,
+      ocMode: pushed.caps.ocMode === 'advanced' ? 'advanced' : 'stock',
     });
     deviceEl.textContent = pushed.caps.deviceName || pushedTarget.name || 'Unknown GPU';
     renderTab();
@@ -549,7 +608,11 @@ async function boot(): Promise<void> {
     state = null;
   }
   if (!panelIdentityMatches(deviceId, deviceKey, bootGeneration)) return;
-  store.set({ caps, state });
+  store.set({
+    caps,
+    state,
+    ocMode: caps?.ocMode === 'advanced' ? 'advanced' : 'stock',
+  });
   deviceEl.textContent = caps?.deviceName || 'Unknown GPU';
   renderTab();
   await syncLatestTelemetry(deviceId, bootGeneration);
@@ -561,6 +624,8 @@ async function boot(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function renderTab(): void {
+  invalidateAdvancedOverlayVoltageRefresh();
+  refreshAdvancedOverlayVoltageOffset = null;
   tuningStateSync = null;
   fanStateSync = null;
   graphicsStateSync = null;
@@ -609,10 +674,21 @@ const SCALAR_CONTROLS = ['powerLimitW', 'gpuFreqOffsetMhz', 'gpuVoltOffsetV', 't
 let values: Record<string, number> = {};
 let applied: Record<string, number> = {};
 let hiddenNegativeControls = new Set<string>();
+let advancedOverlayVoltageRefreshGeneration = 0;
 let applying = false;
 let tuningApplyBtn: HTMLButtonElement | null = null;
 
+function invalidateAdvancedOverlayVoltageRefresh(): void {
+  advancedOverlayVoltageRefreshGeneration += 1;
+}
+// Mode changes can outlive a Tuning-tab render. Keep the transaction guard at
+// module scope so switching to another tab and back cannot start a second
+// write against the same physical GPU.
+let ocModeChangeBusy = false;
+
 async function renderTuning(): Promise<void> {
+  invalidateAdvancedOverlayVoltageRefresh();
+  refreshAdvancedOverlayVoltageOffset = null;
   closeOpenAdvancedMenu();
   clear(contentEl);
   const s = store.get();
@@ -652,6 +728,11 @@ async function renderTuning(): Promise<void> {
   // refreshes it from the envelope so the driver readouts + the chips never
   // go stale in place.
   let currentState: DeviceState = state;
+  let voltageLocalDraft = false;
+  let voltageBaseline: number | null = null;
+  const voltageDeviceId = s.deviceId;
+  const voltageDeviceKey = selectedDeviceKey(s);
+  const voltageGeneration = panelGeneration;
 
   // Gated on the RANGE presence (the main Tuning page's supportedScalars
   // convention - caps.controls keys are the plain CONTROL names
@@ -669,6 +750,138 @@ async function renderTuning(): Promise<void> {
     if (!range) continue;
     values[key] = snapToRange(typeof cur === 'number' ? cur : range.default, range);
   }
+  if (controls.includes('gpuVoltOffsetV')) voltageBaseline = values.gpuVoltOffsetV;
+
+  const syncVoltageDraft = (): void => {
+    if (!controls.includes('gpuVoltOffsetV')) return;
+    const value = values.gpuVoltOffsetV;
+    voltageLocalDraft = voltageBaseline === null || value !== voltageBaseline;
+  };
+
+  // Keep the Advanced Overlay's Alchemist mode switch on the same IPC and
+  // confirmation contract as the main Tuning page. A mode change invalidates
+  // the capability ranges, so the fresh caps/state pair is loaded before the
+  // panel rebuilds its sliders.
+  const showOcModeToggle = isAlchemistGpuName(caps.deviceName, caps);
+  let modeButtons: HTMLButtonElement[] = [];
+  const syncModeButtons = (): void => {
+    const mode = store.get().ocMode;
+    // A mode transaction can finish after renderTab() replaced the original
+    // button nodes. Prefer the currently mounted controls so cancellation,
+    // stale-device returns, and readback failures never leave a rebuilt row
+    // disabled forever.
+    const mountedButtons = Array.from(contentEl.querySelectorAll<HTMLButtonElement>('.adv-oc-mode-btn'));
+    const buttons = mountedButtons.length > 0 ? mountedButtons : modeButtons;
+    for (const button of buttons) {
+      const selected = button.dataset.ocMode === mode;
+      button.classList.toggle('active', selected);
+      button.disabled = ocModeChangeBusy;
+      button.setAttribute('aria-pressed', String(selected));
+    }
+  };
+  const setMode = async (mode: OcMode): Promise<void> => {
+    const live = store.get();
+    let previousMode: OcMode = live.ocMode === 'advanced' ? 'advanced' : 'stock';
+    const deviceId = live.deviceId;
+    const deviceKey = selectedDeviceKey(live);
+    const generation = panelGeneration;
+    if (mode === previousMode || deviceId === null || ocModeChangeBusy) return;
+    ocModeChangeBusy = true;
+    invalidateAdvancedOverlayVoltageRefresh();
+    syncModeButtons();
+    try {
+      if (mode === 'advanced') {
+        let accepted = false;
+        try {
+          ({ accepted } = await api.advancedModeAcceptedGet());
+        } catch {
+          accepted = false;
+        }
+        if (accepted !== true) {
+          const confirmed = await showAdvancedModeConfirm(caps.deviceName || 'this GPU');
+          if (!confirmed) {
+            refreshAdvancedOverlayVoltageOffset?.();
+            return;
+          }
+          try {
+            await api.advancedModeAcceptedSet();
+          } catch {
+            toast('warn', 'Advanced OC Mode', 'The confirmation could not be saved - it will be asked again.');
+          }
+        }
+      }
+      // The confirmation can be open while the main window changes the
+      // focused adapter. Never let a delayed dialog response write to the old
+      // session id (or to a reused id belonging to another physical GPU).
+      if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
+      const current = store.get();
+      if (current.ocMode === mode) return;
+      previousMode = current.ocMode === 'advanced' ? 'advanced' : 'stock';
+      await api.ocModeSet(mode, deviceId, deviceKey);
+      const [freshCaps, freshState] = await Promise.all([
+        api.getCapabilities(deviceId),
+        api.getCurrentSettings(deviceId),
+      ]);
+      if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
+      const appliedMode = freshCaps.ocMode === 'advanced' || freshCaps.ocMode === 'stock'
+        ? freshCaps.ocMode
+        : null;
+      if (appliedMode === null) {
+        throw new Error('the GPU did not report a valid OC mode after the change');
+      }
+      store.set({
+        ocMode: appliedMode,
+        caps: freshCaps,
+        state: freshState,
+      });
+      if (appliedMode === 'advanced') {
+        toast('info', 'Advanced OC Mode enabled', 'Extended power/temperature limits are now available.');
+      } else {
+        toast('info', 'Advanced OC Mode disabled', 'Only Intel-standard limits are available.');
+      }
+      values = {};
+      applied = {};
+      applying = false;
+      tuningApplyBtn = null;
+      ocModeChangeBusy = false;
+      if (activeTab === 'tuning' && panelIdentityMatches(deviceId, deviceKey, generation)) {
+        void renderTuning();
+      }
+    } catch (err) {
+      let rolledBack = false;
+      try {
+        await api.ocModeSet(previousMode, deviceId, deviceKey, mode);
+        rolledBack = true;
+      } catch {
+        // Keep the honest failure toast below; the backend may need a fresh
+        // mode read on the next panel open.
+      }
+      const detail = err instanceof Error ? err.message : String(err);
+      toast('error', 'OC mode could not be changed', rolledBack
+        ? `${detail} (the previous mode was restored)`
+        : `${detail} (the previous mode could not be restored)`);
+    } finally {
+      ocModeChangeBusy = false;
+      syncModeButtons();
+    }
+  };
+  const modeRow = showOcModeToggle ? el('div', { class: 'adv-oc-mode-row' }, [
+    el('span', { class: 'adv-oc-mode-label', text: 'OC mode' }),
+    el('div', { class: 'adv-oc-mode-toggle', role: 'group', 'aria-label': 'OC mode' }, [
+      ...(['stock', 'advanced'] as OcMode[]).map((mode) => {
+        const button = el('button', {
+          class: 'adv-oc-mode-btn',
+          dataset: { ocMode: mode },
+          text: mode === 'stock' ? 'Stock' : 'Advanced',
+          type: 'button',
+          onClick: () => { void setMode(mode); },
+        }) as HTMLButtonElement;
+        modeButtons.push(button);
+        return button;
+      }),
+    ]),
+  ]) : null;
+  syncModeButtons();
 
   const stack = el('div', { class: 'card-stack oc-stack' });
 
@@ -708,6 +921,7 @@ async function renderTuning(): Promise<void> {
         if (!Number.isFinite(visible)) return;
         hiddenNegativeControls.delete(key);
         values[key] = snapToRange(controlValueFromDisplay(visible, key, range, caps.deviceName), range);
+        if (key === 'gpuVoltOffsetV') syncVoltageDraft();
         const shown = visibleValue();
         valueInput.value = editableNumber(shown, displayRange);
         valueNode.textContent = formatValue(shown, display.units, display.decimals);
@@ -738,6 +952,7 @@ async function renderTuning(): Promise<void> {
         const v = snapToRange(controlValueFromDisplay(visible, key, range, caps.deviceName), range);
         hiddenNegativeControls.delete(key);
         values[key] = v;
+        if (key === 'gpuVoltOffsetV') syncVoltageDraft();
         const shown = controlValueToDisplay(v, key, range, caps.deviceName);
         valueNode.textContent = formatValue(shown, display.units, display.decimals);
         valueInput.value = editableNumber(shown, displayRange);
@@ -826,6 +1041,7 @@ async function renderTuning(): Promise<void> {
         const range = cardSliderRange(caps, key);
         if (range) values[key] = snapToRange(range.default, range);
       }
+      if (controls.includes('gpuVoltOffsetV')) syncVoltageDraft();
       renderTuningInPlace();
       updateFloating();
     },
@@ -871,6 +1087,7 @@ async function renderTuning(): Promise<void> {
       // A driver write is intentionally not cancelled, but its response is
       // ignored once the panel moved to another device/generation.
       if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
+      invalidateAdvancedOverlayVoltageRefresh();
       // M24 (fix): set the applied reference BEFORE store.set - the M24
       // sync push fires onStateUpdated → renderTuning() which clears +
       // rebuilds the DOM; if applied is not yet set, the rebuilt chips
@@ -879,6 +1096,11 @@ async function renderTuning(): Promise<void> {
         if (per.ok) {
           const wanted = (settings as Record<string, unknown>)[key];
           if (typeof wanted === 'number') applied[key] = wanted;
+          if (key === 'gpuVoltOffsetV') {
+            const range = cardSliderRange(caps, key);
+            voltageBaseline = range && typeof wanted === 'number' ? snapToRange(wanted, range) : values[key];
+            syncVoltageDraft();
+          }
         }
       }
       if (fresh) {
@@ -896,6 +1118,7 @@ async function renderTuning(): Promise<void> {
         }
       }
       if (fresh) renderTuningInPlace();
+      refreshAdvancedOverlayVoltageOffset?.();
     } catch (err) {
       if (panelIdentityMatches(deviceId, deviceKey, generation)) {
         toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
@@ -954,6 +1177,38 @@ async function renderTuning(): Promise<void> {
     updateFloating();
   };
 
+  const refreshSysmanVoltageOffset = async (): Promise<void> => {
+    const range = cardSliderRange(caps, 'gpuVoltOffsetV');
+    if (!isAlchemistGpuName(caps.deviceName, caps) || voltageDeviceId === null
+      || !range || range.units !== 'V') return;
+    const voltageRefreshGeneration = advancedOverlayVoltageRefreshGeneration;
+    let result: VoltageOffsetRead | null = null;
+    try {
+      result = await api.voltageOffsetRead(voltageDeviceId);
+    } catch {
+      result = null;
+    }
+    if (voltageRefreshGeneration !== advancedOverlayVoltageRefreshGeneration
+      || activeTab !== 'tuning'
+      || !panelIdentityMatches(voltageDeviceId, voltageDeviceKey, voltageGeneration)) return;
+    if (result?.ok !== true || typeof result.offsetV !== 'number' || !Number.isFinite(result.offsetV)) return;
+    const latest = store.get();
+    const latestState = latest.state;
+    if (!latestState || latest.deviceId !== voltageDeviceId
+      || (typeof latestState.gpuVoltOffsetV === 'number'
+        && Number.isFinite(latestState.gpuVoltOffsetV)
+        && latestState.gpuVoltOffsetV > 0.0005)) return;
+    if (voltageLocalDraft) return;
+    currentState = { ...latestState, gpuVoltOffsetV: result.offsetV };
+    hiddenNegativeControls.delete('gpuVoltOffsetV');
+    values.gpuVoltOffsetV = snapToRange(result.offsetV, range);
+    voltageBaseline = values.gpuVoltOffsetV;
+    voltageLocalDraft = false;
+    if ('gpuVoltOffsetV' in applied) applied.gpuVoltOffsetV = values.gpuVoltOffsetV;
+    store.set({ state: currentState });
+    renderTuningInPlace();
+  };
+
   // Main-window, tray, and profile applies all arrive through the shared
   // device-state push. Keep the panel's active Tuning controls in place while
   // preserving only a genuinely unsaved local draft. A clean control with an
@@ -965,13 +1220,16 @@ async function renderTuning(): Promise<void> {
       const range = cardSliderRange(caps, key);
       if (!range) continue;
       const previous = previousState[key as keyof DeviceState];
-      const hasLocalDraft = key in applied
-        ? values[key] !== applied[key]
-        : typeof previous === 'number' && values[key] !== snapToRange(previous, range);
+      const hasLocalDraft = key === 'gpuVoltOffsetV' && voltageLocalDraft
+        ? true
+        : key in applied
+          ? values[key] !== applied[key]
+          : typeof previous === 'number' && values[key] !== snapToRange(previous, range);
       if (hasLocalDraft) continue;
       const raw = nextState[key as keyof DeviceState];
       if (typeof raw === 'number' && Number.isFinite(raw)) {
         values[key] = snapToRange(raw, range);
+        if (key === 'gpuVoltOffsetV' && !voltageLocalDraft) voltageBaseline = values[key];
         if (key in applied) applied[key] = values[key];
       }
     }
@@ -984,7 +1242,9 @@ async function renderTuning(): Promise<void> {
     tuningActions,
   );
   contentEl.append(view);
-  view.append(tuningHeading, stack);
+  view.append(tuningHeading, ...(modeRow ? [modeRow] : []), stack);
+  refreshAdvancedOverlayVoltageOffset = () => { void refreshSysmanVoltageOffset(); };
+  refreshAdvancedOverlayVoltageOffset();
 }
 
 // ---------------------------------------------------------------------------
@@ -1147,9 +1407,56 @@ function recordingQuickTargetFromValue(value: string): RecordingCaptureTarget | 
 
 function recordingQuickEncoderOptions(selected: string): Array<[string, string]> {
   const options: Array<[string, string]> = [['automatic', 'Automatic']];
-  options.push(...recordingGpuEncoderOptions(store.get().devices, recordingQuickStatus.encoders));
-  if (selected && !options.some(([id]) => id === selected)) options.push([selected, `${selected} (saved)`]);
+  const devices = store.get().devices;
+  const concrete = recordingGpuEncoderOptions(devices, recordingQuickStatus.encoders);
+  const effectiveSelected = recordingPhysicalSelectionForId(selected, devices, recordingQuickStatus.encoders) ?? selected;
+  const addOption = (option: [string, string]): void => {
+    if (!options.some(([id]) => id === option[0])) options.push(option);
+  };
+  concrete.forEach(addOption);
+  if (!concrete.length) {
+    for (const option of recordingGlobalEncoderOptions(recordingQuickStatus.encoders)) {
+      addOption(option);
+    }
+  }
+  if (effectiveSelected && !options.some(([id]) => id === effectiveSelected) && !recordingEncoderIdIsGlobal(effectiveSelected)) {
+    const label = recordingEncoderSelectionLabel(effectiveSelected, devices, recordingQuickStatus.encoders)
+      ?? recordingEncoderNameForId(effectiveSelected, recordingQuickStatus.encoders);
+    if (label) addOption([effectiveSelected, label]);
+  }
   return options;
+}
+
+function migrateLegacyRecordingQuickEncoderSelection(): void {
+  if (activeTab !== 'recording' || !recordingQuickSettings || recordingQuickDirty || recordingQuickApplying) return;
+  const currentId = recordingQuickSettings.encoderId;
+  const devices = store.get().devices;
+  const normalized = recordingPhysicalSelectionForId(currentId, devices, recordingQuickStatus.encoders);
+  if (!normalized || normalized === currentId || recordingQuickEncoderMigrationId === normalized) return;
+  const originalId = currentId;
+  const migrationRevision = ++recordingQuickSettingsRevision;
+  recordingQuickEncoderMigrationId = normalized;
+  recordingQuickSettings = { ...recordingQuickSettings, encoderId: normalized };
+  recordingQuickDraft = cloneRecordingQuickSettings(recordingQuickSettings);
+  recordingQuickDirty = false;
+  renderRecording();
+  void api.recordingSettingsSave({ encoderId: normalized }).then((result) => {
+    if (migrationRevision === recordingQuickSettingsRevision
+      && !recordingQuickDirty && !recordingQuickApplying && recordingQuickSettings?.encoderId === normalized) {
+      recordingQuickSettings = result.settings;
+      recordingQuickDraft = cloneRecordingQuickSettings(result.settings);
+    }
+  }).catch((err) => {
+    if (migrationRevision === recordingQuickSettingsRevision
+      && !recordingQuickDirty && !recordingQuickApplying && recordingQuickSettings?.encoderId === normalized) {
+      recordingQuickSettings = { ...recordingQuickSettings, encoderId: originalId };
+      recordingQuickDraft = cloneRecordingQuickSettings(recordingQuickSettings);
+    }
+    toast('error', 'Recording settings', `The dedicated encoder selection could not be saved: ${err instanceof Error ? err.message : String(err)}`);
+  }).finally(() => {
+    if (recordingQuickEncoderMigrationId === normalized) recordingQuickEncoderMigrationId = null;
+    if (activeTab === 'recording') renderRecording();
+  });
 }
 
 function normalizeRecordingQuickStatus(value: RecordingEngineState | null | undefined): RecordingEngineState {
@@ -1164,6 +1471,7 @@ function normalizeRecordingQuickStatus(value: RecordingEngineState | null | unde
 async function loadRecordingQuick(): Promise<void> {
   if (recordingQuickLoading || recordingQuickInitialized) return;
   recordingQuickLoading = true;
+  const loadStateRevision = recordingQuickStateRevision;
   recordingQuickError = null;
   renderRecording();
   try {
@@ -1175,10 +1483,14 @@ async function loadRecordingQuick(): Promise<void> {
     // that normalized value as the authoritative quick-settings base while
     // still loading the status, targets, and profile-backed pill state.
     if (!recordingQuickSettings) {
+      recordingQuickSettingsRevision += 1;
       recordingQuickSettings = loadedSettings;
       recordingQuickDraft = cloneRecordingQuickSettings(loadedSettings);
     }
-    recordingQuickStatus = normalizeRecordingQuickStatus(loadedStatus);
+    if (recordingQuickStateRevision === loadStateRevision) {
+      recordingQuickStatus = normalizeRecordingQuickStatus(loadedStatus);
+    }
+    migrateLegacyRecordingQuickEncoderSelection();
     const [targets, profileEnvelope] = await Promise.all([
       api.recordingCaptureTargets().catch(() => ({ displays: [], windows: [] })),
       api.profilesList().catch(() => null),
@@ -1217,10 +1529,13 @@ function recordingQuickPatchFrom(value: RecordingSettings): RecordingSettingsPat
 
 async function applyRecordingQuickSettings(): Promise<void> {
   if (recordingQuickApplying || !recordingQuickDirty || !recordingQuickDraft) return;
+  recordingQuickSettingsRevision += 1;
   recordingQuickApplying = true;
   renderRecording();
   try {
-    const result = await api.recordingSettingsSave(recordingQuickPatchFrom(recordingQuickDraft));
+    const patch = recordingQuickPatchFrom(recordingQuickDraft);
+    patch.encoderId = recordingPhysicalSelectionForId(patch.encoderId ?? 'automatic', store.get().devices, recordingQuickStatus.encoders) ?? patch.encoderId;
+    const result = await api.recordingSettingsSave(patch);
     recordingQuickSettings = result.settings;
     recordingQuickDraft = cloneRecordingQuickSettings(result.settings);
     recordingQuickStatus = { ...recordingQuickStatus, hotkeys: result.hotkeys };
@@ -1235,7 +1550,7 @@ async function applyRecordingQuickSettings(): Promise<void> {
 }
 
 async function runRecordingQuickAction(action: 'record' | 'replay' | 'stop-video' | 'stop-replay' | 'save-instant-replay'): Promise<void> {
-  if (recordingQuickActionBusy || !recordingQuickSettings || !recordingQuickStatus.available) return;
+  if (recordingQuickActionBusy || !recordingQuickSettings || !recordingQuickActionAvailable()) return;
   if (action === 'save-instant-replay' && recordingQuickStatus.instantReplaySave?.status === 'saving') return;
   if (recordingQuickDirty || recordingQuickApplying) {
     toast('info', 'Apply settings first', 'Apply your recording changes before starting a capture.');
@@ -1294,11 +1609,11 @@ function renderRecordingQuickActions(): HTMLElement {
       el('span', { class: `adv-recording-status-dot${video || replay ? ' is-live' : ''}`, 'aria-hidden': 'true' }),
     ]),
     el('p', { class: 'adv-recording-panel-note', text: recordingQuickSettings
-      ? `${recordingQuickSettings.replayLengthSec}-second Instant Replay window · ${recordingQuickStatus.available ? 'ready' : 'runtime unavailable'}`
+      ? `${recordingQuickSettings.replayLengthSec}-second Instant Replay window · ${recordingQuickActionAvailable() ? 'ready when started' : 'runtime unavailable'}`
       : 'Loading recording profile…' }),
     el('div', { class: 'adv-recording-actions' }, [
-      recordingQuickButton(video ? 'Stop Recording' : 'Record', () => void runRecordingQuickAction(video ? 'stop-video' : 'record'), `btn ${video ? 'btn-recording-stop' : 'btn-primary'}`, !recordingQuickStatus.available || recordingQuickActionBusy || (!video && disabled)),
-      recordingQuickButton(replay ? 'Stop Instant Replay' : 'Start Instant Replay', () => void runRecordingQuickAction(replay ? 'stop-replay' : 'replay'), `btn ${replay ? 'btn-recording-stop' : 'btn-secondary'}`, !recordingQuickStatus.available || recordingQuickActionBusy || (!replay && disabled)),
+      recordingQuickButton(video ? 'Stop Recording' : 'Record', () => void runRecordingQuickAction(video ? 'stop-video' : 'record'), `btn ${video ? 'btn-recording-stop' : 'btn-primary'}`, !recordingQuickActionAvailable() || recordingQuickActionBusy || (!video && disabled)),
+      recordingQuickButton(replay ? 'Stop Instant Replay' : 'Start Instant Replay', () => void runRecordingQuickAction(replay ? 'stop-replay' : 'replay'), `btn ${replay ? 'btn-recording-stop' : 'btn-secondary'}`, !recordingQuickActionAvailable() || recordingQuickActionBusy || (!replay && disabled)),
       recordingQuickButton(instantReplaySaving ? 'Saving Instant Replay…' : 'Save Instant Replay', () => void runRecordingQuickAction('save-instant-replay'), 'btn btn-secondary', !recordingQuickStatus.available || recordingQuickActionBusy || !replay || instantReplaySaving),
     ]),
     instantReplaySaving ? el('p', { class: 'adv-recording-warning', text: 'Instant Replay is being saved…' }) : null,
@@ -1325,7 +1640,9 @@ function renderRecordingQuickSettings(): HTMLElement {
     recordingQuickPatch({ resolution: value });
     renderRecording();
   }, 'Resolution');
-  const encoder = recordingQuickSelect(working.encoderId, recordingQuickEncoderOptions(working.encoderId), (value) => {
+  const selectedEncoder = recordingPhysicalSelectionForId(working.encoderId, store.get().devices, recordingQuickStatus.encoders)
+    ?? working.encoderId;
+  const encoder = recordingQuickSelect(selectedEncoder, recordingQuickEncoderOptions(selectedEncoder), (value) => {
     recordingQuickPatch({ encoderId: value });
     renderRecording();
   }, 'Encoder');

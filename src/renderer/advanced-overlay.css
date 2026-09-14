@@ -363,6 +363,50 @@ html, body {
   text-transform: uppercase;
 }
 
+/* Alchemist's Stock/Advanced tuning mode switch. Keep it compact enough for
+   the panel while matching the main Tuning page's segmented language. */
+.adv-oc-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.adv-oc-mode-label {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.adv-oc-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-inset);
+}
+
+.adv-oc-mode-btn {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 4px 12px;
+  color: var(--text-muted);
+  background: transparent;
+  font: 600 11px var(--font);
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+
+.adv-oc-mode-btn:hover:not(:disabled) { color: var(--text); }
+.adv-oc-mode-btn.active { color: var(--on-accent); background: var(--accent); }
+.adv-oc-mode-btn:disabled { cursor: wait; opacity: .65; }
+
 .page-subtitle {
   color: var(--text-muted);
   font-size: 12.5px;

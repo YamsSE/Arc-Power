@@ -9,7 +9,7 @@ import { showRecordingClipDeleteConfirm } from '../components/recording-delete-d
 import { showRecordingShareDialog, type RecordingShareDialogHandle } from '../components/recording-share-dialog.ts';
 import { showRecordingHotkeyDialog } from '../components/recording-hotkey-dialog.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
-import { parseRecordingEncoderSelection, recordingAdapterTargetOf, recordingBitrateRange, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage } from '../pure/recording.ts';
+import { recordingBitrateRange, recordingEncoderIdIsGlobal, recordingEncoderNameForId, recordingEncoderSelectionLabel, recordingGlobalEncoderOptions, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage, recordingPhysicalSelectionForId } from '../pure/recording.ts';
 import { clampRecordingEditorRange, normalizeRecordingEditorClipName, recordingEditorResumePosition, recordingEditorSelectionFromRatios, recordingEditorSeekTargetMs, recordingEditorTimelineMsFromRatio } from '../pure/recording-editor.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
@@ -27,10 +27,10 @@ const RESOLUTIONS: Array<[RecordingResolution, string]> = [
   ['4k', '4K'],
 ];
 const DEFAULT_REPLAY_LENGTH_SEC = 30;
+const CAPTURE_ENGINE_IDLE_MESSAGE = 'Capture engine idle until recording is requested';
 const RECORDING_FPS_PRESETS = new Set([30, 60, 120]);
 const RECORDING_FPS_MIN = 1;
 const RECORDING_FPS_MAX = 360;
-const INTEL_QSV_ENCODERS = new Set(['obs_qsv11_v2', 'obs_qsv11_hevc', 'obs_qsv11_av1']);
 const PLAYBACK_SPEED_PRESETS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 const PLAYBACK_SPEED_MIN = 0.1;
 const PLAYBACK_SPEED_MAX = 4;
@@ -43,7 +43,7 @@ let status: RecordingEngineState = {
   running: false,
   mode: null,
   startedAt: null,
-  error: 'Loading recording engine…',
+  error: CAPTURE_ENGINE_IDLE_MESSAGE,
   encoders: [],
   audioInputs: [],
   audioOutputs: [],
@@ -75,8 +75,15 @@ let recordingStateRevision = 0;
 let clipLibraryFilter: ClipLibraryFilter = 'all';
 let clipLibrarySort: ClipLibrarySort = 'newest';
 let recordingPillEnabled = false;
+let recordingToastsEnabled = false;
 let recordingDevices: DeviceInfo[] = [];
+let recordingEncoderMigrationId: string | null = null;
+let recordingSettingsRevision = 0;
 let editorPollTimer: number | null = null;
+let recordingRuntimeLeaseState: 'none' | 'acquiring' | 'held' = 'none';
+let recordingRuntimeLeaseWanted = false;
+let recordingRuntimeLeasePromise: Promise<void> | null = null;
+let recordingRuntimeProbePromise: Promise<void> | null = null;
 
 function recordingClipKind(clip: RecordingClip): 'recording' | 'clip' {
   return /^Arc Recording \d+\.mp4$/i.test(clip.fileName) ? 'recording' : 'clip';
@@ -94,6 +101,54 @@ function setStatus(next: RecordingEngineState): void {
     : null;
   status = { ...previous, ...incoming, hotkeys: incoming.hotkeys ?? previous.hotkeys, startedAt };
   recordingStateRevision += 1;
+  migrateLegacyEncoderSelection();
+}
+
+async function releaseRecordingRuntimeLease(): Promise<void> {
+  recordingRuntimeLeaseWanted = false;
+  if (recordingRuntimeLeaseState === 'acquiring') return;
+  if (recordingRuntimeLeaseState !== 'held') return;
+  recordingRuntimeLeaseState = 'none';
+  try {
+    const next = await api.recordingRuntimeRelease();
+    if (next && typeof next === 'object') setStatus(next);
+  } catch {
+    // Navigation must never be blocked by an idle-runtime cleanup failure.
+  }
+}
+
+async function ensureRecordingRuntime(): Promise<void> {
+  recordingRuntimeLeaseWanted = true;
+  if (recordingRuntimeLeaseState === 'none') {
+    recordingRuntimeLeaseState = 'acquiring';
+    const request = api.recordingRuntimeAcquire().then(async (next) => {
+      recordingRuntimeLeaseState = 'held';
+      if (next && typeof next === 'object') {
+        setStatus(next);
+        if (renderContainer) render();
+      }
+      if (!recordingRuntimeLeaseWanted) await releaseRecordingRuntimeLease();
+    }).catch((error) => {
+      recordingRuntimeLeaseState = 'none';
+      throw error;
+    });
+    recordingRuntimeLeasePromise = request;
+  }
+  if (recordingRuntimeLeasePromise) await recordingRuntimeLeasePromise;
+  if (!recordingRuntimeLeaseWanted) return;
+  if (status.probeComplete === true || status.available === true) return;
+  if (!recordingRuntimeProbePromise) {
+    const probe = api.recordingRuntimeProbe().then((next) => {
+      setStatus(next);
+      if (renderContainer) render();
+    }).catch((error) => {
+      status = { ...status, error: messageOf(error) };
+      if (renderContainer) render();
+    });
+    recordingRuntimeProbePromise = probe;
+  }
+  await recordingRuntimeProbePromise;
+  recordingRuntimeProbePromise = null;
 }
 
 const messageOf = recordingMessage;
@@ -225,26 +280,11 @@ function compactPath(value: string): string {
 }
 
 function selectedEncoderLabel(id: string): string {
-  if (id === 'automatic') return 'Automatic';
-  const selection = parseRecordingEncoderSelection(id);
-  if (selection) {
-    const concrete = recordingGpuEncoderOptions(recordingDevices, status.encoders).find(([optionId]) => optionId === id);
-    if (concrete) return concrete[1];
-    const matchingDevice = recordingDevices.find((device) => {
-      const target = recordingAdapterTargetOf(device);
-      if (!target) return false;
-      if (selection.target.deviceKey && target.deviceKey) return selection.target.deviceKey === target.deviceKey;
-      if (selection.target.bdf && target.bdf) return JSON.stringify(selection.target.bdf) === JSON.stringify(target.bdf);
-      return Boolean(selection.target.luid && target.luid && selection.target.luid === target.luid);
-    });
-    const name = matchingDevice?.name ?? selection.deviceName ?? 'GPU';
-    const sku = name.match(/\b[AB]\d{3}\b/i)?.[0]?.toUpperCase();
-    const codec = selection.codec === 'obs_qsv11_av1' ? 'AV1' : selection.codec === 'obs_qsv11_hevc' ? 'HEVC' : 'H264';
-    return `${sku ?? name} ${codec}`;
-  }
-  const encoder = status.encoders.find((candidate) => candidate.type === id);
-  if (encoder) return encoderLabel(encoder);
-  return ({ obs_qsv11_v2: 'Intel H264', obs_qsv11_hevc: 'Intel HEVC', obs_qsv11_av1: 'Intel AV1' } as Record<string, string>)[id] ?? id;
+  const effectiveId = recordingPhysicalSelectionForId(id, recordingDevices, status.encoders) ?? id;
+  if (effectiveId === 'automatic') return 'Automatic';
+  const selectionLabel = recordingEncoderSelectionLabel(effectiveId, recordingDevices, status.encoders);
+  if (selectionLabel) return selectionLabel;
+  return recordingEncoderNameForId(effectiveId, status.encoders) ?? 'Automatic';
 }
 
 function captureProfileLabel(value: RecordingSettings): string {
@@ -304,10 +344,13 @@ function recordingSettingsPatchFrom(value: RecordingSettings): RecordingSettings
 
 async function applyRecordingSettings(): Promise<void> {
   if (applyingSettings || !settingsDirty || !draftSettings) return;
+  recordingSettingsRevision += 1;
   applyingSettings = true;
   updateRecordingApplyButton();
   try {
-    const result = await api.recordingSettingsSave(recordingSettingsPatchFrom(draftSettings));
+    const patch = recordingSettingsPatchFrom(draftSettings);
+    patch.encoderId = recordingPhysicalSelectionForId(patch.encoderId ?? 'automatic', recordingDevices, status.encoders) ?? patch.encoderId;
+    const result = await api.recordingSettingsSave(patch);
     settings = result.settings;
     draftSettings = cloneRecordingSettings(result.settings);
     settingsDirty = false;
@@ -323,47 +366,62 @@ async function applyRecordingSettings(): Promise<void> {
   }
 }
 
-function encoderLabel(encoder: RecordingEngineState['encoders'][number]): string {
-  const source = `${encoder.type} ${encoder.description}`.toLowerCase();
-  const intel = INTEL_QSV_ENCODERS.has(encoder.type) || source.includes('quick sync') || source.includes('qsv') || source.includes('intel');
-  if (source.includes('av1')) return intel ? 'Intel AV1' : 'AV1';
-  if (source.includes('hevc') || source.includes('h.265') || source.includes('h265')) return intel ? 'Intel HEVC' : 'HEVC';
-  if (source.includes('h264') || source.includes('h.264') || source.includes('avc') || encoder.type === 'obs_qsv11_v2') return intel ? 'Intel H264' : 'H264';
-  return encoder.description || encoder.type;
+function migrateLegacyEncoderSelection(): void {
+  if (!renderContainer || !settings || settingsDirty || applyingSettings) return;
+  const currentId = settings.encoderId;
+  const normalized = recordingPhysicalSelectionForId(currentId, recordingDevices, status.encoders);
+  if (!normalized || normalized === currentId || recordingEncoderMigrationId === normalized) return;
+  const originalId = currentId;
+  const migrationRevision = ++recordingSettingsRevision;
+  recordingEncoderMigrationId = normalized;
+  settings = { ...settings, encoderId: normalized };
+  draftSettings = cloneRecordingSettings(settings);
+  render();
+  void api.recordingSettingsSave({ encoderId: normalized }).then((result) => {
+    if (migrationRevision === recordingSettingsRevision
+      && !settingsDirty && !applyingSettings && settings?.encoderId === normalized) {
+      settings = result.settings;
+      draftSettings = cloneRecordingSettings(result.settings);
+    }
+  }).catch((err) => {
+    if (migrationRevision === recordingSettingsRevision
+      && !settingsDirty && !applyingSettings && settings?.encoderId === normalized) {
+      settings = { ...settings, encoderId: originalId };
+      draftSettings = cloneRecordingSettings(settings);
+    }
+    toast('error', 'Recording settings', `The dedicated encoder selection could not be saved: ${messageOf(err)}`);
+  }).finally(() => {
+    if (recordingEncoderMigrationId === normalized) recordingEncoderMigrationId = null;
+    if (renderContainer) render();
+  });
 }
 
 function encoderOptions(selectedId: string): Array<[string, string]> {
   const options: Array<[string, string]> = [['automatic', 'Automatic']];
-  const known = new Map(status.encoders.filter((encoder) => INTEL_QSV_ENCODERS.has(encoder.type)).map((encoder) => [encoder.type, encoder]));
   const concrete = recordingGpuEncoderOptions(recordingDevices, status.encoders);
-  options.push(...concrete);
-  const checking = status.probeComplete !== true && status.encoders.length === 0
-    && (!status.error || /^Loading recording engine/i.test(status.error));
-  for (const [id, label] of [['obs_qsv11_v2', 'Intel H264'], ['obs_qsv11_hevc', 'Intel HEVC'], ['obs_qsv11_av1', 'Intel AV1']] as const) {
-    // Once concrete choices exist, keep the dropdown focused on physical
-    // GPU+codec pairs. A legacy global ID is retained only when it is the
-    // persisted selection, so old settings remain representable and usable.
-    if (concrete.length && id !== selectedId) continue;
-    const encoder = known.get(id);
-    const unavailable = !encoder
-      ? checking ? ' — checking…' : ' — unavailable'
-      : (encoder.startTested && !encoder.startSupported) || encoder.probeValid !== true ? ' — unavailable' : '';
-    options.push([id, `${encoder ? encoderLabel(encoder) : label}${concrete.length ? ' (legacy)' : ''}${unavailable}`]);
+  const effectiveSelectedId = recordingPhysicalSelectionForId(selectedId, recordingDevices, status.encoders) ?? selectedId;
+  const addOption = (option: [string, string]): void => {
+    if (!options.some(([id]) => id === option[0])) options.push(option);
+  };
+  concrete.forEach(addOption);
+  if (!concrete.length) {
+    for (const option of recordingGlobalEncoderOptions(status.encoders)) {
+      addOption(option);
+    }
   }
-  // Keep an older persisted global ID visible even if a future renderer
-  // cannot currently enumerate a stable physical target for it.
-  if (selectedId && !options.some(([id]) => id === selectedId)) options.push([selectedId, selectedEncoderLabel(selectedId)]);
+  if (effectiveSelectedId && !options.some(([id]) => id === effectiveSelectedId) && !recordingEncoderIdIsGlobal(effectiveSelectedId)) {
+    const label = selectedEncoderLabel(effectiveSelectedId);
+    if (label !== 'Automatic') addOption([effectiveSelectedId, label]);
+  }
   return options;
 }
 
 function renderGpuEncoderInventory(): HTMLElement {
   const rows = recordingGpuEncoderRows(recordingDevices, status.encoders);
-  const body = rows.length
-    ? rows.map((row) => el('div', { class: 'recording-encoder-row' }, [
-      el('span', { class: 'recording-encoder-device', text: row.deviceName }),
-      el('strong', { class: 'recording-encoder-codecs', text: row.encoderLabels.join(' · ') }),
-    ]))
-    : [el('p', { class: 'recording-encoder-empty', text: status.probeComplete === true ? 'No GPU encoders were verified.' : 'Checking encoder availability…' })];
+  const body = rows.map((row) => el('div', { class: 'recording-encoder-row' }, [
+    el('span', { class: 'recording-encoder-device', text: row.deviceName }),
+    el('strong', { class: 'recording-encoder-codecs', text: row.encoderLabels.join(' · ') }),
+  ]));
   return el('div', { class: 'recording-encoder-inventory' }, [
     el('div', { class: 'recording-encoder-heading' }, [
       el('span', { class: 'recording-field-label', text: 'GPU encoder inventory' }),
@@ -419,22 +477,40 @@ function renderCaptureActions(): HTMLElement {
 }
 
 function renderRecordingPillSetting(): HTMLElement {
-  return el('div', { class: 'recording-pill-setting' }, [
+  const settingRow = (label: string, title: string, note: string, setting: string, checked: boolean, onChange: (event: Event) => void) => el('div', { class: 'recording-pill-setting' }, [
     el('div', { class: 'recording-pill-setting-copy' }, [
-      el('span', { class: 'recording-field-label', text: 'On-screen indicator' }),
-      el('strong', { text: 'Recording Pill' }),
-      el('span', { class: 'recording-field-note', text: 'Shows the Arc Power icon with a red or blue status pill while capture is active.' }),
+      el('span', { class: 'recording-field-label', text: label }),
+      el('strong', { text: title }),
+      el('span', { class: 'recording-field-note', text: note }),
     ]),
     el('label', { class: 'recording-check-row' }, [
       el('input', {
         type: 'checkbox',
         class: 'settings-checkbox',
-        dataset: { setting: 'overlayRecordingPill' },
-        'aria-label': 'Recording Pill overlay',
-        checked: recordingPillEnabled,
-        onchange: (ev: Event) => void onRecordingPillToggle((ev.target as HTMLInputElement).checked),
+        dataset: { setting },
+        'aria-label': title,
+        checked,
+        onchange: onChange,
       }),
     ]),
+  ]);
+  return el('div', { class: 'recording-pill-setting-stack recording-pill-setting' }, [
+    settingRow(
+      'On-screen indicator',
+      'Recording Pill',
+      'Shows the Arc Power icon with a red or blue status pill while capture is active.',
+      'overlayRecordingPill',
+      recordingPillEnabled,
+      (event) => void onRecordingPillToggle((event.target as HTMLInputElement).checked),
+    ),
+    settingRow(
+      'Desktop notifications',
+      'Recording / Instant Replay Toasts',
+      'Shows a desktop toast when Recording or Instant Replay starts, stops, saves, or fails.',
+      'recordingToastsEnabled',
+      recordingToastsEnabled,
+      (event) => void onRecordingToastsToggle((event.target as HTMLInputElement).checked),
+    ),
   ]);
 }
 
@@ -475,6 +551,21 @@ async function onRecordingPillToggle(checked: boolean): Promise<void> {
   } catch (err) {
     recordingPillEnabled = previous;
     toast('error', 'Recording Pill could not be changed', messageOf(err));
+  }
+  render();
+}
+
+async function onRecordingToastsToggle(checked: boolean): Promise<void> {
+  const previous = recordingToastsEnabled;
+  recordingToastsEnabled = checked;
+  render();
+  try {
+    const result = await api.profilesSettingsSave({ recordingToastsEnabled: checked });
+    recordingToastsEnabled = result.recordingToastsEnabled === true;
+    toast(checked ? 'success' : 'info', checked ? 'Recording toasts enabled' : 'Recording toasts disabled', '');
+  } catch (err) {
+    recordingToastsEnabled = previous;
+    toast('error', 'Recording toasts could not be changed', messageOf(err));
   }
   render();
 }
@@ -662,7 +753,9 @@ function renderQualitySettings(): HTMLElement {
     const value = Number(bitrate.value);
     if (Number.isFinite(value) && value > 0) stagePatch({ bitrateKbps: value }, false);
   });
-  const selectedEncoder = working?.encoderId ?? 'automatic';
+  const selectedEncoder = recordingPhysicalSelectionForId(working?.encoderId ?? 'automatic', recordingDevices, status.encoders)
+    ?? working?.encoderId
+    ?? 'automatic';
   const encoder = select(selectedEncoder, encoderOptions(selectedEncoder), 'Encoder', (value) => stagePatch({ encoderId: value }));
   const resolution = select(selectedResolution, RESOLUTIONS, 'Resolution', (value) => stagePatch({ resolution: value }));
   return el('section', { class: 'recording-panel' }, [
@@ -2039,17 +2132,23 @@ async function load(): Promise<void> {
       api.profilesList().catch(() => null),
     ]);
     settings = loadedSettings;
+    recordingSettingsRevision += 1;
     draftSettings = cloneRecordingSettings(loadedSettings);
     fpsCustomEditing = false;
     settingsDirty = false;
-    // The startup probe and the page load run concurrently. If the probe
+    // The page-owned probe and the page load run concurrently. If the probe
     // pushed a newer encoder list while the clip/settings reads were still
     // pending, never restore the older status snapshot returned by the
     // initial recordingStatus request.
     if (recordingStateRevision === loadStateRevision) setStatus(loadedStatus);
+    // The runtime probe can finish before the settings request. In that
+    // ordering setStatus() had no profile to migrate, so reconcile once the
+    // loaded settings and the newest status are both present.
+    migrateLegacyEncoderSelection();
     clips = loadedClips;
     storageInfo = loadedStorage;
     recordingPillEnabled = profileEnvelope?.settings?.overlayRecordingPill === true;
+    recordingToastsEnabled = profileEnvelope?.settings?.recordingToastsEnabled === true;
     activeTab = tabForMode(settings.mode);
     const canonicalMode = modeForTab(activeTab) ?? 'manual';
     if (settings.mode !== canonicalMode) {
@@ -2198,24 +2297,32 @@ export const recordingPage: Page = {
     if (!unsubscribeRecordingSettings) {
       unsubscribeRecordingSettings = api.onRecordingSettingsUpdated((next) => {
         if (!next || typeof next !== 'object') return;
+        recordingSettingsRevision += 1;
         settings = next;
         // Preserve a local unsaved draft, but adopt the pushed settings as
         // the clean base so the page and the Advanced Overlay stay aligned.
         if (!settingsDirty && !applyingSettings) draftSettings = cloneRecordingSettings(next);
+        migrateLegacyEncoderSelection();
         if (renderContainer === container) render();
       });
     }
     if (!unsubscribeRecordingPillSettings) {
       unsubscribeRecordingPillSettings = api.onRecordingPillSettingsUpdated((next) => {
-        if (!next || typeof next.enabled !== 'boolean') return;
-        recordingPillEnabled = next.enabled;
+        if (!next || (typeof next.enabled !== 'boolean' && typeof next.toastsEnabled !== 'boolean')) return;
+        if (typeof next.enabled === 'boolean') recordingPillEnabled = next.enabled;
+        if (typeof next.toastsEnabled === 'boolean') recordingToastsEnabled = next.toastsEnabled;
         if (renderContainer === container) render();
       });
     }
-    // Do not make first paint wait for settings, clip scanning, or an engine
-    // probe. Startup owns the runtime probe; this page refreshes its cached
-    // state asynchronously after the shell and controls are visible.
+    // Do not make first paint wait for settings, clip scanning, or the
+    // runtime probe. Opening this page is an explicit demand signal, so the
+    // bundled Ascent process is started only after the first controls are
+    // visible and released again when the page is left.
     render();
+    void ensureRecordingRuntime().catch((err) => {
+      status = { ...status, error: messageOf(err) };
+      if (renderContainer === container) render();
+    });
     void load();
     void refreshRecordingCaptureTargets();
   },
@@ -2223,10 +2330,12 @@ export const recordingPage: Page = {
     const devices = context.store.get().devices;
     if (devices !== recordingDevices) {
       recordingDevices = devices;
+      migrateLegacyEncoderSelection();
       if (renderContainer === container) render();
     }
   },
   leave(): void {
+    void releaseRecordingRuntimeLease();
     unsubscribeRecordingState?.();
     unsubscribeRecordingState = null;
     unsubscribeRecordingSettings?.();
@@ -2241,7 +2350,9 @@ export const recordingPage: Page = {
     fpsCustomEditing = false;
     storageInfo = null;
     recordingPillEnabled = false;
+    recordingToastsEnabled = false;
     recordingDevices = [];
+    recordingEncoderMigrationId = null;
     recordingTargets = { displays: [], windows: [] };
     recordingTargetsBusy = false;
     renderContainer = null;

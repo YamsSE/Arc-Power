@@ -3,7 +3,7 @@
 // module only binds the map to ipcMain.handle.
 
 import { app, ipcMain } from 'electron';
-import { createIpcHandlers, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, RECORDING_SETTINGS_CHANNEL, RECORDING_PILL_SETTINGS_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL } from './ipc-core.js';
+import { createIpcHandlers, assertNoPayload, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, RECORDING_SETTINGS_CHANNEL, RECORDING_PILL_SETTINGS_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL, OC_MODE_UPDATED_CHANNEL } from './ipc-core.js';
 import { createDriverInfo } from './driver-info.js';
 import { createRegistryCatalog, REGISTRY_CATALOG } from './registry-catalog.js';
 import { createRegistryApply } from './registry-apply.js';
@@ -64,7 +64,10 @@ import { createRtssStartup } from './rtss-startup.js';
  *   gameArtwork?: (exePath: string) => Promise<string|null|{ artwork?: string|null, banner?: string|null }>,
  *   recordingStore?: import('./store/recording-store.js').RecordingStore,
  *   recordingCopyFile?: (filePath: string) => Promise<boolean>,
- *   recordingEngine?: { getState: () => object, probe: () => Promise<object>, startRecording: (settings: object) => Promise<object>, startReplay: (settings: object) => Promise<object>, stop: () => Promise<object>, saveReplayClip: (request: object) => Promise<object>, shutdown: () => Promise<object>, subscribe?: (cb: (state: object) => void) => () => void },
+ *   recordingEngine?: { getState: () => object, probe: () => Promise<object>, startRecording: (settings: object) => Promise<object>, startReplay: (settings: object) => Promise<object>, stop: () => Promise<object>, saveReplayClip: (request: object) => Promise<object>, shutdownIfIdle?: () => Promise<object>, shutdown: () => Promise<object>, subscribe?: (cb: (state: object) => void) => () => void },
+ *   recordingRuntimeAcquire?: (event?: object) => Promise<object>|object,
+ *   recordingRuntimeRelease?: (event?: object) => Promise<object>|object,
+ *   recordingRuntimeShutdownIfIdle?: () => Promise<object>|object,
  *   chooseRecordingDirectory?: () => Promise<string|null>,
  *   openRecordingFolder?: (directory: string) => Promise<unknown>,
  *   recordingCaptureTargets?: (refresh?: boolean) => Promise<{ displays: object[], windows: object[] }>,
@@ -85,6 +88,12 @@ import { createRtssStartup } from './rtss-startup.js';
  */
 export function registerIpc({ backend, store, getWindow, startup = createStartup(), rtssStartup = createRtssStartup(), driverInfo = createDriverInfo(), driverMonitor = null, sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), fpsLane = null, rtssOverlay = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null, recordingStore = null, recordingCopyFile = async () => false, recordingEngine = null, recordingLifecycle = null, recordingEditor = null, stabilityLab = null, stabilityStore = null, stabilityWorkload = null, overlayLayoutStore = null, obsStream = null, applyOverlayLayout = async () => {}, chooseRecordingDirectory = async () => null, openRecordingFolder = async () => {}, refreshRecordingHotkeys = async () => null, getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }), recordingCaptureTargets = null, onRecordingActionResult = () => {}, onRecordingState = () => {} }) {
   const wheaMonitor = arguments[0]?.wheaMonitor ?? null;
+  const recordingRuntimeAcquire = arguments[0]?.recordingRuntimeAcquire
+    ?? (async () => recordingEngine?.getState?.() ?? null);
+  const recordingRuntimeRelease = arguments[0]?.recordingRuntimeRelease
+    ?? (async () => recordingEngine?.getState?.() ?? null);
+  const recordingRuntimeShutdownIfIdle = arguments[0]?.recordingRuntimeShutdownIfIdle
+    ?? (async () => recordingEngine?.shutdownIfIdle?.() ?? null);
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -129,6 +138,9 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     recordingStore,
     recordingCopyFile,
     recordingEngine,
+    recordingRuntimeAcquire,
+    recordingRuntimeRelease,
+    recordingRuntimeShutdownIfIdle,
     recordingLifecycle,
     recordingEditor,
     stabilityLab,
@@ -234,6 +246,12 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     pushRecordingActionResult({ getWindow, result: enriched });
     try { onRecordingActionResult(enriched); } catch { /* desktop notifications are best effort */ }
   };
+  // M3-C-E: serialize OC-mode writes across the main renderer and the
+  // Advanced Overlay. Without this, two windows can race their persistence
+  // and one window can broadcast a stale capability snapshot after the other
+  // has already changed the same physical GPU.
+  let ocModeSetQueue = Promise.resolve();
+  let nextOcModeRevision = 0;
   for (const [channel, fn] of Object.entries(handlers)) {
     ipcMain.handle(channel, async (event, ...args) => {
       if (channel === 'device-selection-push') {
@@ -244,10 +262,30 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       }
       const recordingAction = recordingInvokeActions[channel];
       const previousRecordingState = recordingAction?.action === 'stop' ? recordingEngine?.getState?.() : null;
+      let releaseOcModeSet = null;
+      let ocModeRevision = null;
+      if (channel === 'oc-mode-set') {
+        const previousOcModeSet = ocModeSetQueue;
+        ocModeSetQueue = new Promise((resolve) => { releaseOcModeSet = resolve; });
+        await previousOcModeSet;
+      }
       let out;
       try {
-        out = await fn(...args);
+        if (channel === 'recording-runtime-acquire') {
+          assertNoPayload(args, channel);
+          out = await recordingRuntimeAcquire(event);
+        } else if (channel === 'recording-runtime-release') {
+          assertNoPayload(args, channel);
+          out = await recordingRuntimeRelease(event);
+        } else {
+          out = await fn(...args);
+          if (channel === 'oc-mode-set') ocModeRevision = ++nextOcModeRevision;
+        }
       } catch (error) {
+        if (releaseOcModeSet) {
+          releaseOcModeSet();
+          releaseOcModeSet = null;
+        }
         if (recordingAction) {
           publishRecordingActionResult({
             action: recordingAction.action,
@@ -271,6 +309,52 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
           state: recordingEngine?.getState?.() ?? null,
         });
       }
+      // M3-C-E: a Stock/Advanced mode change invalidates the selected
+      // adapter's capability ranges. The initiating renderer refreshes its
+      // own pair, but the other renderer must receive the same keyed
+      // caps/state snapshot or its tuning controls keep stale ranges. This
+      // has its own channel: a delayed mode readback must never look like a
+      // new device selection and pull the UI back to an older adapter.
+      if (channel === 'oc-mode-set') {
+        try {
+          if (Number.isInteger(args[1]) && out?.ocMode) {
+            let caps = null;
+            let state = null;
+            try {
+              const deviceId = args[1];
+              [caps, state] = await Promise.all([
+                handlers['get-capabilities'](deviceId),
+                handlers['get-current-settings'](deviceId),
+              ]);
+            } catch {
+              // Still publish an explicit invalidation below. This matters when a
+              // caller rolls back after a successful write whose readback failed:
+              // both renderers must stop displaying the old capability ranges.
+              caps = null;
+              state = null;
+            }
+            const payload = {
+              deviceId: args[1],
+              deviceKey: typeof out.deviceKey === 'string' ? out.deviceKey : null,
+              ocMode: out.ocMode,
+              caps,
+              state,
+              revision: ocModeRevision,
+            };
+            for (const target of [getWindow(), getAdvancedOverlayWindow?.()]) {
+              if (target && !target.isDestroyed()) target.webContents.send(OC_MODE_UPDATED_CHANNEL, payload);
+            }
+          }
+        } finally {
+          // Keep this release outside the integer-device-id branch: legacy
+          // global oc-mode-set calls do not broadcast, but they still own the
+          // serialized queue and must unblock the next writer.
+          if (releaseOcModeSet) {
+            releaseOcModeSet();
+            releaseOcModeSet = null;
+          }
+        }
+      }
       // Recording settings are shared by the main Recording page and the
       // Advanced Overlay quick-controls. Broadcast the normalized result to
       // both renderer windows after every successful save.
@@ -281,12 +365,16 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         const advancedOverlayWin = getAdvancedOverlayWindow();
         if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(RECORDING_SETTINGS_CHANNEL, payload);
       }
-      // The Recording Pill is persisted with profile settings rather than the
-      // recording profile. Broadcast its normalized value to both renderer
-      // surfaces so the main Recording page and Advanced Overlay checkbox
-      // remain live when either one changes it.
-      if (channel === 'profiles-settings-save' && out && typeof out.overlayRecordingPill === 'boolean') {
-        const payload = { enabled: out.overlayRecordingPill };
+      // The Recording Pill and desktop-toast preferences are persisted with
+      // profile settings rather than the recording profile. Broadcast their
+      // normalized values to both renderer surfaces so a profile-settings
+      // save cannot leave the Recording page or Advanced Overlay stale.
+      if (channel === 'profiles-settings-save' && out
+        && (typeof out.overlayRecordingPill === 'boolean' || typeof out.recordingToastsEnabled === 'boolean')) {
+        const payload = {
+          ...(typeof out.overlayRecordingPill === 'boolean' ? { enabled: out.overlayRecordingPill } : {}),
+          ...(typeof out.recordingToastsEnabled === 'boolean' ? { toastsEnabled: out.recordingToastsEnabled } : {}),
+        };
         const win = getWindow();
         if (win && !win.isDestroyed()) win.webContents.send(RECORDING_PILL_SETTINGS_CHANNEL, payload);
         const advancedOverlayWin = getAdvancedOverlayWindow();

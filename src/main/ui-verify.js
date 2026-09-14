@@ -9234,36 +9234,16 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   }
   step('m6-color-swatch', 'yellow swatch -> overlayColor #ffe600 persisted + the overlay re-rendered (css var + computed line color + canvas stroke); restored to the stock white');
 
-  // (f6) M7b: RTSS owns the overlay surface now. The removed Arc/background
-  // controls must stay absent so stale profile fields cannot re-enable them.
-  const removedOverlayControls = await js(`JSON.stringify({
-    bgToggle: !!document.querySelector('.settings-checkbox[data-setting="overlayBgEnabled"]'),
-    bgOptions: !!document.querySelector('.overlay-bg-options'),
-    bgOpacity: !!document.querySelector('.settings-bg-opacity-slider'),
-    arcTheme: !!document.querySelector('.overlay-theme-option')
-  })`);
-  const removedOverlayControlsState = JSON.parse(removedOverlayControls);
-  if (Object.values(removedOverlayControlsState).some(Boolean)) {
-    fail(`M7b: removed RTSS background/theme controls are still present (${removedOverlayControls})`);
-  }
-  const appearanceText = await js(`document.querySelector('.overlay-appearance-card')?.textContent ?? ''`);
-  if (!appearanceText.includes('CLASSIC')) {
-    fail('M7b: the RTSS appearance card does not advertise the Classic-only surface');
-  }
-  step('m7b-classic-only', 'M7b: RTSS-only appearance keeps the Classic surface and removes the background box, opacity, and Arc theme controls');
-
   // (g) the mid-run register-failure honesty: the probe fakes a failure
   // (settable mid-run - not a boot-time knob), a letter save via the
-  // Overlay view (the #/overlay hash redirects here with the view active -
-  // the hotkey input MOVED into the Monitoring page with the rest, M9; the
-  // view KEEPS the .settings-hotkey-input class so the selector survived)
+  // Overlay view: use the current Settings button path into Monitoring.
   // re-registers through the probe, and the honest note appears after the
   // every-render get-state re-query (M1: a letter-save re-register failure
   // mid-session must not leave the note stale).
   hotkeyProbe.failRegister = true;
-  await js(`location.hash = '#/overlay'`);
+  await js(`document.querySelector('.overlay-settings-button')?.click()`);
   if (!(await waitFor(win, `!!document.querySelector('.settings-hotkey-input')`, 8000))) {
-    fail('M9: the #/overlay alias did not render the Overlay view (no hotkey input)');
+    fail('M9: the Settings Overlay button did not render the Overlay view (no hotkey input)');
   }
   await js(`(() => {
     const i = document.querySelector('.settings-hotkey-input');
@@ -9303,9 +9283,13 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail(`M5: the restore letter save did not re-register 'Control+O' (got ${JSON.stringify(hotkeyProbe.registrations)})`);
   }
   await js(`location.hash = '#/dashboard'`);
-  await js(`location.hash = '#/overlay'`);
+  await js(`location.hash = '#/settings'`);
+  if (!(await waitFor(win, `!!document.querySelector('.overlay-settings-button')`, 5000))) {
+    fail('M9: the Settings page did not render its Overlay button during restore');
+  }
+  await js(`document.querySelector('.overlay-settings-button')?.click()`);
   if (!(await waitFor(win, `!!document.querySelector('.settings-hotkey-input')`, 8000))) {
-    fail('M9: the #/overlay alias did not re-render the Overlay view');
+    fail('M9: the Settings Overlay button did not re-render the Overlay view');
   }
   await sleep(250);
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`)) {
@@ -9313,65 +9297,42 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   }
   step('m5-hotkey-restore', `restore: letter O + failRegister cleared -> 'Control+O' re-registered, hotkeyRegistered true, note gone; geometry back to top-left / scale 1`);
 
-  // --- M24 (Part A): the overlay THEMES - the Theme row round trip. The
-  // RID_MOCK_OVERLAY seed writes overlayTheme 'classic' at boot (the
-  // M5-M17g backdrop pins above assert the classic .visible/var/display
-  // mechanics that arc's always-visible backdrop would break), so this
-  // block starts from the classic-seeded state: save 'arc' -> the overlay
-  // window flips to the harness (dataset.overlayTheme, the always-visible
-  // backdrop WITHOUT the .visible toggle, the ::before accent bar, the
-  // gradient canvas stroke); save 'classic' -> the dataset flips back and
-  // the backdrop respects the .visible toggle again; the persisted value
-  // round-trips (m24-theme-persist). The deterministic session end: the
-  // overlay variant's boot seed resets the theme to 'classic' on the next
-  // run, and this block itself ends on 'classic'.
-  const seedTheme = await js(`window.arcPower.profilesList().then((e) => e.settings.overlayTheme)`);
-  if (seedTheme !== 'classic') {
-    fail(`M24: the RID_MOCK_OVERLAY boot seed must set overlayTheme 'classic' (got '${seedTheme}' - the classic-seeded backdrop pins depend on it)`);
+  // M24: verify the current hook-free Arc Power Overlay provider and its
+  // single frametime surface, then restore RTSS.
+  await js(`document.querySelector('[data-overlay-renderer="capframex"]')?.click()`);
+  if (!(await waitFor(overlayWin, `document.documentElement.dataset.overlayRenderer === 'capframex'`, 8000))) {
+    fail(`M24: Arc Power Overlay provider did not become active (renderer='${await ojs(`document.documentElement.dataset.overlayRenderer ?? ''`)}')`);
   }
-  step('m24-theme-seed', `M24: the overlay variant boots CLASSIC-seeded (overlayTheme '${seedTheme}') - the classic backdrop mechanics stay deterministic`);
-
-  // m24-theme-arc: save 'arc' -> the dataset flips, the backdrop computes
-  // display:block WITHOUT the .visible toggle, the ::before accent bar
-  // exists, the canvas stroke is a gradient (the exposed themeStroke flag).
-  await js(`window.arcPower.profilesSettingsSave({ overlayTheme: 'arc' })`);
-  if (!(await waitFor(overlayWin, `document.documentElement.dataset.overlayTheme === 'arc'`, 5000))) {
-    fail(`M24: the overlay window dataset.overlayTheme reads '${await ojs(`document.documentElement.dataset.overlayTheme ?? ''`)}' (expected 'arc' after the save - the push must re-render the HUD)`);
+  const capframexControls = await js(`JSON.stringify({
+    background: !!document.querySelector('.overlay-background-toggle'),
+    color: !!document.querySelector('.settings-background-color-input'),
+    opacity: !!document.querySelector('.settings-background-opacity-slider')
+  })`);
+  const capframexControlState = JSON.parse(capframexControls);
+  if (!capframexControlState.background || !capframexControlState.color || !capframexControlState.opacity) {
+    fail(`M24: Arc Power background controls are incomplete (${capframexControls})`);
   }
-  if (!(await waitFor(overlayWin, `(() => { const b = document.getElementById('overlay-backdrop'); return !!b && getComputedStyle(b).display === 'block' && !b.classList.contains('visible'); })()`, 5000))) {
-    fail('M24: the arc backdrop must compute display:block WITHOUT the .visible toggle (the harness is ALWAYS visible in arc)');
+  await js(`window.arcPower.profilesSettingsSave({ overlayBgEnabled: true, overlayBgColor: '#123456', overlayBgOpacity: 0.3 })`);
+  if (!(await waitFor(overlayWin, `document.documentElement.style.getPropertyValue('--capframex-bg') === '#123456' && document.documentElement.style.getPropertyValue('--capframex-bg-opacity') === '30%'`, 5000))) {
+    fail(`M24: Arc Power background settings did not reach the renderer (bg='${await ojs(`document.documentElement.style.getPropertyValue('--capframex-bg')`)}', opacity='${await ojs(`document.documentElement.style.getPropertyValue('--capframex-bg-opacity')`)}')`);
   }
-  if (!(await waitFor(overlayWin, `getComputedStyle(document.getElementById('overlay-backdrop'), '::before').content !== 'none'`, 5000))) {
-    fail('M24: the arc backdrop has no ::before accent bar (the 2px #7FE3FF -> #4C8DFF top accent)');
+  step('m24-arc-power-background', 'Arc Power background controls are live (color #123456, opacity 30%, toggle present)');
+  const capframexSurface = await ojs(`(() => ({
+    rootVisible: getComputedStyle(document.getElementById('capframex-root')).display !== 'none',
+    rtssHidden: getComputedStyle(document.getElementById('overlay-fps')).display === 'none',
+    frametime: !!document.getElementById('capframex-frametime'),
+    displaytime: !!document.getElementById('capframex-displaytime'),
+    text: document.getElementById('capframex-root')?.textContent ?? ''
+  }))()`);
+  if (!capframexSurface.rootVisible || !capframexSurface.rtssHidden || !capframexSurface.frametime || capframexSurface.displaytime || capframexSurface.text.includes('Displaytime')) {
+    fail(`M24: Arc Power Overlay surface is incomplete (${JSON.stringify(capframexSurface)})`);
   }
-  if (!(await waitFor(overlayWin, `document.documentElement.dataset.themeStroke === 'gradient'`, 5000))) {
-    fail(`M24: the overlay themeStroke reads '${await ojs(`document.documentElement.dataset.themeStroke ?? ''`)}' (expected 'gradient' in arc)`);
+  step('m24-arc-power-provider', `Arc Power Overlay provider is active with one frametime graph and no Displaytime surface (${JSON.stringify(capframexSurface)})`);
+  await js(`window.arcPower.profilesSettingsSave({ overlayBgEnabled: false, overlayBgColor: '#000000', overlayBgOpacity: 0.5 })`);
+  await js(`window.arcPower.profilesSettingsSave({ overlayRenderer: 'rtss' })`);
+  if (!(await waitFor(overlayWin, `document.documentElement.dataset.overlayRenderer === 'rtss'`, 8000))) {
+    fail('M24: restoring the RTSS provider did not complete the settings lifecycle');
   }
-  step('m24-theme-arc', `M24: the theme save 'arc' re-rendered the HUD - dataset.overlayTheme 'arc', the backdrop computes display:block WITHOUT .visible, the ::before accent bar exists, the canvas stroke is a gradient (themeStroke 'gradient')`);
-
-  // m24-theme-classic: save 'classic' -> the dataset flips back + the
-  // backdrop respects the .visible toggle again (hidden when off - the
-  // classic control; the M7b pins above left the box off).
-  await js(`window.arcPower.profilesSettingsSave({ overlayTheme: 'classic' })`);
-  if (!(await waitFor(overlayWin, `document.documentElement.dataset.overlayTheme === 'classic'`, 5000))) {
-    fail(`M24: the overlay window dataset.overlayTheme reads '${await ojs(`document.documentElement.dataset.overlayTheme ?? ''`)}' (expected 'classic' after the restore save)`);
-  }
-  if (!(await waitFor(overlayWin, `document.documentElement.dataset.themeStroke === 'flat'`, 5000))) {
-    fail('M24: the themeStroke must read flat in classic (the pushed-color stroke)');
-  }
-  if (!(await waitFor(overlayWin, `(() => { const b = document.getElementById('overlay-backdrop'); return !!b && getComputedStyle(b).display === 'none' && !b.classList.contains('visible'); })()`, 5000))) {
-    fail('M24: the classic backdrop must respect the .visible toggle again (hidden while off - the harness is arc-only)');
-  }
-  step('m24-theme-classic', `M24: the theme save 'classic' flipped the HUD back - dataset.overlayTheme 'classic', themeStroke 'flat', the backdrop hidden again (the .visible toggle is the classic control)`);
-
-  // m24-theme-persist: the settings.json key round-trips (the pushed
-  // payload shortens to 'theme' - the persisted key keeps 'overlayTheme').
-  const persistedTheme = await js(`window.arcPower.profilesList().then((e) => e.settings.overlayTheme)`);
-  if (persistedTheme !== 'classic') {
-    fail(`M24: profilesList().settings.overlayTheme reads '${persistedTheme}' (expected 'classic' - the theme round trip must persist through the store)`);
-  }
-  step('m24-theme-persist', `M24: the persisted overlayTheme round-trips through profilesList (settings.overlayTheme '${persistedTheme}' - the settings.json key keeps the full name)`);
-
   // M4-D2 (§1): the shared close-to-tray REAL close probe - the LAST step.
   // The main window's closed handler destroys the overlay + unregisters the
   // hotkey (the lifecycle rule) - the app must still quit when the main
@@ -9623,7 +9584,7 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   // Settings General-card toggle OFF mid-run (the toggle is then a no-op),
   // NOT a second boot seed. Navigate to the Overlay view (the #/overlay
   // alias - the Advanced card renders there) and flip the master OFF.
-  await js(`location.hash = '#/overlay'`);
+  await js(`document.querySelector('.overlay-settings-button')?.click()`);
   if (!(await waitFor(win, `!!document.querySelector('.settings-checkbox[data-setting="advancedOverlayEnabled"]')`, 8000))) {
     fail('M23: the Overlay view Advanced card has no advancedOverlayEnabled toggle');
   }
@@ -9675,6 +9636,45 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   }
   const sliderOk = await ojs(`Array.from(document.querySelectorAll('.adv-view .oc-card[data-control] input[type="range"]')).length >= 3`);
   if (!sliderOk) fail('M23: the a770 Tuning tab must render at least three slider cards with range inputs');
+  // M3-C-E: the Alchemist-only Stock/Advanced mode control lives in the
+  // panel as well as the main Tuning page. Exercise both directions through
+  // the real renderer IPC, including the first-run confirmation modal, and
+  // verify the selected state is exposed to assistive technology.
+  const ocModeState = await ojs(`(() => Array.from(document.querySelectorAll('.adv-oc-mode-btn')).map((button) => ({
+    mode: button.dataset.ocMode,
+    active: button.classList.contains('active'),
+    pressed: button.getAttribute('aria-pressed'),
+  })))()`);
+  if (ocModeState.length !== 2
+    || !ocModeState.some((button) => button.mode === 'stock')
+    || !ocModeState.some((button) => button.mode === 'advanced')
+    || !ocModeState.some((button) => button.mode === 'advanced' && button.active && button.pressed === 'true')) {
+    fail(`M3-C-E: the Alchemist Stock/Advanced control did not boot with Advanced selected and aria-pressed state (${JSON.stringify(ocModeState)})`);
+  }
+  await ojs(`document.querySelector('.adv-oc-mode-btn[data-oc-mode="stock"]')?.click()`);
+  if (!(await waitFor(panelWin, `(() => {
+    const button = document.querySelector('.adv-oc-mode-btn[data-oc-mode="stock"]');
+    return !!button && button.classList.contains('active') && button.getAttribute('aria-pressed') === 'true';
+  })()`, 8000))) {
+    fail('M3-C-E: the Advanced Overlay Stock click did not update the selected button');
+  }
+  if (!(await waitFor(panelWin, `window.arcPower.ocModeGet(0).then((m) => m.ocMode === 'stock')`, 8000))) {
+    fail('M3-C-E: the Advanced Overlay Stock click did not reach the keyed backend mode');
+  }
+  await ojs(`document.querySelector('.adv-oc-mode-btn[data-oc-mode="advanced"]')?.click()`);
+  if (await waitFor(panelWin, `!!document.querySelector('.modal-overlay')`, 2000)) {
+    await ojs(`document.querySelector('.modal-actions .btn-danger')?.click()`);
+  }
+  if (!(await waitFor(panelWin, `(() => {
+    const button = document.querySelector('.adv-oc-mode-btn[data-oc-mode="advanced"]');
+    return !!button && button.classList.contains('active') && button.getAttribute('aria-pressed') === 'true';
+  })()`, 8000))) {
+    fail('M3-C-E: the Advanced Overlay Advanced click did not update the selected button');
+  }
+  if (!(await waitFor(panelWin, `window.arcPower.ocModeGet(0).then((m) => m.ocMode === 'advanced')`, 8000))) {
+    fail('M3-C-E: the Advanced Overlay Advanced click did not reach the keyed backend mode');
+  }
+  step('m3c-advanced-overlay-mode', 'M3-C-E: the Advanced Overlay exposed the Alchemist Stock/Advanced toggle; both mode writes, capability refresh, confirmation path, and aria-pressed selection state round-tripped');
   // M31/user: in a multi-device session the panel's shared GPU selector uses
   // the same compact Intel-Arc pill treatment as Dashboard and Tuning. Its
   // focused state must stay in the Arc palette, not the warm Windows ring.
@@ -10140,7 +10140,11 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   // rejection is unit-tested elsewhere; pin the toast UX here). Both cards
   // enforce symmetrically. The HUD letter is seeded 'O' (main.js resets it
   // under the knob) and the advanced letter 'P'.
-  await js(`location.hash = '#/overlay'`);
+  await js(`location.hash = '#/settings'`);
+  if (!(await waitFor(win, `!!document.querySelector('.overlay-settings-button')`, 5000))) {
+    fail('M23: the Settings page did not render its Overlay button before the hotkey collision check');
+  }
+  await js(`document.querySelector('.overlay-settings-button')?.click()`);
   if (!(await waitFor(win, `!!document.querySelector('.settings-advanced-hotkey-input')`, 8000))) {
     fail('M23: the Overlay view did not render the advanced hotkey input');
   }
@@ -10240,7 +10244,11 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
     fail('M23: hotkeyRegistered did not recover after the failure fake was cleared');
   }
   await js(`location.hash = '#/dashboard'`);
-  await js(`location.hash = '#/overlay'`);
+  await js(`location.hash = '#/settings'`);
+  if (!(await waitFor(win, `!!document.querySelector('.overlay-settings-button')`, 5000))) {
+    fail('M23: the Settings page did not render its Overlay button during restore');
+  }
+  await js(`document.querySelector('.overlay-settings-button')?.click()`);
   if (!(await waitFor(win, `!!document.querySelector('.settings-advanced-hotkey-input')`, 8000))) {
     fail('M23: the Overlay view did not re-render after the restore');
   }

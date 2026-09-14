@@ -219,3 +219,43 @@ export function chipLabelCpu(name: unknown): string | null {
   dropCpuTailTokens(kept);
   return kept.length === 0 ? null : kept.join(' ');
 }
+
+/** Human-readable CPU heading for the grouped Arc Power Overlay. */
+export function humanCpuName(name: unknown): string | null {
+  const s = typeof name === 'string' ? name.trim() : '';
+  if (!s) return null;
+  const normalized = s
+    .replace(/\(R\)/gi, '®')
+    .replace(/\(TM\)/gi, '™')
+    .replace(/\s+@\s*[^,]+$/i, '')
+    .replace(/\s+CPU\b/gi, '')
+    .replace(/\s+Processor$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized || null;
+}
+
+/**
+ * Human-readable GPU heading for the grouped Arc Power Overlay. The compact
+ * chip formatter remains the classic overlay's opt-in label; this formatter
+ * keeps the vendor and removes only legal/generic suffix noise.
+ */
+export function humanGpuName(name: unknown): string | null {
+  const raw = typeof name === 'string' ? name.trim() : '';
+  if (!raw) return null;
+  const compact = chipLabelGpu(raw);
+  if (!compact) return null;
+  let model = compact
+    .replace(/^RX(\d+)$/i, 'RX $1')
+    .replace(/^RX(\d+)\s+(XT|XTX|GRE)\b/i, 'RX $1$2')
+    .replace(/(\d)\s+(TI|SUPER)\b/gi, '$1$2')
+    .replace(/Ti\b/gi, 'TI');
+  const vendor = /\b(nvidia|geforce)\b/i.test(raw)
+    ? 'Nvidia'
+    : /\b(amd|radeon)\b/i.test(raw)
+      ? 'AMD'
+      : /\bintel\b/i.test(raw)
+        ? (/\barc\b/i.test(raw) ? 'Intel Arc' : 'Intel')
+        : /\barc\b/i.test(raw) ? 'Intel Arc' : '';
+  return vendor ? `${vendor} ${model}` : model;
+}

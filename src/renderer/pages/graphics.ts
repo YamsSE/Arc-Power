@@ -161,6 +161,15 @@ const IGS_SCALING_METHOD_LABELS: Record<string, string> = {
   integer: 'Integer Scaling',
   'nearest-neighbour': 'Nearest Neighbour',
 };
+
+function scalingStateNoteOf(display: DisplayState['displays'][number] | null): string {
+  const preferred = display?.preferredScalingMode;
+  const gpuPreferred = preferred === 'centered' || preferred === 'stretched' || preferred === 'aspect-ratio-centered-max';
+  if (display?.scalingMode === 'identity' && gpuPreferred) {
+    return `Saved preference: GPU Scaling (${IGS_SCALING_METHOD_LABELS[preferred]}). Active scaler: Display Scaling at the current desktop resolution. ${DISPLAY_SCALING_NOTE}`;
+  }
+  return DISPLAY_SCALING_NOTE;
+}
 const GLOBAL_VRR_LABELS: Record<string, string> = {
   fullscreen: 'Fullscreen',
   'fullscreen-windowed': 'Fullscreen & Windowed',
@@ -243,6 +252,7 @@ let displayDraft: DisplaySettings = {};
 let displayApplied: DisplaySettings = {};
 let displayScalingViewDraft = 'display-scaling';
 let displayScalingMethodDraft = 'maintain-display-scaling';
+let displayScalingDraftRevision = 0;
 let applying = false;
 let queuedDisplayApply: { ctx: PageContext; only: string } | null = null;
 let applyBtn: HTMLButtonElement | null = null;
@@ -305,6 +315,7 @@ function resetPageState() {
   displayApplied = {};
   displayScalingViewDraft = 'display-scaling';
   displayScalingMethodDraft = 'maintain-display-scaling';
+  displayScalingDraftRevision = 0;
   applying = false;
   applyBtn = null;
   displayApplyBtn = null;
@@ -349,6 +360,44 @@ function customScalingOf(display: DisplayState['displays'][number]): NonNullable
     // an old/disabled read-back flag into the next user-initiated apply.
     hardwareModeSet: true,
   };
+}
+
+function markDisplayScalingDraftChanged(): void {
+  displayScalingDraftRevision += 1;
+}
+
+/** Keep the visible scaling selectors and their raw draft payload aligned
+ * with the fresh native read-back after a modeset. A driver may normalize an
+ * attempted transition or retain a preferred method while the active mode is
+ * Display Scaling; the next paint must show what the driver actually reports.
+ */
+function syncDisplayScalingDraftFromReadback(display: DisplayState['displays'][number]): void {
+  const view = scalingViewOf(display);
+  const method = scalingMethodViewOf(display);
+  displayScalingViewDraft = view;
+  displayScalingMethodDraft = method;
+  if (view === 'gpu-scaling') {
+    displayDraft.scalingMode = method as DisplaySettings['scalingMode'];
+    displayDraft.displayScalingMethod = method as DisplaySettings['displayScalingMethod'];
+    delete displayDraft.scalingCustom;
+    delete displayDraft.scalingMethod;
+    return;
+  }
+  if (view === 'retro-scaling') {
+    displayDraft.scalingMode = 'identity';
+    delete displayDraft.displayScalingMethod;
+    delete displayDraft.scalingCustom;
+    displayDraft.scalingMethod = {
+      enabled: true,
+      method: method as NonNullable<DisplaySettings['scalingMethod']>['method'],
+    };
+    return;
+  }
+  displayDraft.scalingMode = method === 'custom' ? 'custom' : 'identity';
+  displayDraft.displayScalingMethod = method as DisplaySettings['displayScalingMethod'];
+  if (method === 'custom') displayDraft.scalingCustom = customScalingOf(display);
+  else delete displayDraft.scalingCustom;
+  delete displayDraft.scalingMethod;
 }
 
 function sameCustomScaling(a: DisplaySettings['scalingCustom'] | null | undefined, b: DisplaySettings['scalingCustom'] | null | undefined): boolean {
@@ -498,6 +547,7 @@ function updateDisplayFloating(): void {
 }
 
 function resetDisplayDraft(display: DisplayState['displays'][number]): void {
+  markDisplayScalingDraftChanged();
   displayDraft = normalizeDisplaySettings(display);
   if (isDisplayControlSupported(display, 'scalingMode')) {
     displayScalingViewDraft = 'display-scaling';
@@ -1398,6 +1448,7 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
     dataset: { displaySelect: 'scalingMode' },
     ariaLabel: 'Scaling Mode',
     onChange: (value) => {
+      markDisplayScalingDraftChanged();
       displayScalingViewDraft = value;
       displayScalingMethodDraft = scalingMethodOptionsForView(display!, displayScalingViewDraft)[0] ?? 'maintain-display-scaling';
       const raw = rawScalingForView(display!, displayScalingViewDraft);
@@ -1434,11 +1485,12 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
       el('h3', { class: 'display-control-title', text: 'Scaling Mode' }),
       el('div', { class: 'graphics-control display-inline-control' }, [select]),
     ]),
-    el('p', { class: 'card-note', text: DISPLAY_SCALING_NOTE }),
+    el('p', { class: 'card-note', text: scalingStateNoteOf(display) }),
     el('div', { class: 'graphics-card-actions' }, [
       el('span', { class: 'chip oc-chip-status', hidden: true }),
       el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'scalingMode'); } }),
       el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
+        markDisplayScalingDraftChanged();
         displayScalingViewDraft = 'display-scaling';
         displayDraft.scalingMode = rawScalingForView(display!, displayScalingViewDraft);
         delete displayDraft.scalingCustom;
@@ -1482,6 +1534,7 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
     dataset: { displaySelect: 'displayScalingMethod' },
     ariaLabel: 'Scaling Method',
     onChange: (value) => {
+      markDisplayScalingDraftChanged();
       displayScalingMethodDraft = value;
       if (view === 'gpu-scaling') {
         displayDraft.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
@@ -1510,10 +1563,11 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
     },
   });
   selectNodes.set('displayScalingMethod', methodSelect);
-  const custom = customScalingOf(display!);
+  const custom = displayDraft.scalingCustom ?? customScalingOf(display!);
   const customX = el('input', { class: 'display-number-input', type: 'number', min: 0, max: 100, step: 1, value: custom.x, hidden: view !== 'display-scaling' || displayScalingMethodDraft !== 'custom', 'aria-label': 'Custom horizontal scaling' }) as HTMLInputElement;
   const customY = el('input', { class: 'display-number-input', type: 'number', min: 0, max: 100, step: 1, value: custom.y, hidden: view !== 'display-scaling' || displayScalingMethodDraft !== 'custom', 'aria-label': 'Custom vertical scaling' }) as HTMLInputElement;
   const setCustom = (): void => {
+    markDisplayScalingDraftChanged();
     displayDraft.scalingCustom = { x: Math.max(0, Math.min(100, Number(customX.value))), y: Math.max(0, Math.min(100, Number(customY.value))), hardwareModeSet: true };
     refreshDisplayChip('displayScalingMethod');
   };
@@ -1530,6 +1584,7 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
       el('span', { class: 'chip oc-chip-status', hidden: true }),
       el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'displayScalingMethod'); } }),
       el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
+        markDisplayScalingDraftChanged();
         displayScalingMethodDraft = methodOptions[0] ?? 'maintain-display-scaling';
         if (view === 'gpu-scaling') {
           displayDraft.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
@@ -1881,6 +1936,7 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
       displayDraft = normalizeDisplaySettings(selectedDisplay());
       displayScalingViewDraft = scalingViewOf(selectedDisplay());
       displayScalingMethodDraft = scalingMethodViewOf(selectedDisplay());
+      markDisplayScalingDraftChanged();
       setDisplayAppliedScalingBaseline();
       renderDisplayCards(view, ctx);
     },
@@ -2034,8 +2090,8 @@ function displayPayloadForControl(only: string, display: DisplayState['displays'
       if (displayScalingViewDraft === 'gpu-scaling') {
         payload.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
         // Keep the IGS method identity alongside the raw IGCL flag. The
-        // backend uses this explicit alias to request the physical modeset
-        // path, which makes GPU method changes visibly transition the display.
+        // backend uses this explicit alias to keep the raw and user-facing
+        // GPU method selections coupled in one output-scaling transaction.
         payload.displayScalingMethod = displayScalingMethodDraft as DisplaySettings['displayScalingMethod'];
       } else if (displayScalingViewDraft === 'display-scaling') {
         payload.scalingMode = raw;
@@ -2134,6 +2190,7 @@ async function applyDisplay(ctx: PageContext, only: string) {
     selectNodes.get('displayScalingMethod')?.setAttribute('disabled', 'true');
   }
   updateDisplayFloating();
+  const scalingDraftRevisionAtStart = displayScalingDraftRevision;
   try {
     const deviceKey = displayState.deviceKey ?? live.devices.find((d) => d.id === deviceId)?.deviceKey ?? null;
     if (!deviceKey || !display.displayKey || display.identityVerified !== true) {
@@ -2159,10 +2216,13 @@ async function applyDisplay(ctx: PageContext, only: string) {
         } else {
           (displayApplied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
         }
-        toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
-        // The scaling card's honest modeset note rides the apply result
-        // (the M10b probe skipped the scaling SET by design - a scaling
-        // change is a PHYSICAL MODESET = a screen flash).
+        if (per.preferredOnly || per.preferenceAlreadyApplied) {
+          toast('info', `${CONTROL_LABELS[key] ?? key} preference ${per.preferenceAlreadyApplied ? 'already saved' : 'saved'}`, per.message
+            ?? 'The driver will use GPU Scaling when the output requires scaling.');
+        } else {
+          toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
+        }
+        // The scaling card's honest display-flash note rides the apply result.
         if (per.warning && !per.internal) toast('warn', 'Screen flash expected', per.warning);
       } else {
         toast('error', `${CONTROL_LABELS[key] ?? key} failed`, per.message ?? errorMessage(per.errorCode, key));
@@ -2176,6 +2236,17 @@ async function applyDisplay(ctx: PageContext, only: string) {
       (displayApplied as Record<string, unknown>).scalingMode = scalingViewOf(freshDisplay);
       (displayApplied as Record<string, unknown>).displayScalingMethod = scalingMethodViewOf(freshDisplay);
       if (freshDisplay.scalingMethod?.value) displayApplied.scalingMethod = freshDisplay.scalingMethod.value;
+    }
+    const hasScalingReadback = out.perControl.scalingMode !== undefined
+      || out.perControl.scalingMethod !== undefined
+      || out.perControl.displayScalingMethod !== undefined;
+    if (freshDisplay && hasScalingReadback) {
+      // A second selector change may have arrived while the first modeset
+      // was in flight. Keep that newer intent for the queued transaction;
+      // only replace an unchanged draft with native read-back.
+      const scalingDraftChangedWhileApplying = displayScalingDraftRevision !== scalingDraftRevisionAtStart;
+      if (!scalingDraftChangedWhileApplying) syncDisplayScalingDraftFromReadback(freshDisplay);
+      if (graphicsView === 'display' && viewContainer?.isConnected) renderDisplayCards(viewContainer, ctx);
     }
     for (const key of DISPLAY_APPLY_KEYS) refreshDisplayChip(key);
     updateDisplayFloating();

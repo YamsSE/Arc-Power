@@ -12,6 +12,7 @@ export const ASCENT_EVENTS = Object.freeze({ QUERY_MACHINE_INFO: 1, ERR: 2, READ
 export const ASCENT_ENCODER_START_ERROR_CODES = Object.freeze([-6, -8]);
 export const ASCENT_QSV_ENCODER_PREFERENCE = Object.freeze(['obs_qsv11_av1', 'obs_qsv11_hevc', 'obs_qsv11_v2']);
 export const RECORDING_GPU_ENCODER_SELECTION_PREFIX = 'arc-gpu-encoder:v1:';
+export const RECORDING_ENGINE_IDLE_MESSAGE = 'Capture engine idle until recording is requested';
 const DEFAULT_SHUTDOWN_MS = 1500;
 const DEFAULT_PROBE_MS = 15000;
 // The native replay muxer can signal replay_ready before Windows releases the
@@ -505,7 +506,7 @@ function isEncoderStartRejection(error) {
   return Number.isInteger(error?.code) && ASCENT_ENCODER_START_ERROR_CODES.includes(error.code);
 }
 
-export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, getCaptureDimensions = () => null, resolveEncoderTarget = async (target) => target, trimReplayClip = null, apmCapture = createApmCapture({ clock }), shutdownMs = DEFAULT_SHUTDOWN_MS, startTimeoutMs = 15000, replayTrimRetryMs = REPLAY_TRIM_RETRY_MS } = {}) {
+export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spawn = spawnProcess, clock = () => Date.now(), onState = () => {}, onEncoderDemoted = async () => {}, getRuntimeDemand = () => 0, getCaptureDimensions = () => null, resolveEncoderTarget = async (target) => target, trimReplayClip = null, apmCapture = createApmCapture({ clock }), shutdownMs = DEFAULT_SHUTDOWN_MS, startTimeoutMs = 15000, replayTrimRetryMs = REPLAY_TRIM_RETRY_MS } = {}) {
   let child = null;
   let output = '';
   let decoder = new StringDecoder('utf8');
@@ -531,7 +532,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   // next capture so every applied profile reaches a fresh OBS output.
   let freshChildRequired = false;
   const demotedEncoders = new Set();
-  let state = { available: false, running: false, mode: null, activeModes: { video: false, replay: false }, startedAt: null, sessionId: null, error: null, encoders: [], audioInputs: [], audioOutputs: [], probeComplete: false, lastEvent: null, instantReplaySave: createInstantReplaySaveState() };
+  let state = { available: false, running: false, mode: null, activeModes: { video: false, replay: false }, startedAt: null, sessionId: null, error: RECORDING_ENGINE_IDLE_MESSAGE, encoders: [], audioInputs: [], audioOutputs: [], probeComplete: false, lastEvent: null, instantReplaySave: createInstantReplaySaveState() };
   const listeners = new Set();
   const pending = new Map();
   const writeQueue = [];
@@ -945,6 +946,38 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     machineInfoReady = false;
     rejectPending(new Error('Ascent process restarted'));
     rejectQueued(new Error('Ascent process restarted'));
+  }
+
+  async function shutdownIfIdleInternal() {
+    if (disposed) return state;
+    if (Number(getRuntimeDemand?.() ?? 0) > 0) return state;
+    if (activeRecorders.size > 0 || startingRecorders.size > 0 || replayCapture || replayClipSaveInFlight) return state;
+    const runtimeWasLoaded = Boolean(child)
+      || state.available === true
+      || state.probeComplete === true
+      || state.encoders.length > 0
+      || state.audioInputs.length > 0
+      || state.audioOutputs.length > 0;
+    if (!runtimeWasLoaded) return state;
+    await closeChildGracefully();
+    output = '';
+    decoder = new StringDecoder('utf8');
+    protocolFailure = null;
+    machineInfoReady = false;
+    freshChildRequired = false;
+    replayCapture = null;
+    replayCaptureReadyAt = 0;
+    publish({
+      available: false,
+      ...captureStatePatch(),
+      error: RECORDING_ENGINE_IDLE_MESSAGE,
+      encoders: [],
+      audioInputs: [],
+      audioOutputs: [],
+      probeComplete: false,
+      instantReplaySave: createInstantReplaySaveState(),
+    });
+    return state;
   }
 
   async function prepareFreshChild() {
@@ -1742,6 +1775,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       return operation.finally(() => { replayClipSaveInFlight = false; });
     },
     stopReplayClip: (identifier) => serialize(() => stopReplayClipInternal(identifier)),
+    // The bundled runtime is reusable after an idle close. The main process
+    // supplies the current page/capture demand so a Recording-tab lease can
+    // keep it warm while the user is configuring capture.
+    shutdownIfIdle: () => serialize(shutdownIfIdleInternal),
     shutdown: () => serialize(shutdownInternal),
     subscribe: (cb) => { listeners.add(cb); return () => listeners.delete(cb); },
   };

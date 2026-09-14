@@ -37,7 +37,7 @@ import { api } from './ipc.ts';
 import { overlayLines, normalizeOverlayStats, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor, clampOverlayBgOpacity, clampOverlayPollMs, OVERLAY_BG_COLOR_DEFAULT, isValidOverlayTheme, OVERLAY_THEME_DEFAULT, isValidOverlayRenderer } from './pure/overlay.ts';
 // M17b (2c): the chip-name cut-down rules (pure; the boot names fetch
 // derives the row labels from the sysinfo fixture/real names).
-import { chipLabelGpu, chipLabelCpu } from './pure/chip-label.ts';
+import { chipLabelGpu, chipLabelCpu, humanCpuName, humanGpuName } from './pure/chip-label.ts';
 import { resolveBootDevice } from './pure/device.ts';
 import { dedupeOverlayDevices, normalizeOverlayIdentityKey as identityToken, overlayDeviceOrder, overlayIdentityAliases as identityAliases, overlaySampleMatchesDevice as sampleMatchesDevice, overlayStableDeviceKey as stableDeviceKey, resolveOverlayMainDevice } from './pure/overlay-routing.ts';
 import { pushSeries, trimSeriesWindow, autoScale, downsample } from './pure/graph.ts';
@@ -54,7 +54,6 @@ const FRAMETIME_DRAW_POINTS = 120;
 /** Arc Power's own surface stays dark and readable over bright game scenes.
  * The legacy RTSS background color remains available to the native renderer,
  * but must not turn this hook-free surface light blue. */
-const ARC_POWER_OVERLAY_BACKGROUND = 'rgba(27, 29, 46, 0.97)';
 
  let scale = 1;
  let latestSample: TelemetrySample | null = null;
@@ -94,11 +93,7 @@ let latestLow01Pct: number | null = null;
 // null-returning polls keep the last known value, like the fps itself).
 let latestApi: string | null = null;
 let series: SeriesPoint[] = [];
-// RTSS exposes frame interval timing, which is the honest timing sample
-// available to the hook-free renderer. Keep a second series so the layout can
-// present Frametime and Displaytime independently when a richer sample is
-// added later without changing the renderer contract.
-let displaySeries: SeriesPoint[] = [];
+let ramTotalBytes: number | null = null;
 // M6: the pushed color + stats (undefined until the first push -> the
 // stock white + the full stat set - the overlayLines defaults).
 let color: string = '#ffffff';
@@ -113,6 +108,7 @@ let stats: unknown = undefined;
 // controllers). null until fetched -> the stock prefixes.
 let chipNamesEnabled = false;
 let cpuChipLabel: string | null = null;
+let cpuHumanName: string | null = null;
 let gpuChipLabel: string | null = null;
 let secondaryGpuChipLabels: Array<string | null> = [];
 type OverlayDeviceIdentity = {
@@ -411,17 +407,11 @@ const capframexLow1 = document.getElementById('capframex-low1');
 const capframexLow01 = document.getElementById('capframex-low01');
 const capframexP99 = document.getElementById('capframex-p99');
 const capframexPerformance = document.getElementById('capframex-performance');
-const capframexPerformanceFt = document.getElementById('capframex-performance-ft');
 const capframexFrametimeCard = document.getElementById('capframex-frametime-card');
-const capframexDisplaytimeCard = document.getElementById('capframex-displaytime-card');
 const capframexFrametimeCanvas = document.getElementById('capframex-frametime') as HTMLCanvasElement | null;
-const capframexDisplaytimeCanvas = document.getElementById('capframex-displaytime') as HTMLCanvasElement | null;
 const capframexFrametimeValue = document.getElementById('capframex-frametime-value');
-const capframexDisplaytimeValue = document.getElementById('capframex-displaytime-value');
 const capframexFrametimeAxisTop = document.getElementById('capframex-frametime-axis-top');
 const capframexFrametimeAxisBottom = document.getElementById('capframex-frametime-axis-bottom');
-const capframexDisplaytimeAxisTop = document.getElementById('capframex-displaytime-axis-top');
-const capframexDisplaytimeAxisBottom = document.getElementById('capframex-displaytime-axis-bottom');
 
 function clearOverlaySampling(): void {
   latestFps = null;
@@ -432,7 +422,6 @@ function clearOverlaySampling(): void {
   latestApi = null;
   latestFrameTime = null;
   series = [];
-  displaySeries = [];
   latestSample = null;
   latestCpuSource = null;
   secondarySamples.clear();
@@ -475,16 +464,14 @@ api.onOverlaySettings((settings) => {
     '--overlay-bg-opacity',
     String(clampOverlayBgOpacity(s.overlayBgOpacity)),
   );
-  const capframexBgColor = isValidOverlayColor(s.overlayBgColor) ? s.overlayBgColor : OVERLAY_BG_COLOR_DEFAULT;
-  const capframexBgOpacity = clampOverlayBgOpacity(s.overlayBgOpacity);
-  // Arc Power Overlay owns a fixed dark blue-purple surface. The legacy RTSS
-  // background controls remain available for the native renderer, but must
-  // not tint this hook-free surface with a saved light-blue color.
-  const capframexBackground = ARC_POWER_OVERLAY_BACKGROUND;
+  const capframexBackground = s.overlayBgEnabled === true && isValidOverlayColor(s.overlayBgColor)
+    ? s.overlayBgColor
+    : 'transparent';
   document.documentElement.style.setProperty(
     '--capframex-bg',
     capframexBackground,
   );
+  document.documentElement.style.setProperty('--capframex-bg-opacity', `${Math.round(clampOverlayBgOpacity(s.overlayBgOpacity) * 100)}%`);
   // M35: monitoring selection is a live setting. Refresh the inventory before
   // applying it: numeric session ids can be reassigned after a driver reset
   // or device hotplug, so reusing the boot list could route the overlay to a
@@ -698,9 +685,8 @@ function capGb(value: unknown): number | null {
 
 function capGpuTitle(sample: TelemetrySample | null, device: OverlayDeviceIdentity | null, ordinal: number): string {
   const raw = sample?.deviceName ?? device?.name ?? null;
-  const model = chipLabelGpu(raw) ?? (typeof raw === 'string' && raw.trim() ? raw.trim() : `GPU ${ordinal}`);
-  const arc = typeof raw === 'string' && /\barc\b/i.test(raw) ? 'Arc ' : '';
-  return `${ordinal > 1 ? `GPU ${ordinal} · ` : ''}${arc}${model} Graphics`;
+  return humanGpuName(raw)
+    ?? (chipLabelGpu(raw) ?? (typeof raw === 'string' && raw.trim() ? raw.trim() : `GPU ${ordinal}`));
 }
 
 function capRow(parent: HTMLElement, label: string, values: string[]): void {
@@ -798,6 +784,7 @@ function renderCapframex(displaySample: TelemetrySample | null): void {
     const title = document.createElement('div');
     title.className = 'capframex-gpu-title';
     const name = document.createElement('span');
+    name.className = 'capframex-title-label';
     name.textContent = capGpuTitle(sample, device, ordinal);
     const clocks = document.createElement('span');
     clocks.className = 'capframex-clock';
@@ -824,25 +811,26 @@ function renderCapframex(displaySample: TelemetrySample | null): void {
   });
 
   if (capframexCpuTitle) {
-    const cpuLabel = document.createElement('span');
-    cpuLabel.className = 'capframex-title-label';
-    cpuLabel.textContent = 'CPU Model';
-    const cpuValue = document.createElement('span');
-    cpuValue.className = 'capframex-title-value';
-    cpuValue.textContent = cpuChipLabel || '-';
-    capframexCpuTitle.replaceChildren(cpuLabel, cpuValue);
+    const cpuName = document.createElement('span');
+    cpuName.className = 'capframex-title-label';
+    cpuName.textContent = cpuHumanName || 'CPU';
+    capframexCpuTitle.replaceChildren(cpuName);
   }
   const cpuSection = capframexCpuTitle?.parentElement;
   if (cpuSection) {
     [...cpuSection.querySelectorAll<HTMLElement>('.capframex-row')].forEach((row) => row.remove());
     capStatRow(cpuSection, enabled, 'cpu-clock', 'CPU Clock', [capValue(displaySample?.cpuFreqMhz, ' MHz')]);
-    capStatRow(cpuSection, enabled, 'cpu-util', 'CPU Total', [capValue(displaySample?.cpuUtilPct, ' %')]);
+    capStatRow(cpuSection, enabled, 'cpu-util', 'CPU Usage', [capValue(displaySample?.cpuUtilPct, ' %')]);
     const packageValues = [capValue(displaySample?.cpuPowerW, ' W', 1)];
     if (enabled.has('cpu-temp')) packageValues.push(capValue(displaySample?.cpuTempC, ' °C'));
     capStatRow(cpuSection, enabled, 'cpu-power', 'CPU Package', packageValues);
     if (enabled.has('cpu-temp') && !enabled.has('cpu-power')) capStatRow(cpuSection, enabled, 'cpu-temp', 'CPU Temp', [capValue(displaySample?.cpuTempC, ' °C')]);
   }
-  if (capframexMemory) capframexMemory.textContent = capValue(capGb(displaySample?.memoryUsedBytes), ' GB', 1);
+  if (capframexMemory) {
+    const used = capGb(displaySample?.memoryUsedBytes);
+    const total = capGb(ramTotalBytes);
+    capframexMemory.textContent = used !== null && total !== null ? `${used.toFixed(1)}/${total.toFixed(1)} GB` : '-';
+  }
   if (capframexMemoryRow) capframexMemoryRow.hidden = !enabled.has('memory-util');
   if (capframexApi) capframexApi.textContent = latestApi ?? '';
   if (capframexApiRow) capframexApiRow.hidden = !enabled.has('api') || !latestApi;
@@ -851,9 +839,7 @@ function renderCapframex(displaySample: TelemetrySample | null): void {
   if (capframexLow01) capframexLow01.textContent = capValue(latestLow01Pct, ' FPS');
   if (capframexP99) capframexP99.textContent = capValue(latestP99, ' FPS');
   if (capframexPerformance) capframexPerformance.textContent = capValue(latestFps, ' FPS');
-  if (capframexPerformanceFt) capframexPerformanceFt.textContent = enabled.has('frametime') ? capValue(latestFrameTime, ' ms', 1) : '';
   if (capframexFrametimeValue) capframexFrametimeValue.textContent = capValue(latestFrameTime, ' ms', 1);
-  if (capframexDisplaytimeValue) capframexDisplaytimeValue.textContent = capValue(latestFrameTime, ' ms', 1);
   if (capframexSummary) {
     capframexSummary.hidden = !['fps', 'fps-avg', 'fps-1pct-low', 'fps-01pct-low', 'fps-99pct', 'frametime'].some((id) => enabled.has(id));
     const summaryItems = capframexSummary.querySelectorAll<HTMLElement>(':scope > div');
@@ -861,12 +847,7 @@ function renderCapframex(displaySample: TelemetrySample | null): void {
     summaryItems.forEach((item, index) => { item.hidden = !enabled.has(summaryIds[index]); });
   }
   if (capframexFrametimeCard) capframexFrametimeCard.hidden = !enabled.has('frametime');
-  if (capframexDisplaytimeCard) capframexDisplaytimeCard.hidden = !enabled.has('frametime');
   drawCapSeries(capframexFrametimeCanvas, series, '#5bd5ff', capframexFrametimeAxisTop, capframexFrametimeAxisBottom);
-  // RTSS supplies frame interval timing rather than a separate present-time
-  // counter. Keep the second chart honest by mirroring that source until a
-  // provider exposes a distinct display-time field.
-  drawCapSeries(capframexDisplaytimeCanvas, displaySeries, '#5bd5ff', capframexDisplaytimeAxisTop, capframexDisplaytimeAxisBottom);
 }
 
 function render(): void {
@@ -1189,7 +1170,6 @@ function armFpsLoop(): void {
       if (ft !== null) {
         const now = Date.now() / 1000;
         series = trimSeriesWindow(pushSeries(series, now, ft, FRAMETIME_DRAW_POINTS), now, FRAMETIME_WINDOW_S);
-        displaySeries = trimSeriesWindow(pushSeries(displaySeries, now, ft, FRAMETIME_DRAW_POINTS), now, FRAMETIME_WINDOW_S);
       }
       render();
     })();
@@ -1363,6 +1343,7 @@ async function bootNamesFetch(): Promise<void> {
     }
     await configureOverlayDevices(primaryId, devices, persistedSelection, requestGeneration);
     const sysinfo = await api.sysinfo();
+    ramTotalBytes = typeof sysinfo?.ram?.totalBytes === 'number' && Number.isFinite(sysinfo.ram.totalBytes) ? sysinfo.ram.totalBytes : null;
     const controllers: OverlaySysinfoController[] = Array.isArray(sysinfo?.videoControllers)
       ? sysinfo.videoControllers
       : [];
@@ -1405,6 +1386,7 @@ async function bootNamesFetch(): Promise<void> {
     }
     projectCurrentChipLabels(primaryLabel);
     cpuChipLabel = chipLabelCpu(sysinfo?.cpu?.name ?? null);
+    cpuHumanName = humanCpuName(sysinfo?.cpu?.name ?? null);
     render();
   } catch {
     // The labels stay null and the overlay keeps honest '-' readouts.

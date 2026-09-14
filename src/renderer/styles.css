@@ -531,6 +531,7 @@ html, body {
 }
 .sidebar-recording-status.is-loading { border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); }
 .sidebar-recording-status.is-ready { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
+.sidebar-recording-status.is-idle { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); background: color-mix(in srgb, var(--warn) 10%, var(--control-bg)); }
 .sidebar-recording-status.is-offline { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
 
 .sidebar-recording-dot {
@@ -547,6 +548,7 @@ html, body {
 }
 .sidebar-recording-dot.is-loading { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); animation: sidebar-recording-pulse 1.25s ease-in-out infinite; }
 .sidebar-recording-dot.is-ready { background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 16%, transparent); }
+.sidebar-recording-dot.is-idle { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 16%, transparent); }
 .sidebar-recording-dot.is-offline { background: var(--warn); }
 
 @keyframes sidebar-recording-pulse {
@@ -2905,6 +2907,19 @@ input[type="number"] {
   color: var(--text);
   min-width: 38px;
 }
+.overlay-settings-root .overlay-background-row,
+.overlay-settings-root .overlay-background-color-row,
+.overlay-settings-root .overlay-background-opacity-row {
+  display: grid;
+  grid-template-columns: minmax(108px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+.overlay-settings-root .overlay-background-row { grid-template-columns: minmax(108px, auto) minmax(0, 1fr); }
+.overlay-background-toggle-label { min-width: 0; }
+.settings-background-color-input { justify-self: start; }
+.settings-background-opacity-slider { width: 100%; min-width: 0; max-width: none; accent-color: var(--accent-strong); }
+.overlay-background-opacity-row .settings-scale-value { text-align: right; }
 .overlay-note { font-size: 12px; }
 .overlay-hotkey-fail { font-weight: 600; }
 
@@ -3398,6 +3413,9 @@ input[type="number"] {
   .overlay-settings-root .overlay-device-monitoring,
   .overlay-settings-root .overlay-scale-row,
   .overlay-settings-root .overlay-poll-ms-row,
+  .overlay-settings-root .overlay-background-row,
+  .overlay-settings-root .overlay-background-color-row,
+  .overlay-settings-root .overlay-background-opacity-row,
   .overlay-settings-root .overlay-bg-row:has(.settings-bg-opacity-slider) { grid-template-columns: 1fr; gap: 6px; }
   .overlay-settings-root .settings-scale-value,
   .overlay-settings-root .settings-bg-opacity-value,
@@ -3707,6 +3725,9 @@ input[type="number"] {
 .recording-profile-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .recording-profile-copy strong { overflow: hidden; color: var(--text); font: 650 12px var(--font); text-overflow: ellipsis; white-space: nowrap; }
 .recording-pill-setting { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 10px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--accent) 23%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--bg-inset) 70%, transparent); }
+.recording-pill-setting-stack { display: flex; flex-direction: column; gap: 10px; }
+.recording-pill-setting-stack.recording-pill-setting { align-items: stretch; margin-top: 10px; padding: 0; border: 0; background: transparent; }
+.recording-pill-setting-stack .recording-pill-setting { margin-top: 0; }
 .recording-pill-setting-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .recording-pill-setting-copy strong { color: var(--text); font: 650 12px var(--font); }
 .recording-pill-setting .recording-check-row { flex: 0 0 auto; white-space: nowrap; }

@@ -37,6 +37,39 @@ export interface RecordingGpuEncoderRow {
 export const RECORDING_GPU_ENCODER_SELECTION_PREFIX = 'arc-gpu-encoder:v1:';
 const RECORDING_ENCODER_SELECTION_MAX_LENGTH = 128;
 const RECORDING_QSV_ENCODER_IDS = ['obs_qsv11_av1', 'obs_qsv11_hevc', 'obs_qsv11_v2'] as const;
+const RECORDING_QSV_ENCODER_LABELS: Record<typeof RECORDING_QSV_ENCODER_IDS[number], string> = {
+  obs_qsv11_av1: 'Intel AV1',
+  obs_qsv11_hevc: 'Intel HEVC',
+  obs_qsv11_v2: 'Intel H264',
+};
+
+/** Return true for the generic QSV choices that are only a fallback when no
+ * physical Intel GPU encoder can be identified. */
+export function recordingEncoderIdIsGlobal(id: string): boolean {
+  return RECORDING_QSV_ENCODER_IDS.includes(String(id ?? '').trim() as typeof RECORDING_QSV_ENCODER_IDS[number]);
+}
+
+/**
+ * Map a legacy global QSV choice to the first matching physical GPU choice
+ * once the adapter inventory is known. The runtime still receives the same
+ * codec, but the persisted selection now carries the stable adapter identity
+ * required by the dedicated-card menu.
+ */
+export function recordingPhysicalSelectionForId(
+  id: string,
+  devices: RecordingGpuLike[] = [],
+  encoders: RecordingEncoderLike[] = [],
+): string | null {
+  if (!recordingEncoderIdIsGlobal(id)) return null;
+  const normalized = String(id ?? '').trim();
+  const codecLabel = normalized === 'obs_qsv11_av1'
+    ? 'AV1'
+    : normalized === 'obs_qsv11_hevc'
+      ? 'HEVC'
+      : 'H264';
+  return recordingGpuEncoderOptions(devices, encoders)
+    .find(([, label]) => label.endsWith(` ${codecLabel}`))?.[0] ?? null;
+}
 
 export interface RecordingAdapterBdf {
   domain: number;
@@ -69,12 +102,67 @@ type RecordingEncoderLike = Pick<RecordingEncoderState, 'type' | 'description' |
   gpuName?: string | null;
 };
 
+type RecordingEncoderNameLike = Pick<RecordingEncoderState, 'type' | 'description'>;
+
+function cleanEncoderName(value: unknown): string | null {
+  const cleaned = String(value ?? '')
+    .replace(/\s*[—–-]\s*(?:loading|checking|legacy|unavailable|saved)\b.*$/i, '')
+    .replace(/\s*\((?:loading|checking|legacy|unavailable|saved)\)\s*$/i, '')
+    .replace(/\s+(?:loading|checking|legacy|unavailable|saved)\b.*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned || /^(?:loading|checking|legacy|unavailable|saved)\b/i.test(cleaned)) return null;
+  if (/\b(?:loading|checking)\b.*\b(?:encoder|availability)\b/i.test(cleaned)) return null;
+  return cleaned;
+}
+
+/** Resolve an encoder payload to a display name without exposing probe state. */
+export function recordingEncoderName(encoder: RecordingEncoderNameLike): string | null {
+  const type = String(encoder?.type ?? '').trim();
+  const description = String(encoder?.description ?? '').trim();
+  const known = RECORDING_QSV_ENCODER_LABELS[type as typeof RECORDING_QSV_ENCODER_IDS[number]];
+  if (known) return known;
+
+  const source = `${type} ${description}`.toLowerCase();
+  const intel = source.includes('quick sync') || source.includes('qsv') || source.includes('intel');
+  if (source.includes('av1')) return intel ? 'Intel AV1' : 'AV1';
+  if (source.includes('hevc') || source.includes('h.265') || source.includes('h265')) return intel ? 'Intel HEVC' : 'HEVC';
+  if (source.includes('h264') || source.includes('h.264') || source.includes('avc')) return intel ? 'Intel H264' : 'H264';
+  const fallback = cleanEncoderName(description);
+  return fallback && fallback.toLowerCase() !== type.toLowerCase() ? fallback : null;
+}
+
+/** Resolve a persisted encoder id to a clean name, including during probing. */
+export function recordingEncoderNameForId(
+  id: string,
+  encoders: readonly RecordingEncoderNameLike[] = [],
+): string | null {
+  const normalized = String(id ?? '').trim();
+  if (!normalized) return null;
+  const runtimeEncoder = encoders.find((encoder) => encoder?.type === normalized);
+  return runtimeEncoder
+    ? recordingEncoderName(runtimeEncoder)
+    : RECORDING_QSV_ENCODER_LABELS[normalized as typeof RECORDING_QSV_ENCODER_IDS[number]] ?? null;
+}
+
+/** Return only actual, usable global encoder choices with name-only labels. */
+export function recordingGlobalEncoderOptions(
+  encoders: readonly RecordingEncoderLike[] = [],
+): Array<[string, string]> {
+  return RECORDING_QSV_ENCODER_IDS.flatMap((id) => {
+    const encoder = encoders.find((candidate) => candidate?.type === id);
+    if (!encoder || !encoderIsUsable(encoder)) return [];
+    const label = recordingEncoderName(encoder);
+    return label ? [[id, label] as [string, string]] : [];
+  });
+}
+
 function encoderInventoryLabel(encoder: RecordingEncoderLike): string {
   const source = `${encoder.type} ${encoder.description}`.toLowerCase();
   if (source.includes('av1')) return 'AV1';
   if (source.includes('hevc') || source.includes('h.265') || source.includes('h265')) return 'HEVC';
   if (source.includes('h264') || source.includes('h.264') || source.includes('avc') || encoder.type === 'obs_qsv11_v2') return 'H.264';
-  return encoder.description || encoder.type;
+  return recordingEncoderName(encoder)?.replace(/^Intel\s+/i, '').replace(/^H264$/, 'H.264') ?? '';
 }
 
 function encoderIsUsable(encoder: RecordingEncoderLike): boolean {
@@ -264,6 +352,29 @@ export function recordingGpuEncoderOptions(
   return options;
 }
 
+/** Resolve a saved physical selection to a clean label even during a reload. */
+export function recordingEncoderSelectionLabel(
+  id: string,
+  devices: RecordingGpuLike[] = [],
+  encoders: RecordingEncoderLike[] = [],
+): string | null {
+  const concrete = recordingGpuEncoderOptions(devices, encoders).find(([optionId]) => optionId === id);
+  if (concrete) return concrete[1];
+  const selection = parseRecordingEncoderSelection(id);
+  if (!selection) return null;
+  const matchingDevice = devices.find((device) => {
+    const target = recordingAdapterTargetOf(device);
+    if (!target) return false;
+    if (selection.target.deviceKey && target.deviceKey) return selection.target.deviceKey === target.deviceKey;
+    if (selection.target.bdf && target.bdf) return JSON.stringify(selection.target.bdf) === JSON.stringify(target.bdf);
+    return Boolean(selection.target.luid && target.luid && selection.target.luid === target.luid);
+  });
+  const name = matchingDevice?.name ?? selection.deviceName ?? 'GPU';
+  const sku = name.match(/\b[AB]\d{3}\b/i)?.[0]?.toUpperCase();
+  const codec = selection.codec === 'obs_qsv11_av1' ? 'AV1' : selection.codec === 'obs_qsv11_hevc' ? 'HEVC' : 'H264';
+  return `${sku ?? name} ${codec}`;
+}
+
 function intelGpu(device: RecordingGpuLike): boolean {
   const vendor = `${device?.gpuVendor ?? ''}`.toLowerCase();
   const pciVendor = String(device?.pciVendorId ?? '').replace(/^0x/i, '').toLowerCase();
@@ -329,7 +440,8 @@ export function recordingGpuEncoderRows(
   for (const { encoder, metadata } of annotated) {
     if (!metadata.key && !metadata.name) continue;
     if (gpuDevices.some((device) => metadataMatchesDevice(metadata, device))) continue;
-    rows.push({ deviceKey: metadata.key, deviceName: metadata.name ?? 'Detected GPU', encoderLabels: [encoderInventoryLabel(encoder)] });
+    const label = encoderInventoryLabel(encoder);
+    if (label) rows.push({ deviceKey: metadata.key, deviceName: metadata.name ?? 'Detected GPU', encoderLabels: [label] });
   }
 
   // A non-Intel runtime entry is unusual for this QSV-only capture path, but

@@ -45,7 +45,7 @@ export function createRecordingHotkeys({ shortcut, getSettings, onAction, reserv
   return { register, unregister, getState: () => ({ ...state, registered: { ...state.registered }, conflicts: { ...state.conflicts } }) };
 }
 
-export function createRecordingActionHandler({ getSettings, recordingEngine, captureScreenshot = null, addMarker = null, saveReplayClip = null, onCaptureStopped = null, fsModule = fs, pathModule = path, now = () => new Date(), log = (message) => console.log(message), onActionResult = async () => {} } = {}) {
+export function createRecordingActionHandler({ getSettings, recordingEngine, shutdownRecordingRuntimeIfIdle = null, captureScreenshot = null, addMarker = null, saveReplayClip = null, onCaptureStopped = null, fsModule = fs, pathModule = path, now = () => new Date(), log = (message) => console.log(message), onActionResult = async () => {} } = {}) {
   return async (action) => {
     let error = null;
     let preActionMode = null;
@@ -93,6 +93,11 @@ export function createRecordingActionHandler({ getSettings, recordingEngine, cap
       error = err instanceof Error ? err.message : String(err);
       log(`[recording] shortcut ${action} failed: ${error}`);
     } finally {
+      if (error) {
+        try {
+          await (shutdownRecordingRuntimeIfIdle ?? (() => recordingEngine.shutdownIfIdle?.()))();
+        } catch { /* idle cleanup is best effort after a failed action */ }
+      }
       try {
         const state = recordingEngine.getState?.() ?? null;
         await onActionResult({ action, ok: error === null, error, preActionMode, ...(action === 'stop' ? { didStop } : {}), ...(outputPath ? { outputPath: pathModule.basename(outputPath) } : {}), state, ...(state?.instantReplaySave ? { instantReplaySave: state.instantReplaySave } : {}) });

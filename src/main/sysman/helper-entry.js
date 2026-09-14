@@ -24,8 +24,18 @@
 import { createSysmanPowerLimits } from './power-limits.js';
 import { runSysmanHelperPipeMode, createSysmanHelperLogFileWriter } from './helper-mode.js';
 import { createIgclWaiverBridge } from '../backend/igcl-bindings.js';
+import { setWindowsProcessIdentity } from './windows-process-identity.js';
 
 const helperLog = createSysmanHelperLogFileWriter();
+// The helper is intentionally a detached, Electron-free process, so the
+// parent Electron process's AppUserModelId is not inherited. Set the same
+// Windows identity locally so Task Manager groups this required Sysman child
+// under Arc Power without changing its proven plain-Node startup contract.
+try { process.title = 'Arc Power'; } catch { /* best effort on constrained hosts */ }
+const processIdentity = setWindowsProcessIdentity();
+if (!processIdentity.ok && !processIdentity.skipped) {
+  helperLog('[identity] could not set the Arc Power Windows process identity');
+}
 // The Sysman voltage-target API is the writer, but this driver gates that
 // writer on the IGCL overclock-waiver state. Keep the bridge lazy: ordinary
 // power-limit startup must remain the proven IGCL-free Sysman path. It is

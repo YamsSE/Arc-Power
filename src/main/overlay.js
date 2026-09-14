@@ -55,15 +55,15 @@ const OVERLAY_BASE_HEIGHT = 170;
 // Keep this as the CSS-pixel contract at scale 1.0; the renderer's rem sizes
 // and the native window geometry both scale from the same value.
 const CAPFRAMEX_BASE_WIDTH = 336;
-const CAPFRAMEX_BASE_HEIGHT = 567;
+const CAPFRAMEX_BASE_HEIGHT = 426;
 // The base height includes one GPU section with the default four visible GPU
 // rows. Keep the per-section estimate in CSS pixels and scale it together
 // with the rest of the window so enabling more telemetry cannot clip the HUD.
 const CAPFRAMEX_GPU_SECTION_OVERHEAD = 24;
-const CAPFRAMEX_GPU_ROW_HEIGHT = 17;
+const CAPFRAMEX_GPU_ROW_HEIGHT = 21;
 const CAPFRAMEX_DEFAULT_GPU_ROWS = 4;
 const CAPFRAMEX_DEFAULT_CPU_ROWS = 3;
-const CAPFRAMEX_DEFAULT_SUMMARY_ROWS = 3;
+const CAPFRAMEX_DEFAULT_SUMMARY_ROWS = 5;
 const CAPFRAMEX_GPU_ROW_STATS = [
   'gpu-util', 'gpu-temp', 'gpu-voltage', 'gpu-power', 'gpu-fan', 'gpu-vram', 'gpu-vram-temp',
 ];
@@ -211,6 +211,8 @@ function normalizeSettings(raw = {}) {
  * @param {{
  *   getOverlaySettings: () => object,   // the CURRENT persisted settings
  *                                       // (main.js: store.loadSettingsSync)
+ *   deferBuild?: boolean,               // do not create Chromium content for
+ *                                       // an inactive provider on product boot
  * }} deps
  * @returns {{
  *   getWindow: () => import('electron').BrowserWindow | null,
@@ -224,7 +226,7 @@ function normalizeSettings(raw = {}) {
  *   destroy: () => void,
  * }}
  */
-export function createOverlayWindow({ getOverlaySettings }) {
+export function createOverlayWindow({ getOverlaySettings, deferBuild = false }) {
   let win = null;
   let visible = false;
   let hotkeyRegistered = false;
@@ -332,8 +334,9 @@ export function createOverlayWindow({ getOverlaySettings }) {
       (count, statId) => count + (applied.stats.includes(statId) ? 1 : 0),
       0,
     );
+    const capframexGpuTitleRows = (applied.stats.includes('gpu-clock') || applied.stats.includes('gpu-mem-clock')) ? 1 : 0;
     const capframexGpuSectionHeight = CAPFRAMEX_GPU_SECTION_OVERHEAD
-      + capframexGpuRows * CAPFRAMEX_GPU_ROW_HEIGHT;
+      + (capframexGpuRows + capframexGpuTitleRows) * CAPFRAMEX_GPU_ROW_HEIGHT;
     const capframexDefaultGpuSectionHeight = CAPFRAMEX_GPU_SECTION_OVERHEAD
       + CAPFRAMEX_DEFAULT_GPU_ROWS * CAPFRAMEX_GPU_ROW_HEIGHT;
     const capframexCpuRows = (applied.stats.includes('cpu-clock') ? 1 : 0)
@@ -450,7 +453,19 @@ export function createOverlayWindow({ getOverlaySettings }) {
      */
     apply(rawSettings, { preserveVisibility = false } = {}) {
       applied = normalizeSettings(rawSettings);
-      if (!win) build();
+      // Keep the product's Chromium HUD absent until the user invokes the
+      // shortcut. The settings envelope is still retained in this handle so
+      // the first shortcut can build the window with the latest geometry and
+      // provider state. ui-verify and direct callers retain the historical
+      // eager-build behavior by leaving deferBuild at its default false.
+      const shouldBuild = !deferBuild;
+      if (!win && shouldBuild) build();
+      if (!win && bootApply) {
+        // The initial settings envelope has been consumed even when no
+        // window was needed.  A later user enable must be treated as a live
+        // settings change and show the newly created software HUD.
+        bootApply = false;
+      }
       if (win && !win.isDestroyed()) {
         const { bounds } = screen.getPrimaryDisplay();
         const size = sizeFor(applied.scale);
@@ -502,6 +517,20 @@ export function createOverlayWindow({ getOverlaySettings }) {
      */
     async toggle() {
       if (!applied.enabled) return;
+      // Product startup deliberately keeps the software HUD out of the
+      // process tree. The shortcut is the explicit demand signal that is
+      // allowed to create it.
+      if (!win || win.isDestroyed()) {
+        build();
+        visible = true;
+        win.show();
+        try {
+          win.setAlwaysOnTop(true, 'screen-saver');
+        } catch {
+          // never throw through the shortcut path
+        }
+        return;
+      }
       const next = !visible;
       const alive = win && !win.isDestroyed();
       if (alive) {
@@ -509,6 +538,12 @@ export function createOverlayWindow({ getOverlaySettings }) {
         else win.hide();
       }
       visible = next;
+      if (!next && deferBuild) {
+        // A hidden HUD no longer has an active user-facing purpose. Release
+        // Chromium now; the next shortcut rebuilds it from `applied`.
+        if (win && !win.isDestroyed()) win.destroy();
+        win = null;
+      }
     },
 
     /** The hotkey seam's live flag (main.js product: register's return;
