@@ -171,6 +171,10 @@ export interface PerControlResult {
   preferredOnly?: boolean;
   /** The requested GPU preference was already present before the setter ran. */
   preferenceAlreadyApplied?: boolean;
+  /** The requested GPU preference was saved, but the current output timing
+   *  does not require a scaler transition, so the active scaler remains
+   *  Identity until a non-native source mode is used. */
+  deferred?: boolean;
   /** M10b: the honest display-flash note the scaling apply carries. */
   warning?: string;
   /** Backend-only companion write; keep it out of the user-facing toast. */

@@ -2228,7 +2228,7 @@ async function applyDisplay(ctx: PageContext, only: string) {
         } else {
           (displayApplied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
         }
-        if (!per.internal && (per.preferredOnly || per.preferenceAlreadyApplied)) {
+        if (!per.internal && (per.deferred || per.preferredOnly || per.preferenceAlreadyApplied)) {
           toast('info', `${CONTROL_LABELS[key] ?? key} preference ${per.preferenceAlreadyApplied ? 'already saved' : 'saved'}`, per.message
             ?? 'The driver will use GPU Scaling when the output requires scaling.');
         } else if (!per.internal) {

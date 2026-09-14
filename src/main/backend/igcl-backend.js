@@ -4482,55 +4482,70 @@ export class IgclBackend {
               && got.scalingType === DISPLAY_SCALING_MODE_TO_IGCL.identity
               && preferredReadBackEqual;
             const nativeReadBackEqual = activeReadBackEqual;
-            if (preferredOnly) {
-              message = 'GPU Scaling preference was saved, but the driver reports Display Scaling as active; the requested GPU transition was not applied.';
-            } else if (preferenceAlreadyApplied) {
-              message = 'GPU Scaling preference was already saved, but the driver reports Display Scaling as active; the requested GPU transition was not applied.';
-            }
             const registryAvailable = registryWriterAvailable;
             let registryReadBackEqual = false;
+            const deferredPreferenceCandidate = preferredOnly || preferenceAlreadyApplied;
             // Do not persist a new IGS preference after a native silent no-op.
             // For a known old value the preflight write can be rolled back;
             // when the old value was unavailable, wait until native proof
             // exists before creating a new registry value.
-            if (registryAvailable && nativeReadBackEqual) {
+            // A verified preferred-only result is also allowed to confirm the
+            // registry write: native Identity is expected while the current
+            // source and target timings are equal, so waiting for an active
+            // non-Identity read-back would otherwise undo a valid preference.
+            const canVerifyDeferredRegistry = registryScalingState?.ok === true || registryFallback?.ok === true;
+            if (registryAvailable && (nativeReadBackEqual || (deferredPreferenceCandidate && canVerifyDeferredRegistry))) {
               const registryNeedsPostSync = registryScalingState?.ok !== true || registryScalingState.value !== registryValue;
               if (registryNeedsPostSync && registryFallback?.ok !== true) registryFallback = await this._vrrRegistry.setScalingState(dev, registryValue).catch(() => null);
               const postRegistry = registryReaderAvailable
                 ? await this._vrrRegistry.getScalingState(dev).catch(() => null)
                 : null;
-              registryReadBackEqual = postRegistry?.ok === true
-                ? postRegistry.value === registryValue
+              registryReadBackEqual = registryReaderAvailable
+                ? postRegistry?.ok === true && postRegistry.value === registryValue
                 : registryFallback?.ok === true || (!registryNeedsPostSync && registryScalingState?.value === registryValue);
             }
             const persistedReadBackEqual = custom !== null || !registryAvailable || registryReadBackEqual;
             readBackEqual = nativeReadBackEqual && persistedReadBackEqual;
-            if (!readBackEqual && !message) {
+            const deferredPreference = deferredPreferenceCandidate
+              && preferredReadBackEqual
+              && persistedReadBackEqual;
+            const applied = readBackEqual || deferredPreference;
+            if (deferredPreference) {
+              message = preferenceAlreadyApplied
+                ? 'GPU Scaling preference is already saved. The driver reports Display Scaling as active at the current desktop resolution; GPU Scaling will activate when the output requires scaling.'
+                : 'GPU Scaling preference was saved. The driver reports Display Scaling as active at the current desktop resolution; GPU Scaling will activate when the output requires scaling.';
+            } else if (preferredOnly) {
+              message = 'GPU Scaling preference was saved, but the driver reports Display Scaling as active; the requested GPU transition was not applied.';
+            } else if (preferenceAlreadyApplied) {
+              message = 'GPU Scaling preference was already saved, but the driver reports Display Scaling as active; the requested GPU transition was not applied.';
+            } else if (!applied && !message) {
               message = `scaling read-back did not prove the requested active and persisted mode (active=${activeReadBackEqual}, preferred=${preferredReadBackEqual}, registry=${registryReadBackEqual})`;
             }
-            if (!readBackEqual) {
+            if (!applied) {
               const restored = await restorePreviousRegistryState();
               if (registryRestoreAttempted) registryReadBackEqual = false;
               if (!restored) message = `${message ?? 'scaling read-back did not prove the requested active and persisted mode'}; the previous IGS scaling preference could not be restored`;
             }
             result.perControl.scalingMode = {
-              ok: readBackEqual,
-              errorCode: readBackEqual ? undefined : 'io-failed',
+              ok: applied,
+              errorCode: applied ? undefined : 'io-failed',
               message,
               readBackEqual,
               activeReadBackEqual,
               preferredReadBackEqual,
               preferredOnly,
               preferenceAlreadyApplied,
+              deferred: deferredPreference,
+              preference: deferredPreference ? 'gpu-scaling' : undefined,
               registryReadBackEqual,
               ...(registryFallback?.ok === true ? { writeTransport: 'registry' } : {}),
-              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual && !deferredPreference,
               // The honest modeset note - the scaling card warns the user
               // (the M10b probe skipped the scaling SET by design; the
               // header documents the same flash for retro scaling).
               warning: DISPLAY_SCALING_FLASH_WARNING,
             };
-            if (!readBackEqual) result.ok = false;
+            if (!applied) result.ok = false;
           }
           }
         }
