@@ -80,7 +80,6 @@ import {
   SCALING_STATE_GPU,
   SCALING_STATE_DISPLAY,
 } from './vrr-registry.js';
-import { createWindowsDisplayModeReapply } from './windows-display-mode.js';
 import { createSharedMemoryOverride, sharedMemoryPlatformSupported } from './shared-memory-override.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
@@ -478,9 +477,11 @@ const DISPLAY_SCALING_MODE_FROM_IGCL = { 1: 'identity', 2: 'centered', 4: 'stret
 // with Version 1 for every scaling mode. Older drivers may reject that
 // version, so retain a narrowly-scoped Version 0 compatibility fallback. A
 // successful setter is still not reported as applied until fresh scaling
-// read-back agrees. Ordinary GPU/Display scaling stays on the normal
-// preference path; Custom scaling remains caller-controlled because it may
-// need an explicit physical display transition.
+// read-back agrees. Intel Graphics Software's ordinary GPU/Display helper
+// sends HardwareModeSet=false: the driver owns the preferred scaler and uses
+// it when the output timing requires scaling. Custom scaling remains
+// caller-controlled because it may need an explicit physical display
+// transition of its own.
 function setScalingWithCompatibility(lib, handle, { flag, custom, hardwareModeSet = false }) {
   const versions = [1, 0];
   let lastResult = CTL_RESULT.ERROR_INVALID_ARGUMENT;
@@ -1014,9 +1015,6 @@ export class IgclBackend {
    *   sharedMemoryOverride?: object|null, // DxgKrnl shared GPU/NPU memory
    *                                   // registry adapter; omitted in native
    *                                   // test fakes and created for product use
-   *   displayModeReapply?: { reapply: (request: object) => object|Promise<object> }|null,
-   *                                   // Windows mode-application seam for
-   *                                   // ordinary GPU-scaling preferences
    *   systemInfoOf?: () => object|null, // trusted cached CPU/RAM snapshot
    * }} opts
    */
@@ -1057,14 +1055,6 @@ export class IgclBackend {
     this._vrrRegistry = Object.prototype.hasOwnProperty.call(opts, 'vrrRegistry')
       ? opts.vrrRegistry
       : (opts.lib ? null : createVrrRegistry());
-    // A normal IGCL GPU-scaling write updates the driver's preferred scaler.
-    // Reapply the current Windows mode so the driver can consume that
-    // preference immediately when the output actually requires scaling. The
-    // seam is disabled for injected native fakes unless a test explicitly
-    // provides it; tests must never touch the user's display session.
-    this._displayModeReapply = Object.prototype.hasOwnProperty.call(opts, 'displayModeReapply')
-      ? opts.displayModeReapply
-      : (opts.lib ? null : createWindowsDisplayModeReapply());
     this._ocMode = opts.ocMode === 'advanced' ? 'advanced' : 'stock';
     // Stock/Advanced is a tuning-surface preference, not a process-global
     // GPU setting. Keep a separate mode for each enumerated adapter so
@@ -4368,13 +4358,16 @@ export class IgclBackend {
           // The M10b-fix lesson: NO SupportedScaling pre-gate - the caps
           // bitmask stays a UI hint (the supportedOptions list); the set
           // reaches the driver and the driver's ACTUAL result decides.
-          // ScalingType is a FLAG value in the struct (1/2/4/8/16). Ordinary
-          // GPU/Display scaling uses the driver's normal preference path.
-          // Only Custom (or an explicit custom physical-mode request) is
-          // allowed to request a hardware transition.
+          // ScalingType is a FLAG value in the struct (1/2/4/8/16). Match
+          // Intel Graphics Software's setCurrentScalingSettings helper for
+          // ordinary GPU/Display transitions: HardwareModeSet is false and
+          // the driver's preferred scaler is the persisted selection.
+          const hardwareModeSet = custom ? custom.hardwareModeSet !== false : false;
           const registryWriterAvailable = !custom && typeof this._vrrRegistry?.setScalingState === 'function';
           const registryReaderAvailable = registryWriterAvailable && typeof this._vrrRegistry?.getScalingState === 'function';
-          const registryValue = patch.scalingMode === 'identity' ? SCALING_STATE_DISPLAY : SCALING_STATE_GPU;
+          const registryValue = patch.scalingMode === 'identity' || patch.scalingMode === 'custom'
+            ? SCALING_STATE_DISPLAY
+            : SCALING_STATE_GPU;
           const registryNeedsSync = registryWriterAvailable
             && registryScalingState?.ok === true
             && registryScalingState.value !== registryValue;
@@ -4382,7 +4375,8 @@ export class IgclBackend {
           let setResult = null;
           let registryRestoreAttempted = false;
           let registryRestoreOk = true;
-          let displayModeReapply = null;
+          let nativePreferenceRestoreAttempted = false;
+          let nativePreferenceRestoreOk = true;
 
           const restorePreviousRegistryState = async () => {
             if (registryRestoreAttempted) return registryRestoreOk;
@@ -4419,7 +4413,7 @@ export class IgclBackend {
             ({ setResult } = setScalingWithCompatibility(lib, handle, {
               flag,
               custom,
-              hardwareModeSet: false,
+              hardwareModeSet,
             }));
           }
 
@@ -4443,26 +4437,6 @@ export class IgclBackend {
             };
             result.ok = false;
           } else {
-            // IGCL's ordinary GPU selector is a preferred output-scaler
-            // write. Reapply the current Windows mode after the native SET so
-            // the driver gets the same mode-application opportunity it gets
-            // from Intel Graphics Software. At a native desktop resolution
-            // the active read-back may still correctly remain Identity; the
-            // fresh read below keeps that distinction explicit.
-            if (!custom
-              && flag !== DISPLAY_SCALING_MODE_TO_IGCL.identity
-              && typeof this._displayModeReapply?.reapply === 'function') {
-              displayModeReapply = await Promise.resolve(this._displayModeReapply.reapply({
-                displayName: selectedDisplay?.name,
-                resolution: selectedDisplay?.resolution,
-                refreshRate: selectedDisplay?.refreshRate,
-              })).catch(() => ({
-                supported: true,
-                ok: false,
-                errorCode: 'display-mode-reapply-failed',
-                message: 'Windows could not reapply the current display mode; no display mode was changed.',
-              }));
-            }
             // The probe never set-tested scaling; the read-back gets a short
             // settle because the driver may need a beat to report the new
             // output state.
@@ -4511,8 +4485,6 @@ export class IgclBackend {
             const registryAvailable = registryWriterAvailable;
             let registryReadBackEqual = false;
             const deferredPreferenceCandidate = preferredOnly || preferenceAlreadyApplied;
-            const displayModeReapplyFailed = displayModeReapply?.supported === true
-              && displayModeReapply.ok !== true;
             // Do not persist a new IGS preference after a native silent no-op.
             // For a known old value the preflight write can be rolled back;
             // when the old value was unavailable, wait until native proof
@@ -4534,18 +4506,21 @@ export class IgclBackend {
             }
             const persistedReadBackEqual = custom !== null || !registryAvailable || registryReadBackEqual;
             readBackEqual = nativeReadBackEqual && persistedReadBackEqual;
-            const deferredPreference = deferredPreferenceCandidate
+            // For ordinary requests, HardwareModeSet=false is the same
+            // preferred-scaler path used by Intel Graphics Software, so a
+            // verified preferred-only result is an applied selection even
+            // when the native desktop timing keeps Identity active. A Custom
+            // request that explicitly asks for a hardware transition still
+            // requires active native read-back.
+            const deferredPreference = !hardwareModeSet
+              && deferredPreferenceCandidate
               && preferredReadBackEqual
-              && persistedReadBackEqual
-              && !displayModeReapplyFailed;
+              && persistedReadBackEqual;
             const applied = readBackEqual || deferredPreference;
-            if (displayModeReapplyFailed && !nativeReadBackEqual) {
-              message = displayModeReapply.message
-                ?? 'GPU Scaling preference was saved, but Windows could not reapply the current display mode; the requested GPU transition was not applied.';
-            } else if (deferredPreference) {
+            if (deferredPreference) {
               message = preferenceAlreadyApplied
-                ? 'GPU Scaling preference is already saved. The driver reports Display Scaling as active at the current desktop resolution; GPU Scaling will activate when the output requires scaling.'
-                : 'GPU Scaling preference was saved. The driver reports Display Scaling as active at the current desktop resolution; GPU Scaling will activate when the output requires scaling.';
+                ? 'GPU Scaling is already applied. At the current desktop timing the driver keeps Identity active, matching Intel Graphics Software; GPU Scaling is the saved selection used when the output requires scaling.'
+                : 'GPU Scaling applied. At the current desktop timing the driver keeps Identity active, matching Intel Graphics Software; GPU Scaling is the saved selection used when the output requires scaling.';
             } else if (preferredOnly) {
               message = 'GPU Scaling preference was saved, but the driver reports Display Scaling as active; the requested GPU transition was not applied.';
             } else if (preferenceAlreadyApplied) {
@@ -4554,6 +4529,41 @@ export class IgclBackend {
               message = `scaling read-back did not prove the requested active and persisted mode (active=${activeReadBackEqual}, preferred=${preferredReadBackEqual}, registry=${registryReadBackEqual})`;
             }
             if (!applied) {
+              // The IGCL SET also updates PreferredScalingType. If a
+              // hardware-mode request did not produce the requested active
+              // scaler, do not leave the failed GPU preference behind for
+              // the next Arc Power launch. Reapply the preference that was
+              // observed before this transaction and verify that persisted
+              // field when the Version 1 surface is available.
+              if (!custom
+                && setResult === CTL_RESULT.SUCCESS
+                && preferredBefore !== null
+                && preferredBefore !== flag
+                && !nativeReadBackEqual) {
+                nativePreferenceRestoreAttempted = true;
+                try {
+                  const nativeRestore = setScalingWithCompatibility(lib, handle, {
+                    flag: preferredBefore,
+                    custom: null,
+                    hardwareModeSet: false,
+                  });
+                  if (nativeRestore.setResult === CTL_RESULT.SUCCESS) {
+                    const restoredReadBack = getScalingWithCompatibility(lib, handle);
+                    nativePreferenceRestoreOk = restoredReadBack.getResult === CTL_RESULT.SUCCESS
+                      && (restoredReadBack.version !== 1
+                        || restoredReadBack.settings?.preferredScalingType === preferredBefore);
+                  } else {
+                    nativePreferenceRestoreOk = false;
+                  }
+                } catch {
+                  nativePreferenceRestoreOk = false;
+                }
+              }
+              if (nativePreferenceRestoreAttempted && !nativePreferenceRestoreOk) {
+                message = `${message ?? 'scaling read-back did not prove the requested active and persisted mode'}; the previous native scaling preference could not be restored`;
+              } else if (nativePreferenceRestoreAttempted) {
+                message = `${message ?? 'the requested active scaling transition was not applied'}; the previous native scaling preference was restored`;
+              }
               const restored = await restorePreviousRegistryState();
               if (registryRestoreAttempted) registryReadBackEqual = false;
               if (!restored) message = `${message ?? 'scaling read-back did not prove the requested active and persisted mode'}; the previous IGS scaling preference could not be restored`;
@@ -4568,11 +4578,9 @@ export class IgclBackend {
               preferredOnly,
               preferenceAlreadyApplied,
               deferred: deferredPreference,
+              igsPreferredSelectionApplied: deferredPreference,
               preference: deferredPreference ? 'gpu-scaling' : undefined,
-              ...(displayModeReapply?.supported === true ? {
-                displayModeReapplyOk: displayModeReapply.ok === true,
-                displayModeReapplyResult: displayModeReapply.result,
-              } : {}),
+              ...(nativePreferenceRestoreAttempted ? { nativePreferenceRestoreOk } : {}),
               registryReadBackEqual,
               ...(registryFallback?.ok === true ? { writeTransport: 'registry' } : {}),
               silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual && !deferredPreference,

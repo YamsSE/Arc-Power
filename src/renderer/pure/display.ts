@@ -54,13 +54,17 @@ function isExplicitScalingPreference(value: unknown): value is 'gpu-scaling' | '
   return value === 'gpu-scaling' || value === 'display-scaling';
 }
 
-/** Resolve the raw mode used by payload construction. The active native scaler
- * remains authoritative whenever IGCL reports one; a persisted preference is
- * only a fallback when the active mode is unavailable. */
+/** Resolve the mode exposed by IGS's Display selector. Intel's wrapper
+ * returns the PreferredScalingType when the active scaler is Identity and
+ * the current desktop timing does not require a physical scale operation.
+ * IGCL's raw active value remains available as `display.scalingMode`; this
+ * helper mirrors the user-facing selection so Arc Power does not show
+ * Display Scaling after a verified GPU preference was applied. */
 export function effectiveScalingModeOf(display: Display | null | undefined): string | null {
   if (!display) return null;
   const active = display.scalingMode;
   const preferred = display.preferredScalingMode;
+  if (active === 'identity' && isGpuScalingMode(preferred)) return preferred;
   if (active === 'identity' && preferred === 'custom') return 'custom';
   if (active !== null && active !== undefined) return active;
   return preferred ?? null;

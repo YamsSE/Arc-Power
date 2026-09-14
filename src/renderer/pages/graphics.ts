@@ -170,7 +170,7 @@ function scalingStateNoteOf(display: DisplayState['displays'][number] | null): s
   const gpuPreferred = display?.scalingPreference !== 'display-scaling'
     && (preferredLabel !== undefined
     || display?.scalingPreference === 'gpu-scaling');
-  if (display?.scalingMode === 'identity' && gpuPreferred) {
+  if (effectiveScalingModeOf(display) === 'identity' && gpuPreferred) {
     const method = preferredLabel ? ` (${preferredLabel})` : '';
     return `Saved preference: GPU Scaling${method}. Active scaler: Display Scaling at the current desktop resolution. ${DISPLAY_SCALING_NOTE}`;
   }
@@ -410,8 +410,10 @@ function preserveDeferredGpuScalingSelection(
   display: DisplayState['displays'][number],
   requestedMethod: string | null,
 ): boolean {
+  const gpuPreferenceVerified = display.scalingPreference === 'gpu-scaling'
+    || ['centered', 'stretched', 'aspect-ratio-centered-max'].includes(display.preferredScalingMode ?? '');
   if (display.scalingMode !== 'identity'
-    || display.scalingPreference !== 'gpu-scaling'
+    || !gpuPreferenceVerified
     || requestedMethod === null
     || !['centered', 'stretched', 'aspect-ratio-centered-max'].includes(requestedMethod)) {
     return false;
@@ -2263,7 +2265,9 @@ async function applyDisplay(ctx: PageContext, only: string) {
         } else {
           (displayApplied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
         }
-        if (!per.internal && (per.deferred || per.preferredOnly || per.preferenceAlreadyApplied)) {
+        if (!per.internal && per.igsPreferredSelectionApplied) {
+          toast('success', `${CONTROL_LABELS[key] ?? key} applied`, per.message ?? 'The driver will use GPU Scaling when the output requires scaling.');
+        } else if (!per.internal && (per.deferred || per.preferredOnly || per.preferenceAlreadyApplied)) {
           toast('info', `${CONTROL_LABELS[key] ?? key} preference ${per.preferenceAlreadyApplied ? 'already saved' : 'saved'}`, per.message
             ?? 'The driver will use GPU Scaling when the output requires scaling.');
         } else if (!per.internal) {

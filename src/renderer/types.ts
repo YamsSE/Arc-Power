@@ -175,6 +175,9 @@ export interface PerControlResult {
    *  does not require a scaler transition, so the active scaler remains
    *  Identity until a non-native source mode is used. */
   deferred?: boolean;
+  /** The IGS-compatible preferred scaler was verified even though the
+   *  current native desktop timing keeps Identity active. */
+  igsPreferredSelectionApplied?: boolean;
   /** M10b: the honest display-flash note the scaling apply carries. */
   warning?: string;
   /** Backend-only companion write; keep it out of the user-facing toast. */
@@ -1126,9 +1129,9 @@ export interface DisplayState {
     colorFormat: string | null;
     quantizationRange: 'default' | 'limited' | 'full' | null;
     scalingMode: string | null;
-    /** Active/native scaler state. The renderer keeps the persisted preference
-     * below separate and does not treat it as active when the driver reports
-     * Identity. */
+    /** Active/native scaler state returned directly by IGCL. The renderer
+     * keeps this diagnostic value separate while mirroring IGS's preferred
+     * selection for the user-facing scaling selector at native timing. */
     preferredScalingMode?: string | null;
     /** Adapter-level GPU-vs-Display preference when the native surface cannot
      * identify the exact GPU scaler method. */

@@ -105,7 +105,7 @@ let activeTab: 'tuning' | 'fan' | 'graphics' | 'recording' = 'tuning';
 // panel is open; keeping these closures next to the tab renderers lets each
 // surface refresh its existing controls without requiring a tab switch.
 let tuningStateSync: ((state: DeviceState) => void) | null = null;
-let refreshAdvancedOverlayVoltageOffset: (() => void) | null = null;
+let refreshAdvancedOverlayVoltageOffset: ((preserveAppliedZero?: boolean) => void) | null = null;
 let fanStateSync: (() => void) | null = null;
 let graphicsStateSync: ((state: GraphicsState) => void) | null = null;
 let recordingSettingsSync: ((settings: RecordingSettings) => void) | null = null;
@@ -1107,6 +1107,12 @@ async function renderTuning(): Promise<void> {
         currentState = fresh;
         store.set({ state: fresh });
       }
+      const zeroVoltageApplied = settings.gpuVoltOffsetV === 0
+        && result.perControl.gpuVoltOffsetV?.ok === true;
+      if (zeroVoltageApplied && currentState) {
+        currentState = { ...currentState, gpuVoltOffsetV: 0 };
+        store.set({ state: currentState });
+      }
       for (const [key, per] of Object.entries(result.perControl)) {
         if (per.ok) {
           toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
@@ -1118,7 +1124,7 @@ async function renderTuning(): Promise<void> {
         }
       }
       if (fresh) renderTuningInPlace();
-      refreshAdvancedOverlayVoltageOffset?.();
+      refreshAdvancedOverlayVoltageOffset?.(zeroVoltageApplied);
     } catch (err) {
       if (panelIdentityMatches(deviceId, deviceKey, generation)) {
         toast('error', 'Apply failed', err instanceof Error ? err.message : String(err));
@@ -1177,7 +1183,7 @@ async function renderTuning(): Promise<void> {
     updateFloating();
   };
 
-  const refreshSysmanVoltageOffset = async (): Promise<void> => {
+  const refreshSysmanVoltageOffset = async (preserveAppliedZero = false): Promise<void> => {
     const range = cardSliderRange(caps, 'gpuVoltOffsetV');
     if (!isAlchemistGpuName(caps.deviceName, caps) || voltageDeviceId === null
       || !range || range.units !== 'V') return;
@@ -1198,6 +1204,10 @@ async function renderTuning(): Promise<void> {
       || (typeof latestState.gpuVoltOffsetV === 'number'
         && Number.isFinite(latestState.gpuVoltOffsetV)
         && latestState.gpuVoltOffsetV > 0.0005)) return;
+    if (preserveAppliedZero
+      && typeof latestState.gpuVoltOffsetV === 'number'
+      && Number.isFinite(latestState.gpuVoltOffsetV)
+      && latestState.gpuVoltOffsetV >= -0.0005) return;
     if (voltageLocalDraft) return;
     currentState = { ...latestState, gpuVoltOffsetV: result.offsetV };
     hiddenNegativeControls.delete('gpuVoltOffsetV');
@@ -1243,7 +1253,7 @@ async function renderTuning(): Promise<void> {
   );
   contentEl.append(view);
   view.append(tuningHeading, ...(modeRow ? [modeRow] : []), stack);
-  refreshAdvancedOverlayVoltageOffset = () => { void refreshSysmanVoltageOffset(); };
+  refreshAdvancedOverlayVoltageOffset = (preserveAppliedZero = false) => { void refreshSysmanVoltageOffset(preserveAppliedZero); };
   refreshAdvancedOverlayVoltageOffset();
 }
 

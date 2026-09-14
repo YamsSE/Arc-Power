@@ -409,7 +409,7 @@ async function refreshSysmanLimits(deviceId: number | null): Promise<void> {
  * so using only getCurrentSettings() leaves a successful -mV apply looking
  * like "Driver: unavailable". Battlemage percent-unit controls stay on their
  * normal backend state and never call this legacy-voltage channel. */
-async function refreshSysmanVoltageOffset(ctx: PageContext, deviceId: number | null): Promise<void> {
+async function refreshSysmanVoltageOffset(ctx: PageContext, deviceId: number | null, preserveAppliedZero = false): Promise<void> {
   const range = renderCaps?.ranges?.gpuVoltOffsetV;
   if (deviceId === null || !range || range.units !== 'V') return;
   const token = ++sysmanVoltageRefreshToken;
@@ -421,6 +421,13 @@ async function refreshSysmanVoltageOffset(ctx: PageContext, deviceId: number | n
   }
   if (token !== sysmanVoltageRefreshToken || ctx.store.get().deviceId !== deviceId) return;
   if (result?.ok !== true || typeof result.offsetV !== 'number' || !Number.isFinite(result.offsetV) || !currentState) return;
+  // A successful zero apply is an explicit Sysman clear. Do not let a
+  // delayed/stale helper read re-introduce the previous negative offset after
+  // the canonical apply path has already verified 0 V.
+  if (preserveAppliedZero
+    && typeof currentState.gpuVoltOffsetV === 'number'
+    && Number.isFinite(currentState.gpuVoltOffsetV)
+    && currentState.gpuVoltOffsetV >= -0.0005) return;
   // The helper owns the legacy negative Alchemist path only. A positive
   // V-unit value already comes from the canonical IGCL state; overlaying a
   // Sysman zero/negative read here makes a successful positive apply appear
@@ -1205,7 +1212,13 @@ export const tuningPage: Page = {
             refreshCard('gpuVoltOffsetV');
             updateFloating();
             void refreshSysmanLimits(deviceId);
-            void refreshSysmanVoltageOffset(ctx, deviceId);
+            const zeroOffsetResetApplied = isOffsetReset
+              && result.perControl.gpuVoltOffsetV?.ok === true;
+            if (zeroOffsetResetApplied && currentState) {
+              currentState = { ...currentState, gpuVoltOffsetV: 0 };
+              ctx.store.set({ state: currentState });
+            }
+            void refreshSysmanVoltageOffset(ctx, deviceId, zeroOffsetResetApplied);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: msg } });
@@ -1926,6 +1939,12 @@ export const tuningPage: Page = {
           currentState = fresh;
           ctx.store.set({ state: fresh });
         }
+        const zeroVoltageApplied = settings.gpuVoltOffsetV === 0
+          && result.perControl.gpuVoltOffsetV?.ok === true;
+        if (zeroVoltageApplied && currentState) {
+          currentState = { ...currentState, gpuVoltOffsetV: 0 };
+          ctx.store.set({ state: currentState });
+        }
         // M3-A: record the last-apply outcome (honest: ok with what
         // changed / failed with the first error). M16: the dashboard OC
         // status row no longer displays this record (the row derives its
@@ -1993,7 +2012,7 @@ export const tuningPage: Page = {
         // The IGCL fresh state cannot carry a negative Alchemist Sysman
         // offset. Read it through the dedicated helper before the final card
         // refresh so the Driver line reflects the actual applied value.
-        await refreshSysmanVoltageOffset(ctx, deviceId);
+        await refreshSysmanVoltageOffset(ctx, deviceId, zeroVoltageApplied);
         for (const key of controls) refreshCard(key);
         refreshLockReadout();
         refreshLockEditor();
