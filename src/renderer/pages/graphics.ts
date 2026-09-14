@@ -2084,7 +2084,12 @@ async function apply(ctx: PageContext, only?: string | string[]) {
 function displayPayloadForControl(only: string, display: DisplayState['displays'][number]): DisplaySettings | null {
   let payload: DisplaySettings = {};
   if (only === 'scalingMode') {
-    if (displayScalingViewDraft !== scalingViewOf(display)) {
+    const appliedScalingView = (displayApplied as Record<string, unknown>).scalingMode;
+    const gpuPreferenceAlreadyApplied = displayScalingViewDraft === 'gpu-scaling'
+      && appliedScalingView === 'gpu-scaling'
+      && (displayApplied as Record<string, unknown>).displayScalingMethod === displayScalingMethodDraft;
+    const scalingViewBaselineDirty = appliedScalingView !== undefined && displayScalingViewDraft !== appliedScalingView;
+    if ((displayScalingViewDraft !== scalingViewOf(display) || scalingViewBaselineDirty) && !gpuPreferenceAlreadyApplied) {
       const raw = rawScalingForView(display, displayScalingViewDraft);
       payload = { scalingMode: raw };
       if (displayScalingViewDraft === 'gpu-scaling') {
@@ -2116,7 +2121,14 @@ function displayPayloadForControl(only: string, display: DisplayState['displays'
     const view = displayScalingViewDraft;
     const customDirty = view === 'display-scaling' && displayScalingMethodDraft === 'custom'
       && !sameCustomScaling(displayDraft.scalingCustom, customScalingOf(display));
-    if (displayScalingMethodDraft !== scalingMethodViewOf(display) || customDirty) {
+    const appliedScalingView = (displayApplied as Record<string, unknown>).scalingMode;
+    const appliedScalingMethod = (displayApplied as Record<string, unknown>).displayScalingMethod;
+    const gpuPreferenceAlreadyApplied = view === 'gpu-scaling'
+      && appliedScalingView === 'gpu-scaling'
+      && appliedScalingMethod === displayScalingMethodDraft;
+    const scalingMethodBaselineDirty = appliedScalingView !== undefined
+      && (view !== appliedScalingView || (view === 'gpu-scaling' && displayScalingMethodDraft !== appliedScalingMethod));
+    if ((displayScalingMethodDraft !== scalingMethodViewOf(display) || customDirty || scalingMethodBaselineDirty) && !gpuPreferenceAlreadyApplied) {
       payload = {};
       if (view === 'gpu-scaling') {
         payload.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
@@ -2216,16 +2228,16 @@ async function applyDisplay(ctx: PageContext, only: string) {
         } else {
           (displayApplied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
         }
-        if (per.preferredOnly || per.preferenceAlreadyApplied) {
+        if (!per.internal && (per.preferredOnly || per.preferenceAlreadyApplied)) {
           toast('info', `${CONTROL_LABELS[key] ?? key} preference ${per.preferenceAlreadyApplied ? 'already saved' : 'saved'}`, per.message
             ?? 'The driver will use GPU Scaling when the output requires scaling.');
-        } else {
+        } else if (!per.internal) {
           toast('success', `${CONTROL_LABELS[key] ?? key} applied`, '');
         }
         // The scaling card's honest display-flash note rides the apply result.
         if (per.warning && !per.internal) toast('warn', 'Screen flash expected', per.warning);
       } else {
-        toast('error', `${CONTROL_LABELS[key] ?? key} failed`, per.message ?? errorMessage(per.errorCode, key));
+        if (!per.internal) toast('error', `${CONTROL_LABELS[key] ?? key} failed`, per.message ?? errorMessage(per.errorCode, key));
       }
     }
     // Scaling Mode and Scaling Method are one IGS three-way control in the
@@ -2245,7 +2257,27 @@ async function applyDisplay(ctx: PageContext, only: string) {
       // was in flight. Keep that newer intent for the queued transaction;
       // only replace an unchanged draft with native read-back.
       const scalingDraftChangedWhileApplying = displayScalingDraftRevision !== scalingDraftRevisionAtStart;
-      if (!scalingDraftChangedWhileApplying) syncDisplayScalingDraftFromReadback(freshDisplay);
+      const scalingResult = out.perControl.scalingMode;
+      const requestedGpuMethod = payload.scalingMode === 'centered' || payload.scalingMode === 'stretched' || payload.scalingMode === 'aspect-ratio-centered-max'
+        ? payload.scalingMode
+        : null;
+      const preserveGpuPreference = scalingResult?.ok === true
+        && (scalingResult.preferredOnly === true || scalingResult.preferenceAlreadyApplied === true)
+        && requestedGpuMethod !== null;
+      if (!scalingDraftChangedWhileApplying) {
+        if (preserveGpuPreference) {
+          displayScalingViewDraft = 'gpu-scaling';
+          displayScalingMethodDraft = requestedGpuMethod;
+          displayDraft.scalingMode = requestedGpuMethod;
+          displayDraft.displayScalingMethod = payload.displayScalingMethod ?? requestedGpuMethod;
+          delete displayDraft.scalingCustom;
+          delete displayDraft.scalingMethod;
+          (displayApplied as Record<string, unknown>).scalingMode = 'gpu-scaling';
+          (displayApplied as Record<string, unknown>).displayScalingMethod = displayScalingMethodDraft;
+        } else {
+          syncDisplayScalingDraftFromReadback(freshDisplay);
+        }
+      }
       if (graphicsView === 'display' && viewContainer?.isConnected) renderDisplayCards(viewContainer, ctx);
     }
     for (const key of DISPLAY_APPLY_KEYS) refreshDisplayChip(key);

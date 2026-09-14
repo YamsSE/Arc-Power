@@ -4548,6 +4548,9 @@ export class IgclBackend {
         && (result.perControl.scalingMode || (enteringRetro && result.perControl.scalingMethod))) {
         result.perControl.displayScalingMethod = {
           ...(result.perControl.scalingMode ?? result.perControl.scalingMethod),
+          // Compatibility mirror only: the renderer must not report the
+          // coupled alias as a second user-facing operation.
+          internal: true,
         };
       } else {
       if (this._isUnavailable(lib.ctlSetCurrentScaling) || this._isUnavailable(lib.ctlGetCurrentScaling)) {
