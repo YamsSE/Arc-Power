@@ -94,6 +94,17 @@ html[data-overlay-renderer="capframex"] #overlay-frametime-value {
   pointer-events: none;
 }
 
+html[data-overlay-bg="disabled"] .capframex-panel {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+html[data-overlay-bg="disabled"] .capframex-panel::before,
+html[data-overlay-bg="disabled"] .capframex-panel::after {
+  display: none;
+}
+
 .capframex-panel > * { position: relative; z-index: 1; }
 
 /* The renderer toggles optional rows with the native hidden attribute. Keep
@@ -153,7 +164,9 @@ html[data-overlay-renderer="capframex"] #overlay-frametime-value {
 .capframex-cpu-section .capframex-row > span:not(.capframex-label) { color: #f1f2f8; }
 .capframex-memory-row { margin: 0.2rem 0 0.34rem; }
 .capframex-memory-row .capframex-label { color: #91d9ee; }
-.capframex-api-row { margin: 0.02rem 0 0.3rem; color: var(--capframex-accent, #ffffff); font-size: 0.9rem; font-weight: 700; text-align: right; }
+.capframex-api-row { display: grid; grid-template-columns: minmax(0, 1fr) 5.8rem 6.4rem; align-items: baseline; column-gap: 0.85rem; margin: 0.02rem 0 0.3rem; color: var(--capframex-accent, #ffffff); font-size: 0.9rem; font-weight: 700; }
+.capframex-api-row .capframex-label { grid-column: 1; }
+.capframex-api-row > span:last-child { grid-column: 3; text-align: right; }
 
 .capframex-summary {
   display: grid;
@@ -306,7 +319,7 @@ html[data-overlay-renderer="capframex"] #overlay-frametime-value {
    block - M20 pinned it to the row stack, so the arc block re-pins both).
    The --overlay-color setting still applies in BOTH themes (the text color
    is orthogonal to the theme - arc's chrome carries the tint). */
-html[data-overlay-theme="arc"] #overlay-backdrop {
+html[data-overlay-theme="arc"] #overlay-backdrop.visible {
   display: block;
   border-radius: 0.6rem;
   background: linear-gradient(165deg, rgba(16, 30, 60, 0.68), rgba(6, 12, 28, 0.74));
@@ -316,7 +329,7 @@ html[data-overlay-theme="arc"] #overlay-backdrop {
 }
 
 /* The 2px top accent bar - the Intel Arc sweep (theme-owned chrome). */
-html[data-overlay-theme="arc"] #overlay-backdrop::before {
+html[data-overlay-theme="arc"] #overlay-backdrop.visible::before {
   content: '';
   position: absolute;
   top: 0;

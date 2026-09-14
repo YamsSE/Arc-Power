@@ -12,9 +12,13 @@ import { existsSync } from 'node:fs';
 export const RTSS_VECTOR_2D = 1;
 export const RTSS_MIN_APP_DETECTION_LEVEL = 1;
 export const RTSS_GLOBAL_PROFILE = '';
+export const RTSS_LIMITER_DISABLED_FLAG = 4;
+export const RTSS_FRAME_LIMIT_RANGE = Object.freeze({ min: 1, max: 1000, step: 1, default: 60 });
 
 const UINT32_SIZE = 4;
 const PROFILE_DLL_NAMES = Object.freeze(['RTSSHooks64.dll', 'RTSSHooks.dll']);
+const RTSS_FRAME_LIMIT_PROPERTY = 'FramerateLimit';
+const RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY = 'FramerateLimitDenominator';
 
 function profileDllPaths(executablePath) {
   if (typeof executablePath !== 'string' || executablePath.trim().length === 0) return [];
@@ -33,8 +37,12 @@ function bindProfileApi(library) {
     getProfileProperty: bind('GetProfileProperty', 'bool', ['str', 'void*', 'uint32']),
     setProfileProperty: bind('SetProfileProperty', 'bool', ['str', 'void*', 'uint32']),
     updateProfiles: bind('UpdateProfiles', 'void', []),
+    setFlags: bind('SetFlags', 'uint32', ['uint32', 'uint32']),
+    enumProfiles: bind('EnumProfiles', 'uint32', ['void*', 'uint32']),
+    deleteProfile: bind('DeleteProfile', 'void', ['str']),
   };
-  return Object.values(api).every((fn) => typeof fn === 'function') ? api : null;
+  const required = ['loadProfile', 'saveProfile', 'getProfileProperty', 'setProfileProperty', 'updateProfiles'];
+  return required.every((key) => typeof api[key] === 'function') ? api : null;
 }
 
 function readProfileProperty(api, name) {
@@ -51,6 +59,50 @@ function writeProfileProperty(api, name, value) {
   const buffer = Buffer.alloc(UINT32_SIZE);
   buffer.writeUInt32LE(value >>> 0, 0);
   return api.setProfileProperty(name, buffer, UINT32_SIZE) === true;
+}
+
+function profileNameOf(executablePath) {
+  if (typeof executablePath !== 'string' || executablePath.trim().length === 0) return RTSS_GLOBAL_PROFILE;
+  const name = path.win32.basename(executablePath.trim());
+  return name && name !== '.' && name !== '\\' ? name : RTSS_GLOBAL_PROFILE;
+}
+
+function enumerateProfiles(api) {
+  if (typeof api?.enumProfiles !== 'function') return null;
+  try {
+    const required = Number(api.enumProfiles(null, 0));
+    if (!Number.isInteger(required) || required <= 0 || required > 1024 * 1024) return null;
+    const buffer = Buffer.alloc(required);
+    api.enumProfiles(buffer, required);
+    const text = buffer.toString('utf8').replaceAll('\0', '');
+    return new Set(text.split(',').map((name) => name.trim().toLowerCase()).filter(Boolean));
+  } catch {
+    return null;
+  }
+}
+
+function readLimiterFlags(api) {
+  if (typeof api?.setFlags !== 'function') return null;
+  try {
+    const flags = Number(api.setFlags(0xFFFFFFFF, 0));
+    return Number.isFinite(flags) ? (flags >>> 0) : null;
+  } catch {
+    return null;
+  }
+}
+
+function setLimiterEnabled(api, enabled) {
+  const current = readLimiterFlags(api);
+  if (current === null) return false;
+  const disabled = (current & RTSS_LIMITER_DISABLED_FLAG) !== 0;
+  const shouldDisable = enabled !== true;
+  if (disabled === shouldDisable) return true;
+  try {
+    const next = Number(api.setFlags(0xFFFFFFFF, RTSS_LIMITER_DISABLED_FLAG)) >>> 0;
+    return ((next & RTSS_LIMITER_DISABLED_FLAG) !== 0) === shouldDisable;
+  } catch {
+    return false;
+  }
 }
 
 function cloneState(state) {
@@ -85,6 +137,13 @@ export function createRtssProfileController({
     error: null,
   };
   let queue = Promise.resolve();
+  // FPS-limit ownership is tracked separately from the OSD profile changes.
+  // A user may already have RTSS limits configured, so Arc Power restores
+  // only values it changed and only while they still equal Arc Power's last
+  // target.
+  const frameLimitSnapshots = new Map();
+  const activeFrameLimitProfiles = new Set();
+  let limiterFlagSnapshot = null;
 
   const resolveExecutablePath = async () => {
     if (typeof executablePath === 'string' && executablePath.trim().length > 0) return executablePath.trim();
@@ -119,6 +178,261 @@ export function createRtssProfileController({
     loadedPath = dllPath;
     state = { ...state, available: true, executablePath: executable, error: null };
     return bindings;
+  };
+
+  const readFrameLimitNow = async ({ executablePath: targetExecutablePath = null } = {}) => {
+    if (platform !== 'win32') {
+      return { ok: false, available: false, source: 'igcl', error: 'RTSS requires Windows' };
+    }
+    const api = bindings ?? await resolveBindings();
+    if (!api || typeof api.setFlags !== 'function') {
+      return { ok: false, available: false, source: 'igcl', error: 'RTSS frame limiter is unavailable' };
+    }
+    const profile = profileNameOf(targetExecutablePath);
+    try {
+      api.loadProfile(profile);
+      const limit = readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY);
+      const denominator = readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY);
+      const flags = readLimiterFlags(api);
+      if (limit === null || flags === null) throw new Error('RTSS frame limiter read-back failed');
+      return {
+        ok: true,
+        available: true,
+        source: 'rtss',
+        profile,
+        limit,
+        denominator: denominator ?? 1,
+        limiterEnabled: (flags & RTSS_LIMITER_DISABLED_FLAG) === 0,
+      };
+    } catch (cause) {
+      return {
+        ok: false,
+        available: true,
+        source: 'igcl',
+        error: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
+  };
+
+  const restoreLimiterFlagIfIdle = (api) => {
+    if (activeFrameLimitProfiles.size > 0 || !limiterFlagSnapshot) return false;
+    const current = readLimiterFlags(api);
+    if (current === null) return false;
+    const currentDisabled = (current & RTSS_LIMITER_DISABLED_FLAG) !== 0;
+    // Do not overwrite a change made outside Arc Power while our limiter was
+    // active. Only restore when the shared flag is still at our last target.
+    if (currentDisabled === limiterFlagSnapshot.desiredDisabled) {
+      if (!setLimiterEnabled(api, limiterFlagSnapshot.previousEnabled)) return false;
+    }
+    limiterFlagSnapshot = null;
+    return true;
+  };
+
+  const rollbackFrameLimitChange = (api, profile) => {
+    const snapshot = frameLimitSnapshots.get(profile);
+    if (!snapshot) return;
+    try {
+      api.loadProfile(profile);
+      const current = readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY);
+      const denominator = readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY);
+      const matches = current === snapshot.desiredLimit
+        && (snapshot.desiredDenominator === null || denominator === snapshot.desiredDenominator);
+      if (matches) {
+        if (snapshot.existed) {
+          if (snapshot.previousLimit !== null && current !== snapshot.previousLimit) writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, snapshot.previousLimit);
+          if (snapshot.previousDenominator !== null && denominator !== snapshot.previousDenominator) writeProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY, snapshot.previousDenominator);
+          api.saveProfile(profile);
+        } else if (profile !== RTSS_GLOBAL_PROFILE && snapshot.created === true && typeof api.deleteProfile === 'function') {
+          api.deleteProfile(profile);
+        }
+      }
+      frameLimitSnapshots.delete(profile);
+      activeFrameLimitProfiles.delete(profile);
+      restoreLimiterFlagIfIdle(api);
+    } catch {
+      // A failed rollback must not turn an optional RTSS integration into a
+      // startup/apply failure. The original failure still selects IGCL.
+    }
+  };
+
+  const applyFrameLimitNow = async ({ enabled = false, value = RTSS_FRAME_LIMIT_RANGE.default, executablePath: targetExecutablePath = null, removeProfile = false } = {}) => {
+    if (platform !== 'win32') {
+      return { ok: false, used: false, fallback: true, source: 'igcl', error: 'RTSS requires Windows' };
+    }
+    const api = bindings ?? await resolveBindings();
+    if (!api || typeof api.setFlags !== 'function') {
+      return { ok: false, used: false, fallback: true, source: 'igcl', error: 'RTSS frame limiter is unavailable' };
+    }
+    const profile = profileNameOf(targetExecutablePath);
+    const requestedLimit = enabled === true
+      ? Math.min(RTSS_FRAME_LIMIT_RANGE.max, Math.max(RTSS_FRAME_LIMIT_RANGE.min, Math.round(Number(value) || RTSS_FRAME_LIMIT_RANGE.default)))
+      : 0;
+    try {
+      api.loadProfile(profile);
+      const beforeLimit = readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY);
+      const beforeDenominator = readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY);
+      if (beforeLimit === null) throw new Error('RTSS FramerateLimit property is unavailable');
+
+      if (enabled !== true) {
+        const snapshot = frameLimitSnapshots.get(profile);
+        let changed = false;
+        if (profile !== RTSS_GLOBAL_PROFILE && removeProfile === true && typeof api.deleteProfile === 'function') {
+          // The caller only requests this after removing an Arc Power-owned
+          // sidecar assignment. It is needed across restarts, where the
+          // in-memory snapshot cannot prove that Arc Power created the RTSS
+          // profile. A normal Off apply keeps the conservative snapshot-only
+          // restoration policy below.
+          api.deleteProfile(profile);
+          frameLimitSnapshots.delete(profile);
+          activeFrameLimitProfiles.delete(profile);
+          const flagRestored = restoreLimiterFlagIfIdle(api);
+          api.updateProfiles();
+          return { ok: true, used: true, source: 'rtss', profile, enabled: false, value: 0, changed: true, removed: true, flagRestored };
+        }
+        if (profile === RTSS_GLOBAL_PROFILE) {
+          // Restore a value Arc Power changed in this process while it still
+          // matches our last target. If there is no snapshot (for example a
+          // restart after an older Arc Power session), explicitly turning the
+          // General control Off clears the persisted global cap.
+          const owned = snapshot
+            && beforeLimit === snapshot.desiredLimit
+            && (snapshot.desiredDenominator === null || beforeDenominator === snapshot.desiredDenominator);
+          if (owned && snapshot.previousLimit !== null && beforeLimit !== snapshot.previousLimit) {
+            if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, snapshot.previousLimit)
+              || readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY) !== snapshot.previousLimit) {
+              throw new Error('RTSS FramerateLimit could not be restored');
+            }
+            changed = true;
+          }
+          if (owned && snapshot.previousDenominator !== null && beforeDenominator !== snapshot.previousDenominator) {
+            if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY, snapshot.previousDenominator)
+              || readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY) !== snapshot.previousDenominator) {
+              throw new Error('RTSS FramerateLimitDenominator could not be restored');
+            }
+            changed = true;
+          }
+          if (!owned && !snapshot) {
+            if (beforeLimit !== 0) {
+              if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, 0)
+                || readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY) !== 0) {
+                throw new Error('RTSS FramerateLimit could not be disabled');
+              }
+              changed = true;
+            }
+            if (beforeDenominator !== null && beforeDenominator !== 1) {
+              if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY, 1)
+                || readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY) !== 1) {
+                throw new Error('RTSS FramerateLimitDenominator could not be reset');
+              }
+              changed = true;
+            }
+          }
+          if (changed) api.saveProfile(profile);
+          frameLimitSnapshots.delete(profile);
+        } else if (snapshot
+          && beforeLimit === snapshot.desiredLimit
+          && (snapshot.desiredDenominator === null || beforeDenominator === snapshot.desiredDenominator)) {
+          if (snapshot.existed) {
+            if (snapshot.previousLimit !== null && beforeLimit !== snapshot.previousLimit) {
+              if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, snapshot.previousLimit)
+                || readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY) !== snapshot.previousLimit) {
+                throw new Error('RTSS FramerateLimit could not be restored');
+              }
+              changed = true;
+            }
+            if (snapshot.previousDenominator !== null && beforeDenominator !== snapshot.previousDenominator) {
+              if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY, snapshot.previousDenominator)
+                || readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY) !== snapshot.previousDenominator) {
+                throw new Error('RTSS FramerateLimitDenominator could not be restored');
+              }
+              changed = true;
+            }
+            if (changed) api.saveProfile(profile);
+          } else if (profile !== RTSS_GLOBAL_PROFILE && snapshot.created === true && typeof api.deleteProfile === 'function') {
+            api.deleteProfile(profile);
+            changed = true;
+          } else if (profile !== RTSS_GLOBAL_PROFILE && snapshot.previousLimit !== null
+            && beforeLimit !== snapshot.previousLimit) {
+            if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, snapshot.previousLimit)
+              || readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY) !== snapshot.previousLimit) {
+              throw new Error('RTSS FramerateLimit could not be restored');
+            }
+            changed = true;
+            api.saveProfile(profile);
+          }
+          frameLimitSnapshots.delete(profile);
+        }
+        if (snapshot && frameLimitSnapshots.has(profile)) frameLimitSnapshots.delete(profile);
+        activeFrameLimitProfiles.delete(profile);
+        const flagRestored = restoreLimiterFlagIfIdle(api);
+        if (changed || flagRestored) api.updateProfiles();
+        return { ok: true, used: true, source: 'rtss', profile, enabled: false, value: 0, changed };
+      }
+
+      if (!frameLimitSnapshots.has(profile)) {
+        const profiles = enumerateProfiles(api);
+        const existed = profile === RTSS_GLOBAL_PROFILE
+          || profiles === null
+          || profiles.has(profile.toLowerCase());
+        frameLimitSnapshots.set(profile, {
+          existed,
+          previousLimit: beforeLimit,
+          previousDenominator: beforeDenominator,
+          desiredLimit: requestedLimit,
+          desiredDenominator: beforeDenominator === null ? null : 1,
+          created: false,
+        });
+      }
+      const snapshot = frameLimitSnapshots.get(profile);
+      snapshot.desiredLimit = requestedLimit;
+      snapshot.desiredDenominator = beforeDenominator === null ? null : 1;
+
+      let changed = false;
+      if (beforeLimit !== requestedLimit) {
+        if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, requestedLimit)
+          || readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY) !== requestedLimit) {
+          throw new Error('RTSS FramerateLimit could not be updated');
+        }
+        changed = true;
+      }
+      if (beforeDenominator !== null && beforeDenominator !== 1) {
+        if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY, 1)
+          || readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY) !== 1) {
+          throw new Error('RTSS FramerateLimitDenominator could not be updated');
+        }
+        changed = true;
+      }
+      if (changed) {
+        api.saveProfile(profile);
+        if (profile !== RTSS_GLOBAL_PROFILE && snapshot.existed === false) snapshot.created = true;
+      }
+
+      if (!limiterFlagSnapshot) {
+        const flags = readLimiterFlags(api);
+        if (flags === null) throw new Error('RTSS limiter state could not be read');
+        limiterFlagSnapshot = {
+          previousEnabled: (flags & RTSS_LIMITER_DISABLED_FLAG) === 0,
+          desiredDisabled: false,
+        };
+      }
+      const flagsBeforeEnable = readLimiterFlags(api);
+      if (flagsBeforeEnable === null || !setLimiterEnabled(api, true)) {
+        throw new Error('RTSS frame limiter could not be enabled');
+      }
+      activeFrameLimitProfiles.add(profile);
+      if (changed || flagsBeforeEnable !== readLimiterFlags(api)) api.updateProfiles();
+      return { ok: true, used: true, source: 'rtss', profile, enabled: true, value: requestedLimit, changed };
+    } catch (cause) {
+      rollbackFrameLimitChange(api, profile);
+      return {
+        ok: false,
+        used: false,
+        fallback: true,
+        source: 'igcl',
+        profile,
+        error: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
   };
 
   const applyNow = async ({ enabled = false } = {}) => {
@@ -237,8 +551,22 @@ export function createRtssProfileController({
     return next;
   };
 
+  const getFrameLimit = (options = {}) => {
+    const next = queue.catch(() => {}).then(() => readFrameLimitNow(options));
+    queue = next.catch(() => {});
+    return next;
+  };
+
+  const applyFrameLimit = (options = {}) => {
+    const next = queue.catch(() => {}).then(() => applyFrameLimitNow(options));
+    queue = next.catch(() => {});
+    return next;
+  };
+
   return {
     apply,
+    getFrameLimit,
+    applyFrameLimit,
     getState: () => cloneState({ ...state, dllPath: loadedPath }),
   };
 }

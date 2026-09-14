@@ -71,6 +71,7 @@ test('CapFrameX-style surface stays independent of CapFrameX native redistributi
   assert.match(overlayCss, /#capframex-root \[hidden\] \{ display: none !important; \}/);
   assert.match(overlayCss, /var\(--capframex-bg/);
   assert.match(overlaySrc, /const capframexBackground = s\.overlayBgEnabled === true/);
+  assert.match(overlayCss, /html\[data-overlay-bg="disabled"\] \.capframex-panel/);
   assert.match(overlayCss, /background: url\('\.\.\/assets\/ArcPowerIcon\.png'\)/);
   assert.match(overlayCss, /grid-template-columns: 1fr;/);
   assert.match(overlayCss, /linear-gradient\(180deg, #7fe3ff/);
@@ -85,7 +86,10 @@ test('CapFrameX-style surface stays independent of CapFrameX native redistributi
   assert.match(overlayHtml, />FPS<\/span>/);
   assert.match(overlayHtml, />RAM<\/span>/);
   assert.doesNotMatch(overlayHtml, /performance-ft/);
-  assert.match(overlaySrc, /'cpu-util', 'CPU Usage'/);
+  assert.match(overlayHtml, /capframex-api-row[\s\S]*capframex-label">API/);
+  assert.match(overlaySrc, /'cpu-util', 'CPU Load'/);
+  assert.match(overlaySrc, /const apiLabel = apiLabelOf\(latestApi\)/);
+  assert.match(overlaySrc, /capframexApiRow\.hidden = !enabled\.has\('api'\) \|\| !apiLabel/);
   assert.match(settingsSrc, /overlayBgEnabled/);
   assert.match(settingsSrc, /settings-background-opacity-slider/);
   assert.doesNotMatch(overlayHtml, /Displaytime/);

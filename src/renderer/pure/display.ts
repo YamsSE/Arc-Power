@@ -54,15 +54,17 @@ function isExplicitScalingPreference(value: unknown): value is 'gpu-scaling' | '
   return value === 'gpu-scaling' || value === 'display-scaling';
 }
 
-/** Resolve the raw mode used by the compact scaling controls. The active
- * native scaler is authoritative when it is available: Identity is the stock
- * Display Scaling state, even when a driver reports a separate GPU preference
- * in PreferredScalingType or NNScalingState. Preferred/registry values are
- * only fallbacks when the active native read-back is unavailable. */
+/** Resolve the mode exposed by IGS's Display selector. Intel's wrapper
+ * returns the PreferredScalingType when the active scaler is Identity and
+ * the current desktop timing does not require a physical scale operation.
+ * IGCL's raw active value remains available as `display.scalingMode`; this
+ * helper mirrors the user-facing selection so Arc Power does not show
+ * Display Scaling after a verified GPU preference was applied. */
 export function effectiveScalingModeOf(display: Display | null | undefined): string | null {
   if (!display) return null;
   const active = display.scalingMode;
   const preferred = display.preferredScalingMode;
+  if (active === 'identity' && isGpuScalingMode(preferred)) return preferred;
   if (active === 'identity' && preferred === 'custom') return 'custom';
   if (active !== null && active !== undefined) return active;
   return preferred ?? null;
@@ -71,6 +73,14 @@ export function effectiveScalingModeOf(display: Display | null | undefined): str
 export function scalingViewOf(display: Display | null | undefined): DisplayScalingView {
   if (!display) return 'display-scaling';
   if (display.scalingMethod?.value?.enabled === true) return 'retro-scaling';
+  // A native Custom preference is a real Display Scaling state. Resolve it
+  // before consulting the adapter-level registry hint: the registry can say
+  // "GPU Scaling" while IGCL is currently reporting Identity, but that hint
+  // must never hide the Custom scaling-method controls.
+  if ((display.scalingMode === 'identity' || display.scalingMode === null || display.scalingMode === undefined)
+    && display.preferredScalingMode === 'custom') {
+    return 'display-scaling';
+  }
   const raw = effectiveScalingModeOf(display);
   if (display.scalingMode === null || display.scalingMode === undefined) {
     if (raw === null && isExplicitScalingPreference(display.scalingPreference)) return display.scalingPreference;

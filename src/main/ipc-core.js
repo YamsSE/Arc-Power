@@ -56,6 +56,7 @@ import { createProfileTransferEnvelope, planProfileTransferImport } from './prof
 import { persistReplayClipMetadata, recordingSessionIdOf } from './recording-lifecycle.js';
 import { createStabilityLabService } from './stability-lab.js';
 import { StabilityStore } from './store/stability-store.js';
+import { RTSS_FRAME_LIMIT_RANGE } from './rtss-profile.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
@@ -227,6 +228,7 @@ const OVERLAY_POLL_MS_MAX = 2000;
 // driver range; the fallback only applies when the device reports no range,
 // so the clamp can never offer an un-appliable value).
 const GRAPHICS_FRAME_LIMIT_FALLBACK = { min: 30, max: 300, step: 1, default: 60 };
+const GRAPHICS_RTSS_FRAME_LIMIT_RANGE = RTSS_FRAME_LIMIT_RANGE;
 const GRAPHICS_MEMORY_OVERRIDE_MIN = 13;
 const GRAPHICS_MEMORY_OVERRIDE_MAX = 100;
 
@@ -1057,6 +1059,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null, avgFps: number | null, low1Pct: number | null, low01Pct: number | null, p99: number | null } | null>, stop?: () => Promise<void> },
  *   fpsLane?: { poll: (deviceId: number) => Promise<object | null>, stop?: () => Promise<void> } | null,  // Native RTSS foreground-process lane; null in mock/tests - the determinism seam like foregroundApi
  *   rtssOverlay?: { publish: (payload: object) => Promise<unknown>|unknown, updateSettings?: (settings: object) => Promise<unknown>|unknown, setKnownDeviceKeys?: (keys: string[], order?: string[], groups?: string[][]) => unknown, clear?: () => Promise<unknown>|unknown, stop?: () => Promise<void> } | null,  // Native RTSS telemetry OSD publisher
+ *   rtssFrameLimiter?: { getFrameLimit?: (options?: object) => Promise<object>, applyFrameLimit?: (options?: object) => Promise<object> } | null,  // Native RTSS profile limiter; IGCL remains the fallback
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
  *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe). M17g: the emit-site composition MOVED into the sysStats adapter's FAST lane - this param is kept for call-site compatibility and is no longer consumed by the telemetry push (the fast-lane field replaces it).
  *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>, sampleFast?: () => Promise<object>, sampleSlow?: () => Promise<object>, setTarget?: (target?: object|null) => void, startSlowLane?: (cadenceMs?: number) => void, stopSlowLane?: () => void } | { current: object | null },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample). M17g: the telemetry push samples the FAST lane (sampleFast) per tick - never the slow PowerShell query; the slow lane runs on the adapter's own background timer (startSlowLane/stopSlowLane, tied to the telemetry session lifecycle). M17p: main.js may pass a MUTABLE HOLDER ({ current: null } - the sysStats block lands AFTER registerIpc; the ONE normalize at the top unwraps it per-access; a plain adapter passes through).
@@ -1186,6 +1189,10 @@ export function createIpcHandlers({
   // publishing must remain a best-effort consumer and never delay or fail a
   // normal renderer sample.
   rtssOverlay = null,
+  // RTSS's profile-backed frame limiter. This is independent of the OSD
+  // publisher and is deliberately optional: every failed RTSS read/write
+  // falls through to the existing IGCL limiter path.
+  rtssFrameLimiter = null,
   // M10a: the foreground-window Graphics-API detector (the overlay's FPS-row
   // badge). The DEFAULT is the null-returning detector (tests + mock/
   // ui-verify NEVER run the real koffi probe - the determinism seam:
@@ -2422,6 +2429,61 @@ export function createIpcHandlers({
     });
   }
 
+  const decorateGraphicsState = (baseState, rtssState) => {
+    const state = baseState && typeof baseState === 'object' ? baseState : null;
+    if (!state) return state;
+    if (!rtssState?.ok) return { ...state, frameLimitSource: 'igcl' };
+    const limit = Number.isFinite(rtssState.limit) ? Math.max(0, Math.round(rtssState.limit)) : 0;
+    return {
+      ...state,
+      supported: { ...(state.supported ?? {}), frameLimit: true },
+      frameLimitRange: { ...GRAPHICS_RTSS_FRAME_LIMIT_RANGE },
+      frameLimitSource: 'rtss',
+      values: {
+        ...(state.values ?? {}),
+        frameLimit: {
+          enabled: rtssState.limiterEnabled !== false && limit > 0,
+          value: limit > 0 ? limit : GRAPHICS_RTSS_FRAME_LIMIT_RANGE.default,
+        },
+      },
+    };
+  };
+
+  const readGraphicsState = async (deviceId, { useRtss = true } = {}) => {
+    const baseState = await backend.getGraphicsSettings(deviceId);
+    if (!useRtss || typeof rtssFrameLimiter?.getFrameLimit !== 'function') {
+      return decorateGraphicsState(baseState, null);
+    }
+    let rtssState = null;
+    try { rtssState = await rtssFrameLimiter.getFrameLimit(); } catch { /* IGCL fallback */ }
+    return decorateGraphicsState(baseState, rtssState);
+  };
+
+  const applyRtssFrameLimit = async (frameLimit, executablePath = null, removeProfile = false) => {
+    if (!frameLimit || typeof rtssFrameLimiter?.applyFrameLimit !== 'function') return null;
+    try {
+      const result = await rtssFrameLimiter.applyFrameLimit({
+        enabled: frameLimit.enabled === true,
+        value: frameLimit.value,
+        executablePath,
+        ...(removeProfile ? { removeProfile: true } : {}),
+      });
+      if (result?.ok === true && result.used === true) {
+        return {
+          handled: true,
+          result,
+          perControl: { frameLimit: { ok: true, source: 'rtss' } },
+        };
+      }
+      return { handled: false, result };
+    } catch (cause) {
+      return {
+        handled: false,
+        result: { ok: false, used: false, fallback: true, source: 'igcl', error: cause instanceof Error ? cause.message : String(cause) },
+      };
+    }
+  };
+
   const handlers = {
     'health': async () => collectHealth(backend),
 
@@ -2646,7 +2708,7 @@ export function createIpcHandlers({
       // throws - the all-false/null state is the honest degrade.
       'graphics:get': async (deviceId) => {
         assertValidDeviceId(deviceId);
-        return backend.getGraphicsSettings(deviceId);
+        return readGraphicsState(deviceId);
       },
 
       // M8: the DEDICATED graphics apply path (plan-review S1 - the OC
@@ -2662,28 +2724,52 @@ export function createIpcHandlers({
       'graphics:apply': async (deviceId, payload) => {
         assertValidDeviceId(deviceId);
         const target = await backend.getDeviceTarget?.(deviceId);
+        const baseGraphicsState = await backend.getGraphicsSettings(deviceId);
+        let rtssFrameState = null;
+        if (typeof rtssFrameLimiter?.getFrameLimit === 'function') {
+          try { rtssFrameState = await rtssFrameLimiter.getFrameLimit(); } catch { /* IGCL fallback */ }
+        }
         // The FPS clamp range: the device's FRESH graphics state (the
         // driver-reported range; the 30-300-1-60 fallback inside the
         // validator when the read degrades).
-        let range = null;
-        try {
-          range = (await backend.getGraphicsSettings(deviceId)).frameLimitRange;
-        } catch {
-          // degraded - the validator's fallback applies
-        }
+        const range = rtssFrameState?.ok === true
+          ? GRAPHICS_RTSS_FRAME_LIMIT_RANGE
+          : baseGraphicsState?.frameLimitRange ?? null;
         const settings = sanitizeGraphicsSettings(payload, range);
         if (target?.synthetic || target?.backendKind === 'os') {
           const perControl = Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: false, errorCode: 'unsupported', message: 'graphics features are not supported on this GPU' }]));
-          return { ok: Object.keys(perControl).length === 0, perControl, graphicsState: await backend.getGraphicsSettings(deviceId) };
+          return { ok: Object.keys(perControl).length === 0, perControl, graphicsState: decorateGraphicsState(baseGraphicsState, null) };
         }
-        if (applyRunner?.needsWorker?.()) {
-          const out = await applyRunner.graphicsApply({ deviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings });
-          return { ok: out.ok === true, perControl: out.perControl ?? {}, graphicsState: out.graphicsState ?? null };
+        let settingsForDriver = { ...settings };
+        const rtssApply = Object.prototype.hasOwnProperty.call(settings, 'frameLimit')
+          ? await applyRtssFrameLimit(settings.frameLimit)
+          : null;
+        if (rtssApply?.handled === false && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
+          // RTSS may expose a wider 1-1000 range than the Intel driver. If a
+          // verified RTSS write fails, re-clamp this same request against the
+          // driver range before taking the IGCL fallback path.
+          settingsForDriver.frameLimit = sanitizeGraphicsSettings(
+            { frameLimit: settings.frameLimit },
+            baseGraphicsState?.frameLimitRange ?? null,
+          ).frameLimit;
         }
-        const out = await backend.setGraphicsSettings(deviceId, settings);
+        if (rtssApply?.handled === true) {
+          const { frameLimit: _rtssFrameLimit, ...withoutFrameLimit } = settingsForDriver;
+          settingsForDriver = withoutFrameLimit;
+        }
+        let driverOut = { ok: true, perControl: {} };
+        if (Object.keys(settingsForDriver).length > 0) {
+          if (applyRunner?.needsWorker?.()) {
+            driverOut = await applyRunner.graphicsApply({ deviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings: settingsForDriver });
+          } else {
+            driverOut = await backend.setGraphicsSettings(deviceId, settingsForDriver);
+          }
+        }
         let graphicsState = null;
-        try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
-        return { ok: out.ok, perControl: out.perControl, graphicsState };
+        try { graphicsState = await readGraphicsState(deviceId, { useRtss: rtssApply?.handled !== false }); } catch { /* degraded */ }
+        const perControl = { ...(driverOut?.perControl ?? {}) };
+        if (rtssApply?.handled === true) Object.assign(perControl, rtssApply.perControl);
+        return { ok: driverOut?.ok === true, perControl, graphicsState };
       },
 
       // M10b (the Graphics "Display" view): the display-output surface.
@@ -4018,14 +4104,31 @@ export function createIpcHandlers({
           exePath: safePath,
           gpuProfiles: mergeGameGpuProfiles(previous?.gpuProfiles, [finalAssignment]),
         });
+        const rtssFrameLimit = graphics.frameLimit && typeof graphics.frameLimit === 'object'
+          ? { ...graphics.frameLimit, enabled: assignment.enabled === true && graphics.frameLimit.enabled === true }
+          : null;
+        const previousFrameLimitWasEnabled = previousAssignment?.graphics?.frameLimit?.enabled === true;
+        const rtssApply = rtssFrameLimit
+          ? await applyRtssFrameLimit(rtssFrameLimit, safePath, previousFrameLimitWasEnabled && rtssFrameLimit.enabled !== true)
+          : null;
+        let graphicsForDriver = graphics;
+        if (rtssApply?.handled === true) {
+          const { frameLimit: _rtssFrameLimit, ...withoutFrameLimit } = graphicsForDriver;
+          graphicsForDriver = withoutFrameLimit;
+        }
         let apply;
         if (targetDeviceId === null || typeof backend.setGameProfileSettings !== 'function') {
-          apply = { ok: false, skipped: true, errorCode: 'unsupported', message: 'The selected graphics adapter cannot apply per-game driver settings.' };
+          apply = rtssApply?.handled === true
+            ? { ok: true, perControl: { ...rtssApply.perControl }, skipped: true, message: 'RTSS applied the per-game frame limiter.' }
+            : { ok: false, skipped: true, errorCode: 'unsupported', message: 'The selected graphics adapter cannot apply per-game driver settings.' };
         } else {
           try {
             // Always update the driver scope. Disabling Use Profile must
             // restore this executable to the global graphics settings.
-            apply = await backend.setGameProfileSettings(targetDeviceId, safePath, graphics, assignment.enabled === true);
+            apply = await backend.setGameProfileSettings(targetDeviceId, safePath, graphicsForDriver, assignment.enabled === true);
+            if (rtssApply?.handled === true) {
+              apply = { ...apply, perControl: { ...(apply?.perControl ?? {}), ...rtssApply.perControl } };
+            }
             if (xeFgRefusal) {
               apply = {
                 ...apply,
@@ -4044,7 +4147,19 @@ export function createIpcHandlers({
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('game-settings-delete: payload must be an object');
         const exePath = canonicalExePath(payload.exePath);
         if (!exePath) throw new Error('game-settings-delete: exePath must be an absolute Windows path');
-        return await gameProfiles.deleteSettings(exePath);
+        let hadArcPowerFrameLimit = false;
+        try {
+          const catalog = await gameProfiles.loadCatalog();
+          const existing = catalog?.settings?.find((item) => item.exePath === exePath);
+          hadArcPowerFrameLimit = existing?.gpuProfiles?.some((profile) => profile?.graphics?.frameLimit?.enabled === true) === true;
+        } catch { /* sidecar cleanup remains best effort */ }
+        const deleted = await gameProfiles.deleteSettings(exePath);
+        // Deleting a sidecar must not leave an Arc Power-owned RTSS app cap
+        // behind for a profile the user can no longer edit.
+        if (hadArcPowerFrameLimit) {
+          try { await rtssFrameLimiter?.applyFrameLimit?.({ enabled: false, executablePath: exePath, removeProfile: true }); } catch { /* optional RTSS cleanup */ }
+        }
+        return deleted;
       },
 
       'game-profiles-list': async (...args) => {

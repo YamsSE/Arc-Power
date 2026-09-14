@@ -780,7 +780,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         el('h3', { class: 'profile-section-title', text: 'Frame Delivery' }),
         ...(gameProfileCapabilities.xeFg ? [settingRow('XeFG multiplier', 'Per-game frame-generation multiplier.', xeFg)] : []),
         settingRow('Frame Synchronization', 'Sets the method used for vertically syncing the rendered image to the display.', frame),
-        settingRow('FPS Limiter', 'Saved independently for this executable.', el('span', { class: 'profile-inline-control' }, [fps, fpsValue])),
+        settingRow('FPS Limiter', 'Uses RTSS when available and the Intel driver limiter otherwise.', el('span', { class: 'profile-inline-control' }, [fps, fpsValue])),
         settingRow('Low Latency Mode', 'Improves the responsiveness between user input and graphics rendering for a better gaming experience.', latency),
       ]),
       el('p', { class: 'profile-capability-note', text: `When Use Profile is enabled for ${gameGpuLabel(targetDevice)}, its tuning preset and Graphics values are applied only to that GPU.` }),

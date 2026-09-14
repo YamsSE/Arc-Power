@@ -18,6 +18,7 @@ const unpacked = path.join(dist, 'win-unpacked');
 const tempConfig = path.join(dist, 'build-dist-config.json');
 const packageJson = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 const baseBuild = packageJson.build;
+const formerNsisArchive = path.join(dist, `arc-power-${packageJson.version}-x64.nsis.7z`);
 
 mkdirSync(dist, { recursive: true });
 
@@ -62,7 +63,7 @@ for (const artifact of [
   unpacked,
   path.join(dist, 'Arc-Power_Installer.exe.blockmap'),
   path.join(dist, 'latest.yml'),
-  path.join(dist, 'arc-power-1.1.5-x64.nsis.7z'),
+  formerNsisArchive,
 ]) rmSync(artifact, { force: true, recursive: artifact === unpacked });
 
 function runBuilder(target, extraArgs = []) {

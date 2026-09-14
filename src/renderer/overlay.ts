@@ -34,7 +34,7 @@
 // and the number - a stat off hides them together.
 
 import { api } from './ipc.ts';
-import { overlayLines, normalizeOverlayStats, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor, clampOverlayBgOpacity, clampOverlayPollMs, OVERLAY_BG_COLOR_DEFAULT, isValidOverlayTheme, OVERLAY_THEME_DEFAULT, isValidOverlayRenderer } from './pure/overlay.ts';
+import { overlayLines, apiLabelOf, normalizeOverlayStats, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor, clampOverlayBgOpacity, clampOverlayPollMs, OVERLAY_BG_COLOR_DEFAULT, isValidOverlayTheme, OVERLAY_THEME_DEFAULT, isValidOverlayRenderer } from './pure/overlay.ts';
 // M17b (2c): the chip-name cut-down rules (pure; the boot names fetch
 // derives the row labels from the sysinfo fixture/real names).
 import { chipLabelGpu, chipLabelCpu, humanCpuName, humanGpuName } from './pure/chip-label.ts';
@@ -439,6 +439,7 @@ api.onOverlaySettings((settings) => {
   softwareRenderer = s.softwareRenderer === true;
   overlayEnabled = s.enabled === true;
   document.documentElement.dataset.overlayRenderer = overlayRenderer;
+  document.documentElement.dataset.overlayBg = s.overlayBgEnabled === true ? 'enabled' : 'disabled';
   if (capframexRoot) capframexRoot.setAttribute('aria-hidden', overlayRenderer === 'capframex' ? 'false' : 'true');
   // The CSSOM font-size scaling (CSP-safe): one change scales every rem
   // size in the HUD - the same persisted scale the window was resized with.
@@ -820,7 +821,7 @@ function renderCapframex(displaySample: TelemetrySample | null): void {
   if (cpuSection) {
     [...cpuSection.querySelectorAll<HTMLElement>('.capframex-row')].forEach((row) => row.remove());
     capStatRow(cpuSection, enabled, 'cpu-clock', 'CPU Clock', [capValue(displaySample?.cpuFreqMhz, ' MHz')]);
-    capStatRow(cpuSection, enabled, 'cpu-util', 'CPU Usage', [capValue(displaySample?.cpuUtilPct, ' %')]);
+    capStatRow(cpuSection, enabled, 'cpu-util', 'CPU Load', [capValue(displaySample?.cpuUtilPct, ' %')]);
     const packageValues = [capValue(displaySample?.cpuPowerW, ' W', 1)];
     if (enabled.has('cpu-temp')) packageValues.push(capValue(displaySample?.cpuTempC, ' °C'));
     capStatRow(cpuSection, enabled, 'cpu-power', 'CPU Package', packageValues);
@@ -832,8 +833,9 @@ function renderCapframex(displaySample: TelemetrySample | null): void {
     capframexMemory.textContent = used !== null && total !== null ? `${used.toFixed(1)}/${total.toFixed(1)} GB` : '-';
   }
   if (capframexMemoryRow) capframexMemoryRow.hidden = !enabled.has('memory-util');
-  if (capframexApi) capframexApi.textContent = latestApi ?? '';
-  if (capframexApiRow) capframexApiRow.hidden = !enabled.has('api') || !latestApi;
+  const apiLabel = apiLabelOf(latestApi);
+  if (capframexApi) capframexApi.textContent = apiLabel ?? '';
+  if (capframexApiRow) capframexApiRow.hidden = !enabled.has('api') || !apiLabel;
   if (capframexAvg) capframexAvg.textContent = capValue(latestAvgFps, ' FPS');
   if (capframexLow1) capframexLow1.textContent = capValue(latestLow1Pct, ' FPS');
   if (capframexLow01) capframexLow01.textContent = capValue(latestLow01Pct, ' FPS');
