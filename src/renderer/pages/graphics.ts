@@ -2264,9 +2264,9 @@ async function applyDisplay(ctx: PageContext, only: string) {
       // only replace an unchanged draft with native read-back.
       const scalingDraftChangedWhileApplying = displayScalingDraftRevision !== scalingDraftRevisionAtStart;
       if (!scalingDraftChangedWhileApplying) {
-        // Keep the raw active/native state truthful, while the compact
-        // selector may remain on a saved GPU preference when the driver is
-        // currently forced to Identity by an equal source/target mode.
+        // Keep the raw active/native state truthful. A saved GPU preference
+        // is explained by the status note, but it must not relabel the
+        // selector while IGCL reports Identity as the active scaler.
         syncDisplayScalingDraftFromReadback(freshDisplay);
       }
       if (graphicsView === 'display' && viewContainer?.isConnected) renderDisplayCards(viewContainer, ctx);
