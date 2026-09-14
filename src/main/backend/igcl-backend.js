@@ -477,9 +477,9 @@ const DISPLAY_SCALING_MODE_FROM_IGCL = { 1: 'identity', 2: 'centered', 4: 'stret
 // with Version 1 for every scaling mode. Older drivers may reject that
 // version, so retain a narrowly-scoped Version 0 compatibility fallback. A
 // successful setter is still not reported as applied until fresh scaling
-// read-back agrees. Explicit GPU writes request a hardware transition;
-// Display identity stays on the ordinary path, and Custom scaling remains
-// caller-controlled because it may need a physical display transition.
+// read-back agrees. Ordinary GPU/Display scaling stays on the normal
+// preference path; Custom scaling remains caller-controlled because it may
+// need an explicit physical display transition.
 function setScalingWithCompatibility(lib, handle, { flag, custom, hardwareModeSet = false }) {
   const versions = [1, 0];
   let lastResult = CTL_RESULT.ERROR_INVALID_ARGUMENT;
@@ -4356,17 +4356,10 @@ export class IgclBackend {
           // The M10b-fix lesson: NO SupportedScaling pre-gate - the caps
           // bitmask stays a UI hint (the supportedOptions list); the set
           // reaches the driver and the driver's ACTUAL result decides.
-          // ScalingType is a FLAG value in the struct (1/2/4/8/16). Keep
-          // Only the explicit coupled GPU selector requests the driver's
-          // hardware transition; a preference-only write can otherwise leave
-          // the active scaler at Display Scaling while the preference appears
-          // to have succeeded. Raw compatibility calls keep their existing
-          // virtual-modeset behavior, while Custom remains caller-controlled.
-          const explicitGpuMethodRequested = !custom
-            && (patch.displayScalingMethod === 'centered'
-              || patch.displayScalingMethod === 'stretched'
-              || patch.displayScalingMethod === 'aspect-ratio-centered-max')
-            && patch.scalingMode === patch.displayScalingMethod;
+          // ScalingType is a FLAG value in the struct (1/2/4/8/16). Ordinary
+          // GPU/Display scaling uses the driver's normal preference path.
+          // Only Custom (or an explicit custom physical-mode request) is
+          // allowed to request a hardware transition.
           const registryWriterAvailable = !custom && typeof this._vrrRegistry?.setScalingState === 'function';
           const registryReaderAvailable = registryWriterAvailable && typeof this._vrrRegistry?.getScalingState === 'function';
           const registryValue = patch.scalingMode === 'identity' ? SCALING_STATE_DISPLAY : SCALING_STATE_GPU;
@@ -4413,7 +4406,7 @@ export class IgclBackend {
             ({ setResult } = setScalingWithCompatibility(lib, handle, {
               flag,
               custom,
-              hardwareModeSet: explicitGpuMethodRequested,
+              hardwareModeSet: false,
             }));
           }
 

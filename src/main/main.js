@@ -3787,6 +3787,10 @@ async function main() {
     fpsAdapter,
     fpsLane,
     rtssOverlay,
+    // The RTSS profile bridge also owns the optional native frame limiter;
+    // its IPC path falls back to IGCL when the profile API cannot verify a
+    // read or write.
+    rtssFrameLimiter: rtssProfile,
     foregroundApi,
     memoryUtil,
     // M17p: the sysStats MUTABLE HOLDER (never the by-value null - the

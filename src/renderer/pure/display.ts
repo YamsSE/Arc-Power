@@ -69,6 +69,14 @@ export function effectiveScalingModeOf(display: Display | null | undefined): str
 export function scalingViewOf(display: Display | null | undefined): DisplayScalingView {
   if (!display) return 'display-scaling';
   if (display.scalingMethod?.value?.enabled === true) return 'retro-scaling';
+  // A native Custom preference is a real Display Scaling state. Resolve it
+  // before consulting the adapter-level registry hint: the registry can say
+  // "GPU Scaling" while IGCL is currently reporting Identity, but that hint
+  // must never hide the Custom scaling-method controls.
+  if ((display.scalingMode === 'identity' || display.scalingMode === null || display.scalingMode === undefined)
+    && display.preferredScalingMode === 'custom') {
+    return 'display-scaling';
+  }
   const raw = effectiveScalingModeOf(display);
   if (display.scalingMode === null || display.scalingMode === undefined) {
     if (raw === null && isExplicitScalingPreference(display.scalingPreference)) return display.scalingPreference;

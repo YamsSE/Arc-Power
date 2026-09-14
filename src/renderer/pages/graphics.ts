@@ -406,6 +406,30 @@ function syncDisplayScalingDraftFromReadback(display: DisplayState['displays'][n
   delete displayDraft.scalingMethod;
 }
 
+function preserveDeferredGpuScalingSelection(
+  display: DisplayState['displays'][number],
+  requestedMethod: string | null,
+): boolean {
+  if (display.scalingMode !== 'identity'
+    || display.scalingPreference !== 'gpu-scaling'
+    || requestedMethod === null
+    || !['centered', 'stretched', 'aspect-ratio-centered-max'].includes(requestedMethod)) {
+    return false;
+  }
+  displayScalingViewDraft = 'gpu-scaling';
+  displayScalingMethodDraft = requestedMethod;
+  displayDraft.scalingMode = requestedMethod as DisplaySettings['scalingMode'];
+  displayDraft.displayScalingMethod = requestedMethod as DisplaySettings['displayScalingMethod'];
+  delete displayDraft.scalingCustom;
+  delete displayDraft.scalingMethod;
+  // The preference was successfully persisted, so the chip baseline follows
+  // the IGS-style selection even though the native read-back remains Identity
+  // at the current desktop resolution.
+  (displayApplied as Record<string, unknown>).scalingMode = 'gpu-scaling';
+  (displayApplied as Record<string, unknown>).displayScalingMethod = requestedMethod;
+  return true;
+}
+
 function sameCustomScaling(a: DisplaySettings['scalingCustom'] | null | undefined, b: DisplaySettings['scalingCustom'] | null | undefined): boolean {
   return !!a && !!b && a.x === b.x && a.y === b.y && a.hardwareModeSet === b.hardwareModeSet;
 }
@@ -1079,7 +1103,12 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
         el('h2', { class: 'card-title', text: CARD_TITLES.frameLimit }),
         el('div', { class: 'graphics-control graphics-inline-control' }, [toggle]),
       ]),
-      el('p', { class: 'card-note', text: CARD_NOTES.frameLimit }),
+      el('p', {
+        class: 'card-note',
+        text: state.frameLimitSource === 'rtss'
+          ? 'Uses the RTSS frame limiter when RTSS is available; falls back to the Intel driver limiter otherwise.'
+          : CARD_NOTES.frameLimit,
+      }),
       el('div', { class: 'graphics-fps-row' }, [
         sliderRow,
       ]),
@@ -2264,10 +2293,14 @@ async function applyDisplay(ctx: PageContext, only: string) {
       // only replace an unchanged draft with native read-back.
       const scalingDraftChangedWhileApplying = displayScalingDraftRevision !== scalingDraftRevisionAtStart;
       if (!scalingDraftChangedWhileApplying) {
-        // Keep the raw active/native state truthful. A saved GPU preference
-        // is explained by the status note, but it must not relabel the
-        // selector while IGCL reports Identity as the active scaler.
-        syncDisplayScalingDraftFromReadback(freshDisplay);
+        const scalingResult = out.perControl.scalingMode;
+        const requestedGpuMethod = typeof payload.displayScalingMethod === 'string'
+          ? payload.displayScalingMethod
+          : (typeof payload.scalingMode === 'string' ? payload.scalingMode : null);
+        const preserved = scalingResult?.ok === true
+          && scalingResult.deferred === true
+          && preserveDeferredGpuScalingSelection(freshDisplay, requestedGpuMethod);
+        if (!preserved) syncDisplayScalingDraftFromReadback(freshDisplay);
       }
       if (graphicsView === 'display' && viewContainer?.isConnected) renderDisplayCards(viewContainer, ctx);
     }

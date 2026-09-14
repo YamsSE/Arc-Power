@@ -80,6 +80,10 @@ Quick access and apply-on-startup controls without opening the window.
   game's render rate - the honest limit of the fallback tier). The custom
   Arc Power installer can install RTSS through WinGet and skips that step when
   RTSS is already installed.
+- **FPS limiter provider** - the General Graphics FPS Limit and each saved
+  per-game FPS Limit use RTSS's verified profile limiter when its profile API
+  is available. If RTSS cannot be read back or rejects a write, Arc Power
+  keeps the existing Intel IGCL limiter path for that operation.
 - **API badge** - the foreground graphics API is detected from the process's
   loaded modules: Vulkan and OpenGL-with-a-vendor-ICD rank above DirectX, a
   bare system OpenGL falls through to DirectX, and launcher-owned windows

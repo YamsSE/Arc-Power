@@ -85,6 +85,7 @@
  *   supported: { frameGen: boolean, flipModes: boolean, frameLimit: boolean, lowLatency: boolean, enduranceGaming?: boolean, sharedMemoryOverride?: boolean, prebuiltShaderDownload?: boolean },
  *   supportedOptions: { frameGen: string[], flipModes: string[], lowLatency: string[], enduranceGaming?: string[], enduranceGamingModes?: string[] },
  *   frameLimitRange: { min: number, max: number, step: number, default: number } | null,
+ *   frameLimitSource?: 'rtss' | 'igcl',
  *   sharedMemoryRange?: { min: number, max: number, step: number, default: number } | null,
  *   values: {
  *     frameGenOverride: string | null,

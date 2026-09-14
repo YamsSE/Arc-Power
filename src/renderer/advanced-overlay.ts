@@ -2026,6 +2026,12 @@ function renderGraphicsCards(view: HTMLElement): void {
         el('span', { class: 'chip oc-chip-status', hidden: true }),
         frameLimitApplyBtn,
       ]),
+      el('p', {
+        class: 'card-note',
+        text: state.frameLimitSource === 'rtss'
+          ? 'RTSS frame limiter active; Intel driver fallback is automatic.'
+          : 'Intel driver frame limiter active; RTSS is unavailable.',
+      }),
       el('div', { class: 'graphics-fps-row' }, [
         el('div', { class: 'graphics-control' }, [toggle]),
         sliderRow,

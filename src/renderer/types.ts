@@ -962,6 +962,8 @@ export interface GraphicsState {
     enduranceGamingModes?: EnduranceGamingMode[];
   };
   frameLimitRange: { min: number; max: number; step: number; default: number } | null;
+  /** The active FPS limiter provider; IGCL is used when RTSS is unavailable. */
+  frameLimitSource?: 'rtss' | 'igcl';
   sharedMemoryRange?: { min: number; max: number; step: number; default: number } | null;
   values: {
     frameGenOverride: FrameGenOverride | null;
