@@ -167,10 +167,9 @@ function scalingStateNoteOf(display: DisplayState['displays'][number] | null): s
   const preferredLabel = preferred === 'centered' || preferred === 'stretched' || preferred === 'aspect-ratio-centered-max'
     ? IGS_SCALING_METHOD_LABELS[preferred]
     : undefined;
-  const gpuPreferred = display?.scalingPreference !== 'display-scaling'
-    && (preferredLabel !== undefined
-    || display?.scalingPreference === 'gpu-scaling');
-  if (effectiveScalingModeOf(display) === 'identity' && gpuPreferred) {
+  const gpuPreferred = display?.scalingPreference === 'gpu-scaling'
+    || ((display?.scalingPreference === null || display?.scalingPreference === undefined) && preferredLabel !== undefined);
+  if (display?.scalingMode === 'identity' && gpuPreferred) {
     const method = preferredLabel ? ` (${preferredLabel})` : '';
     return `Saved preference: GPU Scaling${method}. Active scaler: Display Scaling at the current desktop resolution. ${DISPLAY_SCALING_NOTE}`;
   }
@@ -410,8 +409,12 @@ function preserveDeferredGpuScalingSelection(
   display: DisplayState['displays'][number],
   requestedMethod: string | null,
 ): boolean {
-  const gpuPreferenceVerified = display.scalingPreference === 'gpu-scaling'
-    || ['centered', 'stretched', 'aspect-ratio-centered-max'].includes(display.preferredScalingMode ?? '');
+  // A native PreferredScalingType can remain stale after the user chooses
+  // Display Scaling. Never let that field re-promote the UI to GPU when the
+  // same read-back contains the authoritative IGS Display preference.
+  const gpuPreferenceVerified = display.scalingPreference !== 'display-scaling'
+    && (display.scalingPreference === 'gpu-scaling'
+      || ['centered', 'stretched', 'aspect-ratio-centered-max'].includes(display.preferredScalingMode ?? ''));
   if (display.scalingMode !== 'identity'
     || !gpuPreferenceVerified
     || requestedMethod === null

@@ -4475,8 +4475,16 @@ export class IgclBackend {
             const preferenceAlreadyApplied = current.version === 1
               && !custom
               && flag !== DISPLAY_SCALING_MODE_TO_IGCL.identity
+              // A Display -> GPU transition can legitimately leave the
+              // native PreferredScalingType unchanged: the driver already
+              // has the requested GPU method, while NNScalingState is the
+              // field that changed. A successful preflight registry write is
+              // therefore proof of the missing transition; requiring the
+              // old registry value to match made this exact transition fail
+              // and roll the user's GPU selection back.
               && (!registryWriterAvailable
-                || (registryScalingState?.ok === true && registryScalingState.value === registryValue))
+                || (registryScalingState?.ok === true && registryScalingState.value === registryValue)
+                || registryFallback?.ok === true)
               && preferredBefore === flag
               && got?.enable === true
               && got.scalingType === DISPLAY_SCALING_MODE_TO_IGCL.identity
