@@ -80,6 +80,7 @@ import {
   SCALING_STATE_GPU,
   SCALING_STATE_DISPLAY,
 } from './vrr-registry.js';
+import { createWindowsDisplayModeReapply } from './windows-display-mode.js';
 import { createSharedMemoryOverride, sharedMemoryPlatformSupported } from './shared-memory-override.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
@@ -1013,6 +1014,9 @@ export class IgclBackend {
    *   sharedMemoryOverride?: object|null, // DxgKrnl shared GPU/NPU memory
    *                                   // registry adapter; omitted in native
    *                                   // test fakes and created for product use
+   *   displayModeReapply?: { reapply: (request: object) => object|Promise<object> }|null,
+   *                                   // Windows mode-application seam for
+   *                                   // ordinary GPU-scaling preferences
    *   systemInfoOf?: () => object|null, // trusted cached CPU/RAM snapshot
    * }} opts
    */
@@ -1053,6 +1057,14 @@ export class IgclBackend {
     this._vrrRegistry = Object.prototype.hasOwnProperty.call(opts, 'vrrRegistry')
       ? opts.vrrRegistry
       : (opts.lib ? null : createVrrRegistry());
+    // A normal IGCL GPU-scaling write updates the driver's preferred scaler.
+    // Reapply the current Windows mode so the driver can consume that
+    // preference immediately when the output actually requires scaling. The
+    // seam is disabled for injected native fakes unless a test explicitly
+    // provides it; tests must never touch the user's display session.
+    this._displayModeReapply = Object.prototype.hasOwnProperty.call(opts, 'displayModeReapply')
+      ? opts.displayModeReapply
+      : (opts.lib ? null : createWindowsDisplayModeReapply());
     this._ocMode = opts.ocMode === 'advanced' ? 'advanced' : 'stock';
     // Stock/Advanced is a tuning-surface preference, not a process-global
     // GPU setting. Keep a separate mode for each enumerated adapter so
@@ -4370,6 +4382,7 @@ export class IgclBackend {
           let setResult = null;
           let registryRestoreAttempted = false;
           let registryRestoreOk = true;
+          let displayModeReapply = null;
 
           const restorePreviousRegistryState = async () => {
             if (registryRestoreAttempted) return registryRestoreOk;
@@ -4430,6 +4443,26 @@ export class IgclBackend {
             };
             result.ok = false;
           } else {
+            // IGCL's ordinary GPU selector is a preferred output-scaler
+            // write. Reapply the current Windows mode after the native SET so
+            // the driver gets the same mode-application opportunity it gets
+            // from Intel Graphics Software. At a native desktop resolution
+            // the active read-back may still correctly remain Identity; the
+            // fresh read below keeps that distinction explicit.
+            if (!custom
+              && flag !== DISPLAY_SCALING_MODE_TO_IGCL.identity
+              && typeof this._displayModeReapply?.reapply === 'function') {
+              displayModeReapply = await Promise.resolve(this._displayModeReapply.reapply({
+                displayName: selectedDisplay?.name,
+                resolution: selectedDisplay?.resolution,
+                refreshRate: selectedDisplay?.refreshRate,
+              })).catch(() => ({
+                supported: true,
+                ok: false,
+                errorCode: 'display-mode-reapply-failed',
+                message: 'Windows could not reapply the current display mode; no display mode was changed.',
+              }));
+            }
             // The probe never set-tested scaling; the read-back gets a short
             // settle because the driver may need a beat to report the new
             // output state.
@@ -4478,6 +4511,8 @@ export class IgclBackend {
             const registryAvailable = registryWriterAvailable;
             let registryReadBackEqual = false;
             const deferredPreferenceCandidate = preferredOnly || preferenceAlreadyApplied;
+            const displayModeReapplyFailed = displayModeReapply?.supported === true
+              && displayModeReapply.ok !== true;
             // Do not persist a new IGS preference after a native silent no-op.
             // For a known old value the preflight write can be rolled back;
             // when the old value was unavailable, wait until native proof
@@ -4501,9 +4536,13 @@ export class IgclBackend {
             readBackEqual = nativeReadBackEqual && persistedReadBackEqual;
             const deferredPreference = deferredPreferenceCandidate
               && preferredReadBackEqual
-              && persistedReadBackEqual;
+              && persistedReadBackEqual
+              && !displayModeReapplyFailed;
             const applied = readBackEqual || deferredPreference;
-            if (deferredPreference) {
+            if (displayModeReapplyFailed && !nativeReadBackEqual) {
+              message = displayModeReapply.message
+                ?? 'GPU Scaling preference was saved, but Windows could not reapply the current display mode; the requested GPU transition was not applied.';
+            } else if (deferredPreference) {
               message = preferenceAlreadyApplied
                 ? 'GPU Scaling preference is already saved. The driver reports Display Scaling as active at the current desktop resolution; GPU Scaling will activate when the output requires scaling.'
                 : 'GPU Scaling preference was saved. The driver reports Display Scaling as active at the current desktop resolution; GPU Scaling will activate when the output requires scaling.';
@@ -4530,6 +4569,10 @@ export class IgclBackend {
               preferenceAlreadyApplied,
               deferred: deferredPreference,
               preference: deferredPreference ? 'gpu-scaling' : undefined,
+              ...(displayModeReapply?.supported === true ? {
+                displayModeReapplyOk: displayModeReapply.ok === true,
+                displayModeReapplyResult: displayModeReapply.result,
+              } : {}),
               registryReadBackEqual,
               ...(registryFallback?.ok === true ? { writeTransport: 'registry' } : {}),
               silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual && !deferredPreference,
