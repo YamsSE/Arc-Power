@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { TelemetryService } from './telemetry/telemetry-service.js';
+import { lhmGpuUtilizationTargetIsUnique } from './telemetry/lhm-provider.js';
 import { collectHealth } from './health.js';
 import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_SCALING_METHOD_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual, deviceHardwareKey, isIntegratedStyleDevice } from './backend/units.js';
@@ -1063,7 +1064,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
  *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe). M17g: the emit-site composition MOVED into the sysStats adapter's FAST lane - this param is kept for call-site compatibility and is no longer consumed by the telemetry push (the fast-lane field replaces it).
  *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>, sampleFast?: () => Promise<object>, sampleSlow?: () => Promise<object>, setTarget?: (target?: object|null) => void, startSlowLane?: (cadenceMs?: number) => void, stopSlowLane?: () => void } | { current: object | null },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample). M17g: the telemetry push samples the FAST lane (sampleFast) per tick - never the slow PowerShell query; the slow lane runs on the adapter's own background timer (startSlowLane/stopSlowLane, tied to the telemetry session lifecycle). M17p: main.js may pass a MUTABLE HOLDER ({ current: null } - the sysStats block lands AFTER registerIpc; the ONE normalize at the top unwraps it per-access; a plain adapter passes through).
- *   lhmTelemetry?: { sampleForTarget: (target?: object|null) => Promise<object|null>, close?: () => Promise<void> },  // LibreHardwareMonitor hardware source; GPU utilization is composed separately from the Windows GPU Engine counter.
+ *   lhmTelemetry?: { sampleForTarget: (target?: object|null) => Promise<object|null>, close?: () => Promise<void> },  // LibreHardwareMonitor hardware source; Intel global GPU load is used only with a unique physical-adapter match.
  *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: log-to-file writer (monitor-YYYYMMDD.txt)
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
@@ -1431,18 +1432,68 @@ export function createIpcHandlers({
   };
 
   // The production telemetry contract is intentionally source-specific:
-  // LibreHardwareMonitor owns CPU/RAM/GPU hardware readouts, Windows GPU
-  // Engine owns GPU utilization, and RTSS owns FPS/frametime. Removing the
-  // old IGCL/sys-stats readout fields here is important: a stale native field
-  // must never silently win when the new provider is unavailable.
+  // LibreHardwareMonitor owns CPU/RAM/GPU hardware readouts and Intel Arc
+  // utilization when its Intel GCL global activity sample maps uniquely to
+  // the selected physical adapter.
+  // Windows GPU Engine remains the honest fallback for missing LHM samples
+  // and adapters without an LHM utilization sensor; RTSS owns FPS/frametime.
+  // Removing the old IGCL/sys-stats readout fields here prevents stale native
+  // values from silently winning when the preferred provider is unavailable.
+  const LHM_GPU_INVENTORY_TTL_MS = 1500;
+  let lhmGpuInventory = [];
+  let lhmGpuInventoryAt = 0;
+  let lhmGpuInventoryPromise = null;
+  const currentLhmGpuInventory = async () => {
+    const now = Date.now();
+    if (lhmGpuInventoryAt > 0 && now - lhmGpuInventoryAt < LHM_GPU_INVENTORY_TTL_MS) {
+      return lhmGpuInventory;
+    }
+    if (lhmGpuInventoryPromise) return lhmGpuInventoryPromise;
+    const pending = (async () => {
+      try {
+        const rows = await backend.listDevices?.();
+        lhmGpuInventory = Array.isArray(rows) ? rows : [];
+      } catch {
+        // No complete inventory means LHM's PCI-only utilization cannot be
+        // safely routed; the caller will use the Windows per-adapter source.
+        lhmGpuInventory = [];
+      }
+      lhmGpuInventoryAt = Date.now();
+      return lhmGpuInventory;
+    })().finally(() => {
+      if (lhmGpuInventoryPromise === pending) lhmGpuInventoryPromise = null;
+    });
+    lhmGpuInventoryPromise = pending;
+    return pending;
+  };
   const composeHybridTelemetry = async (target, deviceSample = null) => {
     if (!lhmTelemetry || typeof lhmTelemetry.sampleForTarget !== 'function') return null;
     let hardware = null;
     try { hardware = await lhmTelemetry.sampleForTarget(target); } catch { hardware = null; }
-    let engine = { gpuUtilPct: null };
-    try {
-      engine = await sysStats.sampleGpuUtilForTarget?.(target) ?? engine;
-    } catch { /* honest null utilization */ }
+    let lhmGpuUtilPct = Number.isFinite(hardware?.gpuUtilPct)
+      && hardware.gpuUtilPct >= 0
+      && hardware.gpuUtilPct <= 100
+      ? hardware.gpuUtilPct
+      : null;
+    if (lhmGpuUtilPct !== null) {
+      const inventory = await currentLhmGpuInventory();
+      if (!lhmGpuUtilizationTargetIsUnique(target, inventory)) lhmGpuUtilPct = null;
+    }
+    let gpuUtilPct = lhmGpuUtilPct;
+    let gpuUtilSource = lhmGpuUtilPct !== null ? 'libre-hardware-monitor' : null;
+    if (gpuUtilPct === null) {
+      let engine = { gpuUtilPct: null };
+      try {
+        engine = await sysStats.sampleGpuUtilForTarget?.(target) ?? engine;
+      } catch { /* honest null utilization */ }
+      const engineGpuUtilPct = Number.isFinite(engine?.gpuUtilPct)
+        && engine.gpuUtilPct >= 0
+        && engine.gpuUtilPct <= 100
+        ? engine.gpuUtilPct
+        : null;
+      gpuUtilPct = engineGpuUtilPct;
+      gpuUtilSource = engineGpuUtilPct !== null ? 'windows-gpu-engine' : null;
+    }
     const base = { ...(deviceSample ?? {}) };
     for (const key of [
       'utilPct', 'gpuUtilPct', 'gpuClockMhz', 'memClockMhz', 'tempC',
@@ -1453,11 +1504,11 @@ export function createIpcHandlers({
     return {
       ...base,
       ...(hardware ?? {}),
-      gpuUtilPct: engine?.gpuUtilPct ?? null,
-      // Keep the legacy renderer contract working while making the source
-      // explicit; no IGCL utilization value reaches any consumer.
-      utilPct: engine?.gpuUtilPct ?? null,
-      gpuUtilSource: 'windows-gpu-engine',
+      gpuUtilPct,
+      // Keep the legacy renderer contract working while making the selected
+      // source explicit; no IGCL utilization value reaches any consumer.
+      utilPct: gpuUtilPct,
+      gpuUtilSource,
     };
   };
   // M151: device-preferred-get may be called concurrently by the main window

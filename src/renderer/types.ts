@@ -556,11 +556,12 @@ export interface TelemetrySample {
    *  watts). The class is often ABSENT on desktops, so it honestly
    *  degrades to null ('-'). */
   cpuPowerW?: number | null;
-  /** M4-I: the OS GPU-utilization counter (the GPUEngine rows for the
-   *  matched LUID - per (eng#, engtype) max across the process rows, sum,
-   *  cap 100). Null when the counter is unpopulated; native IGCL utilPct is
-   *  preferred when present and this remains the fallback source. */
+  /** GPU utilization percentage. Intel Arc prefers LibreHardwareMonitor's
+   *  Intel GCL device-wide load; Windows GPUEngine is the fallback when the
+   *  LHM value is unavailable. */
   gpuUtilPct?: number | null;
+  /** Source used for gpuUtilPct; null when no trustworthy sample exists. */
+  gpuUtilSource?: 'libre-hardware-monitor' | 'windows-gpu-engine' | null;
   /** M14: the system-wide USED RAM in bytes (GlobalMemoryStatusEx ->
    *  ullTotalPhys - ullAvailPhys - the Memory row's source). Composed
    *  into BOTH telemetry emit sites (the device + the no-device null
