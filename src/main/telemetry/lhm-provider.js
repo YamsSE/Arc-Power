@@ -2,9 +2,9 @@
 //
 // LibreHardwareMonitor is a managed .NET library, so the Electron main
 // process talks to a small read-only JSON-lines bridge instead of loading the
-// library into Node. GPU utilization is deliberately not read from LHM here:
-// the Windows GPU Engine counter is the authoritative utilization source in
-// Arc Power, while RTSS remains the FPS/frametime source.
+// library into Node. Intel Arc utilization uses LHM's Intel GCL global GPU
+// activity sensor when available; Windows GPU Engine remains the fallback.
+// RTSS remains the FPS/frametime source.
 
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -31,12 +31,21 @@ function normalizedIdentity(value) {
 }
 
 function numberFromSuffix(value) {
-  const text = normalizedText(value);
+  const text = typeof value === 'number' && Number.isInteger(value) && value >= 0
+    ? value.toString(16)
+    : normalizedText(value);
   if (!text) return null;
   const match = text.match(/(?:0x)?([0-9a-f]{1,8})$/i);
   if (!match) return null;
   const trimmed = match[1].toLowerCase().replace(/^0+/, '') || '0';
   return trimmed.padStart(4, '0');
+}
+
+function pnpPciId(target, field) {
+  const pnp = target?.pnpDeviceId ?? target?.osController?.pnpDeviceId;
+  if (typeof pnp !== 'string') return null;
+  const value = pnp.match(new RegExp(`(?:^|[\\\\&])${field}_([0-9a-f]{4})(?:[\\\\&]|$)`, 'i'))?.[1];
+  return value ? numberFromSuffix(value) : null;
 }
 
 function targetPciDeviceId(target) {
@@ -45,14 +54,38 @@ function targetPciDeviceId(target) {
       ?? target?.deviceIdHex
       ?? target?.osController?.pciDeviceId
       ?? target?.osController?.deviceIdHex,
-  );
+  ) ?? pnpPciId(target, 'DEV');
 }
 
 function targetPciVendorId(target) {
   return numberFromSuffix(
     target?.pciVendorId
       ?? target?.osController?.pciVendorId,
-  );
+  ) ?? pnpPciId(target, 'VEN');
+}
+
+/**
+ * LHM's Intel GCL global-load sensor is keyed only by PCI device ID; it does
+ * not expose a BDF/LUID we can use to distinguish identical cards. Only
+ * trust that utilization sample when the full current inventory contains
+ * exactly one adapter with that vendor/device pair and its stable key is the
+ * requested target. Otherwise the caller must use a per-adapter fallback.
+ */
+export function lhmGpuUtilizationTargetIsUnique(target, inventory) {
+  if (!target || !Array.isArray(inventory) || inventory.length === 0) return false;
+  if (target.synthetic === true || target.backendKind === 'os' || target.identityAmbiguous === true) return false;
+  const deviceKey = normalizedText(target.deviceKey);
+  const vendor = targetPciVendorId(target);
+  const device = targetPciDeviceId(target);
+  if (!deviceKey || deviceKey.startsWith('id:') || vendor !== '8086' || !device) return false;
+
+  const samePciDevice = inventory.filter((candidate) => (
+    targetPciVendorId(candidate) === vendor
+      && targetPciDeviceId(candidate) === device
+  ));
+  return samePciDevice.length === 1
+    && samePciDevice[0]?.identityAmbiguous !== true
+    && samePciDevice[0]?.deviceKey === deviceKey;
 }
 
 function hardwareTypeOf(hardware) {
@@ -109,6 +142,8 @@ function emptyHardwareSample() {
     powerW: null,
     fanRpm: null,
     gpuMemUsedBytes: null,
+    gpuUtilPct: null,
+    gpuUtilSource: null,
   };
 }
 
@@ -191,6 +226,22 @@ export function mapLibreHardwareMonitorSnapshot(payload, target = null) {
   if (!gpu) return out;
 
   const sensors = Array.isArray(gpu.sensors) ? gpu.sensors : [];
+  // LibreHardwareMonitor exposes Intel GCL's device-wide activity as the
+  // exact `GPU Core` Load sensor. Keep the component sensors (Render/Compute,
+  // Media, Memory) out of the single total-utilization field.
+  // LHM 0.9.6 can retain Sensor.Value when the Intel telemetry query fails,
+  // so only consume values the bridge confirms were produced by this poll.
+  if (hardwareTypeOf(gpu) === 'gpuintel') {
+    const gpuCoreLoad = firstValue(sensors, (sensor) => (
+      sensorTypeOf(sensor) === 'load'
+      && /^gpu core$/i.test(sensorNameOf(sensor))
+      && sensor?.fresh === true
+    ));
+    if (gpuCoreLoad !== null && gpuCoreLoad >= 0 && gpuCoreLoad <= 100) {
+      out.gpuUtilPct = gpuCoreLoad;
+      out.gpuUtilSource = 'libre-hardware-monitor';
+    }
+  }
   out.gpuClockMhz = firstValue(sensors, (sensor) => (
     sensorTypeOf(sensor) === 'clock' && /^gpu core$/i.test(sensorNameOf(sensor))
   ));
