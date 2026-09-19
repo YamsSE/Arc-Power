@@ -329,6 +329,7 @@ function recordingSettingsPatchFrom(value: RecordingSettings): RecordingSettings
     captureTarget: { ...value.captureTarget },
     captureColorMode: value.captureColorMode,
     showCursor: value.showCursor,
+    memorySavingMode: value.memorySavingMode,
     replayLengthSec: value.replayLengthSec,
     instantReplayAutoStart: value.instantReplayAutoStart,
     replayMarkersEnabled: value.replayMarkersEnabled,
@@ -793,6 +794,13 @@ function renderReplaySettings(): HTMLElement {
   replay.addEventListener('change', () => stagePatch({ replayLengthSec: Number(replay.value) }));
   const autoStart = el('input', { type: 'checkbox', class: 'settings-checkbox', checked: working?.instantReplayAutoStart === true, 'aria-label': 'Auto-start Instant Replay' }) as HTMLInputElement;
   autoStart.addEventListener('change', () => stagePatch({ instantReplayAutoStart: autoStart.checked }));
+  const memorySaving = el('input', {
+    type: 'checkbox',
+    class: 'settings-checkbox',
+    checked: working?.memorySavingMode !== false,
+    'aria-label': 'Memory Saving Mode',
+  }) as HTMLInputElement;
+  memorySaving.addEventListener('change', () => stagePatch({ memorySavingMode: memorySaving.checked }));
   const toggleCard = (title: string, note: string, input: HTMLInputElement): HTMLElement => el('div', { class: 'recording-replay-toggle-card' }, [
     el('div', { class: 'recording-replay-toggle-copy' }, [el('strong', { text: title }), el('span', { class: 'recording-field-note', text: note })]),
     el('label', { class: 'recording-check-row' }, [input]),
@@ -804,6 +812,7 @@ function renderReplaySettings(): HTMLElement {
     ]),
     field('Seconds to keep available', replay, 'Saved when you press Save Instant Replay.'),
     toggleCard('Auto-start Instant Replay after launch', 'Start the rolling buffer once Arc Power finishes launching.', autoStart),
+    toggleCard('Memory Saving Mode', 'On releases the capture runtime whenever recording, replay, and clip work are idle. Off keeps it warm after it has been started.', memorySaving),
   ]);
 }
 

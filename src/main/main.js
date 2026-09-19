@@ -116,7 +116,7 @@ import { trayApplyActiveProfile } from './tray-apply.js';
 import { isElevated as isElevatedReal } from './elevation.js';
 import { OldIgcl } from './old-igcl.js';
 import { executeApply } from './apply-routing.js';
-import { runApplyWorker } from './apply-worker.js';
+import { readAuthenticatedWorkerRequest, runApplyWorker, writeWorkerResult } from './apply-worker.js';
 import {
   runSysmanHelperMode,
   runSysmanHelperPipeMode,
@@ -832,6 +832,28 @@ async function main() {
       app.exit(1);
       return;
     }
+    // Authenticate and validate the request/output pair before warming the
+    // Sysman helper or constructing any IGCL/OldIgcl object. A malformed or
+    // tampered elevated request must not get a privileged native setup path
+    // merely because the worker process was launched successfully.
+    const workerAuth = await readAuthenticatedWorkerRequest({
+      reqPath: workerReqFile,
+      outPath: workerOutFile,
+      workerSecret: process.env.RID_ARC_POWER_WORKER_SECRET ?? null,
+    });
+    if (!workerAuth.ok) {
+      console.error(`[apply-worker] ${workerAuth.error}`);
+      if (workerAuth.canWriteOutput) {
+        await writeWorkerResult(workerOutFile, {
+          requestId: workerAuth.requestId,
+          op: 'worker-bootstrap',
+          ok: false,
+          error: workerAuth.error,
+        }, process.env.RID_ARC_POWER_WORKER_SECRET ?? null);
+      }
+      app.exit(1);
+      return;
+    }
     // M17k: the EARLY warm-up in the worker branch (the same shape as the
     // window path): the proxy is constructed + WARMED BEFORE the worker's
     // backend/IGCL creation - the helper spawns while the machine is idle,
@@ -899,6 +921,7 @@ async function main() {
       // spawn, no RunAs). M17k: the proxy is the WARMED one above (the
       // same shape as the window path).
       sysmanPowerLimits: workerSysmanLimits,
+      workerSecret: process.env.RID_ARC_POWER_WORKER_SECRET ?? null,
       log: (s) => console.log(`[apply-worker] ${s}`),
     });
     // M23 CHANGE 3 (Part A): the ELEVATED worker's full close reaps the
@@ -1890,6 +1913,14 @@ async function main() {
       });
     },
   });
+  // Memory Saving Mode is a Recorder preference, not a separate process
+  // switch. Keep the runtime lazy in either mode; when the user turns the
+  // mode off, an already-started runtime remains warm after the last page or
+  // capture demand is released. Turning it back on closes it at the next idle
+  // boundary. A failed/corrupt sidecar must never make the runtime immortal.
+  const recordingMemorySavingModeEnabled = () => {
+    try { return recordingStore.loadSync()?.settings?.memorySavingMode !== false; } catch { return true; }
+  };
   // Serialize page-lease transitions with idle shutdown. Without this queue,
   // a Recording page could re-enter while the previous page's Ascent child
   // was still closing, receive the old ready state, and skip its new probe.
@@ -1913,7 +1944,7 @@ async function main() {
   const releaseRecordingRuntime = (event) => enqueueRecordingRuntimeTransition(async () => {
     recordingRuntimeLeases.delete(recordingRuntimeLeaseKey(event));
     recordingRuntimeDemand = recordingRuntimeLeases.size;
-    await recordingEngine.shutdownIfIdle?.();
+    if (recordingMemorySavingModeEnabled()) await recordingEngine.shutdownIfIdle?.();
     return recordingEngine.getState();
   });
   const clearRecordingRuntimeDemand = () => enqueueRecordingRuntimeTransition(async () => {
@@ -1922,11 +1953,11 @@ async function main() {
     recordingRuntimeDemand = 0;
     // The first renderer load can overlap explicit Instant Replay auto-start;
     // with no page lease to clear, do not tear down that boot-time capture.
-    if (hadPageDemand) await recordingEngine.shutdownIfIdle?.();
+    if (hadPageDemand && recordingMemorySavingModeEnabled()) await recordingEngine.shutdownIfIdle?.();
     return recordingEngine.getState();
   });
   const shutdownRecordingRuntimeIfIdle = () => enqueueRecordingRuntimeTransition(async () => {
-    await recordingEngine.shutdownIfIdle?.();
+    if (recordingMemorySavingModeEnabled()) await recordingEngine.shutdownIfIdle?.();
     return recordingEngine.getState();
   });
   const recordingLifecycle = createRecordingLifecycleService({ recordingStore, recordingEngine });
@@ -3895,19 +3926,23 @@ async function main() {
     },
   });
   const saveReplayClipForAction = async (request) => {
-    const response = await recordingEngine.saveReplayClip(request);
-    const settings = await recordingStore.settings();
-    const location = recordingAbsolutePath(settings.location, 'location');
-    const responsePath = typeof response?.path === 'string' && path.dirname(path.resolve(response.path)) === path.resolve(location)
-      ? response.path
-      : request.path;
-    const metadata = await persistReplayClipMetadata({
-      recordingStore,
-      recordingRoot: location,
-      outputPath: responsePath,
-      readyPayload: response,
-    });
-    return { response, ...metadata };
+    try {
+      const response = await recordingEngine.saveReplayClip(request);
+      const settings = await recordingStore.settings();
+      const location = recordingAbsolutePath(settings.location, 'location');
+      const responsePath = typeof response?.path === 'string' && path.dirname(path.resolve(response.path)) === path.resolve(location)
+        ? response.path
+        : request.path;
+      const metadata = await persistReplayClipMetadata({
+        recordingStore,
+        recordingRoot: location,
+        outputPath: responsePath,
+        readyPayload: response,
+      });
+      return { response, ...metadata };
+    } finally {
+      await Promise.resolve(shutdownRecordingRuntimeIfIdle()).catch(() => {});
+    }
   };
   const persistCompletedVideoCapture = async (mode = null) => {
     if (mode !== 'video') return null;

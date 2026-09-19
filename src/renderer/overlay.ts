@@ -1045,6 +1045,7 @@ api.onTelemetrySample((sample) => {
   if (isMainSample && (
     Object.prototype.hasOwnProperty.call(sample, 'cpuUtilPct')
     || Object.prototype.hasOwnProperty.call(sample, 'memoryUsedBytes')
+    || Object.prototype.hasOwnProperty.call(sample, 'cpuPowerW')
   )) {
     latestCpuSource = sample;
   }

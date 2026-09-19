@@ -14,9 +14,123 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { sanitizeSettings, clampSettings, sanitizeGraphicsSettings, sanitizeDisplaySettings } from './ipc-core.js';
 import { executeApply, withCapabilityFlags, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_STOCK, OC_MODE_ADVANCED } from './apply-routing.js';
 import { displayKeyInNamespace, normalizeDisplayStateIdentity } from './display-identity.js';
+import { validateSafeGameCandidate } from './game-candidate.js';
+
+const WORKER_CANCELLED_ERROR = 'apply canceled: the parent process revoked this request';
+const WRITE_METHODS = new Set([
+  'applySettings',
+  'restoreWaiverState',
+  'setWaiverAccepted',
+  'resetToDefaults',
+  'setGraphicsSettings',
+  'setGameProfileSettings',
+  'setDisplaySettings',
+]);
+
+function unsignedRequestPayload(request) {
+  const payload = { ...request };
+  delete payload.auth;
+  return JSON.stringify(payload);
+}
+
+function requestAuthIsValid(request, workerSecret) {
+  if (typeof workerSecret !== 'string' || workerSecret.length === 0 || typeof request?.auth !== 'string') return false;
+  const expected = createHmac('sha256', workerSecret).update(unsignedRequestPayload(request)).digest('hex');
+  const supplied = Buffer.from(request.auth, 'utf8');
+  const actual = Buffer.from(expected, 'utf8');
+  return supplied.length === actual.length && timingSafeEqual(supplied, actual);
+}
+
+function unsignedWorkerResultPayload(result) {
+  const payload = { ...result };
+  delete payload.auth;
+  return JSON.stringify(payload);
+}
+
+function workerResultAuthIsValid(result, workerSecret) {
+  if (typeof workerSecret !== 'string' || workerSecret.length === 0 || typeof result?.auth !== 'string') return false;
+  const expected = createHmac('sha256', workerSecret).update(unsignedWorkerResultPayload(result)).digest('hex');
+  const supplied = Buffer.from(result.auth, 'utf8');
+  const actual = Buffer.from(expected, 'utf8');
+  return supplied.length === actual.length && timingSafeEqual(supplied, actual);
+}
+
+/** Validate one worker result against the parent-owned request and secret. */
+export function validateWorkerResult(result, { requestId, op, workerSecret } = {}) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return { ok: false, error: 'worker result is not an object' };
+  }
+  if (result.requestId !== requestId) {
+    return { ok: false, error: 'worker result request id does not match the active request' };
+  }
+  if (result.op !== op) {
+    return { ok: false, error: 'worker result operation does not match the active request' };
+  }
+  if (!workerResultAuthIsValid(result, workerSecret)) {
+    return { ok: false, error: 'worker result authentication failed' };
+  }
+  return { ok: true, result };
+}
+
+/**
+ * The parent owns a tightly scoped request/result pair in %TEMP%. Validate
+ * the pair before reading or writing anything so command-line arguments cannot
+ * redirect an elevated worker at an arbitrary file.
+ */
+export function validateWorkerFilePair(reqPath, outPath) {
+  if (typeof reqPath !== 'string' || typeof outPath !== 'string'
+    || !path.isAbsolute(reqPath) || !path.isAbsolute(outPath)) return null;
+  const requestPath = path.resolve(reqPath);
+  const outputPath = path.resolve(outPath);
+  if (path.dirname(requestPath).toLowerCase() !== path.dirname(outputPath).toLowerCase()) return null;
+  const requestMatch = path.basename(requestPath).match(/^arcpower-req-([A-Za-z0-9-]+)\.json$/i);
+  const outputMatch = path.basename(outputPath).match(/^arcpower-out-([A-Za-z0-9-]+)\.json$/i);
+  if (!requestMatch || !outputMatch || requestMatch[1] !== outputMatch[1]) return null;
+  return { requestPath, outputPath, requestId: requestMatch[1] };
+}
+
+/** Read and authenticate a worker request before any privileged/native setup. */
+export async function readAuthenticatedWorkerRequest({ reqPath, outPath, workerSecret }) {
+  const pair = validateWorkerFilePair(reqPath, outPath);
+  if (!pair) return { ok: false, requestId: null, canWriteOutput: false, error: 'invalid worker request/output paths' };
+  let request;
+  try {
+    request = JSON.parse(await fs.promises.readFile(pair.requestPath, 'utf8'));
+  } catch (err) {
+    return {
+      ok: false,
+      requestId: pair.requestId,
+      canWriteOutput: true,
+      error: `request unreadable: ${err.message}`,
+    };
+  }
+  if (request?.requestId !== pair.requestId) {
+    return { ok: false, requestId: pair.requestId, canWriteOutput: true, error: 'request id does not match its file pair' };
+  }
+  if (!requestAuthIsValid(request, workerSecret)) {
+    return { ok: false, requestId: pair.requestId, canWriteOutput: true, error: 'request authentication failed' };
+  }
+  return { ok: true, requestId: pair.requestId, canWriteOutput: true, request };
+}
+
+function guardNativeWrites(target, writeMethods, requestWasCanceled) {
+  if (!target || (typeof target !== 'object' && typeof target !== 'function')) return target;
+  const methods = new Set(writeMethods);
+  return new Proxy(target, {
+    get(valueTarget, property, receiver) {
+      const value = Reflect.get(valueTarget, property, receiver);
+      if (typeof property !== 'string' || !methods.has(property) || typeof value !== 'function') return value;
+      return async (...args) => {
+        if (await requestWasCanceled()) throw new Error(WORKER_CANCELLED_ERROR);
+        return Reflect.apply(value, valueTarget, args);
+      };
+    },
+  });
+}
 
 /**
  * M2 orphan guard: refuse to run when the request directory holds an
@@ -72,30 +186,48 @@ export async function findStaleSiblingToken(dir, requestId, now = Date.now(), to
  *   log?: (s: string) => void,
  *   sysmanPowerLimits?: object | null, // M17f: the sysman PL2 companion -
  *   // null -> no companion (tests); main.js wires the real adapter
+ *   workerSecret?: string | null, // parent-only HMAC key for the request file
  * }} deps
  * @returns {Promise<number>} process exit code (0 = result written)
  */
-export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log = () => {}, sysmanPowerLimits = null }) {
-  let req;
-  try {
-    const raw = await fs.promises.readFile(reqPath, 'utf8');
-    req = JSON.parse(raw);
-  } catch (err) {
-    log(`[apply-worker] request unreadable: ${err.message}`);
-    await writeResult(outPath, { ok: false, error: `request unreadable: ${err.message}` });
+export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log = () => {}, sysmanPowerLimits = null, workerSecret = process.env.RID_ARC_POWER_WORKER_SECRET ?? null }) {
+  const authenticated = await readAuthenticatedWorkerRequest({ reqPath, outPath, workerSecret });
+  if (!authenticated.ok) {
+    log(`[apply-worker] ${authenticated.error}`);
+    if (authenticated.canWriteOutput) {
+      await writeWorkerResult(outPath, { requestId: authenticated.requestId, op: 'worker-bootstrap', ok: false, error: authenticated.error }, workerSecret);
+    }
     return 1;
   }
-  const requestId = typeof req?.requestId === 'string' ? req.requestId : null;
+  const req = authenticated.request;
+  const requestId = authenticated.requestId;
   const op = req?.op ?? 'apply';
   const deviceId = Number.isInteger(req?.deviceId) && req.deviceId >= 0 ? req.deviceId : null;
   const finish = async (payload) => {
-    await writeResult(outPath, { requestId, op, ...payload });
+    await writeWorkerResult(outPath, { requestId, op, ...payload }, workerSecret);
+  };
+  const cancelPath = requestId
+    ? path.join(path.dirname(reqPath), `arcpower-cancel-${requestId}.json`)
+    : null;
+  const requestWasCanceled = async () => {
+    if (!cancelPath) return false;
+    try {
+      const marker = JSON.parse(await fs.promises.readFile(cancelPath, 'utf8'));
+      return marker?.requestId === requestId;
+    } catch {
+      return false;
+    }
+  };
+  const abortIfCanceled = async () => {
+    if (!(await requestWasCanceled())) return false;
+    await finish({ ok: false, error: WORKER_CANCELLED_ERROR, canceled: true });
+    return true;
   };
   if (deviceId === null) {
     await finish({ ok: false, error: 'invalid request: deviceId must be a non-negative integer' });
     return 1;
   }
-  if (!['apply', 'waiver-accept', 'reset', 'graphics-apply', 'display-apply'].includes(op)) {
+  if (!['apply', 'waiver-accept', 'reset', 'graphics-apply', 'game-profile-apply', 'display-apply'].includes(op)) {
     await finish({ ok: false, error: `invalid request: unknown op '${op}'` });
     return 1;
   }
@@ -118,6 +250,34 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     await finish({ ok: false, error: 'request superseded: the parent process gave up before this worker started' });
     return 1;
   }
+  if (await abortIfCanceled()) return 1;
+
+  // The parent validates the target before spawning, but the elevated child
+  // must defend its own native boundary too. This proxy checks for revocation
+  // immediately before every backend write, including writes reached through
+  // executeApply.
+  const guardedBackend = new Proxy(backend, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof property !== 'string' || !WRITE_METHODS.has(property) || typeof value !== 'function') return value;
+      return async (...args) => {
+        if (await requestWasCanceled()) throw new Error(WORKER_CANCELLED_ERROR);
+        return value.apply(target, args);
+      };
+    },
+  });
+  // executeApply also has two deliberately separate native seams. Guard
+  // those writers as well; checking only backend.set* methods still allowed a
+  // timed-out request to reach the legacy IGCL or Sysman write after the
+  // parent had revoked it.
+  const guardedOldIgcl = guardNativeWrites(oldIgcl, [
+    'setPowerLimitW',
+    'setTempLimitC',
+  ], requestWasCanceled);
+  const guardedSysmanPowerLimits = guardNativeWrites(sysmanPowerLimits, [
+    'setLimits',
+    'setVoltageOffset',
+  ], requestWasCanceled);
 
   const displayIdentityFailure = (errorCode, message) => {
     const settings = req?.settings && typeof req.settings === 'object' && !Array.isArray(req.settings) ? req.settings : {};
@@ -128,14 +288,14 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
   // Initialize before the resolver can refresh the real backend inventory.
   // The stale-token and request gates above intentionally remain pre-init.
   try {
-    await backend.init();
+    await guardedBackend.init();
     // M30: inventory-aware backends expose a resolver so the worker can reject
     // stale keys and synthetic OS-only adapters before any write. Keep the
     // legacy injected-backend seam usable when it has no resolver at all.
     let target = null;
     if (typeof backend?.getDeviceTarget === 'function') {
       try {
-        target = await backend.getDeviceTarget(
+        target = await guardedBackend.getDeviceTarget(
           deviceId,
           typeof req?.deviceKey === 'string' ? req.deviceKey : null,
           req?.physicalTarget && typeof req.physicalTarget === 'object' ? req.physicalTarget : null,
@@ -168,26 +328,27 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
         return 1;
       }
     }
+    if (await abortIfCanceled()) return 1;
     // The parent already accepted the waiver through the user dialog. The
     // worker has its own IGCL context, so replay that cached consent into the
     // driver before an apply; this is not a new acceptance or a user prompt.
     if (req.waiverAccepted === true) {
-      await backend.restoreWaiverState(deviceId, true);
-      if (op === 'apply' && typeof backend.setWaiverAccepted === 'function') {
-        await backend.setWaiverAccepted(deviceId);
+      await guardedBackend.restoreWaiverState(deviceId, true);
+      if (op === 'apply' && typeof guardedBackend.setWaiverAccepted === 'function') {
+        await guardedBackend.setWaiverAccepted(deviceId);
       }
     }
 
     if (op === 'waiver-accept') {
-      await backend.setWaiverAccepted(deviceId);
+      await guardedBackend.setWaiverAccepted(deviceId);
       await finish({ ok: true });
       return 0;
     }
 
     if (op === 'reset') {
-      await backend.resetToDefaults(deviceId);
+      await guardedBackend.resetToDefaults(deviceId);
       let state = null;
-      try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+      try { state = await guardedBackend.getCurrentSettings(deviceId); } catch { /* degraded */ }
       await finish({ ok: true, state });
       return 0;
     }
@@ -207,15 +368,38 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       }
       let range = null;
       try {
-        range = (await backend.getGraphicsSettings(deviceId)).frameLimitRange;
+        range = (await guardedBackend.getGraphicsSettings(deviceId)).frameLimitRange;
       } catch {
         // degraded - the sanitizer's fallback applies
       }
       const settings = sanitizeGraphicsSettings(req.settings, range);
-      const out = await backend.setGraphicsSettings(deviceId, settings);
+      const out = await guardedBackend.setGraphicsSettings(deviceId, settings);
       let graphicsState = null;
-      try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
+      try { graphicsState = await guardedBackend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
       await finish({ ok: out.ok, perControl: out.perControl, graphicsState });
+      return 0;
+    }
+
+    // Per-game graphics settings use the same native 3D-feature surface as
+    // the Graphics tab. Keep this operation in the worker too so a malformed
+    // driver frame-limit call cannot terminate the UI process.
+    if (op === 'game-profile-apply') {
+      const safeExePath = validateSafeGameCandidate(req.exePath, { requireExists: true });
+      if (!safeExePath
+        || typeof req.settings !== 'object' || req.settings === null || Array.isArray(req.settings)) {
+        await finish({ ok: false, error: 'invalid request: executable path and settings are not safe' });
+        return 1;
+      }
+      if (typeof guardedBackend.setGameProfileSettings !== 'function') {
+        await finish({ ok: false, error: 'per-game graphics settings are unavailable in this backend' });
+        return 1;
+      }
+      let range = null;
+      try { range = (await guardedBackend.getGraphicsSettings(deviceId)).frameLimitRange; } catch { /* sanitizer fallback */ }
+      const settings = sanitizeGraphicsSettings(req.settings, range);
+      if (await abortIfCanceled()) return 1;
+      const out = await guardedBackend.setGameProfileSettings(deviceId, safeExePath, settings, req.enabled === true);
+      await finish({ ok: out.ok === true, perControl: out.perControl ?? {} });
       return 0;
     }
 
@@ -243,10 +427,11 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       // route the actual write through the validated worker target identity.
       const writeDeviceKey = typeof target?.deviceKey === 'string' ? target.deviceKey : req.deviceKey;
       const writeDisplayKey = displayKeyInNamespace(req.displayKey, writeDeviceKey);
-      const out = await backend.setDisplaySettings(deviceId, { deviceKey: writeDeviceKey, displayKey: writeDisplayKey, patch: settings });
+      if (await abortIfCanceled()) return 1;
+      const out = await guardedBackend.setDisplaySettings(deviceId, { deviceKey: writeDeviceKey, displayKey: writeDisplayKey, patch: settings });
       let displayState = null;
       try {
-        displayState = normalizeDisplayStateIdentity(await backend.getDisplaySettings(deviceId), req.deviceKey);
+        displayState = normalizeDisplayStateIdentity(await guardedBackend.getDisplaySettings(deviceId), req.deviceKey);
       } catch { /* degraded */ }
       await finish({ ok: out.ok, perControl: out.perControl, displayState });
       return 0;
@@ -278,7 +463,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     // must never silently clamp (the worker's caps max IS the sysman-
     // primary 375 W on the a770, so the flagless skip would clamp silently
     // - the forbidden class).
-    const caps = await backend.getCapabilities(deviceId);
+    const caps = await guardedBackend.getCapabilities(deviceId);
     // M17c: the DEVICE-SCOPED gate thresholds - the caps carry the device
     // identity (pciDeviceId/aibVendor/aibModel - resolved from the
     // worker's OWN post-M17c caps enumeration, round-2 N7), which the
@@ -316,7 +501,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       // is the state before the refused apply. Degraded to null only if the
       // read itself fails.
       let state = null;
-      try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+      try { state = await guardedBackend.getCurrentSettings(deviceId); } catch { /* degraded */ }
       await finish({ ok: false, perControl: refusalPerControl(refusal), state, ocModeRefused: true });
       return 0;
     }
@@ -348,7 +533,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     if (unavailable && Object.keys(settings).every((key) => unavailable.controls.includes(key))) {
       log(`[apply-worker] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied`);
       let state = null;
-      try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+      try { state = await guardedBackend.getCurrentSettings(deviceId); } catch { /* degraded */ }
       await finish({ ok: false, perControl: extendedUnavailablePerControl(unavailable.controls), state, extendedUnavailable: true });
       return 0;
     }
@@ -356,16 +541,17 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       ? extendedRangesFor(caps)
       : caps.ranges;
     const clamped = clampSettings(settings, clampRanges);
+    if (await abortIfCanceled()) return 1;
     const out = await executeApply({
-      backend,
-      oldIgcl,
+      backend: guardedBackend,
+      oldIgcl: guardedOldIgcl,
       deviceId,
       deviceKey: req.deviceKey ?? null,
       physicalTarget: req.physicalTarget ?? null,
       settings: clamped,
       opts: { profileApply: req.profileApply === true, waiverAccepted: req.waiverAccepted === true },
       ocMode: applyMode,
-      sysmanPowerLimits,
+      sysmanPowerLimits: guardedSysmanPowerLimits,
       log,
     });
     // M17c: the result envelope gains the REFUSED VALUES (round-2 S7 +
@@ -404,7 +590,8 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     return 0;
   } catch (err) {
     log(`[apply-worker] FAILED: ${err.message}`);
-    await finish({ ok: false, error: err.message });
+    const canceled = err?.message === WORKER_CANCELLED_ERROR || await requestWasCanceled();
+    await finish({ ok: false, error: err.message, ...(canceled ? { canceled: true } : {}) });
     return 1;
   } finally {
     try { await backend.close(); } catch { /* best effort */ }
@@ -412,9 +599,17 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
   }
 }
 
-async function writeResult(outPath, payload) {
+export async function writeWorkerResult(outPath, payload, workerSecret = null) {
   try {
     await fs.promises.mkdir(path.dirname(outPath), { recursive: true });
   } catch { /* dir exists */ }
-  await fs.promises.writeFile(outPath, JSON.stringify(payload), 'utf8');
+  const unsigned = { ...(payload ?? {}) };
+  delete unsigned.auth;
+  const output = typeof workerSecret === 'string' && workerSecret.length > 0
+    ? {
+      ...unsigned,
+      auth: createHmac('sha256', workerSecret).update(JSON.stringify(unsigned)).digest('hex'),
+    }
+    : unsigned;
+  await fs.promises.writeFile(outPath, JSON.stringify(output), 'utf8');
 }

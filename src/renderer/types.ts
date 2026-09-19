@@ -1241,6 +1241,7 @@ export interface RecordingSettings {
   captureTarget: RecordingCaptureTarget;
   captureColorMode: RecordingCaptureColorMode;
   showCursor: boolean;
+  memorySavingMode: boolean;
   replayLengthSec: number;
   instantReplayAutoStart: boolean;
   replayMarkersEnabled: boolean;

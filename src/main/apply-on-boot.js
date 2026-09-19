@@ -87,6 +87,109 @@ function stableTargetMatchesKey(target, expectedKey) {
 /** Any per-control result carrying the waiver-not-set driver answer. */
 const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
   .some((p) => p?.errorCode === 'waiver-not-set');
+
+const NON_RECONCILABLE_APPLY_ERRORS = new Set([
+  'out-of-range',
+  'unsupported',
+  'waiver-not-set',
+  'stale-target',
+  'device-not-found',
+]);
+
+const STARTUP_APPLY_RETRY_DELAY_MS = 500;
+const TRANSIENT_STARTUP_APPLY_ERRORS = new Set(['not-ready', 'busy', 'timed-out']);
+
+/**
+ * Startup can race the driver/KMD coming out of session initialization. Retry
+ * only those explicitly transient answers; a real refusal must still reach
+ * the normal honest notification/fallback path.
+ */
+export function shouldRetryStartupApply(result) {
+  if (!result || result.ok === true || typeof result !== 'object') return false;
+  const failed = Object.values(result.perControl ?? {}).filter((per) => per?.ok !== true);
+  if (failed.length === 0) return false;
+  return failed.every((per) => {
+    const code = typeof per?.errorCode === 'string' ? per.errorCode : '';
+    if (TRANSIENT_STARTUP_APPLY_ERRORS.has(code)) return true;
+    if (code !== 'io-failed') return false;
+    return /not[- ]?ready|initiali[sz](?:e|ing|ation)|temporar|device.*(?:lost|reset)|kmd.*(?:busy|call)/i.test(String(per?.message ?? ''));
+  });
+}
+
+function profileValuesMatch(requested, actual, control) {
+  if (typeof requested === 'number' && Number.isFinite(requested)
+    && typeof actual === 'number' && Number.isFinite(actual)) {
+    const tolerance = control === 'gpuVoltOffsetV' || control === 'vramVoltOffsetV'
+      ? 0.0011
+      : control === 'powerLimitW' || control === 'tempLimitC' ? 1.01 : 0.001;
+    return Math.abs(requested - actual) <= tolerance;
+  }
+  if (typeof requested === 'boolean') return actual === requested;
+  return typeof requested === 'string' && actual === requested;
+}
+
+function sysmanVoltageApplyRequired(settings, control, sysmanPowerLimits) {
+  return control === 'gpuVoltOffsetV'
+    && typeof settings?.[control] === 'number'
+    && Number.isFinite(settings[control])
+    && typeof sysmanPowerLimits?.setVoltageOffset === 'function';
+}
+
+function sysmanPowerApplyRequired(control, sysmanPowerLimits) {
+  return control === 'powerLimitW'
+    && typeof sysmanPowerLimits?.setLimits === 'function';
+}
+
+export function profileSettingsMatchCurrentState(settings, state, sysmanPowerLimits = null) {
+  if (!settings || typeof settings !== 'object' || !state || typeof state !== 'object') return false;
+  const entries = Object.entries(settings);
+  return entries.length > 0 && entries.every(([control, requested]) => (
+    !sysmanVoltageApplyRequired(settings, control, sysmanPowerLimits)
+      && !sysmanPowerApplyRequired(control, sysmanPowerLimits)
+      && Object.prototype.hasOwnProperty.call(state, control)
+      && profileValuesMatch(requested, state[control], control)
+  ));
+}
+
+/**
+ * A few IGCL/driver combinations report a transient read-back error even
+ * though the write has landed. Startup must not show a failure notification
+ * in that case, but it must continue reporting real refusals. Reconcile only
+ * failed controls whose live state proves the exact requested value; never
+ * turn an unsupported, out-of-range, waiver, or stale-target response into a
+ * success.
+ */
+export function reconcileAppliedProfileResult(result, settings, state, { sysmanPowerLimits = null } = {}) {
+  if (result?.ok === true || !result || typeof result !== 'object'
+    || !settings || typeof settings !== 'object' || !state || typeof state !== 'object') return result;
+  const requestedControls = Object.keys(settings);
+  const perControlResults = result.perControl ?? {};
+  // A partial result is never enough to prove that a whole profile landed.
+  // In particular, an elevated worker can return only the control that failed
+  // while another requested control was never attempted.
+  if (requestedControls.length === 0
+    || requestedControls.some((control) => !Object.prototype.hasOwnProperty.call(perControlResults, control)
+      || !Object.prototype.hasOwnProperty.call(state, control))) return result;
+  const failed = Object.entries(result.perControl ?? {})
+    .filter(([, per]) => per?.ok !== true);
+  if (failed.length === 0) return result;
+  const proven = failed.every(([control, per]) => {
+    // The IGCL getter does not expose the separate Alchemist Sysman voltage
+    // offset. Never turn a failed Sysman clear/write into a success using an
+    // IGCL state that happens to contain zero or the previous offset.
+    if (sysmanVoltageApplyRequired(settings, control, sysmanPowerLimits)) return false;
+    if (NON_RECONCILABLE_APPLY_ERRORS.has(per?.errorCode)) return false;
+    if (!Object.prototype.hasOwnProperty.call(settings, control)
+      || !Object.prototype.hasOwnProperty.call(state, control)) return false;
+    return profileValuesMatch(settings[control], state[control], control);
+  });
+  if (!proven) return result;
+  const perControl = Object.fromEntries(Object.entries(result.perControl ?? {}).map(([control, per]) => [
+    control,
+    per?.ok === true ? per : { ...per, ok: true, readBackEqual: true, reconciledFromLiveState: true },
+  ]));
+  return { ...result, ok: Object.values(perControl).every((per) => per?.ok === true), perControl, reconciledFromLiveState: true };
+}
 /**
  * M29: explicit session ids remain authoritative; persisted selections resolve
  * by durable PCI/BDF identity and legacy numeric-only settings fall back to
@@ -352,13 +455,27 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     ? tempCapabilityPerControl(capabilityRefusal)
     : {};
   let profileState = null;
-  if (Array.isArray(profile.settings.vfCurve)) {
-    try { profileState = await backend.getCurrentSettings(deviceId_); } catch { /* backend normalization remains as a fallback */ }
-  }
+  try { profileState = await backend.getCurrentSettings(deviceId_); } catch { /* backend normalization remains as a fallback */ }
   const normalizedProfileSettings = normalizeBattlemageProfileSettings(profile.settings, caps, profileState);
   const routedProfileSettings = capabilityControls.length > 0
     ? Object.fromEntries(Object.entries(normalizedProfileSettings).filter(([key]) => !capabilityControls.includes(key)))
     : normalizedProfileSettings;
+  // A startup apply often runs against a driver that already retained the
+  // profile's live values. Do not repeat a native write merely to verify what
+  // is already true; this avoids a false boot notification on drivers whose
+  // setter reports a transient read-back mismatch for an idempotent write.
+  if (capabilityControls.length === 0 && profileSettingsMatchCurrentState(normalizedProfileSettings, profileState, sysmanPowerLimits)) {
+    const perControl = Object.fromEntries(Object.keys(normalizedProfileSettings).map((control) => [
+      control,
+      { ok: true, readBackEqual: true, alreadyApplied: true },
+    ]));
+    log('[apply-on-boot] profile already matches the live device state - skipping the redundant startup write');
+    return {
+      applied: true,
+      result: { ok: true, perControl, alreadyApplied: true },
+      state: profileState,
+    };
+  }
   const withCapabilityRefusal = (out) => {
     if (!capabilityRefusal) return withCapabilityFlags(out);
     const perControl = {
@@ -455,7 +572,8 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   let capabilityCeilingRefused = false;
   let capabilityCeilingPartial = false;
   try {
-    let out = await attempt(caps.waiverAccepted === true);
+    let effectiveWaiverAccepted = caps.waiverAccepted === true;
+    let out = await attempt(effectiveWaiverAccepted);
     result = profileResultOf(out);
     state = out.state;
     extendedUnavailable = out.extendedUnavailable === true;
@@ -478,7 +596,8 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
         } else {
           await backend.setWaiverAccepted(deviceId_);
         }
-        out = await attempt(true);
+        effectiveWaiverAccepted = true;
+        out = await attempt(effectiveWaiverAccepted);
         result = profileResultOf(out);
         state = out.state;
         extendedUnavailable = out.extendedUnavailable === true;
@@ -487,6 +606,21 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
         capabilityCeilingPartial = out.capabilityCeilingPartial === true;
       } catch (err) {
         log(`[apply-on-boot] waiver re-set failed: ${err.message} - falling through to the honest failure path`);
+      }
+    }
+    if (!result.ok && shouldRetryStartupApply(result)) {
+      log(`[apply-on-boot] transient driver initialization result - waiting ${STARTUP_APPLY_RETRY_DELAY_MS} ms and retrying ONCE`);
+      await new Promise((resolve) => setTimeout(resolve, STARTUP_APPLY_RETRY_DELAY_MS));
+      try {
+        out = await attempt(effectiveWaiverAccepted);
+        result = profileResultOf(out);
+        state = out.state;
+        extendedUnavailable = out.extendedUnavailable === true;
+        extendedUnavailablePartial = out.extendedUnavailablePartial === true;
+        capabilityCeilingRefused = out.capabilityCeilingRefused === true;
+        capabilityCeilingPartial = out.capabilityCeilingPartial === true;
+      } catch (err) {
+        log(`[apply-on-boot] transient retry threw: ${err.message} - preserving the honest failure result`);
       }
     }
     log(`[apply-on-boot] attempt(s) completed with ${Object.keys(result.perControl).length} per-control result(s)`);
@@ -500,6 +634,12 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       // Read-back failure (M2b step-5 NIT 5): degrade to a null state - the
       // outcome is still reported from `result`; never crash the flow.
     }
+  }
+
+  const reconciledResult = reconcileAppliedProfileResult(result, profile.settings, state, { sysmanPowerLimits });
+  if (reconciledResult?.reconciledFromLiveState === true) {
+    log('[apply-on-boot] apply reported a read-back failure, but the live device state matches every requested control; treating the profile as applied');
+    result = reconciledResult;
   }
 
   if (result.ok === true) {

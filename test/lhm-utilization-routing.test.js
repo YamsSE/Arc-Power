@@ -153,3 +153,54 @@ test('ambiguous identical Intel adapters fall back to each adapter Windows GPU E
   await stopAllTelemetry();
   assert.equal(inventoryReads, 3, 'the cached identity snapshot refreshes after its TTL');
 });
+
+test('LHM null CPU wattage does not erase the native system power sample', async () => {
+  const target = {
+    id: 0,
+    name: 'Intel Arc B580',
+    deviceKey: 'pnp:PCI\\VEN_8086&DEV_E20B&SUBSYS_12345678',
+    pnpDeviceId: 'PCI\\VEN_8086&DEV_E20B&SUBSYS_12345678',
+    pciVendorId: '0x8086',
+    pciDeviceId: '0xE20B',
+  };
+  const emitted = [];
+  const { handlers, stopAllTelemetry } = createIpcHandlers({
+    backend: {
+      async listDevices() { return [target]; },
+      async getDeviceTarget() { return target; },
+      onRawTelemetry() { return () => {}; },
+    },
+    store: { loadSettings: async () => ({ overlayPollMs: 400 }) },
+    sysStats: {
+      setTarget() {},
+      startSlowLane() {},
+      stopSlowLane() {},
+      sampleForTarget: async () => ({ cpuPowerW: 44.5, cpuUtilPct: 51, memoryUsedBytes: 123 }),
+      sampleGpuUtilForTarget: async () => ({ gpuUtilPct: 27 }),
+    },
+    lhmTelemetry: {
+      sampleForTarget: async () => ({
+        telemetryProvider: 'LibreHardwareMonitor',
+        cpuPowerW: null,
+        cpuUtilPct: null,
+        memoryUsedBytes: null,
+        gpuUtilPct: 82,
+        gpuUtilSource: 'libre-hardware-monitor',
+      }),
+    },
+    emit: (channel, payload) => emitted.push([channel, payload]),
+  });
+
+  try {
+    await handlers['telemetry-start'](0);
+  } finally {
+    await stopAllTelemetry();
+  }
+
+  const sample = emitted.find(([channel]) => channel === 'telemetry:sample')?.[1];
+  assert.equal(sample?.cpuPowerW, 44.5);
+  assert.equal(sample?.cpuUtilPct, 51);
+  assert.equal(sample?.memoryUsedBytes, 123);
+  assert.equal(sample?.gpuUtilPct, 82);
+  assert.equal(sample?.gpuUtilSource, 'libre-hardware-monitor');
+});

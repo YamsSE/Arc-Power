@@ -105,6 +105,7 @@ export function buildDropdown(
   let active = selection.activeIndex;
   let typeahead = '';
   let typeaheadTimer: number | null = null;
+  let focusoutTimer: number | null = null;
 
   const optionNodes: HTMLElement[] = [];
   let rootDisabled = config.disabled === true;
@@ -124,6 +125,10 @@ export function buildDropdown(
   };
 
   const close = (restoreFocus = false): void => {
+    if (focusoutTimer !== null) {
+      window.clearTimeout(focusoutTimer);
+      focusoutTimer = null;
+    }
     menu.hidden = true;
     if (menu.parentElement !== root) root.append(menu);
     root.setAttribute('aria-expanded', 'false');
@@ -136,6 +141,10 @@ export function buildDropdown(
 
   const open = (): void => {
     if (rootDisabled || sourceOptions.length === 0) return;
+    if (focusoutTimer !== null) {
+      window.clearTimeout(focusoutTimer);
+      focusoutTimer = null;
+    }
     if (openDropdown && openDropdown.root !== root) openDropdown.close(false);
     const rect = root.getBoundingClientRect();
     const estimatedHeight = Math.min(320, sourceOptions.length * 30 + 8);
@@ -292,8 +301,15 @@ export function buildDropdown(
   root.addEventListener('focusout', (event: FocusEvent) => {
     const related = event.relatedTarget as Node | null;
     if (related && (root.contains(related) || menu.contains(related))) return;
-    window.setTimeout(() => {
-      if (openDropdown?.root === root && document.activeElement !== root) close(false);
+    focusoutTimer = window.setTimeout(() => {
+      focusoutTimer = null;
+      const activeElement = document.activeElement;
+      // A renderer re-render can replace the dropdown while the browser is
+      // still delivering the old focusout event. Only dismiss the instance
+      // that is still mounted and still owns the global menu; never close a
+      // newly opened replacement dropdown because of that stale event.
+      if (root.isConnected && openDropdown?.root === root
+        && activeElement !== root && !menu.contains(activeElement)) close(false);
     }, 0);
   });
   return root;

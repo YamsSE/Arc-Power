@@ -71,13 +71,29 @@ function enumerateProfiles(api) {
   if (typeof api?.enumProfiles !== 'function') return null;
   try {
     const required = Number(api.enumProfiles(null, 0));
-    if (!Number.isInteger(required) || required <= 0 || required > 1024 * 1024) return null;
+    if (!Number.isInteger(required) || required < 0 || required > 1024 * 1024) return null;
+    if (required === 0) return new Set();
     const buffer = Buffer.alloc(required);
     api.enumProfiles(buffer, required);
     const text = buffer.toString('utf8').replaceAll('\0', '');
     return new Set(text.split(',').map((name) => name.trim().toLowerCase()).filter(Boolean));
   } catch {
     return null;
+  }
+}
+
+function deleteProfileVerified(api, profile) {
+  if (typeof api?.deleteProfile !== 'function') return { ok: false, error: 'RTSS profile deletion is unavailable' };
+  try {
+    api.deleteProfile(profile);
+    api.updateProfiles();
+    const profiles = enumerateProfiles(api);
+    if (!(profiles instanceof Set)) return { ok: false, error: 'RTSS profile deletion could not be verified' };
+    return profiles.has(profile.toLowerCase())
+      ? { ok: false, error: 'RTSS profile remained after deletion' }
+      : { ok: true };
+  } catch (cause) {
+    return { ok: false, error: cause instanceof Error ? cause.message : String(cause) };
   }
 }
 
@@ -215,47 +231,96 @@ export function createRtssProfileController({
   };
 
   const restoreLimiterFlagIfIdle = (api) => {
-    if (activeFrameLimitProfiles.size > 0 || !limiterFlagSnapshot) return false;
+    if (!limiterFlagSnapshot) return { ok: true, restored: true, deferred: false };
+    // The shared RTSS limiter flag belongs to all Arc Power-owned profiles.
+    // Releasing one profile while another is still active is successful
+    // cleanup, but the shared flag must stay owned until the final profile is
+    // released. Returning false here made the first profile look like a
+    // failed delete and left the sidecar in a misleading cleanup-pending
+    // state.
+    if (activeFrameLimitProfiles.size > 0) return { ok: true, restored: false, deferred: true };
     const current = readLimiterFlags(api);
-    if (current === null) return false;
+    if (current === null) return { ok: false, restored: false, deferred: false };
     const currentDisabled = (current & RTSS_LIMITER_DISABLED_FLAG) !== 0;
     // Do not overwrite a change made outside Arc Power while our limiter was
     // active. Only restore when the shared flag is still at our last target.
-    if (currentDisabled === limiterFlagSnapshot.desiredDisabled) {
-      if (!setLimiterEnabled(api, limiterFlagSnapshot.previousEnabled)) return false;
-    }
+    if (currentDisabled !== limiterFlagSnapshot.desiredDisabled) return { ok: false, restored: false, deferred: false };
+    if (!setLimiterEnabled(api, limiterFlagSnapshot.previousEnabled)) return { ok: false, restored: false, deferred: false };
     limiterFlagSnapshot = null;
-    return true;
+    return { ok: true, restored: true, deferred: false };
   };
 
   const rollbackFrameLimitChange = (api, profile) => {
     const snapshot = frameLimitSnapshots.get(profile);
-    if (!snapshot) return;
+    if (!snapshot) return { ok: true };
     try {
       api.loadProfile(profile);
       const current = readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY);
       const denominator = readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY);
-      const matches = current === snapshot.desiredLimit
-        && (snapshot.desiredDenominator === null || denominator === snapshot.desiredDenominator);
-      if (matches) {
-        if (snapshot.existed) {
-          if (snapshot.previousLimit !== null && current !== snapshot.previousLimit) writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, snapshot.previousLimit);
-          if (snapshot.previousDenominator !== null && denominator !== snapshot.previousDenominator) writeProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY, snapshot.previousDenominator);
-          api.saveProfile(profile);
-        } else if (profile !== RTSS_GLOBAL_PROFILE && snapshot.created === true && typeof api.deleteProfile === 'function') {
-          api.deleteProfile(profile);
+      const restoreField = ({ name, currentValue, previousValue, desiredValue, label }) => {
+        if (currentValue === previousValue) return false;
+        // A failed multi-field apply can leave only one field at Arc Power's
+        // target. Treat each field independently: requiring the whole profile
+        // to match the desired tuple loses the limiter write when the later
+        // denominator write failed. Anything other than our target or the
+        // recorded previous value is an external edit, so fail closed.
+        if (currentValue !== desiredValue) {
+          throw new Error(`RTSS profile changed outside Arc Power; ${label} rollback was not verified`);
         }
+        if (previousValue === null
+          || !writeProfileProperty(api, name, previousValue)
+          || readProfileProperty(api, name) !== previousValue) {
+          throw new Error(`${label} rollback could not be verified`);
+        }
+        return true;
+      };
+      let changed = false;
+      changed = restoreField({
+        name: RTSS_FRAME_LIMIT_PROPERTY,
+        currentValue: current,
+        previousValue: snapshot.previousLimit,
+        desiredValue: snapshot.desiredLimit,
+        label: 'RTSS FramerateLimit',
+      }) || changed;
+      changed = restoreField({
+        name: RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY,
+        currentValue: denominator,
+        previousValue: snapshot.previousDenominator,
+        desiredValue: snapshot.desiredDenominator,
+        label: 'RTSS FramerateLimitDenominator',
+      }) || changed;
+      if (changed && snapshot.existed) api.saveProfile(profile);
+      if (!snapshot.existed && profile !== RTSS_GLOBAL_PROFILE && snapshot.created === true) {
+        const removed = deleteProfileVerified(api, profile);
+        if (!removed.ok) return { ok: false, error: removed.error };
       }
-      frameLimitSnapshots.delete(profile);
+      // Remove the active marker before attempting flag restoration so the
+      // last profile can release RTSS's shared limiter flag. Keep the
+      // ownership snapshot until that release is verified; a caller can then
+      // retry cleanup with the returned rollback token.
       activeFrameLimitProfiles.delete(profile);
-      restoreLimiterFlagIfIdle(api);
-    } catch {
-      // A failed rollback must not turn an optional RTSS integration into a
-      // startup/apply failure. The original failure still selects IGCL.
+      const hadFlagSnapshot = Boolean(limiterFlagSnapshot);
+      const flagStatus = hadFlagSnapshot
+        ? restoreLimiterFlagIfIdle(api)
+        : { ok: true, restored: true, deferred: false };
+      if (!flagStatus.ok) return { ok: false, error: 'RTSS limiter flag rollback was not verified' };
+      frameLimitSnapshots.delete(profile);
+      return {
+        ok: true,
+        flagRestored: flagStatus.restored,
+        ...(flagStatus.deferred ? { flagRestorationDeferred: true } : {}),
+      };
+    } catch (error) {
+      // The original failure still selects IGCL, but expose cleanupPending so
+      // a caller that owns a sidecar does not report a clean fallback while
+      // its RTSS state may still contain Arc Power's cap. The snapshot is
+      // deliberately retained for a retry.
+      activeFrameLimitProfiles.delete(profile);
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   };
 
-  const applyFrameLimitNow = async ({ enabled = false, value = RTSS_FRAME_LIMIT_RANGE.default, executablePath: targetExecutablePath = null, removeProfile = false } = {}) => {
+  const applyFrameLimitNow = async ({ enabled = false, value = RTSS_FRAME_LIMIT_RANGE.default, executablePath: targetExecutablePath = null, removeProfile = false, rollbackToken = null } = {}) => {
     if (platform !== 'win32') {
       return { ok: false, used: false, fallback: true, source: 'igcl', error: 'RTSS requires Windows' };
     }
@@ -272,22 +337,177 @@ export function createRtssProfileController({
       const beforeLimit = readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY);
       const beforeDenominator = readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY);
       if (beforeLimit === null) throw new Error('RTSS FramerateLimit property is unavailable');
+      const beforeFlags = readLimiterFlags(api);
+      if (beforeFlags === null) throw new Error('RTSS limiter state could not be read');
+      const priorFrameSnapshot = frameLimitSnapshots.get(profile);
+      const priorLimiterFlagSnapshot = limiterFlagSnapshot;
+      const priorActive = activeFrameLimitProfiles.has(profile);
+      const buildRestoreToken = (expectedLimit, expectedDenominator, expectedEnabled) => ({
+        profile,
+        previousLimit: beforeLimit,
+        previousDenominator: beforeDenominator,
+        previousEnabled: (beforeFlags & RTSS_LIMITER_DISABLED_FLAG) === 0,
+        expectedLimit,
+        expectedDenominator,
+        expectedEnabled,
+        priorFrameSnapshot: priorFrameSnapshot ? { ...priorFrameSnapshot } : null,
+        priorLimiterFlagSnapshot: priorLimiterFlagSnapshot ? { ...priorLimiterFlagSnapshot } : null,
+        priorActive,
+      });
+
+      // Rollback may need to re-enable an exact pre-existing profile after
+      // the normal disable path restored its fields. In that narrow case,
+      // preserve the recorded denominator instead of treating the request as
+      // a fresh cap (fresh caps intentionally normalize their denominator to
+      // 1).
+      const tokenSnapshot = rollbackToken && typeof rollbackToken === 'object' && rollbackToken.profile === profile
+        ? { ...rollbackToken }
+        : null;
+      const exactRollbackEnable = enabled === true
+        && tokenSnapshot?.existed === true
+        && beforeLimit === tokenSnapshot.previousLimit
+        && (tokenSnapshot.previousDenominator === null || beforeDenominator === tokenSnapshot.previousDenominator);
+      if (exactRollbackEnable) {
+        if (!limiterFlagSnapshot) {
+          const flags = readLimiterFlags(api);
+          if (flags === null) throw new Error('RTSS limiter state could not be read');
+          limiterFlagSnapshot = {
+            previousEnabled: (flags & RTSS_LIMITER_DISABLED_FLAG) === 0,
+            desiredDisabled: false,
+          };
+        }
+        const flagsBeforeEnable = readLimiterFlags(api);
+        if (flagsBeforeEnable === null || !setLimiterEnabled(api, true)) {
+          throw new Error('RTSS frame limiter could not be enabled');
+        }
+        activeFrameLimitProfiles.add(profile);
+        if (flagsBeforeEnable !== readLimiterFlags(api)) api.updateProfiles();
+        return {
+          ok: true,
+          used: true,
+          source: 'rtss',
+          profile,
+          enabled: true,
+          value: requestedLimit,
+          changed: false,
+          rollbackToken: { profile, ...tokenSnapshot },
+          restoreToken: buildRestoreToken(beforeLimit, beforeDenominator, true),
+        };
+      }
 
       if (enabled !== true) {
-        const snapshot = frameLimitSnapshots.get(profile);
+        const snapshot = frameLimitSnapshots.get(profile) ?? tokenSnapshot;
         let changed = false;
-        if (profile !== RTSS_GLOBAL_PROFILE && removeProfile === true && typeof api.deleteProfile === 'function') {
-          // The caller only requests this after removing an Arc Power-owned
-          // sidecar assignment. It is needed across restarts, where the
-          // in-memory snapshot cannot prove that Arc Power created the RTSS
-          // profile. A normal Off apply keeps the conservative snapshot-only
-          // restoration policy below.
-          api.deleteProfile(profile);
-          frameLimitSnapshots.delete(profile);
+        if (profile !== RTSS_GLOBAL_PROFILE && removeProfile === true) {
+          // A per-application profile is shared user state. Only delete one
+          // when this invocation proved Arc Power created it. A pre-existing
+          // profile is restored in place, including its exact denominator.
+          // After a restart, missing ownership proof fails closed rather than
+          // deleting a profile the user may own.
+          if (!snapshot) throw new Error('RTSS ownership snapshot unavailable; profile was not removed');
+          const matchesDesired = beforeLimit === snapshot.desiredLimit
+            && (snapshot.desiredDenominator === null || beforeDenominator === snapshot.desiredDenominator);
+          if (!matchesDesired) throw new Error('RTSS profile changed outside Arc Power; cleanup was not verified');
+          if (snapshot.existed === true) {
+            if (snapshot.previousLimit !== null && beforeLimit !== snapshot.previousLimit) {
+              if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, snapshot.previousLimit)
+                || readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY) !== snapshot.previousLimit) {
+                throw new Error('RTSS FramerateLimit could not be restored');
+              }
+              changed = true;
+            }
+            if (snapshot.previousDenominator !== null && beforeDenominator !== snapshot.previousDenominator) {
+              if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY, snapshot.previousDenominator)
+                || readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY) !== snapshot.previousDenominator) {
+                throw new Error('RTSS FramerateLimitDenominator could not be restored');
+              }
+              changed = true;
+            }
+            if (changed) {
+              api.saveProfile(profile);
+              api.updateProfiles();
+            }
+            activeFrameLimitProfiles.delete(profile);
+            const hadFlagSnapshot = Boolean(limiterFlagSnapshot);
+            const flagStatus = hadFlagSnapshot
+              ? restoreLimiterFlagIfIdle(api)
+              : { ok: true, restored: true, deferred: false };
+            if (!flagStatus.ok) throw new Error('RTSS limiter flag rollback was not verified');
+            frameLimitSnapshots.delete(profile);
+            return {
+              ok: true,
+              used: true,
+              source: 'rtss',
+              profile,
+              enabled: false,
+              value: 0,
+              changed,
+              removed: true,
+              profileDeleted: false,
+              restored: true,
+              rollbackToken: { profile, ...snapshot },
+              restoreToken: buildRestoreToken(
+                readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY),
+                readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY),
+                (readLimiterFlags(api) & RTSS_LIMITER_DISABLED_FLAG) === 0,
+              ),
+              flagRestored: flagStatus.restored,
+              ...(flagStatus.deferred ? { flagRestorationDeferred: true } : {}),
+            };
+          }
+          if (snapshot.created === true) {
+            const removed = deleteProfileVerified(api, profile);
+            if (!removed.ok) throw new Error(removed.error);
+            activeFrameLimitProfiles.delete(profile);
+            const hadFlagSnapshot = Boolean(limiterFlagSnapshot);
+            const flagStatus = hadFlagSnapshot
+              ? restoreLimiterFlagIfIdle(api)
+              : { ok: true, restored: true, deferred: false };
+            if (!flagStatus.ok) throw new Error('RTSS limiter flag rollback was not verified');
+            frameLimitSnapshots.delete(profile);
+            return {
+              ok: true,
+              used: true,
+              source: 'rtss',
+              profile,
+              enabled: false,
+              value: 0,
+              changed: true,
+              removed: true,
+              profileDeleted: true,
+              rollbackToken: { profile, ...snapshot },
+              restoreToken: buildRestoreToken(
+                readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY),
+                readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY),
+                (readLimiterFlags(api) & RTSS_LIMITER_DISABLED_FLAG) === 0,
+              ),
+              flagRestored: flagStatus.restored,
+              ...(flagStatus.deferred ? { flagRestorationDeferred: true } : {}),
+            };
+          }
+          // No profile was present when Arc Power took its snapshot and no
+          // profile creation was observed, so there is nothing safe to delete.
           activeFrameLimitProfiles.delete(profile);
-          const flagRestored = restoreLimiterFlagIfIdle(api);
-          api.updateProfiles();
-          return { ok: true, used: true, source: 'rtss', profile, enabled: false, value: 0, changed: true, removed: true, flagRestored };
+          const hadFlagSnapshot = Boolean(limiterFlagSnapshot);
+          const flagStatus = hadFlagSnapshot
+            ? restoreLimiterFlagIfIdle(api)
+            : { ok: true, restored: true, deferred: false };
+          if (!flagStatus.ok) throw new Error('RTSS limiter flag rollback was not verified');
+          frameLimitSnapshots.delete(profile);
+          return {
+            ok: true,
+            used: true,
+            source: 'rtss',
+            profile,
+            enabled: false,
+            value: 0,
+            changed: false,
+            removed: true,
+            profileDeleted: false,
+            rollbackToken: { profile, ...snapshot },
+            flagRestored: flagStatus.restored,
+            ...(flagStatus.deferred ? { flagRestorationDeferred: true } : {}),
+          };
         }
         if (profile === RTSS_GLOBAL_PROFILE) {
           // Restore a value Arc Power changed in this process while it still
@@ -328,7 +548,6 @@ export function createRtssProfileController({
             }
           }
           if (changed) api.saveProfile(profile);
-          frameLimitSnapshots.delete(profile);
         } else if (snapshot
           && beforeLimit === snapshot.desiredLimit
           && (snapshot.desiredDenominator === null || beforeDenominator === snapshot.desiredDenominator)) {
@@ -348,9 +567,10 @@ export function createRtssProfileController({
               changed = true;
             }
             if (changed) api.saveProfile(profile);
-          } else if (profile !== RTSS_GLOBAL_PROFILE && snapshot.created === true && typeof api.deleteProfile === 'function') {
-            api.deleteProfile(profile);
-            changed = true;
+        } else if (profile !== RTSS_GLOBAL_PROFILE && snapshot.created === true) {
+          const removed = deleteProfileVerified(api, profile);
+          if (!removed.ok) throw new Error(removed.error);
+          changed = true;
           } else if (profile !== RTSS_GLOBAL_PROFILE && snapshot.previousLimit !== null
             && beforeLimit !== snapshot.previousLimit) {
             if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, snapshot.previousLimit)
@@ -360,13 +580,31 @@ export function createRtssProfileController({
             changed = true;
             api.saveProfile(profile);
           }
-          frameLimitSnapshots.delete(profile);
         }
-        if (snapshot && frameLimitSnapshots.has(profile)) frameLimitSnapshots.delete(profile);
         activeFrameLimitProfiles.delete(profile);
-        const flagRestored = restoreLimiterFlagIfIdle(api);
-        if (changed || flagRestored) api.updateProfiles();
-        return { ok: true, used: true, source: 'rtss', profile, enabled: false, value: 0, changed };
+        const hadFlagSnapshot = Boolean(limiterFlagSnapshot);
+        const flagStatus = hadFlagSnapshot
+          ? restoreLimiterFlagIfIdle(api)
+          : { ok: true, restored: true, deferred: false };
+        if (!flagStatus.ok) throw new Error('RTSS limiter flag rollback was not verified');
+        if (snapshot && frameLimitSnapshots.has(profile)) frameLimitSnapshots.delete(profile);
+          if (changed || flagStatus.restored) api.updateProfiles();
+          return {
+          ok: true,
+          used: true,
+          source: 'rtss',
+          profile,
+          enabled: false,
+            value: 0,
+            changed,
+            restoreToken: buildRestoreToken(
+              readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY),
+              readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY),
+              (readLimiterFlags(api) & RTSS_LIMITER_DISABLED_FLAG) === 0,
+            ),
+            flagRestored: flagStatus.restored,
+          ...(flagStatus.deferred ? { flagRestorationDeferred: true } : {}),
+        };
       }
 
       if (!frameLimitSnapshots.has(profile)) {
@@ -394,6 +632,7 @@ export function createRtssProfileController({
           throw new Error('RTSS FramerateLimit could not be updated');
         }
         changed = true;
+        if (profile !== RTSS_GLOBAL_PROFILE && snapshot.existed === false) snapshot.created = true;
       }
       if (beforeDenominator !== null && beforeDenominator !== 1) {
         if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY, 1)
@@ -421,14 +660,106 @@ export function createRtssProfileController({
       }
       activeFrameLimitProfiles.add(profile);
       if (changed || flagsBeforeEnable !== readLimiterFlags(api)) api.updateProfiles();
-      return { ok: true, used: true, source: 'rtss', profile, enabled: true, value: requestedLimit, changed };
+      return {
+        ok: true,
+        used: true,
+        source: 'rtss',
+        profile,
+        enabled: true,
+        value: requestedLimit,
+        changed,
+        rollbackToken: { profile, ...snapshot },
+        restoreToken: buildRestoreToken(requestedLimit, beforeDenominator === null ? null : 1, true),
+      };
     } catch (cause) {
-      rollbackFrameLimitChange(api, profile);
+      const rollback = rollbackFrameLimitChange(api, profile);
       return {
         ok: false,
         used: false,
         fallback: true,
         source: 'igcl',
+        profile,
+        ...(removeProfile === true || rollback.ok !== true ? { cleanupPending: true } : {}),
+        ...(rollback.ok !== true && rollback.error ? { cleanupError: rollback.error } : {}),
+        ...(frameLimitSnapshots.has(profile) ? { rollbackToken: { profile, ...frameLimitSnapshots.get(profile) } } : {}),
+        error: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
+  };
+
+  const restoreFrameLimitNow = async (restoreToken = null) => {
+    if (platform !== 'win32') {
+      return { ok: false, used: false, error: 'RTSS requires Windows' };
+    }
+    if (!restoreToken || typeof restoreToken !== 'object' || typeof restoreToken.profile !== 'string') {
+      return { ok: false, used: false, error: 'RTSS frame-limit rollback token is unavailable' };
+    }
+    const api = bindings ?? await resolveBindings();
+    if (!api || typeof api.setFlags !== 'function') {
+      return { ok: false, used: false, error: 'RTSS frame limiter is unavailable' };
+    }
+    const profile = restoreToken.profile;
+    try {
+      api.loadProfile(profile);
+      const currentLimit = readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY);
+      const currentDenominator = readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY);
+      const currentFlags = readLimiterFlags(api);
+      if (currentLimit === null || currentFlags === null) throw new Error('RTSS frame-limit rollback read-back failed');
+      const currentEnabled = (currentFlags & RTSS_LIMITER_DISABLED_FLAG) === 0;
+      if (currentLimit !== restoreToken.expectedLimit
+        || (restoreToken.expectedDenominator !== null && currentDenominator !== restoreToken.expectedDenominator)
+        || (typeof restoreToken.expectedEnabled === 'boolean' && currentEnabled !== restoreToken.expectedEnabled)) {
+        throw new Error('RTSS frame-limit rollback refused because the state changed outside Arc Power');
+      }
+      let changed = false;
+      if (restoreToken.previousLimit !== null && currentLimit !== restoreToken.previousLimit) {
+        if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, restoreToken.previousLimit)
+          || readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY) !== restoreToken.previousLimit) {
+          throw new Error('RTSS FramerateLimit rollback could not be verified');
+        }
+        changed = true;
+      }
+      if (restoreToken.previousDenominator !== null && currentDenominator !== restoreToken.previousDenominator) {
+        if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY, restoreToken.previousDenominator)
+          || readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY) !== restoreToken.previousDenominator) {
+          throw new Error('RTSS FramerateLimitDenominator rollback could not be verified');
+        }
+        changed = true;
+      }
+      let flagChanged = false;
+      if (typeof restoreToken.previousEnabled === 'boolean') {
+        flagChanged = currentEnabled !== restoreToken.previousEnabled;
+        if (!setLimiterEnabled(api, restoreToken.previousEnabled)) {
+          throw new Error('RTSS limiter flag rollback could not be verified');
+        }
+      }
+      if (changed) api.saveProfile(profile);
+      if (changed || flagChanged) api.updateProfiles();
+
+      // Restore the controller's ownership bookkeeping along with RTSS's
+      // persisted state. A failed graphics transaction must not leave a
+      // phantom active profile or a stale shared-flag snapshot behind.
+      if (restoreToken.priorFrameSnapshot) frameLimitSnapshots.set(profile, { ...restoreToken.priorFrameSnapshot });
+      else frameLimitSnapshots.delete(profile);
+      if (restoreToken.priorActive === true) activeFrameLimitProfiles.add(profile);
+      else activeFrameLimitProfiles.delete(profile);
+      limiterFlagSnapshot = restoreToken.priorLimiterFlagSnapshot
+        ? { ...restoreToken.priorLimiterFlagSnapshot }
+        : null;
+      return {
+        ok: true,
+        used: true,
+        source: 'rtss',
+        profile,
+        restored: true,
+        changed,
+        flagRestored: true,
+      };
+    } catch (cause) {
+      return {
+        ok: false,
+        used: true,
+        source: 'rtss',
         profile,
         error: cause instanceof Error ? cause.message : String(cause),
       };
@@ -563,10 +894,17 @@ export function createRtssProfileController({
     return next;
   };
 
+  const restoreFrameLimit = (restoreToken = null) => {
+    const next = queue.catch(() => {}).then(() => restoreFrameLimitNow(restoreToken));
+    queue = next.catch(() => {});
+    return next;
+  };
+
   return {
     apply,
     getFrameLimit,
     applyFrameLimit,
+    restoreFrameLimit,
     getState: () => cloneState({ ...state, dllPath: loadedPath }),
   };
 }
