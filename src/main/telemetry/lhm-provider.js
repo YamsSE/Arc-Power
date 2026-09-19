@@ -229,9 +229,13 @@ export function mapLibreHardwareMonitorSnapshot(payload, target = null) {
   // LibreHardwareMonitor exposes Intel GCL's device-wide activity as the
   // exact `GPU Core` Load sensor. Keep the component sensors (Render/Compute,
   // Media, Memory) out of the single total-utilization field.
+  // LHM 0.9.6 can retain Sensor.Value when the Intel telemetry query fails,
+  // so only consume values the bridge confirms were produced by this poll.
   if (hardwareTypeOf(gpu) === 'gpuintel') {
     const gpuCoreLoad = firstValue(sensors, (sensor) => (
-      sensorTypeOf(sensor) === 'load' && /^gpu core$/i.test(sensorNameOf(sensor))
+      sensorTypeOf(sensor) === 'load'
+      && /^gpu core$/i.test(sensorNameOf(sensor))
+      && sensor?.fresh === true
     ));
     if (gpuCoreLoad !== null && gpuCoreLoad >= 0 && gpuCoreLoad <= 100) {
       out.gpuUtilPct = gpuCoreLoad;

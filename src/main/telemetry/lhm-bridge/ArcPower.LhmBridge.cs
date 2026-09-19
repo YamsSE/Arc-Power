@@ -115,6 +115,23 @@ namespace ArcPower.LhmBridge
 
         private static void AppendHardware(IHardware hardware, List<object> output)
         {
+            var clearedIntelGpuCoreLoadIdentifiers = new List<string>();
+            if (hardware.HardwareType == HardwareType.GpuIntel)
+            {
+                foreach (var sensor in hardware.Sensors)
+                {
+                    if (!IsIntelGpuCoreLoadSensor(sensor)) continue;
+                    // ISensor intentionally exposes Value as read-only, but
+                    // the concrete LHM Sensor owns the writable current value.
+                    // Clearing it before Update prevents IntelDiscreteGpu's
+                    // early-return path from leaking the previous poll.
+                    if (TryClearSensorValue(sensor) && sensor.Identifier != null)
+                    {
+                        clearedIntelGpuCoreLoadIdentifiers.Add(sensor.Identifier.ToString());
+                    }
+                }
+            }
+
             try { hardware.Update(); } catch { }
 
             var sensors = new List<object>();
@@ -135,6 +152,16 @@ namespace ArcPower.LhmBridge
                 sensorValue.Add("name", sensor.Name);
                 sensorValue.Add("type", sensor.SensorType.ToString());
                 sensorValue.Add("value", value);
+                if (IsIntelGpuCoreLoadSensor(sensor))
+                {
+                    // A value is fresh only when this bridge could clear the
+                    // concrete sensor before this poll and the post-update
+                    // value is finite. A current sample timestamp alone is
+                    // not sufficient because LHM can retain Sensor.Value.
+                    sensorValue.Add(
+                        "fresh",
+                        WasCleared(clearedIntelGpuCoreLoadIdentifiers, sensor.Identifier) && value.HasValue);
+                }
                 sensors.Add(sensorValue);
             }
 
@@ -148,6 +175,55 @@ namespace ArcPower.LhmBridge
             foreach (var child in hardware.SubHardware)
             {
                 AppendHardware(child, output);
+            }
+        }
+
+        private static bool IsIntelGpuCoreLoadSensor(ISensor sensor)
+        {
+            return sensor != null
+                && sensor.SensorType == SensorType.Load
+                && string.Equals(sensor.Name, "GPU Core", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool WasCleared(List<string> clearedIdentifiers, Identifier sensorIdentifier)
+        {
+            if (sensorIdentifier == null) return false;
+            var identifier = sensorIdentifier.ToString();
+            foreach (var clearedIdentifier in clearedIdentifiers)
+            {
+                if (string.Equals(clearedIdentifier, identifier, StringComparison.Ordinal)) return true;
+            }
+            return false;
+        }
+
+        private static bool TryClearSensorValue(ISensor sensor)
+        {
+            if (sensor == null) return false;
+            try
+            {
+                var sensorType = sensor.GetType();
+                var valueProperty = sensorType.GetProperty("Value");
+                if (valueProperty != null && valueProperty.CanWrite)
+                {
+                    valueProperty.SetValue(sensor, null, null);
+                    if (!sensor.Value.HasValue) return true;
+                }
+
+                // Sensor is internal in LHM 0.9.6. If reflection cannot call
+                // its public setter across the assembly boundary, clear the
+                // concrete current-value backing field as the version-pinned
+                // fallback. Verify through ISensor before claiming freshness.
+                var currentValueField = sensorType.GetField(
+                    "_currentValue",
+                    System.Reflection.BindingFlags.Instance
+                        | System.Reflection.BindingFlags.NonPublic);
+                if (currentValueField == null) return false;
+                currentValueField.SetValue(sensor, null);
+                return !sensor.Value.HasValue;
+            }
+            catch
+            {
+                return false;
             }
         }
 

@@ -43,7 +43,7 @@ function snapshot() {
           { name: 'GPU Package', type: 'Power', value: 158 },
           { name: 'GPU Fan', type: 'Fan', value: 1200 },
           { name: 'GPU Memory Used', type: 'SmallData', value: 2048 },
-          { name: 'GPU Core', type: 'Load', value: 8 },
+          { name: 'GPU Core', type: 'Load', value: 8, fresh: true },
           { name: 'GPU Render/Compute', type: 'Load', value: 23 },
           { name: 'GPU Media', type: 'Load', value: 5 },
           { name: 'GPU Memory', type: 'Load', value: 92 },
@@ -83,6 +83,31 @@ test('LHM Intel GPU load accepts zero and rejects invalid percentages', () => {
   assert.equal(sample.gpuUtilPct, 0, 'zero is a valid utilization sample');
 
   coreLoad.value = 100.1;
+  sample = mapLibreHardwareMonitorSnapshot(payload, {
+    pciVendorId: '0x8086',
+    pciDeviceId: '0xE20B',
+  });
+  assert.equal(sample.gpuUtilPct, null);
+  assert.equal(sample.gpuUtilSource, null);
+});
+
+test('LHM Intel GPU load rejects retained values from a poll that did not refresh the sensor', () => {
+  const payload = snapshot();
+  const gpu = payload.hardware.find((row) => row.type === 'GpuIntel');
+  const coreLoad = gpu.sensors.find((sensor) => sensor.type === 'Load' && sensor.name === 'GPU Core');
+  coreLoad.value = 82;
+  coreLoad.fresh = false;
+
+  let sample = mapLibreHardwareMonitorSnapshot(payload, {
+    pciVendorId: '0x8086',
+    pciDeviceId: '0xE20B',
+  });
+  assert.equal(sample.gpuUtilPct, null);
+  assert.equal(sample.gpuUtilSource, null);
+
+  // Older/partial bridge responses cannot prove the value was refreshed,
+  // even when their top-level snapshot timestamp is current.
+  delete coreLoad.fresh;
   sample = mapLibreHardwareMonitorSnapshot(payload, {
     pciVendorId: '0x8086',
     pciDeviceId: '0xE20B',
