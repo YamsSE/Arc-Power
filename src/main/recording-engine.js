@@ -426,6 +426,7 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
   // this selects Ascent's cross-adapter QSV path without losing GPU ownership
   // in the UI or profile store.
   const runtimeEncoderId = runtimeEncoderIdOf(encoderId, settings.runtimeEncoderId);
+  const h264Encoder = runtimeEncoderId === 'obs_qsv11_v2' || runtimeEncoderId === 'obs_qsv11_soft_v2';
   const adapterTarget = normalizedAdapterTarget(settings.encoderTarget ?? selection?.target);
   // The app keeps the complete stable identity (device key/BDF/LUID) for
   // matching, persistence, and diagnostics. The recording runtime must get
@@ -477,9 +478,13 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
         bitrate: settings.bitrateKbps,
         max_bitrate: settings.bitrateKbps,
         profile: encoderProfileOf(runtimeEncoderId),
-        keyint_sec: 2,
+        // H.264 QSV output must begin with an immediately decodable GOP. The
+        // bundled runtime can otherwise emit a short B-frame lead-in before
+        // the first keyframe, which makes the first second appear corrupted
+        // to players even though the remainder of the file is valid.
+        keyint_sec: h264Encoder ? 1 : 2,
         latency: 'normal',
-        bframes: 3,
+        bframes: h264Encoder ? 0 : 3,
         enhancements: true,
       },
     },

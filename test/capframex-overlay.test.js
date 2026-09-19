@@ -369,6 +369,23 @@ test('recording status pill releases and rebuilds around capture transitions', (
   harness.handle.destroy();
 });
 
+test('recording status pill keeps the legacy running fallback during a start transition', () => {
+  const windows = [];
+  const harness = loadRecordingPillFactory()({
+    initialState: { activeModes: { video: false, replay: false }, running: false, mode: null },
+    windows,
+  });
+
+  harness.handle.apply(true);
+  harness.setState({ activeModes: { video: false, replay: false }, running: true, mode: 'video' });
+  assert.equal(windows.length, 1, 'a start envelope with stale activeModes must still build the pill');
+  assert.equal(windows[0].visible, true);
+
+  harness.setState({ activeModes: { video: false, replay: false }, running: true, mode: 'replay' });
+  assert.equal(windows[0].visible, true, 'the replay fallback must keep the same pill visible');
+  harness.handle.destroy();
+});
+
 test('recording toast releases its transient renderer after expiry', () => {
   const toastSrc = read('src/main/recording-toast.js');
   assert.match(toastSrc, /const destroyWindow = \(\) =>/);

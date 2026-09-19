@@ -103,7 +103,7 @@ function verifiedVoltageResult(result, wantedOffsetV) {
  * @param {boolean} advanced whether the ADVANCED (extended) ceiling applies
  * @returns {{ plMax: number, tlMax: number }}
  */
-export function deviceGateThresholds(limitsKey, advanced) {
+export function deviceGateThresholds(limitsKey, advanced, ranges = null) {
   const identity = limitsKey && typeof limitsKey === 'object'
     ? {
         pciDeviceId: limitsKey.pciDeviceId ?? null,
@@ -117,9 +117,14 @@ export function deviceGateThresholds(limitsKey, advanced) {
       ? { plMax: EXTENDED_PL_MAX_W, tlMax: EXTENDED_TL_MAX_C }
       : { plMax: STD_PL_MAX_W, tlMax: STD_TL_MAX_C };
   }
+  const livePowerMax = ranges?.powerLimitW?.units === 'W'
+    && typeof ranges.powerLimitW.max === 'number'
+    && Number.isFinite(ranges.powerLimitW.max)
+    ? ranges.powerLimitW.max
+    : null;
   return {
     plMax: typeof limits.powerLimitW?.max === 'number' ? limits.powerLimitW.max
-      : (advanced ? EXTENDED_PL_MAX_W : STD_PL_MAX_W),
+      : (livePowerMax ?? (advanced ? EXTENDED_PL_MAX_W : STD_PL_MAX_W)),
     tlMax: typeof limits.tempLimitC?.max === 'number' ? limits.tempLimitC.max
       : (advanced ? EXTENDED_TL_MAX_C : STD_TL_MAX_C),
   };
@@ -219,7 +224,7 @@ export const OC_CEILING_REFUSAL_MSG =
 export function ocModeRefusal(ocMode, settings, ranges = null, limitsKey = null) {
   if (!settings || typeof settings !== 'object') return null;
   const mode = ocMode === OC_MODE_ADVANCED ? OC_MODE_ADVANCED : OC_MODE_STOCK;
-  const { plMax, tlMax } = deviceGateThresholds(limitsKey, mode === OC_MODE_ADVANCED);
+  const { plMax, tlMax } = deviceGateThresholds(limitsKey, mode === OC_MODE_ADVANCED, ranges);
   const isWcUnits = (key) => {
     const units = ranges?.[key]?.units ?? null;
     if (units === null || units === undefined) return true; // unknown -> historical behavior
@@ -430,7 +435,12 @@ export function extendedRangesFor(caps) {
     }, { advanced: true });
     const plMax = typeof advanced?.powerLimitW?.max === 'number'
       ? advanced.powerLimitW.max
-      : EXTENDED_PL_MAX_W;
+      // A listed device can intentionally omit an app-invented Advanced
+      // ceiling (currently A580). Preserve the driver's live range instead
+      // of replacing it with the generic 315 W unlisted-card ceiling.
+      : advanced?.listed === true
+        ? pl.max
+        : EXTENDED_PL_MAX_W;
     out.powerLimitW = { ...pl, max: plMax };
   }
   const tl = ranges.tempLimitC;
@@ -1169,6 +1179,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
   // Clear a stale legacy Sysman undervolt BEFORE that write: on drivers (and
   // in the mock's shared state mirror) a later Sysman zero-clear can otherwise
   // overwrite the positive IGCL value that just applied.
+  let sysmanVoltageCleanupFailure = null;
   if (nonNegativeAlchemistVoltage && !zeroSysmanClearAvailable && sysmanPowerLimits && typeof sysmanPowerLimits.setVoltageOffset === 'function') {
     const prior = await readSysmanVoltageOffset(sysmanPowerLimits, deviceId, physicalTarget);
     const needsClear = prior.ok !== true || !Number.isFinite(prior.offsetV) || prior.offsetV < -0.0005;
@@ -1181,9 +1192,17 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
         opts.waiverAccepted === true,
         { sleep, log },
       );
-      log(clear.ok === true
+      const verifiedClear = verifiedVoltageResult(clear, 0);
+      if (!verifiedClear) {
+        sysmanVoltageCleanupFailure = {
+          ok: false,
+          errorCode: clear?.errorCode ?? 'io-failed',
+          message: clear?.message ?? 'the stale Sysman voltage offset could not be cleared to 0 V',
+        };
+      }
+      log(verifiedClear
         ? '[apply] cleared the stale Sysman negative voltage offset before the non-negative IGCL voltage request'
-        : `[apply] stale Sysman voltage cleanup did not verify (${clear.message ?? clear.errorCode ?? 'unknown'}) - the IGCL result remains canonical`);
+        : `[apply] stale Sysman voltage cleanup did not verify (${sysmanVoltageCleanupFailure.message}) - the IGCL voltage write is blocked`);
     }
   }
 
@@ -1212,7 +1231,11 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
     }
   }
 
-  await applyDriverstore(driverstore);
+  const driverstoreForApply = sysmanVoltageCleanupFailure
+    ? Object.fromEntries(Object.entries(driverstore).filter(([key]) => key !== 'gpuVoltOffsetV'))
+    : driverstore;
+  if (sysmanVoltageCleanupFailure) perControl.gpuVoltOffsetV = sysmanVoltageCleanupFailure;
+  await applyDriverstore(driverstoreForApply);
 
   // Some Alchemist driver packages expose the Celsius control in the V2
   // capability table but refuse the actual V2 write. Give that failed
@@ -1853,8 +1876,18 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
     || isZeroAlchemistVoltage(clamped, effectiveClampRanges))
     && out.result.perControl.gpuVoltOffsetV?.ok === true
     && sysmanPowerLimits) {
-    const readBack = await readSysmanVoltageOffset(sysmanPowerLimits, deviceId, physicalTarget);
-    if (readBack.ok === true && state && Number.isFinite(readBack.offsetV)) state.gpuVoltOffsetV = readBack.offsetV;
+    // A zero request is a real command, not a request to restore the last
+    // negative offset. The legacy Sysman getter can briefly return its stale
+    // cached negative value immediately after the verified clear, so do not
+    // overwrite the canonical zero with that second read. Negative requests
+    // still use the helper read-back so the UI reports the driver's exact
+    // applied value.
+    if (isZeroAlchemistVoltage(clamped, effectiveClampRanges)) {
+      if (state) state.gpuVoltOffsetV = 0;
+    } else {
+      const readBack = await readSysmanVoltageOffset(sysmanPowerLimits, deviceId, physicalTarget);
+      if (readBack.ok === true && state && Number.isFinite(readBack.offsetV)) state.gpuVoltOffsetV = readBack.offsetV;
+    }
   }
   if (partialUnavailable || partialCapability) {
     const perControl = {

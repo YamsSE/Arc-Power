@@ -49,10 +49,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { isElevated as detectElevated } from './elevation.js';
 import { withCapabilityFlags } from './apply-routing.js';
+import { validateWorkerResult } from './apply-worker.js';
 
 export const APPLY_CANCELED_ERROR = 'Apply requires administrator approval.';
 export const WORKER_TIMEOUT_MS = 120000;
@@ -80,12 +81,13 @@ export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\p
  * @param {string} outPath absolute result-file path
  * @returns {string}
  */
-export function buildWorkerLaunch(execPath, appPath, reqPath, outPath) {
+export function buildWorkerLaunch(execPath, appPath, reqPath, outPath, { elevate = true } = {}) {
   const quoteArg = (a) => `'"${a.replace(/"/g, '\\"')}"'`;
   const innerArgs = ['--apply-worker', reqPath, outPath].map(quoteArg).join(', ');
   const appArg = appPath ? `'.', ` : '';
   const workingDir = appPath ? ` -WorkingDirectory '${appPath.replace(/'/g, "''")}'` : '';
-  return `$p = Start-Process -FilePath '${execPath.replace(/'/g, "''")}'${workingDir} -ArgumentList ${appArg}${innerArgs} -Verb RunAs -Wait -PassThru -ErrorAction Stop; if ($null -eq $p) { exit 1 }; exit $p.ExitCode`;
+  const verb = elevate === true ? ' -Verb RunAs' : '';
+  return `$p = Start-Process -FilePath '${execPath.replace(/'/g, "''")}'${workingDir} -ArgumentList ${appArg}${innerArgs}${verb} -Wait -PassThru -ErrorAction Stop; if ($null -eq $p) { exit 1 }; exit $p.ExitCode`;
 }
 
 /**
@@ -98,12 +100,53 @@ export async function writeJsonFile(filePath, value) {
   await fs.promises.writeFile(filePath, JSON.stringify(value), 'utf8');
 }
 
+/**
+ * Publish a timeout revocation synchronously. The worker may be a detached
+ * elevated process, so an awaited promise here would leave a window in which
+ * it can pass its last cancellation check and reach a privileged writer.
+ * Write to a sibling first and rename it into place so the worker observes
+ * either no marker or a complete JSON marker, never a partial file.
+ */
+export function writeCancellationMarkerSync(cancelPath, marker) {
+  const temporaryPath = `${cancelPath}.${process.pid}.${randomUUID()}.tmp`;
+  const serialized = JSON.stringify(marker);
+  try {
+    fs.writeFileSync(temporaryPath, serialized, { encoding: 'utf8', flag: 'wx' });
+    fs.renameSync(temporaryPath, cancelPath);
+    return true;
+  } catch {
+    try { fs.unlinkSync(temporaryPath); } catch { /* best effort */ }
+    // A direct synchronous fallback still publishes before the child is
+    // killed when rename is unavailable on a filesystem with unusual locking.
+    try {
+      fs.writeFileSync(cancelPath, serialized, { encoding: 'utf8', flag: 'wx' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 async function unlinkIfExists(filePath) {
   try {
     await fs.promises.unlink(filePath);
     return 1;
   } catch {
     return 0;
+  }
+}
+
+async function cancelMarkerExpired(markerPath, now, tokenTtlMs) {
+  try {
+    const marker = JSON.parse(await fs.promises.readFile(markerPath, 'utf8'));
+    return typeof marker.cancelledAt === 'number' && now - marker.cancelledAt > tokenTtlMs;
+  } catch {
+    try {
+      const st = await fs.promises.stat(markerPath);
+      return now - st.mtimeMs > tokenTtlMs;
+    } catch {
+      return true;
+    }
   }
 }
 
@@ -138,7 +181,7 @@ export async function sweepStaleWorkerFiles(dir, { now = Date.now(), tokenTtlMs 
   // The two file families (see the M17i note above). Each family's triple
   // logic is identical - only the filename prefixes differ.
   const families = [
-    { req: 'arcpower-req-', out: 'arcpower-out-', tok: 'arcpower-tok-' },
+    { req: 'arcpower-req-', out: 'arcpower-out-', tok: 'arcpower-tok-', cancel: 'arcpower-cancel-' },
     { req: 'arcpower-sm-req-', out: 'arcpower-sm-out-', tok: 'arcpower-sm-tok-' },
   ];
   const allTokNames = new Set();
@@ -180,6 +223,10 @@ export async function sweepStaleWorkerFiles(dir, { now = Date.now(), tokenTtlMs 
         removed += await unlinkIfExists(tokPath);
         removed += await unlinkIfExists(path.join(dir, `${family.req}${id}.json`));
         removed += await unlinkIfExists(path.join(dir, `${family.out}${id}.json`));
+        if (family.cancel) {
+          const cancelPath = path.join(dir, `${family.cancel}${id}.json`);
+          if (await cancelMarkerExpired(cancelPath, now, tokenTtlMs)) removed += await unlinkIfExists(cancelPath);
+        }
         continue;
       }
       if (tokState === 'absent') {
@@ -210,6 +257,16 @@ export async function sweepStaleWorkerFiles(dir, { now = Date.now(), tokenTtlMs 
       remove = true;
     }
     if (remove) removed += await unlinkIfExists(path.join(dir, f));
+  }
+  // A timed-out parent leaves a cancellation marker behind while the
+  // elevated child may still be alive. Keep that revocation visible for the
+  // token TTL, then reap it on a later startup even when the request/token
+  // pair has already been removed.
+  for (const f of files) {
+    const m = f.match(/^arcpower-cancel-(.+)\.json$/);
+    if (!m) continue;
+    const markerPath = path.join(dir, f);
+    if (await cancelMarkerExpired(markerPath, now, tokenTtlMs)) removed += await unlinkIfExists(markerPath);
   }
   return removed;
 }
@@ -252,7 +309,7 @@ export function createApplyRunner({
   log(`[apply-runner] process is ${elevated ? 'ELEVATED' : 'not elevated'} - ${elevated ? 'in-process apply' : 'elevated self-worker'}`);
   const spawn = spawnFn ?? nodeSpawn;
 
-  async function runWorker(req) {
+  async function runWorker(req, { elevate = true } = {}) {
     const dir = tmpdir();
     // M2: request/result/token files are keyed by the SAME requestId - a
     // paired cleanup story + the sweep's identity.
@@ -260,6 +317,7 @@ export function createApplyRunner({
     const reqPath = path.join(dir, `arcpower-req-${rid}.json`);
     const outPath = path.join(dir, `arcpower-out-${rid}.json`);
     const tokPath = path.join(dir, `arcpower-tok-${rid}.json`);
+    const cancelPath = path.join(dir, `arcpower-cancel-${rid}.json`);
     // M2: fresh-startup sweep of a crashed parent's leftovers. Only files
     // whose parent-owned token expired are removed - a live request's fresh
     // token keeps its files untouched.
@@ -268,15 +326,25 @@ export function createApplyRunner({
     // this request as live; its expiry bounds how long the worker is
     // allowed to start after the parent gave up.
     await writeJsonFile(tokPath, { requestId: rid, expiresAt: Date.now() + tokenTtlMs });
-    await writeJsonFile(reqPath, req);
+    // The elevated child receives the HMAC key through its inherited process
+    // environment, never through the request file. A local file edit can
+    // therefore not change the GPU target or settings without invalidating
+    // the parent-authenticated request.
+    const workerSecret = randomBytes(32).toString('hex');
+    const authenticatedRequest = {
+      ...req,
+      auth: createHmac('sha256', workerSecret).update(JSON.stringify(req)).digest('hex'),
+    };
+    await writeJsonFile(reqPath, authenticatedRequest);
     let result = null;
     let killed = false;
     let spawnFailed = false;
     let workerExited = false;
     try {
-      const child = await spawn(powershellExe, ['-NoProfile', '-Command', buildWorkerLaunch(execPath, appPath, reqPath, outPath)], {
+      const child = await spawn(powershellExe, ['-NoProfile', '-Command', buildWorkerLaunch(execPath, appPath, reqPath, outPath, { elevate })], {
         windowsHide: true,
         stdio: 'ignore',
+        env: { ...process.env, RID_ARC_POWER_WORKER_SECRET: workerSecret },
       });
       await new Promise((resolve) => {
         let settled = false;
@@ -289,15 +357,35 @@ export function createApplyRunner({
         const timer = setTimeout(() => {
           log('[apply-runner] elevated worker TIMED OUT - killing');
           killed = true;
+          // Revoke the request before killing only the PowerShell wrapper: an
+          // elevated child can outlive that wrapper on Windows.
+          const markerWritten = writeCancellationMarkerSync(cancelPath, { requestId: rid, cancelledAt: Date.now() });
+          if (!markerWritten) log('[apply-runner] failed to publish the worker cancellation marker');
           try { child.kill(); } catch { /* best effort */ }
           done(null);
         }, workerTimeoutMs);
         child.on('exit', (code) => { workerExited = true; clearTimeout(timer); done(code); });
-        child.on('error', () => { spawnFailed = true; clearTimeout(timer); done(null); });
+          child.on('error', () => { spawnFailed = true; clearTimeout(timer); done(null); });
       });
+      // Once the timeout path has revoked the request, any output that races
+      // in from a detached/elevated child is stale by definition. Never turn
+      // a late success file into a successful UI apply after the caller was
+      // told that the operation timed out.
+      if (killed) return { worker: true, canceled: true, result: null };
       try {
         const raw = await fs.promises.readFile(outPath, 'utf8');
-        result = JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        const verified = validateWorkerResult(parsed, {
+          requestId: rid,
+          op: req.op ?? 'apply',
+          workerSecret,
+        });
+        if (!verified.ok) {
+          log(`[apply-runner] rejected worker result: ${verified.error}`);
+          result = null;
+        } else {
+          result = verified.result;
+        }
       } catch {
         result = null;
       }
@@ -320,6 +408,11 @@ export function createApplyRunner({
       await unlinkIfExists(reqPath);
       await unlinkIfExists(tokPath);
       if (safeToRemoveOut) await unlinkIfExists(outPath);
+      // A timeout means the elevated child may be detached even if the
+      // PowerShell wrapper reports an exit. Keep the revocation marker until
+      // age-based startup sweeping proves it has expired; removing it merely
+      // because the wrapper emitted `exit` re-opens the native-write race.
+      if (!killed) await unlinkIfExists(cancelPath);
     }
   }
 
@@ -475,6 +568,42 @@ export function createApplyRunner({
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok === false && result.error) throw new Error(result.error);
       return { worker: true, ok: result.ok === true, perControl: result.perControl ?? {}, graphicsState: result.graphicsState ?? null };
+    },
+    /**
+     * Run the graphics apply in a short-lived child even when this process is
+     * already elevated. IGCL is a native boundary; isolating it prevents a
+     * driver access violation during a frame-limit write from terminating the
+     * renderer/main process. An unelevated parent still uses the normal UAC
+     * worker, while an elevated parent passes its token without a second UAC.
+     */
+    async graphicsApplyIsolated({ deviceId, deviceKey = null, physicalTarget = null, settings }) {
+      const { result } = await runWorker({
+        requestId: randomUUID(),
+        op: 'graphics-apply',
+        deviceId,
+        settings,
+        ...(typeof deviceKey === 'string' ? { deviceKey } : {}),
+        ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}),
+      }, { elevate: !elevated });
+      if (!result) throw new Error(APPLY_CANCELED_ERROR);
+      if (result.ok === false && result.error) throw new Error(result.error);
+      return { worker: true, isolated: true, ok: result.ok === true, perControl: result.perControl ?? {}, graphicsState: result.graphicsState ?? null };
+    },
+    /** Run a per-game graphics apply in the same native-call isolation boundary. */
+    async gameProfileApplyIsolated({ deviceId, deviceKey = null, physicalTarget = null, exePath, settings, enabled }) {
+      const { result } = await runWorker({
+        requestId: randomUUID(),
+        op: 'game-profile-apply',
+        deviceId,
+        exePath,
+        settings,
+        enabled: enabled === true,
+        ...(typeof deviceKey === 'string' ? { deviceKey } : {}),
+        ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}),
+      }, { elevate: !elevated });
+      if (!result) throw new Error(APPLY_CANCELED_ERROR);
+      if (result.ok === false && result.error) throw new Error(result.error);
+      return { worker: true, isolated: true, ok: result.ok === true, perControl: result.perControl ?? {} };
     },
     /**
      * M10b (the Graphics "Display" view): run one display apply - the

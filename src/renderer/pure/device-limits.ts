@@ -78,6 +78,8 @@ export const A380_PCI_DEVICE_ID = '0x000056a5';
 /** The Arc A310 PCI device id (verified from pci-ids.ucw.cz/read/PC/8086:
  *  'DG2 [Arc A310]'). */
 export const A310_PCI_DEVICE_ID = '0x000056a6';
+/** The Arc A580 PCI device id (DG2 mid-range Alchemist). */
+export const A580_PCI_DEVICE_ID = '0x000056a2';
 
 /** A per-control override - the exposed max (+ optionally the step). A row
  *  may carry only a subset of the controls; `max` is present on the
@@ -264,6 +266,19 @@ const A310_ROW: DeviceLimits = {
   tempLimitC: { max: 90 },
 };
 
+/**
+ * The Arc A580 stock/advanced row deliberately does not invent a power cap.
+ * The public driver/sysman range is the only trustworthy limit until an
+ * A580-specific apply probe is available. Keeping powerLimitW absent also
+ * prevents the generic 315 W Advanced ceiling from being advertised and then
+ * rejected by the lower-end card's driver.
+ */
+const A580_ROW: DeviceLimits = {
+  listed: true,
+  gpuVoltOffsetV: { min: -0.500, step: 0.001 },
+  tempLimitC: { max: 90 },
+};
+
 /** The listed rows keyed on the PCI device id (the canonical '0x0000xxxx'
  *  caps/DeviceInfo rendering). Each factory returns the requested shape:
  *  the STOCK row (with the per-AIB PL ceilings) or the ADVANCED row (the
@@ -299,6 +314,9 @@ const LISTED_ROWS: Record<string, (input: DeviceLimitsInput, advanced: boolean) 
   // The A310: 0x56A6 (pci-ids-verified). PL 75 W for both shapes
   // (user-specified ceiling). TL 90 C.
   [A310_PCI_DEVICE_ID]: () => A310_ROW,
+  // A580: retain the live driver/sysman power range in both modes. Do not
+  // route it through the unlisted-card generic Advanced power ceiling.
+  [A580_PCI_DEVICE_ID]: () => A580_ROW,
 };
 
 /**
