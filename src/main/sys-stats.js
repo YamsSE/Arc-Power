@@ -107,6 +107,10 @@ export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\p
 // GPU Engine samples are refreshed by the slow PowerShell lane. Do not let a
 // stalled counter query masquerade as a current Task Manager value.
 export const GPU_UTIL_STALE_MS = 8000;
+// Get-Counter's GPU Engine value is a rate counter. Collect two samples over
+// a short interval and use the second sample so the provider has a real
+// previous/current pair instead of exposing the first (often near-zero) read.
+export const GPU_ENGINE_SAMPLE_INTERVAL_SEC = 1;
 
 /**
  * The per-tick CIM query: the _Total processor FORMATTED counters (the OS's
@@ -131,8 +135,11 @@ export function buildSysStatsScript() {
     '$gpu = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Select-Object Name,DedicatedUsage,SharedUsage)',
     // M4-I: query the PDH GPU Engine counter directly. Its InstanceName uses
     // the same LUID/engine identity as the formatted WMI rows, but this is
-    // the live performance-counter source used by Windows' GPU views.
-    '$gpuEng = @(Get-Counter \'\\GPU Engine(*)\\Utilization Percentage\' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CounterSamples | ForEach-Object { [pscustomobject]@{ Name = $_.InstanceName; UtilizationPercentage = $_.CookedValue } })',
+    // the live performance-counter source used by Windows' GPU views. The
+    // counter is a rate: the first collection seeds its previous value, so
+    // use the second sample from a one-second interval.
+    `$gpuEngSample = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -SampleInterval ${GPU_ENGINE_SAMPLE_INTERVAL_SEC} -MaxSamples 2 -ErrorAction SilentlyContinue | Select-Object -Last 1`,
+    '$gpuEng = @($gpuEngSample.CounterSamples | ForEach-Object { [pscustomobject]@{ Name = $_.InstanceName; UtilizationPercentage = $_.CookedValue } })',
     // M4-H: the PowerMeter perf counter - the FORMATTED 'Power' property is
     // already in watts (N9). The class is often absent (no metering
     // hardware) -> null, the honest '-' degrade.

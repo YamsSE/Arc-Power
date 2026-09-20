@@ -2,7 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
 import { mapLibreHardwareMonitorSnapshot } from '../src/main/telemetry/lhm-provider.js';
-import { gpuUtilPctOf } from '../src/main/sys-stats.js';
+import { buildSysStatsScript, gpuUtilPctOf } from '../src/main/sys-stats.js';
+
+test('Windows GPU Engine sampling uses a real interval and the second counter set', () => {
+  const script = buildSysStatsScript();
+  assert.match(script, /Get-Counter .*GPU Engine\(\*\).*Utilization Percentage.*-SampleInterval 1 -MaxSamples 2/);
+  assert.match(script, /gpuEngSample\.CounterSamples/);
+  assert.match(script, /Select-Object -Last 1/);
+});
 
 test('Windows GPU Engine aggregation matches Task Manager busiest-engine semantics', () => {
   const luid = { high: 0, low: 0xBB85 };
