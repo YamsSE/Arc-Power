@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
 import { mapLibreHardwareMonitorSnapshot } from '../src/main/telemetry/lhm-provider.js';
-import { buildGpuEngineScript, buildSysStatsScript, createSysStats, gpuUtilPctOf } from '../src/main/sys-stats.js';
+import { buildGpuEngineScript, buildGpuEngineWorkerScript, buildSysStatsScript, createSysStats, gpuUtilPctOf } from '../src/main/sys-stats.js';
 
 test('Windows GPU Engine sampling uses a real interval and the second counter set', () => {
   const script = buildSysStatsScript();
@@ -18,6 +20,14 @@ test('production GPU Engine sampling is separated from the broad CIM query', () 
   assert.match(systemScript, /\$gpuEng = @\(\)/, 'the broad query must still emit the backward-compatible field');
   assert.match(gpuScript, /Get-Counter .*GPU Engine\(\*\).*Utilization Percentage.*-SampleInterval 1 -MaxSamples 2/);
   assert.match(gpuScript, /Select-Object -Last 1/);
+});
+
+test('persistent GPU Engine worker keeps a continuous flushed counter stream', () => {
+  const script = buildGpuEngineWorkerScript();
+  assert.match(script, /Get-Counter .*GPU Engine\(\*\).*Utilization Percentage.*-SampleInterval 1 -Continuous/);
+  assert.match(script, /ForEach-Object/);
+  assert.match(script, /ConvertTo-Json/);
+  assert.match(script, /\[Console\]::Out\.Flush\(\)/);
 });
 
 test('dedicated GPU Engine lane refreshes utilization without the slow lane wiping it', async () => {
@@ -62,6 +72,119 @@ test('dedicated GPU Engine lane refreshes utilization without the slow lane wipi
 
   stats.stopSlowLane(7);
   assert.deepEqual(cleared.sort(), [1, 2], 'both lane timers are stopped by the shared teardown');
+});
+
+test('dedicated GPU Engine cache survives PCI-only to PNP inventory enrichment', async () => {
+  const pciTarget = {
+    deviceKey: 'pci:0x8086:0xe20b@3:0.0',
+    pciVendorId: '0x8086',
+    pciDeviceId: '0xe20b',
+    bdf: { bus: 3, device: 0, function: 0 },
+  };
+  const pnpTarget = {
+    deviceKey: 'pnp:PCI\\VEN_8086&DEV_E20B&SUBSYS_60211849',
+    pnpDeviceId: 'PCI\\VEN_8086&DEV_E20B&SUBSYS_60211849',
+    pciVendorId: pciTarget.pciVendorId,
+    pciDeviceId: pciTarget.pciDeviceId,
+    deviceKeys: [pciTarget.deviceKey],
+  };
+  const gpuOutput = JSON.stringify({ gpuEng: [{
+    Name: 'pid_1_luid_0x00000000_0x0000bb85_phys_0_eng_0_engtype_3d',
+    UtilizationPercentage: 41,
+  }] });
+  const handles = [];
+  const stats = createSysStats({
+    enableDedicatedGpuSampler: true,
+    ...pciTarget,
+    deviceIdHex: pciTarget.pciDeviceId,
+    // Deliberately stale serialized LUID: the current PCI/BDF lookup must win.
+    osLuid: { high: 0, low: 0xADFB },
+    luidOf: async () => ({ high: 0, low: 0xBB85 }),
+    execFile: async () => ({ stdout: gpuOutput }),
+    setInterval: (fn) => { handles.push(fn); return handles.length; },
+    clearInterval: () => {},
+  });
+  stats.startSlowLane(999, 1);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  stats.setTarget(pnpTarget);
+  assert.equal((await stats.sampleGpuUtilForTarget(pnpTarget)).gpuUtilPct, 41);
+  stats.stopSlowLane(1);
+});
+
+test('same-model PNP-only targets without a shared alias remain separate', () => {
+  const targetA = {
+    deviceKey: 'pci:0x8086:0xe20b@3:0.0',
+    pciVendorId: '0x8086',
+    pciDeviceId: '0xe20b',
+    bdf: { bus: 3, device: 0, function: 0 },
+  };
+  const targetB = {
+    deviceKey: 'pnp:PCI\\VEN_8086&DEV_E20B&SUBSYS_SECOND',
+    pnpDeviceId: 'PCI\\VEN_8086&DEV_E20B&SUBSYS_SECOND',
+    pciVendorId: targetA.pciVendorId,
+    pciDeviceId: targetA.pciDeviceId,
+  };
+  const stats = createSysStats({ ...targetA, deviceIdHex: targetA.pciDeviceId });
+  const firstKey = stats.registerTarget(targetA);
+  const secondKey = stats.registerTarget(targetB);
+  assert.notEqual(secondKey, firstKey, 'a same-model adapter without a shared physical alias must not borrow the first adapter');
+});
+
+test('dedicated GPU worker restarts after a previously valid stream goes stale', async () => {
+  const target = { deviceIdHex: '0xE20B', osLuid: { high: 0, low: 0xBB85 } };
+  const output = (value) => JSON.stringify({ gpuEng: [{
+    Name: 'pid_1_luid_0x00000000_0x0000bb85_phys_0_eng_0_engtype_3d',
+    UtilizationPercentage: value,
+  }] }) + '\n';
+  const children = [];
+  const handles = [];
+  let clock = 0;
+  const stats = createSysStats({
+    enableDedicatedGpuSampler: true,
+    ...target,
+    luidOf: async () => target.osLuid,
+    execFile: async () => ({ stdout: JSON.stringify({
+      cpu: { PercentProcessorTime: 0, PercentProcessorPerformance: 100 },
+      maxClockMhz: 1000,
+      thermal: [],
+      msaThermal: [],
+      gpuMem: [],
+      gpuEng: [],
+      powerMeter: [],
+    }) }),
+    spawn: () => {
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.kill = () => {
+        child.stdout.end();
+        child.emit('close', 0);
+      };
+      children.push(child);
+      return child;
+    },
+    now: () => clock,
+    setInterval: (fn) => { handles.push(fn); return handles.length; },
+    clearInterval: () => {},
+  });
+
+  stats.startSlowLane(999, 1);
+  children[0].stdout.write(output(37));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  handles[1]();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal((await stats.sampleGpuUtilForTarget(target)).gpuUtilPct, 37);
+
+  clock = 9001;
+  handles[1]();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(children.length, 2, 'a stale live worker is replaced');
+
+  children[1].stdout.write(output(43));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  handles[1]();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal((await stats.sampleGpuUtilForTarget(target)).gpuUtilPct, 43);
+  stats.stopSlowLane(1);
 });
 
 test('Windows GPU Engine aggregation matches Task Manager busiest-engine semantics', () => {
@@ -190,6 +313,71 @@ test('LHM Intel utilization is used only when the fresh Windows value is unavail
   assert.equal(sample?.gpuUtilPct, 82);
   assert.equal(sample?.utilPct, 82);
   assert.equal(sample?.gpuUtilSource, 'libre-hardware-monitor');
+});
+
+test('stale authoritative Windows utilization is not replaced by a lower LHM value', async () => {
+  const target = {
+    id: 0,
+    name: 'Intel Arc B580',
+    deviceKey: 'pnp:PCI\\VEN_8086&DEV_E20B&SUBSYS_12345678',
+    pnpDeviceId: 'PCI\\VEN_8086&DEV_E20B&SUBSYS_12345678',
+    pciVendorId: '0x8086',
+    pciDeviceId: '0xE20B',
+  };
+  const emitted = [];
+  const { handlers, stopAllTelemetry } = createIpcHandlers({
+    backend: {
+      async listDevices() { return [target]; },
+      async getDeviceTarget() { return target; },
+    },
+    store: { loadSettings: async () => ({ overlayPollMs: 400 }) },
+    sysStats: {
+      setTarget() {},
+      startSlowLane() {},
+      stopSlowLane() {},
+      sampleGpuUtilForTarget: async () => ({
+        gpuUtilPct: null,
+        gpuUtilSource: 'windows-gpu-engine',
+        gpuUtilAuthoritative: true,
+      }),
+    },
+    lhmTelemetry: {
+      sampleForTarget: async () => ({
+        telemetryProvider: 'LibreHardwareMonitor',
+        gpuUtilPct: 2,
+        gpuUtilSource: 'libre-hardware-monitor',
+      }),
+    },
+    emit: (channel, payload) => emitted.push([channel, payload]),
+  });
+
+  try {
+    await handlers['telemetry-start'](0);
+  } finally {
+    await stopAllTelemetry();
+  }
+
+  const sample = emitted.find(([channel]) => channel === 'telemetry:sample')?.[1];
+  assert.equal(sample?.gpuUtilPct, null);
+  assert.equal(sample?.utilPct, null);
+  assert.equal(sample?.gpuUtilSource, null);
+});
+
+test('Windows GPU Engine authority is false when the selected target has no routable LUID', async () => {
+  const target = {
+    deviceKey: 'pnp:PCI\\VEN_8086&DEV_E20B&SUBSYS_12345678',
+    pnpDeviceId: 'PCI\\VEN_8086&DEV_E20B&SUBSYS_12345678',
+    pciVendorId: '0x8086',
+    pciDeviceId: '0xE20B',
+  };
+  const stats = createSysStats({
+    enableDedicatedGpuSampler: true,
+    luidOf: async () => null,
+  });
+  const sample = await stats.sampleGpuUtilForTarget(target);
+  assert.equal(sample.gpuUtilPct, null);
+  assert.equal(sample.gpuUtilSource, null);
+  assert.equal(sample.gpuUtilAuthoritative, false);
 });
 
 test('ambiguous identical Intel adapters fall back to each adapter Windows GPU Engine sample', async () => {

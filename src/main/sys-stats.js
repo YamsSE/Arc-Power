@@ -98,7 +98,8 @@
 // lost in the move); the frozenDrop window STAYS with the slow-lane WMI
 // temp fallbacks (the MSR reading is live - the drop never applies to it).
 
-import { execFile as nodeExecFile } from 'node:child_process';
+import { execFile as nodeExecFile, spawn as nodeSpawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import koffi from 'koffi';
 import { isIntegratedStyleDevice } from './backend/units.js';
@@ -106,12 +107,13 @@ import { isIntegratedStyleDevice } from './backend/units.js';
 const execFile = promisify(nodeExecFile);
 
 export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-// GPU Engine samples are refreshed by the slow PowerShell lane. Do not let a
-// stalled counter query masquerade as a current Task Manager value.
+// GPU Engine samples are refreshed by the dedicated PowerShell lane. Do not
+// let a stalled counter query masquerade as a current Task Manager value.
 export const GPU_UTIL_STALE_MS = 8000;
-// Get-Counter's GPU Engine value is a rate counter. Collect two samples over
-// a short interval and use the second sample so the provider has a real
-// previous/current pair instead of exposing the first (often near-zero) read.
+// The legacy broad system-stat query and the one-shot fallback use a
+// two-sample rate read. The production dedicated lane keeps one continuous
+// provider alive, so it can retain the counter baseline without paying cold
+// PowerShell startup on every utilization tick.
 export const GPU_ENGINE_SAMPLE_INTERVAL_SEC = 1;
 
 // The GPU Engine lane is independent from the broad CIM lane. The cadence is
@@ -173,6 +175,25 @@ export function buildGpuEngineScript() {
     `$gpuEngSample = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -SampleInterval ${GPU_ENGINE_SAMPLE_INTERVAL_SEC} -MaxSamples 2 -ErrorAction SilentlyContinue | Select-Object -Last 1`,
     '$gpuEng = @($gpuEngSample.CounterSamples | ForEach-Object { [pscustomobject]@{ Name = $_.InstanceName; UtilizationPercentage = $_.CookedValue } })',
     '[pscustomobject]@{ gpuEng = $gpuEng } | ConvertTo-Json -Depth 3 -Compress',
+  ].join('; ');
+}
+
+/**
+ * Build the long-lived GPU Engine reader used by the production lane. Keeping
+ * PowerShell alive avoids paying its provider/process startup cost on every
+ * utilization tick. Each JSON line is one current counter snapshot from the
+ * provider's maintained rate baseline; the one-shot buildGpuEngineScript()
+ * remains the fallback when the worker cannot be started.
+ * @returns {string}
+ */
+export function buildGpuEngineWorkerScript() {
+  return [
+    '$ErrorActionPreference = \'SilentlyContinue\'',
+    'Get-Counter \'\\GPU Engine(*)\\Utilization Percentage\' -SampleInterval 1 -Continuous -ErrorAction SilentlyContinue | ForEach-Object {',
+    '$gpuEng = @($_.CounterSamples | ForEach-Object { [pscustomobject]@{ Name = $_.InstanceName; UtilizationPercentage = $_.CookedValue } })',
+    '[pscustomobject]@{ gpuEng = $gpuEng } | ConvertTo-Json -Depth 3 -Compress',
+    '[Console]::Out.Flush()',
+    '}',
   ].join('; ');
 }
 
@@ -584,6 +605,8 @@ export function createCpuUtilReader(deps = {}) {
  * (never double-fired).
  * @param {{
  *   execFile?: typeof execFile,
+ *   spawn?: typeof nodeSpawn,       // persistent GPU Engine worker seam
+ *   usePersistentGpuSampler?: boolean, // production defaults to true
  *   luidOf?: (deviceIdHex: string, bdf?: string|null) => Promise<{ high: number, low: number } | null>,
  *   deviceKey?: string|null,       // stable physical adapter identity
  *   pnpDeviceId?: string|null,     // Windows identity fallback
@@ -620,8 +643,15 @@ export function createCpuUtilReader(deps = {}) {
 export function createSysStats(deps = {}) {
   const exec = deps.execFile ?? execFile;
   const enableDedicatedGpuSampler = deps.enableDedicatedGpuSampler === true;
+  const spawn = deps.spawn ?? nodeSpawn;
+  // The production path keeps one PowerShell counter provider alive. Tests
+  // that inject execFile retain the deterministic one-shot seam unless they
+  // explicitly inject spawn for the worker path.
+  const usePersistentGpuSampler = enableDedicatedGpuSampler
+    && deps.usePersistentGpuSampler !== false
+    && (deps.spawn !== undefined || deps.execFile === undefined);
   const luidOf = deps.luidOf ?? (async () => null);
-  let deviceIdHex = deps.deviceIdHex ?? null;
+  let deviceIdHex = deps.deviceIdHex ?? deps.pciDeviceId ?? null;
   let deviceBdf = deps.bdf ?? null;
   // Accept the production target spelling as well as the legacy test/helper
   // alias. The initial record must carry the LUID so the very first dedicated
@@ -680,6 +710,13 @@ export function createSysStats(deps = {}) {
   let gpuHandle = null;
   let gpuOwner = undefined;
   let gpuInflight = false;
+  let gpuProcess = null;
+  let gpuReadline = null;
+  let gpuWorkerActive = false;
+  let gpuWorkerFailed = false;
+  let gpuWorkerFirstSampleTimer = null;
+  let latestGpuRows = null;
+  let latestGpuRowsAt = null;
 
   // M150: system counters are queried once, but the GPU fields are cached
   // per physical adapter.  The old adapter had one mutable target, so a
@@ -721,6 +758,9 @@ export function createSysStats(deps = {}) {
     const rawBdf = target?.bdf ?? controller.bdf ?? null;
     return {
       deviceKey: typeof target?.deviceKey === 'string' && target.deviceKey.trim() ? target.deviceKey.trim() : null,
+      deviceKeys: Array.isArray(target?.deviceKeys)
+        ? target.deviceKeys.filter((value) => typeof value === 'string' && value.trim()).map((value) => value.trim())
+        : null,
       pnpDeviceId: target?.pnpDeviceId ?? controller.pnpDeviceId ?? null,
       pciVendorId,
       pciDeviceId,
@@ -750,25 +790,66 @@ export function createSysStats(deps = {}) {
   };
   const targetKeyOf = (target) => {
     const spec = targetSpecOf(target);
-    if (spec.deviceKey) return `key:${identityText(spec.deviceKey)}`;
     const pnp = identityText(spec.pnpDeviceId);
     const bdf = bdfText(spec.bdf);
     const vendor = identityText(spec.pciVendorId);
     const pci = identityText(spec.pciDeviceId ?? spec.deviceIdHex);
     const luid = luidText(spec.osLuid);
-    if (pnp || bdf || pci || luid) return `physical:${pnp ?? '-'}|${vendor ?? '-'}:${pci ?? '-'}|${bdf ?? '-'}|luid:${luid ?? '-'}`;
+    // The inventory starts with an IGCL PCI/BDF row and later enriches it
+    // with a PNP-backed deviceKey.  A cache keyed by deviceKey would create
+    // a second record for the same physical adapter during that transition;
+    // the next slow counter read would then be the only thing reconnecting
+    // the value. Prefer the strongest physical proof that is stable across
+    // both inventory shapes, and use deviceKey only as the final fallback.
+    if (bdf) return `physical:bdf:${bdf}`;
+    if (luid) return `physical:luid:${luid}`;
+    if (pnp) return `physical:pnp:${pnp}`;
+    if (spec.deviceKey) return `key:${identityText(spec.deviceKey)}`;
+    if (pci || bdf) return `physical:${vendor ?? '-'}:${pci ?? '-'}|bdf:${bdf ?? '-'}`;
     return 'default';
   };
   const targetRecords = new Map();
+  const recordMatchesTarget = (record, spec) => {
+    const recordPnp = identityText(record.pnpDeviceId);
+    const targetPnp = identityText(spec.pnpDeviceId);
+    if (recordPnp && targetPnp && recordPnp === targetPnp) return true;
+    const recordBdf = bdfText(record.bdf);
+    const targetBdf = bdfText(spec.bdf);
+    if (recordBdf && targetBdf && recordBdf === targetBdf) return true;
+    const recordLuid = luidText(record.osLuid);
+    const targetLuid = luidText(spec.osLuid);
+    if (recordLuid && targetLuid && recordLuid === targetLuid) return true;
+    const recordKey = identityText(record.deviceKey);
+    const targetKey = identityText(spec.deviceKey);
+    if (recordKey && targetKey && recordKey === targetKey) return true;
+    const recordAliases = new Set([recordKey, ...(record.deviceKeys ?? []).map(identityText)].filter(Boolean));
+    const targetAliases = new Set([targetKey, ...(spec.deviceKeys ?? []).map(identityText)].filter(Boolean));
+    for (const alias of targetAliases) if (recordAliases.has(alias)) return true;
+    return false;
+  };
   const ensureTargetRecord = (target = null) => {
     const spec = targetSpecOf(target);
     const key = targetKeyOf(spec);
     let record = targetRecords.get(key);
     if (!record) {
+      const strongMatches = [...targetRecords.values()].filter((candidate) => recordMatchesTarget(candidate, spec));
+      if (strongMatches.length === 1) record = strongMatches[0];
+    }
+    if (!record) {
       record = { key, ...spec, cache: emptyLaneCache(), gpuUtilSampledAt: null };
       targetRecords.set(key, record);
     } else {
-      Object.assign(record, spec);
+      // Inventory enrichment is partial: a later PNP row can omit a LUID,
+      // BDF, or capacity that an earlier DXGI/IGCL row already proved. Do not
+      // erase that stronger physical evidence with a null placeholder.
+      for (const [field, value] of Object.entries(spec)) {
+        if (value === null || value === undefined || value === '') continue;
+        if (field === 'deviceKeys') {
+          record.deviceKeys = [...new Set([...(record.deviceKeys ?? []), ...(value ?? [])])];
+        } else {
+          record[field] = value;
+        }
+      }
     }
     return record;
   };
@@ -779,6 +860,7 @@ export function createSysStats(deps = {}) {
     pciDeviceId: deviceIdHex,
     bdf: deviceBdf,
     osLuid: luidOverride,
+    deviceKeys: deps.deviceKeys ?? null,
     integrated: targetIntegrated,
     mobile: targetMobile,
     vramBytes: dedicatedCapacityBytes,
@@ -788,11 +870,22 @@ export function createSysStats(deps = {}) {
   // M4-I: resolve the stable adapter identity once per record/query. GPU
   // Engine rows carry the DXGI LUID, so utilization must never be selected
   // by adapter ordinal or by whichever GPU happens to be active in the UI.
-  const luidForRecord = async (record) => (
-    normalizeLuid(record.osLuid) ?? normalizeLuid(await luidOf(record.deviceIdHex, record.bdf))
-  );
+  const luidForRecord = async (record) => {
+    // Resolve from the current PCI/BDF proof first. A serialized OS LUID can
+    // be stale after a display/driver topology change; trusting it before
+    // the DXGI physical lookup silently selects the wrong GPU Engine rows.
+    let resolved = null;
+    if (record.deviceIdHex || record.bdf) {
+      try {
+        resolved = normalizeLuid(await luidOf(record.deviceIdHex, record.bdf));
+      } catch {
+        resolved = null;
+      }
+    }
+    return resolved ?? normalizeLuid(record.osLuid);
+  };
   const gpuUtilForRecord = async (record, rows) => {
-    if (!(record.deviceIdHex || record.osLuid)) return null;
+    if (!(record.deviceIdHex || record.osLuid || record.bdf)) return null;
     try {
       return gpuUtilPctOf(rows, await luidForRecord(record));
     } catch {
@@ -885,6 +978,107 @@ export function createSysStats(deps = {}) {
     };
   };
 
+  const applyGpuEngineRows = async (rows, sampledAt) => {
+    for (const record of targetRecords.values()) {
+      const gpuUtilPct = await gpuUtilForRecord(record, rows);
+      record.cache = {
+        ...record.cache,
+        gpuUtilPct,
+      };
+      // A successful counter read with no matching physical rows is not a
+      // fresh zero. Leave the freshness gate closed so composeHybridTelemetry
+      // cannot present an unrelated stale value as the selected adapter.
+      record.gpuUtilSampledAt = gpuUtilPct === null ? null : sampledAt;
+    }
+    laneCache = activeRecord.cache;
+  };
+
+  const stopGpuEngineWorker = () => {
+    if (gpuWorkerFirstSampleTimer !== null) {
+      clearTimeout(gpuWorkerFirstSampleTimer);
+      gpuWorkerFirstSampleTimer = null;
+    }
+    const reader = gpuReadline;
+    const child = gpuProcess;
+    // Clear the references before kill(): the close event from an intentional
+    // teardown must not mark the worker as failed and trigger a fallback read.
+    gpuReadline = null;
+    gpuProcess = null;
+    gpuWorkerActive = false;
+    try { reader?.close?.(); } catch { /* best effort */ }
+    try { child?.kill?.(); } catch { /* best effort */ }
+  };
+
+  const restartGpuEngineWorker = () => {
+    stopGpuEngineWorker();
+    gpuWorkerFailed = false;
+    startGpuEngineWorker();
+  };
+
+  const startGpuEngineWorker = () => {
+    if (!usePersistentGpuSampler || gpuProcess !== null || gpuWorkerFailed) return;
+    let child;
+    try {
+      child = spawn(
+        deps.powershellExe ?? POWERSHELL_EXE,
+        ['-NoProfile', '-NonInteractive', '-Command', buildGpuEngineWorkerScript()],
+        { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] },
+      );
+      if (!child?.stdout) throw new Error('GPU Engine worker has no stdout');
+    } catch {
+      gpuWorkerFailed = true;
+      return;
+    }
+    latestGpuRows = null;
+    latestGpuRowsAt = null;
+    gpuProcess = child;
+    gpuWorkerActive = true;
+    try {
+      gpuReadline = createInterface({ input: child.stdout });
+      gpuReadline.on('line', (line) => {
+        const text = String(line ?? '').trim();
+        if (!text.startsWith('{')) return;
+        // Empty gpuEng arrays are valid samples and deliberately clear a
+        // previous value; malformed/non-JSON PowerShell chatter is ignored.
+        let parsed;
+        try { parsed = JSON.parse(text); } catch { return; }
+        if (!Object.prototype.hasOwnProperty.call(parsed ?? {}, 'gpuEng')) return;
+        latestGpuRows = parseGpuEngineOutput(text);
+        latestGpuRowsAt = now();
+        if (gpuWorkerFirstSampleTimer !== null) {
+          clearTimeout(gpuWorkerFirstSampleTimer);
+          gpuWorkerFirstSampleTimer = null;
+        }
+      });
+    } catch {
+      gpuWorkerFailed = true;
+      stopGpuEngineWorker();
+      return;
+    }
+    const worker = child;
+    const failed = () => {
+      if (gpuProcess !== worker) return;
+      gpuWorkerFailed = true;
+      stopGpuEngineWorker();
+    };
+    try {
+      child.once?.('error', failed);
+      child.once?.('close', failed);
+    } catch {
+      failed();
+      return;
+    }
+    // If a provider/driver refuses the persistent stream before its first
+    // line, fall back to the one-shot reader instead of leaving utilization
+    // permanently unavailable.
+    gpuWorkerFirstSampleTimer = setTimeout(() => {
+      if (gpuWorkerActive && latestGpuRowsAt === null) {
+        gpuWorkerFailed = true;
+        stopGpuEngineWorker();
+      }
+    }, 15000);
+  };
+
   // M4-I: the production-only GPU Engine lane. It uses the same PDH/Get-
   // Counter source as Task Manager, but does not wait behind the broad CIM
   // query. The per-lane guard is separate from `inflight` because the two
@@ -894,6 +1088,23 @@ export function createSysStats(deps = {}) {
     if (!enableDedicatedGpuSampler || gpuInflight) return;
     gpuInflight = true;
     try {
+      if (gpuWorkerActive) {
+        const sampledAt = latestGpuRowsAt;
+        const fresh = Array.isArray(latestGpuRows)
+          && Number.isFinite(sampledAt)
+          && now() - sampledAt <= GPU_UTIL_STALE_MS;
+        if (fresh) {
+          await applyGpuEngineRows(latestGpuRows, sampledAt);
+          return;
+        }
+        if (Number.isFinite(sampledAt) && now() - sampledAt > GPU_UTIL_STALE_MS) {
+          // A worker can remain alive after its provider has stopped emitting.
+          // Restart it once the last known rate sample is stale; if spawning
+          // fails, fall through to the one-shot reader below.
+          restartGpuEngineWorker();
+          if (gpuWorkerActive) return;
+        } else return;
+      }
       const { stdout } = await exec(
         deps.powershellExe ?? POWERSHELL_EXE,
         ['-NoProfile', '-NonInteractive', '-Command', buildGpuEngineScript()],
@@ -901,14 +1112,7 @@ export function createSysStats(deps = {}) {
       );
       const rows = parseGpuEngineOutput(stdout);
       const sampledAt = now();
-      for (const record of targetRecords.values()) {
-        record.cache = {
-          ...record.cache,
-          gpuUtilPct: await gpuUtilForRecord(record, rows),
-        };
-        record.gpuUtilSampledAt = sampledAt;
-      }
-      laneCache = activeRecord.cache;
+      await applyGpuEngineRows(rows, sampledAt);
     } catch {
       // The existing freshness gate turns a failed query into null once the
       // last known value ages out; never publish an invented zero here.
@@ -1076,11 +1280,26 @@ export function createSysStats(deps = {}) {
      * fallback when LHM is active.
      */
     async sampleGpuUtilForTarget(target = null) {
-      if (targetKeyOf(target) === 'default') return { gpuUtilPct: null };
+      if (targetKeyOf(target) === 'default') {
+        return {
+          gpuUtilPct: null,
+          gpuUtilSource: null,
+          gpuUtilAuthoritative: false,
+        };
+      }
       const record = ensureTargetRecord(target);
+      const routedLuid = enableDedicatedGpuSampler ? await luidForRecord(record) : null;
+      const gpuUtilAuthoritative = enableDedicatedGpuSampler && routedLuid !== null;
       const sampledAt = record.gpuUtilSampledAt;
       const fresh = Number.isFinite(sampledAt) && now() - sampledAt <= GPU_UTIL_STALE_MS;
-      return { gpuUtilPct: fresh ? record.cache?.gpuUtilPct ?? null : null };
+      return {
+        gpuUtilPct: fresh ? record.cache?.gpuUtilPct ?? null : null,
+        gpuUtilSource: gpuUtilAuthoritative ? 'windows-gpu-engine' : null,
+        // The dedicated lane is the authoritative Task Manager-aligned
+        // source. Callers should not silently substitute a low LHM value
+        // while this source is warming or has gone stale.
+        gpuUtilAuthoritative,
+      };
     },
 
     registerTarget(target = null) {
@@ -1122,6 +1341,7 @@ export function createSysStats(deps = {}) {
         gpuHandle = setIntervalFn(() => {
           void gpuTick();
         }, GPU_UTIL_LANE_CADENCE_MS);
+        startGpuEngineWorker();
         // Seed both lanes immediately; neither await blocks the telemetry
         // caller, and the independent guards prevent duplicate queries.
         void gpuTick();
@@ -1147,6 +1367,7 @@ export function createSysStats(deps = {}) {
         clearIntervalFn(gpuHandle);
         gpuHandle = null;
       }
+      stopGpuEngineWorker();
       slowOwner = undefined;
       gpuOwner = undefined;
     },
