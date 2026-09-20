@@ -236,9 +236,8 @@ function normalizeGpu(gpu, index) {
     key: aliases[0] ?? null,
     aliases,
     name: gpu?.deviceName ?? gpu?.name ?? gpu?.label ?? `GPU ${index + 1}`,
-    // IGCL's device-wide activity counter is the closest match to the
-    // vendor tools' total GPU-busy reading. The WMI GPUEngine aggregate is
-    // the fallback when the native counter is unavailable.
+    // The telemetry sample already carries the Task Manager-aligned Windows
+    // GPU Engine value, with the LHM Intel sensor as its guarded fallback.
     util: valueOrNull(gpu?.utilPct, gpu?.gpuUtilPct, gpu?.utilization),
     clock: valueOrNull(gpu?.gpuClockMhz),
     memClock: valueOrNull(gpu?.memClockMhz),

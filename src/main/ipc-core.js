@@ -1436,11 +1436,11 @@ export function createIpcHandlers({
   };
 
   // The production telemetry contract is intentionally source-specific:
-  // LibreHardwareMonitor owns CPU/RAM/GPU hardware readouts and Intel Arc
-  // utilization when its Intel GCL global activity sample maps uniquely to
-  // the selected physical adapter.
-  // Windows GPU Engine remains the honest fallback for missing LHM samples
-  // and adapters without an LHM utilization sensor; RTSS owns FPS/frametime.
+  // LibreHardwareMonitor owns CPU/RAM/GPU hardware readouts. Windows GPU
+  // Engine owns the single adapter-utilization value because it follows the
+  // Task Manager busiest-engine policy; LHM's Intel GCL load remains the
+  // fallback when the fresh per-adapter Windows value is unavailable.
+  // RTSS owns FPS/frametime.
   // Removing the old IGCL/sys-stats readout fields here prevents stale native
   // values from silently winning when the preferred provider is unavailable.
   const LHM_GPU_INVENTORY_TTL_MS = 1500;
@@ -1476,30 +1476,42 @@ export function createIpcHandlers({
     try { hardware = await lhmTelemetry.sampleForTarget(target); } catch { hardware = null; }
     let systemSample = {};
     try { systemSample = await sysStats.sampleForTarget?.(target) ?? {}; } catch { systemSample = {}; }
+    let engineGpuUtilPct = null;
+    // The explicit reader applies the per-adapter freshness window. Only use
+    // sampleForTarget's cached field in minimal test doubles that do not
+    // expose that freshness-aware seam; never let a stale real cache win.
+    if (typeof sysStats.sampleGpuUtilForTarget === 'function') {
+      let engine = { gpuUtilPct: null };
+      try {
+        engine = await sysStats.sampleGpuUtilForTarget(target) ?? engine;
+      } catch { /* honest null utilization */ }
+      engineGpuUtilPct = Number.isFinite(engine?.gpuUtilPct)
+        && engine.gpuUtilPct >= 0
+        && engine.gpuUtilPct <= 100
+        ? engine.gpuUtilPct
+        : null;
+    } else {
+      engineGpuUtilPct = Number.isFinite(systemSample?.gpuUtilPct)
+        && systemSample.gpuUtilPct >= 0
+        && systemSample.gpuUtilPct <= 100
+        ? systemSample.gpuUtilPct
+        : null;
+    }
     let lhmGpuUtilPct = Number.isFinite(hardware?.gpuUtilPct)
       && hardware.gpuUtilPct >= 0
       && hardware.gpuUtilPct <= 100
       ? hardware.gpuUtilPct
       : null;
-    if (lhmGpuUtilPct !== null) {
+    if (engineGpuUtilPct === null && lhmGpuUtilPct !== null) {
       const inventory = await currentLhmGpuInventory();
       if (!lhmGpuUtilizationTargetIsUnique(target, inventory)) lhmGpuUtilPct = null;
     }
-    let gpuUtilPct = lhmGpuUtilPct;
-    let gpuUtilSource = lhmGpuUtilPct !== null ? 'libre-hardware-monitor' : null;
-    if (gpuUtilPct === null) {
-      let engine = { gpuUtilPct: null };
-      try {
-        engine = await sysStats.sampleGpuUtilForTarget?.(target) ?? engine;
-      } catch { /* honest null utilization */ }
-      const engineGpuUtilPct = Number.isFinite(engine?.gpuUtilPct)
-        && engine.gpuUtilPct >= 0
-        && engine.gpuUtilPct <= 100
-        ? engine.gpuUtilPct
+    const gpuUtilPct = engineGpuUtilPct ?? lhmGpuUtilPct;
+    const gpuUtilSource = engineGpuUtilPct !== null
+      ? 'windows-gpu-engine'
+      : lhmGpuUtilPct !== null
+        ? 'libre-hardware-monitor'
         : null;
-      gpuUtilPct = engineGpuUtilPct;
-      gpuUtilSource = engineGpuUtilPct !== null ? 'windows-gpu-engine' : null;
-    }
     const base = { ...systemSample, ...(deviceSample ?? {}) };
     for (const key of [
       'utilPct', 'gpuUtilPct', 'gpuClockMhz', 'memClockMhz', 'tempC',

@@ -556,9 +556,9 @@ export interface TelemetrySample {
    *  watts). The class is often ABSENT on desktops, so it honestly
    *  degrades to null ('-'). */
   cpuPowerW?: number | null;
-  /** GPU utilization percentage. Intel Arc prefers LibreHardwareMonitor's
-   *  Intel GCL device-wide load; Windows GPUEngine is the fallback when the
-   *  LHM value is unavailable. */
+  /** GPU utilization percentage. Windows GPU Engine is authoritative for the
+   *  Task Manager-style busiest-engine value; LibreHardwareMonitor's Intel
+   *  GCL device-wide load is the fallback when the Windows value is absent. */
   gpuUtilPct?: number | null;
   /** Source used for gpuUtilPct; null when no trustworthy sample exists. */
   gpuUtilSource?: 'libre-hardware-monitor' | 'windows-gpu-engine' | null;

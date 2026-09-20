@@ -2,8 +2,9 @@
 //
 // LibreHardwareMonitor is a managed .NET library, so the Electron main
 // process talks to a small read-only JSON-lines bridge instead of loading the
-// library into Node. Intel Arc utilization uses LHM's Intel GCL global GPU
-// activity sensor when available; Windows GPU Engine remains the fallback.
+// library into Node. Intel Arc's LHM Intel GCL global GPU activity sensor is
+// available as a fallback; the main-process Windows GPU Engine path owns the
+// Task Manager-aligned utilization value when it is fresh.
 // RTSS remains the FPS/frametime source.
 
 import { existsSync } from 'node:fs';

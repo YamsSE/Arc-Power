@@ -308,8 +308,9 @@ export function frozenDrop(lastSamples) {
 }
 
 /**
- * M4-I (D1): the engine key of a GPUEngine instance name - per (eng#,
- * engtype) grouping key. The live name format (probed 2026-08-08):
+ * M4-I (D1): the engine key of a GPUEngine instance name - per physical
+ * engine (phys#, eng#, engtype) grouping key. The live name format (probed
+ * 2026-08-08):
  * "pid_12336_luid_0x00000000_0x0000ADFB_phys_0_eng_0_engtype_3D" (the
  * engtype half may be EMPTY: "eng_10_engtype_"). Unparseable names fall
  * back to the whole name (a distinct key - never a cross-engine merge).
@@ -317,8 +318,8 @@ export function frozenDrop(lastSamples) {
  * @returns {string}
  */
 export function engineKeyOf(instanceName) {
-  const m = String(instanceName ?? '').match(/_eng_(\d+)_engtype_([A-Za-z0-9]*)/);
-  return m ? `${m[2]}_${m[1]}` : String(instanceName ?? '');
+  const m = String(instanceName ?? '').match(/_phys_(\d+)_eng_(\d+)_engtype_([A-Za-z0-9]*)/i);
+  return m ? `phys_${m[1]}|${m[3]}_${m[2]}` : String(instanceName ?? '');
 }
 
 /**
@@ -338,11 +339,13 @@ export function engineRowMatchesLuid(instanceName, luid) {
 }
 
 /**
- * M4-I (D1): aggregate the GPUEngine rows for the matched LUID into one
- * utilization percentage - per (eng#, engtype) the MAX across the process
- * rows, then SUM the engine maxima, capped at 100. Null when the counter
- * is unpopulated (no matched rows, or every matched row's utilPct is
- * null/absent - the honest '-'; a populated-but-zero counter reports 0).
+ * M4-I (D1): aggregate the GPUEngine rows for the matched LUID into the
+ * Task Manager-style adapter utilization. The counter exposes one row per
+ * process/engine, so sum valid process contributions for each physical
+ * engine, cap that engine at 100, then report the busiest engine (MAX across
+ * engines). Null when the counter is unpopulated (no matched rows, or every
+ * matched row's utilPct is null/absent - the honest '-'; a populated-but-zero
+ * counter reports 0).
  * @param {Array<{ name: string | null, utilPct: number | null }>} rows
  * @param {{ high: number, low: number } | null} luid
  * @returns {number | null}
@@ -354,13 +357,13 @@ export function gpuUtilPctOf(rows, luid) {
   if (matched.length === 0) return null;
   const byEngine = new Map();
   for (const r of matched) {
-    if (typeof r?.utilPct !== 'number' || !Number.isFinite(r.utilPct)) continue;
+    if (typeof r?.utilPct !== 'number' || !Number.isFinite(r.utilPct) || r.utilPct < 0) continue;
     const key = engineKeyOf(r.name);
-    byEngine.set(key, Math.max(byEngine.get(key) ?? 0, r.utilPct));
+    const contribution = Math.min(100, r.utilPct);
+    byEngine.set(key, Math.min(100, (byEngine.get(key) ?? 0) + contribution));
   }
   if (byEngine.size === 0) return null;
-  const sum = [...byEngine.values()].reduce((a, b) => a + b, 0);
-  return Math.min(100, sum);
+  return Math.max(...byEngine.values());
 }
 
 /** Normalize the LUID shapes used by DXGI, koffi, JSON, and persisted GPU
