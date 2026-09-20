@@ -556,12 +556,13 @@ export interface TelemetrySample {
    *  watts). The class is often ABSENT on desktops, so it honestly
    *  degrades to null ('-'). */
   cpuPowerW?: number | null;
-  /** GPU utilization percentage. Windows GPU Engine is authoritative for the
-   *  Task Manager-style busiest-engine value; LibreHardwareMonitor's Intel
-   *  GCL device-wide load is the fallback when the Windows value is absent. */
+  /** GPU utilization percentage. The native D3DKMT adapter/node reader is
+   *  preferred for the Task Manager-style busiest-engine value; the Windows
+   *  GPU Engine counter is its fallback, then LHM's Intel GCL load is used
+   *  only when neither Windows source is available. */
   gpuUtilPct?: number | null;
   /** Source used for gpuUtilPct; null when no trustworthy sample exists. */
-  gpuUtilSource?: 'libre-hardware-monitor' | 'windows-gpu-engine' | null;
+  gpuUtilSource?: 'libre-hardware-monitor' | 'windows-gpu-engine' | 'windows-d3dkmt' | null;
   /** M14: the system-wide USED RAM in bytes (GlobalMemoryStatusEx ->
    *  ullTotalPhys - ullAvailPhys - the Memory row's source). Composed
    *  into BOTH telemetry emit sites (the device + the no-device null

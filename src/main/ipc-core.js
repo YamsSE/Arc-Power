@@ -1477,6 +1477,7 @@ export function createIpcHandlers({
     let systemSample = {};
     try { systemSample = await sysStats.sampleForTarget?.(target) ?? {}; } catch { systemSample = {}; }
     let engineGpuUtilPct = null;
+    let engineGpuUtilSource = null;
     let engineGpuUtilAuthoritative = false;
     // The explicit reader applies the per-adapter freshness window. Only use
     // sampleForTarget's cached field in minimal test doubles that do not
@@ -1487,6 +1488,9 @@ export function createIpcHandlers({
         engine = await sysStats.sampleGpuUtilForTarget(target) ?? engine;
       } catch { /* honest null utilization */ }
       engineGpuUtilAuthoritative = engine?.gpuUtilAuthoritative === true;
+      engineGpuUtilSource = typeof engine?.gpuUtilSource === 'string'
+        ? engine.gpuUtilSource
+        : null;
       engineGpuUtilPct = Number.isFinite(engine?.gpuUtilPct)
         && engine.gpuUtilPct >= 0
         && engine.gpuUtilPct <= 100
@@ -1508,14 +1512,14 @@ export function createIpcHandlers({
       const inventory = await currentLhmGpuInventory();
       if (!lhmGpuUtilizationTargetIsUnique(target, inventory)) lhmGpuUtilPct = null;
     } else if (engineGpuUtilPct === null && engineGpuUtilAuthoritative) {
-      // The Windows GPU Engine lane is the requested Task Manager-aligned
+      // The native/PDH Windows GPU lane is the requested Task Manager-aligned
       // source. While it is warming or stale, do not replace it with an
       // unrelated device-wide LHM percentage that can under-report 3D work.
       lhmGpuUtilPct = null;
     }
     const gpuUtilPct = engineGpuUtilPct ?? lhmGpuUtilPct;
     const gpuUtilSource = engineGpuUtilPct !== null
-      ? 'windows-gpu-engine'
+      ? engineGpuUtilSource ?? 'windows-gpu-engine'
       : lhmGpuUtilPct !== null
         ? 'libre-hardware-monitor'
         : null;
