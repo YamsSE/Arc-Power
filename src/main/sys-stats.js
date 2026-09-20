@@ -61,10 +61,12 @@
 //                      its cached sample is stale.
 //
 // ONE PowerShell query per sample() reads every source at once (all
-// single-sample formatted values - no cross-tick state, no deltas). A
-// query in flight is never doubled (the previous result is served) - at
-// most one PowerShell per tick. Any failure degrades per-field to null
-// (honest '-' in the UI, never a crash).
+// single-sample formatted values - no cross-tick state, no deltas). In the
+// production telemetry lane, the GPU Engine counter is deliberately split
+// into its own query: the CIM query can take several seconds and must not
+// hold a Task Manager-style utilization value hostage. Each query has its
+// own in-flight guard, and any failure degrades per-field to null (honest
+// '-' in the UI, never a crash).
 //
 // Mock mode (createMockSysStats): fixed deterministic values so ui-verify
 // pins are stable; never spawns PowerShell. M4-I: the mock temperature
@@ -112,6 +114,11 @@ export const GPU_UTIL_STALE_MS = 8000;
 // previous/current pair instead of exposing the first (often near-zero) read.
 export const GPU_ENGINE_SAMPLE_INTERVAL_SEC = 1;
 
+// The GPU Engine lane is independent from the broad CIM lane. The cadence is
+// intentionally shorter than the old 2.5 s slow lane; the query itself still
+// determines the effective refresh and the in-flight guard prevents overlap.
+export const GPU_UTIL_LANE_CADENCE_MS = 1500;
+
 /**
  * The per-tick CIM query: the _Total processor FORMATTED counters (the OS's
  * own 0..100 "% Processor Time" and the "% Processor Performance" frequency
@@ -121,7 +128,19 @@ export const GPU_ENGINE_SAMPLE_INTERVAL_SEC = 1;
  * side stays dumb); missing classes degrade to null/[].
  * @returns {string}
  */
-export function buildSysStatsScript() {
+export function buildSysStatsScript(options = {}) {
+  const includeGpuEngine = options.includeGpuEngine !== false;
+  const gpuEngineLines = includeGpuEngine
+    ? [
+      // M4-I: query the PDH GPU Engine counter directly. Its InstanceName uses
+      // the same LUID/engine identity as the formatted WMI rows, but this is
+      // the live performance-counter source used by Windows' GPU views. The
+      // counter is a rate: the first collection seeds its previous value, so
+      // use the second sample from a one-second interval.
+      `$gpuEngSample = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -SampleInterval ${GPU_ENGINE_SAMPLE_INTERVAL_SEC} -MaxSamples 2 -ErrorAction SilentlyContinue | Select-Object -Last 1`,
+      '$gpuEng = @($gpuEngSample.CounterSamples | ForEach-Object { [pscustomobject]@{ Name = $_.InstanceName; UtilizationPercentage = $_.CookedValue } })',
+    ]
+    : ['$gpuEng = @()'];
   return [
     '$ErrorActionPreference = \'SilentlyContinue\'',
     '$cpu = Get-CimInstance Win32_PerfFormattedData_Counters_ProcessorInformation -Filter "Name=\'_Total\'" | Select-Object -First 1 Name,PercentProcessorTime,PercentProcessorPerformance',
@@ -133,19 +152,53 @@ export function buildSysStatsScript() {
     // counter below).
     '$msa = @(Get-CimInstance -Namespace root\\wmi -ClassName MSAcpi_ThermalZoneTemperature | Select-Object CurrentTemperature)',
     '$gpu = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Select-Object Name,DedicatedUsage,SharedUsage)',
-    // M4-I: query the PDH GPU Engine counter directly. Its InstanceName uses
-    // the same LUID/engine identity as the formatted WMI rows, but this is
-    // the live performance-counter source used by Windows' GPU views. The
-    // counter is a rate: the first collection seeds its previous value, so
-    // use the second sample from a one-second interval.
-    `$gpuEngSample = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -SampleInterval ${GPU_ENGINE_SAMPLE_INTERVAL_SEC} -MaxSamples 2 -ErrorAction SilentlyContinue | Select-Object -Last 1`,
-    '$gpuEng = @($gpuEngSample.CounterSamples | ForEach-Object { [pscustomobject]@{ Name = $_.InstanceName; UtilizationPercentage = $_.CookedValue } })',
+    ...gpuEngineLines,
     // M4-H: the PowerMeter perf counter - the FORMATTED 'Power' property is
     // already in watts (N9). The class is often absent (no metering
     // hardware) -> null, the honest '-' degrade.
     '$pm = @(Get-CimInstance Win32_PerfFormattedData_PowerMeter_PowerMeter | Select-Object -First 1 Power)',
     '[pscustomobject]@{ cpu = $cpu; maxClockMhz = $proc.MaxClockSpeed; thermal = $tz; msaThermal = $msa; gpuMem = $gpu; gpuEng = $gpuEng; powerMeter = $pm } | ConvertTo-Json -Depth 3 -Compress',
   ].join('; ');
+}
+
+/**
+ * The dedicated GPU Engine query used by the production telemetry lane. It
+ * returns only the rate-counter rows, so the slow CIM/WMI fields cannot delay
+ * or overwrite the utilization cache.
+ * @returns {string}
+ */
+export function buildGpuEngineScript() {
+  return [
+    '$ErrorActionPreference = \'SilentlyContinue\'',
+    `$gpuEngSample = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -SampleInterval ${GPU_ENGINE_SAMPLE_INTERVAL_SEC} -MaxSamples 2 -ErrorAction SilentlyContinue | Select-Object -Last 1`,
+    '$gpuEng = @($gpuEngSample.CounterSamples | ForEach-Object { [pscustomobject]@{ Name = $_.InstanceName; UtilizationPercentage = $_.CookedValue } })',
+    '[pscustomobject]@{ gpuEng = $gpuEng } | ConvertTo-Json -Depth 3 -Compress',
+  ].join('; ');
+}
+
+/**
+ * Parse the small JSON envelope emitted by buildGpuEngineScript().
+ * @param {string} stdout
+ * @returns {Array<{ name: string | null, utilPct: number | null }>}
+ */
+export function parseGpuEngineOutput(stdout) {
+  let raw = null;
+  try {
+    raw = JSON.parse(String(stdout ?? ''));
+  } catch {
+    return [];
+  }
+  const rows = Array.isArray(raw?.gpuEng)
+    ? raw.gpuEng
+    : raw?.gpuEng
+      ? [raw.gpuEng]
+      : [];
+  return rows.map((g) => ({
+    name: typeof g?.Name === 'string' && g.Name ? g.Name : null,
+    utilPct: typeof g?.UtilizationPercentage === 'number' && Number.isFinite(g.UtilizationPercentage)
+      ? g.UtilizationPercentage
+      : null,
+  }));
 }
 
 /**
@@ -555,6 +608,9 @@ export function createCpuUtilReader(deps = {}) {
  *   cpuUtilReader?: { read: () => Promise<number | null> },  // M17g: the
  *                                  // GetSystemTimes reader; the DEFAULT is
  *                                  // createCpuUtilReader({ load: deps.load })
+ *   enableDedicatedGpuSampler?: boolean, // M4-I: production-only GPU
+ *                                  // Engine lane; test seams keep it off
+ *                                  // unless explicitly enabled
  *   load?: (name: string) => object,  // M17g: the injectable koffi load
  *                                  // (the cpu-util reader's test-harness seam)
  *   setInterval?: typeof setInterval,   // M17g: the slow-lane timer seam
@@ -563,10 +619,14 @@ export function createCpuUtilReader(deps = {}) {
  */
 export function createSysStats(deps = {}) {
   const exec = deps.execFile ?? execFile;
+  const enableDedicatedGpuSampler = deps.enableDedicatedGpuSampler === true;
   const luidOf = deps.luidOf ?? (async () => null);
   let deviceIdHex = deps.deviceIdHex ?? null;
   let deviceBdf = deps.bdf ?? null;
-  let luidOverride = deps.luid ?? null;
+  // Accept the production target spelling as well as the legacy test/helper
+  // alias. The initial record must carry the LUID so the very first dedicated
+  // GPU sample cannot land on an identity-less cache.
+  let luidOverride = deps.osLuid ?? deps.luid ?? null;
   let targetIntegrated = deps.integrated === true;
   let targetMobile = deps.mobile === true;
   let dedicatedCapacityBytes = deps.dedicatedCapacityBytes ?? deps.vramBytes ?? null;
@@ -614,6 +674,12 @@ export function createSysStats(deps = {}) {
   let slowHandle = null;
   let slowOwner = undefined;
   let slowInflight = false;
+  // M4-I: GPU Engine sampling has its own query and timer. The broad CIM
+  // query can take several seconds; sharing its in-flight guard would keep
+  // the visible GPU percentage stale while Task Manager is already current.
+  let gpuHandle = null;
+  let gpuOwner = undefined;
+  let gpuInflight = false;
 
   // M150: system counters are queried once, but the GPU fields are cached
   // per physical adapter.  The old adapter had one mutable target, so a
@@ -719,6 +785,21 @@ export function createSysStats(deps = {}) {
   });
   laneCache = activeRecord.cache;
 
+  // M4-I: resolve the stable adapter identity once per record/query. GPU
+  // Engine rows carry the DXGI LUID, so utilization must never be selected
+  // by adapter ordinal or by whichever GPU happens to be active in the UI.
+  const luidForRecord = async (record) => (
+    normalizeLuid(record.osLuid) ?? normalizeLuid(await luidOf(record.deviceIdHex, record.bdf))
+  );
+  const gpuUtilForRecord = async (record, rows) => {
+    if (!(record.deviceIdHex || record.osLuid)) return null;
+    try {
+      return gpuUtilPctOf(rows, await luidForRecord(record));
+    } catch {
+      return null;
+    }
+  };
+
   // M4L (B4): the once-per-session MSR degrade note - fired when the MSR
   // provider reports an unavailable state (device absent, install failed,
   // AV quarantine) so the honest text (with the pawnio.eu link) reaches
@@ -804,6 +885,38 @@ export function createSysStats(deps = {}) {
     };
   };
 
+  // M4-I: the production-only GPU Engine lane. It uses the same PDH/Get-
+  // Counter source as Task Manager, but does not wait behind the broad CIM
+  // query. The per-lane guard is separate from `inflight` because the two
+  // queries have disjoint responsibilities and the GPU value must continue
+  // refreshing while WMI is slow.
+  async function sampleDedicatedGpuUtil() {
+    if (!enableDedicatedGpuSampler || gpuInflight) return;
+    gpuInflight = true;
+    try {
+      const { stdout } = await exec(
+        deps.powershellExe ?? POWERSHELL_EXE,
+        ['-NoProfile', '-NonInteractive', '-Command', buildGpuEngineScript()],
+        { windowsHide: true, timeout: 10000 },
+      );
+      const rows = parseGpuEngineOutput(stdout);
+      const sampledAt = now();
+      for (const record of targetRecords.values()) {
+        record.cache = {
+          ...record.cache,
+          gpuUtilPct: await gpuUtilForRecord(record, rows),
+        };
+        record.gpuUtilSampledAt = sampledAt;
+      }
+      laneCache = activeRecord.cache;
+    } catch {
+      // The existing freshness gate turns a failed query into null once the
+      // last known value ages out; never publish an invented zero here.
+    } finally {
+      gpuInflight = false;
+    }
+  }
+
   return (adapter = {
     /**
      * LEGACY - the pre-M17g single-query entry point, retained as a
@@ -849,7 +962,9 @@ export function createSysStats(deps = {}) {
       try {
         const { stdout } = await exec(
           deps.powershellExe ?? POWERSHELL_EXE,
-          ['-NoProfile', '-NonInteractive', '-Command', buildSysStatsScript()],
+          ['-NoProfile', '-NonInteractive', '-Command', buildSysStatsScript({
+            includeGpuEngine: !enableDedicatedGpuSampler,
+          })],
           { windowsHide: true, timeout: 10000 },
         );
         const raw = parseSysStatsOutput(stdout);
@@ -879,11 +994,14 @@ export function createSysStats(deps = {}) {
         for (const record of targetRecords.values()) {
           let gpuBytes = null;
           let gpuMemorySource = null;
-          let gpuUtil = null;
+          // When the dedicated lane is active, its cache owns utilization.
+          // The broad query intentionally omits GPU Engine rows and must not
+          // replace a fresh value with null on every CIM refresh.
+          let gpuUtil = enableDedicatedGpuSampler ? record.cache.gpuUtilPct : null;
           const canUseUniqueBuiltInMemoryRow = (record.integrated || record.mobile) && raw.gpuMemRows.length === 1;
           if (record.deviceIdHex || record.osLuid || canUseUniqueBuiltInMemoryRow) {
             try {
-              const luid = normalizeLuid(record.osLuid) ?? normalizeLuid(await luidOf(record.deviceIdHex, record.bdf));
+              const luid = await luidForRecord(record);
               const memory = gpuMemoryUsageOf(raw.gpuMemRows, luid, {
                 integrated: record.integrated,
                 mobile: record.mobile,
@@ -893,11 +1011,11 @@ export function createSysStats(deps = {}) {
                 gpuBytes = memory.bytes;
                 gpuMemorySource = memory.source;
               }
-              gpuUtil = gpuUtilPctOf(raw.gpuEngRows, luid);
+              if (!enableDedicatedGpuSampler) gpuUtil = gpuUtilPctOf(raw.gpuEngRows, luid);
             } catch {
               gpuBytes = null;
               gpuMemorySource = null;
-              gpuUtil = null;
+              if (!enableDedicatedGpuSampler) gpuUtil = null;
             }
           }
           record.cache = {
@@ -908,7 +1026,7 @@ export function createSysStats(deps = {}) {
           };
           // Keep freshness metadata private to the internal target record so
           // the public sample shapes remain backward compatible.
-          record.gpuUtilSampledAt = gpuUtilSampledAt;
+          if (!enableDedicatedGpuSampler) record.gpuUtilSampledAt = gpuUtilSampledAt;
         }
         laneCache = activeRecord.cache;
         return laneCache;
@@ -999,6 +1117,15 @@ export function createSysStats(deps = {}) {
       slowHandle = setIntervalFn(() => {
         void slowTick();
       }, cadenceMs);
+      if (enableDedicatedGpuSampler) {
+        gpuOwner = owner;
+        gpuHandle = setIntervalFn(() => {
+          void gpuTick();
+        }, GPU_UTIL_LANE_CADENCE_MS);
+        // Seed both lanes immediately; neither await blocks the telemetry
+        // caller, and the independent guards prevent duplicate queries.
+        void gpuTick();
+      }
       // An immediate first tick seeds the shared cache (never blocks the
       // caller - the tick runs async; the handle is assigned FIRST so the
       // seed tick passes the stop-guard in slowTick).
@@ -1011,11 +1138,17 @@ export function createSysStats(deps = {}) {
      * @param {number} [owner] optional telemetry startup generation
      */
     stopSlowLane(owner = undefined) {
-      if (owner !== undefined && slowOwner !== owner) return;
-      if (slowHandle === null) return;
-      clearIntervalFn(slowHandle);
-      slowHandle = null;
+      if (owner !== undefined && (slowOwner !== owner || (gpuHandle !== null && gpuOwner !== owner))) return;
+      if (slowHandle !== null) {
+        clearIntervalFn(slowHandle);
+        slowHandle = null;
+      }
+      if (gpuHandle !== null) {
+        clearIntervalFn(gpuHandle);
+        gpuHandle = null;
+      }
       slowOwner = undefined;
+      gpuOwner = undefined;
     },
   });
 
@@ -1036,6 +1169,14 @@ export function createSysStats(deps = {}) {
     } finally {
       slowInflight = false;
     }
+  }
+
+  // Dedicated GPU Engine timer counterpart to slowTick. It has an independent
+  // handle/guard because the WMI lane is allowed to remain busy while this
+  // lane refreshes the value shown in Monitoring, Dashboard, and Overlay.
+  async function gpuTick() {
+    if (gpuHandle === null || gpuInflight) return;
+    await sampleDedicatedGpuUtil();
   }
 }
 

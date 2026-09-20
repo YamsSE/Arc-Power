@@ -2,13 +2,66 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
 import { mapLibreHardwareMonitorSnapshot } from '../src/main/telemetry/lhm-provider.js';
-import { buildSysStatsScript, gpuUtilPctOf } from '../src/main/sys-stats.js';
+import { buildGpuEngineScript, buildSysStatsScript, createSysStats, gpuUtilPctOf } from '../src/main/sys-stats.js';
 
 test('Windows GPU Engine sampling uses a real interval and the second counter set', () => {
   const script = buildSysStatsScript();
   assert.match(script, /Get-Counter .*GPU Engine\(\*\).*Utilization Percentage.*-SampleInterval 1 -MaxSamples 2/);
   assert.match(script, /gpuEngSample\.CounterSamples/);
   assert.match(script, /Select-Object -Last 1/);
+});
+
+test('production GPU Engine sampling is separated from the broad CIM query', () => {
+  const systemScript = buildSysStatsScript({ includeGpuEngine: false });
+  const gpuScript = buildGpuEngineScript();
+  assert.doesNotMatch(systemScript, /Get-Counter .*GPU Engine\(\*\)/, 'the slow CIM lane must not hold GPU utilization hostage');
+  assert.match(systemScript, /\$gpuEng = @\(\)/, 'the broad query must still emit the backward-compatible field');
+  assert.match(gpuScript, /Get-Counter .*GPU Engine\(\*\).*Utilization Percentage.*-SampleInterval 1 -MaxSamples 2/);
+  assert.match(gpuScript, /Select-Object -Last 1/);
+});
+
+test('dedicated GPU Engine lane refreshes utilization without the slow lane wiping it', async () => {
+  const target = { deviceIdHex: '0xE20B', osLuid: { high: 0, low: 0xBB85 } };
+  const gpuOutput = JSON.stringify({ gpuEng: [{
+    Name: 'pid_1_luid_0x00000000_0x0000bb85_phys_0_eng_0_engtype_3d',
+    UtilizationPercentage: 37,
+  }] });
+  const systemOutput = JSON.stringify({
+    cpu: { PercentProcessorTime: 0, PercentProcessorPerformance: 100 },
+    maxClockMhz: 1000,
+    thermal: [],
+    msaThermal: [],
+    gpuMem: [],
+    gpuEng: [],
+    powerMeter: [],
+  });
+  const commands = [];
+  const handles = [];
+  const cleared = [];
+  const stats = createSysStats({
+    enableDedicatedGpuSampler: true,
+    ...target,
+    execFile: async (_exe, args) => {
+      const command = String(args?.[3] ?? '');
+      commands.push(command);
+      return { stdout: command.includes('Get-Counter') ? gpuOutput : systemOutput };
+    },
+    setInterval: (fn) => {
+      handles.push(fn);
+      return handles.length;
+    },
+    clearInterval: (handle) => cleared.push(handle),
+  });
+
+  stats.startSlowLane(999, 7);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(await stats.sampleGpuUtilForTarget(target).then((sample) => sample.gpuUtilPct), 37);
+  await stats.sampleSlow();
+  assert.equal(await stats.sampleGpuUtilForTarget(target).then((sample) => sample.gpuUtilPct), 37);
+  assert.equal(commands.filter((command) => command.includes('Get-Counter')).length, 1);
+
+  stats.stopSlowLane(7);
+  assert.deepEqual(cleared.sort(), [1, 2], 'both lane timers are stopped by the shared teardown');
 });
 
 test('Windows GPU Engine aggregation matches Task Manager busiest-engine semantics', () => {

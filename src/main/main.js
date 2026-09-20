@@ -4126,6 +4126,9 @@ async function main() {
       integrated: initialTarget?.integrated === true,
       mobile: initialTarget?.mobile === true,
       dedicatedCapacityBytes: initialTarget?.vramBytes ?? null,
+      // M4-I: keep the Task Manager-aligned GPU Engine counter on its own
+      // sampler so the slow CIM query cannot leave utilization stale.
+      enableDedicatedGpuSampler: true,
       luidOf: async (devId, bdf) => fpsAdapter.adapterLuidOf?.(devId, bdf) ?? null,
       msrReader,
       // M4L (B4): the once-per-session honest degrade note (the pawnio.eu
