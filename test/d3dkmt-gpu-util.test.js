@@ -17,14 +17,14 @@ test('D3DKMT x64 offsets match the installed Windows SDK layout', () => {
   assert.equal(D3DKMT_OFFSETS.queryNode, 0x320);
 });
 
-test('D3DKMT utilization uses the busiest node and its system-time denominator', () => {
+test('D3DKMT utilization uses the busiest node and a wall-clock denominator', () => {
   const previous = [
-    { id: 0, globalRunningTime: 100n, systemRunningTime: 100n },
-    { id: 1, globalRunningTime: 200n, systemRunningTime: 200n },
+    { id: 0, globalRunningTime: 1_000_000n, systemRunningTime: 100n },
+    { id: 1, globalRunningTime: 2_000_000n, systemRunningTime: 200n },
   ];
   const current = [
-    { id: 0, globalRunningTime: 140n, systemRunningTime: 200n },
-    { id: 1, globalRunningTime: 220n, systemRunningTime: 300n },
+    { id: 0, globalRunningTime: 1_400_000n, systemRunningTime: 101n },
+    { id: 1, globalRunningTime: 2_133_333n, systemRunningTime: 300n },
   ];
   assert.equal(d3dkmtUtilPctOf(previous, current, 100), 40);
 });
@@ -37,23 +37,52 @@ test('D3DKMT utilization falls back to the observed 100-ns wall-clock counter', 
   ), 100);
 });
 
-test('D3DKMT utilization skips missing, stalled, or reset system counters', () => {
-  const previous = [{ id: 0, globalRunningTime: 100n, systemRunningTime: 100n }];
+test('D3DKMT utilization ignores missing, stalled, or reset system counters', () => {
+  const previous = [{ id: 0, globalRunningTime: 1_000_000n, systemRunningTime: 100n }];
   assert.equal(d3dkmtUtilPctOf(
     previous,
-    [{ id: 0, globalRunningTime: 200n, systemRunningTime: 90n }],
+    [{ id: 0, globalRunningTime: 1_060_000n, systemRunningTime: 90n }],
+    100,
+  ), 6);
+  assert.equal(d3dkmtUtilPctOf(
+    previous,
+    [{ id: 0, globalRunningTime: 1_060_000n, systemRunningTime: 100n }],
+    100,
+  ), 6);
+  assert.equal(d3dkmtUtilPctOf(
+    [{ id: 0, globalRunningTime: 1_000_000n, systemRunningTime: null }],
+    [{ id: 0, globalRunningTime: 1_060_000n, systemRunningTime: null }],
+    100,
+  ), 6);
+});
+
+test('D3DKMT rejects an overrun instead of clamping it to a false 100%', () => {
+  const previous = [{ id: 0, globalRunningTime: 1_000_000n, systemRunningTime: 100n }];
+  assert.equal(d3dkmtUtilPctOf(
+    previous,
+    [{ id: 0, globalRunningTime: 2_040_000n, systemRunningTime: 101n }],
+    100,
+  ), 100, 'small query timestamp skew may still represent a full-load sample');
+  assert.equal(d3dkmtUtilPctOf(
+    previous,
+    [{ id: 0, globalRunningTime: 2_050_000n, systemRunningTime: 101n }],
+    100,
+  ), 100, 'the exact overrun tolerance boundary remains accepted');
+  assert.equal(d3dkmtUtilPctOf(
+    previous,
+    [{ id: 0, globalRunningTime: 2_050_001n, systemRunningTime: 101n }],
+    100,
+  ), null, 'a just-over-tolerance sample is rejected');
+  assert.equal(d3dkmtUtilPctOf(
+    previous,
+    [{ id: 0, globalRunningTime: 2_100_000n, systemRunningTime: 101n }],
     100,
   ), null);
   assert.equal(d3dkmtUtilPctOf(
     previous,
-    [{ id: 0, globalRunningTime: 200n, systemRunningTime: 100n }],
+    [{ id: 0, globalRunningTime: 2_000_000n, systemRunningTime: 101n }],
     100,
-  ), null);
-  assert.equal(d3dkmtUtilPctOf(
-    [{ id: 0, globalRunningTime: 100n, systemRunningTime: null }],
-    [{ id: 0, globalRunningTime: 200n, systemRunningTime: null }],
-    100,
-  ), null);
+  ), 100);
 });
 
 test('D3DKMT reader establishes a baseline before publishing a node delta', async () => {

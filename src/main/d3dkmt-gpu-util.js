@@ -30,6 +30,7 @@ export const D3DKMT_OFFSETS = Object.freeze({
 });
 
 const RUNNING_TIME_TICKS_PER_MILLISECOND = 10_000n;
+const MAX_SAMPLE_OVERRUN_PERCENT = 5n;
 const MAX_NODE_COUNT = 256;
 
 function finiteNumber(value) {
@@ -85,20 +86,41 @@ function bigintCounter(value) {
   return null;
 }
 
-function clampPercent(value) {
-  if (!Number.isFinite(value)) return null;
-  return Math.max(0, Math.min(100, value));
+function utilizationFromGlobalDelta(globalDelta, elapsedMs) {
+  // GlobalInformation.RunningTime is accumulated node busy time in 100-ns
+  // ticks. Use elapsed real time as the denominator. SystemInformation is
+  // the system-thread counter, not the sampling interval; using it here can
+  // turn a small system-thread delta into a false 100% node utilization.
+  const wallTicks = BigInt(Math.max(1, Math.round(
+    elapsedMs * Number(RUNNING_TIME_TICKS_PER_MILLISECOND),
+  )));
+  if (globalDelta > wallTicks) {
+    // sampledAt is captured after the native query batch. Permit only a
+    // small amount of timestamp skew; never clamp an arbitrary overrun into
+    // a convincing-looking 100% sample.
+    const overrunTicks = globalDelta - wallTicks;
+    if (overrunTicks * 100n > wallTicks * MAX_SAMPLE_OVERRUN_PERCENT) return null;
+    return 100;
+  }
+  const utilization = (Number(globalDelta) / Number(wallTicks)) * 100;
+  return Number.isFinite(utilization) && utilization >= 0 && utilization <= 100
+    ? utilization
+    : null;
 }
 
 /**
  * Compute the adapter utilization from one native sample pair per node.
  *
- * The preferred denominator is each node's system-running-time delta. It
- * makes the result independent of the driver's running-time unit. Some Intel
- * drivers return zero for that field, so the live B580 fallback uses the
- * observed 100-ns global counter against a monotonic wall-clock interval.
- * Missing or reset counters are ignored; null means no trustworthy node
- * sample was available.
+ * GlobalInformation.RunningTime is the node's accumulated busy time. Its
+ * denominator is the monotonic wall-clock interval between samples, expressed
+ * in the same 100-ns units. SystemInformation.RunningTime is the system
+ * thread's counter, not the sampling interval; it can advance much less than
+ * the global counter and would create false 100% spikes. Samples that exceed
+ * the wall-clock interval are inconsistent and rejected rather than clamped.
+ * Missing or reset global counters are ignored; null means no trustworthy node
+ * sample was available. A small overrun tolerance covers timestamp skew from
+ * taking the timestamp after the native query batch; larger overruns are
+ * rejected rather than clamped.
  */
 export function d3dkmtUtilPctOf(previousNodes, currentNodes, elapsedMs) {
   if (!Array.isArray(previousNodes) || !Array.isArray(currentNodes)) return null;
@@ -116,29 +138,10 @@ export function d3dkmtUtilPctOf(previousNodes, currentNodes, elapsedMs) {
     if (globalNow === null || globalBefore === null || globalNow < globalBefore) continue;
     const globalDelta = globalNow - globalBefore;
 
-    const systemNow = bigintCounter(current.systemRunningTime);
-    const systemBefore = bigintCounter(previous.systemRunningTime);
-    let utilization;
-    const hasSystemCounters = systemNow !== null && systemBefore !== null;
-    const systemCountersReset = hasSystemCounters && systemNow < systemBefore;
-    if (systemCountersReset || !hasSystemCounters) continue;
-    if (systemNow === 0n && systemBefore === 0n) {
-      // The live B580 driver exposes a zero system-thread counter. Its global
-      // delta is in 100-ns ticks, so one millisecond is 10,000 ticks.
-      const wallTicks = BigInt(Math.max(1, Math.round(
-        elapsed * Number(RUNNING_TIME_TICKS_PER_MILLISECOND),
-      )));
-      utilization = (Number(globalDelta) / Number(wallTicks)) * 100;
-    } else if (systemNow > systemBefore) {
-      const systemDelta = systemNow - systemBefore;
-      utilization = (Number(globalDelta) / Number(systemDelta)) * 100;
-    } else {
-      // A non-zero system counter that did not advance is not a trustworthy
-      // denominator; do not turn it into a wall-clock estimate.
-      continue;
+    const utilization = utilizationFromGlobalDelta(globalDelta, elapsed);
+    if (utilization !== null && (busiest === null || utilization > busiest)) {
+      busiest = utilization;
     }
-    const clamped = clampPercent(utilization);
-    if (clamped !== null && (busiest === null || clamped > busiest)) busiest = clamped;
   }
   return busiest;
 }
