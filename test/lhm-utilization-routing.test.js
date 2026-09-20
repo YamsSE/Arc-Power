@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { createIpcHandlers } from '../src/main/ipc-core.js';
+import { createIpcHandlers, mergeIntelTelemetryGpuUtil } from '../src/main/ipc-core.js';
 import { mapLibreHardwareMonitorSnapshot } from '../src/main/telemetry/lhm-provider.js';
 import { buildGpuEngineScript, buildGpuEngineWorkerScript, buildSysStatsScript, createSysStats, gpuUtilPctOf } from '../src/main/sys-stats.js';
 
@@ -378,6 +378,85 @@ test('Windows GPU Engine authority is false when the selected target has no rout
   assert.equal(sample.gpuUtilPct, null);
   assert.equal(sample.gpuUtilSource, null);
   assert.equal(sample.gpuUtilAuthoritative, false);
+});
+
+test('native Windows utilization remains authoritative when LHM is unavailable', () => {
+  const merged = mergeIntelTelemetryGpuUtil(
+    { gpuUtilPct: 60, cpuUtilPct: 9 },
+    { utilPct: 4, gpuUtilPct: 5, tempC: 72 },
+    { gpuUtilPct: 48, gpuUtilSource: 'windows-d3dkmt', gpuUtilAuthoritative: true },
+  );
+  assert.equal(merged.gpuUtilPct, 48);
+  assert.equal(merged.utilPct, 48);
+  assert.equal(merged.gpuUtilSource, 'windows-d3dkmt');
+  assert.equal(merged.tempC, 72);
+  assert.equal(merged.cpuUtilPct, 9);
+});
+
+test('native Windows utilization publishes honest null while warming', () => {
+  const merged = mergeIntelTelemetryGpuUtil(
+    {},
+    { utilPct: 4, gpuUtilPct: 5 },
+    { gpuUtilPct: null, gpuUtilSource: null, gpuUtilAuthoritative: true },
+  );
+  assert.equal(merged.gpuUtilPct, null);
+  assert.equal(merged.utilPct, null);
+  assert.equal(merged.gpuUtilSource, null);
+});
+
+test('Intel telemetry lane does not let IGCL overwrite native Windows utilization', async () => {
+  const target = {
+    id: 0,
+    name: 'Intel Arc B580',
+    deviceKey: 'pnp:PCI\\VEN_8086&DEV_E20B&SUBSYS_12345678',
+    pciVendorId: '0x8086',
+    pciDeviceId: '0xE20B',
+  };
+  const rawCallbacks = new Set();
+  const emitted = [];
+  const { handlers, stopAllTelemetry } = createIpcHandlers({
+    backend: {
+      async listDevices() { return [target]; },
+      async getDeviceTarget() { return target; },
+      onRawTelemetry(_deviceId, callback) { rawCallbacks.add(callback); return () => rawCallbacks.delete(callback); },
+      async sampleRawTelemetry() {
+        for (const callback of rawCallbacks) callback({ t: Date.now(), utilPct: 4, gpuUtilPct: 5, tempC: 72 });
+      },
+    },
+    store: { loadSettings: async () => ({ overlayPollMs: 400 }) },
+    sysStats: {
+      setTarget() {},
+      sampleFast: async () => ({ gpuUtilPct: 60, cpuUtilPct: 9 }),
+      sampleGpuUtilForTarget: async () => ({
+        gpuUtilPct: 48,
+        gpuUtilSource: 'windows-d3dkmt',
+        gpuUtilAuthoritative: true,
+      }),
+      startSlowLane() {},
+      stopSlowLane() {},
+    },
+    // This is the production fallback branch under test: no LHM bridge.
+    lhmTelemetry: null,
+    emit: (channel, payload) => {
+      if (channel === 'telemetry:sample') emitted.push(payload);
+    },
+  });
+
+  try {
+    await handlers['telemetry-start'](0);
+    await handlers['overlay-telemetry-start']([0]);
+  } finally {
+    await stopAllTelemetry();
+  }
+
+  const samples = emitted.filter((sample) => sample.deviceId === 0);
+  assert.ok(samples.length >= 2, 'main and overlay Intel lanes both publish');
+  for (const sample of samples) {
+    assert.equal(sample.gpuUtilPct, 48);
+    assert.equal(sample.utilPct, 48);
+    assert.equal(sample.gpuUtilSource, 'windows-d3dkmt');
+    assert.equal(sample.tempC, 72);
+  }
 });
 
 test('ambiguous identical Intel adapters fall back to each adapter Windows GPU Engine sample', async () => {

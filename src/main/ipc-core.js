@@ -70,6 +70,36 @@ export { recordingAbsolutePath };
 
 const execFileAsync = promisify(execFile);
 
+function validGpuUtilPct(value) {
+  return Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
+}
+
+/**
+ * Merge an Intel device sample with the OS GPU-utilization lane.
+ *
+ * The IGCL backend still supplies the normal device telemetry fields, but its
+ * utilization field is not the Task Manager-aligned source. When the native
+ * Windows lane has a routable adapter, it owns both public utilization aliases
+ * even while its first sample is warming (in which case the honest result is
+ * null, never the lower IGCL value).
+ *
+ * @param {object} extra fast OS/system sample
+ * @param {object|null} sample device/IGCL sample
+ * @param {object|null} gpuUtil Windows GPU-utilization result
+ * @returns {object}
+ */
+export function mergeIntelTelemetryGpuUtil(extra = {}, sample = null, gpuUtil = null) {
+  const merged = { ...(extra ?? {}), ...(sample ?? {}) };
+  if (gpuUtil?.gpuUtilAuthoritative !== true) return merged;
+  const pct = validGpuUtilPct(gpuUtil.gpuUtilPct);
+  return {
+    ...merged,
+    gpuUtilPct: pct,
+    utilPct: pct,
+    gpuUtilSource: typeof gpuUtil.gpuUtilSource === 'string' ? gpuUtil.gpuUtilSource : null,
+  };
+}
+
 function parseCsvLine(line) {
   const fields = [];
   let field = '';
@@ -1545,6 +1575,14 @@ export function createIpcHandlers({
       gpuUtilSource,
     };
   };
+  const sampleAuthoritativeGpuUtil = async (target) => {
+    if (typeof sysStats.sampleGpuUtilForTarget !== 'function') return null;
+    try {
+      return await sysStats.sampleGpuUtilForTarget(target);
+    } catch {
+      return null;
+    }
+  };
   // M151: device-preferred-get may be called concurrently by the main window
   // and either overlay. Deduplicate only the currently running probe. Do not
   // retain a completed result: active display topology can change without an
@@ -1868,15 +1906,16 @@ export function createIpcHandlers({
         // a stats failure must never break the telemetry push
         extra = {};
       }
+      const gpuUtil = await sampleAuthoritativeGpuUtil(target);
       if (generation !== telemetryGeneration) return;
+      const merged = mergeIntelTelemetryGpuUtil(extra, sample, gpuUtil);
       emitTelemetry({
         deviceId,
         deviceKey: stableDeviceKey,
         deviceKeys: telemetryAliases ? [...new Set([stableDeviceKey, ...telemetryAliases].filter(Boolean))] : null,
         deviceName: target?.name ?? null,
         sessionGeneration: generation,
-        ...extra,
-        ...sample,
+        ...merged,
       });
     });
     // B390/Battlemage driver builds can report the Intel power-telemetry
@@ -2090,15 +2129,16 @@ export function createIpcHandlers({
         try {
           extra = await sysStats.sampleForTarget?.(target) ?? {};
         } catch { /* honest empty OS fields */ }
+        const gpuUtil = await sampleAuthoritativeGpuUtil(target);
         if (generation !== overlayTelemetryGeneration) return;
+        const merged = mergeIntelTelemetryGpuUtil(extra, sample, gpuUtil);
         emitTelemetry({
           deviceId,
           deviceKey: telemetryDeviceKey,
           deviceKeys: telemetryDeviceAliases,
           deviceName: target?.name ?? device?.name ?? null,
           sessionGeneration: telemetryGeneration,
-          ...extra,
-          ...sample,
+          ...merged,
         });
       });
       try {
