@@ -9,18 +9,20 @@
 
 <h1 align="center">Arc Power</h1>
 
-<p align="center"><b>1.1.5</b> - Arc Power: Windows tuning, monitoring, overlay, and profile management for Intel Arc GPUs.</p>
+<p align="center"><b>1.1.6</b> - Arc Power: Windows tuning, monitoring, overlay, and profile management for Intel Arc GPUs.</p>
 
 Arc Power provides driver-backed controls for Intel Arc graphics cards, including overclocking, fan control, live telemetry, graphics settings, profiles, and an in-game overlay. Controls are shown only when the selected GPU and driver expose them; unsupported controls remain unavailable or read-only.
 
 ## Supported hardware
 
-| GPU | Support |
-|---|---|
-| Arc A3 / A5 / A7 series (Alchemist) | Verified tuning, monitoring, and undervolting |
-| Arc B580 / B570 (Battlemage) | Verified tuning and monitoring |
-| Arc Pro Series | Verified tweaks and telemetry; overclocking is driver-locked |
-| Arc integrated graphics | Verified tweaks and telemetry; controls depend on the driver |
+| GPU | Architecture | Support |
+|---|---|---|
+| Arc A3 / A5 / A7 series | Alchemist | **Verified - Working** |
+| Arc B580 / B570 | Battlemage | **Verified - Working** |
+| Arc Pro B50 | Battlemage (pro) | **Verified - Tweaks & Telemetry only** |
+| Arc iGPU | Alchemist & Battlemage | **Verified - Tweaks & Telemetry only** |
+
+- [x] Battlemage enablement (live verification on B580 / B570)
 
 AMD and NVIDIA adapters remain visible for telemetry when their vendor libraries are available, but Arc tuning requires an Intel Arc GPU.
 

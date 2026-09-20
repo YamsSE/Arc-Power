@@ -171,6 +171,13 @@ export interface PerControlResult {
   preferredOnly?: boolean;
   /** The requested GPU preference was already present before the setter ran. */
   preferenceAlreadyApplied?: boolean;
+  /** The requested GPU preference was saved, but the current output timing
+   *  does not require a scaler transition, so the active scaler remains
+   *  Identity until a non-native source mode is used. */
+  deferred?: boolean;
+  /** The IGS-compatible preferred scaler was verified even though the
+   *  current native desktop timing keeps Identity active. */
+  igsPreferredSelectionApplied?: boolean;
   /** M10b: the honest display-flash note the scaling apply carries. */
   warning?: string;
   /** Backend-only companion write; keep it out of the user-facing toast. */
@@ -549,11 +556,12 @@ export interface TelemetrySample {
    *  watts). The class is often ABSENT on desktops, so it honestly
    *  degrades to null ('-'). */
   cpuPowerW?: number | null;
-  /** M4-I: the OS GPU-utilization counter (the GPUEngine rows for the
-   *  matched LUID - per (eng#, engtype) max across the process rows, sum,
-   *  cap 100). Null when the counter is unpopulated; native IGCL utilPct is
-   *  preferred when present and this remains the fallback source. */
+  /** GPU utilization percentage. Intel Arc prefers LibreHardwareMonitor's
+   *  Intel GCL device-wide load; Windows GPUEngine is the fallback when the
+   *  LHM value is unavailable. */
   gpuUtilPct?: number | null;
+  /** Source used for gpuUtilPct; null when no trustworthy sample exists. */
+  gpuUtilSource?: 'libre-hardware-monitor' | 'windows-gpu-engine' | null;
   /** M14: the system-wide USED RAM in bytes (GlobalMemoryStatusEx ->
    *  ullTotalPhys - ullAvailPhys - the Memory row's source). Composed
    *  into BOTH telemetry emit sites (the device + the no-device null
@@ -960,6 +968,8 @@ export interface GraphicsState {
     enduranceGamingModes?: EnduranceGamingMode[];
   };
   frameLimitRange: { min: number; max: number; step: number; default: number } | null;
+  /** The active FPS limiter provider; IGCL is used when RTSS is unavailable. */
+  frameLimitSource?: 'rtss' | 'igcl';
   sharedMemoryRange?: { min: number; max: number; step: number; default: number } | null;
   values: {
     frameGenOverride: FrameGenOverride | null;
@@ -1122,9 +1132,9 @@ export interface DisplayState {
     colorFormat: string | null;
     quantizationRange: 'default' | 'limited' | 'full' | null;
     scalingMode: string | null;
-    /** Active/native scaler state. The renderer keeps the persisted preference
-     * below separate and does not treat it as active when the driver reports
-     * Identity. */
+    /** Active/native scaler state returned directly by IGCL. The renderer
+     * keeps this diagnostic value separate while mirroring IGS's preferred
+     * selection for the user-facing scaling selector at native timing. */
     preferredScalingMode?: string | null;
     /** Adapter-level GPU-vs-Display preference when the native surface cannot
      * identify the exact GPU scaler method. */
@@ -1233,6 +1243,7 @@ export interface RecordingSettings {
   captureTarget: RecordingCaptureTarget;
   captureColorMode: RecordingCaptureColorMode;
   showCursor: boolean;
+  memorySavingMode: boolean;
   replayLengthSec: number;
   instantReplayAutoStart: boolean;
   replayMarkersEnabled: boolean;

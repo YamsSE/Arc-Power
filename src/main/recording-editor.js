@@ -18,7 +18,25 @@ export const RECORDING_EDITOR_VERSION = 1;
 const EDITOR_ID = /^[A-Za-z0-9_-]{8,128}$/;
 const EDITOR_OUTPUT_EXTENSIONS = Object.freeze(['.mp4', '.gif']);
 const DEFAULT_TIMEOUT_MS = 120_000;
+// Re-encoding a long clip is intentionally allowed more time than the
+// historical two-minute fixed ceiling. Keep a finite upper bound so a stuck
+// FFmpeg process is still cleaned up instead of becoming an unbounded child.
+const MAX_OPERATION_TIMEOUT_MS = 30 * 60 * 1_000;
+const OPERATION_TIMEOUT_HEADROOM_MS = 30_000;
+const OPERATION_TIMEOUT_PER_SECOND_MS = 20_000;
 const PROBE_TIMEOUT_MS = 15_000;
+
+export function recordingEditorOperationTimeoutMs(durationMs, configuredTimeoutMs = DEFAULT_TIMEOUT_MS) {
+  const duration = Number(durationMs);
+  const configured = Number(configuredTimeoutMs);
+  const minimum = Number.isFinite(configured) && configured > 0
+    ? Math.round(configured)
+    : DEFAULT_TIMEOUT_MS;
+  const durationBudget = Number.isFinite(duration) && duration > 0
+    ? Math.ceil(duration / 1_000) * OPERATION_TIMEOUT_PER_SECOND_MS + OPERATION_TIMEOUT_HEADROOM_MS
+    : minimum;
+  return Math.min(MAX_OPERATION_TIMEOUT_MS, Math.max(minimum, durationBudget));
+}
 
 function finiteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -368,6 +386,7 @@ export function createRecordingEditorService({
         },
         onChild: (child) => { job.child = child; },
       };
+      const operationTimeoutMs = recordingEditorOperationTimeoutMs(job.request.durationMs, timeoutMs);
       let result = null;
       // Existing encoded video with the original audio can be clipped by
       // copying packets. This makes Create Clip feel immediate; the exact
@@ -376,7 +395,7 @@ export function createRecordingEditorService({
       if (job.request.operation === 'trim' && job.request.audio === 'original' && audioStreamIndex === null) {
         const copyArgs = recordingEditorCopyArguments(sourcePath, temp, job.request.startMs, job.request.endMs);
         if (copyArgs) {
-          result = await spawnOnce(spawn, executable, copyArgs, timeoutMs, progressOptions);
+          result = await spawnOnce(spawn, executable, copyArgs, operationTimeoutMs, progressOptions);
           const copyValid = result.ok && hasUsableFile(fsImpl, temp)
             && await probeFile({ fsImpl, spawn, executable: resolveFfprobePath(), filePath: temp, expectedDurationMs: job.request.durationMs });
           if (!copyValid) {
@@ -390,7 +409,7 @@ export function createRecordingEditorService({
           ? recordingEditorGifArguments(sourcePath, temp, job.request.startMs, job.request.endMs, job.request.fps, job.request.width)
           : recordingEditorTrimArguments(sourcePath, temp, job.request.startMs, job.request.endMs, job.request.audio, audioStreamIndex);
         if (!args) throw new Error('Invalid editor bounds');
-        result = await spawnOnce(spawn, executable, args, timeoutMs, progressOptions);
+        result = await spawnOnce(spawn, executable, args, operationTimeoutMs, progressOptions);
       }
       if (job.cancelRequested || result.signal === 'SIGTERM' || result.signal === 'SIGKILL') {
         update(job, { state: 'cancelled', progress: 0, child: null });

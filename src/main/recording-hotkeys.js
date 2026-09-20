@@ -93,7 +93,11 @@ export function createRecordingActionHandler({ getSettings, recordingEngine, shu
       error = err instanceof Error ? err.message : String(err);
       log(`[recording] shortcut ${action} failed: ${error}`);
     } finally {
-      if (error) {
+      // A successful Instant Replay save can still leave Ascent resident after
+      // its clip file and metadata are complete. The injected main-process
+      // save path also performs this cleanup, while this guard covers tests,
+      // alternate callers, and the direct engine fallback.
+      if (error || action === 'saveClip') {
         try {
           await (shutdownRecordingRuntimeIfIdle ?? (() => recordingEngine.shutdownIfIdle?.()))();
         } catch { /* idle cleanup is best effort after a failed action */ }

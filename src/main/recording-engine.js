@@ -426,6 +426,7 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
   // this selects Ascent's cross-adapter QSV path without losing GPU ownership
   // in the UI or profile store.
   const runtimeEncoderId = runtimeEncoderIdOf(encoderId, settings.runtimeEncoderId);
+  const h264Encoder = runtimeEncoderId === 'obs_qsv11_v2' || runtimeEncoderId === 'obs_qsv11_soft_v2';
   const adapterTarget = normalizedAdapterTarget(settings.encoderTarget ?? selection?.target);
   // The app keeps the complete stable identity (device key/BDF/LUID) for
   // matching, persistence, and diagnostics. The recording runtime must get
@@ -477,13 +478,13 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
         bitrate: settings.bitrateKbps,
         max_bitrate: settings.bitrateKbps,
         profile: encoderProfileOf(runtimeEncoderId),
-        // H.264/QSV can emit a short undecodable lead-in when its first GOP
-        // contains reordered B-frames. Start H.264 with an immediately
-        // decodable keyframe and no reordering; AV1/HEVC keep their existing
-        // quality-oriented GOP settings.
-        keyint_sec: runtimeEncoderId === 'obs_qsv11_v2' || runtimeEncoderId === 'obs_qsv11_soft_v2' ? 1 : 2,
+        // H.264 QSV output must begin with an immediately decodable GOP. The
+        // bundled runtime can otherwise emit a short B-frame lead-in before
+        // the first keyframe, which makes the first second appear corrupted
+        // to players even though the remainder of the file is valid.
+        keyint_sec: h264Encoder ? 1 : 2,
         latency: 'normal',
-        bframes: runtimeEncoderId === 'obs_qsv11_v2' || runtimeEncoderId === 'obs_qsv11_soft_v2' ? 0 : 3,
+        bframes: h264Encoder ? 0 : 3,
         enhancements: true,
       },
     },
@@ -1117,7 +1118,17 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     // Publish the pending-start state before waiting for the native STARTED
     // event. Consumers that render capture status can now show the pill for
     // the whole start handshake without treating the capture as confirmed.
-    publish({ ...captureStatePatch(), error: null });
+    const pendingStartState = captureStatePatch();
+    if (mode === 'replay' && replayBufferRecoveryInFlight && state.activeModes?.replay === true) {
+      // Recycling a replay buffer is an internal stop/start transaction. Keep
+      // the public lifecycle active until the replacement buffer confirms its
+      // STARTED event so the status pill and overlay do not flash stopped.
+      pendingStartState.activeModes = { ...pendingStartState.activeModes, replay: true };
+      pendingStartState.running = true;
+      pendingStartState.mode = pendingStartState.activeModes.video ? 'video' : 'replay';
+      pendingStartState.sessionId = state.sessionId;
+    }
+    publish({ ...pendingStartState, error: null });
     try {
       await request(payload.cmd, type, fields, [mode === 'replay' ? ASCENT_EVENTS.REPLAY_STARTED : ASCENT_EVENTS.RECORDING_STARTED], startTimeoutMs, identifier);
     } catch (error) {
@@ -1463,7 +1474,9 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     // source is how an entire rolling buffer escaped as a short clip.
     if (!await waitForReplayFile(sourcePath, fileReady ? REPLAY_FILE_STABLE_MS * 3 : REPLAY_FILE_WAIT_MS)) return false;
     try {
-      const result = await trimReplayClip({ path: sourcePath, destinationPath, durationMs: headDuration });
+      const request = { path: sourcePath, durationMs: headDuration };
+      if (destinationPath !== sourcePath) request.destinationPath = destinationPath;
+      const result = await trimReplayClip(request);
       if (result === true) return destinationPath;
       if (result && typeof result.path === 'string' && result.path.trim()) return result.path;
       return false;

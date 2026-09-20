@@ -71,6 +71,7 @@ test('CapFrameX-style surface stays independent of CapFrameX native redistributi
   assert.match(overlayCss, /#capframex-root \[hidden\] \{ display: none !important; \}/);
   assert.match(overlayCss, /var\(--capframex-bg/);
   assert.match(overlaySrc, /const capframexBackground = s\.overlayBgEnabled === true/);
+  assert.match(overlayCss, /html\[data-overlay-bg="disabled"\] \.capframex-panel/);
   assert.match(overlayCss, /background: url\('\.\.\/assets\/ArcPowerIcon\.png'\)/);
   assert.match(overlayCss, /grid-template-columns: 1fr;/);
   assert.match(overlayCss, /linear-gradient\(180deg, #7fe3ff/);
@@ -85,7 +86,10 @@ test('CapFrameX-style surface stays independent of CapFrameX native redistributi
   assert.match(overlayHtml, />FPS<\/span>/);
   assert.match(overlayHtml, />RAM<\/span>/);
   assert.doesNotMatch(overlayHtml, /performance-ft/);
-  assert.match(overlaySrc, /'cpu-util', 'CPU Usage'/);
+  assert.match(overlayHtml, /capframex-api-row[\s\S]*capframex-label">API/);
+  assert.match(overlaySrc, /'cpu-util', 'CPU Load'/);
+  assert.match(overlaySrc, /const apiLabel = apiLabelOf\(latestApi\)/);
+  assert.match(overlaySrc, /capframexApiRow\.hidden = !enabled\.has\('api'\) \|\| !apiLabel/);
   assert.match(settingsSrc, /overlayBgEnabled/);
   assert.match(settingsSrc, /settings-background-opacity-slider/);
   assert.doesNotMatch(overlayHtml, /Displaytime/);
@@ -362,6 +366,23 @@ test('recording status pill releases and rebuilds around capture transitions', (
   assert.equal(windows.length, 2, 'a later replay must rebuild the renderer');
   harness.handle.apply(false);
   assert.equal(windows[1].destroyed, true, 'disabling the pill must release an active renderer');
+  harness.handle.destroy();
+});
+
+test('recording status pill keeps the legacy running fallback during a start transition', () => {
+  const windows = [];
+  const harness = loadRecordingPillFactory()({
+    initialState: { activeModes: { video: false, replay: false }, running: false, mode: null },
+    windows,
+  });
+
+  harness.handle.apply(true);
+  harness.setState({ activeModes: { video: false, replay: false }, running: true, mode: 'video' });
+  assert.equal(windows.length, 1, 'a start envelope with stale activeModes must still build the pill');
+  assert.equal(windows[0].visible, true);
+
+  harness.setState({ activeModes: { video: false, replay: false }, running: true, mode: 'replay' });
+  assert.equal(windows[0].visible, true, 'the replay fallback must keep the same pill visible');
   harness.handle.destroy();
 });
 

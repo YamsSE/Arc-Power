@@ -60,6 +60,8 @@ const INITIAL_RECORDING_STATUS: RecordingEngineState = {
 let globalRecordingStatus: RecordingEngineState = INITIAL_RECORDING_STATUS;
 let globalRecordingTimer: number | null = null;
 let unsubscribeGlobalRecordingState: (() => void) | null = null;
+let unsubscribeGlobalRecordingSettings: (() => void) | null = null;
+let recordingMemorySavingMode = true;
 
 function recordingElapsed(startedAt: number | null | undefined): string {
   if (!Number.isFinite(startedAt)) return '00:00:00';
@@ -75,7 +77,7 @@ function updateGlobalRecordingWidget(target?: HTMLElement): void {
   if (!root) return;
   const running = globalRecordingStatus.running === true;
   const loading = !globalRecordingStatus.probeComplete && globalRecordingStatus.error === 'Loading capture engine…';
-  const memorySavingMode = globalRecordingStatus.memorySavingMode !== false;
+  const memorySavingMode = globalRecordingStatus.memorySavingMode !== false && recordingMemorySavingMode !== false;
   const idle = memorySavingMode
     && !globalRecordingStatus.probeComplete
     && globalRecordingStatus.error === CAPTURE_ENGINE_IDLE_MESSAGE;
@@ -90,7 +92,7 @@ function updateGlobalRecordingWidget(target?: HTMLElement): void {
   const detail = root.querySelector<HTMLElement>('[data-recording-status-detail]');
   const timer = root.querySelector<HTMLElement>('[data-recording-timer]');
   const dot = root.querySelector<HTMLElement>('[data-recording-status-dot]');
-  if (title) title.textContent = replaySaving ? 'Saving Instant Replay' : replayFailed ? 'Instant Replay failed' : running ? mode === 'replay' ? 'Instant Replay' : 'Recording' : loading ? 'Starting capture engine' : idle ? 'Memory Saving Mode' : ready ? 'Capture engine ready' : 'Capture offline';
+  if (title) title.textContent = replaySaving ? 'Saving Instant Replay' : replayFailed ? 'Instant Replay failed' : running ? mode === 'replay' ? 'Instant Replay' : 'Recording' : loading ? 'Starting capture engine' : idle ? 'Memory Saving Mode' : ready ? 'Ready when you are' : 'Capture offline';
   if (detail) detail.textContent = replaySaving ? 'Writing the latest moments to disk' : replayFailed ? (globalRecordingStatus.instantReplaySave?.error ?? 'Try saving again') : running ? 'Arc Capture is running' : loading ? 'Checking the bundled capture runtime' : idle ? 'Open Recording or start a capture to load it' : ready && !memorySavingMode ? 'Memory Saving Mode is off' : ready ? 'Ready when you are' : (globalRecordingStatus.error || 'Capture engine unavailable');
   if (timer) {
     timer.textContent = running ? recordingElapsed(globalRecordingStatus.startedAt) : '';
@@ -514,6 +516,18 @@ async function boot() {
   if (!unsubscribeGlobalRecordingState) {
     unsubscribeGlobalRecordingState = api.onRecordingStateUpdated((next) => setGlobalRecordingStatus(next));
   }
+  if (!unsubscribeGlobalRecordingSettings) {
+    unsubscribeGlobalRecordingSettings = api.onRecordingSettingsUpdated((next) => {
+      recordingMemorySavingMode = next?.memorySavingMode !== false;
+      updateGlobalRecordingWidget();
+    });
+  }
+  void api.recordingSettingsGet().then((settings) => {
+    recordingMemorySavingMode = settings?.memorySavingMode !== false;
+    updateGlobalRecordingWidget();
+  }).catch(() => {
+    // The default remains the safe memory-saving state when settings are unavailable.
+  });
   void api.recordingStatus().then((next) => {
     setGlobalRecordingStatus(next);
   }).catch(() => {

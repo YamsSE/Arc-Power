@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { TelemetryService } from './telemetry/telemetry-service.js';
+import { lhmGpuUtilizationTargetIsUnique } from './telemetry/lhm-provider.js';
 import { collectHealth } from './health.js';
 import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_SCALING_METHOD_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual, deviceHardwareKey, isIntegratedStyleDevice } from './backend/units.js';
@@ -56,6 +57,7 @@ import { createProfileTransferEnvelope, planProfileTransferImport } from './prof
 import { persistReplayClipMetadata, recordingSessionIdOf } from './recording-lifecycle.js';
 import { createStabilityLabService } from './stability-lab.js';
 import { StabilityStore } from './store/stability-store.js';
+import { RTSS_FRAME_LIMIT_RANGE } from './rtss-profile.js';
 
 const require = createRequire(import.meta.url);
 // The app version shipped to the renderer for the header line (B3); the
@@ -63,7 +65,7 @@ const require = createRequire(import.meta.url);
 // when no electron app exists (tests).
 const PKG_VERSION = require('../../package.json').version ?? '0.0.0';
 
-const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'bitrateKbps', 'captureTarget', 'captureColorMode', 'showCursor', 'replayLengthSec', 'instantReplayAutoStart', 'replayMarkersEnabled', 'hotkeys', 'audio']);
+const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'bitrateKbps', 'captureTarget', 'captureColorMode', 'showCursor', 'memorySavingMode', 'replayLengthSec', 'instantReplayAutoStart', 'replayMarkersEnabled', 'hotkeys', 'audio']);
 export { recordingAbsolutePath };
 
 const execFileAsync = promisify(execFile);
@@ -135,6 +137,7 @@ function recordingPatch(patch) {
   if (patch.bitrateKbps !== undefined && (typeof patch.bitrateKbps !== 'number' || !Number.isFinite(patch.bitrateKbps) || patch.bitrateKbps <= 0)) throw new Error('recording-settings-save: bitrate must be a positive number');
   if (patch.captureColorMode !== undefined && !RECORDING_CAPTURE_COLOR_MODES.includes(patch.captureColorMode)) throw new Error('recording-settings-save: invalid capture color mode');
   if (patch.showCursor !== undefined && typeof patch.showCursor !== 'boolean') throw new Error('recording-settings-save: show cursor must be a boolean');
+  if (patch.memorySavingMode !== undefined && typeof patch.memorySavingMode !== 'boolean') throw new Error('recording-settings-save: memory saving mode must be a boolean');
   if (patch.instantReplayAutoStart !== undefined && typeof patch.instantReplayAutoStart !== 'boolean') throw new Error('recording-settings-save: auto-start must be a boolean');
   if (patch.replayMarkersEnabled !== undefined && typeof patch.replayMarkersEnabled !== 'boolean') throw new Error('recording-settings-save: replay markers must be a boolean');
   if (patch.captureTarget !== undefined) {
@@ -227,6 +230,7 @@ const OVERLAY_POLL_MS_MAX = 2000;
 // driver range; the fallback only applies when the device reports no range,
 // so the clamp can never offer an un-appliable value).
 const GRAPHICS_FRAME_LIMIT_FALLBACK = { min: 30, max: 300, step: 1, default: 60 };
+const GRAPHICS_RTSS_FRAME_LIMIT_RANGE = RTSS_FRAME_LIMIT_RANGE;
 const GRAPHICS_MEMORY_OVERRIDE_MIN = 13;
 const GRAPHICS_MEMORY_OVERRIDE_MAX = 100;
 
@@ -1057,10 +1061,11 @@ export async function resolveBootDeviceId(backend, store) {
  *   fpsAdapter?: { poll: (deviceId: number) => Promise<{ fps: number | null, frameTimeMs: number | null, gpuBusy: number | null, avgFps: number | null, low1Pct: number | null, low01Pct: number | null, p99: number | null } | null>, stop?: () => Promise<void> },
  *   fpsLane?: { poll: (deviceId: number) => Promise<object | null>, stop?: () => Promise<void> } | null,  // Native RTSS foreground-process lane; null in mock/tests - the determinism seam like foregroundApi
  *   rtssOverlay?: { publish: (payload: object) => Promise<unknown>|unknown, updateSettings?: (settings: object) => Promise<unknown>|unknown, setKnownDeviceKeys?: (keys: string[], order?: string[], groups?: string[][]) => unknown, clear?: () => Promise<unknown>|unknown, stop?: () => Promise<void> } | null,  // Native RTSS telemetry OSD publisher
+ *   rtssFrameLimiter?: { getFrameLimit?: (options?: object) => Promise<object>, applyFrameLimit?: (options?: object) => Promise<object> } | null,  // Native RTSS profile limiter; IGCL remains the fallback
  *   foregroundApi?: { detect: () => Promise<string | null> },  // M10a: the foreground-window Graphics-API detector (the DEFAULT is the null-returning detector - mock/ui-verify never run the real probe)
  *   memoryUtil?: { detect: () => Promise<number | null> },  // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in BYTES - total - avail; the DEFAULT is the null-returning detector - mock/ui-verify never run the real koffi probe). M17g: the emit-site composition MOVED into the sysStats adapter's FAST lane - this param is kept for call-site compatibility and is no longer consumed by the telemetry push (the fast-lane field replaces it).
  *   sysStats?: { sample: () => Promise<{ cpuUtilPct: number | null, cpuTempC: number | null, cpuFreqMhz: number | null, gpuMemUsedBytes: number | null }>, sampleFast?: () => Promise<object>, sampleSlow?: () => Promise<object>, setTarget?: (target?: object|null) => void, startSlowLane?: (cadenceMs?: number) => void, stopSlowLane?: () => void } | { current: object | null },  // M4-D2: CPU/GPU system stats (OS-formatted counters, single-sample). M17g: the telemetry push samples the FAST lane (sampleFast) per tick - never the slow PowerShell query; the slow lane runs on the adapter's own background timer (startSlowLane/stopSlowLane, tied to the telemetry session lifecycle). M17p: main.js may pass a MUTABLE HOLDER ({ current: null } - the sysStats block lands AFTER registerIpc; the ONE normalize at the top unwraps it per-access; a plain adapter passes through).
- *   lhmTelemetry?: { sampleForTarget: (target?: object|null) => Promise<object|null>, close?: () => Promise<void> },  // LibreHardwareMonitor hardware source; GPU utilization is composed separately from the Windows GPU Engine counter.
+ *   lhmTelemetry?: { sampleForTarget: (target?: object|null) => Promise<object|null>, close?: () => Promise<void> },  // LibreHardwareMonitor hardware source; Intel global GPU load is used only with a unique physical-adapter match.
  *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: log-to-file writer (monitor-YYYYMMDD.txt)
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
@@ -1187,6 +1192,10 @@ export function createIpcHandlers({
   // publishing must remain a best-effort consumer and never delay or fail a
   // normal renderer sample.
   rtssOverlay = null,
+  // RTSS's profile-backed frame limiter. This is independent of the OSD
+  // publisher and is deliberately optional: every failed RTSS read/write
+  // falls through to the existing IGCL limiter path.
+  rtssFrameLimiter = null,
   // M10a: the foreground-window Graphics-API detector (the overlay's FPS-row
   // badge). The DEFAULT is the null-returning detector (tests + mock/
   // ui-verify NEVER run the real koffi probe - the determinism seam:
@@ -1427,33 +1436,90 @@ export function createIpcHandlers({
   };
 
   // The production telemetry contract is intentionally source-specific:
-  // LibreHardwareMonitor owns CPU/RAM/GPU hardware readouts, Windows GPU
-  // Engine owns GPU utilization, and RTSS owns FPS/frametime. Removing the
-  // old IGCL/sys-stats readout fields here is important: a stale native field
-  // must never silently win when the new provider is unavailable.
+  // LibreHardwareMonitor owns CPU/RAM/GPU hardware readouts and Intel Arc
+  // utilization when its Intel GCL global activity sample maps uniquely to
+  // the selected physical adapter.
+  // Windows GPU Engine remains the honest fallback for missing LHM samples
+  // and adapters without an LHM utilization sensor; RTSS owns FPS/frametime.
+  // Removing the old IGCL/sys-stats readout fields here prevents stale native
+  // values from silently winning when the preferred provider is unavailable.
+  const LHM_GPU_INVENTORY_TTL_MS = 1500;
+  let lhmGpuInventory = [];
+  let lhmGpuInventoryAt = 0;
+  let lhmGpuInventoryPromise = null;
+  const currentLhmGpuInventory = async () => {
+    const now = Date.now();
+    if (lhmGpuInventoryAt > 0 && now - lhmGpuInventoryAt < LHM_GPU_INVENTORY_TTL_MS) {
+      return lhmGpuInventory;
+    }
+    if (lhmGpuInventoryPromise) return lhmGpuInventoryPromise;
+    const pending = (async () => {
+      try {
+        const rows = await backend.listDevices?.();
+        lhmGpuInventory = Array.isArray(rows) ? rows : [];
+      } catch {
+        // No complete inventory means LHM's PCI-only utilization cannot be
+        // safely routed; the caller will use the Windows per-adapter source.
+        lhmGpuInventory = [];
+      }
+      lhmGpuInventoryAt = Date.now();
+      return lhmGpuInventory;
+    })().finally(() => {
+      if (lhmGpuInventoryPromise === pending) lhmGpuInventoryPromise = null;
+    });
+    lhmGpuInventoryPromise = pending;
+    return pending;
+  };
   const composeHybridTelemetry = async (target, deviceSample = null) => {
     if (!lhmTelemetry || typeof lhmTelemetry.sampleForTarget !== 'function') return null;
     let hardware = null;
     try { hardware = await lhmTelemetry.sampleForTarget(target); } catch { hardware = null; }
-    let engine = { gpuUtilPct: null };
-    try {
-      engine = await sysStats.sampleGpuUtilForTarget?.(target) ?? engine;
-    } catch { /* honest null utilization */ }
-    const base = { ...(deviceSample ?? {}) };
+    let systemSample = {};
+    try { systemSample = await sysStats.sampleForTarget?.(target) ?? {}; } catch { systemSample = {}; }
+    let lhmGpuUtilPct = Number.isFinite(hardware?.gpuUtilPct)
+      && hardware.gpuUtilPct >= 0
+      && hardware.gpuUtilPct <= 100
+      ? hardware.gpuUtilPct
+      : null;
+    if (lhmGpuUtilPct !== null) {
+      const inventory = await currentLhmGpuInventory();
+      if (!lhmGpuUtilizationTargetIsUnique(target, inventory)) lhmGpuUtilPct = null;
+    }
+    let gpuUtilPct = lhmGpuUtilPct;
+    let gpuUtilSource = lhmGpuUtilPct !== null ? 'libre-hardware-monitor' : null;
+    if (gpuUtilPct === null) {
+      let engine = { gpuUtilPct: null };
+      try {
+        engine = await sysStats.sampleGpuUtilForTarget?.(target) ?? engine;
+      } catch { /* honest null utilization */ }
+      const engineGpuUtilPct = Number.isFinite(engine?.gpuUtilPct)
+        && engine.gpuUtilPct >= 0
+        && engine.gpuUtilPct <= 100
+        ? engine.gpuUtilPct
+        : null;
+      gpuUtilPct = engineGpuUtilPct;
+      gpuUtilSource = engineGpuUtilPct !== null ? 'windows-gpu-engine' : null;
+    }
+    const base = { ...systemSample, ...(deviceSample ?? {}) };
     for (const key of [
       'utilPct', 'gpuUtilPct', 'gpuClockMhz', 'memClockMhz', 'tempC',
       'vramTempC', 'gpuVoltageV', 'powerW', 'fanRpm', 'gpuMemUsedBytes',
-      'gpuMemorySource', 'cpuUtilPct', 'cpuTempC', 'cpuFreqMhz', 'cpuPowerW',
-      'memoryUsedBytes',
+      'gpuMemorySource',
     ]) delete base[key];
+    // LHM returns a complete object shape with null values for unsupported
+    // sensors. Do not let those placeholders erase a valid native CPU/RAM
+    // sample; only a real LHM value should replace the system lane.
+    const merged = { ...base };
+    for (const [key, value] of Object.entries(hardware ?? {})) {
+      if (value !== null && value !== undefined) merged[key] = value;
+    }
     return {
-      ...base,
-      ...(hardware ?? {}),
-      gpuUtilPct: engine?.gpuUtilPct ?? null,
-      // Keep the legacy renderer contract working while making the source
-      // explicit; no IGCL utilization value reaches any consumer.
-      utilPct: engine?.gpuUtilPct ?? null,
-      gpuUtilSource: 'windows-gpu-engine',
+      ...merged,
+      gpuUtilPct,
+      // Keep the legacy renderer contract working while making the selected
+      // source explicit; no IGCL utilization value reaches any consumer.
+      utilPct: gpuUtilPct,
+      gpuUtilSource,
     };
   };
   // M151: device-preferred-get may be called concurrently by the main window
@@ -2365,6 +2431,33 @@ export function createIpcHandlers({
     return null;
   };
 
+  const applyGameProfileDriverScope = async ({ target, exePath, settings = {}, enabled = false } = {}) => {
+    const targetDeviceId = Number.isInteger(target?.id) ? target.id : null;
+    const isolated = typeof applyRunner?.gameProfileApplyIsolated === 'function';
+    if (targetDeviceId === null || (!isolated && typeof backend.setGameProfileSettings !== 'function')) {
+      return {
+        ok: false,
+        skipped: true,
+        errorCode: 'unsupported',
+        message: 'the selected graphics adapter cannot apply per-game driver settings',
+      };
+    }
+    try {
+      return isolated
+        ? await applyRunner.gameProfileApplyIsolated({
+          deviceId: targetDeviceId,
+          deviceKey: target?.deviceKey ?? null,
+          physicalTarget: physicalTargetOf(target),
+          exePath,
+          settings,
+          enabled: enabled === true,
+        })
+        : await backend.setGameProfileSettings(targetDeviceId, exePath, settings, enabled === true);
+    } catch (err) {
+      return { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) };
+    }
+  };
+
   // M188c: the Stability Lab consumes the same main-owned telemetry lane as
   // Monitoring. It captures the durable key at start and never routes by a
   // renderer numeric id. Tests may inject a complete service; the default
@@ -2424,6 +2517,99 @@ export function createIpcHandlers({
       onStatus: (status) => emit('stability:status', status),
     });
   }
+
+  const decorateGraphicsState = (baseState, rtssState) => {
+    const state = baseState && typeof baseState === 'object' ? baseState : null;
+    if (!state) return state;
+    if (!rtssState?.ok) return { ...state, frameLimitSource: 'igcl' };
+    const limit = Number.isFinite(rtssState.limit) ? Math.max(0, Math.round(rtssState.limit)) : 0;
+    return {
+      ...state,
+      supported: { ...(state.supported ?? {}), frameLimit: true },
+      frameLimitRange: { ...GRAPHICS_RTSS_FRAME_LIMIT_RANGE },
+      frameLimitSource: 'rtss',
+      values: {
+        ...(state.values ?? {}),
+        frameLimit: {
+          enabled: rtssState.limiterEnabled !== false && limit > 0,
+          value: limit > 0 ? limit : GRAPHICS_RTSS_FRAME_LIMIT_RANGE.default,
+        },
+      },
+    };
+  };
+
+  const readGraphicsState = async (deviceId, { useRtss = true } = {}) => {
+    const baseState = await backend.getGraphicsSettings(deviceId);
+    if (!useRtss || typeof rtssFrameLimiter?.getFrameLimit !== 'function') {
+      return decorateGraphicsState(baseState, null);
+    }
+    let rtssState = null;
+    try { rtssState = await rtssFrameLimiter.getFrameLimit(); } catch { /* IGCL fallback */ }
+    return decorateGraphicsState(baseState, rtssState);
+  };
+
+  const applyRtssFrameLimit = async (frameLimit, executablePath = null, removeProfile = false, rollbackToken = null) => {
+    if (!frameLimit || typeof rtssFrameLimiter?.applyFrameLimit !== 'function') return null;
+    try {
+      const result = await rtssFrameLimiter.applyFrameLimit({
+        enabled: frameLimit.enabled === true,
+        value: frameLimit.value,
+        executablePath,
+        ...(removeProfile ? { removeProfile: true } : {}),
+        ...(rollbackToken ? { rollbackToken } : {}),
+      });
+      if (result?.ok === true && result.used === true) {
+        return {
+          handled: true,
+          result,
+          perControl: { frameLimit: { ok: true, source: 'rtss' } },
+        };
+      }
+      return { handled: false, result };
+    } catch (cause) {
+      return {
+        handled: false,
+        result: { ok: false, used: false, fallback: true, source: 'igcl', error: cause instanceof Error ? cause.message : String(cause) },
+      };
+    }
+  };
+
+  const rollbackRtssFrameLimit = async (rtssApply) => {
+    if (rtssApply?.handled !== true) return { ok: true };
+    const restoreToken = rtssApply.result?.restoreToken ?? null;
+    if (restoreToken && typeof rtssFrameLimiter?.restoreFrameLimit === 'function') {
+      try {
+        const result = await rtssFrameLimiter.restoreFrameLimit(restoreToken);
+        return result?.ok === true
+          ? { ok: true }
+          : { ok: false, error: result?.error ?? 'RTSS frame-limit rollback was not verified' };
+      } catch (cause) {
+        return { ok: false, error: cause instanceof Error ? cause.message : String(cause) };
+      }
+    }
+    // Compatibility fallback for older injected controllers: use the
+    // controller's existing ownership token and verify the resulting write.
+    // New production controllers take the exact restoreToken path above so
+    // denominator and shared-flag state are restored transactionally.
+    const token = rtssApply.result?.rollbackToken ?? null;
+    if (!token || typeof rtssFrameLimiter?.applyFrameLimit !== 'function') {
+      return { ok: false, error: 'RTSS frame-limit rollback token is unavailable' };
+    }
+    const previousLimit = Number.isFinite(token.previousLimit) ? token.previousLimit : 0;
+    try {
+      const result = await applyRtssFrameLimit(
+        { enabled: previousLimit > 0, value: previousLimit },
+        null,
+        false,
+        token,
+      );
+      return result?.handled === true && result.result?.ok === true
+        ? { ok: true }
+        : { ok: false, error: result?.result?.error ?? 'RTSS frame-limit rollback was not verified' };
+    } catch (cause) {
+      return { ok: false, error: cause instanceof Error ? cause.message : String(cause) };
+    }
+  };
 
   const handlers = {
     'health': async () => collectHealth(backend),
@@ -2649,7 +2835,7 @@ export function createIpcHandlers({
       // throws - the all-false/null state is the honest degrade.
       'graphics:get': async (deviceId) => {
         assertValidDeviceId(deviceId);
-        return backend.getGraphicsSettings(deviceId);
+        return readGraphicsState(deviceId);
       },
 
       // M8: the DEDICATED graphics apply path (plan-review S1 - the OC
@@ -2665,28 +2851,85 @@ export function createIpcHandlers({
       'graphics:apply': async (deviceId, payload) => {
         assertValidDeviceId(deviceId);
         const target = await backend.getDeviceTarget?.(deviceId);
+        const baseGraphicsState = await backend.getGraphicsSettings(deviceId);
+        let rtssFrameState = null;
+        if (typeof rtssFrameLimiter?.getFrameLimit === 'function') {
+          try { rtssFrameState = await rtssFrameLimiter.getFrameLimit(); } catch { /* IGCL fallback */ }
+        }
         // The FPS clamp range: the device's FRESH graphics state (the
         // driver-reported range; the 30-300-1-60 fallback inside the
         // validator when the read degrades).
-        let range = null;
-        try {
-          range = (await backend.getGraphicsSettings(deviceId)).frameLimitRange;
-        } catch {
-          // degraded - the validator's fallback applies
-        }
+        const range = rtssFrameState?.ok === true
+          ? GRAPHICS_RTSS_FRAME_LIMIT_RANGE
+          : baseGraphicsState?.frameLimitRange ?? null;
         const settings = sanitizeGraphicsSettings(payload, range);
         if (target?.synthetic || target?.backendKind === 'os') {
           const perControl = Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: false, errorCode: 'unsupported', message: 'graphics features are not supported on this GPU' }]));
-          return { ok: Object.keys(perControl).length === 0, perControl, graphicsState: await backend.getGraphicsSettings(deviceId) };
+          return { ok: Object.keys(perControl).length === 0, perControl, graphicsState: decorateGraphicsState(baseGraphicsState, null) };
         }
-        if (applyRunner?.needsWorker?.()) {
-          const out = await applyRunner.graphicsApply({ deviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings });
-          return { ok: out.ok === true, perControl: out.perControl ?? {}, graphicsState: out.graphicsState ?? null };
+        let settingsForDriver = { ...settings };
+        const rtssApply = Object.prototype.hasOwnProperty.call(settings, 'frameLimit')
+          ? await applyRtssFrameLimit(settings.frameLimit)
+          : null;
+        if (rtssApply?.handled === false && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
+          // RTSS may expose a wider 1-1000 range than the Intel driver. If a
+          // verified RTSS write fails, re-clamp this same request against the
+          // driver range before taking the IGCL fallback path.
+          settingsForDriver.frameLimit = sanitizeGraphicsSettings(
+            { frameLimit: settings.frameLimit },
+            baseGraphicsState?.frameLimitRange ?? null,
+          ).frameLimit;
         }
-        const out = await backend.setGraphicsSettings(deviceId, settings);
+        if (rtssApply?.handled === true) {
+          const { frameLimit: _rtssFrameLimit, ...withoutFrameLimit } = settingsForDriver;
+          settingsForDriver = withoutFrameLimit;
+        }
+        let driverOut = { ok: true, perControl: {} };
+        let driverError = null;
+        if (Object.keys(settingsForDriver).length > 0) {
+          try {
+            if (typeof applyRunner?.graphicsApplyIsolated === 'function') {
+              driverOut = await applyRunner.graphicsApplyIsolated({ deviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings: settingsForDriver });
+            } else if (applyRunner?.needsWorker?.()) {
+              driverOut = await applyRunner.graphicsApply({ deviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings: settingsForDriver });
+            } else {
+              driverOut = await backend.setGraphicsSettings(deviceId, settingsForDriver);
+            }
+          } catch (cause) {
+            driverError = cause;
+            driverOut = { ok: false, perControl: {} };
+          }
+        }
+        const rtssRollback = driverOut?.ok === true
+          ? { ok: true }
+          : await rollbackRtssFrameLimit(rtssApply);
         let graphicsState = null;
-        try { graphicsState = await backend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
-        return { ok: out.ok, perControl: out.perControl, graphicsState };
+        try { graphicsState = await readGraphicsState(deviceId, { useRtss: rtssApply?.handled !== false }); } catch { /* degraded */ }
+        const perControl = { ...(driverOut?.perControl ?? {}) };
+        if (rtssApply?.handled === true) {
+          if (rtssRollback.ok === true && driverOut?.ok === true) {
+            Object.assign(perControl, rtssApply.perControl);
+          } else if (rtssRollback.ok === true) {
+            perControl.frameLimit = {
+              ok: false,
+              errorCode: 'rolled-back',
+              message: 'RTSS frame limit was rolled back because another graphics setting failed',
+            };
+          } else {
+            perControl.frameLimit = {
+              ok: false,
+              errorCode: 'cleanup-pending',
+              message: `RTSS frame-limit rollback failed: ${rtssRollback.error}`,
+            };
+          }
+        }
+        if (driverError) {
+          const rollbackMessage = rtssRollback.ok === true
+            ? 'The RTSS frame-limit change was rolled back.'
+            : `RTSS cleanup is still pending: ${rtssRollback.error}`;
+          throw new Error(`${driverError instanceof Error ? driverError.message : String(driverError)}. ${rollbackMessage}`);
+        }
+        return { ok: driverOut?.ok === true && rtssRollback.ok === true, perControl, graphicsState };
       },
 
       // M10b (the Graphics "Display" view): the display-output surface.
@@ -3536,6 +3779,11 @@ export function createIpcHandlers({
         if (nextPatch.location) fs.mkdirSync(nextPatch.location, { recursive: true });
         const settings = recordingStore?.saveSettings ? await recordingStore.saveSettings(nextPatch) : normalizeRecordingSettings(nextPatch);
         const hotkeys = await refreshRecordingHotkeys() ?? getRecordingHotkeyState();
+        // Re-enabling Memory Saving Mode must take effect at the next idle
+        // boundary, including when the runtime was kept warm while the
+        // Recorder page was closed. Active capture still vetoes shutdown in
+        // the engine, so changing the setting never interrupts a recording.
+        if (nextPatch.memorySavingMode === true) await Promise.resolve(recordingRuntimeShutdownIfIdle()).catch(() => {});
         return { settings, hotkeys };
       },
       'recording-runtime-probe': async (...args) => {
@@ -3639,32 +3887,36 @@ export function createIpcHandlers({
       'recording-clip-save': async (payload = {}) => {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('recording-clip-save: payload must be an object');
         if (!recordingEngine?.saveReplayClip || !recordingStore) throw new Error('Recording engine is not available');
-        const settings = await recordingStore.settings();
-        const location = recordingAbsolutePath(settings.location, 'location');
-        const requestedDurationMs = Number(payload.headDurationMs);
-        const configuredDurationMs = Number(settings.replayLengthSec) * 1000;
-        const headDurationMs = Number.isFinite(requestedDurationMs) && requestedDurationMs > 0
-          ? Math.min(3600000, Math.round(requestedDurationMs))
-          : configuredDurationMs;
-        fs.mkdirSync(location, { recursive: true });
-        const outputPath = collisionSafeRecordingPath(location, 'clip', { exists: (candidate) => fs.existsSync(candidate) });
-        const response = await recordingEngine.saveReplayClip({ path: outputPath, headDuration: headDurationMs, thumbnailFolder: location });
-        const responsePath = typeof response?.path === 'string' && path.dirname(path.resolve(response.path)) === path.resolve(location)
-          ? response.path
-          : outputPath;
-        const metadata = await persistReplayClipMetadata({
-          recordingStore,
-          recordingRoot: location,
-          outputPath: responsePath,
-          readyPayload: response,
-        });
-        return {
-          response,
-          outputPath: path.basename(responsePath),
-          clip: metadata.clip,
-          markerMapping: metadata.markerMapping,
-          instantReplaySave: recordingEngine.getState?.().instantReplaySave ?? null,
-        };
+        try {
+          const settings = await recordingStore.settings();
+          const location = recordingAbsolutePath(settings.location, 'location');
+          const requestedDurationMs = Number(payload.headDurationMs);
+          const configuredDurationMs = Number(settings.replayLengthSec) * 1000;
+          const headDurationMs = Number.isFinite(requestedDurationMs) && requestedDurationMs > 0
+            ? Math.min(3600000, Math.round(requestedDurationMs))
+            : configuredDurationMs;
+          fs.mkdirSync(location, { recursive: true });
+          const outputPath = collisionSafeRecordingPath(location, 'clip', { exists: (candidate) => fs.existsSync(candidate) });
+          const response = await recordingEngine.saveReplayClip({ path: outputPath, headDuration: headDurationMs, thumbnailFolder: location });
+          const responsePath = typeof response?.path === 'string' && path.dirname(path.resolve(response.path)) === path.resolve(location)
+            ? response.path
+            : outputPath;
+          const metadata = await persistReplayClipMetadata({
+            recordingStore,
+            recordingRoot: location,
+            outputPath: responsePath,
+            readyPayload: response,
+          });
+          return {
+            response,
+            outputPath: path.basename(responsePath),
+            clip: metadata.clip,
+            markerMapping: metadata.markerMapping,
+            instantReplaySave: recordingEngine.getState?.().instantReplaySave ?? null,
+          };
+        } finally {
+          await Promise.resolve(recordingRuntimeShutdownIfIdle()).catch(() => {});
+        }
       },
       'recording-marker-add': async (payload = {}) => {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('recording-marker-add: payload must be an object');
@@ -4016,19 +4268,148 @@ export function createIpcHandlers({
         // gate did not prove eligible. This also cleans stale values from an
         // older sidecar when a profile is edited after the gate is tightened.
         const finalAssignment = normalizeGameGpuProfile({ ...assignment, graphics });
-        const saved = await gameProfiles.saveSettings({
-          ...previous,
-          exePath: safePath,
-          gpuProfiles: mergeGameGpuProfiles(previous?.gpuProfiles, [finalAssignment]),
-        });
+        const rtssFrameLimit = graphics.frameLimit && typeof graphics.frameLimit === 'object'
+          ? { ...graphics.frameLimit, enabled: assignment.enabled === true && graphics.frameLimit.enabled === true }
+          : null;
+        const previousFrameLimitWasEnabled = previousAssignment?.graphics?.frameLimit?.enabled === true;
+        const rtssApply = rtssFrameLimit
+          ? await applyRtssFrameLimit(rtssFrameLimit, safePath, previousFrameLimitWasEnabled && rtssFrameLimit.enabled !== true)
+          : null;
+        if (rtssApply?.result?.cleanupPending === true) {
+          const cleanupMessage = rtssApply.result.cleanupError ?? rtssApply.result.error ?? 'RTSS cleanup could not be verified';
+          return {
+            settings: previous,
+            apply: {
+              ok: false,
+              cleanupPending: true,
+              perControl: {
+                ...(rtssApply.perControl ?? {}),
+                frameLimit: { ok: false, errorCode: 'cleanup-pending', message: cleanupMessage },
+                ...(xeFgRefusal ? { frameGenOverride: xeFgRefusal } : {}),
+              },
+              message: `RTSS frame-limit cleanup failed: ${cleanupMessage}`,
+            },
+          };
+        }
+        let graphicsForDriver = graphics;
+        if (rtssApply?.handled === true) {
+          const { frameLimit: _rtssFrameLimit, ...withoutFrameLimit } = graphicsForDriver;
+          graphicsForDriver = withoutFrameLimit;
+        }
+        const rollbackRtss = async () => {
+          if (rtssApply?.handled !== true) return { ok: true };
+          const previousFrameLimit = previousAssignment?.graphics?.frameLimit;
+          const restorePreviousLimiter = previousFrameLimit?.enabled === true;
+          if (restorePreviousLimiter) {
+            // First restore the exact prior profile fields (including an
+            // existing denominator), then re-enable the shared RTSS flag.
+            // A single enabled write would preserve the cap value but could
+            // silently normalize the denominator to 1.
+            const profileRestore = await applyRtssFrameLimit(
+              { enabled: false, value: previousFrameLimit.value },
+              safePath,
+              true,
+              rtssApply.result?.rollbackToken ?? null,
+            );
+            const profileRestored = profileRestore?.handled === true
+              && profileRestore.result?.ok === true
+              && profileRestore.result?.used === true
+              && profileRestore.result?.removed === true
+              && (profileRestore.result?.flagRestored === true || profileRestore.result?.flagRestorationDeferred === true);
+            if (!profileRestored) return { ok: false, error: profileRestore?.result?.error ?? 'RTSS profile rollback was not applied' };
+            const limiterRestored = await applyRtssFrameLimit(
+              { enabled: true, value: previousFrameLimit.value },
+              safePath,
+              false,
+              rtssApply.result?.rollbackToken ?? null,
+            );
+            return limiterRestored?.handled === true
+              && limiterRestored.result?.ok === true
+              && limiterRestored.result?.used === true
+              && limiterRestored.result?.enabled === true
+              ? { ok: true }
+              : { ok: false, error: limiterRestored?.result?.error ?? 'RTSS limiter re-enable was not applied' };
+          }
+          const rollback = await applyRtssFrameLimit(
+            { enabled: false, value: previousFrameLimit?.value ?? rtssFrameLimit?.value },
+            safePath,
+            true,
+            rtssApply.result?.rollbackToken ?? null,
+          );
+          return rollback?.handled === true
+            && rollback.result?.ok === true
+            && rollback.result?.used === true
+            && rollback.result?.removed === true
+            && (rollback.result?.flagRestored === true || rollback.result?.flagRestorationDeferred === true)
+            ? { ok: true }
+            : { ok: false, error: rollback?.result?.error ?? 'RTSS rollback was not applied' };
+        };
+        // RTSS owns the frame-limit field when available, but the driver's
+        // per-executable scope still needs to be disabled when the user turns
+        // a previously enabled assignment off. An empty settings payload is
+        // meaningful here: it removes the old native override instead of
+        // leaving the IGCL fallback active behind the RTSS profile.
+        const resetDriverScope = assignment.enabled !== true;
         let apply;
-        if (targetDeviceId === null || typeof backend.setGameProfileSettings !== 'function') {
-          apply = { ok: false, skipped: true, errorCode: 'unsupported', message: 'The selected graphics adapter cannot apply per-game driver settings.' };
-        } else {
+        let nativeApplyAttempted = false;
+        const requiresNativeApply = Object.keys(graphicsForDriver).length > 0 || resetDriverScope;
+        const rollbackNative = async () => {
+          if (!nativeApplyAttempted) return { ok: true };
+          const previousGraphics = { ...(previousAssignment?.graphics ?? {}) };
+          if (rtssApply?.handled === true) delete previousGraphics.frameLimit;
           try {
-            // Always update the driver scope. Disabling Use Profile must
-            // restore this executable to the global graphics settings.
-            apply = await backend.setGameProfileSettings(targetDeviceId, safePath, graphics, assignment.enabled === true);
+            const rollback = await applyGameProfileDriverScope({
+              target,
+              exePath: safePath,
+              settings: previousGraphics,
+              enabled: previousAssignment?.enabled === true,
+            });
+            return rollback?.ok === true
+              ? { ok: true }
+              : { ok: false, error: rollback?.message ?? rollback?.errorCode ?? 'native rollback was not applied' };
+          } catch (error) {
+            return { ok: false, error: error instanceof Error ? error.message : String(error) };
+          }
+        };
+        if (!requiresNativeApply) {
+          const perControl = {
+            ...(rtssApply?.handled === true ? rtssApply.perControl : {}),
+            ...(xeFgRefusal ? { frameGenOverride: xeFgRefusal } : {}),
+          };
+          apply = {
+            ok: xeFgRefusal ? false : true,
+            perControl,
+          };
+        } else if (targetDeviceId === null || (!applyRunner?.gameProfileApplyIsolated && typeof backend.setGameProfileSettings !== 'function')) {
+          const unsupported = Object.fromEntries(Object.keys(graphicsForDriver).map((key) => [key, {
+            ok: false,
+            errorCode: 'unsupported',
+            message: 'the selected graphics adapter cannot apply per-game driver settings',
+          }]));
+          apply = {
+            ok: false,
+            skipped: true,
+            perControl: {
+              ...unsupported,
+              ...(rtssApply?.handled === true ? rtssApply.perControl : {}),
+              ...(xeFgRefusal ? { frameGenOverride: xeFgRefusal } : {}),
+            },
+            message: 'the selected graphics adapter cannot apply all per-game driver settings',
+          };
+        } else {
+          // Always update the driver scope. Disabling Use Profile must
+          // restore this executable to the global graphics settings.
+          nativeApplyAttempted = true;
+          apply = await applyGameProfileDriverScope({
+            target,
+            exePath: safePath,
+            settings: graphicsForDriver,
+            enabled: assignment.enabled === true,
+          });
+          if (apply?.ok === true) {
+            if (rtssApply?.handled === true) {
+              apply = { ...apply, perControl: { ...(apply?.perControl ?? {}), ...rtssApply.perControl } };
+            }
             if (xeFgRefusal) {
               apply = {
                 ...apply,
@@ -4036,19 +4417,149 @@ export function createIpcHandlers({
                 perControl: { ...(apply?.perControl ?? {}), frameGenOverride: xeFgRefusal },
               };
             }
-          } catch (err) {
-            apply = { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) };
+          } else if (rtssApply?.handled === true) {
+            apply = { ...apply, perControl: { ...(apply?.perControl ?? {}), ...rtssApply.perControl } };
           }
+        }
+        if (apply?.ok !== true) {
+          const nativeRollback = await rollbackNative();
+          const rollback = await rollbackRtss();
+          if (nativeRollback.ok !== true || rollback.ok !== true) {
+            const cleanupErrors = [nativeRollback, rollback]
+              .filter((item) => item.ok !== true)
+              .map((item) => item.error)
+              .filter(Boolean)
+              .join(' ');
+            apply = {
+              ...apply,
+              cleanupPending: true,
+              message: `${apply.message ?? 'per-game settings apply failed'} ${cleanupErrors || 'runtime cleanup was not applied'}.`,
+            };
+          }
+        }
+        if (apply?.ok !== true) return { settings: previous, apply };
+        let saved;
+        try {
+          saved = await gameProfiles.saveSettings({
+            ...previous,
+            exePath: safePath,
+            gpuProfiles: mergeGameGpuProfiles(previous?.gpuProfiles, [finalAssignment]),
+          });
+        } catch (err) {
+          const nativeRollback = await rollbackNative();
+          const rtssRollback = await rollbackRtss();
+          const rollbackMessage = nativeRollback.ok && rtssRollback.ok
+            ? 'Runtime changes were rolled back.'
+            : 'Runtime cleanup is still pending.';
+          throw new Error(`game-settings-save: profile persistence failed (${err instanceof Error ? err.message : String(err)}). ${rollbackMessage}`);
         }
         return { settings: saved, apply };
       }),
 
-      'game-settings-delete': async (payload) => {
+      'game-settings-delete': async (payload) => serializeGameProfileMutation(async () => {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('game-settings-delete: payload must be an object');
         const exePath = canonicalExePath(payload.exePath);
         if (!exePath) throw new Error('game-settings-delete: exePath must be an absolute Windows path');
-        return await gameProfiles.deleteSettings(exePath);
-      },
+        const catalog = await gameProfiles.loadCatalog();
+        const existing = catalog?.settings?.find((item) => item.exePath === exePath) ?? null;
+        const assignments = Array.isArray(existing?.gpuProfiles) ? existing.gpuProfiles : [];
+        const persisted = await store.loadSettings();
+        const clearedTargets = new Set();
+        const attemptedNativeCleanup = [];
+        let rtssCleanup = null;
+        const compensateNativeCleanup = async () => {
+          const errors = [];
+          for (const entry of attemptedNativeCleanup.slice().reverse()) {
+            try {
+              const rollback = await applyGameProfileDriverScope({
+                target: entry.target,
+                exePath,
+                settings: { ...(entry.assignment?.graphics ?? {}) },
+                enabled: entry.assignment?.enabled === true,
+              });
+              if (rollback?.ok !== true) errors.push(`${entry.target.deviceKey ?? entry.target.id}: ${rollback?.message ?? rollback?.errorCode ?? 'native rollback failed'}`);
+            } catch (error) {
+              errors.push(`${entry.target.deviceKey ?? entry.target.id}: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+          return errors.length > 0 ? { ok: false, error: errors.join('; ') } : { ok: true };
+        };
+        const failDeleteWithCompensation = async (message) => {
+          const compensation = await compensateNativeCleanup();
+          throw new Error(compensation.ok ? message : `${message} Runtime cleanup is still pending: ${compensation.error}`);
+        };
+        const compensateRtssCleanup = async () => {
+          if (!(rtssCleanup?.ok === true && rtssCleanup?.used === true)) return { ok: true };
+          const frameLimitAssignment = assignments.find((assignment) => assignment?.graphics?.frameLimit?.enabled === true);
+          if (!frameLimitAssignment) return { ok: true };
+          try {
+            const restored = await rtssFrameLimiter.applyFrameLimit({
+              enabled: true,
+              value: frameLimitAssignment.graphics.frameLimit.value,
+              executablePath: exePath,
+            });
+            return restored?.ok === true && restored?.used === true
+              ? { ok: true }
+              : { ok: false, error: restored?.error ?? 'RTSS runtime restoration was not verified' };
+          } catch (error) {
+            return { ok: false, error: error instanceof Error ? error.message : String(error) };
+          }
+        };
+        for (const assignment of assignments) {
+          const targetKey = typeof assignment?.deviceKey === 'string' && assignment.deviceKey.length > 0
+            ? assignment.deviceKey
+            : null;
+          const target = await gameProfileTarget(targetKey, persisted);
+          const targetIdentity = target?.deviceKey ?? (Number.isInteger(target?.id) ? `id:${target.id}` : null);
+          if (!target || !targetIdentity) {
+            await failDeleteWithCompensation(`game-settings-delete: cannot resolve the configured GPU for ${targetKey ?? 'the legacy assignment'}`);
+          }
+          if (clearedTargets.has(targetIdentity)) continue;
+          const cleanupEntry = { target, assignment };
+          attemptedNativeCleanup.push(cleanupEntry);
+          const native = await applyGameProfileDriverScope({ target, exePath, settings: {}, enabled: false });
+          if (native?.ok !== true) {
+            await failDeleteWithCompensation(`game-settings-delete: native cleanup failed for ${target.deviceKey ?? target.id}: ${native?.message ?? native?.errorCode ?? 'unknown error'}`);
+          }
+          clearedTargets.add(targetIdentity);
+        }
+        const hadArcPowerFrameLimit = assignments.some((profile) => profile?.graphics?.frameLimit?.enabled === true);
+        // Deleting a sidecar must not leave an Arc Power-owned RTSS app cap
+        // behind for a profile the user can no longer edit.
+        if (hadArcPowerFrameLimit) {
+          rtssCleanup = typeof rtssFrameLimiter?.applyFrameLimit === 'function'
+            ? await rtssFrameLimiter.applyFrameLimit({ enabled: false, executablePath: exePath, removeProfile: true })
+            : null;
+          if (!(rtssCleanup?.ok === true
+            && rtssCleanup?.used === true
+            && rtssCleanup?.removed === true
+            && (rtssCleanup?.flagRestored === true || rtssCleanup?.flagRestorationDeferred === true))) {
+            await failDeleteWithCompensation(`game-settings-delete: RTSS cleanup failed: ${rtssCleanup?.error ?? 'profile removal was not verified'}`);
+          }
+        }
+        try {
+          return await gameProfiles.deleteSettings(exePath);
+        } catch (error) {
+          const nativeRestore = await compensateNativeCleanup();
+          const rtssRestore = await compensateRtssCleanup();
+          let persistenceRestore = { ok: true };
+          if (existing && typeof gameProfiles.saveSettings !== 'function') {
+            persistenceRestore = { ok: false, error: 'sidecar restoration is unavailable' };
+          } else if (existing) {
+            try {
+              await gameProfiles.saveSettings(existing);
+            } catch (restoreError) {
+              persistenceRestore = { ok: false, error: restoreError instanceof Error ? restoreError.message : String(restoreError) };
+            }
+          }
+          const details = [nativeRestore, rtssRestore, persistenceRestore]
+            .filter((item) => item.ok !== true)
+            .map((item) => item.error)
+            .filter(Boolean)
+            .join('; ');
+          throw new Error(`game-settings-delete: persistence failed (${error instanceof Error ? error.message : String(error)}). ${details || 'runtime and sidecar state were restored.'}`);
+        }
+      }),
 
       'game-profiles-list': async (...args) => {
         assertNoPayload(args, 'game-profiles-list');

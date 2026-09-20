@@ -504,9 +504,11 @@ const DISPLAY_SCALING_MODE_FROM_IGCL = { 1: 'identity', 2: 'centered', 4: 'stret
 // with Version 1 for every scaling mode. Older drivers may reject that
 // version, so retain a narrowly-scoped Version 0 compatibility fallback. A
 // successful setter is still not reported as applied until fresh scaling
-// read-back agrees. Ordinary Display/GPU writes use the virtual-modeset path
-// used by IGS; Custom scaling remains caller-controlled because it may need
-// the physical display transition exposed by IGS.
+// read-back agrees. Intel Graphics Software's ordinary GPU/Display helper
+// sends HardwareModeSet=false: the driver owns the preferred scaler and uses
+// it when the output timing requires scaling. Custom scaling remains
+// caller-controlled because it may need an explicit physical display
+// transition of its own.
 function setScalingWithCompatibility(lib, handle, { flag, custom, hardwareModeSet = false }) {
   const versions = [1, 0];
   let lastResult = CTL_RESULT.ERROR_INVALID_ARGUMENT;
@@ -2163,11 +2165,23 @@ export class IgclBackend {
           : false;
         const explicitControlContract = this._hasSysmanCapabilitySeam
           || typeof this._extended?.isTempCapable === 'function';
+        // Only cards with an evidence-backed Advanced power ceiling may be
+        // promoted to the shared Sysman ceiling. A listed card can be known
+        // without having a safe hard-coded power cap (currently A580); for
+        // those cards the driver-reported range remains authoritative instead
+        // of exposing a generic 315/375 W value that the apply path rejects.
+        const advancedPowerLimit = deviceLimitsOf({
+          pciDeviceId: dev.pciDeviceId ?? null,
+          aibVendor: null,
+          aibModel: null,
+        }, { advanced: true })?.powerLimitW;
+        const hasEvidenceBackedAdvancedPowerCeiling = typeof advancedPowerLimit?.max === 'number'
+          && Number.isFinite(advancedPowerLimit.max);
         if (!explicitControlContract) {
           delete caps.extendedControls;
           if (runtimeCapable && ocMode === 'advanced'
             && ((caps.ranges.powerLimitW?.units === 'W') || (caps.ranges.tempLimitC?.units === 'C'))) {
-            if (caps.ranges.powerLimitW?.units === 'W') {
+            if (caps.ranges.powerLimitW?.units === 'W' && hasEvidenceBackedAdvancedPowerCeiling) {
               caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: SYSMAN_PL_MAX_W };
             }
             if (caps.ranges.tempLimitC?.units === 'C') {
@@ -2194,7 +2208,7 @@ export class IgclBackend {
             tempLimitC: Boolean(tempCapable && hasC),
           };
           if (ocMode === 'advanced' && (caps.extendedControls.powerLimitW || caps.extendedControls.tempLimitC)) {
-            if (caps.extendedControls.powerLimitW) {
+            if (caps.extendedControls.powerLimitW && hasEvidenceBackedAdvancedPowerCeiling) {
               caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: SYSMAN_PL_MAX_W };
             }
             if (caps.extendedControls.tempLimitC) {
@@ -4441,14 +4455,16 @@ export class IgclBackend {
           // The M10b-fix lesson: NO SupportedScaling pre-gate - the caps
           // bitmask stays a UI hint (the supportedOptions list); the set
           // reaches the driver and the driver's ACTUAL result decides.
-          // ScalingType is a FLAG value in the struct (1/2/4/8/16). Keep
-          // ordinary Display/GPU mode changes on IGCL's virtual-modeset path,
-          // exactly like Intel Graphics Software. HardwareModeSet=true is
-          // reserved for the explicit Custom-scaling path, where the caller
-          // has requested a physical display transition.
+          // ScalingType is a FLAG value in the struct (1/2/4/8/16). Match
+          // Intel Graphics Software's setCurrentScalingSettings helper for
+          // ordinary GPU/Display transitions: HardwareModeSet is false and
+          // the driver's preferred scaler is the persisted selection.
+          const hardwareModeSet = custom ? custom.hardwareModeSet !== false : false;
           const registryWriterAvailable = !custom && typeof this._vrrRegistry?.setScalingState === 'function';
           const registryReaderAvailable = registryWriterAvailable && typeof this._vrrRegistry?.getScalingState === 'function';
-          const registryValue = patch.scalingMode === 'identity' ? SCALING_STATE_DISPLAY : SCALING_STATE_GPU;
+          const registryValue = patch.scalingMode === 'identity' || patch.scalingMode === 'custom'
+            ? SCALING_STATE_DISPLAY
+            : SCALING_STATE_GPU;
           const registryNeedsSync = registryWriterAvailable
             && registryScalingState?.ok === true
             && registryScalingState.value !== registryValue;
@@ -4456,6 +4472,8 @@ export class IgclBackend {
           let setResult = null;
           let registryRestoreAttempted = false;
           let registryRestoreOk = true;
+          let nativePreferenceRestoreAttempted = false;
+          let nativePreferenceRestoreOk = true;
 
           const restorePreviousRegistryState = async () => {
             if (registryRestoreAttempted) return registryRestoreOk;
@@ -4492,7 +4510,7 @@ export class IgclBackend {
             ({ setResult } = setScalingWithCompatibility(lib, handle, {
               flag,
               custom,
-              hardwareModeSet: false,
+              hardwareModeSet,
             }));
           }
 
@@ -4539,10 +4557,10 @@ export class IgclBackend {
               preferredReadBackEqual = current.version === 1 && !custom && got.preferredScalingType === flag;
               message = activeReadBackEqual ? undefined : `read-back ${JSON.stringify(got)} != requested ${JSON.stringify({ scalingType: flag, ...custom })}`;
             }
-            // Some Version 1 drivers persist a GPU preference while leaving
-            // the active scaler at Identity. That is a successful persisted
-            // GPU preference, but only when the preferred flag is the one
-            // requested; an unchanged preference remains a true no-op.
+            // A Version 1 driver may persist a GPU preference while leaving
+            // the active scaler at Identity. That is not proof of the
+            // requested hardware transition, even when the preference is new
+            // or already matched before the setter ran.
             const preferredOnly = current.version === 1
               && !custom
               && flag !== DISPLAY_SCALING_MODE_TO_IGCL.identity
@@ -4554,64 +4572,129 @@ export class IgclBackend {
             const preferenceAlreadyApplied = current.version === 1
               && !custom
               && flag !== DISPLAY_SCALING_MODE_TO_IGCL.identity
+              // A Display -> GPU transition can legitimately leave the
+              // native PreferredScalingType unchanged: the driver already
+              // has the requested GPU method, while NNScalingState is the
+              // field that changed. A successful preflight registry write is
+              // therefore proof of the missing transition; requiring the
+              // old registry value to match made this exact transition fail
+              // and roll the user's GPU selection back.
               && (!registryWriterAvailable
-                || (registryScalingState?.ok === true && registryScalingState.value === registryValue))
+                || (registryScalingState?.ok === true && registryScalingState.value === registryValue)
+                || registryFallback?.ok === true)
               && preferredBefore === flag
               && got?.enable === true
               && got.scalingType === DISPLAY_SCALING_MODE_TO_IGCL.identity
               && preferredReadBackEqual;
-            const nativeReadBackEqual = activeReadBackEqual || preferredOnly || preferenceAlreadyApplied;
-            if (preferredOnly) {
-              message = 'GPU Scaling preference was saved; the driver reports Display Scaling as active at the current desktop resolution. GPU Scaling will be used when the output requires scaling.';
-            } else if (preferenceAlreadyApplied) {
-              message = 'GPU Scaling preference was already saved; the driver reports Display Scaling as active at the current desktop resolution. GPU Scaling will be used when the output requires scaling.';
-            }
+            const nativeReadBackEqual = activeReadBackEqual;
             const registryAvailable = registryWriterAvailable;
             let registryReadBackEqual = false;
+            const deferredPreferenceCandidate = preferredOnly || preferenceAlreadyApplied;
             // Do not persist a new IGS preference after a native silent no-op.
             // For a known old value the preflight write can be rolled back;
             // when the old value was unavailable, wait until native proof
             // exists before creating a new registry value.
-            if (registryAvailable && nativeReadBackEqual) {
+            // A verified preferred-only result is also allowed to confirm the
+            // registry write: native Identity is expected while the current
+            // source and target timings are equal, so waiting for an active
+            // non-Identity read-back would otherwise undo a valid preference.
+            const canVerifyDeferredRegistry = registryScalingState?.ok === true || registryFallback?.ok === true;
+            if (registryAvailable && (nativeReadBackEqual || (deferredPreferenceCandidate && canVerifyDeferredRegistry))) {
               const registryNeedsPostSync = registryScalingState?.ok !== true || registryScalingState.value !== registryValue;
               if (registryNeedsPostSync && registryFallback?.ok !== true) registryFallback = await this._vrrRegistry.setScalingState(dev, registryValue).catch(() => null);
               const postRegistry = registryReaderAvailable
                 ? await this._vrrRegistry.getScalingState(dev).catch(() => null)
                 : null;
-              registryReadBackEqual = postRegistry?.ok === true
-                ? postRegistry.value === registryValue
+              registryReadBackEqual = registryReaderAvailable
+                ? postRegistry?.ok === true && postRegistry.value === registryValue
                 : registryFallback?.ok === true || (!registryNeedsPostSync && registryScalingState?.value === registryValue);
             }
             const persistedReadBackEqual = custom !== null || !registryAvailable || registryReadBackEqual;
             readBackEqual = nativeReadBackEqual && persistedReadBackEqual;
-            if (!readBackEqual && !message) {
+            // For ordinary requests, HardwareModeSet=false is the same
+            // preferred-scaler path used by Intel Graphics Software, so a
+            // verified preferred-only result is an applied selection even
+            // when the native desktop timing keeps Identity active. A Custom
+            // request that explicitly asks for a hardware transition still
+            // requires active native read-back.
+            const deferredPreference = !hardwareModeSet
+              && deferredPreferenceCandidate
+              && preferredReadBackEqual
+              && persistedReadBackEqual;
+            const applied = readBackEqual || deferredPreference;
+            if (deferredPreference) {
+              message = preferenceAlreadyApplied
+                ? 'GPU Scaling is already applied. At the current desktop timing the driver keeps Identity active, matching Intel Graphics Software; GPU Scaling is the saved selection used when the output requires scaling.'
+                : 'GPU Scaling applied. At the current desktop timing the driver keeps Identity active, matching Intel Graphics Software; GPU Scaling is the saved selection used when the output requires scaling.';
+            } else if (preferredOnly) {
+              message = 'GPU Scaling preference was saved, but the driver reports Display Scaling as active; the requested GPU transition was not applied.';
+            } else if (preferenceAlreadyApplied) {
+              message = 'GPU Scaling preference was already saved, but the driver reports Display Scaling as active; the requested GPU transition was not applied.';
+            } else if (!applied && !message) {
               message = `scaling read-back did not prove the requested active and persisted mode (active=${activeReadBackEqual}, preferred=${preferredReadBackEqual}, registry=${registryReadBackEqual})`;
             }
-            if (!readBackEqual) {
+            if (!applied) {
+              // The IGCL SET also updates PreferredScalingType. If a
+              // hardware-mode request did not produce the requested active
+              // scaler, do not leave the failed GPU preference behind for
+              // the next Arc Power launch. Reapply the preference that was
+              // observed before this transaction and verify that persisted
+              // field when the Version 1 surface is available.
+              if (!custom
+                && setResult === CTL_RESULT.SUCCESS
+                && preferredBefore !== null
+                && preferredBefore !== flag
+                && !nativeReadBackEqual) {
+                nativePreferenceRestoreAttempted = true;
+                try {
+                  const nativeRestore = setScalingWithCompatibility(lib, handle, {
+                    flag: preferredBefore,
+                    custom: null,
+                    hardwareModeSet: false,
+                  });
+                  if (nativeRestore.setResult === CTL_RESULT.SUCCESS) {
+                    const restoredReadBack = getScalingWithCompatibility(lib, handle);
+                    nativePreferenceRestoreOk = restoredReadBack.getResult === CTL_RESULT.SUCCESS
+                      && (restoredReadBack.version !== 1
+                        || restoredReadBack.settings?.preferredScalingType === preferredBefore);
+                  } else {
+                    nativePreferenceRestoreOk = false;
+                  }
+                } catch {
+                  nativePreferenceRestoreOk = false;
+                }
+              }
+              if (nativePreferenceRestoreAttempted && !nativePreferenceRestoreOk) {
+                message = `${message ?? 'scaling read-back did not prove the requested active and persisted mode'}; the previous native scaling preference could not be restored`;
+              } else if (nativePreferenceRestoreAttempted) {
+                message = `${message ?? 'the requested active scaling transition was not applied'}; the previous native scaling preference was restored`;
+              }
               const restored = await restorePreviousRegistryState();
               if (registryRestoreAttempted) registryReadBackEqual = false;
               if (!restored) message = `${message ?? 'scaling read-back did not prove the requested active and persisted mode'}; the previous IGS scaling preference could not be restored`;
             }
             result.perControl.scalingMode = {
-              ok: readBackEqual,
-              errorCode: readBackEqual ? undefined : 'io-failed',
+              ok: applied,
+              errorCode: applied ? undefined : 'io-failed',
               message,
               readBackEqual,
               activeReadBackEqual,
               preferredReadBackEqual,
               preferredOnly,
               preferenceAlreadyApplied,
-              deferred: preferredOnly || preferenceAlreadyApplied,
-              preference: preferredOnly || preferenceAlreadyApplied ? 'gpu-scaling' : undefined,
+              deferred: deferredPreference,
+              igsPreferredSelectionApplied: deferredPreference,
+              preference: deferredPreference ? 'gpu-scaling' : undefined,
+              ...(nativePreferenceRestoreAttempted ? { nativePreferenceRestoreOk } : {}),
               registryReadBackEqual,
               ...(registryFallback?.ok === true ? { writeTransport: 'registry' } : {}),
-              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
+              silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual && !deferredPreference,
               // The honest modeset note - the scaling card warns the user
               // (the M10b probe skipped the scaling SET by design; the
               // header documents the same flash for retro scaling).
               warning: DISPLAY_SCALING_FLASH_WARNING,
             };
-            if (!readBackEqual) result.ok = false;
+            if (!applied) result.ok = false;
           }
           }
         }
@@ -4635,6 +4718,9 @@ export class IgclBackend {
         && (result.perControl.scalingMode || (enteringRetro && result.perControl.scalingMethod))) {
         result.perControl.displayScalingMethod = {
           ...(result.perControl.scalingMode ?? result.perControl.scalingMethod),
+          // Compatibility mirror only: the renderer must not report the
+          // coupled alias as a second user-facing operation.
+          internal: true,
         };
       } else {
       if (this._isUnavailable(lib.ctlSetCurrentScaling) || this._isUnavailable(lib.ctlGetCurrentScaling)) {

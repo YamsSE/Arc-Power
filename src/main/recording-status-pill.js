@@ -23,7 +23,8 @@ function isCaptureActive(state) {
   const starting = state.startingModes;
   if (modes && typeof modes === 'object') {
     return modes.video === true || modes.replay === true
-      || (starting && typeof starting === 'object' && (starting.video === true || starting.replay === true));
+      || (starting && typeof starting === 'object' && (starting.video === true || starting.replay === true))
+      || state.running === true && (state.mode === 'video' || state.mode === 'replay');
   }
   if (starting && typeof starting === 'object' && (starting.video === true || starting.replay === true)) return true;
   return state.running === true && (state.mode === 'video' || state.mode === 'replay');

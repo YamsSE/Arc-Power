@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
+import { deviceGateThresholds, extendedRangesFor, ocModeRefusal } from '../src/main/apply-routing.js';
 
 const overlay = fs.readFileSync(
   fileURLToPath(new URL('../src/renderer/advanced-overlay.ts', import.meta.url)),
@@ -117,4 +118,32 @@ test('OC mode writes reject stale physical identity and stale rollback mode', as
     /device key mismatch/,
   );
   assert.equal(backendMode, 'advanced');
+});
+
+test('A580 Advanced ranges preserve the driver power ceiling when no app ceiling exists', () => {
+  const ranges = extendedRangesFor({
+    pciDeviceId: '0x000056a2',
+    ranges: {
+      powerLimitW: { units: 'W', min: 50, max: 200 },
+      tempLimitC: { units: 'C', min: 60, max: 90 },
+    },
+  });
+  assert.equal(ranges.powerLimitW.max, 200);
+  assert.equal(ranges.tempLimitC.max, 115);
+
+  const unlisted = extendedRangesFor({
+    pciDeviceId: '0x0000ffff',
+    ranges: { powerLimitW: { units: 'W', min: 50, max: 200 } },
+  });
+  assert.equal(unlisted.powerLimitW.max, 315);
+});
+
+test('A580 Advanced power gate follows the live driver ceiling', () => {
+  const ranges = {
+    powerLimitW: { units: 'W', min: 50, max: 200 },
+    tempLimitC: { units: 'C', min: 60, max: 90 },
+  };
+  assert.equal(deviceGateThresholds({ pciDeviceId: '0x000056a2' }, true, ranges).plMax, 200);
+  const refusal = ocModeRefusal('advanced', { powerLimitW: 250 }, ranges, { pciDeviceId: '0x000056a2' });
+  assert.deepEqual(refusal?.controls, ['powerLimitW']);
 });

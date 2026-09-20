@@ -54,16 +54,20 @@ function isExplicitScalingPreference(value: unknown): value is 'gpu-scaling' | '
   return value === 'gpu-scaling' || value === 'display-scaling';
 }
 
-/** Resolve the raw mode used by the compact scaling controls. The active
- * native scaler is authoritative when it is available: Identity is the stock
- * Display Scaling state, even when a driver reports a separate GPU preference
- * in PreferredScalingType or NNScalingState. Preferred/registry values are
- * only fallbacks when the active native read-back is unavailable. */
+/** Resolve the raw mode used by payload construction and method selection.
+ * Intel's output-handle GET can retain a stale PreferredScalingType after
+ * the user switches back to Display Scaling. NNScalingState is the same
+ * driver preference that IGS uses for its Display-vs-GPU selector, so an
+ * explicit registry preference must override that stale native field while
+ * active IGCL Identity remains available as the physical read-back. */
 export function effectiveScalingModeOf(display: Display | null | undefined): string | null {
   if (!display) return null;
   const active = display.scalingMode;
   const preferred = display.preferredScalingMode;
   if (active === 'identity' && preferred === 'custom') return 'custom';
+  if (active === 'identity' && display.scalingPreference === 'display-scaling') return 'identity';
+  if (active === 'identity' && display.scalingPreference === 'gpu-scaling' && isGpuScalingMode(preferred)) return preferred;
+  if (active === 'identity' && isGpuScalingMode(preferred)) return preferred;
   if (active !== null && active !== undefined) return active;
   return preferred ?? null;
 }
@@ -71,13 +75,20 @@ export function effectiveScalingModeOf(display: Display | null | undefined): str
 export function scalingViewOf(display: Display | null | undefined): DisplayScalingView {
   if (!display) return 'display-scaling';
   if (display.scalingMethod?.value?.enabled === true) return 'retro-scaling';
-  // Identity remains the authoritative active read-back, but a saved GPU
-  // preference is still the user-facing selection while that preference is
-  // deferred. Retro Scaling above always has priority over this distinction.
-  if (display.scalingMode === 'identity'
-    && (isGpuScalingMode(display.preferredScalingMode) || display.scalingPreference === 'gpu-scaling')) {
-    return 'gpu-scaling';
+  // A native Custom preference is a real Display Scaling state. Resolve it
+  // before consulting the adapter-level registry hint: the registry can say
+  // "GPU Scaling" while IGCL is currently reporting Identity, but that hint
+  // must never hide the Custom scaling-method controls.
+  if ((display.scalingMode === 'identity' || display.scalingMode === null || display.scalingMode === undefined)
+    && display.preferredScalingMode === 'custom') {
+    return 'display-scaling';
   }
+  // Identity is the driver's active read-back for Display Scaling. A saved
+  // GPU preference can remain in NNScalingState until the output actually
+  // requires scaling, but it must not make the UI claim that the GPU scaler is
+  // active while IGCL reports Identity (this is also how IGS presents the
+  // current desktop-resolution state).
+  if (display.scalingMode === 'identity') return 'display-scaling';
   const raw = effectiveScalingModeOf(display);
   if (display.scalingMode === null || display.scalingMode === undefined) {
     if (raw === null && isExplicitScalingPreference(display.scalingPreference)) return display.scalingPreference;

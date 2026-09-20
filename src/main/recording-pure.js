@@ -71,6 +71,10 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
   },
   captureColorMode: 'auto',
   showCursor: false,
+  // Keep the bundled capture runtime lazy and release it again whenever no
+  // recording work is active. Users can disable this from the Recorder page
+  // when they prefer the runtime to remain warm after it has been started.
+  memorySavingMode: true,
   replayLengthSec: 30,
   instantReplayAutoStart: false,
   replayMarkersEnabled: true,
@@ -275,7 +279,9 @@ export function recordingAbsolutePath(value, label = 'location') {
 
 const ELECTRON_MODIFIERS = new Map([
   ['commandorcontrol', 'CommandOrControl'],
+  ['cmdorcontrol', 'CommandOrControl'],
   ['control', 'Control'],
+  ['ctrl', 'Control'],
   ['alt', 'Alt'],
   ['shift', 'Shift'],
 ]);
@@ -292,6 +298,9 @@ function canonicalAccelerator(value) {
     if (!modifier || modifiers.includes(modifier)) return null;
     modifiers.push(modifier);
   }
+  // Electron accepts modifier combinations in either order. Preserve the
+  // user's order after spelling normalization so a configured accelerator is
+  // stable when it is displayed and reloaded (for example Alt+Control+F9).
   return [...modifiers, key].join('+');
 }
 
@@ -332,6 +341,7 @@ export function normalizeRecordingSettings(raw = {}) {
       ? source.captureColorMode
       : DEFAULT_RECORDING_SETTINGS.captureColorMode,
     showCursor: source.showCursor === true,
+    memorySavingMode: source.memorySavingMode !== false,
     replayLengthSec: Math.min(3600, Math.max(5, replayLength)),
     audio: normalizeRecordingAudioSettings({ ...DEFAULT_RECORDING_SETTINGS.audio, ...(source.audio ?? {}) }),
     hotkeys: {
