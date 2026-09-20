@@ -722,6 +722,13 @@ export function createSysStats(deps = {}) {
   let gpuHandle = null;
   let gpuOwner = undefined;
   let gpuInflight = false;
+  let gpuGeneration = 0;
+  // The native D3DKMT sampler must not share the slow fallback's guard. A
+  // Get-Counter/PowerShell read can take several seconds on this machine;
+  // holding this guard across that read starves the native 500 ms sampler
+  // after its first baseline and leaves the UI at zero while Task Manager is
+  // already showing activity.
+  let nativeGpuInflight = false;
   let gpuProcess = null;
   let gpuReadline = null;
   let gpuWorkerActive = false;
@@ -996,10 +1003,22 @@ export function createSysStats(deps = {}) {
     };
   };
 
-  const applyGpuEngineRows = async (rows, sampledAt, preserveRecords = new Set()) => {
+  const applyGpuEngineRows = async (rows, sampledAt, preserveRecords = new Set(), generation = gpuGeneration) => {
     for (const record of targetRecords.values()) {
-      if (preserveRecords.has(record)) continue;
+      if (generation !== gpuGeneration) return;
+      // A native sample may complete while the slower PDH query is in flight.
+      // Re-check the source at commit time so that late fallback data cannot
+      // overwrite the newer D3DKMT value.
+      if (generation !== gpuGeneration
+        || preserveRecords.has(record)
+        || record.gpuUtilSource === 'windows-d3dkmt') continue;
       const gpuUtilPct = await gpuUtilForRecord(record, rows);
+      // gpuUtilForRecord resolves the physical LUID asynchronously. The
+      // native sampler can finish during that await, so the ownership check
+      // must also happen immediately before the cache write.
+      if (generation !== gpuGeneration
+        || preserveRecords.has(record)
+        || record.gpuUtilSource === 'windows-d3dkmt') continue;
       record.cache = {
         ...record.cache,
         gpuUtilPct,
@@ -1018,15 +1037,17 @@ export function createSysStats(deps = {}) {
   // that target for this tick; PDH fills only the targets that native could
   // not sample, which keeps a transient D3DKMT failure from blanking every
   // adapter at once.
-  async function sampleD3dkmtGpuUtil() {
+  async function sampleD3dkmtGpuUtil(generation = gpuGeneration) {
     const nativeRecords = new Set();
     if (!d3dkmtGpuUtil || typeof d3dkmtGpuUtil.sample !== 'function') return nativeRecords;
     for (const record of targetRecords.values()) {
+      if (generation !== gpuGeneration) return nativeRecords;
       let luid = null;
       try { luid = await luidForRecord(record); } catch { luid = null; }
       if (!luid) continue;
       let gpuUtilPct = null;
       try { gpuUtilPct = await d3dkmtGpuUtil.sample(luid); } catch { gpuUtilPct = null; }
+      if (generation !== gpuGeneration) return nativeRecords;
       if (Number.isFinite(gpuUtilPct) && gpuUtilPct >= 0 && gpuUtilPct <= 100) {
         record.cache = { ...record.cache, gpuUtilPct };
         record.gpuUtilSampledAt = now();
@@ -1130,21 +1151,33 @@ export function createSysStats(deps = {}) {
 
   // M4-I: the production-only GPU Engine lane. It uses the same PDH/Get-
   // Counter source as Task Manager, but does not wait behind the broad CIM
-  // query. The per-lane guard is separate from `inflight` because the two
-  // queries have disjoint responsibilities and the GPU value must continue
-  // refreshing while WMI is slow.
+  // query. The native D3DKMT and PDH fallback guards are independent: the
+  // fallback may be slow, but it must never pause the native 500 ms cadence.
   async function sampleDedicatedGpuUtil() {
-    if (!enableDedicatedGpuSampler || gpuInflight) return;
+    if (!enableDedicatedGpuSampler) return;
+    const generation = gpuGeneration;
+    let nativeRecords = new Set();
+    if (d3dkmtGpuUtil && typeof d3dkmtGpuUtil.sample === 'function' && !nativeGpuInflight) {
+      nativeGpuInflight = true;
+      try {
+        nativeRecords = await sampleD3dkmtGpuUtil(generation);
+      } catch {
+        nativeRecords = new Set();
+      } finally {
+        nativeGpuInflight = false;
+      }
+    }
+    if (generation !== gpuGeneration) return;
+    if (gpuInflight) return;
     gpuInflight = true;
     try {
-      const nativeRecords = await sampleD3dkmtGpuUtil();
       if (gpuWorkerActive) {
         const sampledAt = latestGpuRowsAt;
         const fresh = Array.isArray(latestGpuRows)
           && Number.isFinite(sampledAt)
           && now() - sampledAt <= GPU_UTIL_STALE_MS;
         if (fresh) {
-          await applyGpuEngineRows(latestGpuRows, sampledAt, nativeRecords);
+          await applyGpuEngineRows(latestGpuRows, sampledAt, nativeRecords, generation);
           return;
         }
         if (Number.isFinite(sampledAt) && now() - sampledAt > GPU_UTIL_STALE_MS) {
@@ -1162,7 +1195,7 @@ export function createSysStats(deps = {}) {
       );
       const rows = parseGpuEngineOutput(stdout);
       const sampledAt = now();
-      await applyGpuEngineRows(rows, sampledAt, nativeRecords);
+      await applyGpuEngineRows(rows, sampledAt, nativeRecords, generation);
     } catch {
       // The existing freshness gate turns a failed query into null once the
       // last known value ages out; never publish an invented zero here.
@@ -1423,6 +1456,16 @@ export function createSysStats(deps = {}) {
         clearIntervalFn(gpuHandle);
         gpuHandle = null;
       }
+      gpuGeneration += 1;
+      // A telemetry restart must establish a fresh native baseline. Do not
+      // expose the previous session's value while the next D3DKMT pair is
+      // warming, and do not let a slow fallback repopulate it after stop.
+      for (const record of targetRecords.values()) {
+        record.cache = { ...record.cache, gpuUtilPct: null };
+        record.gpuUtilSampledAt = null;
+        record.gpuUtilSource = null;
+      }
+      laneCache = activeRecord.cache;
       stopGpuEngineWorker();
       try { d3dkmtGpuUtil?.reset?.(); } catch { /* best effort */ }
       slowOwner = undefined;
@@ -1453,7 +1496,7 @@ export function createSysStats(deps = {}) {
   // handle/guard because the WMI lane is allowed to remain busy while this
   // lane refreshes the value shown in Monitoring, Dashboard, and Overlay.
   async function gpuTick() {
-    if (gpuHandle === null || gpuInflight) return;
+    if (gpuHandle === null) return;
     await sampleDedicatedGpuUtil();
   }
 }

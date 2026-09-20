@@ -129,3 +129,222 @@ test('sys-stats prefers a valid D3DKMT sample over the PDH fallback', async () =
   stats.stopSlowLane(1);
   assert.equal(resetCalls, 1, 'stopping the telemetry lane clears the native baseline');
 });
+
+test('sys-stats keeps native sampling live while a slow PDH fallback is in flight', async () => {
+  const target = { deviceIdHex: '0xE20B', osLuid: { high: 0, low: 0xbb85 } };
+  const intervalCallbacks = [];
+  let fallbackStartedResolve;
+  const fallbackStarted = new Promise((resolve) => { fallbackStartedResolve = resolve; });
+  let releaseFallback;
+  const fallbackGate = new Promise((resolve) => { releaseFallback = resolve; });
+  let nativeCalls = 0;
+  const stats = createSysStats({
+    enableDedicatedGpuSampler: true,
+    ...target,
+    d3dkmtGpuUtil: {
+      sample: async () => nativeCalls++ === 0 ? null : 67,
+      reset: () => {},
+    },
+    execFile: async (_exe, args) => {
+      const command = String(args?.[3] ?? '');
+      if (command.includes('Get-Counter')) {
+        fallbackStartedResolve();
+        await fallbackGate;
+        return { stdout: JSON.stringify({ gpuEng: [] }) };
+      }
+      return { stdout: JSON.stringify({
+        cpu: { PercentProcessorTime: 0, PercentProcessorPerformance: 100 },
+        maxClockMhz: 1000,
+        thermal: [],
+        msaThermal: [],
+        gpuMem: [],
+        gpuEng: [],
+        powerMeter: [],
+      }) };
+    },
+    setInterval: (fn) => { intervalCallbacks.push(fn); return intervalCallbacks.length; },
+    clearInterval: () => {},
+  });
+
+  try {
+    stats.startSlowLane(999, 1);
+    await fallbackStarted;
+    assert.equal(intervalCallbacks.length, 2, 'slow and dedicated GPU timers are both armed');
+
+    // The second GPU tick must be able to establish the native sample even
+    // while the first tick's PowerShell fallback remains blocked.
+    await intervalCallbacks[1]();
+    const live = await stats.sampleGpuUtilForTarget(target);
+    assert.equal(live.gpuUtilPct, 67);
+    assert.equal(live.gpuUtilSource, 'windows-d3dkmt');
+    assert.equal(nativeCalls, 2);
+  } finally {
+    releaseFallback();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    stats.stopSlowLane(1);
+  }
+});
+
+test('a late PDH fallback cannot overwrite a newer native utilization sample', async () => {
+  const target = { deviceIdHex: '0xE20B', osLuid: { high: 0, low: 0xbb85 } };
+  const intervalCallbacks = [];
+  let releaseFallback;
+  const fallbackGate = new Promise((resolve) => { releaseFallback = resolve; });
+  let releaseLuid;
+  const fallbackLuidGate = new Promise((resolve) => { releaseLuid = resolve; });
+  let fallbackLuidStartedResolve;
+  const fallbackLuidStarted = new Promise((resolve) => { fallbackLuidStartedResolve = resolve; });
+  let holdFallbackLuid = false;
+  let nativeCalls = 0;
+  let fallbackStartedResolve;
+  const fallbackStarted = new Promise((resolve) => { fallbackStartedResolve = resolve; });
+  const stats = createSysStats({
+    enableDedicatedGpuSampler: true,
+    ...target,
+    d3dkmtGpuUtil: {
+      sample: async () => nativeCalls++ === 0 ? null : 73,
+      reset: () => {},
+    },
+    luidOf: async () => {
+      if (holdFallbackLuid) {
+        holdFallbackLuid = false;
+        fallbackLuidStartedResolve();
+        await fallbackLuidGate;
+      }
+      return target.osLuid;
+    },
+    execFile: async (_exe, args) => {
+      const command = String(args?.[3] ?? '');
+      if (command.includes('Get-Counter')) {
+        fallbackStartedResolve();
+        await fallbackGate;
+        return { stdout: JSON.stringify({ gpuEng: [{
+          Name: 'pid_1_luid_0x00000000_0x0000bb85_phys_0_eng_0_engtype_3d',
+          UtilizationPercentage: 12,
+        }] }) };
+      }
+      return { stdout: JSON.stringify({
+        cpu: { PercentProcessorTime: 0, PercentProcessorPerformance: 100 },
+        maxClockMhz: 1000,
+        thermal: [],
+        msaThermal: [],
+        gpuMem: [],
+        gpuEng: [],
+        powerMeter: [],
+      }) };
+    },
+    setInterval: (fn) => { intervalCallbacks.push(fn); return intervalCallbacks.length; },
+    clearInterval: () => {},
+  });
+
+  try {
+    stats.startSlowLane(999, 1);
+    await fallbackStarted;
+    // Hold the fallback after its async LUID lookup begins. The native tick
+    // then completes during that await, exercising the final commit check.
+    holdFallbackLuid = true;
+    releaseFallback();
+    await fallbackLuidStarted;
+    await intervalCallbacks[1]();
+    releaseLuid();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const afterFallback = await stats.sampleGpuUtilForTarget(target);
+    assert.equal(afterFallback.gpuUtilPct, 73);
+    assert.equal(afterFallback.gpuUtilSource, 'windows-d3dkmt');
+  } finally {
+    releaseFallback();
+    stats.stopSlowLane(1);
+  }
+});
+
+test('stopping and restarting telemetry clears the previous native GPU sample', async () => {
+  const target = { deviceIdHex: '0xE20B', osLuid: { high: 0, low: 0xbb85 } };
+  const intervalCallbacks = [];
+  const nativeValues = [73, null, 81];
+  const stats = createSysStats({
+    enableDedicatedGpuSampler: true,
+    ...target,
+    d3dkmtGpuUtil: {
+      sample: async () => nativeValues.shift() ?? null,
+      reset: () => {},
+    },
+    execFile: async () => ({ stdout: JSON.stringify({ gpuEng: [] }) }),
+    setInterval: (fn) => { intervalCallbacks.push(fn); return intervalCallbacks.length; },
+    clearInterval: () => {},
+  });
+
+  stats.startSlowLane(999, 1);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal((await stats.sampleGpuUtilForTarget(target)).gpuUtilPct, 73);
+
+  stats.stopSlowLane(1);
+  assert.equal((await stats.sampleGpuUtilForTarget(target)).gpuUtilPct, null);
+
+  stats.startSlowLane(999, 2);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal((await stats.sampleGpuUtilForTarget(target)).gpuUtilPct, null, 'restart waits for a fresh native pair');
+
+  await intervalCallbacks[3]();
+  assert.equal((await stats.sampleGpuUtilForTarget(target)).gpuUtilPct, 81);
+  stats.stopSlowLane(2);
+});
+
+test('stopping telemetry prevents a blocked fallback lookup from committing', async () => {
+  const target = { deviceIdHex: '0xE20B', osLuid: { high: 0, low: 0xbb85 } };
+  let releaseLuid;
+  const luidGate = new Promise((resolve) => { releaseLuid = resolve; });
+  let fallbackLuidStartedResolve;
+  const fallbackLuidStarted = new Promise((resolve) => { fallbackLuidStartedResolve = resolve; });
+  let holdFallbackLuid = false;
+  let fallbackStartedResolve;
+  const fallbackStarted = new Promise((resolve) => { fallbackStartedResolve = resolve; });
+  let releaseFallbackRows;
+  const fallbackRowsGate = new Promise((resolve) => { releaseFallbackRows = resolve; });
+  const stats = createSysStats({
+    enableDedicatedGpuSampler: true,
+    ...target,
+    d3dkmtGpuUtil: { sample: async () => null, reset: () => {} },
+    luidOf: async () => {
+      if (holdFallbackLuid) {
+        holdFallbackLuid = false;
+        fallbackLuidStartedResolve();
+        await luidGate;
+      }
+      return target.osLuid;
+    },
+    execFile: async (_exe, args) => {
+      const command = String(args?.[3] ?? '');
+      if (command.includes('Get-Counter')) {
+        fallbackStartedResolve();
+        await fallbackRowsGate;
+        return { stdout: JSON.stringify({ gpuEng: [{
+          Name: 'pid_1_luid_0x00000000_0x0000bb85_phys_0_eng_0_engtype_3d',
+          UtilizationPercentage: 12,
+        }] }) };
+      }
+      return { stdout: JSON.stringify({
+        cpu: { PercentProcessorTime: 0, PercentProcessorPerformance: 100 },
+        maxClockMhz: 1000,
+        thermal: [],
+        msaThermal: [],
+        gpuMem: [],
+        gpuEng: [],
+        powerMeter: [],
+      }) };
+    },
+    setInterval: (fn) => ({ fn }),
+    clearInterval: () => {},
+  });
+
+  stats.startSlowLane(999, 1);
+  await fallbackStarted;
+  holdFallbackLuid = true;
+  releaseFallbackRows();
+  await fallbackLuidStarted;
+  stats.stopSlowLane(1);
+  releaseLuid();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const afterStop = await stats.sampleGpuUtilForTarget(target);
+  assert.equal(afterStop.gpuUtilPct, null);
+  assert.equal(afterStop.gpuUtilSource, null);
+});
