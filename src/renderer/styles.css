@@ -2389,7 +2389,7 @@ input[type="number"] {
 .telemetry-panel-body[hidden] { display: none; }
 .telemetry-metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 6px; }
 .telemetry-panel[data-telemetry-panel="fps"] .telemetry-metric-grid { grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
-.telemetry-metric { min-width: 0; min-height: 96px; display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.08fr); align-items: center; gap: 7px; padding: 6px 7px; border: 1px solid color-mix(in srgb, var(--border) 86%, var(--accent)); border-radius: 6px; background: color-mix(in srgb, var(--bg-inset) 82%, var(--bg-elev)); }
+.telemetry-metric { min-width: 0; min-height: 96px; display: grid; grid-template-columns: minmax(104px, .78fr) minmax(0, 1.22fr); align-items: center; gap: 8px; padding: 6px 7px; border: 1px solid color-mix(in srgb, var(--border) 86%, var(--accent)); border-radius: 6px; background: color-mix(in srgb, var(--bg-inset) 82%, var(--bg-elev)); }
 .telemetry-metric-copy { min-width: 0; display: grid; grid-template-rows: auto auto; align-items: end; }
 .telemetry-metric-graph { --telemetry-graph-height: 80px; --telemetry-graph-plot-top: 5px; --telemetry-graph-plot-bottom: 13px; min-width: 0; display: grid; align-content: center; gap: 2px; overflow: visible; }
 .telemetry-metric-graph-layout { width: calc(100% + 30px); min-width: 0; margin-left: -30px; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 6px; align-items: stretch; }
@@ -2464,7 +2464,7 @@ input[type="number"] {
 }
 @media (max-width: 620px) {
   .telemetry-metrics { grid-template-columns: 1fr; }
-  .telemetry-metric { grid-template-columns: minmax(98px, .7fr) minmax(80px, 1fr); }
+  .telemetry-metric { grid-template-columns: minmax(98px, .72fr) minmax(80px, 1.28fr); }
 }
 
 /* A narrow main column can occur before the viewport reaches the global

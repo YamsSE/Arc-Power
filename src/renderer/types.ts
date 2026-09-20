@@ -777,6 +777,8 @@ export interface ProfileSettingsState {
   startMinimized: boolean;
   /** M4-D: closing the window hides it to the tray instead of quitting. */
   closeToTray: boolean;
+  /** Capture runtime retention; absent on old files means enabled. */
+  memorySavingMode: boolean;
   /** M4-D2: the Monitoring "Log to file" toggle (absent on old files -> false). */
   monitorLogToFile: boolean;
   /** Monitoring metrics selected for the Log to file card (absent on old files -> all). */
@@ -1260,6 +1262,10 @@ export interface RecordingEngineState {
   mode: 'video' | 'replay' | null;
   /** Both capture modes may be active at the same time. */
   activeModes?: { video: boolean; replay: boolean };
+  /** A native start handshake is pending; it is not active until STARTED. */
+  startingModes?: { video: boolean; replay: boolean };
+  /** Global capture-runtime retention preference; absent legacy pushes mean on. */
+  memorySavingMode?: boolean;
   startedAt: number | null;
   sessionId?: string | null;
   error: string | null;

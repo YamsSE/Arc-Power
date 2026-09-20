@@ -1119,6 +1119,7 @@ export async function resolveBootDeviceId(backend, store) {
  *                                  // advancedOverlay* field; main.js applies
  *                                  // geometry/visibility/hotkey + sends
  *                                  // 'advanced-overlay:settings' to the panel.
+ *   onRecordingMemorySavingSettings?: (enabled: boolean) => Promise<unknown>, // keep the capture runtime warm/idle after a settings change
  * }} ctx
  */
 export function createIpcHandlers({
@@ -1249,6 +1250,8 @@ export function createIpcHandlers({
   // geometry/visibility/hotkey + sends 'advanced-overlay:settings'
   // DIRECTLY to the panel window.
   onAdvancedOverlaySettings = async () => {},
+  onRecordingMemorySavingSettings = async () => {},
+  getRecordingMemorySavingMode = () => true,
   // M23: the panel's custom close op - the dedicated 'advanced-overlay:close'
   // channel's handler (the DEFAULT is a no-op; main.js wires it to the panel
   // handle's session hide - the main window is never closed by the panel).
@@ -3537,8 +3540,8 @@ export function createIpcHandlers({
       },
       'recording-runtime-probe': async (...args) => {
         assertNoPayload(args, 'recording-runtime-probe');
-        if (!recordingEngine?.probe) return { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [], hotkeys: getRecordingHotkeyState() };
-        return { ...(await recordingEngine.probe()), hotkeys: getRecordingHotkeyState() };
+        if (!recordingEngine?.probe) return { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [], memorySavingMode: getRecordingMemorySavingMode() !== false, hotkeys: getRecordingHotkeyState() };
+        return { ...(await recordingEngine.probe()), memorySavingMode: getRecordingMemorySavingMode() !== false, hotkeys: getRecordingHotkeyState() };
       },
       'recording-runtime-acquire': async (...args) => {
         assertNoPayload(args, 'recording-runtime-acquire');
@@ -3550,7 +3553,7 @@ export function createIpcHandlers({
       },
       'recording-status': async (...args) => {
         assertNoPayload(args, 'recording-status');
-        return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [] }), hotkeys: getRecordingHotkeyState() };
+        return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [] }), memorySavingMode: getRecordingMemorySavingMode() !== false, hotkeys: getRecordingHotkeyState() };
       },
       'recording-start': async (...args) => {
         assertNoPayload(args, 'recording-start');
@@ -4327,6 +4330,12 @@ export function createIpcHandlers({
           recordingToastsEnabled: patch.recordingToastsEnabled === undefined
             ? cur.recordingToastsEnabled === true
             : patch.recordingToastsEnabled === true,
+          // The capture-runtime retention preference is global, but it rides
+          // this read-modify-write envelope so unrelated settings saves
+          // cannot reset it. Missing legacy values default to memory saving.
+          memorySavingMode: patch.memorySavingMode === undefined
+            ? cur.memorySavingMode !== false
+            : patch.memorySavingMode === true,
           // M23: the ADVANCED-overlay fields (the Overlay view's Advanced
           // card persists them through this channel - the M5 overlaySettings
           // pattern, new keys). The letter REJECTS with an honest error when
@@ -4407,6 +4416,15 @@ export function createIpcHandlers({
           // error and mismatch state.
         }
         await store.saveSettings(next);
+        if (patch.memorySavingMode !== undefined && next.memorySavingMode !== cur.memorySavingMode) {
+          try {
+            await onRecordingMemorySavingSettings(next.memorySavingMode);
+          } catch (err) {
+            // The preference is durable even when a probe/idle close is
+            // unavailable; the next runtime transition will reconcile it.
+            console.log(`[recording] memory-saving setting reaction failed: ${err.message}`);
+          }
+        }
         if (startupError && startup.registrationMode === 'task') throw startupError;
         // M5: the overlay reaction (the rebuildTray pattern) - when any
         // overlay field the PATCH touched actually changed, the injected

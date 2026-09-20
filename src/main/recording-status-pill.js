@@ -20,7 +20,12 @@ const STATUS_CHANNEL = 'recording:state';
 function isCaptureActive(state) {
   if (!state || typeof state !== 'object') return false;
   const modes = state.activeModes;
-  if (modes && typeof modes === 'object') return modes.video === true || modes.replay === true;
+  const starting = state.startingModes;
+  if (modes && typeof modes === 'object') {
+    return modes.video === true || modes.replay === true
+      || (starting && typeof starting === 'object' && (starting.video === true || starting.replay === true));
+  }
+  if (starting && typeof starting === 'object' && (starting.video === true || starting.replay === true)) return true;
   return state.running === true && (state.mode === 'video' || state.mode === 'replay');
 }
 

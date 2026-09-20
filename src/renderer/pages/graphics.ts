@@ -46,6 +46,7 @@ import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { applyFailureText, CONTROL_LABELS, errorMessage } from '../pure/errors.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
+import { activeDeviceLabel } from '../pure/device.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { chipState } from '../pure/chip.ts';
 import { isBattlemageGpuName } from '../pure/hardware-icons.ts';
@@ -615,7 +616,7 @@ export const graphicsPage: Page = {
       ]),
       el('div', { class: 'arc-page-hero-side' }, [
         el('span', { class: 'arc-hero-label', text: 'ACTIVE GPU' }),
-        ...(deviceSelect ? [deviceSelect] : [el('span', { class: 'arc-hero-value', text: 'Current adapter' })]),
+        ...(deviceSelect ? [deviceSelect] : [el('span', { class: 'arc-hero-value', text: activeDeviceLabel(s.devices) })]),
       ]),
     ]);
     const viewToggle = el('div', { class: 'graphics-view-toggle-row' }, [

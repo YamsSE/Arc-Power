@@ -1757,8 +1757,14 @@ async function main() {
   // or Instant Replay captures are an implicit demand of their own; once
   // neither exists, the engine can close its child again.
   let recordingRuntimeDemand = 0;
+  const recordingMemorySavingEnabled = () => {
+    try { return store.loadSettingsSync()?.memorySavingMode !== false; } catch { return true; }
+  };
   const recordingEngine = createAscentEngine({
-    getRuntimeDemand: () => recordingRuntimeDemand,
+    // A disabled Memory Saving Mode is an explicit warm-runtime lease. It
+    // keeps the child alive even when no page/capture lease is held, while
+    // active captures and the Recording page still use the normal demand.
+    getRuntimeDemand: () => recordingRuntimeDemand + (recordingMemorySavingEnabled() ? 0 : 1),
     onEncoderDemoted: (encoderId, _error, context = {}) => recordingStore.demoteEncoder(
       context.selectionId ?? encoderId,
       context.adapterTarget ?? null,
@@ -1929,6 +1935,17 @@ async function main() {
     await recordingEngine.shutdownIfIdle?.();
     return recordingEngine.getState();
   });
+  const applyRecordingMemorySavingSettings = async (enabled) => {
+    if (enabled === false) {
+      // Turning the preference off is an immediate request to keep the
+      // runtime ready. The mock/UI verifier remains deterministic and does
+      // not spawn the bundled child as a side effect of saving Settings.
+      if (!mock && !uiVerify) await recordingEngine.probe();
+      return recordingEngine.getState();
+    }
+    await shutdownRecordingRuntimeIfIdle();
+    return recordingEngine.getState();
+  };
   const recordingLifecycle = createRecordingLifecycleService({ recordingStore, recordingEngine });
   const mockGameDir = mock && process.env.RID_MOCK_GAME_SCAN === '1'
     ? path.join(os.tmpdir(), 'arcpower-mock-games')
@@ -3771,6 +3788,7 @@ async function main() {
     // onOverlaySettings pattern) - called by profiles-settings-save when an
     // advancedOverlay* field changed.
     onAdvancedOverlaySettings,
+    onRecordingMemorySavingSettings: applyRecordingMemorySavingSettings,
     // M5: the overlay settings reaction (the rebuildTray pattern) - called
     // by profiles-settings-save when an overlay field changed.
     onOverlaySettings,
@@ -3879,6 +3897,7 @@ async function main() {
     refreshRecordingHotkeys: () => recordingHotkeys.register(),
     getRecordingHotkeyState: () => recordingHotkeys.getState(),
     onRecordingActionResult: showRecordingActionToast,
+    getRecordingMemorySavingMode: recordingMemorySavingEnabled,
     // M143: keep the pill on the same authoritative engine subscription as
     // the main renderer and desktop notifications. Instant Replay save
     // progress is carried by the engine state envelope.
@@ -3947,12 +3966,10 @@ async function main() {
   });
   await recordingHotkeys.register();
 
-  // Keep the bundled capture runtime out of the idle process tree.  A normal
-  // launch only needs the lightweight recording store; probing Ascent starts
-  // a separate OBS-based process that can cost hundreds of megabytes.  The
-  // only boot-time exception is an explicit Instant Replay auto-start, which
-  // must preserve its existing behavior. Manual capture and the Recording
-  // page call the same probe lazily on demand.
+  // Keep the bundled capture runtime out of the idle process tree when
+  // Memory Saving Mode is enabled. With that setting off, probe once at boot
+  // and keep the child warm so the user's explicit latency preference is
+  // honored. Instant Replay auto-start remains a separate boot-time demand.
   if (!mock && !uiVerify) {
     const probeWithRetry = async () => {
       let lastError = null;
@@ -3965,26 +3982,33 @@ async function main() {
       }
       throw lastError ?? new Error('Recording runtime probe failed');
     };
-    void recordingStore.settings().then((settings) => {
-      if (settings?.instantReplayAutoStart !== true) return null;
-      return probeWithRetry().catch((error) => {
-        console.log(`[recording] auto-start probe unavailable after retries: ${error?.message ?? String(error)}`);
-        return Promise.resolve(shutdownRecordingRuntimeIfIdle()).then(() => null).catch(() => null);
-      });
-    }).then((probeState) => {
-      if (!probeState) return null;
-      return recordingLifecycle.autoStartInstantReplay().catch((error) => {
+    void recordingStore.settings().then(async (settings) => {
+      const keepWarm = recordingMemorySavingEnabled() === false;
+      const autoStart = settings?.instantReplayAutoStart === true;
+      if (!keepWarm && !autoStart) return null;
+      let probeState;
+      try {
+        probeState = await probeWithRetry();
+      } catch (error) {
+        console.log(`[recording] startup probe unavailable after retries: ${error?.message ?? String(error)}`);
+        return null;
+      }
+      if (!autoStart) return probeState;
+      try {
+        return await recordingLifecycle.autoStartInstantReplay();
+      } catch (error) {
         console.log(`[recording] Instant Replay auto-start unavailable: ${error?.message ?? String(error)}`);
-        return Promise.resolve(shutdownRecordingRuntimeIfIdle()).then(() => null).catch(() => null);
-      });
+        return null;
+      }
     }).catch((error) => {
       console.log(`[recording] auto-start settings check unavailable: ${error?.message ?? String(error)}`);
       return null;
     }).finally(() => {
-      // A probe can finish after the setting is disabled.  autoStart may
-      // then return its successful "disabled" no-op, so clean up every
-      // completed boot attempt and let active replay/page demand veto close.
-      return Promise.resolve(shutdownRecordingRuntimeIfIdle()).catch(() => null);
+      // Re-check the preference after the asynchronous probe/auto-start. A
+      // user or profile migration may have changed it while the child was
+      // starting; the demand lease then decides whether cleanup is allowed.
+      if (recordingMemorySavingEnabled()) return Promise.resolve(shutdownRecordingRuntimeIfIdle()).catch(() => null);
+      return null;
     });
   }
   if (!uiVerify) {

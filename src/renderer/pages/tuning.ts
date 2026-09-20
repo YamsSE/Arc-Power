@@ -75,6 +75,7 @@ import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
 import { toast } from '../components/toast.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
+import { activeDeviceLabel } from '../pure/device.ts';
 import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-editor.ts';
 import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import {
@@ -2089,7 +2090,7 @@ export const tuningPage: Page = {
       ]),
       el('div', { class: 'arc-page-hero-side tuning-gpu-selector' }, [
         el('span', { class: 'arc-hero-label', text: 'ACTIVE GPU' }),
-        ...(deviceSelect ? [deviceSelect] : [el('span', { class: 'arc-hero-value', text: 'Current adapter' })]),
+        ...(deviceSelect ? [deviceSelect] : [el('span', { class: 'arc-hero-value', text: activeDeviceLabel(ctx.store.get().devices) })]),
       ]),
     ]);
 

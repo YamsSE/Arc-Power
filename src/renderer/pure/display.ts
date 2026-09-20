@@ -71,6 +71,13 @@ export function effectiveScalingModeOf(display: Display | null | undefined): str
 export function scalingViewOf(display: Display | null | undefined): DisplayScalingView {
   if (!display) return 'display-scaling';
   if (display.scalingMethod?.value?.enabled === true) return 'retro-scaling';
+  // Identity remains the authoritative active read-back, but a saved GPU
+  // preference is still the user-facing selection while that preference is
+  // deferred. Retro Scaling above always has priority over this distinction.
+  if (display.scalingMode === 'identity'
+    && (isGpuScalingMode(display.preferredScalingMode) || display.scalingPreference === 'gpu-scaling')) {
+    return 'gpu-scaling';
+  }
   const raw = effectiveScalingModeOf(display);
   if (display.scalingMode === null || display.scalingMode === undefined) {
     if (raw === null && isExplicitScalingPreference(display.scalingPreference)) return display.scalingPreference;
@@ -107,7 +114,14 @@ export function scalingMethodViewOf(display: Display | null | undefined): string
   const raw = effectiveScalingModeOf(display);
   if (view === 'gpu-scaling') {
     const options = scalingMethodOptionsForView(display, view);
-    return raw && options.includes(raw) ? raw : options[0];
+    // The active mode remains authoritative for ordinary read-back. When it
+    // is Identity, retain a supported saved GPU method for the deferred
+    // preference; an unsupported preference falls through to the existing
+    // capability-ordered default.
+    const preferred = display?.scalingMode === 'identity' && isGpuScalingMode(display.preferredScalingMode)
+      ? display.preferredScalingMode
+      : raw;
+    return preferred && options.includes(preferred) ? preferred : options[0];
   }
   return raw === 'custom' ? 'custom' : 'maintain-display-scaling';
 }

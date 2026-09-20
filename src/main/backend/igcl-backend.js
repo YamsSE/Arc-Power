@@ -114,6 +114,33 @@ const RETRYABLE_VF_WRITE_RESULTS = new Set([
   CTL_RESULT.ERROR_RETRY_OPERATION,
 ]);
 
+// The VF read-modify-write transaction needs a current STOCK/LIVE table before
+// it can safely submit a profile.  On Battlemage, the first read can race the
+// driver's overclock service becoming ready and return a transient native
+// failure even though a subsequent read is valid.  Retry only those results;
+// malformed data and invalid-curve results must remain hard failures.
+const RETRYABLE_VF_READ_RESULTS = new Set([
+  CTL_RESULT.ERROR_DATA_READ,
+  CTL_RESULT.ERROR_OS_CALL,
+  CTL_RESULT.ERROR_KMD_CALL,
+  CTL_RESULT.ERROR_NOT_AVAILABLE,
+  CTL_RESULT.ERROR_DEVICE_UNAVAILABLE,
+  CTL_RESULT.ERROR_RETRY_OPERATION,
+]);
+// Some older runtimes expose the LIVE curve but not the STOCK surface. Only
+// these explicit API-surface refusals may use LIVE as the native write shape;
+// malformed data and transient device failures must not be masked by a
+// successful fallback read.
+const VF_STOCK_LIVE_FALLBACK_RESULTS = new Set([
+  CTL_RESULT.ERROR_NOT_AVAILABLE,
+  CTL_RESULT.ERROR_NOT_IMPLEMENTED,
+  CTL_RESULT.ERROR_UNSUPPORTED_FEATURE,
+  CTL_RESULT.ERROR_UNSUPPORTED_SIZE,
+  CTL_RESULT.ERROR_UNSUPPORTED_VERSION,
+]);
+const VF_READ_RETRY_MAX_ATTEMPTS = 3;
+const VF_READ_RETRY_SETTLE_MS = 25;
+
 // A successful B-series custom-curve write can become visible in LIVE only
 // after the KMD's asynchronous table update completes. Keep this poll small
 // and explicit: it is entered only when LIVE is still exactly the before
@@ -2202,9 +2229,23 @@ export class IgclBackend {
         // Custom live VF curves are a Battlemage surface. Alchemist exposes
         // the legacy symbols on some runtimes but rejects this curve ABI.
         const battlemage = isBattlemageGpuName(dev.name, dev);
-        caps.controls.vfCurve = battlemage
-          && this._vfCurveReadable(dev.handle)
-          && !this._isUnavailable(lib.ctlOverclockWriteCustomVFCurve);
+        const vfWriterAvailable = !this._isUnavailable(lib.ctlOverclockWriteCustomVFCurve);
+        const vfProbe = battlemage && vfWriterAvailable
+          ? await this._vfCurveReadable(dev.handle)
+          : {
+            ok: false,
+            state: 'unsupported',
+            reason: battlemage
+              ? 'ctlOverclockWriteCustomVFCurve is unavailable in the IGCL runtime'
+              : 'Custom VF curves are only exposed for Battlemage adapters.',
+          };
+        caps.controls.vfCurve = battlemage && vfWriterAvailable && vfProbe.ok === true;
+        caps.controlStatus.vfCurve = caps.controls.vfCurve
+          ? { state: 'available', reason: null }
+          : {
+            state: vfProbe.state ?? 'unsupported',
+            reason: vfProbe.reason ?? 'The driver did not expose a readable custom VF curve surface.',
+          };
         // M17e (round-1 S3): the per-device gpuLock bounds - derived from the
         // props' gpuVFCurveVoltageLimit / gpuVFCurveFrequencyLimit (the
         // bounds the custom-VF-curve validation references) THROUGH the units
@@ -2521,24 +2562,30 @@ export class IgclBackend {
     }
   }
 
-  _vfCurveReadable(handle) {
+  async _vfCurveReadable(handle) {
     const lib = this._libOrThrow();
-    if (this._isUnavailable(lib.ctlOverclockReadVFCurve)) return false;
-    try {
-      const numBuf = koffi.alloc('uint32', 1);
-      koffi.encode(numBuf, 'uint32', 0);
-      // The documented custom-write flow is read-modify-write from the STOCK
-      // simplified table. Some driver builds expose only LIVE, so retain the
-      // live fallback while still probing the shape the writer expects first.
-      let result = lib.ctlOverclockReadVFCurve(handle, 0 /* STOCK */, 0 /* SIMPLIFIED */, numBuf, null);
-      if (result !== CTL_RESULT.SUCCESS) {
-        koffi.encode(numBuf, 'uint32', 0);
-        result = lib.ctlOverclockReadVFCurve(handle, 1 /* LIVE */, 0 /* SIMPLIFIED */, numBuf, null);
-      }
-      return result === CTL_RESULT.SUCCESS;
-    } catch {
-      return false;
+    if (this._isUnavailable(lib.ctlOverclockReadVFCurve)) {
+      return {
+        ok: false,
+        state: 'unsupported',
+        reason: 'ctlOverclockReadVFCurve is unavailable in the IGCL runtime',
+      };
     }
+    // Use the same full count+payload read as the apply path. A count-only
+    // probe can advertise a curve while the driver still refuses the payload
+    // read, and a transient KMD response must not be cached as unsupported.
+    const stock = await this._readVfCurvePointsWithRetry(handle, 0, 0);
+    if (stock.ok) return { ok: true, state: 'available', reason: null };
+    // Only an explicit API-surface absence permits the documented LIVE-only
+    // fallback. KMD/OS/device failures are retried above and remain an honest
+    // runtime refusal instead of silently changing the write contract.
+    if (!stock.fallbackToLive) {
+      return { ok: false, state: 'runtime-refused', reason: stock.message };
+    }
+    const live = await this._readVfCurvePointsWithRetry(handle, 1, 0);
+    return live.ok
+      ? { ok: true, state: 'available', reason: null }
+      : { ok: false, state: 'runtime-refused', reason: live.message };
   }
 
   /**
@@ -2551,23 +2598,44 @@ export class IgclBackend {
   _readVfCurvePoints(handle, type = 1, details = 0) {
     const lib = this._libOrThrow();
     if (this._isUnavailable(lib.ctlOverclockReadVFCurve)) {
-      return { ok: false, points: [], result: null, message: 'ctlOverclockReadVFCurve is unavailable' };
+      return {
+        ok: false,
+        points: [],
+        result: CTL_RESULT.ERROR_NOT_AVAILABLE,
+        retryable: false,
+        fallbackToLive: true,
+        message: 'ctlOverclockReadVFCurve is unavailable',
+      };
     }
     try {
       const numBuf = koffi.alloc('uint32', 1);
       koffi.encode(numBuf, 'uint32', 0);
       let result = lib.ctlOverclockReadVFCurve(handle, type, details, numBuf, null);
       if (result !== CTL_RESULT.SUCCESS) {
-        return { ok: false, points: [], result, message: `VF curve read failed (${describeResult(result)})` };
+        return {
+          ok: false,
+          points: [],
+          result,
+          retryable: RETRYABLE_VF_READ_RESULTS.has(result),
+          fallbackToLive: VF_STOCK_LIVE_FALLBACK_RESULTS.has(result),
+          message: `VF curve read failed (${describeResult(result)})`,
+        };
       }
       const num = koffi.decode(numBuf, 'uint32');
       if (!Number.isInteger(num) || num < 2 || num >= 10000) {
-        return { ok: false, points: [], result: CTL_RESULT.ERROR_DATA_READ, message: `VF curve returned an invalid point count (${num})` };
+        return { ok: false, points: [], result: CTL_RESULT.ERROR_DATA_READ, retryable: false, message: `VF curve returned an invalid point count (${num})` };
       }
       const curveBuf = koffi.alloc('ctl_voltage_frequency_point_t', num);
       result = lib.ctlOverclockReadVFCurve(handle, type, details, numBuf, curveBuf);
       if (result !== CTL_RESULT.SUCCESS) {
-        return { ok: false, points: [], result, message: `VF curve read failed (${describeResult(result)})` };
+        return {
+          ok: false,
+          points: [],
+          result,
+          retryable: RETRYABLE_VF_READ_RESULTS.has(result),
+          fallbackToLive: VF_STOCK_LIVE_FALLBACK_RESULTS.has(result),
+          message: `VF curve read failed (${describeResult(result)})`,
+        };
       }
       const pointSize = koffi.sizeof('ctl_voltage_frequency_point_t');
       const points = Array.from({ length: num }, (_, index) => {
@@ -2575,12 +2643,29 @@ export class IgclBackend {
         return { Voltage: Number(point.Voltage), Frequency: Number(point.Frequency) };
       });
       if (points.some((point) => !Number.isFinite(point.Voltage) || !Number.isFinite(point.Frequency))) {
-        return { ok: false, points: [], result: CTL_RESULT.ERROR_DATA_READ, message: 'VF curve returned a non-numeric point' };
+        return { ok: false, points: [], result: CTL_RESULT.ERROR_DATA_READ, retryable: false, message: 'VF curve returned a non-numeric point' };
       }
       return { ok: true, points, result: CTL_RESULT.SUCCESS, message: undefined };
     } catch (error) {
-      return { ok: false, points: [], result: null, message: `VF curve read failed (${error instanceof Error ? error.message : String(error)})` };
+      return { ok: false, points: [], result: null, retryable: false, fallbackToLive: false, message: `VF curve read failed (${error instanceof Error ? error.message : String(error)})` };
     }
+  }
+
+  async _readVfCurvePointsWithRetry(handle, type = 1, details = 0) {
+    let last = null;
+    for (let attempt = 0; attempt < VF_READ_RETRY_MAX_ATTEMPTS; attempt += 1) {
+      last = this._readVfCurvePoints(handle, type, details);
+      if (last.ok) return last;
+      const retryable = last.retryable === true;
+      if (!retryable || attempt === VF_READ_RETRY_MAX_ATTEMPTS - 1) return last;
+      await new Promise((resolve) => setTimeout(resolve, VF_READ_RETRY_SETTLE_MS * (attempt + 1)));
+    }
+    return last ?? {
+      ok: false,
+      points: [],
+      result: CTL_RESULT.ERROR_DATA_READ,
+      message: 'VF curve read failed without a native result',
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -4516,6 +4601,8 @@ export class IgclBackend {
               preferredReadBackEqual,
               preferredOnly,
               preferenceAlreadyApplied,
+              deferred: preferredOnly || preferenceAlreadyApplied,
+              preference: preferredOnly || preferenceAlreadyApplied ? 'gpu-scaling' : undefined,
               registryReadBackEqual,
               ...(registryFallback?.ok === true ? { writeTransport: 'registry' } : {}),
               silentNoop: setResult === CTL_RESULT.SUCCESS && !readBackEqual,
@@ -4966,12 +5053,15 @@ export class IgclBackend {
     if (opts.profileApply === true && isBattlemageGpuName(caps.deviceName, caps)
       && Array.isArray(settings.vfCurve)) {
       const out = { ...settings };
-      if (caps.controls.vfCurve !== true) {
+      if (caps.controls.vfCurve !== true
+        && caps.controlStatus?.vfCurve?.state !== 'runtime-refused') {
         delete out.vfCurve;
       } else {
-        const stock = this._readVfCurvePoints(dev.handle, 0, 0);
-        const live = this._readVfCurvePoints(dev.handle, 1, 0);
-        const native = stock.ok ? stock : live;
+        const stock = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
+        const live = stock.ok || stock.fallbackToLive
+          ? await this._readVfCurvePointsWithRetry(dev.handle, 1, 0)
+          : { ok: false, points: [], result: stock.result, message: stock.message };
+        const native = stock.ok ? stock : (stock.fallbackToLive ? live : stock);
         const nativeCanonical = native.ok
           ? native.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
           : null;
@@ -5464,7 +5554,12 @@ export class IgclBackend {
     // the IGCL point struct is millivolts/MHz.
     if (settings.vfCurve !== null && settings.vfCurve !== undefined) {
       if (!caps.controls.vfCurve || this._isUnavailable(lib.ctlOverclockWriteCustomVFCurve)) {
-        fail('vfCurve', 'unsupported', 'custom VF curve not supported on this device');
+        const vfStatus = caps.controlStatus?.vfCurve;
+        fail(
+          'vfCurve',
+          vfStatus?.state === 'runtime-refused' ? 'io-failed' : 'unsupported',
+          vfStatus?.reason ?? 'custom VF curve not supported on this device',
+        );
       } else {
         // Intel's VF flow sets the waiver immediately before the custom
         // curve write. The isolated worker already performs that replay at
@@ -5518,8 +5613,10 @@ export class IgclBackend {
               // old renderer bundles cannot send an invalid payload. A few
               // driver builds expose only LIVE, so fall back to that read without
               // changing the write payload shape.
-              const stock = this._readVfCurvePoints(dev.handle, 0, 0);
-              const native = stock.ok ? stock : this._readVfCurvePoints(dev.handle, 1, 0);
+              const stock = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
+              const native = stock.ok
+                ? stock
+                : (stock.fallbackToLive ? await this._readVfCurvePointsWithRetry(dev.handle, 1, 0) : stock);
               if (!native.ok) {
                 fail('vfCurve', igclErrorCode(native.result) ?? 'io-failed', native.message);
               } else if (native.points.length !== points.length) {
@@ -5531,7 +5628,7 @@ export class IgclBackend {
                 // LIVE is the before-image for no-op detection. STOCK is only
                 // the native write shape; on Battlemage the two tables can
                 // legitimately differ after an active tuning change.
-                const liveBefore = this._readVfCurvePoints(dev.handle, 1, 0);
+                const liveBefore = await this._readVfCurvePointsWithRetry(dev.handle, 1, 0);
                 const pointsEqual = (left, right) => Array.isArray(left) && Array.isArray(right)
                   && left.length === right.length
                   && left.every((point, index) => point.Voltage === right[index]?.Voltage && point.Frequency === right[index]?.Frequency);
@@ -5614,7 +5711,7 @@ export class IgclBackend {
                   };
                   let v;
                   for (let readAttempt = 0; readAttempt < VF_READBACK_MAX_ATTEMPTS; readAttempt += 1) {
-                    const readBack = this._readVfCurvePoints(dev.handle, 1, 0);
+                    const readBack = await this._readVfCurvePointsWithRetry(dev.handle, 1, 0);
                     v = validateVfReadBack(readBack);
                     if (v.ok || readAttempt === VF_READBACK_MAX_ATTEMPTS - 1
                       || !readBack.ok || !liveBefore.ok

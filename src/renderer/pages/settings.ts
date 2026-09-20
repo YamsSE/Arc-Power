@@ -67,7 +67,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   // M6-amd3: the shrunk Overlay card is BUTTON-ONLY (the enable toggle
   // moved to the Overlay view - M6 the #/overlay page, M9 the Monitoring
   // page's Overlay view; the old #/overlay page is gone).
-  let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; ocOnBoot: boolean; activeProfileId: string | null; theme: Theme };
+  let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; memorySavingMode: boolean; ocOnBoot: boolean; activeProfileId: string | null; theme: Theme };
   // Theme chips apply immediately, so rapid clicks can enqueue overlapping
   // read-modify-write IPC calls. Serialize only the theme writes to preserve
   // click order in the ProfileStore and keep the final chip persistent.
@@ -84,6 +84,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       startWithWindows: envelope.settings.startWithWindows === true,
       startMinimized: envelope.settings.startMinimized === true,
       closeToTray: envelope.settings.closeToTray === true,
+      memorySavingMode: envelope.settings.memorySavingMode !== false,
       // M4-D2 (r2 F6): the mismatch formula also reads the profile's
       // start-at-boot intent (ocOnBoot + activeProfileId) - the startup
       // registration is shared, so the Settings checkbox can legitimately be ON because
@@ -186,6 +187,28 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       }),
     ]);
 
+    const memorySavingCard = el('section', { class: 'card settings-card arc-surface-card' }, [
+      el('h2', { class: 'card-title', text: 'Memory Saving Mode' }),
+      el('div', { class: 'settings-row' }, [
+        el('label', { class: 'boot-toggle' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox',
+            dataset: { setting: 'memorySavingMode' },
+            checked: persisted.memorySavingMode,
+            onchange: (ev: Event) => void onMemorySavingToggle((ev.target as HTMLInputElement).checked),
+          }),
+          el('span', { text: 'Unload the capture runtime when it is idle' }),
+        ]),
+      ]),
+      el('p', {
+        class: 'card-note settings-state',
+        text: persisted.memorySavingMode
+          ? 'On - saves RAM by loading the recording runtime only when needed.'
+          : 'Off - keeps the capture runtime ready for faster recording starts and uses more RAM.',
+      }),
+    ]);
+
     // 1.0.1 Themes: the Theme card - one swatch per theme
     // (button[data-theme-option="dark|midnight|light"]). The color chips
     // are CSS-class driven (.swatch-*) - CSP style-src 'self' blocks inline
@@ -252,7 +275,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ]),
     ]);
 
-    const settingCards = [startWithCard, startMinimizedCard, closeToTrayCard, overlayCard, maintenanceCard, themeCard, aboutCard];
+    const settingCards = [startWithCard, startMinimizedCard, closeToTrayCard, memorySavingCard, overlayCard, maintenanceCard, themeCard, aboutCard];
     const settingsHero = el('header', { class: 'arc-page-hero settings-page-hero' }, [
       el('div', { class: 'arc-page-hero-copy' }, [
         el('span', { class: 'arc-section-kicker', text: 'SYSTEM CONTROL' }),
@@ -361,6 +384,25 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       return;
     }
     await refresh();
+  };
+
+  const onMemorySavingToggle = async (checked: boolean): Promise<void> => {
+    const previous = persisted.memorySavingMode;
+    const box = root.querySelector<HTMLInputElement>('.settings-checkbox[data-setting="memorySavingMode"]');
+    persisted.memorySavingMode = checked;
+    render();
+    try {
+      const result = await api.profilesSettingsSave({ memorySavingMode: checked });
+      persisted.memorySavingMode = result.memorySavingMode !== false;
+      toast(checked ? 'success' : 'info', checked ? 'Memory Saving Mode enabled' : 'Memory Saving Mode disabled', checked
+        ? 'The capture runtime will unload when idle.'
+        : 'The capture runtime will stay ready for faster starts.');
+    } catch (err) {
+      persisted.memorySavingMode = previous;
+      if (box) box.checked = previous;
+      toast('error', 'Memory Saving Mode could not be changed', err instanceof Error ? err.message : String(err));
+    }
+    render();
   };
 
   const onClearCacheAndRestart = async (): Promise<void> => {

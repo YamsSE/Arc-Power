@@ -628,7 +628,7 @@ function drawMiniSeries(canvas: HTMLCanvasElement, points: SeriesPoint[], series
     else ctx.lineTo(px, py);
   });
   ctx.strokeStyle = color;
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = 1.75;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.stroke();

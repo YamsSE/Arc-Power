@@ -53,16 +53,12 @@
 //                      no conversion). The class is often ABSENT on
 //                      desktops (no power-metering hardware), so it
 //                      honestly degrades to null ('-' in the UI).
-//   gpuUtilPct        - M4-I: the OS GPU-utilization fallback counter - the
-//                      Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine
-//                      rows for the matched LUID (aggregate: per (eng#,
-//                      engtype) the MAX across the process rows, then SUM,
-//                      cap 100). Null when the counter is unpopulated
-//                      (every matched row's UtilizationPercentage is
-//                      null/absent - honest '-'; live probe 2026-08-08 on
-//                      the A770: the field is POPULATED but reads 0 on
-//                      every row - an Intel-Arc driver quirk; the AMD
-//                      tester's box may feed it for real).
+//   gpuUtilPct        - M4-I: the Windows GPU Engine performance counter
+//                      (PDH/Get-Counter, the same counter family surfaced by
+//                      Task Manager) for the matched LUID. The aggregate is
+//                      per (eng#, engtype) MAX across process rows, then SUM,
+//                      capped at 100. Null when the counter is unpopulated or
+//                      its cached sample is stale.
 //
 // ONE PowerShell query per sample() reads every source at once (all
 // single-sample formatted values - no cross-tick state, no deltas). A
@@ -108,6 +104,9 @@ import { isIntegratedStyleDevice } from './backend/units.js';
 const execFile = promisify(nodeExecFile);
 
 export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+// GPU Engine samples are refreshed by the slow PowerShell lane. Do not let a
+// stalled counter query masquerade as a current Task Manager value.
+export const GPU_UTIL_STALE_MS = 8000;
 
 /**
  * The per-tick CIM query: the _Total processor FORMATTED counters (the OS's
@@ -130,11 +129,10 @@ export function buildSysStatsScript() {
     // counter below).
     '$msa = @(Get-CimInstance -Namespace root\\wmi -ClassName MSAcpi_ThermalZoneTemperature | Select-Object CurrentTemperature)',
     '$gpu = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Select-Object Name,DedicatedUsage,SharedUsage)',
-    // M4-I: the GPUEngine rows (Name + UtilizationPercentage) - the OS
-    // GPU-utilization counter. Instance names encode the adapter LUID +
-    // the engine: "pid_12336_luid_0x00000000_0x0000ADFB_phys_0_eng_0_
-    // engtype_3D" (live-verified 2026-08-08).
-    '$gpuEng = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine | Select-Object Name,UtilizationPercentage)',
+    // M4-I: query the PDH GPU Engine counter directly. Its InstanceName uses
+    // the same LUID/engine identity as the formatted WMI rows, but this is
+    // the live performance-counter source used by Windows' GPU views.
+    '$gpuEng = @(Get-Counter \'\\GPU Engine(*)\\Utilization Percentage\' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CounterSamples | ForEach-Object { [pscustomobject]@{ Name = $_.InstanceName; UtilizationPercentage = $_.CookedValue } })',
     // M4-H: the PowerMeter perf counter - the FORMATTED 'Power' property is
     // already in watts (N9). The class is often absent (no metering
     // hardware) -> null, the honest '-' degrade.
@@ -578,6 +576,7 @@ export function createSysStats(deps = {}) {
   // the default is the Node globals).
   const setIntervalFn = deps.setInterval ?? setInterval;
   const clearIntervalFn = deps.clearInterval ?? clearInterval;
+  const now = deps.now ?? (() => Date.now());
   let maxClockMhz = null; // cached Win32_Processor MaxClockSpeed
   // M17g: the SHARED inflight guard - ONE PowerShell query at a time across
   // BOTH entry points: the legacy sample() delegate's inline seed AND
@@ -690,7 +689,7 @@ export function createSysStats(deps = {}) {
     const key = targetKeyOf(spec);
     let record = targetRecords.get(key);
     if (!record) {
-      record = { key, ...spec, cache: emptyLaneCache() };
+      record = { key, ...spec, cache: emptyLaneCache(), gpuUtilSampledAt: null };
       targetRecords.set(key, record);
     } else {
       Object.assign(record, spec);
@@ -863,6 +862,7 @@ export function createSysStats(deps = {}) {
           // sample); null when the class is absent (honest '-').
           cpuPowerW: raw.powerW,
         };
+        const gpuUtilSampledAt = now();
         // M150: resolve every registered physical target against the SAME
         // query.  Each adapter keeps its own LUID/memory/utilization cache;
         // a selected-device switch cannot overwrite another overlay lane.
@@ -896,6 +896,9 @@ export function createSysStats(deps = {}) {
             gpuMemorySource,
             gpuUtilPct: gpuUtil,
           };
+          // Keep freshness metadata private to the internal target record so
+          // the public sample shapes remain backward compatible.
+          record.gpuUtilSampledAt = gpuUtilSampledAt;
         }
         laneCache = activeRecord.cache;
         return laneCache;
@@ -947,7 +950,9 @@ export function createSysStats(deps = {}) {
     async sampleGpuUtilForTarget(target = null) {
       if (targetKeyOf(target) === 'default') return { gpuUtilPct: null };
       const record = ensureTargetRecord(target);
-      return { gpuUtilPct: record.cache?.gpuUtilPct ?? null };
+      const sampledAt = record.gpuUtilSampledAt;
+      const fresh = Number.isFinite(sampledAt) && now() - sampledAt <= GPU_UTIL_STALE_MS;
+      return { gpuUtilPct: fresh ? record.cache?.gpuUtilPct ?? null : null };
     },
 
     registerTarget(target = null) {

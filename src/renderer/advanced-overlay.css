@@ -480,6 +480,11 @@ html, body {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 15%, transparent);
 }
 
+.adv-recording-status-dot.is-ready {
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 16%, transparent);
+}
+
 .adv-recording-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -441,7 +441,7 @@ export class ProfileStore {
    * files -> the defaults (off / 'P' / 'right'; the M5 overlaySettings
    * pattern, NO schema bump - NO scale key, the panel is a fixed compact
    * size).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, rtssOnBoot?: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, monitorLogMetrics?: string[], deviceId: number|null, theme: 'dark'|'midnight'|'light', overlayEnabled: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, recordingToastsEnabled: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, rtssOnBoot?: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, monitorLogMetrics?: string[], deviceId: number|null, theme: 'dark'|'midnight'|'light', memorySavingMode: boolean, overlayEnabled: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, recordingToastsEnabled: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -478,6 +478,10 @@ export class ProfileStore {
         deviceId: null,
         deviceKey: null,
         theme: 'dark',
+        // Capture runtime retention defaults to memory saving. The field is
+        // additive so old settings files gain the preference without a
+        // schema migration.
+        memorySavingMode: true,
         // M5: the software-overlay settings. Absent on old files -> the
         // defaults (enabled off, letter 'O', top-left, scale 1.0 - the same
         // absent-field mechanism, NO schema bump).
@@ -542,6 +546,9 @@ export class ProfileStore {
       deviceId: Number.isInteger(data.deviceId) && data.deviceId >= 0 ? data.deviceId : null,
       deviceKey: typeof data.deviceKey === 'string' && data.deviceKey.length > 0 ? data.deviceKey : null,
       theme: THEMES.includes(data.theme) ? data.theme : 'dark',
+      // Keep the bundled capture runtime unloaded while idle by default;
+      // only an explicit false opts into the higher-RAM warm-runtime mode.
+      memorySavingMode: data.memorySavingMode !== false,
       overlayEnabled: data.overlayEnabled === true,
       overlayHotkeyLetter: typeof data.overlayHotkeyLetter === 'string'
         && /^[A-Za-z]$/.test(data.overlayHotkeyLetter)
@@ -627,7 +634,7 @@ export class ProfileStore {
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, rtssOnBoot?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, monitorLogMetrics?: string[], deviceId?: number|null, theme?: 'dark'|'midnight'|'light', overlayEnabled?: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, recordingToastsEnabled?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, rtssOnBoot?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, monitorLogMetrics?: string[], deviceId?: number|null, theme?: 'dark'|'midnight'|'light', memorySavingMode?: boolean, overlayEnabled?: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, recordingToastsEnabled?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
   async saveSettings(settings) {
     const persisted = {
@@ -647,6 +654,9 @@ export class ProfileStore {
       // as 'dark' (the channel already guards patch.theme, so the store
       // fallback only ever sees absent fields on direct callers).
       theme: THEMES.includes(settings.theme) ? settings.theme : 'dark',
+      memorySavingMode: settings.memorySavingMode !== undefined
+        ? settings.memorySavingMode === true
+        : this._settingsCache?.memorySavingMode !== false,
       // M5: the software-overlay settings - validated on save like the
       // theme (the channel validates first; the store fallback covers
       // direct callers).
@@ -732,6 +742,10 @@ export class ProfileStore {
       ? settings.rtssOnBoot === true
       : this._settingsCache?.rtssOnBoot;
     if (rtssOnBoot !== undefined) persisted.rtssOnBoot = rtssOnBoot === true;
+    const memorySavingMode = settings.memorySavingMode !== undefined
+      ? settings.memorySavingMode === true
+      : this._settingsCache?.memorySavingMode !== false;
+    persisted.memorySavingMode = memorySavingMode;
     const recordingToastsEnabled = settings.recordingToastsEnabled !== undefined
       ? settings.recordingToastsEnabled === true
       : this._settingsCache?.recordingToastsEnabled;
@@ -749,6 +763,7 @@ export class ProfileStore {
       ...(ocModeMap !== undefined ? { ocModes: ocModeMap } : {}),
       ...(monitorLogMetrics !== undefined ? { monitorLogMetrics } : {}),
       ...(rtssOnBoot !== undefined ? { rtssOnBoot } : {}),
+      memorySavingMode,
       ...(overlayRenderer !== undefined ? { overlayRenderer } : {}),
       schemaVersion: SCHEMA_VERSION,
     });

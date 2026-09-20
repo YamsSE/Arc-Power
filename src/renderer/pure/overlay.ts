@@ -234,15 +234,21 @@ export function recordingPillView(state: unknown): RecordingPillView {
     running?: unknown;
     mode?: unknown;
     activeModes?: { video?: unknown; replay?: unknown } | null;
+    startingModes?: { video?: unknown; replay?: unknown } | null;
     instantReplaySave?: { status?: unknown } | null;
   };
   const modes = value.activeModes;
+  const starting = value.startingModes;
   const video = modes && typeof modes === 'object'
     ? modes.video === true
-    : value.running === true && value.mode === 'video';
+      || (starting && typeof starting === 'object' && starting.video === true)
+    : (starting && typeof starting === 'object' && starting.video === true)
+      || value.running === true && value.mode === 'video';
   const replay = modes && typeof modes === 'object'
     ? modes.replay === true
-    : value.running === true && value.mode === 'replay';
+      || (starting && typeof starting === 'object' && starting.replay === true)
+    : (starting && typeof starting === 'object' && starting.replay === true)
+      || value.running === true && value.mode === 'replay';
   // A full recording remains the strongest live state. Instant Replay save
   // progress/error then takes precedence over the ordinary replay dot, and
   // remains visible briefly even if the replay recorder has already stopped.

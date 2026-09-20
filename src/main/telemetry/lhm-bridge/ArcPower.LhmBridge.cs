@@ -115,6 +115,27 @@ namespace ArcPower.LhmBridge
 
         private static void AppendHardware(IHardware hardware, List<object> output)
         {
+            var intelGpuCoreLoadSensors = new List<ISensor>();
+            if (hardware.HardwareType == HardwareType.GpuIntel)
+            {
+                foreach (var sensor in hardware.Sensors)
+                {
+                    if (sensor.SensorType == SensorType.Load && string.Equals(sensor.Name, "GPU Core", StringComparison.Ordinal))
+                    {
+                        intelGpuCoreLoadSensors.Add(sensor);
+                        try
+                        {
+                            var valueProperty = sensor.GetType().GetProperty("Value");
+                            if (valueProperty != null && valueProperty.CanWrite)
+                            {
+                                valueProperty.SetValue(sensor, null, null);
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+
             try { hardware.Update(); } catch { }
 
             var sensors = new List<object>();
@@ -135,6 +156,10 @@ namespace ArcPower.LhmBridge
                 sensorValue.Add("name", sensor.Name);
                 sensorValue.Add("type", sensor.SensorType.ToString());
                 sensorValue.Add("value", value);
+                if (intelGpuCoreLoadSensors.Contains(sensor))
+                {
+                    sensorValue.Add("fresh", sensor.Value.HasValue);
+                }
                 sensors.Add(sensorValue);
             }
 

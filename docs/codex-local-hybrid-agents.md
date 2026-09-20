@@ -6,20 +6,21 @@ This project keeps the cloud orchestration path as the normal default and adds a
 
 - Runtime: LM Studio with its Vulkan `llama.cpp` engine.
 - Hardware survey: Intel Arc B580 11.83 GiB VRAM and Arc A770 7.91 GiB VRAM are visible to the runtime.
-- Model: `qwen/qwen2.5-coder-7b@q4_k_m` (Qwen2.5-Coder 7B Instruct GGUF Q4_K_M, 4.68 GB). It loads in about 4.36 GiB of GPU memory on the B580.
-- Working load profile: one request at a time, full GPU offload, and 32768-token context. Keep the B580 selected explicitly in LM Studio because this machine has two Intel Arc adapters.
-- The larger Qwen3-Coder 30B Q4 profile is about 18.6 GB and is not a reliable full-GPU choice for a 12 GB B580.
+- Endpoint: `http://127.0.0.1:1234/v1`.
+- Model: `qwen/qwen3.5-9b`, LM Studio's Qwen3.5 9B Q4_K_M profile.
+- Working load profile: Intel Arc B580, context `16384`, and one request at a time. Keep the local load bounded so it does not compete with the application or other GPU workloads.
+- The exact Qwen3.5 profile is the only permitted local model for bounded implementation, debugging, technical analysis, and first-pass review. Luna Max remains the orchestrator/planner and Luna xhigh is the final reviewer. Astra is not the default final reviewer. Never silently fall back to another Qwen model, quantization, backend, or cloud model for those local passes.
 
 The model is not checked into this repository. On a fresh machine, download it once with:
 
 ```powershell
-lms get qwen/qwen2.5-coder-7b@q4_k_m -y
+lms get qwen/qwen3.5-9b -y
 ```
 
 Then load it and start the server:
 
 ```powershell
-lms load qwen/qwen2.5-coder-7b --gpu max --context-length 32768 --parallel 1 --identifier arc-local-coder
+lms load qwen/qwen3.5-9b --gpu max --context-length 16384 --parallel 1 --identifier qwen/qwen3.5-9b -y
 lms server start
 ```
 
@@ -29,29 +30,48 @@ LM Studio serves the OpenAI-compatible API at `http://localhost:1234/v1`. Valida
 Invoke-RestMethod http://localhost:1234/v1/models
 
 $body = @{
-  model = "arc-local-coder"
+  model = "qwen/qwen3.5-9b"
   messages = @(@{ role = "user"; content = "Return only: local endpoint works" })
   temperature = 0
+  max_tokens = 128
+  reasoning_effort = "none"
 } | ConvertTo-Json -Depth 5
 
 Invoke-RestMethod http://localhost:1234/v1/chat/completions -Method Post -ContentType "application/json" -Body $body
 ```
 
-On this machine the loaded profile used 4.36 GiB of GPU memory. A short endpoint probe returned in 5.1 seconds (7 completion tokens), and a 96-token coding probe returned in 6.7 seconds. The endpoint and Codex transport are working; the small model's generated code still needs human/cloud review for correctness.
+The endpoint must list the exact `qwen/qwen3.5-9b` model ID before a local worker is started. LM Studio may emit a harmless Codex metadata warning because its `/v1/models` response uses the OpenAI-compatible `data` shape; that warning does not mean the chat endpoint is unavailable. Use `model_reasoning_effort="none"` for Codex local runs and `reasoning_effort="none"` for direct API probes so reasoning does not consume the entire local response budget.
 
-Run a local Codex session against the loaded model with:
+Run a bounded local Codex session against the loaded model with:
 
 ```powershell
-codex --oss --local-provider lmstudio --model arc-local-coder -c model_reasoning_effort="none"
+codex --oss --local-provider lmstudio --model qwen/qwen3.5-9b --config 'model_reasoning_effort="none"' --sandbox workspace-write
 ```
 
-The project `.codex/config.toml` sets `oss_provider = "lmstudio"` so `codex --oss` has a deterministic provider choice. The project config deliberately leaves the cloud model as Luna; local runs are opt-in.
+When the active checkout is a sibling worktree, expose the canonical Arc Power checkout so the local worker can read the ignored project instructions, then select the sibling worktree as its working directory. Use this non-interactive form:
+
+```powershell
+codex exec --oss --local-provider lmstudio --model qwen/qwen3.5-9b --config 'model_reasoning_effort="none"' --sandbox workspace-write --add-dir "C:\Users\Yams\Documents\R.ID Arc Power" -C "C:\Users\Yams\Documents\R.ID Arc Power-bugfixes" "Perform only the bounded task described here. Read the canonical AGENTS.md, .codex/config.toml, and .codex/agents definitions first. Use the provided patch tool for edits; never construct Unix heredocs or redirect syntax in PowerShell."
+```
+
+The direct LM Studio REST probe is verified with this model. The current Codex
+OSS adapter smoke test is not yet verified: Codex 0.155.0-alpha.9.2 currently
+sends a message layout that causes the Qwen3.5 template to return `System
+message must be at the beginning`. Do not treat that adapter error as a
+successful local implementation or review run, and do not silently fall back
+to another model. The next fix is to make the adapter/template put the system
+message first, then rerun this smoke test.
+
+Use the interactive `--sandbox workspace-write` form for normal manual work. Do not use a model alias when testing the setup: `qwen/qwen3.5-9b` is the exact LM Studio identifier. On PowerShell, use the provided patch shim with a here-string (`$patch = @' ... '@; $patch | apply_patch`); if it is unavailable, use only `Set-Content -LiteralPath 'C:\path with spaces\file'` for an explicitly assigned file and verify immediately with `Test-Path -LiteralPath` and `Get-Content -LiteralPath`. Never use unquoted paths, `echo`, `>`, `>>`, `&&`, or Unix heredoc syntax.
+
+The project `.codex/config.toml` sets `oss_provider = "lmstudio"` so `codex --oss` has a deterministic provider choice. The project config deliberately leaves the cloud model and Luna Max reasoning setting intact; local invocations add `--config 'model_reasoning_effort="none"'` because the exact Qwen3.5 endpoint does not accept the cloud-only `max` enum.
 
 Codex OSS mode selects the provider for the session. The project-local role files
 are available for the local implementer and reviewer when that local session is
-used; a real local Codex smoke has validated endpoint routing. They do not silently redirect a cloud Luna parent or an Astra reviewer to
-LM Studio. Keep the cloud path for architecture and escalation, and start the
-local session explicitly for the bounded implementation/review loop.
+used; they do not silently redirect the Luna Max orchestrator or Luna xhigh
+final reviewer to LM Studio. Keep local prompts compact enough for the 16,384
+context on the B580 and start the local session explicitly for the bounded
+implementation/review loop.
 
 ## Workflow
 
@@ -59,6 +79,6 @@ local session explicitly for the bounded implementation/review loop.
 2. `local-implementer` performs the change with the local Qwen model.
 3. Run the narrowest relevant test or build check.
 4. `local-reviewer` reads the actual diff and performs a read-only first pass.
-5. Escalate the categories listed in `AGENTS.md` to the cloud Luna/Astra roles before acceptance.
+5. Escalate the categories listed in `AGENTS.md` to the cloud Luna roles before acceptance.
 
-The local endpoint is not a substitute for cloud review, and local inference has no web search or reliable evidence for current external facts. The working Qwen2.5-Coder 7B profile has answered through `/v1/chat/completions`, a real Codex OSS smoke returned `LOCAL CODEX OK`, and the local read-only reviewer smoke found no material configuration issues. The model produced a syntactically imperfect small-code sample in the quick quality probe, so the local worker remains bounded and cloud review remains required for consequential changes. LM Studio's `/v1/models` response also emits a harmless Codex metadata warning because its listing uses the OpenAI-compatible `data` shape.
+The local endpoint is not a substitute for the Luna xhigh final review, and local inference has no web search or reliable evidence for current external facts. Keep local implementation ownership narrow, run focused validation after each edit, and use the read-only Qwen3.5 local reviewer before final review. If the local worker attempts Unix shell syntax on this Windows host, stop that run and correct the invocation or prompt instead of accepting an unverified edit.
