@@ -78,6 +78,9 @@ import { selectDevice } from '../app.ts';
 import { activeDeviceLabel } from '../pure/device.ts';
 import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-editor.ts';
 import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
+import { graphDrawnPoints } from '../pure/monitoring-graph.ts';
+import { nearestSampleIndex } from '../pure/graph.ts';
+import type { SeriesPoint } from '../pure/graph.ts';
 import {
   VF_EDITOR_MAX_POINTS,
   isValidNativeVfCurve,
@@ -271,6 +274,24 @@ function buildTuningTelemetry(ctx: PageContext): HTMLElement {
     gpuClockMhz: svgEl('polyline', { class: 'tuning-telemetry-line telemetry-clock', points: '' }),
   };
   chart.append(lines.utilPct, lines.tempC, lines.powerW, lines.gpuClockMhz);
+  const crosshair = el('span', { class: 'tuning-telemetry-crosshair', hidden: true, 'aria-hidden': 'true' });
+  const tooltipTime = el('span', { class: 'tuning-telemetry-tooltip-time', text: 'Live sample' });
+  const tooltipValueNodes = {
+    utilPct: el('span', { class: 'tuning-telemetry-tooltip-value', text: '-' }),
+    tempC: el('span', { class: 'tuning-telemetry-tooltip-value', text: '-' }),
+    powerW: el('span', { class: 'tuning-telemetry-tooltip-value', text: '-' }),
+    gpuClockMhz: el('span', { class: 'tuning-telemetry-tooltip-value', text: '-' }),
+  };
+  const tooltip = el('div', { class: 'tuning-telemetry-tooltip', hidden: true, role: 'status' }, [
+    tooltipTime,
+    el('div', { class: 'tuning-telemetry-tooltip-grid' }, [
+      el('div', { class: 'tuning-telemetry-tooltip-metric telemetry-util' }, [el('span', { text: 'GPU load' }), tooltipValueNodes.utilPct]),
+      el('div', { class: 'tuning-telemetry-tooltip-metric telemetry-temp' }, [el('span', { text: 'Temperature' }), tooltipValueNodes.tempC]),
+      el('div', { class: 'tuning-telemetry-tooltip-metric telemetry-power' }, [el('span', { text: 'Power' }), tooltipValueNodes.powerW]),
+      el('div', { class: 'tuning-telemetry-tooltip-metric telemetry-clock' }, [el('span', { text: 'Core clock' }), tooltipValueNodes.gpuClockMhz]),
+    ]),
+  ]);
+  const pointerSurface = el('div', { class: 'tuning-telemetry-pointer-surface', 'aria-hidden': 'true' }, [crosshair, tooltip]);
   const current = el('div', { class: 'tuning-telemetry-readouts' });
   const readoutNodes = {
     utilPct: el('span', { class: 'tuning-telemetry-value', text: '-' }),
@@ -284,21 +305,77 @@ function buildTuningTelemetry(ctx: PageContext): HTMLElement {
     el('div', { class: 'tuning-telemetry-readout' }, [el('span', { class: 'tuning-telemetry-label', text: 'Power' }), readoutNodes.powerW]),
     el('div', { class: 'tuning-telemetry-readout' }, [el('span', { class: 'tuning-telemetry-label', text: 'Core clock' }), readoutNodes.gpuClockMhz]),
   );
+  const legend = el('div', { class: 'tuning-telemetry-legend' }, [
+    el('span', { class: 'tuning-telemetry-legend-item telemetry-util', text: 'GPU load' }),
+    el('span', { class: 'tuning-telemetry-legend-item telemetry-temp', text: 'Temperature' }),
+    el('span', { class: 'tuning-telemetry-legend-item telemetry-power', text: 'Power' }),
+    el('span', { class: 'tuning-telemetry-legend-item telemetry-clock', text: 'Core clock' }),
+  ]);
+  const chartWrap = el('div', { class: 'tuning-telemetry-chart-wrap' }, [chart, legend, pointerSurface, el('div', { class: 'tuning-telemetry-axis', 'aria-hidden': 'true' }, [el('span', { text: '100%' }), el('span', { text: '50%' }), el('span', { text: '0%' })])]);
   const surface = el('section', { class: 'card tuning-telemetry-surface', 'aria-label': 'Performance and tuning telemetry' }, [
     el('div', { class: 'tuning-telemetry-heading' }, [
       el('div', {}, [el('span', { class: 'arc-section-kicker', text: 'READ-ONLY TELEMETRY' }), el('h2', { class: 'card-title', text: 'Performance & Tuning' }), el('p', { class: 'tuning-telemetry-copy', text: 'Live behavior from the selected GPU. Tune below without leaving the chart.' })]),
       el('span', { class: 'tuning-telemetry-live', text: 'LIVE' }),
     ]),
-    el('div', { class: 'tuning-telemetry-chart-wrap' }, [chart, el('div', { class: 'tuning-telemetry-axis', 'aria-hidden': 'true' }, [el('span', { text: '100%' }), el('span', { text: '50%' }), el('span', { text: '0%' })])]),
-    el('div', { class: 'tuning-telemetry-legend' }, [
-      el('span', { class: 'tuning-telemetry-legend-item telemetry-util', text: 'GPU load' }),
-      el('span', { class: 'tuning-telemetry-legend-item telemetry-temp', text: 'Temperature' }),
-      el('span', { class: 'tuning-telemetry-legend-item telemetry-power', text: 'Power' }),
-      el('span', { class: 'tuning-telemetry-legend-item telemetry-clock', text: 'Core clock' }),
-    ]),
+    chartWrap,
     current,
     el('p', { class: 'tuning-telemetry-note', text: 'Relative trend · each metric is normalized to its own fixed operating range.' }),
   ]);
+  const metricUnits = { utilPct: '%', tempC: '°C', powerW: ' W', gpuClockMhz: ' MHz' } as const;
+  const metricDecimals = { utilPct: 0, tempC: 0, powerW: 1, gpuClockMhz: 0 } as const;
+  let hoverRatio: number | null = null;
+  const xRatioForIndex = (history: TelemetrySample[], index: number): number => {
+    if (history.length <= 1) return .5;
+    const start = history[0].t;
+    const span = Math.max(1, history[history.length - 1].t - start);
+    return Math.min(1, Math.max(0, (history[index].t - start) / span));
+  };
+  const hideHover = (): void => {
+    hoverRatio = null;
+    crosshair.hidden = true;
+    tooltip.hidden = true;
+  };
+  const renderHover = (ratio: number): void => {
+    const history = tuningTelemetryHistory.get(tuningTelemetryKey(ctx)) ?? [];
+    const points: SeriesPoint[] = graphDrawnPoints(history.map((entry) => ({ t: entry.t, v: 0 })));
+    if (!points.length) {
+      hideHover();
+      return;
+    }
+    const drawnIndex = nearestSampleIndex(points, ratio);
+    if (drawnIndex < 0) return;
+    const point = points[drawnIndex];
+    const sampleIndex = history.findIndex((entry) => entry.t === point.t);
+    const sample = sampleIndex >= 0 ? history[sampleIndex] : null;
+    if (!sample) return;
+    const snappedRatio = xRatioForIndex(history, sampleIndex);
+    const elapsedSeconds = history.length > 1 ? Math.max(0, sample.t - history[0].t) / 1000 : 0;
+    tooltipTime.textContent = history.length > 1
+      ? `T + ${elapsedSeconds >= 10 ? elapsedSeconds.toFixed(0) : elapsedSeconds.toFixed(1)}s`
+      : 'Live sample';
+    (Object.keys(metricUnits) as Array<keyof typeof metricUnits>).forEach((metric) => {
+      tooltipValueNodes[metric].textContent = telemetryMetricText(sample, metric, metricUnits[metric], metricDecimals[metric]);
+    });
+    tooltip.hidden = false;
+    const surfaceWidth = pointerSurface.clientWidth;
+    const tooltipWidth = tooltip.offsetWidth || Math.min(250, surfaceWidth);
+    const desiredLeft = snappedRatio <= .5
+      ? snappedRatio * surfaceWidth + 8
+      : snappedRatio * surfaceWidth - tooltipWidth - 8;
+    const maxLeft = Math.max(4, surfaceWidth - tooltipWidth - 4);
+    tooltip.style.left = `${Math.min(Math.max(4, desiredLeft), maxLeft)}px`;
+    tooltip.style.transform = 'none';
+    crosshair.style.left = `${snappedRatio * 100}%`;
+    crosshair.hidden = false;
+  };
+  const updateHover = (event: PointerEvent): void => {
+    const rect = pointerSurface.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    hoverRatio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    renderHover(hoverRatio);
+  };
+  pointerSurface.addEventListener('pointermove', updateHover);
+  pointerSurface.addEventListener('pointerleave', hideHover);
   const update = (): void => {
     const live = ctx.store.get();
     const sample = live.latestSample;
@@ -307,7 +384,7 @@ function buildTuningTelemetry(ctx: PageContext): HTMLElement {
     (Object.keys(lines) as Array<keyof typeof lines>).forEach((metric) => {
       const points = history.map((entry, index) => {
         const value = telemetryMetricValue(entry, metric);
-        return value === null ? null : `${history.length <= 1 ? 50 : (index / (history.length - 1)) * 100},${100 - Math.max(0, Math.min(100, value / domains[metric] * 100))}`;
+        return value === null ? null : `${xRatioForIndex(history, index) * 100},${100 - Math.max(0, Math.min(100, value / domains[metric] * 100))}`;
       }).filter((point): point is string => point !== null).join(' ');
       lines[metric].setAttribute('points', points);
     });
@@ -315,6 +392,7 @@ function buildTuningTelemetry(ctx: PageContext): HTMLElement {
     readoutNodes.tempC.textContent = telemetryMetricText(sample, 'tempC', '°C');
     readoutNodes.powerW.textContent = telemetryMetricText(sample, 'powerW', ' W', 1);
     readoutNodes.gpuClockMhz.textContent = telemetryMetricText(sample, 'gpuClockMhz', ' MHz');
+    if (hoverRatio !== null) renderHover(hoverRatio);
   };
   tuningTelemetryUpdate = update;
   recordTuningTelemetry(ctx);

@@ -2129,8 +2129,8 @@ input[type="number"] {
   min-width: 0;
   padding: 18px 20px 16px;
   border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
-  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), color-mix(in srgb, var(--bg-inset) 95%, var(--bg-elev)));
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent), 0 10px 26px color-mix(in srgb, #000 14%, transparent);
+  background: var(--bg-elev);
+  box-shadow: none;
 }
 .tuning-telemetry-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
 .tuning-telemetry-heading .card-title { margin: 4px 0 3px; font-size: 18px; letter-spacing: -.015em; }
@@ -2144,17 +2144,30 @@ input[type="number"] {
   font: 700 10px/1 var(--mono);
   letter-spacing: .07em;
 }
-.tuning-telemetry-chart-wrap { position: relative; min-height: 276px; margin: 18px 0 12px 24px; padding: 10px 10px 8px 0; border: 1px solid color-mix(in srgb, var(--border-strong) 68%, var(--accent)); border-radius: 8px; background: linear-gradient(180deg, color-mix(in srgb, var(--control-bg) 88%, var(--accent) 12%), var(--control-bg)); }
+.tuning-telemetry-chart-wrap { position: relative; min-height: 276px; margin: 18px 0 12px 24px; padding: 10px 10px 8px 0; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--control-bg); overflow: visible; }
 .tuning-telemetry-chart { display: block; width: 100%; height: 276px; overflow: visible; }
-.tuning-telemetry-plot { fill: color-mix(in srgb, var(--control-bg) 92%, var(--accent)); }
-.tuning-telemetry-grid { stroke: color-mix(in srgb, var(--accent) 24%, var(--border-strong)); stroke-width: .55; vector-effect: non-scaling-stroke; }
-.tuning-telemetry-line { fill: none; stroke-width: 1.45; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 1.5px color-mix(in srgb, currentColor 55%, transparent)); }
+.tuning-telemetry-chart { pointer-events: none; }
+.tuning-telemetry-plot { fill: var(--control-bg); }
+.tuning-telemetry-grid { stroke: color-mix(in srgb, var(--border-strong) 72%, transparent); stroke-width: .55; vector-effect: non-scaling-stroke; }
+.tuning-telemetry-line { fill: none; stroke-width: 1.35; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .tuning-telemetry-line.telemetry-util { stroke: var(--accent); }
 .tuning-telemetry-line.telemetry-temp { stroke: var(--warn); }
 .tuning-telemetry-line.telemetry-power { stroke: color-mix(in srgb, var(--error) 76%, var(--accent)); }
 .tuning-telemetry-line.telemetry-clock { stroke: var(--success); }
 .tuning-telemetry-axis { position: absolute; inset: 10px auto 8px -24px; display: flex; flex-direction: column; justify-content: space-between; padding: 1px 0; color: var(--text-dim); font: 10px var(--mono); pointer-events: none; }
-.tuning-telemetry-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; color: var(--text-muted); font-size: 11px; }
+.tuning-telemetry-pointer-surface { position: absolute; inset: 10px 10px 8px 0; z-index: 5; cursor: crosshair; outline: none; touch-action: pan-y; }
+.tuning-telemetry-crosshair { position: absolute; inset: 0 auto 0 0; z-index: 2; width: 1px; transform: translateX(-.5px); border-left: 1px dashed color-mix(in srgb, var(--text) 58%, transparent); pointer-events: none; }
+.tuning-telemetry-tooltip { position: absolute; top: 4px; left: 0; z-index: 6; display: grid; gap: 5px; width: min(250px, calc(100% - 8px)); box-sizing: border-box; padding: 7px 8px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--bg-elev); color: var(--text); font: 600 10px/1.2 var(--mono); pointer-events: none; }
+.tuning-telemetry-tooltip-time { color: var(--text-dim); font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
+.tuning-telemetry-tooltip-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; }
+.tuning-telemetry-tooltip-metric { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; gap: 7px; }
+.tuning-telemetry-tooltip-metric > span:first-child { overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; }
+.tuning-telemetry-tooltip-value { color: currentColor; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tuning-telemetry-tooltip-metric.telemetry-util { color: var(--accent); }
+.tuning-telemetry-tooltip-metric.telemetry-temp { color: var(--warn); }
+.tuning-telemetry-tooltip-metric.telemetry-power { color: color-mix(in srgb, var(--error) 76%, var(--accent)); }
+.tuning-telemetry-tooltip-metric.telemetry-clock { color: var(--success); }
+.tuning-telemetry-legend { position: absolute; top: 16px; right: 14px; z-index: 4; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 12px; max-width: 72%; color: var(--text-muted); font-size: 11px; pointer-events: none; }
 .tuning-telemetry-legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .tuning-telemetry-legend-item::before { width: 8px; height: 8px; border-radius: 50%; background: currentColor; content: ''; }
 .tuning-telemetry-legend-item.telemetry-util { color: var(--accent); }
@@ -2173,28 +2186,32 @@ input[type="number"] {
   gap: 0;
   padding: 16px 18px 12px;
   border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
-  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 95%, var(--accent) 5%), var(--bg-elev));
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 4%, transparent), 0 9px 24px color-mix(in srgb, #000 12%, transparent);
+  background: var(--bg-elev);
+  box-shadow: none;
 }
 .tuning-control-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 2px 2px 12px; border-bottom: 1px solid color-mix(in srgb, var(--border-strong) 75%, transparent); }
 .tuning-control-heading .card-title { margin: 4px 0 0; font-size: 17px; letter-spacing: -.015em; }
 .tuning-control-context { flex: 0 0 auto; margin-top: 4px; color: var(--text-dim); font: 700 10px/1 var(--mono); letter-spacing: .07em; }
 .tuning-control-surface .tuning-general-actions { order: 3; position: relative; top: auto; z-index: auto; margin: 12px 0 0; padding: 10px 2px 0; border-top: 1px solid color-mix(in srgb, var(--border-strong) 75%, transparent); border-bottom: 0; background: transparent; }
-.tuning-control-surface .tuning-general-actions .floating-apply { position: static; left: auto; bottom: auto; z-index: auto; box-shadow: 0 4px 14px rgba(var(--accent-rgb), .2); }
-.tuning-control-surface .oc-stack { order: 2; gap: 0; }
+.tuning-control-surface .tuning-general-actions .floating-apply { position: static; left: auto; bottom: auto; z-index: auto; }
+.tuning-control-surface .oc-stack { order: 2; gap: 7px; padding-top: 12px; }
 .tuning-control-surface .oc-card {
-  padding: 13px 2px 12px;
-  border: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
+  padding: 13px 12px 12px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 62%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-inset) 38%, var(--bg-elev));
+  overflow: visible;
+  transition: border-color .14s ease, background-color .14s ease;
 }
-.tuning-control-surface .oc-card:hover { border-color: color-mix(in srgb, var(--accent) 36%, var(--border)); background: color-mix(in srgb, var(--accent-soft) 55%, transparent); }
+.tuning-control-surface .oc-card:hover,
+.tuning-control-surface .oc-card:focus-within { border-color: color-mix(in srgb, var(--accent) 52%, var(--border)); background: color-mix(in srgb, var(--accent-soft) 62%, var(--bg-inset)); }
 .tuning-control-surface .oc-card::after { display: none; }
 .tuning-control-surface .oc-card-head { align-items: center; margin-bottom: 8px; }
 .tuning-control-surface .oc-card .card-title { font-size: 14px; }
 .tuning-control-surface .oc-slider-row { gap: 14px; }
+.tuning-view-toggle .oc-mode-btn:not(.active):hover,
+.oc-mode-row .oc-mode-col-mode .oc-mode-btn:not(.active):hover,
+.tuning-control-surface .oc-mode-btn:not(.active):hover { color: var(--text); background: var(--bg-inset); }
 .tuning-control-surface .oc-card-actions { margin-top: 9px; padding-top: 8px; }
 .tuning-control-surface > .card:not(.oc-card) { order: 4; margin-top: 10px; }
 
