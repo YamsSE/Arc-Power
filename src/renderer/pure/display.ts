@@ -196,6 +196,9 @@ export function isDisplayControlSupported(display: Display | null | undefined, c
     case 'saturation': return display.saturation?.controllable === true;
     case 'brightness': return display.brightness?.controllable === true;
     case 'contrast': return display.contrast?.controllable === true;
+    case 'superResolution': return display.superResolution?.controllable === true
+      && display.superResolution.supported === true
+      && display.superResolution.modes.length + display.superResolution.customSourceModes.length + display.superResolution.presets.length > 0;
     default: return false;
   }
 }
@@ -223,6 +226,14 @@ export function displayDriverValue(display: Display | null | undefined, control:
     case 'saturation': return display.saturation?.value;
     case 'brightness': return display.brightness?.value;
     case 'contrast': return display.contrast?.value;
+    case 'superResolution': {
+      const capability = display.superResolution;
+      if (!capability) return null;
+      const source = capability.currentSourceResolution;
+      return capability.enabled === true && source && capability.currentSourceRefreshRate && capability.currentSourceRefreshRate > 0
+        ? { enabled: true, width: source.width, height: source.height, refreshRate: capability.currentSourceRefreshRate }
+        : { enabled: false };
+    }
     default: return null;
   }
 }
@@ -230,6 +241,17 @@ export function displayDriverValue(display: Display | null | undefined, control:
 export function normalizeDisplaySettings(display: Display | null | undefined): DisplaySettings {
   const out: DisplaySettings = {};
   if (!display) return out;
+  if (display.superResolution) {
+    const capability = display.superResolution;
+    const source = capability.currentSourceResolution;
+    const modes = [...capability.modes, ...capability.presets];
+    const current = source && capability.currentSourceRefreshRate
+      ? modes.find((mode) => mode.width === source.width && mode.height === source.height && mode.refreshRate === capability.currentSourceRefreshRate)
+      : undefined;
+    out.superResolution = capability.enabled === true && current
+      ? { enabled: true, width: current.width, height: current.height, refreshRate: current.refreshRate }
+      : { enabled: false };
+  }
   if (isDisplayControlSupported(display, 'quantizationRange')) {
     out.quantizationRange = display.quantizationRange ?? display.supportedOptions.quantizationRanges[0] as DisplaySettings['quantizationRange'];
   }
@@ -277,7 +299,27 @@ const ARC_SYNC_PROFILE_SET = new Set<unknown>(DISPLAY_ARC_SYNC_PROFILE_OPTIONS);
 const GLOBAL_VRR_MODE_SET = new Set<unknown>(DISPLAY_GLOBAL_VRR_MODE_OPTIONS);
 const SCALING_METHOD_SET = new Set<unknown>(DISPLAY_SCALING_METHOD_OPTIONS);
 
-export function validateDisplaySettings(value: unknown): value is DisplaySettings {
+function isPositiveDimension(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function isListedSuperResolutionMode(value: { width?: unknown; height?: unknown; refreshRate?: unknown }, display?: Display | null): boolean {
+  if (!display || !isPositiveDimension(value.width) || !isPositiveDimension(value.height) || !isPositiveDimension(value.refreshRate)) return false;
+  return [...display.superResolution?.modes ?? [], ...display.superResolution?.presets ?? []]
+    .some((mode) => mode.width === value.width && mode.height === value.height && mode.refreshRate === value.refreshRate);
+}
+
+export function validateSuperResolutionSettings(value: unknown, display?: Display | null): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const setting = value as { enabled?: unknown; width?: unknown; height?: unknown; refreshRate?: unknown };
+  if (typeof setting.enabled !== 'boolean') return false;
+  if (setting.width !== undefined && !isPositiveDimension(setting.width)) return false;
+  if (setting.height !== undefined && !isPositiveDimension(setting.height)) return false;
+  if (setting.refreshRate !== undefined && !isPositiveDimension(setting.refreshRate)) return false;
+  return setting.enabled === false || isListedSuperResolutionMode(setting, display);
+}
+
+export function validateDisplaySettings(value: unknown, display?: Display | null): value is DisplaySettings {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   for (const [key, v] of Object.entries(value)) {
     if (key === 'quantizationRange') {
@@ -306,6 +348,8 @@ export function validateDisplaySettings(value: unknown): value is DisplaySetting
       if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
       const wf = v as { model?: unknown; depth?: unknown };
       if (!WIRE_FORMAT_SET.has(wf.model) || typeof wf.depth !== 'number' || !Number.isFinite(wf.depth) || !DISPLAY_BPC_OPTIONS.includes(wf.depth)) return false;
+    } else if (key === 'superResolution') {
+      if (!validateSuperResolutionSettings(v, display)) return false;
     } else if (DISPLAY_COLOR_CONTROLS.includes(key as typeof DISPLAY_COLOR_CONTROLS[number])) {
       if (typeof v !== 'number' || !Number.isFinite(v)) return false;
     } else {
@@ -328,11 +372,20 @@ function sameValue(a: unknown, b: unknown): boolean {
   return false;
 }
 
+function sameSuperResolutionIntent(a: unknown, b: unknown): boolean {
+  if (a && typeof a === 'object' && (a as { enabled?: unknown }).enabled === false) {
+    return Boolean(b && typeof b === 'object' && (b as { enabled?: unknown }).enabled === false);
+  }
+  return sameValue(a, b);
+}
+
 export function isDisplayControlDirty(control: string, draft: DisplaySettings, display: Display | null): boolean {
   if (!(control in draft) || !display || !isDisplayControlSupported(display, control)) return false;
   const wanted = (draft as Record<string, unknown>)[control];
   const driver = displayDriverValue(display, control);
+  if (control === 'superResolution' && !validateSuperResolutionSettings(wanted, display)) return false;
   if (driver === null || driver === undefined) return true;
+  if (control === 'superResolution') return !sameSuperResolutionIntent(wanted, driver);
   if (typeof wanted === 'string') return wanted !== driver;
   if (control === 'wireFormat') return !sameWireFormat(wanted as { model: string; depth: number }, driver as { model: string; depth: number });
   return !sameValue(wanted, driver);
@@ -341,9 +394,11 @@ export function isDisplayControlDirty(control: string, draft: DisplaySettings, d
 export function isDisplayControlDirtyVsApplied(control: string, draft: DisplaySettings, display: Display | null, applied: DisplaySettings): boolean {
   if (!(control in draft) || (display && !isDisplayControlSupported(display, control))) return false;
   const wanted = (draft as Record<string, unknown>)[control];
+  if (control === 'superResolution' && !validateSuperResolutionSettings(wanted, display)) return false;
   if (control in applied) {
     const appliedValue = (applied as Record<string, unknown>)[control];
     if (typeof wanted === 'string') return wanted !== appliedValue;
+    if (control === 'superResolution') return !sameSuperResolutionIntent(wanted, appliedValue);
     if (control === 'wireFormat') return !sameWireFormat(wanted as { model: string; depth: number }, appliedValue as { model: string; depth: number });
     return !sameValue(wanted, appliedValue);
   }

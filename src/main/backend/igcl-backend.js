@@ -41,6 +41,9 @@ import {
   decodeRetroScalingSettings, decodeArcSyncMonitor, decodeArcSyncProfile,
   encodeArcSyncProfile, encodeEdidManagementArgs,
   encodePanelDescriptorArgs, edidMonitorName,
+  CTL_CUSTOM_MODE_OPERATION,
+  encodeCustomModeArgs, decodeCustomModeArgs,
+  encodeCustomSrcModes, decodeCustomSrcModes,
 } from './igcl-bindings.js';
 import {
   igclErrorCode, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS,
@@ -49,6 +52,7 @@ import {
   DISPLAY_RETRO_SCALING_METHOD_OPTIONS, DISPLAY_ARC_SYNC_PROFILE_OPTIONS,
   DISPLAY_GLOBAL_VRR_MODE_OPTIONS,
   DISPLAY_SCALING_FLASH_WARNING,
+  DISPLAY_SUPER_RESOLUTION_WARNING,
 } from './backend.interface.js';
 import { canonicalToIgcl, igclToCanonical, clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, nearlyEqual, TEMP_LIMIT_MAX_C, vramMemTypeOfName, sortDevicesDiscreteFirst, deviceHardwareKey, isIntegratedStyleDevice, isIntelIntegratedOrMobileArc, dedicatedMemoryBytesOf } from './units.js';
 import { EXTENDED_TL_MAX_C } from '../old-igcl.js';
@@ -81,6 +85,7 @@ import {
   SCALING_STATE_DISPLAY,
 } from './vrr-registry.js';
 import { createSharedMemoryOverride, sharedMemoryPlatformSupported } from './shared-memory-override.js';
+import { createWindowsDisplayModeController } from './windows-display-mode.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
 
@@ -258,6 +263,99 @@ function writeFanProbeCache(cacheFile, entry) {
     fs.writeFileSync(cacheFile, JSON.stringify(entry));
   } catch {
     // a failed cache write never breaks the probe path
+  }
+}
+
+const SUPER_RESOLUTION_STATE_FILENAME = 'supernative-display-state.json';
+const SUPER_RESOLUTION_STATE_VERSION = 2;
+const SUPER_RESOLUTION_LEGACY_PREFIX = 'legacy|';
+
+function superResolutionStateFile() {
+  const dir = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  return path.join(dir, 'ArcPower', SUPER_RESOLUTION_STATE_FILENAME);
+}
+
+function superResolutionStorageKeyOf(displayKey) {
+  if (typeof displayKey !== 'string') return null;
+  return displayKey.length > 0 ? displayKey : null;
+}
+
+function superResolutionLegacyStorageKeyOf(displayKey) {
+  if (typeof displayKey !== 'string') return null;
+  const marker = '|display|';
+  const index = displayKey.indexOf(marker);
+  const suffix = index >= 0 ? displayKey.slice(index + marker.length) : displayKey;
+  return suffix.length > 0 ? `${SUPER_RESOLUTION_LEGACY_PREFIX}${suffix}` : null;
+}
+
+function displayEncoderIdOf(displayKey) {
+  if (typeof displayKey !== 'string') return null;
+  const marker = '|display|';
+  const index = displayKey.indexOf(marker);
+  if (index < 0) return null;
+  const suffix = displayKey.slice(index + marker.length);
+  const encoderId = suffix.split('|edid|', 1)[0];
+  return encoderId.length > 0 ? encoderId : null;
+}
+
+function displayEdidFingerprintOf(displayKey) {
+  if (typeof displayKey !== 'string') return null;
+  const marker = '|edid|';
+  const index = displayKey.indexOf(marker);
+  const fingerprint = index >= 0 ? displayKey.slice(index + marker.length) : '';
+  return fingerprint.length > 0 ? fingerprint : null;
+}
+
+function readSuperResolutionState(stateFile) {
+  const result = new Map();
+  if (typeof stateFile !== 'string' || stateFile.length === 0) return result;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    if (parsed?.version === 1 && parsed.displays && typeof parsed.displays === 'object') {
+      // Version 1 keyed only by encoder/EDID suffix. Keep those entries in an
+      // explicit legacy namespace until a current full adapter/output key and
+      // matching Windows identity let us migrate one safely.
+      for (const [key, value] of Object.entries(parsed.displays)) {
+        if (!value || typeof value !== 'object' || value.active !== true) continue;
+        result.set(`${SUPER_RESOLUTION_LEGACY_PREFIX}${key}`, value);
+      }
+      return result;
+    }
+    if (parsed?.version !== SUPER_RESOLUTION_STATE_VERSION || !parsed.displays || typeof parsed.displays !== 'object') return result;
+    for (const [key, value] of Object.entries(parsed.displays)) {
+      if (!value || typeof value !== 'object' || value.active !== true) continue;
+      result.set(key, value);
+    }
+    if (parsed.legacy && typeof parsed.legacy === 'object') {
+      for (const [key, value] of Object.entries(parsed.legacy)) {
+        if (!value || typeof value !== 'object' || value.active !== true) continue;
+        result.set(`${SUPER_RESOLUTION_LEGACY_PREFIX}${key}`, value);
+      }
+    }
+  } catch {
+    // Missing/corrupt state fails closed; the feature can still be used from
+    // a fresh native desktop mode and writes a new state on enable.
+  }
+  return result;
+}
+
+function writeSuperResolutionState(stateFile, state) {
+  if (typeof stateFile !== 'string' || stateFile.length === 0) return false;
+  try {
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const displays = {};
+    const legacy = {};
+    for (const [key, value] of state.entries()) {
+      if (key.startsWith(SUPER_RESOLUTION_LEGACY_PREFIX)) legacy[key.slice(SUPER_RESOLUTION_LEGACY_PREFIX.length)] = value;
+      else displays[key] = value;
+    }
+    fs.writeFileSync(stateFile, JSON.stringify({ version: SUPER_RESOLUTION_STATE_VERSION, displays, legacy }));
+    return true;
+  } catch {
+    // Persistence is best effort. The in-process controller remains the
+    // authoritative rollback path, while a new process fails closed if the
+    // baseline was not durable.
+    return false;
   }
 }
 
@@ -647,6 +745,140 @@ const DISPLAY_FEATURE_HDR = 1 << 5;
 const displayCapability = (value, supported, controllable = false, reason = null, source = 'igcl') => ({
   value, supported, controllable, reason, source,
 });
+
+// Intel does not expose a driver-wide video-style VSR switch. This surface is
+// deliberately named Supernative Resolution because it combines IGCL's
+// custom-source-mode API with a verified Windows display mode change: the
+// desktop and games see a higher source resolution, while the monitor still
+// receives its native output timing through the normal display path.
+const SUPER_RESOLUTION_SOURCE = 'igcl-custom-source-mode+windows-devmode';
+const SUPER_RESOLUTION_SCALE_FACTORS = [1.25, 1.3333, 1.5, 1.7778, 2];
+const SUPER_RESOLUTION_MAX_DIMENSION = 16384;
+const SUPER_RESOLUTION_SETTLE_MS = 350;
+const SUPER_RESOLUTION_CAPABILITY_ERRORS = new Set([
+  CTL_RESULT.ERROR_INVALID_ARGUMENT,
+  CTL_RESULT.ERROR_UNSUPPORTED_FEATURE,
+  CTL_RESULT.ERROR_UNSUPPORTED_VERSION,
+  CTL_RESULT.ERROR_UNSUPPORTED_SIZE,
+  CTL_RESULT.ERROR_NOT_IMPLEMENTED,
+  CTL_RESULT.ERROR_NOT_AVAILABLE,
+]);
+
+function waitForDisplayModeSettle() {
+  return new Promise((resolve) => setTimeout(resolve, SUPER_RESOLUTION_SETTLE_MS));
+}
+
+function resolutionCopy(resolution) {
+  return resolution && Number.isInteger(Number(resolution.width)) && Number.isInteger(Number(resolution.height))
+    ? { width: Number(resolution.width), height: Number(resolution.height) }
+    : null;
+}
+
+function sameResolution(a, b) {
+  return a?.width === b?.width && a?.height === b?.height;
+}
+
+function sameDisplayMode(a, b, refreshTolerance = 1) {
+  if (!sameResolution(a, b)) return false;
+  const actualRefresh = Number(a?.refreshRate);
+  const expectedRefresh = Number(b?.refreshRate);
+  return Number.isFinite(actualRefresh) && actualRefresh > 0
+    && Number.isFinite(expectedRefresh) && expectedRefresh > 0
+    && Math.abs(actualRefresh - expectedRefresh) <= refreshTolerance;
+}
+
+function edidBytesOf(data, size) {
+  const count = Math.min(Number(size) || 0, 128);
+  if (!data || count < 128) return null;
+  return Array.from({ length: count }, (_, index) => Number(koffi.decode(data, index, 'uint8')) & 0xff);
+}
+
+function edidPreferredModeOf(data, size) {
+  const bytes = edidBytesOf(data, size);
+  if (!bytes) return null;
+  for (let offset = 0x36; offset + 18 <= 0x7e; offset += 18) {
+    const pixelClock10Khz = bytes[offset] | (bytes[offset + 1] << 8);
+    if (pixelClock10Khz === 0) continue;
+    const width = bytes[offset + 2] | ((bytes[offset + 4] & 0xf0) << 4);
+    const height = bytes[offset + 5] | ((bytes[offset + 7] & 0xf0) << 4);
+    const horizontalBlank = bytes[offset + 3] | ((bytes[offset + 4] & 0x0f) << 8);
+    const verticalBlank = bytes[offset + 6] | ((bytes[offset + 7] & 0x0f) << 8);
+    const totalPixels = (width + horizontalBlank) * (height + verticalBlank);
+    const refreshRate = totalPixels > 0 ? (pixelClock10Khz * 10000) / totalPixels : 0;
+    if (width > 320 && height > 200 && width <= SUPER_RESOLUTION_MAX_DIMENSION
+      && height <= SUPER_RESOLUTION_MAX_DIMENSION && refreshRate > 10 && refreshRate <= 1000) {
+      return { width, height, refreshRate };
+    }
+  }
+  return null;
+}
+
+function edidFingerprintOf(data, size) {
+  const bytes = edidBytesOf(data, size);
+  if (!bytes) return null;
+  // A compact session identity: EDID bytes include the manufacturer/product,
+  // serial, and timing descriptors. This is only an identity namespace, not
+  // a security hash; it prevents a replacement panel on the same encoder
+  // from inheriting the previous panel's cached baseline.
+  let hash = 2166136261;
+  for (const byte of bytes) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
+  return hash.toString(16).padStart(8, '0');
+}
+
+function superResolutionPresetsOf(nativeResolution, refreshRate = 60) {
+  const native = resolutionCopy(nativeResolution);
+  if (!native) return [];
+  const seen = new Set();
+  return SUPER_RESOLUTION_SCALE_FACTORS.map((scale) => {
+    const width = Math.round((native.width * scale) / 8) * 8;
+    const height = Math.round((native.height * scale) / 8) * 8;
+    return {
+      width,
+      height,
+      refreshRate: Number(refreshRate) > 0 ? Number(refreshRate) : 60,
+      scale,
+      label: `${width} × ${height} (${scale.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}×)`,
+    };
+  }).filter((preset) => {
+    const key = `${preset.width}x${preset.height}`;
+    if (seen.has(key) || preset.width <= native.width || preset.height <= native.height
+      || preset.width > SUPER_RESOLUTION_MAX_DIMENSION || preset.height > SUPER_RESOLUTION_MAX_DIMENSION) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function emptySuperResolution(reason = 'Supernative display resolution is not available on this driver.', source = SUPER_RESOLUTION_SOURCE) {
+  return {
+    supported: false,
+    controllable: false,
+    reason,
+    source,
+    nativeResolution: null,
+    nativeRefreshRate: null,
+    currentSourceResolution: null,
+    currentSourceRefreshRate: null,
+    enabled: false,
+    modes: [],
+    customSourceModes: [],
+    presets: [],
+  };
+}
+
+function customModeErrorCode(result) {
+  return SUPER_RESOLUTION_CAPABILITY_ERRORS.has(result)
+    ? 'unsupported'
+    : (igclErrorCode(result) ?? 'io-failed');
+}
+
+function customModeResultMessage(result, operation = 'read') {
+  if (SUPER_RESOLUTION_CAPABILITY_ERRORS.has(result)) {
+    return operation === 'read'
+      ? 'The Intel driver does not expose usable custom display source modes.'
+      : 'The Intel driver rejected the requested custom display source mode.';
+  }
+  return `IGCL ${describeResult(result)}`;
+}
 
 // Intel's Media API structures are not present in the older local binding
 // set. Keep the byte contract isolated here so a missing/newer runtime can
@@ -1042,6 +1274,10 @@ export class IgclBackend {
    *   sharedMemoryOverride?: object|null, // DxgKrnl shared GPU/NPU memory
    *                                   // registry adapter; omitted in native
    *                                   // test fakes and created for product use
+   *   displayModeController?: object|null, // injectable Windows source-mode
+   *                                   // controller; omitted in product use
+   *   superResolutionStateFile?: string|null, // durable pre-enable desktop
+   *                                   // baseline; injected in tests
    *   systemInfoOf?: () => object|null, // trusted cached CPU/RAM snapshot
    * }} opts
    */
@@ -1076,6 +1312,9 @@ export class IgclBackend {
     this._sharedMemoryOverride = Object.prototype.hasOwnProperty.call(opts, 'sharedMemoryOverride')
       ? opts.sharedMemoryOverride
       : (opts.lib ? null : createSharedMemoryOverride());
+    this._displayModeController = Object.prototype.hasOwnProperty.call(opts, 'displayModeController')
+      ? opts.displayModeController
+      : (opts.lib ? null : createWindowsDisplayModeController());
     // Injected native libraries are test seams. They must never cause a test
     // to query or write the real Windows registry; a product backend without
     // an injected lib gets the real, identity-resolved fallback instead.
@@ -1139,6 +1378,18 @@ export class IgclBackend {
     // the fan handles; the per-display VALUES are never cached, every
     // getDisplaySettings reads fresh).
     this._displayHandles = new Map();
+    // Supernative Resolution keeps the original desktop source mode and any
+    // custom source modes that Arc Power added so disable/rollback can restore
+    // only this display without retargeting a re-enumerated output.
+    this._superResolutionBaseByDisplay = new Map();
+    this._superResolutionAddedModes = new Map();
+    this._superResolutionVerdicts = new Map();
+    this._superResolutionWindowsIdentityByDisplay = new Map();
+    this._superResolutionStateFile = Object.prototype.hasOwnProperty.call(opts, 'superResolutionStateFile')
+      ? opts.superResolutionStateFile
+      : (opts.lib ? null : superResolutionStateFile());
+    this._superResolutionPersisted = readSuperResolutionState(this._superResolutionStateFile);
+    this._displayApplyLocks = new Map();
     // Keep the complete color state only after a verified pixel-transform
     // write. A fresh process never assumes that the driver's transform is
     // neutral; the GET path establishes that before exposing a writable row.
@@ -3676,30 +3927,29 @@ export class IgclBackend {
   }
 
   /**
-   * M10b: the monitor-name read (the EDID 0xFC display-name descriptor).
-   * ctlEdidManagement 2-pass (READ, MONITOR) first; ctlPanelDescriptorAccess
-   * 2-pass (READ, block 0) is the fallback. The M10b probe: the management
-   * call answered ERROR_KMD_CALL on the A770 and the panel-descriptor path
-   * served the 128-byte block (name: MSI G27C4 E3). Null on any failure
-   * path (never throws - the caller wraps it).
-   * @param {object} handle the display handle
-   * @returns {Promise<string | null>}
+   * Read the monitor EDID/panel descriptor once and retain the payload long
+   * enough to derive both the display label and the preferred timing. The
+   * preferred detailed timing is the monitor's EDID native baseline; the
+   * current Windows mode is tracked separately for reversible restore.
+   * @param {object} handle
+   * @returns {Promise<{ data: unknown, size: number }|null>}
    */
-  async _readDisplayName(handle) {
+  async _readDisplayEdid(handle) {
     const lib = this._libOrThrow();
+    let fallback = null;
     if (!this._isUnavailable(lib.ctlEdidManagement)) {
       try {
         let args = encodeEdidManagementArgs({ edidSize: 0 });
         let r = lib.ctlEdidManagement(handle, args.buf);
         if (r === CTL_RESULT.SUCCESS) {
           const size = Number(koffi.decode(args.buf, koffi.offsetof('ctl_edid_management_args_t', 'EdidSize'), 'uint32'));
-          if (Number.isInteger(size) && size > 0 && size <= 4096) {
+          if (Number.isInteger(size) && size >= 128 && size <= 4096) {
             const data = koffi.alloc('uint8', size);
             args = encodeEdidManagementArgs({ edidSize: size, pEdidBuf: koffi.address(data) });
             r = lib.ctlEdidManagement(handle, args.buf);
             if (r === CTL_RESULT.SUCCESS) {
-              const name = edidMonitorName(data, size);
-              if (name) return name;
+              fallback = { data, size };
+              if (edidMonitorName(data, size)) return fallback;
             }
           }
         }
@@ -3713,21 +3963,49 @@ export class IgclBackend {
         let r = lib.ctlPanelDescriptorAccess(handle, args.buf);
         if (r === CTL_RESULT.SUCCESS) {
           const size = Number(koffi.decode(args.buf, koffi.offsetof('ctl_panel_descriptor_access_args_t', 'DescriptorDataSize'), 'uint32'));
-          if (Number.isInteger(size) && size > 0 && size <= 4096) {
+          if (Number.isInteger(size) && size >= 128 && size <= 4096) {
             const data = koffi.alloc('uint8', size);
             args = encodePanelDescriptorArgs({ dataSize: size, pData: koffi.address(data) });
             r = lib.ctlPanelDescriptorAccess(handle, args.buf);
             if (r === CTL_RESULT.SUCCESS) {
-              const name = edidMonitorName(data, size);
-              if (name) return name;
+              const payload = { data, size };
+              if (edidMonitorName(data, size)) return payload;
+              fallback ??= payload;
             }
           }
         }
       } catch {
-        // no name path succeeded - null
+        // no panel-descriptor path succeeded
       }
     }
-    return null;
+    return fallback;
+  }
+
+  _readDisplayEncoderId(handle) {
+    const lib = this._libOrThrow();
+    if (this._isUnavailable(lib.ctlGetDisplayProperties)) return null;
+    try {
+      const { buf } = encodeDisplayProperties();
+      if (lib.ctlGetDisplayProperties(handle, buf) !== CTL_RESULT.SUCCESS) return null;
+      return decodeDisplayProperties(buf).encoderId ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * M10b: the monitor-name read (the EDID 0xFC display-name descriptor).
+   * ctlEdidManagement 2-pass (READ, MONITOR) first; ctlPanelDescriptorAccess
+   * 2-pass (READ, block 0) is the fallback. The M10b probe: the management
+   * call answered ERROR_KMD_CALL on the A770 and the panel-descriptor path
+   * served the 128-byte block (name: MSI G27C4 E3). Null on any failure
+   * path (never throws - the caller wraps it).
+   * @param {object} handle the display handle
+   * @returns {Promise<string | null>}
+   */
+  async _readDisplayName(handle) {
+    const edid = await this._readDisplayEdid(handle);
+    return edid ? edidMonitorName(edid.data, edid.size) : null;
   }
 
   /**
@@ -3742,6 +4020,531 @@ export class IgclBackend {
       && t.hActive > 320 && t.hActive <= 16384
       && t.vActive > 200 && t.vActive <= 16384
       && Number.isInteger(t.pixelClockHz) && t.pixelClockHz > 0 && t.pixelClockHz < 20000000000;
+  }
+
+  /**
+   * Read the optional IGCL custom-source-mode list. GET is intentionally a
+   * two-pass query: first ask for the count, then allocate exactly the list
+   * the driver requested. A missing/refused symbol degrades only this feature.
+   */
+  _customSourceModesOf(handle) {
+    const lib = this._libOrThrow();
+    if (this._isUnavailable(lib.ctlGetSetCustomMode)) {
+      return {
+        supported: false,
+        ok: false,
+        modes: [],
+        errorCode: 'unavailable-symbol',
+        message: 'The Intel custom display source-mode API is missing in this driver runtime.',
+      };
+    }
+    try {
+      const countArgs = encodeCustomModeArgs({ operation: CTL_CUSTOM_MODE_OPERATION.GET });
+      let nativeResult = lib.ctlGetSetCustomMode(handle, countArgs.buf);
+      if (nativeResult !== CTL_RESULT.SUCCESS) {
+        return {
+          supported: false,
+          ok: false,
+          modes: [],
+          errorCode: customModeErrorCode(nativeResult),
+          message: customModeResultMessage(nativeResult),
+        };
+      }
+      const count = decodeCustomModeArgs(countArgs.buf).numOfModes;
+      if (!Number.isInteger(count) || count < 0 || count > 1024) {
+        return { supported: false, ok: false, modes: [], errorCode: 'io-failed', message: 'The driver returned an invalid custom source-mode count.' };
+      }
+      if (count === 0) return { supported: true, ok: true, modes: [] };
+
+      const list = encodeCustomSrcModes(Array.from({ length: count }, () => ({})));
+      const args = encodeCustomModeArgs({
+        operation: CTL_CUSTOM_MODE_OPERATION.GET,
+        numOfModes: count,
+        pCustomSrcModeList: koffi.address(list.buf),
+      });
+      nativeResult = lib.ctlGetSetCustomMode(handle, args.buf);
+      if (nativeResult !== CTL_RESULT.SUCCESS) {
+        return {
+          supported: false,
+          ok: false,
+          modes: [],
+          errorCode: customModeErrorCode(nativeResult),
+          message: customModeResultMessage(nativeResult),
+        };
+      }
+      const returned = Math.min(count, decodeCustomModeArgs(args.buf).numOfModes);
+      return { supported: true, ok: true, modes: decodeCustomSrcModes(list.buf, returned) };
+    } catch (error) {
+      return {
+        supported: false,
+        ok: false,
+        modes: [],
+        errorCode: 'io-failed',
+        message: error instanceof Error ? error.message : 'The custom source-mode read failed.',
+      };
+    }
+  }
+
+  _changeCustomSourceModes(handle, operation, modes) {
+    const lib = this._libOrThrow();
+    if (this._isUnavailable(lib.ctlGetSetCustomMode)) {
+      return { supported: false, ok: false, errorCode: 'unavailable-symbol', message: 'The Intel custom display source-mode API is missing in this driver runtime.' };
+    }
+    try {
+      const args = encodeCustomModeArgs({ operation, modes });
+      const nativeResult = lib.ctlGetSetCustomMode(handle, args.buf);
+      return nativeResult === CTL_RESULT.SUCCESS
+        ? { supported: true, ok: true }
+        : { supported: false, ok: false, errorCode: customModeErrorCode(nativeResult), message: customModeResultMessage(nativeResult, operation === CTL_CUSTOM_MODE_OPERATION.ADD ? 'add' : 'remove') };
+    } catch (error) {
+      return { supported: false, ok: false, errorCode: 'io-failed', message: error instanceof Error ? error.message : 'The custom source-mode change failed.' };
+    }
+  }
+
+  _persistSuperResolutionState(displayKey, base, displayIdentity = null) {
+    const storageKey = superResolutionStorageKeyOf(displayKey);
+    if (!storageKey || !(this._superResolutionPersisted instanceof Map)) return false;
+    const existing = this._superResolutionPersisted.get(storageKey) ?? {};
+    const nativeResolution = resolutionCopy(base?.nativeResolution ?? base?.resolution);
+    const initialMode = base?.initialMode && resolutionCopy(base.initialMode)
+      ? { ...resolutionCopy(base.initialMode), refreshRate: Number(base.initialMode.refreshRate) || null }
+      : null;
+    if (!nativeResolution || !initialMode) return false;
+    const addedModes = typeof displayKey === 'string' && this._superResolutionAddedModes instanceof Map
+      ? this._superResolutionAddedModes.get(displayKey) ?? existing.addedModes ?? []
+      : existing.addedModes ?? [];
+    this._superResolutionPersisted.set(storageKey, {
+      active: true,
+      nativeResolution,
+      nativeRefreshRate: Number(base.nativeRefreshRate ?? base.refreshRate) || null,
+      initialMode,
+      windowsIdentity: displayIdentity ?? existing.windowsIdentity ?? null,
+      addedModes: addedModes.map((mode) => ({ width: mode.width, height: mode.height })),
+    });
+    return writeSuperResolutionState(this._superResolutionStateFile, this._superResolutionPersisted);
+  }
+
+  _clearSuperResolutionState(displayKey) {
+    const storageKey = superResolutionStorageKeyOf(displayKey);
+    if (!storageKey || !(this._superResolutionPersisted instanceof Map)) return true;
+    if (!this._superResolutionPersisted.has(storageKey)) return true;
+    const previous = this._superResolutionPersisted.get(storageKey);
+    this._superResolutionPersisted.delete(storageKey);
+    if (!this._superResolutionStateFile || writeSuperResolutionState(this._superResolutionStateFile, this._superResolutionPersisted)) return true;
+    // Keep memory and disk aligned when the durable cleanup fails so a retry
+    // can still remove the exact custom modes owned by Arc Power.
+    this._superResolutionPersisted.set(storageKey, previous);
+    return false;
+  }
+
+  async _readSuperResolutionOutput(display, handle, preferredDisplayMode = null) {
+    const displayKey = display.displayKey;
+    const source = SUPER_RESOLUTION_SOURCE;
+    const currentResolution = resolutionCopy(display.resolution);
+    if (!currentResolution) return emptySuperResolution('The active display resolution is unavailable.', source);
+
+    const controller = this._displayModeController;
+    const modeState = controller && typeof controller.resolve === 'function'
+      ? controller.resolve({ displayName: display.name, resolution: currentResolution, refreshRate: display.refreshRate })
+      : { supported: false, ok: false, errorCode: 'windows-only', message: 'Windows display-mode APIs are unavailable.' };
+    const windowsIdentity = modeState.output?.displayIdentity ?? null;
+    if (typeof displayKey === 'string' && typeof windowsIdentity === 'string' && windowsIdentity.length > 0) {
+      if (!(this._superResolutionWindowsIdentityByDisplay instanceof Map)) this._superResolutionWindowsIdentityByDisplay = new Map();
+      const previousIdentity = this._superResolutionWindowsIdentityByDisplay.get(displayKey);
+      if (previousIdentity && previousIdentity !== windowsIdentity) {
+        this._superResolutionBaseByDisplay.delete(displayKey);
+        this._superResolutionAddedModes.delete(displayKey);
+        this._superResolutionVerdicts.delete(displayKey);
+        this._superResolutionWindowsIdentityByDisplay.set(displayKey, windowsIdentity);
+        return emptySuperResolution('The display identity changed; refresh Display before using source-resolution control.', source);
+      }
+      this._superResolutionWindowsIdentityByDisplay.set(displayKey, windowsIdentity);
+    }
+
+    const storageKey = superResolutionStorageKeyOf(displayKey);
+    let persisted = storageKey && this._superResolutionPersisted instanceof Map
+      ? this._superResolutionPersisted.get(storageKey)
+      : null;
+    if (!persisted && storageKey && this._superResolutionPersisted instanceof Map) {
+      const legacyKey = superResolutionLegacyStorageKeyOf(displayKey);
+      const legacy = legacyKey ? this._superResolutionPersisted.get(legacyKey) : null;
+      // A v1 state entry is safe to migrate only when its remembered Windows
+      // monitor identity matches this live output. Without that proof, keep
+      // the legacy record isolated and fail closed rather than assigning a
+      // baseline from another adapter with the same EDID/encoder suffix.
+      if (legacy?.windowsIdentity && windowsIdentity && legacy.windowsIdentity === windowsIdentity) {
+        this._superResolutionPersisted.delete(legacyKey);
+        this._superResolutionPersisted.set(storageKey, legacy);
+        writeSuperResolutionState(this._superResolutionStateFile, this._superResolutionPersisted);
+        persisted = legacy;
+      }
+    }
+    if (persisted?.windowsIdentity && windowsIdentity && persisted.windowsIdentity !== windowsIdentity) {
+      this._superResolutionPersisted.delete(storageKey);
+      writeSuperResolutionState(this._superResolutionStateFile, this._superResolutionPersisted);
+      persisted = null;
+    }
+    if (persisted?.addedModes && typeof displayKey === 'string'
+      && this._superResolutionAddedModes instanceof Map && !this._superResolutionAddedModes.has(displayKey)) {
+      this._superResolutionAddedModes.set(displayKey, persisted.addedModes.map((mode) => ({ width: mode.width, height: mode.height })));
+    }
+
+    let base = typeof displayKey === 'string' ? this._superResolutionBaseByDisplay.get(displayKey) : null;
+    if (!base && persisted?.nativeResolution && persisted?.initialMode) {
+      base = {
+        nativeResolution: resolutionCopy(persisted.nativeResolution),
+        nativeRefreshRate: Number(persisted.nativeRefreshRate) || null,
+        initialMode: { ...persisted.initialMode },
+        resolution: resolutionCopy(persisted.nativeResolution),
+        refreshRate: Number(persisted.initialMode.refreshRate) || null,
+      };
+      if (typeof displayKey === 'string') this._superResolutionBaseByDisplay.set(displayKey, base);
+    }
+    if (!base) {
+      const preferredResolution = resolutionCopy(preferredDisplayMode);
+      const currentMode = { ...currentResolution, refreshRate: Number(display.refreshRate) || null };
+      const currentIsAbovePreferred = preferredResolution
+        && currentResolution.width > preferredResolution.width
+        && currentResolution.height > preferredResolution.height;
+      if (currentIsAbovePreferred) {
+        return emptySuperResolution('A higher source mode is active, but Arc Power has no persisted pre-enable desktop baseline for safe restoration.', source);
+      }
+      base = {
+        // `nativeResolution` comes from the EDID preferred detailed timing
+        // when available. `initialMode` is the user's actual desktop mode and
+        // is kept separately so disabling restores a below-native desktop too.
+        nativeResolution: preferredResolution ?? currentResolution,
+        nativeRefreshRate: Number(preferredDisplayMode?.refreshRate) || Number(display.refreshRate) || null,
+        initialMode: currentMode,
+        // Compatibility aliases for injected tests/older session state.
+        resolution: preferredResolution ?? currentResolution,
+        refreshRate: Number(display.refreshRate) || null,
+      };
+      if (typeof displayKey === 'string') this._superResolutionBaseByDisplay.set(displayKey, base);
+    }
+    const nativeResolution = resolutionCopy(base.nativeResolution ?? base.resolution);
+    const initialMode = base.initialMode ?? {
+      ...(resolutionCopy(base.resolution) ?? currentResolution),
+      refreshRate: Number(base.refreshRate ?? display.refreshRate) || null,
+    };
+    const presets = superResolutionPresetsOf(nativeResolution, initialMode.refreshRate ?? display.refreshRate);
+    const custom = this._customSourceModesOf(handle);
+    const current = modeState.output?.currentMode ?? null;
+    const windowsModes = Array.isArray(modeState.output?.modes) ? modeState.output.modes : [];
+    const customSourceModes = custom.modes.map((mode) => ({ width: mode.SourceX, height: mode.SourceY }));
+    const modes = windowsModes
+      .filter((mode) => mode.width > nativeResolution.width && mode.height > nativeResolution.height)
+      .map((mode) => ({
+        width: mode.width,
+        height: mode.height,
+        refreshRate: mode.refreshRate,
+        custom: customSourceModes.some((candidate) => candidate.width === mode.width && candidate.height === mode.height),
+      }))
+      .filter((mode, index, all) => all.findIndex((candidate) => candidate.width === mode.width
+        && candidate.height === mode.height && Math.abs(candidate.refreshRate - mode.refreshRate) <= 1) === index);
+    const verdict = typeof displayKey === 'string' ? this._superResolutionVerdicts.get(displayKey) : null;
+    const controllerReady = modeState.supported === true && modeState.ok === true;
+    const capabilityReady = custom.supported === true && controllerReady && verdict?.errorCode !== 'unsupported';
+    let reason = verdict?.reason ?? null;
+    if (!reason && !controllerReady) reason = modeState.message ?? 'Windows could not resolve this display for source-resolution control.';
+    if (!reason && !custom.supported) reason = custom.message ?? 'The Intel driver does not expose custom display source modes.';
+    if (!reason && capabilityReady && modes.length === 0 && customSourceModes.length === 0) {
+      reason = 'No higher source modes are currently installed; Arc Power can request a custom mode when you apply a preset.';
+    }
+    return {
+      supported: capabilityReady,
+      controllable: capabilityReady,
+      reason,
+      source,
+      nativeResolution,
+      nativeRefreshRate: Number(base.nativeRefreshRate ?? base.refreshRate) || null,
+      currentSourceResolution: resolutionCopy(current),
+      currentSourceRefreshRate: Number(current?.refreshRate) || null,
+      enabled: current?.width > nativeResolution.width && current?.height > nativeResolution.height,
+      modes,
+      customSourceModes,
+      presets,
+    };
+  }
+
+  async _applySuperResolution(handle, selectedDisplay, requested) {
+    const displayKey = selectedDisplay.displayKey;
+    const fail = (errorCode, message, blockCapability = false) => {
+      if (blockCapability && typeof displayKey === 'string') {
+        this._superResolutionVerdicts.set(displayKey, { reason: message, errorCode });
+      }
+      return { ok: false, errorCode, message, readBackEqual: false, warning: DISPLAY_SUPER_RESOLUTION_WARNING };
+    };
+    if (!requested || typeof requested !== 'object' || typeof requested.enabled !== 'boolean') {
+      return fail('out-of-range', 'Supernative Resolution requires enabled=true or enabled=false.');
+    }
+    const controller = this._displayModeController;
+    const custom = this._customSourceModesOf(handle);
+    if (!controller || typeof controller.resolve !== 'function' || typeof controller.apply !== 'function') {
+      return fail('unsupported', 'Windows display-mode control is unavailable on this system.');
+    }
+    const currentResolution = resolutionCopy(selectedDisplay.resolution);
+    const base = (typeof displayKey === 'string' ? this._superResolutionBaseByDisplay.get(displayKey) : null)
+      ?? {
+        nativeResolution: resolutionCopy(selectedDisplay.superResolution?.nativeResolution) ?? currentResolution,
+        nativeRefreshRate: selectedDisplay.superResolution?.nativeRefreshRate ?? selectedDisplay.refreshRate,
+        initialMode: { ...(currentResolution ?? {}), refreshRate: selectedDisplay.refreshRate },
+        resolution: resolutionCopy(selectedDisplay.superResolution?.nativeResolution) ?? currentResolution,
+        refreshRate: selectedDisplay.refreshRate,
+      };
+    const nativeResolution = resolutionCopy(base.nativeResolution ?? base.resolution);
+    const initialMode = base.initialMode ?? {
+      ...(resolutionCopy(base.resolution) ?? currentResolution ?? {}),
+      refreshRate: Number(base.refreshRate ?? selectedDisplay.refreshRate) || null,
+    };
+    if (!nativeResolution) return fail('unsupported', 'The display baseline resolution is unavailable.');
+    const displayName = selectedDisplay.name;
+    const knownDisplayIdentity = typeof displayKey === 'string' && this._superResolutionWindowsIdentityByDisplay instanceof Map
+      ? this._superResolutionWindowsIdentityByDisplay.get(displayKey)
+      : null;
+    const initial = controller.resolve({
+      displayName,
+      resolution: currentResolution,
+      refreshRate: selectedDisplay.refreshRate,
+      ...(knownDisplayIdentity ? { displayIdentity: knownDisplayIdentity } : {}),
+    });
+    if (initial.ok !== true || !initial.output) return fail(initial.errorCode ?? 'unsupported', initial.message ?? 'Windows could not resolve the selected display.');
+    const deviceName = initial.output.deviceName;
+    const displayIdentity = initial.output.displayIdentity ?? knownDisplayIdentity ?? null;
+    if (typeof displayKey === 'string' && displayIdentity && this._superResolutionWindowsIdentityByDisplay instanceof Map) {
+      this._superResolutionWindowsIdentityByDisplay.set(displayKey, displayIdentity);
+    }
+    const storageKey = superResolutionStorageKeyOf(displayKey);
+    const hadPersistedState = storageKey && this._superResolutionPersisted instanceof Map
+      ? this._superResolutionPersisted.has(storageKey)
+      : false;
+    if (requested.enabled) {
+      const persistedBaseline = this._persistSuperResolutionState(displayKey, base, displayIdentity);
+      // A restart must be able to identify the user's pre-enable desktop
+      // mode. Do not change the display if the product state file cannot be
+      // written; injected/unit-test backends intentionally have no state file.
+      if (this._superResolutionStateFile && persistedBaseline !== true) {
+        if (!hadPersistedState && !this._clearSuperResolutionState(displayKey)) {
+          return fail('cleanup-pending', 'Arc Power could not persist the pre-enable desktop baseline and its temporary state cleanup is pending.', true);
+        }
+        return fail('io-failed', 'Arc Power could not persist the pre-enable desktop baseline, so no display mode was changed.');
+      }
+    }
+    const previousMode = initial.output.currentMode ?? {
+      ...currentResolution,
+      refreshRate: Number(selectedDisplay.refreshRate) || null,
+    };
+
+    const expectedEncoderId = displayEncoderIdOf(displayKey);
+    const expectedEdidFingerprint = displayEdidFingerprintOf(displayKey);
+    const revalidateCustomOutput = async () => {
+      const currentWindows = controller.resolve({ deviceName, ...(displayIdentity ? { displayIdentity } : {}) });
+      if (currentWindows.ok !== true || !currentWindows.output) {
+        return { ok: false, errorCode: 'display-identity-mismatch', message: 'The Windows display identity changed; no custom source-mode write was sent to the replacement output.' };
+      }
+      if (displayIdentity && currentWindows.output.displayIdentity
+        && currentWindows.output.displayIdentity !== displayIdentity) {
+        return { ok: false, errorCode: 'display-identity-mismatch', message: 'The Windows display identity changed; no custom source-mode write was sent to the replacement output.' };
+      }
+      if (expectedEncoderId) {
+        const currentEncoderId = typeof this._readDisplayEncoderId === 'function'
+          ? this._readDisplayEncoderId(handle)
+          : null;
+        if (currentEncoderId !== expectedEncoderId) {
+          return { ok: false, errorCode: 'display-identity-mismatch', message: 'The Intel display encoder identity changed; no custom source-mode write was sent to a reused output handle.' };
+        }
+      }
+      if (expectedEdidFingerprint) {
+        const edid = typeof this._readDisplayEdid === 'function' ? await this._readDisplayEdid(handle) : null;
+        const currentEdidFingerprint = edid ? edidFingerprintOf(edid.data, edid.size) : null;
+        if (currentEdidFingerprint !== expectedEdidFingerprint) {
+          return { ok: false, errorCode: 'display-identity-mismatch', message: 'The monitor EDID identity changed; no custom source-mode write was sent to a replacement display.' };
+        }
+      }
+      return { ok: true };
+    };
+
+    const removeAddedModes = async (requestedModes = null) => {
+      const added = typeof displayKey === 'string' ? this._superResolutionAddedModes.get(displayKey) ?? [] : [];
+      const removing = Array.isArray(requestedModes) ? requestedModes : added;
+      if (removing.length === 0) return { ok: true };
+      const identity = await revalidateCustomOutput();
+      if (identity.ok !== true) return identity;
+      const cleanup = this._changeCustomSourceModes(handle, CTL_CUSTOM_MODE_OPERATION.REMOVE, removing);
+      if (cleanup.ok === true && typeof displayKey === 'string') {
+        const identityAfterRemove = await revalidateCustomOutput();
+        if (identityAfterRemove.ok !== true) {
+          return { ok: false, errorCode: 'cleanup-pending', message: `Custom-mode removal completed, but output identity verification failed: ${identityAfterRemove.message}` };
+        }
+        const readBack = this._customSourceModesOf(handle);
+        if (readBack.ok !== true || removing.some((candidate) => readBack.modes.some((mode) => mode.SourceX === candidate.width && mode.SourceY === candidate.height))) {
+          return { ok: false, errorCode: 'cleanup-pending', message: 'The driver accepted custom-mode removal, but the removed modes are still present on read-back.' };
+        }
+        const identityAfterReadBack = await revalidateCustomOutput();
+        if (identityAfterReadBack.ok !== true) {
+          return { ok: false, errorCode: 'cleanup-pending', message: `Custom-mode removal read-back completed, but output identity verification failed: ${identityAfterReadBack.message}` };
+        }
+        const remaining = added.filter((existing) => !removing.some((candidate) => candidate.width === existing.width && candidate.height === existing.height));
+        if (remaining.length > 0) this._superResolutionAddedModes.set(displayKey, remaining);
+        else this._superResolutionAddedModes.delete(displayKey);
+        this._persistSuperResolutionState(displayKey, base, displayIdentity);
+      }
+      return cleanup;
+    };
+    const verify = (expected) => {
+      const read = controller.resolve({ deviceName, ...(displayIdentity ? { displayIdentity } : {}) });
+      return read.ok === true && sameDisplayMode(read.output?.currentMode, expected)
+        ? { ok: true, read }
+        : { ok: false, read };
+    };
+
+    const restorePriorMode = async () => {
+      if (!previousMode || !Number.isInteger(previousMode.width) || !Number.isInteger(previousMode.height)
+        || !Number.isFinite(Number(previousMode.refreshRate)) || Number(previousMode.refreshRate) <= 0) {
+        return { ok: false, message: 'The previous display mode is unavailable.' };
+      }
+      const restored = controller.apply({
+        deviceName,
+        displayName,
+        ...(displayIdentity ? { displayIdentity } : {}),
+        resolution: { width: previousMode.width, height: previousMode.height },
+        refreshRate: previousMode.refreshRate,
+      });
+      if (restored.ok !== true) return restored;
+      await waitForDisplayModeSettle();
+      const readBack = verify(previousMode);
+      return readBack.ok ? { ok: true } : { ok: false, message: 'The previous display mode did not verify after rollback.' };
+    };
+
+    if (!requested.enabled) {
+      let restored = typeof controller.restore === 'function'
+        ? controller.restore({ deviceName, displayName, ...(displayIdentity ? { displayIdentity } : {}) })
+        : { ok: false, errorCode: 'no-captured-mode', message: 'No captured Windows display mode is available.' };
+      let restoreExpected = restored.mode ?? null;
+      if (restored.ok !== true) {
+        // A fresh process has no in-memory captured DEVMODE. The persisted
+        // initial mode is the user's actual pre-enable
+        // desktop mode. It may be below the EDID preferred/native timing, so
+        // preserve it even when a fresh process is disabling from a higher
+        // source mode; falling back to native here would silently change the
+        // user's desktop resolution after a restart.
+        const fallbackResolution = resolutionCopy(initialMode) ?? nativeResolution;
+        const fallbackCandidates = (initial.output.modes ?? []).filter((mode) => sameResolution(mode, fallbackResolution));
+        const candidate = fallbackCandidates.sort((a, b) => Math.abs(a.refreshRate - Number(initialMode.refreshRate ?? selectedDisplay.refreshRate))
+          - Math.abs(b.refreshRate - Number(initialMode.refreshRate ?? selectedDisplay.refreshRate)))[0];
+        if (!candidate) return fail('unsupported', 'Windows could not find a safe baseline display mode to restore.');
+        restored = controller.apply({ deviceName, displayName, ...(displayIdentity ? { displayIdentity } : {}), resolution: fallbackResolution, refreshRate: candidate.refreshRate, captureOriginal: false });
+        restoreExpected = { ...fallbackResolution, refreshRate: candidate.refreshRate };
+      }
+      if (restored.ok !== true) return fail(restored.errorCode ?? 'io-failed', restored.message ?? 'Windows rejected the baseline display restoration.');
+      await waitForDisplayModeSettle();
+      const readBack = verify(restoreExpected ?? initialMode);
+      if (!readBack.ok) return fail('io-failed', 'Windows accepted the restore request but the source-resolution read-back did not match.');
+      const cleanup = await removeAddedModes();
+      if (cleanup.ok !== true) {
+        this._persistSuperResolutionState(displayKey, base, displayIdentity);
+        return fail('cleanup-pending', `Desktop resolution was restored, but custom-mode cleanup is pending: ${cleanup.message ?? 'unknown error'}`, true);
+      }
+      if (!this._clearSuperResolutionState(displayKey)) {
+        return fail('cleanup-pending', 'Desktop resolution and custom-mode cleanup succeeded, but durable Arc Power state cleanup is pending.', true);
+      }
+      if (typeof displayKey === 'string') this._superResolutionVerdicts.delete(displayKey);
+      return { ok: true, readBackEqual: true, warning: DISPLAY_SUPER_RESOLUTION_WARNING };
+    }
+
+    const targetWidth = Number(requested.width);
+    const targetHeight = Number(requested.height);
+    if (!Number.isInteger(targetWidth) || !Number.isInteger(targetHeight)
+      || targetWidth <= nativeResolution.width || targetHeight <= nativeResolution.height
+      || targetWidth > SUPER_RESOLUTION_MAX_DIMENSION || targetHeight > SUPER_RESOLUTION_MAX_DIMENSION) {
+      return fail('out-of-range', 'The requested source resolution must be larger than the baseline and within the driver limit.');
+    }
+    const target = { width: targetWidth, height: targetHeight };
+    const alreadyCustom = custom.modes.some((mode) => mode.SourceX === target.width && mode.SourceY === target.height);
+    let added = false;
+    if (!alreadyCustom) {
+      const identity = await revalidateCustomOutput();
+      if (identity.ok !== true) {
+        if (!hadPersistedState && !this._clearSuperResolutionState(displayKey)) {
+          return fail('cleanup-pending', `${identity.message} Temporary Arc Power state cleanup is pending.`, true);
+        }
+        return fail(identity.errorCode, identity.message);
+      }
+      const add = this._changeCustomSourceModes(handle, CTL_CUSTOM_MODE_OPERATION.ADD, [target]);
+      if (add.ok !== true) {
+        if (!hadPersistedState && !this._clearSuperResolutionState(displayKey)) {
+          return fail('cleanup-pending', `${add.message ?? 'The Intel driver rejected the custom source mode.'} Temporary Arc Power state cleanup is pending.`, true);
+        }
+        return fail(add.errorCode ?? 'unsupported', add.message ?? 'The Intel driver rejected the custom source mode.', add.errorCode === 'unsupported');
+      }
+      added = true;
+      if (typeof displayKey === 'string') {
+        const existing = this._superResolutionAddedModes.get(displayKey) ?? [];
+        this._superResolutionAddedModes.set(displayKey, [...existing, target]);
+      }
+      const persistedAddedMode = this._persistSuperResolutionState(displayKey, base, displayIdentity);
+      if (this._superResolutionStateFile && persistedAddedMode !== true) {
+        const cleanup = await removeAddedModes([target]);
+        if (cleanup.ok === true) {
+          if (!hadPersistedState && !this._clearSuperResolutionState(displayKey)) {
+            return fail('cleanup-pending', 'The custom source mode was removed before the display changed, but durable Arc Power state cleanup is pending.', true);
+          }
+          return fail('io-failed', 'Arc Power could not persist the custom source mode, so it was removed before the display changed.');
+        }
+        this._persistSuperResolutionState(displayKey, base, displayIdentity);
+        return fail('cleanup-pending', `The custom source mode was added but could not be durably recorded: ${cleanup.message ?? 'cleanup is pending'}`, true);
+      }
+      const identityAfterAdd = await revalidateCustomOutput();
+      if (identityAfterAdd.ok !== true) {
+        this._persistSuperResolutionState(displayKey, base, displayIdentity);
+        return fail('cleanup-pending', `${identityAfterAdd.message} The custom source mode was retained for a verified retry.`, true);
+      }
+      await waitForDisplayModeSettle();
+    }
+    const refreshed = controller.resolve({ deviceName, displayName, ...(displayIdentity ? { displayIdentity } : {}), resolution: currentResolution, refreshRate: selectedDisplay.refreshRate });
+    const candidates = (refreshed.output?.modes ?? []).filter((mode) => sameResolution(mode, target));
+    const rollbackEnableFailure = async (errorCode, message) => {
+      const restored = await restorePriorMode();
+      if (!restored.ok) {
+        this._persistSuperResolutionState(displayKey, base, displayIdentity);
+        return fail('cleanup-pending', `${message} The previous display mode could not be verified during rollback; the custom mode was retained for retry.`, true);
+      }
+      if (added) {
+        const cleanup = await removeAddedModes([target]);
+        if (cleanup.ok !== true) {
+          this._persistSuperResolutionState(displayKey, base, displayIdentity);
+          return fail('cleanup-pending', `${message} The previous display mode was restored, but custom-mode cleanup is pending: ${cleanup.message ?? 'unknown error'}`, true);
+        }
+      }
+      if (!hadPersistedState && !this._clearSuperResolutionState(displayKey)) {
+        return fail('cleanup-pending', `${message} The previous display mode was restored and the custom mode was removed, but durable Arc Power state cleanup is pending.`, true);
+      }
+      else this._persistSuperResolutionState(displayKey, base, displayIdentity);
+      return fail(errorCode, `${message} The previous display mode was restored${added ? ' and the temporary custom mode was removed' : ''}.`, errorCode === 'unsupported');
+    };
+    if (refreshed.ok !== true || candidates.length === 0) {
+      return rollbackEnableFailure('unsupported', 'The custom source mode was accepted, but Windows did not advertise a usable display mode for it.');
+    }
+    const preferredRefresh = Number(requested.refreshRate) > 0
+      ? Number(requested.refreshRate)
+      : Number(selectedDisplay.refreshRate ?? candidates[0].refreshRate);
+    const refreshCandidates = candidates.filter((mode) => Math.abs(Number(mode.refreshRate) - preferredRefresh) <= 1);
+    if (refreshCandidates.length === 0) {
+      return rollbackEnableFailure('unsupported', `Windows advertised the requested source resolution, but not the requested ${preferredRefresh} Hz refresh rate.`);
+    }
+    const candidate = [...refreshCandidates].sort((a, b) => Math.abs(a.refreshRate - preferredRefresh) - Math.abs(b.refreshRate - preferredRefresh))[0];
+    const applied = controller.apply({ deviceName, displayName, ...(displayIdentity ? { displayIdentity } : {}), resolution: target, refreshRate: candidate.refreshRate });
+    if (applied.ok !== true) {
+      return rollbackEnableFailure(applied.errorCode ?? 'io-failed', applied.message ?? 'Windows rejected the requested source resolution.');
+    }
+    await waitForDisplayModeSettle();
+    const readBack = verify({ ...target, refreshRate: candidate.refreshRate });
+    if (!readBack.ok) {
+      return rollbackEnableFailure('io-failed', 'Windows accepted the mode change but source-resolution read-back did not match.');
+    }
+    if (typeof displayKey === 'string') this._superResolutionVerdicts.delete(displayKey);
+    this._persistSuperResolutionState(displayKey, base, displayIdentity);
+    return { ok: true, readBackEqual: true, warning: DISPLAY_SUPER_RESOLUTION_WARNING };
   }
 
   /**
@@ -3774,6 +4577,7 @@ export class IgclBackend {
       preferredScalingMode: null,
       scalingPreference: null,
       scalingDetails: null,
+      superResolution: emptySuperResolution(),
       scalingMethod: displayCapability(null, false, false, 'Retro scaling is not exposed by the driver interface.'),
       globalVrrMode: displayCapability(null, null, false, 'Global Variable Refresh Rate Mode is not exposed by the driver interface.'),
       vrrMode: displayCapability(null, null, false, 'Arc Sync profile control is not exposed by the driver interface.'),
@@ -3811,6 +4615,8 @@ export class IgclBackend {
       const num = Object.entries(CTL_WIRE_COLOR_MODEL).find(([, n]) => n === name)?.[0];
       return num === undefined ? null : (DISPLAY_WIRE_MODEL_FROM_IGCL[num] ?? null);
     };
+    let preferredDisplayMode = null;
+    let displayEdidFingerprint = null;
 
     // Properties - the ONLY mandatory read (an inactive output's feature
     // reads refuse with ERROR_KMD_CALL anyway; the probe record).
@@ -3861,6 +4667,47 @@ export class IgclBackend {
       }
     } catch {
       // degrade this display's fields
+    }
+
+    // Some recent Arc drivers expose the attached output through IGCL but do
+    // not populate the active timing/configuration bits that the older
+    // Display tab relied on. Windows remains the authoritative source for
+    // the current desktop mode; use it as a narrowly-scoped fallback only
+    // when the IGCL output has a verified EDID name and Windows resolves one
+    // unambiguous active output. Never guess among multiple monitors.
+    try {
+      if (!this._isUnavailable(lib.ctlEdidManagement) || !this._isUnavailable(lib.ctlPanelDescriptorAccess)) {
+        const edid = await this._readDisplayEdid(handle);
+        if (edid) {
+          d.name = edidMonitorName(edid.data, edid.size);
+          preferredDisplayMode = edidPreferredModeOf(edid.data, edid.size);
+          displayEdidFingerprint = edidFingerprintOf(edid.data, edid.size);
+          if (displayEdidFingerprint && d.displayKey) {
+            d.displayKey = `${d.displayKey}|edid|${displayEdidFingerprint}`;
+          }
+        }
+      }
+      const controller = this._displayModeController;
+      if (controller && typeof controller.resolve === 'function' && d.name) {
+        let windowsOutput = controller.resolve({ displayName: d.name, resolution: d.resolution, refreshRate: d.refreshRate });
+        if (windowsOutput?.ok !== true && typeof controller.enumerate === 'function') {
+          const enumerated = controller.enumerate();
+          if (enumerated?.ok === true && enumerated.outputs?.length === 1) {
+            windowsOutput = controller.resolve({ deviceName: enumerated.outputs[0].deviceName });
+          }
+        }
+        if (windowsOutput?.ok === true && windowsOutput.output?.currentMode) {
+          const mode = windowsOutput.output.currentMode;
+          if (!d.flags.active || !d.resolution) {
+            d.flags.active = true;
+            d.flags.attached = true;
+            d.resolution = { width: mode.width, height: mode.height };
+            d.refreshRate = mode.refreshRate;
+          }
+        }
+      }
+    } catch {
+      // Windows fallback is optional; keep the native IGCL verdict.
     }
     if (!d.flags.active) return d;
 
@@ -4128,11 +4975,10 @@ export class IgclBackend {
       // Keep the honest read-only color capability defaults.
     }
 
-    // The EDID monitor name (defensive - a failing name read keeps null).
     try {
-      d.name = await this._readDisplayName(handle);
+      d.superResolution = await this._readSuperResolutionOutput(d, handle, preferredDisplayMode);
     } catch {
-      d.name = null;
+      d.superResolution = emptySuperResolution('Supernative display resolution could not be read safely.');
     }
     return d;
   }
@@ -4192,6 +5038,23 @@ export class IgclBackend {
    * @returns {Promise<import('./backend.interface.js').ApplyResult>}
    */
   async setDisplaySettings(deviceId, request = {}) {
+    if (!(this._displayApplyLocks instanceof Map)) this._displayApplyLocks = new Map();
+    const lockKey = `${deviceId}|${request?.deviceKey ?? ''}|${request?.displayKey ?? ''}`;
+    const previous = this._displayApplyLocks.get(lockKey) ?? Promise.resolve();
+    let release;
+    const turn = new Promise((resolve) => { release = resolve; });
+    const queued = previous.then(() => turn);
+    this._displayApplyLocks.set(lockKey, queued);
+    await previous;
+    try {
+      return await this._setDisplaySettingsUnlocked(deviceId, request);
+    } finally {
+      release();
+      if (this._displayApplyLocks.get(lockKey) === queued) this._displayApplyLocks.delete(lockKey);
+    }
+  }
+
+  async _setDisplaySettingsUnlocked(deviceId, request = {}) {
     const lib = this._libOrThrow();
     const dev = await this._device(deviceId);
     const deviceKey = typeof request.deviceKey === 'string' ? request.deviceKey : null;
@@ -4202,7 +5065,7 @@ export class IgclBackend {
       result.perControl[control] = { ok: false, errorCode, message };
       result.ok = false;
     };
-    let controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'variableRefreshRate', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
+    let controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'variableRefreshRate', 'vrrMode', 'superResolution', 'hue', 'saturation', 'brightness', 'contrast']
       .filter((c) => patch[c] !== null && patch[c] !== undefined);
 
     // The whole-surface gate (the M8 setGraphicsSettings pattern): when NO
@@ -4216,7 +5079,9 @@ export class IgclBackend {
       && this._isUnavailable(lib.ctlSetIntelArcSyncProfile)
       && this._isUnavailable(lib.ctlPixelTransformationSetConfig)
       && this._isUnavailable(lib.ctlGetSetVideoProcessingFeature)
-      && this._isUnavailable(lib.ctlGetSet3DFeature)) {
+      && this._isUnavailable(lib.ctlGetSet3DFeature)
+      && this._isUnavailable(lib.ctlGetSetCustomMode)
+      && (!this._displayModeController || typeof this._displayModeController.resolve !== 'function')) {
       for (const c of controls) {
         fail(c, 'unavailable-symbol', 'the display-settings API is missing in the IGCL runtime');
       }
@@ -4262,7 +5127,7 @@ export class IgclBackend {
           method: selectedDisplay.scalingMethod.value.method ?? 'integer',
         },
       };
-      controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'variableRefreshRate', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
+      controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'variableRefreshRate', 'vrrMode', 'superResolution', 'hue', 'saturation', 'brightness', 'contrast']
         .filter((c) => patch[c] !== null && patch[c] !== undefined);
     }
 
@@ -5107,6 +5972,12 @@ export class IgclBackend {
           }
         }
       }
+    }
+
+    if (patch.superResolution !== null && patch.superResolution !== undefined) {
+      const superResult = await this._applySuperResolution(handle, selectedDisplay, patch.superResolution);
+      result.perControl.superResolution = superResult;
+      if (superResult.ok !== true) result.ok = false;
     }
 
     return result;

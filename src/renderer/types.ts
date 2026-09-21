@@ -1001,6 +1001,7 @@ export interface GraphicsApplyResponse {
  *  main-side contract (backend.interface.js option lists); the scalingMode
  *  values are the driver's scaling-type FLAG names. */
 export interface DisplaySettings {
+  superResolution?: { enabled: boolean; width?: number; height?: number; refreshRate?: number };
   quantizationRange?: 'default' | 'limited' | 'full';
   wireFormat?: { model: 'RGB' | 'YCbCr420' | 'YCbCr422' | 'YCbCr444'; depth: number };
   /** Raw IGCL ordinary scaling type used behind the IGS-style view. */
@@ -1112,6 +1113,35 @@ export interface DisplayCapability<T> {
   source: string;
 }
 
+export interface DisplayResolutionMode {
+  width: number;
+  height: number;
+  refreshRate: number;
+  label?: string;
+  name?: string;
+  id?: string;
+}
+
+export interface DisplaySourceResolution {
+  width: number;
+  height: number;
+}
+
+export interface DisplaySuperResolutionCapability {
+  supported: boolean | null;
+  controllable: boolean;
+  reason: string | null;
+  source: string;
+  nativeResolution: { width: number; height: number } | null;
+  nativeRefreshRate: number | null;
+  currentSourceResolution: { width: number; height: number } | null;
+  currentSourceRefreshRate: number | null;
+  enabled: boolean;
+  modes: DisplayResolutionMode[];
+  customSourceModes: DisplaySourceResolution[];
+  presets: DisplayResolutionMode[];
+}
+
 /** M10b: the driver read-back (getDisplaySettings) - never throws; the
  *  { displays: [] } shape is the honest "no display outputs" degrade (the
  *  no-controls surface the page renders honestly). */
@@ -1154,6 +1184,7 @@ export interface DisplayState {
     saturation?: DisplayCapability<number>;
     brightness?: DisplayCapability<number>;
     contrast?: DisplayCapability<number>;
+    superResolution?: DisplaySuperResolutionCapability;
     supportedOptions: {
       scalingModes: string[];
       scalingMethods: string[];

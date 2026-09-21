@@ -70,6 +70,51 @@ export { recordingAbsolutePath };
 
 const execFileAsync = promisify(execFile);
 
+// Display modes are process-global Windows state. Serialize requests by the
+// verified adapter/output identity before choosing the in-process or elevated
+// executor so two renderer actions cannot race the same DEVMODE/custom-mode
+// transaction.
+const displayApplyLocks = new Map();
+
+async function withDisplayApplyLock(key, task) {
+  const previous = displayApplyLocks.get(key) ?? Promise.resolve();
+  let release;
+  const turn = new Promise((resolve) => { release = resolve; });
+  const queued = previous.then(() => turn);
+  displayApplyLocks.set(key, queued);
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+    if (displayApplyLocks.get(key) === queued) displayApplyLocks.delete(key);
+  }
+}
+
+/**
+ * Main/worker boundary validation for a requested source mode. Renderer-side
+ * validation is UX only; a direct IPC caller must still choose a mode exposed
+ * by the fresh capability read-back.
+ * @returns {{ ok: true }|{ ok: false, message: string }}
+ */
+export function validateDisplaySuperResolutionCapability(settings, displayState, displayKey) {
+  const requested = settings?.superResolution;
+  if (!requested || requested.enabled !== true) return { ok: true };
+  const display = Array.isArray(displayState?.displays)
+    ? displayState.displays.find((candidate) => candidate?.displayKey === displayKey)
+    : null;
+  const capability = display?.superResolution;
+  if (capability?.supported !== true || capability?.controllable !== true) {
+    return { ok: false, message: capability?.reason ?? 'The selected display does not expose a controllable supernative source mode.' };
+  }
+  const listed = [...(capability.modes ?? []), ...(capability.presets ?? [])];
+  const matches = listed.some((mode) => mode.width === requested.width && mode.height === requested.height
+    && (requested.refreshRate === undefined || Math.abs(Number(mode.refreshRate) - Number(requested.refreshRate)) <= 1));
+  return matches
+    ? { ok: true }
+    : { ok: false, message: 'The requested source resolution is not present in the selected display capability list.' };
+}
+
 function validGpuUtilPct(value) {
   return Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
 }
@@ -380,6 +425,24 @@ export function sanitizeDisplaySettings(payload) {
         throw new Error('scalingMethod must be { enabled: boolean, method: integer|nearest-neighbour }');
       }
       out[key] = { enabled: value.enabled, method: value.method };
+    } else if (key === 'superResolution') {
+      if (typeof value !== 'object' || value === null || Array.isArray(value) || typeof value.enabled !== 'boolean') {
+        throw new Error('superResolution must be { enabled: boolean, width?: integer, height?: integer, refreshRate?: number }');
+      }
+      if (!value.enabled) {
+        out[key] = { enabled: false };
+      } else if (!Number.isInteger(value.width) || value.width < 321 || value.width > 16384
+        || !Number.isInteger(value.height) || value.height < 321 || value.height > 16384
+        || (value.refreshRate !== undefined && (typeof value.refreshRate !== 'number' || !Number.isFinite(value.refreshRate) || value.refreshRate <= 0 || value.refreshRate > 1000))) {
+        throw new Error('superResolution enabled payload requires integer width/height from 321 to 16384 and an optional refreshRate greater than 0 and at most 1000');
+      } else {
+        out[key] = {
+          enabled: true,
+          width: value.width,
+          height: value.height,
+          ...(value.refreshRate === undefined ? {} : { refreshRate: value.refreshRate }),
+        };
+      }
     } else if (key === 'vrrMode') {
       if (!['recommended', 'excellent', 'good', 'compatible', 'off', 'vesa', 'custom'].includes(value)) {
         throw new Error('vrrMode must be one of: recommended, excellent, good, compatible, off, vesa, custom');
@@ -3024,25 +3087,40 @@ export function createIpcHandlers({
           || typeof request.displayKey !== 'string' || request.displayKey.length === 0) {
           throw new Error('display apply request requires stable deviceKey and displayKey');
         }
-        const target = await backend.getDeviceTarget?.(deviceId);
-        if (!target || target.deviceKey !== request.deviceKey) {
-          throw new Error('stale display target: the selected graphics adapter changed; refresh Display and try again');
-        }
-        const settings = sanitizeDisplaySettings(request.patch);
-        if (target.synthetic || target.backendKind === 'os') {
-          const perControl = Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: false, errorCode: 'unsupported', message: 'display settings are not supported on this GPU' }]));
-          return { ok: Object.keys(perControl).length === 0, perControl, displayState: await backend.getDisplaySettings(deviceId) };
-        }
-        const applyRequest = { deviceId, deviceKey: request.deviceKey, displayKey: request.displayKey, physicalTarget: physicalTargetOf(target), settings };
-        if (applyRunner) {
-          const out = await applyRunner.displayApply(applyRequest);
-          return { ok: out.ok === true, perControl: out.perControl ?? {}, displayState: out.displayState ?? null };
-        }
-        await backend.assertDeviceTarget?.(deviceId, request.deviceKey, physicalTargetOf(target));
-        const out = await backend.setDisplaySettings(deviceId, { deviceKey: request.deviceKey, displayKey: request.displayKey, patch: settings });
-        let displayState = null;
-        try { displayState = await backend.getDisplaySettings(deviceId); } catch { /* degraded */ }
-        return { ok: out.ok, perControl: out.perControl, displayState };
+        const lockKey = `${request.deviceKey}|${request.displayKey}`;
+        return withDisplayApplyLock(lockKey, async () => {
+          const target = await backend.getDeviceTarget?.(deviceId);
+          if (!target || target.deviceKey !== request.deviceKey) {
+            throw new Error('stale display target: the selected graphics adapter changed; refresh Display and try again');
+          }
+          const settings = sanitizeDisplaySettings(request.patch);
+          if (target.synthetic || target.backendKind === 'os') {
+            const perControl = Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: false, errorCode: 'unsupported', message: 'display settings are not supported on this GPU' }]));
+            return { ok: Object.keys(perControl).length === 0, perControl, displayState: await backend.getDisplaySettings(deviceId) };
+          }
+          let preflightState = null;
+          if (settings.superResolution?.enabled === true) {
+            try { preflightState = await backend.getDisplaySettings(deviceId); } catch { preflightState = null; }
+            const capability = validateDisplaySuperResolutionCapability(settings, preflightState, request.displayKey);
+            if (!capability.ok) {
+              return {
+                ok: false,
+                perControl: { superResolution: { ok: false, errorCode: 'unsupported', message: capability.message } },
+                displayState: preflightState,
+              };
+            }
+          }
+          const applyRequest = { deviceId, deviceKey: request.deviceKey, displayKey: request.displayKey, physicalTarget: physicalTargetOf(target), settings };
+          if (applyRunner) {
+            const out = await applyRunner.displayApply(applyRequest);
+            return { ok: out.ok === true, perControl: out.perControl ?? {}, displayState: out.displayState ?? null };
+          }
+          await backend.assertDeviceTarget?.(deviceId, request.deviceKey, physicalTargetOf(target));
+          const out = await backend.setDisplaySettings(deviceId, { deviceKey: request.deviceKey, displayKey: request.displayKey, patch: settings });
+          let displayState = null;
+          try { displayState = await backend.getDisplaySettings(deviceId); } catch { /* degraded */ }
+          return { ok: out.ok, perControl: out.perControl, displayState };
+        });
       },
 
       'apply-settings': async (deviceId, payload, opts) => {

@@ -121,6 +121,16 @@
  *     colorFormat: string|null,
  *     quantizationRange: 'default'|'limited'|'full'|null,
  *     scalingMode: string|null,
+ *     superResolution: {
+ *       supported: boolean, controllable: boolean, reason: string|null,
+ *       source: string, nativeResolution: { width: number, height: number }|null,
+ *       nativeRefreshRate: number|null,
+ *       currentSourceResolution: { width: number, height: number }|null,
+ *       currentSourceRefreshRate: number|null, enabled: boolean,
+ *       modes: Array<{ width: number, height: number, refreshRate: number, custom?: boolean }>,
+ *       customSourceModes: Array<{ width: number, height: number }>,
+ *       presets: Array<{ width: number, height: number, refreshRate: number, scale: number, label?: string }>,
+ *     },
  *     supportedOptions: {
  *       scalingModes: string[],
  *       scalingMethods: string[],
@@ -152,6 +162,7 @@
  *   wireFormat?: { model: 'RGB' | 'YCbCr420' | 'YCbCr422' | 'YCbCr444', depth: number },
  *   scalingMode?: 'identity' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'custom',
  *   displayScalingMethod?: 'maintain-display-scaling' | 'custom' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'integer' | 'nearest-neighbour',
+ *   superResolution?: { enabled: boolean, width?: number, height?: number, refreshRate?: number },
  * }} DisplaySettings
  */
 
@@ -371,6 +382,7 @@ export const DISPLAY_GLOBAL_VRR_MODE_OPTIONS = ['fullscreen', 'fullscreen-window
  * @type {string}
  */
 export const DISPLAY_SCALING_FLASH_WARNING = 'Changing the scaling mode may briefly flash the display while the driver applies the output state.';
+export const DISPLAY_SUPER_RESOLUTION_WARNING = 'Changing the Windows source resolution may briefly flash the display; games may need to be restarted to pick up the new render target.';
 
 /**
  * Map an IGCL ctl_result_t code to a canonical OcErrorCode (or null when

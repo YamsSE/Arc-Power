@@ -32,7 +32,7 @@ import {
   DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS,
   DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_RETRO_SCALING_METHOD_OPTIONS,
   DISPLAY_ARC_SYNC_PROFILE_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS,
-  DISPLAY_SCALING_FLASH_WARNING,
+  DISPLAY_SCALING_FLASH_WARNING, DISPLAY_SUPER_RESOLUTION_WARNING,
 } from './backend.interface.js';
 // M17c: the pure AIB decode (aibOf + the laptop branch) - the SAME decode
 // the real backend runs in getCapabilities (the renderer TS imports fine
@@ -119,6 +119,26 @@ const DISPLAY_FIXTURE = Object.freeze({
     quantizationRange: 'default',
     scalingMode: 'identity',
     scalingDetails: { customX: 100, customY: 100, hardwareModeSet: false, preferredScalingType: 'identity' },
+    superResolution: {
+      supported: true,
+      controllable: true,
+      reason: null,
+      source: 'mock-fixture',
+      nativeResolution: { width: 2560, height: 1440 },
+      nativeRefreshRate: 144,
+      currentSourceResolution: { width: 2560, height: 1440 },
+      currentSourceRefreshRate: 144,
+      enabled: false,
+      modes: [
+        { width: 3200, height: 1800, refreshRate: 144, custom: true },
+        { width: 3840, height: 2160, refreshRate: 144, custom: true },
+      ],
+      customSourceModes: [{ width: 3200, height: 1800 }, { width: 3840, height: 2160 }],
+      presets: [
+        { width: 3200, height: 1800, refreshRate: 144, scale: 1.25, label: '3200 × 1800 (1.25×)' },
+        { width: 3840, height: 2160, refreshRate: 144, scale: 1.5, label: '3840 × 2160 (1.50×)' },
+      ],
+    },
     scalingMethod: displayCapability({ enabled: true, method: 'integer' }, true, true, null, 'mock-fixture'),
     globalVrrMode: displayCapability('fullscreen', true, true, null, 'mock-fixture'),
     vrrMode: displayCapability('recommended', true, true, null, 'mock-fixture'),
@@ -1304,7 +1324,7 @@ export class MockBackend {
     const e = this._entry(id);
     const patch = request?.patch && typeof request.patch === 'object' ? request.patch : {};
     const result = { ok: true, perControl: {} };
-    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'variableRefreshRate', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
+    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'variableRefreshRate', 'vrrMode', 'superResolution', 'hue', 'saturation', 'brightness', 'contrast']
       .filter((key) => patch[key] !== null && patch[key] !== undefined);
     const fail = (key, errorCode, message) => {
       result.perControl[key] = { ok: false, errorCode, message };
@@ -1490,6 +1510,34 @@ export class MockBackend {
         display.arcSync.profile = patch.vrrMode;
         display.variableRefreshRate.value = patch.vrrMode !== 'off';
         result.perControl.vrrMode = { ok: display.vrrMode.value === patch.vrrMode, readBackEqual: display.vrrMode.value === patch.vrrMode };
+      }
+    }
+    if (patch.superResolution !== undefined && patch.superResolution !== null) {
+      const value = patch.superResolution;
+      if (typeof value !== 'object' || typeof value.enabled !== 'boolean') {
+        fail('superResolution', 'out-of-range', 'Supernative Resolution requires enabled=true or enabled=false');
+      } else if (display.superResolution?.controllable !== true) {
+        fail('superResolution', 'unsupported', display.superResolution?.reason ?? 'Supernative Resolution is not supported by this display');
+      } else if (!value.enabled) {
+        display.resolution = { ...display.superResolution.nativeResolution };
+        display.refreshRate = display.superResolution.nativeRefreshRate;
+        display.superResolution.currentSourceResolution = { ...display.superResolution.nativeResolution };
+        display.superResolution.currentSourceRefreshRate = display.superResolution.nativeRefreshRate;
+        display.superResolution.enabled = false;
+        result.perControl.superResolution = { ok: true, readBackEqual: true, warning: DISPLAY_SUPER_RESOLUTION_WARNING };
+      } else {
+        const mode = display.superResolution.modes.find((candidate) => candidate.width === value.width && candidate.height === value.height
+          && (value.refreshRate === undefined || Math.abs(candidate.refreshRate - value.refreshRate) <= 1));
+        if (!mode) {
+          fail('superResolution', 'unsupported', 'The requested source resolution is not available in the mock display mode list');
+        } else {
+          display.resolution = { width: mode.width, height: mode.height };
+          display.refreshRate = mode.refreshRate;
+          display.superResolution.currentSourceResolution = { width: mode.width, height: mode.height };
+          display.superResolution.currentSourceRefreshRate = mode.refreshRate;
+          display.superResolution.enabled = true;
+          result.perControl.superResolution = { ok: true, readBackEqual: true, warning: DISPLAY_SUPER_RESOLUTION_WARNING };
+        }
       }
     }
     for (const key of ['hue', 'saturation', 'brightness', 'contrast']) {

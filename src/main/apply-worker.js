@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { sanitizeSettings, clampSettings, sanitizeGraphicsSettings, sanitizeDisplaySettings } from './ipc-core.js';
+import { sanitizeSettings, clampSettings, sanitizeGraphicsSettings, sanitizeDisplaySettings, validateDisplaySuperResolutionCapability } from './ipc-core.js';
 import { executeApply, withCapabilityFlags, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_STOCK, OC_MODE_ADVANCED } from './apply-routing.js';
 import { displayKeyInNamespace, normalizeDisplayStateIdentity } from './display-identity.js';
 import { validateSafeGameCandidate } from './game-candidate.js';
@@ -427,6 +427,19 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       // route the actual write through the validated worker target identity.
       const writeDeviceKey = typeof target?.deviceKey === 'string' ? target.deviceKey : req.deviceKey;
       const writeDisplayKey = displayKeyInNamespace(req.displayKey, writeDeviceKey);
+      if (settings.superResolution?.enabled === true) {
+        let displayState = null;
+        try { displayState = await guardedBackend.getDisplaySettings(deviceId); } catch { /* fail closed below */ }
+        const capability = validateDisplaySuperResolutionCapability(settings, displayState, writeDisplayKey);
+        if (!capability.ok) {
+          await finish({
+            ok: false,
+            perControl: { superResolution: { ok: false, errorCode: 'unsupported', message: capability.message } },
+            displayState: displayState ? normalizeDisplayStateIdentity(displayState, req.deviceKey) : null,
+          });
+          return 0;
+        }
+      }
       if (await abortIfCanceled()) return 1;
       const out = await guardedBackend.setDisplaySettings(deviceId, { deviceKey: writeDeviceKey, displayKey: writeDisplayKey, patch: settings });
       let displayState = null;
