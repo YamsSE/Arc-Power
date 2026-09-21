@@ -2116,22 +2116,21 @@ input[type="number"] {
 .tuning-card-result.result-ok { color: var(--success); }
 .tuning-card-result.result-error { color: var(--error); }
 
-/* Concept 16 Tuning workspace: presentation/telemetry read-only surface on
-   the left, existing writable controls grouped on the right. */
+/* Concept 16 Tuning workspace: a wide performance canvas above one unified
+   control surface. The existing control cards remain the source of truth for
+   selectors and handlers; these rules only change their presentation. */
 .tuning-workspace {
-  display: grid;
-  grid-template-columns: minmax(360px, 1.18fr) minmax(330px, .82fr);
-  align-items: start;
-  gap: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
 }
 .tuning-telemetry-surface {
-  position: sticky;
-  top: 12px;
   min-width: 0;
-  padding: 18px 20px;
-  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
-  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 95%, var(--accent) 5%), var(--bg-inset));
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent), var(--shadow);
+  padding: 18px 20px 16px;
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), color-mix(in srgb, var(--bg-inset) 95%, var(--bg-elev)));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent), 0 10px 26px color-mix(in srgb, #000 14%, transparent);
 }
 .tuning-telemetry-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
 .tuning-telemetry-heading .card-title { margin: 4px 0 3px; font-size: 18px; letter-spacing: -.015em; }
@@ -2145,34 +2144,61 @@ input[type="number"] {
   font: 700 10px/1 var(--mono);
   letter-spacing: .07em;
 }
-.tuning-telemetry-chart-wrap { position: relative; min-height: 250px; margin: 22px 0 12px 24px; }
-.tuning-telemetry-chart { display: block; width: 100%; height: 250px; overflow: visible; }
-.tuning-telemetry-plot { fill: color-mix(in srgb, var(--bg-inset) 92%, var(--accent)); }
-.tuning-telemetry-grid { stroke: color-mix(in srgb, var(--accent) 22%, var(--border-strong)); stroke-width: .55; vector-effect: non-scaling-stroke; }
-.tuning-telemetry-line { fill: none; stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.tuning-telemetry-chart-wrap { position: relative; min-height: 276px; margin: 18px 0 12px 24px; padding: 10px 10px 8px 0; border: 1px solid color-mix(in srgb, var(--border-strong) 68%, var(--accent)); border-radius: 8px; background: linear-gradient(180deg, color-mix(in srgb, var(--control-bg) 88%, var(--accent) 12%), var(--control-bg)); }
+.tuning-telemetry-chart { display: block; width: 100%; height: 276px; overflow: visible; }
+.tuning-telemetry-plot { fill: color-mix(in srgb, var(--control-bg) 92%, var(--accent)); }
+.tuning-telemetry-grid { stroke: color-mix(in srgb, var(--accent) 24%, var(--border-strong)); stroke-width: .55; vector-effect: non-scaling-stroke; }
+.tuning-telemetry-line { fill: none; stroke-width: 1.45; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 1.5px color-mix(in srgb, currentColor 55%, transparent)); }
 .tuning-telemetry-line.telemetry-util { stroke: var(--accent); }
-.tuning-telemetry-line.telemetry-temp { stroke: color-mix(in srgb, var(--accent) 44%, var(--text)); }
-.tuning-telemetry-line.telemetry-power { stroke: var(--error); }
+.tuning-telemetry-line.telemetry-temp { stroke: var(--warn); }
+.tuning-telemetry-line.telemetry-power { stroke: color-mix(in srgb, var(--error) 76%, var(--accent)); }
 .tuning-telemetry-line.telemetry-clock { stroke: var(--success); }
-.tuning-telemetry-axis { position: absolute; inset: 0 auto 0 -24px; display: flex; flex-direction: column; justify-content: space-between; padding: 1px 0; color: var(--text-dim); font: 10px var(--mono); pointer-events: none; }
+.tuning-telemetry-axis { position: absolute; inset: 10px auto 8px -24px; display: flex; flex-direction: column; justify-content: space-between; padding: 1px 0; color: var(--text-dim); font: 10px var(--mono); pointer-events: none; }
 .tuning-telemetry-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; color: var(--text-muted); font-size: 11px; }
 .tuning-telemetry-legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .tuning-telemetry-legend-item::before { width: 8px; height: 8px; border-radius: 50%; background: currentColor; content: ''; }
 .tuning-telemetry-legend-item.telemetry-util { color: var(--accent); }
-.tuning-telemetry-legend-item.telemetry-temp { color: color-mix(in srgb, var(--accent) 44%, var(--text)); }
-.tuning-telemetry-legend-item.telemetry-power { color: var(--error); }
+.tuning-telemetry-legend-item.telemetry-temp { color: var(--warn); }
+.tuning-telemetry-legend-item.telemetry-power { color: color-mix(in srgb, var(--error) 76%, var(--accent)); }
 .tuning-telemetry-legend-item.telemetry-clock { color: var(--success); }
 .tuning-telemetry-readouts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 18px; }
-.tuning-telemetry-readout { min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; background: color-mix(in srgb, var(--bg-inset) 76%, var(--bg-elev)); }
+.tuning-telemetry-readout { min-width: 0; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--border) 78%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--bg-inset) 82%, var(--bg-elev)); }
 .tuning-telemetry-label { display: block; overflow: hidden; color: var(--text-dim); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .tuning-telemetry-value { display: block; margin-top: 4px; color: var(--text); font: 650 13px var(--mono); white-space: nowrap; }
 .tuning-telemetry-note { margin: 12px 0 0; color: var(--text-dim); font-size: 10.5px; }
-.tuning-control-surface { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
-.tuning-control-surface .tuning-general-actions { position: sticky; top: -1px; }
+.tuning-control-surface {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 16px 18px 12px;
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 95%, var(--accent) 5%), var(--bg-elev));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 4%, transparent), 0 9px 24px color-mix(in srgb, #000 12%, transparent);
+}
+.tuning-control-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 2px 2px 12px; border-bottom: 1px solid color-mix(in srgb, var(--border-strong) 75%, transparent); }
+.tuning-control-heading .card-title { margin: 4px 0 0; font-size: 17px; letter-spacing: -.015em; }
+.tuning-control-context { flex: 0 0 auto; margin-top: 4px; color: var(--text-dim); font: 700 10px/1 var(--mono); letter-spacing: .07em; }
+.tuning-control-surface .tuning-general-actions { order: 3; position: relative; top: auto; z-index: auto; margin: 12px 0 0; padding: 10px 2px 0; border-top: 1px solid color-mix(in srgb, var(--border-strong) 75%, transparent); border-bottom: 0; background: transparent; }
+.tuning-control-surface .tuning-general-actions .floating-apply { position: static; left: auto; bottom: auto; z-index: auto; box-shadow: 0 4px 14px rgba(var(--accent-rgb), .2); }
+.tuning-control-surface .oc-stack { order: 2; gap: 0; }
+.tuning-control-surface .oc-card {
+  padding: 13px 2px 12px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.tuning-control-surface .oc-card:hover { border-color: color-mix(in srgb, var(--accent) 36%, var(--border)); background: color-mix(in srgb, var(--accent-soft) 55%, transparent); }
+.tuning-control-surface .oc-card::after { display: none; }
+.tuning-control-surface .oc-card-head { align-items: center; margin-bottom: 8px; }
+.tuning-control-surface .oc-card .card-title { font-size: 14px; }
+.tuning-control-surface .oc-slider-row { gap: 14px; }
+.tuning-control-surface .oc-card-actions { margin-top: 9px; padding-top: 8px; }
+.tuning-control-surface > .card:not(.oc-card) { order: 4; margin-top: 10px; }
 
 @media (max-width: 1050px) {
-  .tuning-workspace { grid-template-columns: minmax(0, 1fr); }
-  .tuning-telemetry-surface { position: relative; top: auto; }
   .tuning-control-surface { min-width: 0; }
 }
 @media (max-width: 620px) {

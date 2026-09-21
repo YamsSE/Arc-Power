@@ -286,7 +286,7 @@ function buildTuningTelemetry(ctx: PageContext): HTMLElement {
   );
   const surface = el('section', { class: 'card tuning-telemetry-surface', 'aria-label': 'Performance and tuning telemetry' }, [
     el('div', { class: 'tuning-telemetry-heading' }, [
-      el('div', {}, [el('span', { class: 'arc-section-kicker', text: 'READ-ONLY TELEMETRY' }), el('h2', { class: 'card-title', text: 'Performance & Tuning' }), el('p', { class: 'tuning-telemetry-copy', text: 'Live behavior from the selected GPU. Controls remain on the right.' })]),
+      el('div', {}, [el('span', { class: 'arc-section-kicker', text: 'READ-ONLY TELEMETRY' }), el('h2', { class: 'card-title', text: 'Performance & Tuning' }), el('p', { class: 'tuning-telemetry-copy', text: 'Live behavior from the selected GPU. Tune below without leaving the chart.' })]),
       el('span', { class: 'tuning-telemetry-live', text: 'LIVE' }),
     ]),
     el('div', { class: 'tuning-telemetry-chart-wrap' }, [chart, el('div', { class: 'tuning-telemetry-axis', 'aria-hidden': 'true' }, [el('span', { text: '100%' }), el('span', { text: '50%' }), el('span', { text: '0%' })])]),
@@ -1412,7 +1412,6 @@ export const tuningPage: Page = {
           ]),
         ]),
         el('div', { class: 'oc-slider-row' }, [
-          valueField,
           el('div', { class: 'oc-slider' }, [
             el('div', { class: 'oc-track-fill' }),
             el('input', {
@@ -1429,6 +1428,7 @@ export const tuningPage: Page = {
               },
             }),
           ]),
+          valueField,
           valueText,
         ]),
         ...(vfCurveEditorEl ? [vfCurveEditorEl] : []),
@@ -1918,11 +1918,18 @@ export const tuningPage: Page = {
         renderFanEditor(viewContainer, ctx);
         return;
       }
-      const controlSurface = el('div', { class: 'tuning-control-surface' }, [
-        generalActions,
+      const controlSurface = el('section', { class: 'card tuning-control-surface', 'aria-label': 'Tuning Controls' }, [
+        el('div', { class: 'tuning-control-heading' }, [
+          el('div', {}, [
+            el('span', { class: 'arc-section-kicker', text: 'CONTROL INSPECTOR' }),
+            el('h2', { class: 'card-title', text: 'Tuning Controls' }),
+          ]),
+          el('span', { class: 'tuning-control-context', text: 'SELECTED GPU' }),
+        ]),
         controls.length > 0
           ? el('div', { class: 'card-stack oc-stack' }, controls.map(buildCard))
           : el('div', { class: 'card', text: 'No overclocking controls are available on this device.' }),
+        generalActions,
 
         // M25: the Advanced (VRAM overclocking) section is REMOVED - VRAM
         // now lives in the main card stack (CONTROL_ORDER) below Core-Offset
