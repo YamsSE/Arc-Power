@@ -16,9 +16,10 @@ import { mkdir, cp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { prepareArcPowerCacheSync } from './cache-lifecycle.js';
-import { isElevated } from './elevation.js';
+import { getElevationStatus, isElevated } from './elevation.js';
 import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.js';
 import { detectRtssInstallation, installRtss } from './rtss-install.js';
+import { launchRtss } from './rtss-startup.js';
 import {
   PRODUCT_NAME,
   INSTALLED_EXECUTABLE_NAME,
@@ -331,7 +332,7 @@ async function installArcPower(win, options = {}) {
   await mkdir(plan.installDir, { recursive: true });
   sendProgress(win, 20, 'Copying the Arc Power application');
   await copyPackagedPayload(sourceRoot, plan.installDir);
-  let rtss = { ok: true, installed: false, skipped: true, reason: 'not-requested' };
+  let rtss = { ok: true, installed: false, skipped: true, reason: 'not-requested', launch: { started: false, alreadyRunning: false, reason: 'not-requested' } };
   if (options.installRtss === true) {
     sendProgress(win, 64, 'Checking the RTSS FPS provider');
     rtss = await installRtss();
@@ -363,6 +364,29 @@ async function installArcPower(win, options = {}) {
   // caches, while a same-version reinstall leaves those caches alone.
   prepareArcPowerCacheSync(paths.appData, app.getVersion());
   sendProgress(win, 100, 'Arc Power is ready');
+  // RTSS remains optional and its HKCU Run registration is a separate user
+  // preference. Start it immediately only for the install handoff the user
+  // explicitly requested, after verification and before Arc Power opens.
+  if (options.installRtss === true && plan.launchAfterInstall && rtss.ok === true && rtss.installed === true) {
+    try {
+      sendProgress(win, 100, 'Starting the RTSS FPS provider');
+      const elevation = getElevationStatus();
+      // A verified non-elevated installer may start a per-user RTSS copy. An
+      // elevated or unknown installer may only start a canonical machine
+      // install; an elevation-probe failure must never widen that boundary.
+      rtss = {
+        ...rtss,
+        launch: await launchRtss({
+          allowUserWritablePath: elevation.verified === true && elevation.elevated !== true,
+        }),
+      };
+    } catch (error) {
+      rtss = {
+        ...rtss,
+        launch: { started: false, alreadyRunning: false, reason: 'launch-failed', detail: String(error?.message ?? error) },
+      };
+    }
+  }
   if (plan.launchAfterInstall) {
     await launchInstalledApp(plan.executablePath, plan.installDir);
   }

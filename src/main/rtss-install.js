@@ -38,7 +38,7 @@ const RTSS_WINGET_NAME_LIST_ARGS = Object.freeze([
 ]);
 
 const defaultExecFile = promisify(execFile);
-const RTSS_EXE_NAME = 'RTSS.exe';
+export const RTSS_EXE_NAME = 'RTSS.exe';
 
 function unique(values) {
   return [...new Set(values.filter((value) => typeof value === 'string' && value.length > 0))];

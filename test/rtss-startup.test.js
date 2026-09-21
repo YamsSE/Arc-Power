@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createRtssStartup, createMockRtssStartup, resolveRtssExecutablePath, RTSS_STARTUP_KEY, RTSS_STARTUP_VALUE_NAME } from '../src/main/rtss-startup.js';
+import { acquireRtssLaunchLease, createRtssStartup, createMockRtssStartup, isTrustedRtssExecutablePath, launchRtss, resolveRtssExecutablePath, RTSS_STARTUP_KEY, RTSS_STARTUP_VALUE_NAME } from '../src/main/rtss-startup.js';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
 import { createMockStartup } from '../src/main/startup.js';
 
@@ -33,6 +33,170 @@ test('RTSS path resolution prefers known installed locations and supports runnin
   assert.equal(fallback, RTSS);
 });
 
+test('immediate RTSS launch starts a discovered executable detached and unreferences it', async () => {
+  const calls = [];
+  const child = {
+    once(event, handler) {
+      calls.push(event);
+      if (event === 'spawn') queueMicrotask(handler);
+      return this;
+    },
+    unref() { calls.push('unref'); },
+  };
+  const result = await launchRtss({
+    platform: 'win32',
+    env: { ProgramFiles: 'C:\\PF' },
+    exists: (filePath) => filePath === 'C:\\PF\\RivaTuner Statistics Server\\RTSS.exe',
+    getRunningProcessImagePath: async () => null,
+    getTrustedProgramFilesRoots: async () => ['C:\\PF'],
+    realpath: (filePath) => filePath,
+    lstat: () => ({ isSymbolicLink: () => false }),
+    spawnProcess: (...args) => { calls.push(args); return child; },
+  });
+  assert.equal(result.started, true);
+  assert.equal(result.reason, 'started');
+  assert.equal(calls.at(-1), 'unref');
+  assert.equal(calls[0][0], 'C:\\PF\\RivaTuner Statistics Server\\RTSS.exe');
+  assert.deepEqual(calls[0][2], { detached: true, stdio: 'ignore', windowsHide: false });
+});
+
+test('immediate RTSS launch skips an already-running process and missing paths honestly', async () => {
+  let spawns = 0;
+  const running = await launchRtss({
+    platform: 'win32',
+    getRunningProcessImagePath: async () => RTSS,
+    spawnProcess: () => { spawns += 1; },
+  });
+  assert.deepEqual(running, { started: false, alreadyRunning: true, executablePath: RTSS, reason: 'already-running' });
+  const missing = await launchRtss({
+    platform: 'win32',
+    env: {},
+    exists: () => false,
+    getRunningProcessImagePath: async () => null,
+    spawnProcess: () => { spawns += 1; },
+  });
+  assert.equal(missing.reason, 'executable-not-found');
+  assert.equal(spawns, 0);
+});
+
+test('immediate RTSS launch reports a child-process failure without throwing', async () => {
+  const child = {
+    once(event, handler) {
+      if (event === 'error') queueMicrotask(() => handler(new Error('access denied')));
+      return this;
+    },
+  };
+  const result = await launchRtss({
+    platform: 'win32',
+    env: { ProgramFiles: 'C:\\PF' },
+    exists: (filePath) => filePath === 'C:\\PF\\RivaTuner Statistics Server\\RTSS.exe',
+    getRunningProcessImagePath: async () => null,
+    getTrustedProgramFilesRoots: async () => ['C:\\PF'],
+    realpath: (filePath) => filePath,
+    lstat: () => ({ isSymbolicLink: () => false }),
+    spawnProcess: () => child,
+  });
+  assert.equal(result.reason, 'launch-failed');
+  assert.match(result.detail, /access denied/);
+});
+
+test('immediate RTSS launch refuses a user-writable path by default', async () => {
+  let spawns = 0;
+  const localPath = 'C:\\Users\\Tester\\AppData\\Local\\RivaTuner Statistics Server\\RTSS.exe';
+  const result = await launchRtss({
+    platform: 'win32',
+    env: { LOCALAPPDATA: 'C:\\Users\\Tester\\AppData\\Local' },
+    exists: (filePath) => filePath === localPath,
+    getRunningProcessImagePath: async () => null,
+    spawnProcess: () => { spawns += 1; },
+  });
+  assert.equal(result.reason, 'untrusted-location');
+  assert.equal(spawns, 0);
+});
+
+test('trusted RTSS paths ignore caller-controlled ProgramFiles roots', () => {
+  const fakeFs = { realpath: (filePath) => filePath, lstat: () => ({ isSymbolicLink: () => false }) };
+  const userRoot = 'C:\\Users\\Tester\\AppData\\Local';
+  assert.equal(isTrustedRtssExecutablePath(
+    `${userRoot}\\RivaTuner Statistics Server\\RTSS.exe`,
+    { ProgramFiles: userRoot, 'ProgramFiles(x86)': userRoot },
+    ['C:\\Program Files (x86)', 'C:\\Program Files'],
+    fakeFs,
+  ), false);
+  assert.equal(isTrustedRtssExecutablePath(
+    'C:\\Program Files (x86)\\RivaTuner Statistics Server\\RTSS.exe',
+    { ProgramFiles: userRoot },
+    ['C:\\Program Files (x86)'],
+    fakeFs,
+  ), true);
+});
+
+test('trusted RTSS paths reject a parent junction or reparse point', () => {
+  const junction = 'C:\\Program Files (x86)\\RivaTuner Statistics Server';
+  const fakeFs = {
+    realpath: (filePath) => filePath.toLowerCase() === junction.toLowerCase()
+      ? 'C:\\Users\\Tester\\AppData\\Local\\RivaTuner Statistics Server'
+      : filePath,
+    lstat: () => ({ isSymbolicLink: () => false }),
+  };
+  assert.equal(isTrustedRtssExecutablePath(
+    `${junction}\\RTSS.exe`,
+    {},
+    ['C:\\Program Files (x86)'],
+    fakeFs,
+  ), false);
+});
+
+test('concurrent immediate RTSS launch requests share one child process', async () => {
+  let spawns = 0;
+  const child = {
+    once(event, handler) {
+      if (event === 'spawn') queueMicrotask(handler);
+      return this;
+    },
+    unref() {},
+  };
+  const options = {
+    platform: 'win32',
+    env: { ProgramFiles: 'C:\\PF' },
+    exists: (filePath) => filePath === 'C:\\PF\\RivaTuner Statistics Server\\RTSS.exe',
+    getRunningProcessImagePath: async () => null,
+    getTrustedProgramFilesRoots: async () => ['C:\\PF'],
+    realpath: (filePath) => filePath,
+    lstat: () => ({ isSymbolicLink: () => false }),
+    spawnProcess: () => { spawns += 1; return child; },
+  };
+  const [first, second] = await Promise.all([launchRtss(options), launchRtss(options)]);
+  assert.equal(first.reason, 'started');
+  assert.equal(second.reason, 'started');
+  assert.equal(spawns, 1);
+});
+
+test('RTSS launch lease blocks a separate process during the probe-to-spawn window', async () => {
+  let present = false;
+  const fs = {
+    async mkdir() {},
+    async openFile() {
+      if (present) throw { code: 'EEXIST' };
+      present = true;
+      return { async close() {} };
+    },
+    async statFile() {
+      if (!present) throw { code: 'ENOENT' };
+      return { mtimeMs: 1000 };
+    },
+    async rmFile() { present = false; },
+  };
+  const first = await acquireRtssLaunchLease({ leasePath: 'C:\\Temp\\ArcPower-rtss-launch.lock', now: () => 1000, ...fs });
+  const second = await acquireRtssLaunchLease({ leasePath: 'C:\\Temp\\ArcPower-rtss-launch.lock', now: () => 1000, ...fs });
+  assert.equal(first.ok, true);
+  assert.deepEqual(second, { ok: false, reason: 'launch-in-progress' });
+  await first.release();
+  const third = await acquireRtssLaunchLease({ leasePath: 'C:\\Temp\\ArcPower-rtss-launch.lock', now: () => 1000, ...fs });
+  assert.equal(third.ok, true);
+  await third.release();
+});
+
 test('RTSS adapter enables/disables an independent quoted HKCU Run value', async () => {
   const fake = fakeRegistry();
   const startup = createRtssStartup({ platform: 'win32', exists: () => true, execFileAsync: fake.execFileAsync });
@@ -62,6 +226,18 @@ test('RTSS adapter can remove a custom-path registration after the process exits
   assert.equal(current.registered, true);
   const removed = await startup.set(false);
   assert.equal(removed.valueExists, false);
+});
+
+test('RTSS adapter exposes process availability separately from an installed path', async () => {
+  const startup = createRtssStartup({
+    platform: 'win32',
+    env: { 'ProgramFiles(x86)': 'C:\\Program Files (x86)' },
+    exists: () => true,
+    getRunningProcessImagePath: async () => null,
+    execFileAsync: fakeRegistry().execFileAsync,
+  });
+  assert.equal((await startup.get()).executablePath, RTSS);
+  assert.equal(await startup.isRunning(), false);
 });
 
 test('RTSS adapter exposes a stale custom registration as removable after uninstall', async () => {

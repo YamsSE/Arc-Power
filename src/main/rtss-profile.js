@@ -135,6 +135,7 @@ export function createRtssProfileController({
   platform = process.platform,
   executablePath = null,
   getExecutablePath = null,
+  isRunning = async () => true,
   exists = existsSync,
   load = (filePath) => koffi.load(filePath),
 } = {}) {
@@ -196,10 +197,23 @@ export function createRtssProfileController({
     return bindings;
   };
 
-  const readFrameLimitNow = async ({ executablePath: targetExecutablePath = null } = {}) => {
+  const frameLimiterAvailability = async () => {
     if (platform !== 'win32') {
       return { ok: false, available: false, source: 'igcl', error: 'RTSS requires Windows' };
     }
+    try {
+      if (typeof isRunning === 'function' && await isRunning() === true) return null;
+    } catch {
+      // A failed process probe is not proof that RTSS is available. Keep the
+      // Intel driver limiter as the safe fallback instead of claiming RTSS
+      // ownership from a DLL that may only be installed on disk.
+    }
+    return { ok: false, available: false, source: 'igcl', error: 'RTSS is not running' };
+  };
+
+  const readFrameLimitNow = async ({ executablePath: targetExecutablePath = null } = {}) => {
+    const unavailable = await frameLimiterAvailability();
+    if (unavailable) return unavailable;
     const api = bindings ?? await resolveBindings();
     if (!api || typeof api.setFlags !== 'function') {
       return { ok: false, available: false, source: 'igcl', error: 'RTSS frame limiter is unavailable' };
@@ -321,9 +335,8 @@ export function createRtssProfileController({
   };
 
   const applyFrameLimitNow = async ({ enabled = false, value = RTSS_FRAME_LIMIT_RANGE.default, executablePath: targetExecutablePath = null, removeProfile = false, rollbackToken = null } = {}) => {
-    if (platform !== 'win32') {
-      return { ok: false, used: false, fallback: true, source: 'igcl', error: 'RTSS requires Windows' };
-    }
+    const unavailable = await frameLimiterAvailability();
+    if (unavailable) return { ...unavailable, used: false, fallback: true };
     const api = bindings ?? await resolveBindings();
     if (!api || typeof api.setFlags !== 'function') {
       return { ok: false, used: false, fallback: true, source: 'igcl', error: 'RTSS frame limiter is unavailable' };
@@ -688,9 +701,8 @@ export function createRtssProfileController({
   };
 
   const restoreFrameLimitNow = async (restoreToken = null) => {
-    if (platform !== 'win32') {
-      return { ok: false, used: false, error: 'RTSS requires Windows' };
-    }
+    const unavailable = await frameLimiterAvailability();
+    if (unavailable) return { ...unavailable, used: false };
     if (!restoreToken || typeof restoreToken !== 'object' || typeof restoreToken.profile !== 'string') {
       return { ok: false, used: false, error: 'RTSS frame-limit rollback token is unavailable' };
     }

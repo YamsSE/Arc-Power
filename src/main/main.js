@@ -1436,7 +1436,14 @@ async function main() {
     // soon as the query lands, so every post-window consumer (the
     // renderer's listDevices + caps + sysinfo:get) sees the enriched
     // names exactly as before.
-    const sysinfoPromise = collectSysinfo({ timeoutMs: 10000 });
+    const sysinfoPromise = collectSysinfo({
+      timeoutMs: 10000,
+      // The first installed launch can race PowerShell/CIM initialization.
+      // Retry one degraded snapshot without changing the normal collector's
+      // one-query/cache contract used by other startup paths and tests.
+      retryOnDegraded: true,
+      retryTimeoutMs: 5000,
+    });
     let sysinfoLanded = false;
     const sysinfoResult = async () => {
       if (!sysinfoLanded) {
@@ -1465,6 +1472,7 @@ async function main() {
     // multi-GPU machine.  Keep each reader memoized, but merge every
     // identity-matched verdict into the corresponding OS controller.
     const driverReBars = new Map();
+    const driverReBarRetries = new Map();
     const rebarTargetKey = (target) => {
       if (typeof target?.deviceKey === 'string' && target.deviceKey.trim()) return `key:${target.deviceKey.trim().toUpperCase()}`;
       const vendor = typeof target?.pciVendorId === 'string' ? target.pciVendorId : '';
@@ -1487,9 +1495,24 @@ async function main() {
             reader = createDriverReBar(rawBackend, target);
             driverReBars.set(key, reader);
           }
-          const verdict = await reader();
+          let verdict = await reader();
+          if (verdict === null || verdict === undefined) {
+            // createDriverReBar deliberately memoizes a null verdict for its
+            // own session contract. A new reader is the bounded main-path
+            // recovery for a transient first IGCL read; concurrent callers
+            // share the same retry promise and never fan out duplicate reads.
+            let retry = driverReBarRetries.get(key);
+            if (!retry) {
+              const retryReader = createDriverReBar(rawBackend, target);
+              driverReBars.set(key, retryReader);
+              retry = retryReader();
+              driverReBarRetries.set(key, retry);
+            }
+            verdict = await retry;
+          }
           if (verdict !== null && verdict !== undefined) {
-            result = applyDriverReBar(result, verdict, reader.target ?? target);
+            const resolvedReader = driverReBars.get(key);
+            result = applyDriverReBar(result, verdict, resolvedReader?.target ?? reader.target ?? target);
           }
         }
         return result;
@@ -2368,6 +2391,7 @@ async function main() {
     ? null
     : createRtssProfileController({
         getExecutablePath: async () => (await rtssStartup.get())?.executablePath ?? null,
+        isRunning: async () => await rtssStartup.isRunning?.() === true,
       });
   // The product telemetry HUD is rendered by RTSS itself. Keep the FPS lane
   // mutable because the foreground/process ownership seam is created after
