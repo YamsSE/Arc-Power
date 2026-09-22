@@ -871,7 +871,9 @@ html, body {
 .dashboard-pulse-lanes { display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; }
 .dashboard-pulse-lane { min-width: 0; padding: 13px 15px; border: 1px solid #2a4863; border-radius: 5px; background: linear-gradient(135deg, #0b1b2d 0%, #091525 58%, #0a1727 100%); box-shadow: inset 0 1px 0 rgba(100, 191, 227, .06); }
 .dashboard-pulse-hud { display: grid; grid-template-columns: minmax(300px, .8fr) minmax(420px, 1.65fr); align-items: stretch; gap: 16px; }
-.dashboard-pulse-visual { display: flex; min-width: 0; flex-direction: column; align-items: center; justify-content: center; padding: 4px 8px; border-right: 1px solid #29455e; background: radial-gradient(circle at 50% 10%, rgba(53, 200, 244, .08), transparent 48%); }
+.dashboard-pulse-visual { position: relative; isolation: isolate; display: flex; min-width: 0; flex-direction: column; align-items: center; justify-content: center; padding: 4px 8px; border-right: 1px solid #29455e; background: transparent; }
+.dashboard-pulse-visual::before { content: ''; position: absolute; top: -14px; left: 12%; z-index: 0; width: 76%; height: 184px; border-radius: 50%; background: radial-gradient(ellipse at center, rgba(53, 200, 244, .11) 0%, rgba(53, 200, 244, .045) 46%, transparent 76%); filter: blur(10px); pointer-events: none; }
+.dashboard-pulse-visual > * { position: relative; z-index: 1; }
 .dashboard-pulse-identity { min-width: 0; display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 8px; }
 .dashboard-pulse-identity .hardware-card-icon { width: 48px; height: 48px; min-width: 48px; min-height: 48px; flex: 0 0 48px; padding: 0; border-color: #2a4964; background: #0c1a2b; }
 .dashboard-pulse-identity-copy { min-width: 0; }
@@ -2197,7 +2199,9 @@ input[type="number"] {
 .tuning-control-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 2px 2px 12px; border-bottom: 1px solid color-mix(in srgb, var(--border-strong) 75%, transparent); }
 .tuning-control-heading .card-title { margin: 4px 0 0; font-size: 17px; letter-spacing: -.015em; }
 .tuning-control-context { flex: 0 0 auto; margin-top: 4px; color: var(--text-dim); font: 700 10px/1 var(--mono); letter-spacing: .07em; }
-.tuning-control-surface .tuning-general-actions { order: 3; position: relative; top: auto; z-index: auto; margin: 12px 0 0; padding: 10px 2px 0; border-top: 1px solid color-mix(in srgb, var(--border-strong) 75%, transparent); border-bottom: 0; background: transparent; }
+.tuning-control-surface .tuning-general-actions { order: 3; position: relative; top: auto; z-index: auto; box-sizing: border-box; min-height: 42px; margin: 12px 0 0; padding: 10px 4px 6px; border: 0; border-top: 1px solid color-mix(in srgb, var(--border-strong) 75%, transparent); background: transparent; }
+.tuning-control-surface .tuning-general-actions .tuning-pending-summary { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.2; }
+.tuning-control-surface .tuning-general-actions > .btn { flex: 0 0 auto; }
 .tuning-control-surface .tuning-general-actions .floating-apply { position: static; left: auto; bottom: auto; z-index: auto; }
 .tuning-control-surface .oc-stack { order: 2; gap: 7px; padding-top: 12px; }
 .tuning-control-surface .oc-card {
