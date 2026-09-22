@@ -875,7 +875,7 @@ html, body {
 .dashboard-pulse-visual::before { content: ''; position: absolute; top: -14px; left: 12%; z-index: 0; width: 76%; height: 184px; border-radius: 50%; background: radial-gradient(ellipse at center, rgba(53, 200, 244, .11) 0%, rgba(53, 200, 244, .045) 46%, transparent 76%); filter: blur(10px); pointer-events: none; }
 .dashboard-pulse-visual > * { position: relative; z-index: 1; }
 .dashboard-pulse-identity { min-width: 0; display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 8px; }
-.dashboard-pulse-identity .hardware-card-icon { width: 48px; height: 48px; min-width: 48px; min-height: 48px; flex: 0 0 48px; padding: 0; border-color: #2a4964; background: #0c1a2b; }
+.dashboard-pulse-identity .hardware-card-icon { width: 48px; height: 48px; min-width: 48px; min-height: 48px; flex: 0 0 48px; padding: 0; border-color: #000; background: #0c1a2b; }
 .dashboard-pulse-identity-copy { min-width: 0; }
 .dashboard-pulse-identity-copy .card-title { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .dashboard-pulse-identity-note { display: block; margin-top: 4px; color: var(--text-dim); font: 9px var(--mono); text-transform: uppercase; }
