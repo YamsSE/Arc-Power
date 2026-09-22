@@ -26,6 +26,7 @@ import { formatGpuMemoryGb } from '../pure/gpu-memory.ts';
 import { cpuIconKeyOf, cpuIconPath, gpuIconKeyOf, gpuIconPath } from '../pure/hardware-icons.ts';
 import { deviceHardwareKey } from '../pure/device.ts';
 import { dashboardDeviceStatusLabel, dashboardGpuOrder } from '../pure/dashboard.ts';
+import { dashboardRetailAssetPath } from '../pure/dashboard-retail-assets.ts';
 import { aibOf, aibOfPnpDeviceId } from '../pure/aib.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
@@ -308,26 +309,6 @@ function dashboardActiveDevice(state: AppState): AppState['devices'][number] | n
   return ordered.find((device) => device.id === state.deviceId) ?? ordered[0] ?? null;
 }
 
-function dashboardRetailAssetPath(name: string): string | null {
-  const model = name.toLowerCase();
-  // Keep these visuals tied to recognizable reference-card families. The
-  // telemetry name is the only input here; no device identity or Apply path
-  // is changed by the presentation mapping.
-  if (/\b(?:a750|a770)\b/.test(model)) return '../assets/dashboard/gpu/intel-arc-a770.png';
-  if (/\b(?:b570|b580)\b/.test(model)) return '../assets/dashboard/gpu/intel-arc-b580.png';
-  if (/\bigpu\b|\b(?:uhd|iris)\b|\bintegrated\b|\bintel graphics\b/.test(model)) {
-    return '../assets/dashboard/gpu/intel-igpu-chip.png';
-  }
-  if (/\brtx\b/.test(model)) return '../assets/dashboard/gpu/nvidia-rtx-reference.png';
-  if (/\bgtx\b/.test(model)) return '../assets/dashboard/gpu/nvidia-gtx-reference.png';
-  if (/\bvega\b/.test(model)) return '../assets/dashboard/gpu/amd-radeon-vega-reference.png';
-  if (/\brx\s*?(?:7|9)\d{3}\b/.test(model)) return '../assets/dashboard/gpu/amd-radeon-rx-7000-9000-reference.png';
-  if (/\brx\s*?[56]\d{3}\b/.test(model)) return '../assets/dashboard/gpu/amd-radeon-rx-5000-6000-reference.png';
-  if (/\brx\s*?[45]\d{2}\b/.test(model)) return '../assets/dashboard/gpu/amd-radeon-rx-480-580-reference.png';
-  if (/\br9\s*[23]\d{2}\b/.test(model)) return '../assets/dashboard/gpu/amd-radeon-r9-200-300-reference.png';
-  return null;
-}
-
 type DashboardRetailArtVariant = 'discrete' | 'integrated';
 
 function dashboardRetailArt(variant: DashboardRetailArtVariant, label: string): SVGSVGElement {
@@ -578,7 +559,18 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
     el('div', { class: 'dashboard-pulse-lanes' }, entries.map((entry) => pulseLaneElement(
       pulseLaneFor(entry.key), entry.label, entry.name,
       entry.device ? gpuIconPath(gpuIconKeyOf(entry.device.name, entry.device.gpuVendor, entry.device)) : null,
-      entry.device ? dashboardRetailAssetPath(entry.name) : null,
+      entry.device ? (() => {
+        const aib = aibOf(entry.device.pciSubsysVendorId, entry.device.pciSubsysId);
+        return dashboardRetailAssetPath({
+          name: entry.device.name,
+          gpuVendor: entry.device.gpuVendor,
+          integrated: entry.device.integrated,
+          mobile: entry.device.mobile,
+          aibVendor: aib?.vendor,
+          aibVendorId: entry.device.pciSubsysVendorId,
+          aibModel: aib?.model,
+        });
+      })() : null,
       entry.device && (entry.device.integrated === true || /\b(?:uhd|iris|vega|integrated|igpu)\b/i.test(entry.device.name)) ? 'integrated' : 'discrete',
       entry.sample,
       entry.vramCapacityBytes === null ? null : entry.vramCapacityBytes / (1024 ** 3),

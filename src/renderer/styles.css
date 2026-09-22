@@ -882,7 +882,7 @@ html, body {
 .dashboard-retail-art { display: block; width: 218px; height: 86px; margin-top: 4px; overflow: visible; }
 .dashboard-retail-art-slot { position: relative; display: grid; place-items: center; width: 100%; min-height: 184px; }
 .dashboard-retail-art-slot .dashboard-retail-art { grid-area: 1 / 1; }
-.dashboard-retail-art-asset { position: absolute; z-index: 1; width: min(100%, 300px); height: 180px; object-fit: contain; border: 0; border-radius: 0; background: transparent; opacity: 1; }
+.dashboard-retail-art-asset { position: absolute; inset: 0; z-index: 1; width: min(100%, 300px); height: 180px; margin: auto; object-fit: contain; object-position: center; border: 0; border-radius: 0; background: transparent; opacity: 1; }
 .dashboard-retail-art-board, .dashboard-retail-art-package { fill: #10263b; stroke: #4aa6c7; stroke-width: 1.4; }
 .dashboard-retail-art-bracket, .dashboard-retail-art-edge, .dashboard-retail-art-pins { fill: none; stroke: #5b83a0; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .dashboard-retail-art-fan { fill: #0a1828; stroke: #55c8e8; stroke-width: 1.4; }
@@ -902,7 +902,7 @@ html, body {
 .dashboard-pulse-live-dot { width: 6px; height: 6px; border-radius: 50%; background: #52d5ad; }
 .dashboard-pulse-grid { display: grid; grid-template-columns: 1fr; gap: 6px; }
 .dashboard-pulse-metric { --pulse-metric-color: #35c8f4; position: relative; min-width: 0; min-height: 57px; overflow: hidden; padding: 7px 10px 6px; border: 1px solid color-mix(in srgb, var(--pulse-metric-color) 24%, #29435e); border-radius: 4px; background: linear-gradient(135deg, color-mix(in srgb, var(--pulse-metric-color) 7%, #102136), #0b192a 72%); box-shadow: inset 0 1px 0 rgba(150, 220, 242, .06); }
-.dashboard-pulse-metric::before { content: ''; position: absolute; top: 2px; left: 10px; z-index: 1; width: 34px; height: 2px; border-radius: 999px; background: var(--pulse-metric-color); box-shadow: 0 0 8px color-mix(in srgb, var(--pulse-metric-color) 58%, transparent); opacity: .86; }
+.dashboard-pulse-metric::before { content: ''; position: absolute; top: 0; left: 10px; z-index: 1; width: 34px; height: 2px; border-radius: 999px; background: var(--pulse-metric-color); box-shadow: 0 0 8px color-mix(in srgb, var(--pulse-metric-color) 58%, transparent); opacity: .86; pointer-events: none; }
 .dashboard-pulse-metric[data-pulse-metric="temperature"] { --pulse-metric-color: #f3b35b; }
 .dashboard-pulse-metric[data-pulse-metric="power"] { --pulse-metric-color: #b698f4; }
 .dashboard-pulse-metric[data-pulse-metric="vram"] { --pulse-metric-color: #52d5ad; }
