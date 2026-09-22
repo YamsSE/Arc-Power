@@ -73,12 +73,13 @@ const DASHBOARD_PULSE: Array<{ id: DashboardPulseId; label: string; unit: string
   { id: 'gpu-util', label: 'GPU utilization', unit: '%', color: TELEMETRY_PULSE_COLORS.utilization },
   { id: 'temperature', label: 'GPU temperature', unit: '°C', color: TELEMETRY_PULSE_COLORS.temperature },
   { id: 'power', label: 'GPU power', unit: 'W', color: TELEMETRY_PULSE_COLORS.power },
-  { id: 'vram', label: 'VRAM in use', unit: 'GB', color: TELEMETRY_PULSE_COLORS.memory },
+  { id: 'vram', label: 'VRAM in use', unit: 'GiB', color: TELEMETRY_PULSE_COLORS.memory },
 ];
 
 const DASHBOARD_HISTORY_LIMIT = TELEMETRY_HISTORY_POINTS;
 type DashboardPulseLane = {
   key: string;
+  vramCapacityGiB: number | null;
   history: TelemetrySample[];
   startedAt: number;
   valueNodes: Map<DashboardPulseId, HTMLElement>;
@@ -129,11 +130,41 @@ function dashboardSampleFor(state: AppState, device: { id: number; deviceKey?: s
   return state.latestSamples?.[key] ?? (state.deviceId === device.id ? state.latestSample : null);
 }
 
+function dashboardVramCapacityBytes(
+  device: {
+    integrated?: boolean | null;
+    mobile?: boolean | null;
+    vramBytes?: number | null;
+    sharedMemoryBytes?: number | null;
+  } | null | undefined,
+  sharedMemoryFallbackBytes: number | null = null,
+): number | null {
+  if (!device) return null;
+  if (typeof device.vramBytes === 'number' && Number.isFinite(device.vramBytes) && device.vramBytes > 0) {
+    return device.vramBytes;
+  }
+  const sharedCapacity = typeof device.sharedMemoryBytes === 'number'
+    && Number.isFinite(device.sharedMemoryBytes)
+    && device.sharedMemoryBytes > 0
+    ? device.sharedMemoryBytes
+    : null;
+  const fallbackCapacity = typeof sharedMemoryFallbackBytes === 'number'
+    && Number.isFinite(sharedMemoryFallbackBytes)
+    && sharedMemoryFallbackBytes > 0
+    ? sharedMemoryFallbackBytes
+    : null;
+  if (sharedCapacity !== null && (device.integrated === true || device.mobile === true || fallbackCapacity !== null)) {
+    return sharedCapacity;
+  }
+  return fallbackCapacity;
+}
+
 function pulseLaneFor(key: string): DashboardPulseLane {
   const existing = dashboardPulseLanes.get(key);
   if (existing) return existing;
   const created: DashboardPulseLane = {
     key,
+    vramCapacityGiB: null,
     history: [],
     startedAt: Date.now(),
     valueNodes: new Map(),
@@ -164,7 +195,7 @@ function pulseSampleValue(id: DashboardPulseId, sample: TelemetrySample): number
   if (id === 'temperature') return sample.tempC;
   if (id === 'power') return sample.powerW;
   return typeof sample.gpuMemUsedBytes === 'number' && Number.isFinite(sample.gpuMemUsedBytes)
-    ? sample.gpuMemUsedBytes / 1e9
+    ? sample.gpuMemUsedBytes / (1024 ** 3)
     : undefined;
 }
 
@@ -180,8 +211,12 @@ function pulseHistoryValues(lane: DashboardPulseLane, id: DashboardPulseId): num
 }
 
 function pulseRangeValue(id: DashboardPulseId, value: number): string {
-  if (id === 'power' || id === 'vram') return value.toFixed(1);
+  if (id === 'vram') return Number.isInteger(value) ? String(value) : value.toFixed(1);
   return String(Math.round(value));
+}
+
+function pulseHoverValue(id: DashboardPulseId, value: number): string {
+  return id === 'power' || id === 'vram' ? value.toFixed(1) : String(Math.round(value));
 }
 
 function pulseGraphPoints(lane: DashboardPulseLane, id: DashboardPulseId): Array<{ t: number; value: number }> {
@@ -190,15 +225,15 @@ function pulseGraphPoints(lane: DashboardPulseLane, id: DashboardPulseId): Array
     .filter((point): point is { t: number; value: number } => typeof point.value === 'number' && Number.isFinite(point.value));
 }
 
-function pulseGraphRange(id: DashboardPulseId, values: number[]): { min: number; max: number } | null {
-  if (values.length === 0) return null;
-  const observedMax = Math.max(...values);
-  const max = id === 'gpu-util' || id === 'temperature'
-    ? 100
-    : id === 'power'
-      ? 400
-      : Math.max(1, Math.ceil(observedMax * 1.2));
-  return { min: 0, max: Math.max(max, observedMax) };
+function pulseGraphRange(lane: DashboardPulseLane, id: DashboardPulseId): { min: number; max: number } {
+  return {
+    min: 0,
+    max: id === 'gpu-util' || id === 'temperature'
+      ? 100
+      : id === 'power'
+        ? 400
+        : lane.vramCapacityGiB ?? 1,
+  };
 }
 
 function updatePulsePath(lane: DashboardPulseLane, id: DashboardPulseId): void {
@@ -206,18 +241,11 @@ function updatePulsePath(lane: DashboardPulseLane, id: DashboardPulseId): void {
   const area = lane.areaPathNodes.get(id);
   if (!path) return;
   const values = pulseHistoryValues(lane, id);
-  const graphRange = pulseGraphRange(id, values);
+  const graphRange = pulseGraphRange(lane, id);
   const minNode = lane.rangeMinNodes.get(id);
   const maxNode = lane.rangeMaxNodes.get(id);
-  if (values.length === 0) {
-    if (minNode) minNode.textContent = '—';
-    if (maxNode) maxNode.textContent = '—';
-  } else {
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    if (minNode) minNode.textContent = pulseRangeValue(id, min);
-    if (maxNode) maxNode.textContent = pulseRangeValue(id, max);
-  }
+  if (minNode) minNode.textContent = pulseRangeValue(id, graphRange.min);
+  if (maxNode) maxNode.textContent = pulseRangeValue(id, graphRange.max);
   if (values.length < 2) {
     const y = values.length === 1 && graphRange
       ? 34 - ((values[0] - graphRange.min) / Math.max(0.001, graphRange.max - graphRange.min)) * 30
@@ -265,7 +293,7 @@ function updatePulseLane(lane: DashboardPulseLane, sample: TelemetrySample | nul
   if (lane.gaugeValueNode) lane.gaugeValueNode.textContent = utilization === undefined ? '-' : `${Math.round(utilization)}%`;
   if (lane.gaugeRingNode) {
     const progress = Math.max(0, Math.min(100, utilization ?? 0));
-    lane.gaugeRingNode.setAttribute('stroke-dashoffset', `${264 - (264 * progress) / 100}`);
+    lane.gaugeRingNode.setAttribute('stroke-dashoffset', `${100 - progress}`);
   }
   for (const metric of DASHBOARD_PULSE) {
     const valueNode = lane.valueNodes.get(metric.id);
@@ -339,7 +367,9 @@ function pulseLaneElement(
   gpuRetailAsset: string | null,
   retailVariant: DashboardRetailArtVariant,
   sample: TelemetrySample | null,
+  vramCapacityGiB: number | null,
 ): HTMLElement {
+  lane.vramCapacityGiB = vramCapacityGiB;
   lane.valueNodes.clear();
   lane.pathNodes.clear();
   lane.areaPathNodes.clear();
@@ -404,7 +434,7 @@ function pulseLaneElement(
       if (!point) return;
       crosshair.style.left = `${ratio * 100}%`;
       crosshair.hidden = false;
-      tooltip.textContent = `${pulseRangeValue(metric.id, point.value)} ${metric.unit}`;
+      tooltip.textContent = `${pulseHoverValue(metric.id, point.value)} ${metric.unit}`;
       tooltip.style.left = `${ratio * 100}%`;
       tooltip.style.transform = ratio > .55 ? 'translateX(-100%)' : 'none';
       tooltip.hidden = false;
@@ -447,8 +477,9 @@ function pulseLaneElement(
     fill: 'none',
     'stroke-width': 7,
     'stroke-linecap': 'round',
-    'stroke-dasharray': 264,
-    'stroke-dashoffset': 264,
+    pathLength: 100,
+    'stroke-dasharray': '100 100',
+    'stroke-dashoffset': 100,
     'aria-hidden': 'true',
   });
   const gaugeSvg = svgEl('svg', { class: 'dashboard-pulse-gauge-svg', viewBox: '0 0 104 104', 'aria-hidden': 'true' });
@@ -469,12 +500,12 @@ function pulseLaneElement(
     el('div', { class: 'dashboard-pulse-identity-copy' }, [
       el('span', { class: 'dashboard-eyebrow', text: gpuLabel }),
       el('h3', { class: 'card-title', text: gpuName || 'GPU' }),
-      el('span', { class: 'dashboard-pulse-identity-note', text: 'Live device telemetry' }),
+      el('span', { class: 'dashboard-pulse-identity-note', text: 'Active device' }),
     ]),
   ]);
   const liveStatus = el('div', { class: 'dashboard-pulse-live-status' }, [
     el('span', { class: 'dashboard-pulse-live-dot', 'aria-hidden': 'true' }),
-    el('span', { text: 'ONLINE / LIVE TELEMETRY' }),
+    el('span', { text: 'ONLINE' }),
   ]);
   const retailArt = gpuRetailAsset ? null : dashboardRetailArt(retailVariant, `${gpuLabel} ${retailVariant} GPU artwork`);
   const retailAsset = gpuRetailAsset
@@ -516,8 +547,22 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
         name: activeDevice.name,
         key: dashboardDeviceKey(activeDevice),
         sample: dashboardSampleFor(state, activeDevice),
+        vramCapacityBytes: dashboardVramCapacityBytes(
+          activeDevice,
+          activeDevice.integrated === true || activeDevice.mobile === true ? state.sysinfo?.ram.totalBytes ?? null : null,
+        ),
       }]
-    : [{ device: null, label: 'System', name: state.osGpu?.name ?? 'No GPU selected', key: 'system', sample: state.latestSample }];
+    : [{
+        device: null,
+        label: 'System',
+        name: state.osGpu?.name ?? 'No GPU selected',
+        key: 'system',
+        sample: state.latestSample,
+        vramCapacityBytes: dashboardVramCapacityBytes(
+          state.osGpu,
+          state.osGpu?.vramBytes == null ? state.osGpu?.sharedMemoryBytes ?? state.sysinfo?.ram.totalBytes ?? null : null,
+        ),
+      }];
   const activeKeys = new Set(entries.map((entry) => entry.key));
   for (const key of dashboardPulseLanes.keys()) {
     if (!activeKeys.has(key)) dashboardPulseLanes.delete(key);
@@ -525,8 +570,7 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
   return el('section', { class: 'card dashboard-pulse-card', dataset: { gpuCount: String(devices.length) } }, [
     el('div', { class: 'dashboard-pulse-heading' }, [
       el('div', {}, [
-        el('span', { class: 'dashboard-eyebrow', text: 'GPU TELEMETRY / LIVE' }),
-        el('h2', { class: 'card-title', text: 'Live system context' }),
+        el('h2', { class: 'card-title', text: 'GPU Telemetry: Live Monitoring' }),
       ]),
       el('span', { class: `dashboard-pulse-device${entries.length ? '' : ' text-unknown' }`, text: `${entries.length} GPU${entries.length === 1 ? '' : 's'}` }),
     ]),
@@ -536,6 +580,7 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
       entry.device ? dashboardRetailAssetPath(entry.name) : null,
       entry.device && (entry.device.integrated === true || /\b(?:uhd|iris|vega|integrated|igpu)\b/i.test(entry.device.name)) ? 'integrated' : 'discrete',
       entry.sample,
+      entry.vramCapacityBytes === null ? null : entry.vramCapacityBytes / (1024 ** 3),
     ))),
   ]);
 }
@@ -1063,8 +1108,8 @@ export const dashboardPage: Page = {
       el('header', { class: 'dashboard-hud-header' }, [
         el('div', { class: 'dashboard-hud-header-copy' }, [
           el('span', { class: 'dashboard-eyebrow', text: 'ARC POWER / SYSTEM MONITOR' }),
-          el('h1', { class: 'dashboard-hud-title', text: 'Neon Telemetry HUD' }),
-          el('p', { class: 'dashboard-hud-subtitle', text: 'Live system context / physical GPU telemetry' }),
+          el('h1', { class: 'dashboard-hud-title', text: 'Arc Power Dashboard' }),
+          el('p', { class: 'dashboard-hud-subtitle', text: 'Live system context / physical GPU data' }),
         ]),
         el('div', { class: 'dashboard-hud-header-controls' }, [
           ...(deviceSelect ? [
