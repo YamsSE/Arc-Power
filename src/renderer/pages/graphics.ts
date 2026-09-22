@@ -113,7 +113,6 @@ const DISPLAY_VRR_NOTE = 'Choose whether variable refresh rate is enabled.';
 const DISPLAY_SLIDERS_NOTE = 'IGS-style display color controls; Apply verifies the driver read-back.';
 const DISPLAY_WIRE_READONLY_NOTE = 'The driver did not report writable color-format data.';
 const DISPLAY_NO_DISPLAYS_NOTE = 'No display settings are available on this GPU.';
-const DISPLAY_SUPER_RESOLUTION_NOTE = 'Changes the Windows desktop source resolution and can expose higher render/output modes to games. A display flash and game restart may be required.';
 
 export const CARD_TITLES: Record<string, string> = {
   enduranceGaming: 'Endurance Gaming',
@@ -1474,73 +1473,6 @@ function buildDisplayDropdownRow(
   return row;
 }
 
-function superResolutionModeLabel(mode: { width: number; height: number; refreshRate: number; label?: string; name?: string }): string {
-  return mode.label ?? mode.name ?? `${mode.width}×${mode.height} @ ${mode.refreshRate} Hz`;
-}
-
-function buildSuperResolutionRow(ctx: PageContext): HTMLElement {
-  const display = selectedDisplay();
-  const capability = display?.superResolution;
-  const supported = display !== null && isDisplayControlSupported(display, 'superResolution');
-  if (!capability || !supported) {
-    return el('div', { class: 'display-control display-control-readonly', dataset: { control: 'superResolution' } }, [
-      el('h3', { class: 'display-control-title', text: 'Supernative Resolution (Windows Display)' }),
-      el('p', { class: 'card-note', text: capability?.reason ?? 'Not supported by the current display driver.' }),
-    ]);
-  }
-  const modes = [...capability.modes, ...capability.presets]
-    .filter((mode, index, all) => all.findIndex((candidate) => candidate.width === mode.width && candidate.height === mode.height && candidate.refreshRate === mode.refreshRate) === index);
-  const current = displayDraft.superResolution;
-  const currentMode = modes.find((mode) => mode.width === current?.width && mode.height === current?.height && mode.refreshRate === current?.refreshRate) ?? modes[0];
-  const modeSelect = buildDropdown(currentMode ? `${currentMode.width}x${currentMode.height}@${currentMode.refreshRate}` : '', modes.map((mode) => ({
-    value: `${mode.width}x${mode.height}@${mode.refreshRate}`,
-    label: superResolutionModeLabel(mode),
-  })), {
-    className: 'graphics-select display-select',
-    ariaLabel: 'Supernative source resolution',
-    onChange: (value) => {
-      const mode = modes.find((candidate) => `${candidate.width}x${candidate.height}@${candidate.refreshRate}` === value);
-      if (!mode) return;
-      displayDraft.superResolution = { enabled: displayDraft.superResolution?.enabled === true, width: mode.width, height: mode.height, refreshRate: mode.refreshRate };
-      refreshDisplayChip('superResolution');
-    },
-  });
-  const enabledSelect = buildDropdown(current?.enabled === true ? 'enabled' : 'disabled', [
-    { value: 'enabled', label: 'Enabled' },
-    { value: 'disabled', label: 'Disabled' },
-  ], {
-    className: 'graphics-select display-select',
-    ariaLabel: 'Supernative Resolution enabled',
-    onChange: (value) => {
-      const draftMode = displayDraft.superResolution;
-      const mode = modes.find((candidate) => candidate.width === draftMode?.width && candidate.height === draftMode?.height && candidate.refreshRate === draftMode?.refreshRate) ?? modes[0];
-      displayDraft.superResolution = value === 'enabled' && mode
-        ? { enabled: true, width: mode.width, height: mode.height, refreshRate: mode.refreshRate }
-        : { enabled: false };
-      refreshDisplayChip('superResolution');
-    },
-  });
-  const row = el('div', { class: 'display-control', dataset: { control: 'superResolution' } }, [
-    el('div', { class: 'display-control-heading' }, [
-      el('h3', { class: 'display-control-title', text: 'Supernative Resolution (Windows Display)' }),
-      el('div', { class: 'graphics-control display-inline-control' }, [enabledSelect, modeSelect]),
-    ]),
-    el('p', { class: 'card-note', text: capability.reason ? `${DISPLAY_SUPER_RESOLUTION_NOTE} ${capability.reason}` : DISPLAY_SUPER_RESOLUTION_NOTE }),
-    el('div', { class: 'graphics-card-actions' }, [
-      el('span', { class: 'chip oc-chip-status', hidden: true }),
-      el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'superResolution'); } }),
-      el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
-        displayDraft.superResolution = normalizeDisplaySettings(display).superResolution ?? { enabled: false };
-        if (viewContainer?.isConnected) renderDisplayCards(viewContainer, ctx);
-      } }),
-    ]),
-  ]);
-  chipNodes.set('superResolution', row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
-  chipApplyNodes.set('superResolution', row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
-  refreshDisplayChip('superResolution');
-  return row;
-}
-
 /** IGS presents ordinary, display, and retro scaling as one three-way view.
  * Keep the raw IGCL scaling flags internal and translate the selection into
  * one serialized driver transaction as soon as the selector changes. */
@@ -2056,7 +1988,6 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
   });
 
   const general = buildDisplayGroup('general', 'General', [
-    buildSuperResolutionRow(ctx),
     buildDisplayDropdownRow(ctx, 'scalingMode', 'Scaling Mode', DISPLAY_SCALING_NOTE, display.supportedOptions.scalingModes, SCALING_MODE_LABELS),
     buildDisplayScalingMethodRow(ctx),
     buildDisplayDropdownRow(ctx, 'globalVrrMode', 'Variable Refresh Rate Mode', DISPLAY_GLOBAL_VRR_NOTE, display.supportedOptions.globalVrrModes ?? [], GLOBAL_VRR_LABELS),

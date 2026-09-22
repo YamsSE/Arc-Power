@@ -77,6 +77,8 @@ const DASHBOARD_PULSE: Array<{ id: DashboardPulseId; label: string; unit: string
   { id: 'vram', label: 'VRAM in use', unit: 'GiB', color: TELEMETRY_PULSE_COLORS.memory },
 ];
 
+const DASHBOARD_GAUGE_RADIUS = 42;
+const DASHBOARD_GAUGE_CIRCUMFERENCE = 2 * Math.PI * DASHBOARD_GAUGE_RADIUS;
 const DASHBOARD_HISTORY_LIMIT = TELEMETRY_HISTORY_POINTS;
 type DashboardPulseLane = {
   key: string;
@@ -294,7 +296,8 @@ function updatePulseLane(lane: DashboardPulseLane, sample: TelemetrySample | nul
   if (lane.gaugeValueNode) lane.gaugeValueNode.textContent = utilization === undefined ? '-' : `${Math.round(utilization)}%`;
   if (lane.gaugeRingNode) {
     const progress = Math.max(0, Math.min(100, utilization ?? 0));
-    lane.gaugeRingNode.setAttribute('stroke-dashoffset', `${100 - progress}`);
+    const visibleLength = DASHBOARD_GAUGE_CIRCUMFERENCE * (progress / 100);
+    lane.gaugeRingNode.setAttribute('stroke-dashoffset', `${DASHBOARD_GAUGE_CIRCUMFERENCE - visibleLength}`);
   }
   for (const metric of DASHBOARD_PULSE) {
     const valueNode = lane.valueNodes.get(metric.id);
@@ -454,18 +457,17 @@ function pulseLaneElement(
     class: 'dashboard-pulse-gauge-ring',
     cx: 52,
     cy: 52,
-    r: 42,
+    r: DASHBOARD_GAUGE_RADIUS,
     fill: 'none',
     'stroke-width': 7,
     'stroke-linecap': 'round',
-    pathLength: 100,
-    'stroke-dasharray': '100 100',
-    'stroke-dashoffset': 100,
+    'stroke-dasharray': `${DASHBOARD_GAUGE_CIRCUMFERENCE} ${DASHBOARD_GAUGE_CIRCUMFERENCE}`,
+    'stroke-dashoffset': DASHBOARD_GAUGE_CIRCUMFERENCE,
     'aria-hidden': 'true',
   });
   const gaugeSvg = svgEl('svg', { class: 'dashboard-pulse-gauge-svg', viewBox: '0 0 104 104', 'aria-hidden': 'true' });
   gaugeSvg.append(
-    svgEl('circle', { class: 'dashboard-pulse-gauge-track', cx: 52, cy: 52, r: 42, fill: 'none', 'stroke-width': 7 }),
+    svgEl('circle', { class: 'dashboard-pulse-gauge-track', cx: 52, cy: 52, r: DASHBOARD_GAUGE_RADIUS, fill: 'none', 'stroke-width': 7 }),
     lane.gaugeRingNode,
   );
   const gauge = el('div', { class: 'dashboard-pulse-gauge', role: 'img', 'aria-label': `${gpuLabel} GPU utilization` }, [
