@@ -194,6 +194,13 @@ export interface ArcPowerApi {
    *  (shell.openExternal in main). STRICTLY validated: https: + github.com
    *  + the '/YamsSE/Arc-Power' path - anything else rejects. */
   openExternal(url: string): Promise<void>;
+  /** Read latest Intel Arc consumer/iGPU and Arc Pro driver metadata. */
+  intelDriverUpdateCheck(): Promise<{
+    arc: { version: string; releaseDate: string | null; officialPageUrl: string } | null;
+    pro: { version: string; releaseDate: string | null; officialPageUrl: string } | null;
+  }>;
+  /** Open one fixed official Intel driver page; renderer-supplied URLs are never accepted. */
+  openIntelDriverDownloadPage(kind: 'arc' | 'pro'): Promise<void>;
   driverInfo(): Promise<{ driverDate: string | null }>;
   /** M2C-B B3: the app version for the header line ("Arc Power Ver. X.XX"). */
   appVersion(): Promise<{ version: string }>;

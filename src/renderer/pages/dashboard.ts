@@ -20,13 +20,15 @@ import { healthRows, dashboardNeedsFullRender } from '../pure/status.ts';
 import type { DashboardSig, HealthRow } from '../pure/status.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
-import { shaderUnits } from '../pure/driver.ts';
+import { decodeDriverVersion, shaderUnits } from '../pure/driver.ts';
 import { cpuCardRows, rebarState, vramRowValue } from '../pure/sysinfo.ts';
 import { formatGpuMemoryGb } from '../pure/gpu-memory.ts';
 import { cpuIconKeyOf, cpuIconPath, gpuIconKeyOf, gpuIconPath } from '../pure/hardware-icons.ts';
 import { deviceHardwareKey } from '../pure/device.ts';
 import { dashboardDeviceStatusLabel, dashboardGpuOrder } from '../pure/dashboard.ts';
 import { dashboardRetailAssetPath } from '../pure/dashboard-retail-assets.ts';
+import { createIntelDriverCheckLoader, intelDriverKind, newerIntelRelease, type IntelDriverKind, type IntelDriverUpdateCheck } from '../pure/intel-driver-updates.ts';
+import { showIntelDriverUpdateDialog } from '../components/intel-driver-update-dialog.ts';
 import { aibOf, aibOfPnpDeviceId } from '../pure/aib.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
@@ -79,6 +81,24 @@ const DASHBOARD_PULSE: Array<{ id: DashboardPulseId; label: string; unit: string
 
 const DASHBOARD_GAUGE_RADIUS = 42;
 const DASHBOARD_HISTORY_LIMIT = TELEMETRY_HISTORY_POINTS;
+const intelDriverNoticeNodes = new Map<string, { row: HTMLElement; content: HTMLElement; kind: IntelDriverKind; installed: string }>();
+const loadIntelDriverCheck = createIntelDriverCheckLoader(() => api.intelDriverUpdateCheck());
+
+function renderIntelDriverNotice(key: string, check: IntelDriverUpdateCheck): void {
+  const entry = intelDriverNoticeNodes.get(key);
+  if (!entry || !entry.row.isConnected) return;
+  const release = newerIntelRelease(entry.kind, entry.installed, check);
+  if (!release) return;
+  entry.content.replaceChildren(
+    el('span', { text: `${entry.installed} → ${release.version}` }),
+    el('button', {
+      class: 'btn intel-driver-update-button', type: 'button', text: 'New Driver Version Available',
+      'aria-label': `New Intel driver version ${release.version} available; installed version ${entry.installed}`,
+      onClick: () => showIntelDriverUpdateDialog(entry.kind, entry.installed, release),
+    }),
+  );
+  entry.row.hidden = false;
+}
 function dashboardUtilizationPercent(value: number | undefined): number | null {
   return value === undefined || !Number.isFinite(value)
     ? null
@@ -611,6 +631,26 @@ function dashboardGpuCard(device: AppState['devices'][number], index: number, st
   const memory = typeof sample?.memClockMhz === 'number' && Number.isFinite(sample.memClockMhz)
     ? sample.memClockMhz
     : null;
+  const intelKind = intelDriverKind(device.gpuVendor, device.name);
+  const installedDriver = decodeDriverVersion(device.osController?.driverVersion ?? device.driverVersion);
+  const driverRow = intelKind
+    ? el('div', { class: 'kv intel-driver-version-row', 'data-label': 'Driver version' }, [
+        el('span', { class: 'intel-driver-update-content', 'aria-live': 'polite', text: installedDriver ?? '-' }),
+      ])
+    : null;
+  if (driverRow && intelKind && installedDriver) {
+    const key = dashboardDeviceKey(device);
+    const entry = {
+      row: driverRow,
+      content: driverRow.querySelector('.intel-driver-update-content') as HTMLElement,
+      kind: intelKind,
+      installed: installedDriver,
+    };
+    intelDriverNoticeNodes.set(key, entry);
+    void loadIntelDriverCheck().then((check) => {
+      if (check && intelDriverNoticeNodes.get(key) === entry) renderIntelDriverNotice(key, check);
+    });
+  }
   return el('section', { class: 'card device-card', hidden: !visible, dataset: { deviceKey: dashboardDeviceKey(device) } }, [
     el('div', { class: 'device-card-head' }, [
       el('div', { class: 'hardware-card-heading' }, [
@@ -620,6 +660,7 @@ function dashboardGpuCard(device: AppState['devices'][number], index: number, st
     ]),
     el('div', { class: 'card-body kv-grid' }, [
       el('div', { class: 'kv', 'data-label': 'GPU' }, [el('span', { text: device.name })]),
+      ...(driverRow ? [driverRow] : []),
       el('div', { class: 'kv', 'data-label': 'Board partner' }, [el('span', {
         class: aib ? undefined : 'text-unknown',
         text: aib ? (aib.model ? `${aib.vendor} (${aib.model})` : aib.vendor) : '-',
@@ -1113,6 +1154,7 @@ export const dashboardPage: Page = {
     const deviceSelect = buildDeviceSelect(ctx.store, (id) => void ctx.selectDevice?.(id));
 
     clear(container);
+    intelDriverNoticeNodes.clear();
     container.append(
       el('header', { class: 'dashboard-hud-header' }, [
         el('div', { class: 'dashboard-hud-header-copy' }, [

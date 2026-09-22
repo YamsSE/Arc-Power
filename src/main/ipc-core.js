@@ -30,6 +30,7 @@ import { promisify } from 'node:util';
 import { TelemetryService } from './telemetry/telemetry-service.js';
 import { lhmGpuUtilizationTargetIsUnique } from './telemetry/lhm-provider.js';
 import { collectHealth } from './health.js';
+import { createIntelDriverUpdateService, INTEL_DRIVER_PAGES } from './intel-driver-update.js';
 import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_SCALING_METHOD_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual, deviceHardwareKey, isIntegratedStyleDevice } from './backend/units.js';
 import { pnpParts } from './gpu-inventory.js';
@@ -1227,6 +1228,7 @@ export function createIpcHandlers({
   startup = createMockStartup(),
   rtssStartup = createMockRtssStartup(),
   driverInfo = createMockDriverInfo(),
+  intelDriverUpdateService = createIntelDriverUpdateService(),
   driverMonitor = null,
   // M4-D: the sysinfo adapter. The DEFAULT is the MOCK fixture (never
   // spawns PowerShell); main.js injects the cached CIM result in the
@@ -2739,6 +2741,17 @@ export function createIpcHandlers({
 
   const handlers = {
     'health': async () => collectHealth(backend),
+
+    'intel-driver-update-check': async (...args) => {
+      assertNoPayload(args, 'intel-driver-update-check');
+      return intelDriverUpdateService.check();
+    },
+
+    'intel-driver-download-page-open': async (kind, ...args) => {
+      if (args.length !== 0) throw new Error('intel-driver-download-page-open takes one payload');
+      if (kind !== 'arc' && kind !== 'pro') throw new Error('intel-driver-download-page-open: invalid kind');
+      await openExternal(INTEL_DRIVER_PAGES[kind].officialPageUrl);
+    },
 
       'list-devices': async () => {
         try {

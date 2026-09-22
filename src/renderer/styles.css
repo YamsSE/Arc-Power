@@ -1370,6 +1370,18 @@ input[type="number"] {
 .modal-text { color: var(--text); line-height: 1.55; margin: 0 0 20px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
 
+.intel-driver-version-row[hidden] { display: none; }
+.intel-driver-update-content { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.intel-driver-update-button { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 48%, var(--border-strong)); }
+.intel-driver-dialog { width: min(480px, calc(100vw - 32px)); }
+.intel-driver-dialog-question { margin-top: 12px; font-weight: 650; }
+.intel-driver-dialog-versions { display: grid; gap: 8px; margin: 0 0 16px; }
+.intel-driver-dialog-versions > div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-inset); }
+.intel-driver-dialog-versions dt { color: var(--text-muted); }
+.intel-driver-dialog-versions dd { margin: 0; font-family: var(--font-mono); }
+.intel-driver-dialog-note { padding: 11px 12px; border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--bg-inset)); }
+.intel-driver-dialog-status:empty { display: none; }
+
 /* --------------------------------------------------------------- stat tiles */
 
 /* M2C-B B9: the dashboard live readout is compact - shorter tiles, tighter

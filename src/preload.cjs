@@ -93,6 +93,8 @@ contextBridge.exposeInMainWorld('arcPower', {
   // via shell.openExternal (STRICTLY validated in ipc-core.js: https: +
   // github.com + the /YamsSE/Arc-Power path).
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  intelDriverUpdateCheck: () => ipcRenderer.invoke('intel-driver-update-check'),
+  openIntelDriverDownloadPage: (kind) => ipcRenderer.invoke('intel-driver-download-page-open', kind),
   driverInfo: () => ipcRenderer.invoke('driver-info'),
   appVersion: () => ipcRenderer.invoke('app-version'),
   // M4-E: distribution kind - 'installed' | 'portable' | 'dev'
