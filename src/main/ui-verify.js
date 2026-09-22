@@ -1210,15 +1210,21 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `document.querySelector('.dashboard-pulse-metric[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent?.trim() === '42'`, 8000))) {
     fail(`M140: GPU utilization pulse is '${await js(`document.querySelector('.dashboard-pulse-metric[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent ?? ''`)}' (expected 42)`);
   }
-  const gaugeProgress = await js(`(() => {
+  const gaugeGeometry = await js(`(() => {
     const ring = document.querySelector('.dashboard-pulse-gauge-ring');
     if (!ring) return 'no-ring';
-    return JSON.stringify({ pathLength: ring.getAttribute('pathLength'), dasharray: ring.getAttribute('stroke-dasharray'), offset: ring.getAttribute('stroke-dashoffset'), linecap: ring.getAttribute('stroke-linecap'), transition: getComputedStyle(ring).transitionProperty });
+    const length = ring.getTotalLength();
+    const end = ring.getPointAtLength(length);
+    const svg = ring.ownerSVGElement;
+    const style = getComputedStyle(ring);
+    return JSON.stringify({ tag: ring.tagName, d: ring.getAttribute('d'), length, end: [end.x, end.y], value: document.querySelector('.dashboard-pulse-gauge-value')?.textContent?.trim(), transitionDuration: style.transitionDuration, animationDuration: style.animationDuration, transform: getComputedStyle(svg).transform });
   })()`);
-  const gaugeProgressState = gaugeProgress === 'no-ring' ? null : JSON.parse(gaugeProgress);
-  const gaugeDashValues = gaugeProgressState?.dasharray?.match(/[\d.]+/g)?.map(Number) ?? [];
-  if (!gaugeProgressState || gaugeProgressState.pathLength !== '100' || gaugeDashValues.length < 2 || gaugeDashValues[0] !== 42 || gaugeDashValues[1] !== 100 || gaugeProgressState.offset !== '0' || gaugeProgressState.linecap !== 'butt' || gaugeProgressState.transition !== 'stroke-dasharray') {
-    fail(`M140: GPU utilization ring does not show a fixed-start 42% arc: '${gaugeProgress}'`);
+  const gaugeGeometryState = gaugeGeometry === 'no-ring' ? null : JSON.parse(gaugeGeometry);
+  const expectedGaugeAngle = 42 / 100 * Math.PI * 2;
+  const expectedGaugeEnd = [52 + 42 * Math.sin(expectedGaugeAngle), 52 - 42 * Math.cos(expectedGaugeAngle)];
+  const gaugeArcLength = 2 * Math.PI * 42 * 0.42;
+  if (!gaugeGeometryState || gaugeGeometryState.tag !== 'path' || gaugeGeometryState.value !== '42%' || !/^M 52 10 A 42 42 0 0 1 /.test(gaugeGeometryState.d ?? '') || Math.abs(gaugeGeometryState.length - gaugeArcLength) > 0.02 || gaugeGeometryState.end.some((n, i) => Math.abs(n - expectedGaugeEnd[i]) > 0.01) || gaugeGeometryState.transitionDuration.split(',').some((duration) => parseFloat(duration) !== 0) || gaugeGeometryState.animationDuration.split(',').some((duration) => parseFloat(duration) !== 0) || gaugeGeometryState.transform !== 'none') {
+    fail(`M140: GPU utilization path geometry does not match the fixed-start 42% readout: '${gaugeGeometry}'`);
   }
   if (multiGpuDashboard && !(await waitFor(win, `Array.from(document.querySelectorAll('.dashboard-pulse-lane')).length === ${dashboardGpuCount} && Array.from(document.querySelectorAll('.dashboard-pulse-lane')).every((lane) => lane.querySelector('[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent?.trim() === '42' && lane.querySelector('[data-pulse-metric="vram"] .dashboard-pulse-value')?.textContent?.trim() !== '-')`, 10000))) {
     fail(`M140: multi-GPU Performance Pulse did not populate both GPU lanes: '${await js(`JSON.stringify(Array.from(document.querySelectorAll('.dashboard-pulse-lane')).map((lane) => Array.from(lane.querySelectorAll('.dashboard-pulse-value')).map((n) => n.textContent.trim())))`)}'`);

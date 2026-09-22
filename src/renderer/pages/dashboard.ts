@@ -79,6 +79,27 @@ const DASHBOARD_PULSE: Array<{ id: DashboardPulseId; label: string; unit: string
 
 const DASHBOARD_GAUGE_RADIUS = 42;
 const DASHBOARD_HISTORY_LIMIT = TELEMETRY_HISTORY_POINTS;
+function dashboardUtilizationPercent(value: number | undefined): number | null {
+  return value === undefined || !Number.isFinite(value)
+    ? null
+    : Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function dashboardUtilizationArcPath(percent: number): string {
+  const startX = 52;
+  const startY = 52 - DASHBOARD_GAUGE_RADIUS;
+  if (percent <= 0) return `M ${startX} ${startY}`;
+  if (percent >= 100) {
+    const bottomY = 52 + DASHBOARD_GAUGE_RADIUS;
+    return `M ${startX} ${startY} A ${DASHBOARD_GAUGE_RADIUS} ${DASHBOARD_GAUGE_RADIUS} 0 0 1 ${startX} ${bottomY} A ${DASHBOARD_GAUGE_RADIUS} ${DASHBOARD_GAUGE_RADIUS} 0 0 1 ${startX} ${startY}`;
+  }
+  const angle = (percent / 100) * Math.PI * 2;
+  const endX = 52 + DASHBOARD_GAUGE_RADIUS * Math.sin(angle);
+  const endY = 52 - DASHBOARD_GAUGE_RADIUS * Math.cos(angle);
+  const largeArc = percent > 50 ? 1 : 0;
+  return `M ${startX} ${startY} A ${DASHBOARD_GAUGE_RADIUS} ${DASHBOARD_GAUGE_RADIUS} 0 ${largeArc} 1 ${endX.toFixed(3)} ${endY.toFixed(3)}`;
+}
+
 type DashboardPulseLane = {
   key: string;
   vramCapacityGiB: number | null;
@@ -91,7 +112,7 @@ type DashboardPulseLane = {
   rangeMinNodes: Map<DashboardPulseId, HTMLElement>;
   rangeMaxNodes: Map<DashboardPulseId, HTMLElement>;
   gaugeValueNode: HTMLElement | null;
-  gaugeRingNode: SVGCircleElement | null;
+  gaugeRingNode: SVGPathElement | null;
   runtimeNode: HTMLElement | null;
   peakNode: HTMLElement | null;
   averageNode: HTMLElement | null;
@@ -291,13 +312,10 @@ function updateSessionStats(lane: DashboardPulseLane): void {
 
 function updatePulseLane(lane: DashboardPulseLane, sample: TelemetrySample | null): void {
   rememberDashboardSample(lane, sample);
-  const utilization = sample ? pulseSampleValue('gpu-util', sample) : undefined;
-  if (lane.gaugeValueNode) lane.gaugeValueNode.textContent = utilization === undefined ? '-' : `${Math.round(utilization)}%`;
+  const utilization = dashboardUtilizationPercent(sample ? pulseSampleValue('gpu-util', sample) : undefined);
+  if (lane.gaugeValueNode) lane.gaugeValueNode.textContent = utilization === null ? '-' : `${utilization}%`;
   if (lane.gaugeRingNode) {
-    const progress = Math.max(0, Math.min(100, utilization ?? 0));
-    lane.gaugeRingNode.setAttribute('stroke-dasharray', `${progress} 100`);
-    lane.gaugeRingNode.setAttribute('stroke-dashoffset', '0');
-    lane.gaugeRingNode.setAttribute('stroke-linecap', 'butt');
+    lane.gaugeRingNode.setAttribute('d', dashboardUtilizationArcPath(utilization ?? 0));
   }
   for (const metric of DASHBOARD_PULSE) {
     const valueNode = lane.valueNodes.get(metric.id);
@@ -453,17 +471,12 @@ function pulseLaneElement(
   lane.peakNode = el('strong', { text: '-' });
   lane.averageNode = el('strong', { text: '-' });
   lane.gaugeValueNode = el('strong', { class: 'dashboard-pulse-gauge-value', text: '-' });
-  lane.gaugeRingNode = svgEl('circle', {
+  lane.gaugeRingNode = svgEl('path', {
     class: 'dashboard-pulse-gauge-ring',
-    cx: 52,
-    cy: 52,
-    r: DASHBOARD_GAUGE_RADIUS,
-    pathLength: 100,
+    d: 'M 52 10',
     fill: 'none',
     'stroke-width': 7,
     'stroke-linecap': 'butt',
-    'stroke-dasharray': '0 100',
-    'stroke-dashoffset': '0',
     'aria-hidden': 'true',
   });
   const gaugeSvg = svgEl('svg', { class: 'dashboard-pulse-gauge-svg', viewBox: '0 0 104 104', 'aria-hidden': 'true' });
