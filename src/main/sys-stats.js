@@ -53,22 +53,20 @@
 //                      no conversion). The class is often ABSENT on
 //                      desktops (no power-metering hardware), so it
 //                      honestly degrades to null ('-' in the UI).
-//   gpuUtilPct        - M4-I: the OS GPU-utilization fallback counter - the
-//                      Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine
-//                      rows for the matched LUID (aggregate: per (eng#,
-//                      engtype) the MAX across the process rows, then SUM,
-//                      cap 100). Null when the counter is unpopulated
-//                      (every matched row's UtilizationPercentage is
-//                      null/absent - honest '-'; live probe 2026-08-08 on
-//                      the A770: the field is POPULATED but reads 0 on
-//                      every row - an Intel-Arc driver quirk; the AMD
-//                      tester's box may feed it for real).
+//   gpuUtilPct        - M4-I: the native D3DKMT adapter/node running-time
+//                      counters for the matched LUID (the Task Manager-style
+//                      busiest-node value), with the Windows GPU Engine
+//                      performance counter (PDH/Get-Counter) as the explicit
+//                      fallback. Null when neither source has a fresh,
+//                      physically matched sample.
 //
 // ONE PowerShell query per sample() reads every source at once (all
-// single-sample formatted values - no cross-tick state, no deltas). A
-// query in flight is never doubled (the previous result is served) - at
-// most one PowerShell per tick. Any failure degrades per-field to null
-// (honest '-' in the UI, never a crash).
+// single-sample formatted values - no cross-tick state, no deltas). In the
+// production telemetry lane, GPU utilization is deliberately split into its
+// own native/PDH lane: the CIM query can take several seconds and must not
+// hold a Task Manager-style utilization value hostage. Each query has its
+// own in-flight guard, and any failure degrades per-field to null (honest
+// '-' in the UI, never a crash).
 //
 // Mock mode (createMockSysStats): fixed deterministic values so ui-verify
 // pins are stable; never spawns PowerShell. M4-I: the mock temperature
@@ -100,14 +98,29 @@
 // lost in the move); the frozenDrop window STAYS with the slow-lane WMI
 // temp fallbacks (the MSR reading is live - the drop never applies to it).
 
-import { execFile as nodeExecFile } from 'node:child_process';
+import { execFile as nodeExecFile, spawn as nodeSpawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import koffi from 'koffi';
 import { isIntegratedStyleDevice } from './backend/units.js';
+import { createD3dkmtGpuUtilReader } from './d3dkmt-gpu-util.js';
 
 const execFile = promisify(nodeExecFile);
 
 export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+// GPU Engine samples are refreshed by the dedicated PowerShell lane. Do not
+// let a stalled counter query masquerade as a current Task Manager value.
+export const GPU_UTIL_STALE_MS = 8000;
+// The legacy broad system-stat query and the one-shot fallback use a
+// two-sample rate read. The production dedicated lane keeps one continuous
+// provider alive, so it can retain the counter baseline without paying cold
+// PowerShell startup on every utilization tick.
+export const GPU_ENGINE_SAMPLE_INTERVAL_SEC = 1;
+
+// The GPU Engine lane is independent from the broad CIM lane. The cadence is
+// intentionally shorter than the old 2.5 s slow lane; the query itself still
+// determines the effective refresh and the in-flight guard prevents overlap.
+export const GPU_UTIL_LANE_CADENCE_MS = 1500;
 
 /**
  * The per-tick CIM query: the _Total processor FORMATTED counters (the OS's
@@ -118,7 +131,19 @@ export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\p
  * side stays dumb); missing classes degrade to null/[].
  * @returns {string}
  */
-export function buildSysStatsScript() {
+export function buildSysStatsScript(options = {}) {
+  const includeGpuEngine = options.includeGpuEngine !== false;
+  const gpuEngineLines = includeGpuEngine
+    ? [
+      // M4-I: query the PDH GPU Engine counter directly. Its InstanceName uses
+      // the same LUID/engine identity as the formatted WMI rows, but this is
+      // the live performance-counter source used by Windows' GPU views. The
+      // counter is a rate: the first collection seeds its previous value, so
+      // use the second sample from a one-second interval.
+      `$gpuEngSample = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -SampleInterval ${GPU_ENGINE_SAMPLE_INTERVAL_SEC} -MaxSamples 2 -ErrorAction SilentlyContinue | Select-Object -Last 1`,
+      '$gpuEng = @($gpuEngSample.CounterSamples | ForEach-Object { [pscustomobject]@{ Name = $_.InstanceName; UtilizationPercentage = $_.CookedValue } })',
+    ]
+    : ['$gpuEng = @()'];
   return [
     '$ErrorActionPreference = \'SilentlyContinue\'',
     '$cpu = Get-CimInstance Win32_PerfFormattedData_Counters_ProcessorInformation -Filter "Name=\'_Total\'" | Select-Object -First 1 Name,PercentProcessorTime,PercentProcessorPerformance',
@@ -130,17 +155,72 @@ export function buildSysStatsScript() {
     // counter below).
     '$msa = @(Get-CimInstance -Namespace root\\wmi -ClassName MSAcpi_ThermalZoneTemperature | Select-Object CurrentTemperature)',
     '$gpu = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory | Select-Object Name,DedicatedUsage,SharedUsage)',
-    // M4-I: the GPUEngine rows (Name + UtilizationPercentage) - the OS
-    // GPU-utilization counter. Instance names encode the adapter LUID +
-    // the engine: "pid_12336_luid_0x00000000_0x0000ADFB_phys_0_eng_0_
-    // engtype_3D" (live-verified 2026-08-08).
-    '$gpuEng = @(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine | Select-Object Name,UtilizationPercentage)',
+    ...gpuEngineLines,
     // M4-H: the PowerMeter perf counter - the FORMATTED 'Power' property is
     // already in watts (N9). The class is often absent (no metering
     // hardware) -> null, the honest '-' degrade.
     '$pm = @(Get-CimInstance Win32_PerfFormattedData_PowerMeter_PowerMeter | Select-Object -First 1 Power)',
     '[pscustomobject]@{ cpu = $cpu; maxClockMhz = $proc.MaxClockSpeed; thermal = $tz; msaThermal = $msa; gpuMem = $gpu; gpuEng = $gpuEng; powerMeter = $pm } | ConvertTo-Json -Depth 3 -Compress',
   ].join('; ');
+}
+
+/**
+ * The dedicated GPU Engine query used by the production telemetry lane. It
+ * returns only the rate-counter rows, so the slow CIM/WMI fields cannot delay
+ * or overwrite the utilization cache.
+ * @returns {string}
+ */
+export function buildGpuEngineScript() {
+  return [
+    '$ErrorActionPreference = \'SilentlyContinue\'',
+    `$gpuEngSample = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -SampleInterval ${GPU_ENGINE_SAMPLE_INTERVAL_SEC} -MaxSamples 2 -ErrorAction SilentlyContinue | Select-Object -Last 1`,
+    '$gpuEng = @($gpuEngSample.CounterSamples | ForEach-Object { [pscustomobject]@{ Name = $_.InstanceName; UtilizationPercentage = $_.CookedValue } })',
+    '[pscustomobject]@{ gpuEng = $gpuEng } | ConvertTo-Json -Depth 3 -Compress',
+  ].join('; ');
+}
+
+/**
+ * Build the long-lived GPU Engine reader used by the production lane. Keeping
+ * PowerShell alive avoids paying its provider/process startup cost on every
+ * utilization tick. Each JSON line is one current counter snapshot from the
+ * provider's maintained rate baseline; the one-shot buildGpuEngineScript()
+ * remains the fallback when the worker cannot be started.
+ * @returns {string}
+ */
+export function buildGpuEngineWorkerScript() {
+  return [
+    '$ErrorActionPreference = \'SilentlyContinue\'',
+    'Get-Counter \'\\GPU Engine(*)\\Utilization Percentage\' -SampleInterval 1 -Continuous -ErrorAction SilentlyContinue | ForEach-Object {',
+    '$gpuEng = @($_.CounterSamples | ForEach-Object { [pscustomobject]@{ Name = $_.InstanceName; UtilizationPercentage = $_.CookedValue } })',
+    '[pscustomobject]@{ gpuEng = $gpuEng } | ConvertTo-Json -Depth 3 -Compress',
+    '[Console]::Out.Flush()',
+    '}',
+  ].join('; ');
+}
+
+/**
+ * Parse the small JSON envelope emitted by buildGpuEngineScript().
+ * @param {string} stdout
+ * @returns {Array<{ name: string | null, utilPct: number | null }>}
+ */
+export function parseGpuEngineOutput(stdout) {
+  let raw = null;
+  try {
+    raw = JSON.parse(String(stdout ?? ''));
+  } catch {
+    return [];
+  }
+  const rows = Array.isArray(raw?.gpuEng)
+    ? raw.gpuEng
+    : raw?.gpuEng
+      ? [raw.gpuEng]
+      : [];
+  return rows.map((g) => ({
+    name: typeof g?.Name === 'string' && g.Name ? g.Name : null,
+    utilPct: typeof g?.UtilizationPercentage === 'number' && Number.isFinite(g.UtilizationPercentage)
+      ? g.UtilizationPercentage
+      : null,
+  }));
 }
 
 /**
@@ -310,8 +390,9 @@ export function frozenDrop(lastSamples) {
 }
 
 /**
- * M4-I (D1): the engine key of a GPUEngine instance name - per (eng#,
- * engtype) grouping key. The live name format (probed 2026-08-08):
+ * M4-I (D1): the engine key of a GPUEngine instance name - per physical
+ * engine (phys#, eng#, engtype) grouping key. The live name format (probed
+ * 2026-08-08):
  * "pid_12336_luid_0x00000000_0x0000ADFB_phys_0_eng_0_engtype_3D" (the
  * engtype half may be EMPTY: "eng_10_engtype_"). Unparseable names fall
  * back to the whole name (a distinct key - never a cross-engine merge).
@@ -319,8 +400,8 @@ export function frozenDrop(lastSamples) {
  * @returns {string}
  */
 export function engineKeyOf(instanceName) {
-  const m = String(instanceName ?? '').match(/_eng_(\d+)_engtype_([A-Za-z0-9]*)/);
-  return m ? `${m[2]}_${m[1]}` : String(instanceName ?? '');
+  const m = String(instanceName ?? '').match(/_phys_(\d+)_eng_(\d+)_engtype_([A-Za-z0-9]*)/i);
+  return m ? `phys_${m[1]}|${m[3]}_${m[2]}` : String(instanceName ?? '');
 }
 
 /**
@@ -340,11 +421,13 @@ export function engineRowMatchesLuid(instanceName, luid) {
 }
 
 /**
- * M4-I (D1): aggregate the GPUEngine rows for the matched LUID into one
- * utilization percentage - per (eng#, engtype) the MAX across the process
- * rows, then SUM the engine maxima, capped at 100. Null when the counter
- * is unpopulated (no matched rows, or every matched row's utilPct is
- * null/absent - the honest '-'; a populated-but-zero counter reports 0).
+ * M4-I (D1): aggregate the GPUEngine rows for the matched LUID into the
+ * Task Manager-style adapter utilization. The counter exposes one row per
+ * process/engine, so sum valid process contributions for each physical
+ * engine, cap that engine at 100, then report the busiest engine (MAX across
+ * engines). Null when the counter is unpopulated (no matched rows, or every
+ * matched row's utilPct is null/absent - the honest '-'; a populated-but-zero
+ * counter reports 0).
  * @param {Array<{ name: string | null, utilPct: number | null }>} rows
  * @param {{ high: number, low: number } | null} luid
  * @returns {number | null}
@@ -356,13 +439,13 @@ export function gpuUtilPctOf(rows, luid) {
   if (matched.length === 0) return null;
   const byEngine = new Map();
   for (const r of matched) {
-    if (typeof r?.utilPct !== 'number' || !Number.isFinite(r.utilPct)) continue;
+    if (typeof r?.utilPct !== 'number' || !Number.isFinite(r.utilPct) || r.utilPct < 0) continue;
     const key = engineKeyOf(r.name);
-    byEngine.set(key, Math.max(byEngine.get(key) ?? 0, r.utilPct));
+    const contribution = Math.min(100, r.utilPct);
+    byEngine.set(key, Math.min(100, (byEngine.get(key) ?? 0) + contribution));
   }
   if (byEngine.size === 0) return null;
-  const sum = [...byEngine.values()].reduce((a, b) => a + b, 0);
-  return Math.min(100, sum);
+  return Math.max(...byEngine.values());
 }
 
 /** Normalize the LUID shapes used by DXGI, koffi, JSON, and persisted GPU
@@ -523,6 +606,8 @@ export function createCpuUtilReader(deps = {}) {
  * (never double-fired).
  * @param {{
  *   execFile?: typeof execFile,
+ *   spawn?: typeof nodeSpawn,       // persistent GPU Engine worker seam
+ *   usePersistentGpuSampler?: boolean, // production defaults to true
  *   luidOf?: (deviceIdHex: string, bdf?: string|null) => Promise<{ high: number, low: number } | null>,
  *   deviceKey?: string|null,       // stable physical adapter identity
  *   pnpDeviceId?: string|null,     // Windows identity fallback
@@ -547,6 +632,9 @@ export function createCpuUtilReader(deps = {}) {
  *   cpuUtilReader?: { read: () => Promise<number | null> },  // M17g: the
  *                                  // GetSystemTimes reader; the DEFAULT is
  *                                  // createCpuUtilReader({ load: deps.load })
+ *   enableDedicatedGpuSampler?: boolean, // M4-I: production-only GPU
+ *                                  // Engine lane; test seams keep it off
+ *                                  // unless explicitly enabled
  *   load?: (name: string) => object,  // M17g: the injectable koffi load
  *                                  // (the cpu-util reader's test-harness seam)
  *   setInterval?: typeof setInterval,   // M17g: the slow-lane timer seam
@@ -555,10 +643,21 @@ export function createCpuUtilReader(deps = {}) {
  */
 export function createSysStats(deps = {}) {
   const exec = deps.execFile ?? execFile;
+  const enableDedicatedGpuSampler = deps.enableDedicatedGpuSampler === true;
+  const spawn = deps.spawn ?? nodeSpawn;
+  // The production path keeps one PowerShell counter provider alive. Tests
+  // that inject execFile retain the deterministic one-shot seam unless they
+  // explicitly inject spawn for the worker path.
+  const usePersistentGpuSampler = enableDedicatedGpuSampler
+    && deps.usePersistentGpuSampler !== false
+    && (deps.spawn !== undefined || deps.execFile === undefined);
   const luidOf = deps.luidOf ?? (async () => null);
-  let deviceIdHex = deps.deviceIdHex ?? null;
+  let deviceIdHex = deps.deviceIdHex ?? deps.pciDeviceId ?? null;
   let deviceBdf = deps.bdf ?? null;
-  let luidOverride = deps.luid ?? null;
+  // Accept the production target spelling as well as the legacy test/helper
+  // alias. The initial record must carry the LUID so the very first dedicated
+  // GPU sample cannot land on an identity-less cache.
+  let luidOverride = deps.osLuid ?? deps.luid ?? null;
   let targetIntegrated = deps.integrated === true;
   let targetMobile = deps.mobile === true;
   let dedicatedCapacityBytes = deps.dedicatedCapacityBytes ?? deps.vramBytes ?? null;
@@ -578,6 +677,18 @@ export function createSysStats(deps = {}) {
   // the default is the Node globals).
   const setIntervalFn = deps.setInterval ?? setInterval;
   const clearIntervalFn = deps.clearInterval ?? clearInterval;
+  const now = deps.now ?? (() => Date.now());
+  const monotonicNow = deps.monotonicNow ?? (() => performance.now());
+  // D3DKMTQueryStatistics reads the adapter/node running-time counters that
+  // Windows uses for its headline GPU value. Keep it out of injected test
+  // seams (and out of the old PowerShell-only test path), while making it the
+  // production-first reader. The existing PDH GPU Engine lane remains the
+  // explicit fallback when the native bridge is unavailable or warming.
+  const d3dkmtGpuUtil = deps.d3dkmtGpuUtil !== undefined
+    ? deps.d3dkmtGpuUtil
+    : enableDedicatedGpuSampler && deps.execFile === undefined && deps.spawn === undefined
+      ? createD3dkmtGpuUtilReader({ now: monotonicNow })
+      : null;
   let maxClockMhz = null; // cached Win32_Processor MaxClockSpeed
   // M17g: the SHARED inflight guard - ONE PowerShell query at a time across
   // BOTH entry points: the legacy sample() delegate's inline seed AND
@@ -605,6 +716,26 @@ export function createSysStats(deps = {}) {
   let slowHandle = null;
   let slowOwner = undefined;
   let slowInflight = false;
+  // M4-I: GPU Engine sampling has its own query and timer. The broad CIM
+  // query can take several seconds; sharing its in-flight guard would keep
+  // the visible GPU percentage stale while Task Manager is already current.
+  let gpuHandle = null;
+  let gpuOwner = undefined;
+  let gpuInflight = false;
+  let gpuGeneration = 0;
+  // The native D3DKMT sampler must not share the slow fallback's guard. A
+  // Get-Counter/PowerShell read can take several seconds on this machine;
+  // holding this guard across that read starves the native 500 ms sampler
+  // after its first baseline and leaves the UI at zero while Task Manager is
+  // already showing activity.
+  let nativeGpuInflight = false;
+  let gpuProcess = null;
+  let gpuReadline = null;
+  let gpuWorkerActive = false;
+  let gpuWorkerFailed = false;
+  let gpuWorkerFirstSampleTimer = null;
+  let latestGpuRows = null;
+  let latestGpuRowsAt = null;
 
   // M150: system counters are queried once, but the GPU fields are cached
   // per physical adapter.  The old adapter had one mutable target, so a
@@ -646,6 +777,9 @@ export function createSysStats(deps = {}) {
     const rawBdf = target?.bdf ?? controller.bdf ?? null;
     return {
       deviceKey: typeof target?.deviceKey === 'string' && target.deviceKey.trim() ? target.deviceKey.trim() : null,
+      deviceKeys: Array.isArray(target?.deviceKeys)
+        ? target.deviceKeys.filter((value) => typeof value === 'string' && value.trim()).map((value) => value.trim())
+        : null,
       pnpDeviceId: target?.pnpDeviceId ?? controller.pnpDeviceId ?? null,
       pciVendorId,
       pciDeviceId,
@@ -675,25 +809,72 @@ export function createSysStats(deps = {}) {
   };
   const targetKeyOf = (target) => {
     const spec = targetSpecOf(target);
-    if (spec.deviceKey) return `key:${identityText(spec.deviceKey)}`;
     const pnp = identityText(spec.pnpDeviceId);
     const bdf = bdfText(spec.bdf);
     const vendor = identityText(spec.pciVendorId);
     const pci = identityText(spec.pciDeviceId ?? spec.deviceIdHex);
     const luid = luidText(spec.osLuid);
-    if (pnp || bdf || pci || luid) return `physical:${pnp ?? '-'}|${vendor ?? '-'}:${pci ?? '-'}|${bdf ?? '-'}|luid:${luid ?? '-'}`;
+    // The inventory starts with an IGCL PCI/BDF row and later enriches it
+    // with a PNP-backed deviceKey.  A cache keyed by deviceKey would create
+    // a second record for the same physical adapter during that transition;
+    // the next slow counter read would then be the only thing reconnecting
+    // the value. Prefer the strongest physical proof that is stable across
+    // both inventory shapes, and use deviceKey only as the final fallback.
+    if (bdf) return `physical:bdf:${bdf}`;
+    if (luid) return `physical:luid:${luid}`;
+    if (pnp) return `physical:pnp:${pnp}`;
+    if (spec.deviceKey) return `key:${identityText(spec.deviceKey)}`;
+    if (pci || bdf) return `physical:${vendor ?? '-'}:${pci ?? '-'}|bdf:${bdf ?? '-'}`;
     return 'default';
   };
   const targetRecords = new Map();
+  const recordMatchesTarget = (record, spec) => {
+    const recordPnp = identityText(record.pnpDeviceId);
+    const targetPnp = identityText(spec.pnpDeviceId);
+    if (recordPnp && targetPnp && recordPnp === targetPnp) return true;
+    const recordBdf = bdfText(record.bdf);
+    const targetBdf = bdfText(spec.bdf);
+    if (recordBdf && targetBdf && recordBdf === targetBdf) return true;
+    const recordLuid = luidText(record.osLuid);
+    const targetLuid = luidText(spec.osLuid);
+    if (recordLuid && targetLuid && recordLuid === targetLuid) return true;
+    const recordKey = identityText(record.deviceKey);
+    const targetKey = identityText(spec.deviceKey);
+    if (recordKey && targetKey && recordKey === targetKey) return true;
+    const recordAliases = new Set([recordKey, ...(record.deviceKeys ?? []).map(identityText)].filter(Boolean));
+    const targetAliases = new Set([targetKey, ...(spec.deviceKeys ?? []).map(identityText)].filter(Boolean));
+    for (const alias of targetAliases) if (recordAliases.has(alias)) return true;
+    return false;
+  };
   const ensureTargetRecord = (target = null) => {
     const spec = targetSpecOf(target);
     const key = targetKeyOf(spec);
     let record = targetRecords.get(key);
     if (!record) {
-      record = { key, ...spec, cache: emptyLaneCache() };
+      const strongMatches = [...targetRecords.values()].filter((candidate) => recordMatchesTarget(candidate, spec));
+      if (strongMatches.length === 1) record = strongMatches[0];
+    }
+    if (!record) {
+      record = {
+        key,
+        ...spec,
+        cache: emptyLaneCache(),
+        gpuUtilSampledAt: null,
+        gpuUtilSource: null,
+      };
       targetRecords.set(key, record);
     } else {
-      Object.assign(record, spec);
+      // Inventory enrichment is partial: a later PNP row can omit a LUID,
+      // BDF, or capacity that an earlier DXGI/IGCL row already proved. Do not
+      // erase that stronger physical evidence with a null placeholder.
+      for (const [field, value] of Object.entries(spec)) {
+        if (value === null || value === undefined || value === '') continue;
+        if (field === 'deviceKeys') {
+          record.deviceKeys = [...new Set([...(record.deviceKeys ?? []), ...(value ?? [])])];
+        } else {
+          record[field] = value;
+        }
+      }
     }
     return record;
   };
@@ -704,11 +885,38 @@ export function createSysStats(deps = {}) {
     pciDeviceId: deviceIdHex,
     bdf: deviceBdf,
     osLuid: luidOverride,
+    deviceKeys: deps.deviceKeys ?? null,
     integrated: targetIntegrated,
     mobile: targetMobile,
     vramBytes: dedicatedCapacityBytes,
   });
   laneCache = activeRecord.cache;
+
+  // M4-I: resolve the stable adapter identity once per record/query. GPU
+  // Engine rows carry the DXGI LUID, so utilization must never be selected
+  // by adapter ordinal or by whichever GPU happens to be active in the UI.
+  const luidForRecord = async (record) => {
+    // Resolve from the current PCI/BDF proof first. A serialized OS LUID can
+    // be stale after a display/driver topology change; trusting it before
+    // the DXGI physical lookup silently selects the wrong GPU Engine rows.
+    let resolved = null;
+    if (record.deviceIdHex || record.bdf) {
+      try {
+        resolved = normalizeLuid(await luidOf(record.deviceIdHex, record.bdf));
+      } catch {
+        resolved = null;
+      }
+    }
+    return resolved ?? normalizeLuid(record.osLuid);
+  };
+  const gpuUtilForRecord = async (record, rows) => {
+    if (!(record.deviceIdHex || record.osLuid || record.bdf)) return null;
+    try {
+      return gpuUtilPctOf(rows, await luidForRecord(record));
+    } catch {
+      return null;
+    }
+  };
 
   // M4L (B4): the once-per-session MSR degrade note - fired when the MSR
   // provider reports an unavailable state (device absent, install failed,
@@ -795,6 +1003,207 @@ export function createSysStats(deps = {}) {
     };
   };
 
+  const applyGpuEngineRows = async (rows, sampledAt, preserveRecords = new Set(), generation = gpuGeneration) => {
+    for (const record of targetRecords.values()) {
+      if (generation !== gpuGeneration) return;
+      // A native sample may complete while the slower PDH query is in flight.
+      // Re-check the source at commit time so that late fallback data cannot
+      // overwrite the newer D3DKMT value.
+      if (generation !== gpuGeneration
+        || preserveRecords.has(record)
+        || record.gpuUtilSource === 'windows-d3dkmt') continue;
+      const gpuUtilPct = await gpuUtilForRecord(record, rows);
+      // gpuUtilForRecord resolves the physical LUID asynchronously. The
+      // native sampler can finish during that await, so the ownership check
+      // must also happen immediately before the cache write.
+      if (generation !== gpuGeneration
+        || preserveRecords.has(record)
+        || record.gpuUtilSource === 'windows-d3dkmt') continue;
+      record.cache = {
+        ...record.cache,
+        gpuUtilPct,
+      };
+      record.gpuUtilSource = gpuUtilPct === null ? null : 'windows-gpu-engine';
+      // A successful counter read with no matching physical rows is not a
+      // fresh zero. Leave the freshness gate closed so composeHybridTelemetry
+      // cannot present an unrelated stale value as the selected adapter.
+      record.gpuUtilSampledAt = gpuUtilPct === null ? null : sampledAt;
+    }
+    laneCache = activeRecord.cache;
+  };
+
+  // Native adapter/node running-time reader. Task Manager presents the
+  // busiest engine, not the sum of PDH rows. A successful native sample owns
+  // that target for this tick; PDH fills only the targets that native could
+  // not sample, which keeps a transient D3DKMT failure from blanking every
+  // adapter at once.
+  async function sampleD3dkmtGpuUtil(generation = gpuGeneration) {
+    const nativeRecords = new Set();
+    if (!d3dkmtGpuUtil || typeof d3dkmtGpuUtil.sample !== 'function') return nativeRecords;
+    for (const record of targetRecords.values()) {
+      if (generation !== gpuGeneration) return nativeRecords;
+      let luid = null;
+      try { luid = await luidForRecord(record); } catch { luid = null; }
+      if (!luid) continue;
+      let gpuUtilPct = null;
+      try { gpuUtilPct = await d3dkmtGpuUtil.sample(luid); } catch { gpuUtilPct = null; }
+      if (generation !== gpuGeneration) return nativeRecords;
+      if (Number.isFinite(gpuUtilPct) && gpuUtilPct >= 0 && gpuUtilPct <= 100) {
+        record.cache = { ...record.cache, gpuUtilPct };
+        record.gpuUtilSampledAt = now();
+        record.gpuUtilSource = 'windows-d3dkmt';
+        nativeRecords.add(record);
+      } else if (record.gpuUtilSource === 'windows-d3dkmt') {
+        record.cache = { ...record.cache, gpuUtilPct: null };
+        record.gpuUtilSampledAt = null;
+        record.gpuUtilSource = null;
+      }
+    }
+    laneCache = activeRecord.cache;
+    return nativeRecords;
+  }
+
+  const stopGpuEngineWorker = () => {
+    if (gpuWorkerFirstSampleTimer !== null) {
+      clearTimeout(gpuWorkerFirstSampleTimer);
+      gpuWorkerFirstSampleTimer = null;
+    }
+    const reader = gpuReadline;
+    const child = gpuProcess;
+    // Clear the references before kill(): the close event from an intentional
+    // teardown must not mark the worker as failed and trigger a fallback read.
+    gpuReadline = null;
+    gpuProcess = null;
+    gpuWorkerActive = false;
+    try { reader?.close?.(); } catch { /* best effort */ }
+    try { child?.kill?.(); } catch { /* best effort */ }
+  };
+
+  const restartGpuEngineWorker = () => {
+    stopGpuEngineWorker();
+    gpuWorkerFailed = false;
+    startGpuEngineWorker();
+  };
+
+  const startGpuEngineWorker = () => {
+    if (!usePersistentGpuSampler || gpuProcess !== null || gpuWorkerFailed) return;
+    let child;
+    try {
+      child = spawn(
+        deps.powershellExe ?? POWERSHELL_EXE,
+        ['-NoProfile', '-NonInteractive', '-Command', buildGpuEngineWorkerScript()],
+        { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] },
+      );
+      if (!child?.stdout) throw new Error('GPU Engine worker has no stdout');
+    } catch {
+      gpuWorkerFailed = true;
+      return;
+    }
+    latestGpuRows = null;
+    latestGpuRowsAt = null;
+    gpuProcess = child;
+    gpuWorkerActive = true;
+    try {
+      gpuReadline = createInterface({ input: child.stdout });
+      gpuReadline.on('line', (line) => {
+        const text = String(line ?? '').trim();
+        if (!text.startsWith('{')) return;
+        // Empty gpuEng arrays are valid samples and deliberately clear a
+        // previous value; malformed/non-JSON PowerShell chatter is ignored.
+        let parsed;
+        try { parsed = JSON.parse(text); } catch { return; }
+        if (!Object.prototype.hasOwnProperty.call(parsed ?? {}, 'gpuEng')) return;
+        latestGpuRows = parseGpuEngineOutput(text);
+        latestGpuRowsAt = now();
+        if (gpuWorkerFirstSampleTimer !== null) {
+          clearTimeout(gpuWorkerFirstSampleTimer);
+          gpuWorkerFirstSampleTimer = null;
+        }
+      });
+    } catch {
+      gpuWorkerFailed = true;
+      stopGpuEngineWorker();
+      return;
+    }
+    const worker = child;
+    const failed = () => {
+      if (gpuProcess !== worker) return;
+      gpuWorkerFailed = true;
+      stopGpuEngineWorker();
+    };
+    try {
+      child.once?.('error', failed);
+      child.once?.('close', failed);
+    } catch {
+      failed();
+      return;
+    }
+    // If a provider/driver refuses the persistent stream before its first
+    // line, fall back to the one-shot reader instead of leaving utilization
+    // permanently unavailable.
+    gpuWorkerFirstSampleTimer = setTimeout(() => {
+      if (gpuWorkerActive && latestGpuRowsAt === null) {
+        gpuWorkerFailed = true;
+        stopGpuEngineWorker();
+      }
+    }, 15000);
+  };
+
+  // M4-I: the production-only GPU Engine lane. It uses the same PDH/Get-
+  // Counter source as Task Manager, but does not wait behind the broad CIM
+  // query. The native D3DKMT and PDH fallback guards are independent: the
+  // fallback may be slow, but it must never pause the native 500 ms cadence.
+  async function sampleDedicatedGpuUtil() {
+    if (!enableDedicatedGpuSampler) return;
+    const generation = gpuGeneration;
+    let nativeRecords = new Set();
+    if (d3dkmtGpuUtil && typeof d3dkmtGpuUtil.sample === 'function' && !nativeGpuInflight) {
+      nativeGpuInflight = true;
+      try {
+        nativeRecords = await sampleD3dkmtGpuUtil(generation);
+      } catch {
+        nativeRecords = new Set();
+      } finally {
+        nativeGpuInflight = false;
+      }
+    }
+    if (generation !== gpuGeneration) return;
+    if (gpuInflight) return;
+    gpuInflight = true;
+    try {
+      if (gpuWorkerActive) {
+        const sampledAt = latestGpuRowsAt;
+        const fresh = Array.isArray(latestGpuRows)
+          && Number.isFinite(sampledAt)
+          && now() - sampledAt <= GPU_UTIL_STALE_MS;
+        if (fresh) {
+          await applyGpuEngineRows(latestGpuRows, sampledAt, nativeRecords, generation);
+          return;
+        }
+        if (Number.isFinite(sampledAt) && now() - sampledAt > GPU_UTIL_STALE_MS) {
+          // A worker can remain alive after its provider has stopped emitting.
+          // Restart it once the last known rate sample is stale; if spawning
+          // fails, fall through to the one-shot reader below.
+          restartGpuEngineWorker();
+          if (gpuWorkerActive) return;
+        } else return;
+      }
+      const { stdout } = await exec(
+        deps.powershellExe ?? POWERSHELL_EXE,
+        ['-NoProfile', '-NonInteractive', '-Command', buildGpuEngineScript()],
+        { windowsHide: true, timeout: 10000 },
+      );
+      const rows = parseGpuEngineOutput(stdout);
+      const sampledAt = now();
+      await applyGpuEngineRows(rows, sampledAt, nativeRecords, generation);
+    } catch {
+      // The existing freshness gate turns a failed query into null once the
+      // last known value ages out; never publish an invented zero here.
+    } finally {
+      gpuInflight = false;
+    }
+  }
+
   return (adapter = {
     /**
      * LEGACY - the pre-M17g single-query entry point, retained as a
@@ -840,7 +1249,9 @@ export function createSysStats(deps = {}) {
       try {
         const { stdout } = await exec(
           deps.powershellExe ?? POWERSHELL_EXE,
-          ['-NoProfile', '-NonInteractive', '-Command', buildSysStatsScript()],
+          ['-NoProfile', '-NonInteractive', '-Command', buildSysStatsScript({
+            includeGpuEngine: !enableDedicatedGpuSampler,
+          })],
           { windowsHide: true, timeout: 10000 },
         );
         const raw = parseSysStatsOutput(stdout);
@@ -863,17 +1274,21 @@ export function createSysStats(deps = {}) {
           // sample); null when the class is absent (honest '-').
           cpuPowerW: raw.powerW,
         };
+        const gpuUtilSampledAt = now();
         // M150: resolve every registered physical target against the SAME
         // query.  Each adapter keeps its own LUID/memory/utilization cache;
         // a selected-device switch cannot overwrite another overlay lane.
         for (const record of targetRecords.values()) {
           let gpuBytes = null;
           let gpuMemorySource = null;
-          let gpuUtil = null;
+          // When the dedicated lane is active, its cache owns utilization.
+          // The broad query intentionally omits GPU Engine rows and must not
+          // replace a fresh value with null on every CIM refresh.
+          let gpuUtil = enableDedicatedGpuSampler ? record.cache.gpuUtilPct : null;
           const canUseUniqueBuiltInMemoryRow = (record.integrated || record.mobile) && raw.gpuMemRows.length === 1;
           if (record.deviceIdHex || record.osLuid || canUseUniqueBuiltInMemoryRow) {
             try {
-              const luid = normalizeLuid(record.osLuid) ?? normalizeLuid(await luidOf(record.deviceIdHex, record.bdf));
+              const luid = await luidForRecord(record);
               const memory = gpuMemoryUsageOf(raw.gpuMemRows, luid, {
                 integrated: record.integrated,
                 mobile: record.mobile,
@@ -883,19 +1298,28 @@ export function createSysStats(deps = {}) {
                 gpuBytes = memory.bytes;
                 gpuMemorySource = memory.source;
               }
-              gpuUtil = gpuUtilPctOf(raw.gpuEngRows, luid);
+              if (!enableDedicatedGpuSampler) gpuUtil = gpuUtilPctOf(raw.gpuEngRows, luid);
             } catch {
               gpuBytes = null;
               gpuMemorySource = null;
-              gpuUtil = null;
+              if (!enableDedicatedGpuSampler) gpuUtil = null;
             }
           }
           record.cache = {
             ...common,
             gpuMemUsedBytes: gpuBytes,
             gpuMemorySource,
-            gpuUtilPct: gpuUtil,
+            // The slow CIM query can finish after the independent native GPU
+            // tick started. Re-read the dedicated cache at the commit point
+            // so a late slow-lane result cannot erase a newer D3DKMT/PDH
+            // utilization sample with the value captured before its await.
+            gpuUtilPct: enableDedicatedGpuSampler
+              ? record.cache.gpuUtilPct
+              : gpuUtil,
           };
+          // Keep freshness metadata private to the internal target record so
+          // the public sample shapes remain backward compatible.
+          if (!enableDedicatedGpuSampler) record.gpuUtilSampledAt = gpuUtilSampledAt;
         }
         laneCache = activeRecord.cache;
         return laneCache;
@@ -945,9 +1369,26 @@ export function createSysStats(deps = {}) {
      * fallback when LHM is active.
      */
     async sampleGpuUtilForTarget(target = null) {
-      if (targetKeyOf(target) === 'default') return { gpuUtilPct: null };
+      if (targetKeyOf(target) === 'default') {
+        return {
+          gpuUtilPct: null,
+          gpuUtilSource: null,
+          gpuUtilAuthoritative: false,
+        };
+      }
       const record = ensureTargetRecord(target);
-      return { gpuUtilPct: record.cache?.gpuUtilPct ?? null };
+      const routedLuid = enableDedicatedGpuSampler ? await luidForRecord(record) : null;
+      const gpuUtilAuthoritative = enableDedicatedGpuSampler && routedLuid !== null;
+      const sampledAt = record.gpuUtilSampledAt;
+      const fresh = Number.isFinite(sampledAt) && now() - sampledAt <= GPU_UTIL_STALE_MS;
+      return {
+        gpuUtilPct: fresh ? record.cache?.gpuUtilPct ?? null : null,
+        gpuUtilSource: fresh ? record.gpuUtilSource : null,
+        // The dedicated lane is the authoritative Task Manager-aligned
+        // source. Callers should not silently substitute a low LHM value
+        // while this source is warming or has gone stale.
+        gpuUtilAuthoritative,
+      };
     },
 
     registerTarget(target = null) {
@@ -984,6 +1425,16 @@ export function createSysStats(deps = {}) {
       slowHandle = setIntervalFn(() => {
         void slowTick();
       }, cadenceMs);
+      if (enableDedicatedGpuSampler) {
+        gpuOwner = owner;
+        gpuHandle = setIntervalFn(() => {
+          void gpuTick();
+        }, GPU_UTIL_LANE_CADENCE_MS);
+        startGpuEngineWorker();
+        // Seed both lanes immediately; neither await blocks the telemetry
+        // caller, and the independent guards prevent duplicate queries.
+        void gpuTick();
+      }
       // An immediate first tick seeds the shared cache (never blocks the
       // caller - the tick runs async; the handle is assigned FIRST so the
       // seed tick passes the stop-guard in slowTick).
@@ -996,11 +1447,29 @@ export function createSysStats(deps = {}) {
      * @param {number} [owner] optional telemetry startup generation
      */
     stopSlowLane(owner = undefined) {
-      if (owner !== undefined && slowOwner !== owner) return;
-      if (slowHandle === null) return;
-      clearIntervalFn(slowHandle);
-      slowHandle = null;
+      if (owner !== undefined && (slowOwner !== owner || (gpuHandle !== null && gpuOwner !== owner))) return;
+      if (slowHandle !== null) {
+        clearIntervalFn(slowHandle);
+        slowHandle = null;
+      }
+      if (gpuHandle !== null) {
+        clearIntervalFn(gpuHandle);
+        gpuHandle = null;
+      }
+      gpuGeneration += 1;
+      // A telemetry restart must establish a fresh native baseline. Do not
+      // expose the previous session's value while the next D3DKMT pair is
+      // warming, and do not let a slow fallback repopulate it after stop.
+      for (const record of targetRecords.values()) {
+        record.cache = { ...record.cache, gpuUtilPct: null };
+        record.gpuUtilSampledAt = null;
+        record.gpuUtilSource = null;
+      }
+      laneCache = activeRecord.cache;
+      stopGpuEngineWorker();
+      try { d3dkmtGpuUtil?.reset?.(); } catch { /* best effort */ }
       slowOwner = undefined;
+      gpuOwner = undefined;
     },
   });
 
@@ -1021,6 +1490,14 @@ export function createSysStats(deps = {}) {
     } finally {
       slowInflight = false;
     }
+  }
+
+  // Dedicated GPU Engine timer counterpart to slowTick. It has an independent
+  // handle/guard because the WMI lane is allowed to remain busy while this
+  // lane refreshes the value shown in Monitoring, Dashboard, and Overlay.
+  async function gpuTick() {
+    if (gpuHandle === null) return;
+    await sampleDedicatedGpuUtil();
   }
 }
 

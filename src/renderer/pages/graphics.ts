@@ -46,6 +46,7 @@ import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { applyFailureText, CONTROL_LABELS, errorMessage } from '../pure/errors.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
+import { activeDeviceLabel } from '../pure/device.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { chipState } from '../pure/chip.ts';
 import { isBattlemageGpuName } from '../pure/hardware-icons.ts';
@@ -530,7 +531,11 @@ function refreshDisplayChip(key: string) {
       : displayDriverValue(display, key);
   const customDirty = key === 'displayScalingMethod' && displayScalingMethodDraft === 'custom'
     && !sameCustomScaling(displayDraft.scalingCustom, customScalingOf(display!));
-  const state = customDirty ? 'dirty' : chipState(key, { [key]: viewKey }, { [key]: appliedKey }, driverValue, key === 'scalingMode' || key === 'displayScalingMethod'
+  const chipViewKey = key === 'superResolution' && viewKey && typeof viewKey === 'object'
+    && (viewKey as { enabled?: unknown }).enabled === false
+    ? { enabled: false }
+    : viewKey;
+  const state = customDirty ? 'dirty' : chipState(key, { [key]: chipViewKey }, { [key]: appliedKey }, driverValue, key === 'scalingMode' || key === 'displayScalingMethod'
     ? isDisplayControlSupported(display, 'scalingMode')
     : isDisplayControlSupported(display, key));
   chip.hidden = state !== 'applied';
@@ -563,7 +568,7 @@ function refreshAll() {
 // until those driver paths are revalidated on every adapter. Keeping the
 // hidden keys out of this list prevents a global Apply from sending controls
 // the user cannot see or edit.
-const DISPLAY_APPLY_KEYS = ['scalingMode', 'displayScalingMethod', 'globalVrrMode', 'variableRefreshRate', 'quantizationRange'];
+const DISPLAY_APPLY_KEYS = ['scalingMode', 'displayScalingMethod', 'globalVrrMode', 'variableRefreshRate', 'quantizationRange', 'superResolution'];
 const DISPLAY_COLOR_KEYS = ['hue', 'saturation', 'brightness', 'contrast'];
 
 function displayHasDirtyDraft(display: DisplayState['displays'][number] | null): boolean {
@@ -650,7 +655,7 @@ export const graphicsPage: Page = {
       ]),
       el('div', { class: 'arc-page-hero-side' }, [
         el('span', { class: 'arc-hero-label', text: 'ACTIVE GPU' }),
-        ...(deviceSelect ? [deviceSelect] : [el('span', { class: 'arc-hero-value', text: 'Current adapter' })]),
+        ...(deviceSelect ? [deviceSelect] : [el('span', { class: 'arc-hero-value', text: activeDeviceLabel(s.devices) })]),
       ]),
     ]);
     const viewToggle = el('div', { class: 'graphics-view-toggle-row' }, [
@@ -2224,7 +2229,7 @@ async function applyDisplay(ctx: PageContext, only: string) {
   } else {
     Object.assign(payload, displayPayloadForControl(only, display) ?? {});
   }
-  if (!validateDisplaySettings(payload)) {
+  if (!validateDisplaySettings(payload, display)) {
     toast('error', 'Apply aborted', 'The display payload failed validation - this is a bug.');
     return;
   }
@@ -2294,7 +2299,7 @@ async function applyDisplay(ctx: PageContext, only: string) {
     const hasScalingReadback = out.perControl.scalingMode !== undefined
       || out.perControl.scalingMethod !== undefined
       || out.perControl.displayScalingMethod !== undefined;
-    if (freshDisplay && hasScalingReadback) {
+    if (freshDisplay && (hasScalingReadback || out.perControl.superResolution !== undefined)) {
       // A second selector change may have arrived while the first modeset
       // was in flight. Keep that newer intent for the queued transaction;
       // only replace an unchanged draft with native read-back.

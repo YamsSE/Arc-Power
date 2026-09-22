@@ -686,8 +686,12 @@ function capGb(value: unknown): number | null {
 
 function capGpuTitle(sample: TelemetrySample | null, device: OverlayDeviceIdentity | null, ordinal: number): string {
   const raw = sample?.deviceName ?? device?.name ?? null;
+  if (chipNamesEnabled) {
+    return chipLabelGpu(raw)
+      ?? (humanGpuName(raw) ?? (typeof raw === 'string' && raw.trim() ? raw.trim() : `GPU ${ordinal}`));
+  }
   return humanGpuName(raw)
-    ?? (chipLabelGpu(raw) ?? (typeof raw === 'string' && raw.trim() ? raw.trim() : `GPU ${ordinal}`));
+    ?? (typeof raw === 'string' && raw.trim() ? raw.trim() : `GPU ${ordinal}`);
 }
 
 function capRow(parent: HTMLElement, label: string, values: string[]): void {
@@ -814,7 +818,9 @@ function renderCapframex(displaySample: TelemetrySample | null): void {
   if (capframexCpuTitle) {
     const cpuName = document.createElement('span');
     cpuName.className = 'capframex-title-label';
-    cpuName.textContent = cpuHumanName || 'CPU';
+    cpuName.textContent = chipNamesEnabled
+      ? (cpuChipLabel ?? cpuHumanName ?? 'CPU')
+      : (cpuHumanName ?? 'CPU');
     capframexCpuTitle.replaceChildren(cpuName);
   }
   const cpuSection = capframexCpuTitle?.parentElement;

@@ -76,6 +76,7 @@ import { createRtssStartup } from './rtss-startup.js';
  *   getRecordingHotkeyState?: () => object,
  *   onRecordingActionResult?: (result: object) => void,
  *   onRecordingState?: (state: object, previous: object | null) => void,
+ *   getRecordingMemorySavingMode?: () => boolean,
  *   recordingEditor?: object,
  *   stabilityLab?: object,
  *   stabilityStore?: object,
@@ -87,7 +88,7 @@ import { createRtssStartup } from './rtss-startup.js';
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, startup = createStartup(), rtssStartup = createRtssStartup(), driverInfo = createDriverInfo(), driverMonitor = null, sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), fpsLane = null, rtssOverlay = null, rtssFrameLimiter = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null, recordingStore = null, recordingCopyFile = async () => false, recordingEngine = null, recordingLifecycle = null, recordingEditor = null, stabilityLab = null, stabilityStore = null, stabilityWorkload = null, overlayLayoutStore = null, obsStream = null, applyOverlayLayout = async () => {}, chooseRecordingDirectory = async () => null, openRecordingFolder = async () => {}, refreshRecordingHotkeys = async () => null, getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }), recordingCaptureTargets = null, onRecordingActionResult = () => {}, onRecordingState = () => {} }) {
+export function registerIpc({ backend, store, getWindow, startup = createStartup(), rtssStartup = createRtssStartup(), driverInfo = createDriverInfo(), driverMonitor = null, sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), fpsLane = null, rtssOverlay = null, rtssFrameLimiter = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null, recordingStore = null, recordingCopyFile = async () => false, recordingEngine = null, recordingLifecycle = null, recordingEditor = null, stabilityLab = null, stabilityStore = null, stabilityWorkload = null, overlayLayoutStore = null, obsStream = null, applyOverlayLayout = async () => {}, chooseRecordingDirectory = async () => null, openRecordingFolder = async () => {}, refreshRecordingHotkeys = async () => null, getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }), recordingCaptureTargets = null, onRecordingActionResult = () => {}, onRecordingState = () => {}, getRecordingMemorySavingMode = () => true }) {
   const wheaMonitor = arguments[0]?.wheaMonitor ?? null;
   const recordingRuntimeAcquire = arguments[0]?.recordingRuntimeAcquire
     ?? (async () => recordingEngine?.getState?.() ?? null);
@@ -132,6 +133,8 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     advancedOverlayOps,
     advancedOverlayClose,
     onAdvancedOverlaySettings,
+    onRecordingMemorySavingSettings: arguments[0]?.onRecordingMemorySavingSettings,
+    getRecordingMemorySavingMode,
     sysmanPowerLimits,
     gameProfiles,
     gameScan: gameScan ?? undefined,
@@ -198,19 +201,23 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(channel, payload);
     },
   });
-  let previousRecordingState = recordingEngine?.getState?.() ?? null;
+  const recordingStateWithSettings = (state) => state && typeof state === 'object'
+    ? { ...state, memorySavingMode: getRecordingMemorySavingMode() !== false }
+    : state;
+  let previousRecordingState = recordingStateWithSettings(recordingEngine?.getState?.() ?? null);
   const unsubscribeRecordingState = recordingEngine?.subscribe?.((state) => {
-    pushRecordingState({ getWindow, state, getHotkeyState: getRecordingHotkeyState });
+    const enrichedState = recordingStateWithSettings(state);
+    pushRecordingState({ getWindow, state: enrichedState, getHotkeyState: getRecordingHotkeyState });
     // The Advanced Overlay has its own renderer and therefore does not see
     // the main window's recording-state push. Forward the same normalized
     // envelope so its Record/Instant Replay quick actions stay live when a
     // global hotkey or the main Recording page changes the engine.
     const advancedOverlayWin = getAdvancedOverlayWindow();
     if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) {
-      advancedOverlayWin.webContents.send(RECORDING_STATE_CHANNEL, { ...state, hotkeys: getRecordingHotkeyState() });
+      advancedOverlayWin.webContents.send(RECORDING_STATE_CHANNEL, { ...enrichedState, hotkeys: getRecordingHotkeyState() });
     }
-    try { onRecordingState(state, previousRecordingState); } catch { /* desktop notifications are best effort */ }
-    previousRecordingState = state;
+    try { onRecordingState(enrichedState, previousRecordingState); } catch { /* desktop notifications are best effort */ }
+    previousRecordingState = enrichedState;
   });
   // The foreground detector is absent in mock/ui-verify mode. In the real
   // product it gives Game Profiles the same executable identity used by the
@@ -381,6 +388,13 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         if (win && !win.isDestroyed()) win.webContents.send(RECORDING_PILL_SETTINGS_CHANNEL, payload);
         const advancedOverlayWin = getAdvancedOverlayWindow();
         if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(RECORDING_PILL_SETTINGS_CHANNEL, payload);
+      }
+      if (channel === 'profiles-settings-save' && out && typeof out.memorySavingMode === 'boolean') {
+        const state = recordingStateWithSettings(recordingEngine?.getState?.() ?? null);
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(RECORDING_STATE_CHANNEL, { ...state, hotkeys: getRecordingHotkeyState() });
+        const advancedOverlayWin = getAdvancedOverlayWindow();
+        if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(RECORDING_STATE_CHANNEL, { ...state, hotkeys: getRecordingHotkeyState() });
       }
       // M24 (Part B): the cross-window settings sync - an apply/reset from
       // ANY renderer (the main window OR the advanced-overlay panel) pushes

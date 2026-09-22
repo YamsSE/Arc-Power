@@ -58,6 +58,14 @@ test('CapFrameX-style renderer is live-switchable and owns its telemetry lanes',
   assert.doesNotMatch(settingsSrc, /CapFrameX-style|CapFrameX style|Show CapFrameX/);
 });
 
+test('CapFrameX-style renderer honors the shared chip-name label toggle', () => {
+  const gpuTitle = overlaySrc.match(/function capGpuTitle\([\s\S]*?\n}\n/);
+  assert.ok(gpuTitle, 'CapFrameX GPU title helper should remain isolated');
+  assert.match(gpuTitle[0], /if \(chipNamesEnabled\)/);
+  assert.match(gpuTitle[0], /chipLabelGpu\(raw\)/);
+  assert.match(overlaySrc, /cpuName\.textContent = chipNamesEnabled[\s\S]*cpuChipLabel/);
+});
+
 test('Arc Power Overlay labels averaged CPU frequency as CPU Clock', () => {
   assert.doesNotMatch(overlaySrc, /'CPU Max'/);
   assert.match(overlaySrc, /capStatRow\(cpuSection, enabled, 'cpu-clock', 'CPU Clock'/);

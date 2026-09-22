@@ -225,6 +225,18 @@ function field(label: string, control: HTMLElement, note?: string): HTMLElement 
   ]);
 }
 
+// A field containing more than one interactive control must not be a
+// <label>. The custom-FPS row contains a dropdown and a number input; the
+// browser's implicit label activation otherwise focuses the number input when
+// the dropdown is opened, which immediately closes the menu on focusout.
+function fieldGroup(label: string, control: HTMLElement, note?: string): HTMLElement {
+  return el('div', { class: 'recording-field' }, [
+    el('span', { class: 'recording-field-label', text: label }),
+    control,
+    note ? el('span', { class: 'recording-field-note', text: note }) : null,
+  ]);
+}
+
 function cloneRecordingSettings(value: RecordingSettings): RecordingSettings {
   return {
     ...value,
@@ -765,7 +777,7 @@ function renderQualitySettings(): HTMLElement {
       el('span', { class: 'recording-panel-badge', text: 'Applies to video and clips' }),
     ]),
     el('div', { class: 'recording-settings-grid' }, [
-      field('Frame rate', fps),
+    fieldGroup('Frame rate', fps),
       field('Resolution', resolution),
       field('Encoder', encoder),
       field('Bitrate (Kbps)', bitrate),

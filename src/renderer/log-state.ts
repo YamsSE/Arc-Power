@@ -81,9 +81,9 @@ export function filterMonitorLogSample(sample: Record<string, unknown>): Record<
     if (enabled.has(metric)) return;
     for (const key of keys) out[key] = null;
   };
-  // IGCL's device-wide activity counter is the preferred GPU utilization
-  // source when it is present. The WMI GPUEngine aggregate remains the
-  // fallback for vendor lanes and driver builds without the native counter.
+  // The main process has already selected the Task Manager-aligned Windows
+  // GPU Engine value, with LibreHardwareMonitor as the fallback. Keep the
+  // legacy utilPct alias for log consumers without recalculating utilization.
   out.utilPct = sample.utilPct ?? sample.gpuUtilPct ?? null;
   drop('gpu-util', 'utilPct', 'gpuUtilPct');
   drop('gpu-clock', 'gpuClockMhz');

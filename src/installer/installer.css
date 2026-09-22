@@ -7,6 +7,7 @@
   --panel-2: #111827;
   --line: rgba(136, 162, 202, .18);
   --cyan: #4cc2ff;
+  --accent-strong: #1f9ce8;
   --violet: #8d73ff;
   --danger: #ff789b;
 }
@@ -39,7 +40,12 @@ button { color: inherit; cursor: pointer; }
 .hero-icon { position: relative; width: 235px; height: 235px; object-fit: contain; }
 .art-caption { position: absolute; bottom: 23px; color: var(--muted-2); font: 500 10px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; letter-spacing: .14em; }
 .pulse-dot { display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 12px var(--cyan); }
-.panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; justify-content: flex-start; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 28px 44px 24px; }
+.panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; justify-content: flex-start; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: var(--accent-strong) var(--panel-2); padding: 28px 44px 24px; }
+.panel::-webkit-scrollbar { width: 10px; height: 10px; }
+.panel::-webkit-scrollbar-track { background: var(--panel-2); border-radius: 5px; }
+.panel::-webkit-scrollbar-thumb { background: var(--accent-strong); border-radius: 5px; border: 2px solid var(--panel-2); }
+.panel::-webkit-scrollbar-thumb:hover { background: var(--cyan); }
+.panel::-webkit-scrollbar-corner { background: var(--panel-2); }
 body[data-state="busy"] .panel, body[data-state="complete"] .panel { padding-top: 24px; padding-bottom: 20px; }
 body[data-state="complete"] .progress-area { margin-top: 22px; }
 body[data-state="complete"] .status-card { margin-top: 18px; }

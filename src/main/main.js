@@ -1436,7 +1436,14 @@ async function main() {
     // soon as the query lands, so every post-window consumer (the
     // renderer's listDevices + caps + sysinfo:get) sees the enriched
     // names exactly as before.
-    const sysinfoPromise = collectSysinfo({ timeoutMs: 10000 });
+    const sysinfoPromise = collectSysinfo({
+      timeoutMs: 10000,
+      // The first installed launch can race PowerShell/CIM initialization.
+      // Retry one degraded snapshot without changing the normal collector's
+      // one-query/cache contract used by other startup paths and tests.
+      retryOnDegraded: true,
+      retryTimeoutMs: 5000,
+    });
     let sysinfoLanded = false;
     const sysinfoResult = async () => {
       if (!sysinfoLanded) {
@@ -1465,6 +1472,7 @@ async function main() {
     // multi-GPU machine.  Keep each reader memoized, but merge every
     // identity-matched verdict into the corresponding OS controller.
     const driverReBars = new Map();
+    const driverReBarRetries = new Map();
     const rebarTargetKey = (target) => {
       if (typeof target?.deviceKey === 'string' && target.deviceKey.trim()) return `key:${target.deviceKey.trim().toUpperCase()}`;
       const vendor = typeof target?.pciVendorId === 'string' ? target.pciVendorId : '';
@@ -1487,9 +1495,24 @@ async function main() {
             reader = createDriverReBar(rawBackend, target);
             driverReBars.set(key, reader);
           }
-          const verdict = await reader();
+          let verdict = await reader();
+          if (verdict === null || verdict === undefined) {
+            // createDriverReBar deliberately memoizes a null verdict for its
+            // own session contract. A new reader is the bounded main-path
+            // recovery for a transient first IGCL read; concurrent callers
+            // share the same retry promise and never fan out duplicate reads.
+            let retry = driverReBarRetries.get(key);
+            if (!retry) {
+              const retryReader = createDriverReBar(rawBackend, target);
+              driverReBars.set(key, retryReader);
+              retry = retryReader();
+              driverReBarRetries.set(key, retry);
+            }
+            verdict = await retry;
+          }
           if (verdict !== null && verdict !== undefined) {
-            result = applyDriverReBar(result, verdict, reader.target ?? target);
+            const resolvedReader = driverReBars.get(key);
+            result = applyDriverReBar(result, verdict, resolvedReader?.target ?? reader.target ?? target);
           }
         }
         return result;
@@ -1780,8 +1803,14 @@ async function main() {
   // or Instant Replay captures are an implicit demand of their own; once
   // neither exists, the engine can close its child again.
   let recordingRuntimeDemand = 0;
+  const recordingMemorySavingEnabled = () => {
+    try { return store.loadSettingsSync()?.memorySavingMode !== false; } catch { return true; }
+  };
   const recordingEngine = createAscentEngine({
-    getRuntimeDemand: () => recordingRuntimeDemand,
+    // A disabled Memory Saving Mode is an explicit warm-runtime lease. It
+    // keeps the child alive even when no page/capture lease is held, while
+    // active captures and the Recording page still use the normal demand.
+    getRuntimeDemand: () => recordingRuntimeDemand + (recordingMemorySavingEnabled() ? 0 : 1),
     onEncoderDemoted: (encoderId, _error, context = {}) => recordingStore.demoteEncoder(
       context.selectionId ?? encoderId,
       context.adapterTarget ?? null,
@@ -1960,6 +1989,17 @@ async function main() {
     if (recordingMemorySavingModeEnabled()) await recordingEngine.shutdownIfIdle?.();
     return recordingEngine.getState();
   });
+  const applyRecordingMemorySavingSettings = async (enabled) => {
+    if (enabled === false) {
+      // Turning the preference off is an immediate request to keep the
+      // runtime ready. The mock/UI verifier remains deterministic and does
+      // not spawn the bundled child as a side effect of saving Settings.
+      if (!mock && !uiVerify) await recordingEngine.probe();
+      return recordingEngine.getState();
+    }
+    await shutdownRecordingRuntimeIfIdle();
+    return recordingEngine.getState();
+  };
   const recordingLifecycle = createRecordingLifecycleService({ recordingStore, recordingEngine });
   const mockGameDir = mock && process.env.RID_MOCK_GAME_SCAN === '1'
     ? path.join(os.tmpdir(), 'arcpower-mock-games')
@@ -2351,6 +2391,7 @@ async function main() {
     ? null
     : createRtssProfileController({
         getExecutablePath: async () => (await rtssStartup.get())?.executablePath ?? null,
+        isRunning: async () => await rtssStartup.isRunning?.() === true,
       });
   // The product telemetry HUD is rendered by RTSS itself. Keep the FPS lane
   // mutable because the foreground/process ownership seam is created after
@@ -3802,6 +3843,7 @@ async function main() {
     // onOverlaySettings pattern) - called by profiles-settings-save when an
     // advancedOverlay* field changed.
     onAdvancedOverlaySettings,
+    onRecordingMemorySavingSettings: applyRecordingMemorySavingSettings,
     // M5: the overlay settings reaction (the rebuildTray pattern) - called
     // by profiles-settings-save when an overlay field changed.
     onOverlaySettings,
@@ -3914,6 +3956,7 @@ async function main() {
     refreshRecordingHotkeys: () => recordingHotkeys.register(),
     getRecordingHotkeyState: () => recordingHotkeys.getState(),
     onRecordingActionResult: showRecordingActionToast,
+    getRecordingMemorySavingMode: recordingMemorySavingEnabled,
     // M143: keep the pill on the same authoritative engine subscription as
     // the main renderer and desktop notifications. Instant Replay save
     // progress is carried by the engine state envelope.
@@ -3986,12 +4029,10 @@ async function main() {
   });
   await recordingHotkeys.register();
 
-  // Keep the bundled capture runtime out of the idle process tree.  A normal
-  // launch only needs the lightweight recording store; probing Ascent starts
-  // a separate OBS-based process that can cost hundreds of megabytes.  The
-  // only boot-time exception is an explicit Instant Replay auto-start, which
-  // must preserve its existing behavior. Manual capture and the Recording
-  // page call the same probe lazily on demand.
+  // Keep the bundled capture runtime out of the idle process tree when
+  // Memory Saving Mode is enabled. With that setting off, probe once at boot
+  // and keep the child warm so the user's explicit latency preference is
+  // honored. Instant Replay auto-start remains a separate boot-time demand.
   if (!mock && !uiVerify) {
     const probeWithRetry = async () => {
       let lastError = null;
@@ -4004,26 +4045,33 @@ async function main() {
       }
       throw lastError ?? new Error('Recording runtime probe failed');
     };
-    void recordingStore.settings().then((settings) => {
-      if (settings?.instantReplayAutoStart !== true) return null;
-      return probeWithRetry().catch((error) => {
-        console.log(`[recording] auto-start probe unavailable after retries: ${error?.message ?? String(error)}`);
-        return Promise.resolve(shutdownRecordingRuntimeIfIdle()).then(() => null).catch(() => null);
-      });
-    }).then((probeState) => {
-      if (!probeState) return null;
-      return recordingLifecycle.autoStartInstantReplay().catch((error) => {
+    void recordingStore.settings().then(async (settings) => {
+      const keepWarm = recordingMemorySavingEnabled() === false;
+      const autoStart = settings?.instantReplayAutoStart === true;
+      if (!keepWarm && !autoStart) return null;
+      let probeState;
+      try {
+        probeState = await probeWithRetry();
+      } catch (error) {
+        console.log(`[recording] startup probe unavailable after retries: ${error?.message ?? String(error)}`);
+        return null;
+      }
+      if (!autoStart) return probeState;
+      try {
+        return await recordingLifecycle.autoStartInstantReplay();
+      } catch (error) {
         console.log(`[recording] Instant Replay auto-start unavailable: ${error?.message ?? String(error)}`);
-        return Promise.resolve(shutdownRecordingRuntimeIfIdle()).then(() => null).catch(() => null);
-      });
+        return null;
+      }
     }).catch((error) => {
       console.log(`[recording] auto-start settings check unavailable: ${error?.message ?? String(error)}`);
       return null;
     }).finally(() => {
-      // A probe can finish after the setting is disabled.  autoStart may
-      // then return its successful "disabled" no-op, so clean up every
-      // completed boot attempt and let active replay/page demand veto close.
-      return Promise.resolve(shutdownRecordingRuntimeIfIdle()).catch(() => null);
+      // Re-check the preference after the asynchronous probe/auto-start. A
+      // user or profile migration may have changed it while the child was
+      // starting; the demand lease then decides whether cleanup is allowed.
+      if (recordingMemorySavingEnabled()) return Promise.resolve(shutdownRecordingRuntimeIfIdle()).catch(() => null);
+      return null;
     });
   }
   if (!uiVerify) {
@@ -4102,6 +4150,9 @@ async function main() {
       integrated: initialTarget?.integrated === true,
       mobile: initialTarget?.mobile === true,
       dedicatedCapacityBytes: initialTarget?.vramBytes ?? null,
+      // M4-I: keep the Task Manager-aligned GPU Engine counter on its own
+      // sampler so the slow CIM query cannot leave utilization stale.
+      enableDedicatedGpuSampler: true,
       luidOf: async (devId, bdf) => fpsAdapter.adapterLuidOf?.(devId, bdf) ?? null,
       msrReader,
       // M4L (B4): the once-per-session honest degrade note (the pawnio.eu

@@ -537,7 +537,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   // next capture so every applied profile reaches a fresh OBS output.
   let freshChildRequired = false;
   const demotedEncoders = new Set();
-  let state = { available: false, running: false, mode: null, activeModes: { video: false, replay: false }, startedAt: null, sessionId: null, error: RECORDING_ENGINE_IDLE_MESSAGE, encoders: [], audioInputs: [], audioOutputs: [], probeComplete: false, lastEvent: null, instantReplaySave: createInstantReplaySaveState() };
+  let state = { available: false, running: false, mode: null, activeModes: { video: false, replay: false }, startingModes: { video: false, replay: false }, startedAt: null, sessionId: null, error: RECORDING_ENGINE_IDLE_MESSAGE, encoders: [], audioInputs: [], audioOutputs: [], probeComplete: false, lastEvent: null, instantReplaySave: createInstantReplaySaveState() };
   const listeners = new Set();
   const pending = new Map();
   const writeQueue = [];
@@ -596,6 +596,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       video: activeRecorders.has('video'),
       replay: activeRecorders.has('replay'),
     };
+    const startingModes = {
+      video: startingRecorders.has('video'),
+      replay: startingRecorders.has('replay'),
+    };
     const startedAt = active.length
       ? Math.min(...active.map((recorder) => Number.isFinite(recorder.startedAt) ? recorder.startedAt : clock()))
       : null;
@@ -606,6 +610,10 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       // one label. activeModes is authoritative when both are running.
       mode: activeModes.video ? 'video' : activeModes.replay ? 'replay' : null,
       activeModes,
+      // A start request is visible to the status pill immediately, while
+      // `activeModes` remains reserved for a native STARTED confirmation.
+      // This prevents the pill from appearing only when the user stops.
+      startingModes,
       startedAt,
       sessionId: sessionRecorder ? `${sessionRecorder.mode}:${sessionRecorder.identifier}` : null,
     };
@@ -1107,6 +1115,20 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     const startingRecorder = { identifier, type, mode, ready: false, sessionId: `${mode}:${identifier}`, startedAt: clock(), outputPath: typeof outputPath === 'string' ? outputPath : null, settings };
     startingRecorders.set(mode, startingRecorder);
     startApmSession(startingRecorder);
+    // Publish the pending-start state before waiting for the native STARTED
+    // event. Consumers that render capture status can now show the pill for
+    // the whole start handshake without treating the capture as confirmed.
+    const pendingStartState = captureStatePatch();
+    if (mode === 'replay' && replayBufferRecoveryInFlight && state.activeModes?.replay === true) {
+      // Recycling a replay buffer is an internal stop/start transaction. Keep
+      // the public lifecycle active until the replacement buffer confirms its
+      // STARTED event so the status pill and overlay do not flash stopped.
+      pendingStartState.activeModes = { ...pendingStartState.activeModes, replay: true };
+      pendingStartState.running = true;
+      pendingStartState.mode = pendingStartState.activeModes.video ? 'video' : 'replay';
+      pendingStartState.sessionId = state.sessionId;
+    }
+    publish({ ...pendingStartState, error: null });
     try {
       await request(payload.cmd, type, fields, [mode === 'replay' ? ASCENT_EVENTS.REPLAY_STARTED : ASCENT_EVENTS.RECORDING_STARTED], startTimeoutMs, identifier);
     } catch (error) {
@@ -1121,6 +1143,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
       } else if (startingRecorder?.identifier === identifier) {
         stopApmSession(startingRecorder);
         startingRecorders.delete(mode);
+        publish(captureStatePatch());
       }
       if (mode === 'replay' && retryAfterCrash && !disposed && isNativeChildCrash(error)) {
         await waitMs(REPLAY_CAPTURE_RETRY_DELAY_MS);
@@ -1451,7 +1474,9 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
     // source is how an entire rolling buffer escaped as a short clip.
     if (!await waitForReplayFile(sourcePath, fileReady ? REPLAY_FILE_STABLE_MS * 3 : REPLAY_FILE_WAIT_MS)) return false;
     try {
-      const result = await trimReplayClip({ path: sourcePath, destinationPath, durationMs: headDuration });
+      const request = { path: sourcePath, durationMs: headDuration };
+      if (destinationPath !== sourcePath) request.destinationPath = destinationPath;
+      const result = await trimReplayClip(request);
       if (result === true) return destinationPath;
       if (result && typeof result.path === 'string' && result.path.trim()) return result.path;
       return false;

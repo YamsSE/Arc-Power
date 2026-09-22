@@ -66,6 +66,28 @@ test('graphics apply rolls RTSS back when the driver apply returns a failure', a
   assert.equal(rtssCalls.length, 1, 'the production controller restoreFrameLimit path should own rollback');
 });
 
+test('graphics apply sends the limiter to IGCL when RTSS is unavailable', async () => {
+  let driverSettings = null;
+  const handlers = createGraphicsHandlers({
+    rtssFrameLimiter: {
+      async getFrameLimit() { return { ok: false, available: false, source: 'igcl', error: 'RTSS is not running' }; },
+      async applyFrameLimit() { return { ok: false, used: false, fallback: true, source: 'igcl', error: 'RTSS is not running' }; },
+    },
+    applyRunner: {
+      async graphicsApplyIsolated({ settings }) {
+        driverSettings = settings;
+        return { ok: true, perControl: { frameLimit: { ok: true, source: 'igcl' } } };
+      },
+    },
+  });
+
+  const result = await handlers['graphics:apply'](0, { frameLimit: { enabled: true, value: 144 } });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(driverSettings, { frameLimit: { enabled: true, value: 144 } });
+  assert.equal(result.graphicsState.frameLimitSource, 'igcl');
+});
+
 test('graphics apply rolls RTSS back when the isolated driver apply throws', async () => {
   let restored = 0;
   const handlers = createGraphicsHandlers({

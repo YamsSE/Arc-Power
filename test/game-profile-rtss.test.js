@@ -68,6 +68,26 @@ test('disabling a RTSS-owned game limiter also clears the native driver scope', 
   assert.deepEqual(rtssCalls, [{ enabled: false, value: 60, executablePath: executablePath.toLowerCase(), removeProfile: true }]);
 });
 
+test('RTSS frame limiter falls back to IGCL when RTSS.exe is not running', async () => {
+  let loadCalls = 0;
+  const rtssFrameLimiter = createRtssProfileController({
+    platform: 'win32',
+    executablePath: 'C:\\Program Files (x86)\\RivaTuner Statistics Server\\RTSS.exe',
+    isRunning: async () => false,
+    exists: () => true,
+    load: () => { loadCalls += 1; return { func: () => null }; },
+  });
+
+  const read = await rtssFrameLimiter.getFrameLimit();
+  const apply = await rtssFrameLimiter.applyFrameLimit({ enabled: true, value: 144 });
+  const restore = await rtssFrameLimiter.restoreFrameLimit({ profile: '', expectedLimit: 144 });
+
+  assert.deepEqual(read, { ok: false, available: false, source: 'igcl', error: 'RTSS is not running' });
+  assert.deepEqual(apply, { ok: false, available: false, source: 'igcl', error: 'RTSS is not running', used: false, fallback: true });
+  assert.deepEqual(restore, { ok: false, available: false, source: 'igcl', error: 'RTSS is not running', used: false });
+  assert.equal(loadCalls, 0, 'an installed RTSS DLL must not be loaded when RTSS.exe is absent');
+});
+
 test('failed disable restores the previously enabled RTSS limiter', async () => {
   const executablePath = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'notepad.exe');
   const device = { id: 0, deviceKey: 'pci:arc-b580-test', name: 'Intel Arc B580' };

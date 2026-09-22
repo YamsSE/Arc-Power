@@ -47,6 +47,7 @@ const INITIAL_RECORDING_STATUS: RecordingEngineState = {
   available: false,
   running: false,
   mode: null,
+  memorySavingMode: true,
   startedAt: null,
   error: CAPTURE_ENGINE_IDLE_MESSAGE,
   encoders: [],
@@ -76,8 +77,13 @@ function updateGlobalRecordingWidget(target?: HTMLElement): void {
   if (!root) return;
   const running = globalRecordingStatus.running === true;
   const loading = !globalRecordingStatus.probeComplete && globalRecordingStatus.error === 'Loading capture engine…';
-  const idle = !globalRecordingStatus.probeComplete && globalRecordingStatus.error === CAPTURE_ENGINE_IDLE_MESSAGE;
-  const state = running ? 'live' : loading ? 'loading' : idle ? 'idle' : globalRecordingStatus.available ? 'ready' : 'offline';
+  const memorySavingMode = globalRecordingStatus.memorySavingMode !== false && recordingMemorySavingMode !== false;
+  const idle = memorySavingMode
+    && !globalRecordingStatus.probeComplete
+    && globalRecordingStatus.error === CAPTURE_ENGINE_IDLE_MESSAGE;
+  const ready = !running && !loading && !idle
+    && (globalRecordingStatus.available === true || globalRecordingStatus.probeComplete === true);
+  const state = running ? 'live' : loading ? 'loading' : idle ? 'idle' : ready ? 'ready' : 'offline';
   const mode = globalRecordingStatus.mode;
   const replaySaveStatus = globalRecordingStatus.instantReplaySave?.status;
   const replaySaving = replaySaveStatus === 'saving';
@@ -86,8 +92,8 @@ function updateGlobalRecordingWidget(target?: HTMLElement): void {
   const detail = root.querySelector<HTMLElement>('[data-recording-status-detail]');
   const timer = root.querySelector<HTMLElement>('[data-recording-timer]');
   const dot = root.querySelector<HTMLElement>('[data-recording-status-dot]');
-  if (title) title.textContent = replaySaving ? 'Saving Instant Replay' : replayFailed ? 'Instant Replay failed' : running ? mode === 'replay' ? 'Instant Replay' : 'Recording' : loading ? 'Starting capture engine' : idle ? recordingMemorySavingMode ? 'Memory Saving Mode' : 'Capture engine ready' : globalRecordingStatus.available ? 'Ready to capture' : 'Capture offline';
-  if (detail) detail.textContent = replaySaving ? 'Writing the latest moments to disk' : replayFailed ? (globalRecordingStatus.instantReplaySave?.error ?? 'Try saving again') : running ? 'Arc Capture is running' : loading ? 'Checking the bundled capture runtime' : idle ? recordingMemorySavingMode ? 'Open Recording or start a capture to load it' : 'Memory Saving Mode is off' : globalRecordingStatus.available ? 'Ready when you are' : (globalRecordingStatus.error || 'Capture engine unavailable');
+  if (title) title.textContent = replaySaving ? 'Saving Instant Replay' : replayFailed ? 'Instant Replay failed' : running ? mode === 'replay' ? 'Instant Replay' : 'Recording' : loading ? 'Starting capture engine' : idle ? 'Memory Saving Mode' : ready ? 'Arc Capture' : 'Capture offline';
+  if (detail) detail.textContent = replaySaving ? 'Writing the latest moments to disk' : replayFailed ? (globalRecordingStatus.instantReplaySave?.error ?? 'Try saving again') : running ? 'Arc Capture is running' : loading ? 'Checking the bundled capture runtime' : idle ? 'Open Recording or start a capture to load it' : ready ? 'Recording is Ready' : (globalRecordingStatus.error || 'Capture engine unavailable');
   if (timer) {
     timer.textContent = running ? recordingElapsed(globalRecordingStatus.startedAt) : '';
     timer.hidden = !running;

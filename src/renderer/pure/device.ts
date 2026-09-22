@@ -156,6 +156,19 @@ export function showDeviceSelector(devices: DeviceInfo[]): boolean {
 }
 
 /**
+ * The focused-device hero still needs a useful identity when the selector is
+ * hidden for a single-GPU session. Keep the full backend-provided name,
+ * including its VRAM suffix, and retain the historical fallback for empty or
+ * multi-device inventories.
+ */
+export function activeDeviceLabel(devices: DeviceInfo[]): string {
+  if (devices.length === 1 && typeof devices[0]?.name === 'string' && devices[0].name.trim()) {
+    return devices[0].name;
+  }
+  return 'Current adapter';
+}
+
+/**
  * M4-F: the selector option list. Each option carries the device NAME
  * (the backend formats the VRAM suffix into device.name at enumeration
  * time - the option text never re-derives it); `selected` marks the

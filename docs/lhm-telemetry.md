@@ -7,16 +7,17 @@ through the read-only `ArcPower.LhmBridge.exe` JSON-lines helper. The helper
 is isolated from Electron because the LHM library is managed .NET code and
 some sensors require elevated hardware access.
 
-The bridge reports CPU, memory, and GPU sensors. For Intel discrete Arc GPUs,
-Arc Power uses LHM's Intel GCL device-wide `GPU Core` load sensor only when the
-current GPU inventory proves a unique PCI vendor/device match and exact stable
-adapter key. LHM's GPU identifier does not include BDF/LUID, so a single LHM
-row is not enough to distinguish two identical cards. Component
-`GPU Render/Compute`, `GPU Media`, and `GPU Memory` load sensors are not
-substitutes for total GPU load. Windows GPU Engine remains the per-adapter
-fallback when LHM is unavailable, ambiguous, or does not report a valid Intel
-sample. FPS and frametime come from RTSS. GPU matching never binds a physical
-adapter by enumeration ordinal.
+The bridge reports CPU, memory, and GPU sensors. For displayed GPU utilization,
+Arc Power uses the fresh per-adapter Windows GPU Engine counters and follows
+the Task Manager busiest-engine policy. For Intel discrete Arc GPUs, LHM's
+Intel GCL device-wide `GPU Core` load sensor is retained as a fallback only
+when the Windows value is unavailable and the current GPU inventory proves a
+unique PCI vendor/device match and exact stable adapter key. LHM's GPU
+identifier does not include BDF/LUID, so a single LHM row is not enough to
+distinguish two identical cards. Component `GPU Render/Compute`, `GPU Media`,
+and `GPU Memory` load sensors are not substitutes for total GPU load. FPS and
+frametime come from RTSS. GPU matching never binds a physical adapter by
+enumeration ordinal.
 
 To rebuild the vendored bridge, obtain the exact `LibreHardwareMonitor.zip`
 asset from the v0.9.6 release and run:

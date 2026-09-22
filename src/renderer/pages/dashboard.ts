@@ -19,12 +19,14 @@ import type { AppState, Page, PageContext } from '../router.ts';
 import { healthRows, dashboardNeedsFullRender } from '../pure/status.ts';
 import type { DashboardSig, HealthRow } from '../pure/status.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
+import { buildDeviceSelect } from '../components/device-select.ts';
 import { shaderUnits } from '../pure/driver.ts';
 import { cpuCardRows, rebarState, vramRowValue } from '../pure/sysinfo.ts';
 import { formatGpuMemoryGb } from '../pure/gpu-memory.ts';
 import { cpuIconKeyOf, cpuIconPath, gpuIconKeyOf, gpuIconPath } from '../pure/hardware-icons.ts';
 import { deviceHardwareKey } from '../pure/device.ts';
 import { dashboardDeviceStatusLabel, dashboardGpuOrder } from '../pure/dashboard.ts';
+import { dashboardRetailAssetPath } from '../pure/dashboard-retail-assets.ts';
 import { aibOf, aibOfPnpDeviceId } from '../pure/aib.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
@@ -72,18 +74,25 @@ const DASHBOARD_PULSE: Array<{ id: DashboardPulseId; label: string; unit: string
   { id: 'gpu-util', label: 'GPU utilization', unit: '%', color: TELEMETRY_PULSE_COLORS.utilization },
   { id: 'temperature', label: 'GPU temperature', unit: '°C', color: TELEMETRY_PULSE_COLORS.temperature },
   { id: 'power', label: 'GPU power', unit: 'W', color: TELEMETRY_PULSE_COLORS.power },
-  { id: 'vram', label: 'VRAM in use', unit: 'GB', color: TELEMETRY_PULSE_COLORS.memory },
+  { id: 'vram', label: 'VRAM in use', unit: 'GiB', color: TELEMETRY_PULSE_COLORS.memory },
 ];
 
+const DASHBOARD_GAUGE_RADIUS = 42;
+const DASHBOARD_GAUGE_CIRCUMFERENCE = 2 * Math.PI * DASHBOARD_GAUGE_RADIUS;
 const DASHBOARD_HISTORY_LIMIT = TELEMETRY_HISTORY_POINTS;
 type DashboardPulseLane = {
   key: string;
+  vramCapacityGiB: number | null;
   history: TelemetrySample[];
   startedAt: number;
   valueNodes: Map<DashboardPulseId, HTMLElement>;
   pathNodes: Map<DashboardPulseId, SVGPathElement>;
+  areaPathNodes: Map<DashboardPulseId, SVGPathElement>;
+  hoverNodes: Map<DashboardPulseId, { surface: HTMLElement; crosshair: HTMLElement; tooltip: HTMLElement }>;
   rangeMinNodes: Map<DashboardPulseId, HTMLElement>;
   rangeMaxNodes: Map<DashboardPulseId, HTMLElement>;
+  gaugeValueNode: HTMLElement | null;
+  gaugeRingNode: SVGCircleElement | null;
   runtimeNode: HTMLElement | null;
   peakNode: HTMLElement | null;
   averageNode: HTMLElement | null;
@@ -124,17 +133,51 @@ function dashboardSampleFor(state: AppState, device: { id: number; deviceKey?: s
   return state.latestSamples?.[key] ?? (state.deviceId === device.id ? state.latestSample : null);
 }
 
+function dashboardVramCapacityBytes(
+  device: {
+    integrated?: boolean | null;
+    mobile?: boolean | null;
+    vramBytes?: number | null;
+    sharedMemoryBytes?: number | null;
+  } | null | undefined,
+  sharedMemoryFallbackBytes: number | null = null,
+): number | null {
+  if (!device) return null;
+  if (typeof device.vramBytes === 'number' && Number.isFinite(device.vramBytes) && device.vramBytes > 0) {
+    return device.vramBytes;
+  }
+  const sharedCapacity = typeof device.sharedMemoryBytes === 'number'
+    && Number.isFinite(device.sharedMemoryBytes)
+    && device.sharedMemoryBytes > 0
+    ? device.sharedMemoryBytes
+    : null;
+  const fallbackCapacity = typeof sharedMemoryFallbackBytes === 'number'
+    && Number.isFinite(sharedMemoryFallbackBytes)
+    && sharedMemoryFallbackBytes > 0
+    ? sharedMemoryFallbackBytes
+    : null;
+  if (sharedCapacity !== null && (device.integrated === true || device.mobile === true || fallbackCapacity !== null)) {
+    return sharedCapacity;
+  }
+  return fallbackCapacity;
+}
+
 function pulseLaneFor(key: string): DashboardPulseLane {
   const existing = dashboardPulseLanes.get(key);
   if (existing) return existing;
   const created: DashboardPulseLane = {
     key,
+    vramCapacityGiB: null,
     history: [],
     startedAt: Date.now(),
     valueNodes: new Map(),
     pathNodes: new Map(),
+    areaPathNodes: new Map(),
+    hoverNodes: new Map(),
     rangeMinNodes: new Map(),
     rangeMaxNodes: new Map(),
+    gaugeValueNode: null,
+    gaugeRingNode: null,
     runtimeNode: null,
     peakNode: null,
     averageNode: null,
@@ -155,7 +198,7 @@ function pulseSampleValue(id: DashboardPulseId, sample: TelemetrySample): number
   if (id === 'temperature') return sample.tempC;
   if (id === 'power') return sample.powerW;
   return typeof sample.gpuMemUsedBytes === 'number' && Number.isFinite(sample.gpuMemUsedBytes)
-    ? sample.gpuMemUsedBytes / 1e9
+    ? sample.gpuMemUsedBytes / (1024 ** 3)
     : undefined;
 }
 
@@ -171,38 +214,60 @@ function pulseHistoryValues(lane: DashboardPulseLane, id: DashboardPulseId): num
 }
 
 function pulseRangeValue(id: DashboardPulseId, value: number): string {
-  if (id === 'power' || id === 'vram') return value.toFixed(1);
+  if (id === 'vram') return Number.isInteger(value) ? String(value) : value.toFixed(1);
   return String(Math.round(value));
+}
+
+function pulseHoverValue(id: DashboardPulseId, value: number): string {
+  return id === 'power' || id === 'vram' ? value.toFixed(1) : String(Math.round(value));
+}
+
+function pulseGraphPoints(lane: DashboardPulseLane, id: DashboardPulseId): Array<{ t: number; value: number }> {
+  return lane.history
+    .map((sample) => ({ t: sample.t, value: pulseSampleValue(id, sample) }))
+    .filter((point): point is { t: number; value: number } => typeof point.value === 'number' && Number.isFinite(point.value));
+}
+
+function pulseGraphRange(lane: DashboardPulseLane, id: DashboardPulseId): { min: number; max: number } {
+  return {
+    min: 0,
+    max: id === 'gpu-util' || id === 'temperature'
+      ? 100
+      : id === 'power'
+        ? 400
+        : lane.vramCapacityGiB ?? 1,
+  };
 }
 
 function updatePulsePath(lane: DashboardPulseLane, id: DashboardPulseId): void {
   const path = lane.pathNodes.get(id);
+  const area = lane.areaPathNodes.get(id);
   if (!path) return;
   const values = pulseHistoryValues(lane, id);
+  const graphRange = pulseGraphRange(lane, id);
   const minNode = lane.rangeMinNodes.get(id);
   const maxNode = lane.rangeMaxNodes.get(id);
-  if (values.length === 0) {
-    if (minNode) minNode.textContent = '—';
-    if (maxNode) maxNode.textContent = '—';
-  } else {
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    if (minNode) minNode.textContent = pulseRangeValue(id, min);
-    if (maxNode) maxNode.textContent = pulseRangeValue(id, max);
-  }
+  if (minNode) minNode.textContent = pulseRangeValue(id, graphRange.min);
+  if (maxNode) maxNode.textContent = pulseRangeValue(id, graphRange.max);
   if (values.length < 2) {
-    path.setAttribute('d', 'M 0 16 L 120 16');
+    const y = values.length === 1 && graphRange
+      ? 34 - ((values[0] - graphRange.min) / Math.max(0.001, graphRange.max - graphRange.min)) * 30
+      : 34;
+    path.setAttribute('d', `M 0 ${y} L 120 ${y}`);
+    if (area) area.setAttribute('d', values.length === 1 ? `M 0 34 L 0 ${y} L 120 ${y} L 120 34 Z` : 'M 0 34 L 120 34 Z');
     return;
   }
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  const min = graphRange?.min ?? 0;
+  const max = graphRange?.max ?? 1;
   const span = Math.max(0.001, max - min);
   const points = values.map((value, index) => {
     const x = (index / (values.length - 1)) * 120;
-    const y = 28 - ((value - min) / span) * 22;
+    const y = Math.max(4, Math.min(34, 34 - ((value - min) / span) * 30));
     return `${x.toFixed(1)} ${y.toFixed(1)}`;
   });
-  path.setAttribute('d', `M ${points.join(' L ')}`);
+  const line = `M ${points.join(' L ')}`;
+  path.setAttribute('d', line);
+  if (area) area.setAttribute('d', `${line} L 120 34 L 0 34 Z`);
 }
 
 function formatSessionAge(startedAt: number): string {
@@ -227,6 +292,13 @@ function updateSessionStats(lane: DashboardPulseLane): void {
 
 function updatePulseLane(lane: DashboardPulseLane, sample: TelemetrySample | null): void {
   rememberDashboardSample(lane, sample);
+  const utilization = sample ? pulseSampleValue('gpu-util', sample) : undefined;
+  if (lane.gaugeValueNode) lane.gaugeValueNode.textContent = utilization === undefined ? '-' : `${Math.round(utilization)}%`;
+  if (lane.gaugeRingNode) {
+    const progress = Math.max(0, Math.min(100, utilization ?? 0));
+    const visibleLength = DASHBOARD_GAUGE_CIRCUMFERENCE * (progress / 100);
+    lane.gaugeRingNode.setAttribute('stroke-dashoffset', `${DASHBOARD_GAUGE_CIRCUMFERENCE - visibleLength}`);
+  }
   for (const metric of DASHBOARD_PULSE) {
     const valueNode = lane.valueNodes.get(metric.id);
     if (valueNode) valueNode.textContent = pulseDisplayValue(metric.id, sample);
@@ -235,35 +307,131 @@ function updatePulseLane(lane: DashboardPulseLane, sample: TelemetrySample | nul
   updateSessionStats(lane);
 }
 
+function dashboardActiveDevice(state: AppState): AppState['devices'][number] | null {
+  const ordered = dashboardGpuOrder(state.devices);
+  return ordered.find((device) => device.id === state.deviceId) ?? ordered[0] ?? null;
+}
+
+type DashboardRetailArtVariant = 'discrete' | 'integrated';
+
+function dashboardRetailArt(variant: DashboardRetailArtVariant, label: string): SVGSVGElement {
+  const svg = svgEl('svg', {
+    class: `dashboard-retail-art dashboard-retail-art-${variant}`,
+    viewBox: '0 0 180 72',
+    role: 'img',
+    'aria-label': label,
+  });
+  if (variant === 'discrete') {
+    svg.append(
+      svgEl('path', { class: 'dashboard-retail-art-board', d: 'M19 17h119l20 13v25H19c-5 0-9-4-9-9V26c0-5 4-9 9-9Z' }),
+      svgEl('path', { class: 'dashboard-retail-art-bracket', d: 'M10 26h10v29H10M159 30h10v25h-10' }),
+      svgEl('circle', { class: 'dashboard-retail-art-fan', cx: 65, cy: 38, r: 15 }),
+      svgEl('circle', { class: 'dashboard-retail-art-fan', cx: 111, cy: 38, r: 15 }),
+      svgEl('circle', { class: 'dashboard-retail-art-fan-core', cx: 65, cy: 38, r: 4 }),
+      svgEl('circle', { class: 'dashboard-retail-art-fan-core', cx: 111, cy: 38, r: 4 }),
+      svgEl('path', { class: 'dashboard-retail-art-trace', d: 'M27 25h20M27 51h23M128 24h9M128 51h13' }),
+      svgEl('path', { class: 'dashboard-retail-art-edge', d: 'M35 58h88l5 6H30Z' }),
+    );
+  } else {
+    svg.append(
+      svgEl('rect', { class: 'dashboard-retail-art-package', x: 48, y: 9, width: 84, height: 54, rx: 6 }),
+      svgEl('rect', { class: 'dashboard-retail-art-die', x: 67, y: 20, width: 46, height: 32, rx: 3 }),
+      svgEl('path', { class: 'dashboard-retail-art-pins', d: 'M40 18h8M40 28h8M40 38h8M40 48h8M132 18h8M132 28h8M132 38h8M132 48h8M61 1v8M73 1v8M85 1v8M97 1v8M109 1v8M61 63v8M73 63v8M85 63v8M97 63v8M109 63v8' }),
+      svgEl('path', { class: 'dashboard-retail-art-trace', d: 'M74 28h32M74 36h32M74 44h22' }),
+    );
+  }
+  return svg;
+}
+
 function pulseLaneElement(
   lane: DashboardPulseLane,
   gpuLabel: string,
   gpuName: string,
+  gpuIcon: string | null,
+  gpuRetailAsset: string | null,
+  retailVariant: DashboardRetailArtVariant,
   sample: TelemetrySample | null,
+  vramCapacityGiB: number | null,
 ): HTMLElement {
+  lane.vramCapacityGiB = vramCapacityGiB;
   lane.valueNodes.clear();
   lane.pathNodes.clear();
+  lane.areaPathNodes.clear();
+  lane.hoverNodes.clear();
   lane.rangeMinNodes.clear();
   lane.rangeMaxNodes.clear();
+  lane.gaugeValueNode = null;
+  lane.gaugeRingNode = null;
   const pulseCards = DASHBOARD_PULSE.map((metric) => {
+    const area = svgEl('path', {
+      class: 'dashboard-sparkline-area',
+      d: 'M 0 34 L 120 34 Z',
+      fill: metric.color,
+      'fill-opacity': metric.id === 'gpu-util' ? .16 : 0,
+    });
+    const baseline = svgEl('path', {
+      class: 'dashboard-sparkline-baseline',
+      d: 'M 0 34 L 120 34',
+      fill: 'none',
+      'stroke-width': 1,
+    });
     const path = svgEl('path', {
-      d: 'M 0 16 L 120 16',
+      d: 'M 0 20 L 120 20',
       fill: 'none',
       stroke: metric.color,
-      'stroke-width': 2,
+      'stroke-width': metric.id === 'gpu-util' ? 3.2 : 2,
       'stroke-linecap': 'round',
       'stroke-linejoin': 'round',
+      'vector-effect': 'non-scaling-stroke',
     }) as SVGPathElement;
     const svg = svgEl('svg', {
       class: 'dashboard-sparkline',
-      viewBox: '0 0 120 32',
+      viewBox: '0 0 120 40',
+      preserveAspectRatio: 'none',
       role: 'img',
       'aria-label': `${gpuLabel} ${metric.label} history`,
     });
-    svg.append(path);
+    svg.append(baseline, area, path);
+    const grid = el('div', { class: 'dashboard-sparkline-grid', 'aria-hidden': 'true' }, [
+      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-top' }),
+      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-mid' }),
+      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-bottom' }),
+      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-quarter' }),
+      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-half' }),
+      el('span', { class: 'dashboard-sparkline-grid-line dashboard-sparkline-grid-three-quarter' }),
+    ]);
+    const crosshair = el('span', { class: 'dashboard-sparkline-crosshair', hidden: true, 'aria-hidden': 'true' });
+    const tooltip = el('span', { class: 'dashboard-sparkline-tooltip', hidden: true, role: 'status' });
+    const surface = el('div', { class: 'dashboard-sparkline-surface', 'aria-label': `${gpuLabel} ${metric.label} plot` }, [
+      grid,
+      svg,
+      crosshair,
+      tooltip,
+    ]);
+    surface.addEventListener('pointermove', (event) => {
+      const points = pulseGraphPoints(lane, metric.id);
+      const rect = surface.getBoundingClientRect();
+      if (points.length === 0 || rect.width <= 0) return;
+      const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      const index = points.length <= 1 ? 0 : Math.round(ratio * (points.length - 1));
+      const point = points[index];
+      if (!point) return;
+      crosshair.style.left = `${ratio * 100}%`;
+      crosshair.hidden = false;
+      tooltip.textContent = `${pulseHoverValue(metric.id, point.value)} ${metric.unit}`;
+      tooltip.style.left = `${ratio * 100}%`;
+      tooltip.style.transform = ratio > .55 ? 'translateX(-100%)' : 'none';
+      tooltip.hidden = false;
+    });
+    surface.addEventListener('pointerleave', () => {
+      crosshair.hidden = true;
+      tooltip.hidden = true;
+    });
     const valueNode = el('strong', { class: 'dashboard-pulse-value', text: pulseDisplayValue(metric.id, sample) });
     lane.valueNodes.set(metric.id, valueNode);
     lane.pathNodes.set(metric.id, path);
+    lane.areaPathNodes.set(metric.id, area);
+    lane.hoverNodes.set(metric.id, { surface, crosshair, tooltip });
     const rangeMinNode = el('strong', { text: '—' });
     const rangeMaxNode = el('strong', { text: '—' });
     lane.rangeMinNodes.set(metric.id, rangeMinNode);
@@ -277,13 +445,63 @@ function pulseLaneElement(
         el('span', { class: 'dashboard-pulse-label', text: metric.label }),
         el('span', { class: 'dashboard-pulse-inline-value' }, [valueNode, el('span', { class: 'dashboard-pulse-unit', text: metric.unit })]),
       ]),
-      svg,
+      surface,
       range,
     ]);
   });
   lane.runtimeNode = el('strong', { text: formatSessionAge(lane.startedAt) });
   lane.peakNode = el('strong', { text: '-' });
   lane.averageNode = el('strong', { text: '-' });
+  lane.gaugeValueNode = el('strong', { class: 'dashboard-pulse-gauge-value', text: '-' });
+  lane.gaugeRingNode = svgEl('circle', {
+    class: 'dashboard-pulse-gauge-ring',
+    cx: 52,
+    cy: 52,
+    r: DASHBOARD_GAUGE_RADIUS,
+    fill: 'none',
+    'stroke-width': 7,
+    'stroke-linecap': 'round',
+    'stroke-dasharray': `${DASHBOARD_GAUGE_CIRCUMFERENCE} ${DASHBOARD_GAUGE_CIRCUMFERENCE}`,
+    'stroke-dashoffset': DASHBOARD_GAUGE_CIRCUMFERENCE,
+    'aria-hidden': 'true',
+  });
+  const gaugeSvg = svgEl('svg', { class: 'dashboard-pulse-gauge-svg', viewBox: '0 0 104 104', 'aria-hidden': 'true' });
+  gaugeSvg.append(
+    svgEl('circle', { class: 'dashboard-pulse-gauge-track', cx: 52, cy: 52, r: DASHBOARD_GAUGE_RADIUS, fill: 'none', 'stroke-width': 7 }),
+    lane.gaugeRingNode,
+  );
+  const gauge = el('div', { class: 'dashboard-pulse-gauge', role: 'img', 'aria-label': `${gpuLabel} GPU utilization` }, [
+    gaugeSvg,
+    el('div', { class: 'dashboard-pulse-gauge-center' }, [
+      lane.gaugeValueNode,
+      el('span', { class: 'dashboard-pulse-gauge-label', text: 'GPU load' }),
+    ]),
+  ]);
+  const artwork = hardwareIcon(gpuIcon, `${gpuName || 'GPU'} icon`, 'gpu');
+  const identity = el('div', { class: 'dashboard-pulse-identity' }, [
+    ...(artwork ? [artwork] : []),
+    el('div', { class: 'dashboard-pulse-identity-copy' }, [
+      el('span', { class: 'dashboard-eyebrow', text: gpuLabel }),
+      el('h3', { class: 'card-title', text: gpuName || 'GPU' }),
+      el('span', { class: 'dashboard-pulse-identity-note', text: 'Active device' }),
+    ]),
+  ]);
+  const liveStatus = el('div', { class: 'dashboard-pulse-live-status' }, [
+    el('span', { class: 'dashboard-pulse-live-dot', 'aria-hidden': 'true' }),
+    el('span', { text: 'ONLINE' }),
+  ]);
+  const retailArt = gpuRetailAsset ? null : dashboardRetailArt(retailVariant, `${gpuLabel} ${retailVariant} GPU artwork`);
+  const retailAsset = gpuRetailAsset
+    ? el('img', {
+        class: 'dashboard-retail-art-asset',
+        src: gpuRetailAsset,
+        alt: `${gpuLabel} GPU retail artwork`,
+        loading: 'eager',
+        decoding: 'async',
+      })
+    : null;
+  const retailArtSlot = el('div', { class: 'dashboard-retail-art-slot' }, [retailAsset, retailArt]);
+  const visualColumn = el('div', { class: 'dashboard-pulse-visual' }, [gauge, retailArtSlot, identity, liveStatus]);
   const sessionStats = el('div', { class: 'dashboard-session-stats' }, [
     el('span', { class: 'dashboard-session-title', text: 'Since launch' }),
     el('span', { class: 'dashboard-session-stat' }, [el('span', { text: 'Session' }), lane.runtimeNode]),
@@ -292,13 +510,10 @@ function pulseLaneElement(
   ]);
   updatePulseLane(lane, sample);
   return el('section', { class: 'dashboard-pulse-lane', dataset: { deviceKey: lane.key } }, [
-    el('div', { class: 'dashboard-pulse-heading' }, [
-      el('div', {}, [
-        el('span', { class: 'dashboard-eyebrow', text: gpuLabel }),
-        el('h3', { class: 'card-title', text: gpuName || 'GPU' }),
-      ]),
+    el('div', { class: 'dashboard-pulse-hud' }, [
+      visualColumn,
+      el('div', { class: 'dashboard-pulse-grid' }, pulseCards),
     ]),
-    el('div', { class: 'dashboard-pulse-grid' }, pulseCards),
     sessionStats,
   ]);
 }
@@ -306,45 +521,75 @@ function pulseLaneElement(
 function dashboardPulse(ctx: PageContext): HTMLElement {
   const state = ctx.store.get();
   const devices = dashboardGpuOrder(state.devices);
-  const entries = devices.length > 0
-    ? devices.map((device, index) => ({
-        device,
-        label: `GPU ${index + 1}`,
-        name: device.name,
-        key: dashboardDeviceKey(device),
-        sample: dashboardSampleFor(state, device),
-      }))
-    : [{ device: null, label: 'System', name: state.osGpu?.name ?? 'No GPU selected', key: 'system', sample: state.latestSample }];
+  const activeDevice = dashboardActiveDevice(state);
+  const activeIndex = activeDevice ? devices.findIndex((device) => device.id === activeDevice.id) : -1;
+  const entries = activeDevice
+    ? [{
+        device: activeDevice,
+        label: `GPU ${activeIndex >= 0 ? activeIndex + 1 : 1}`,
+        name: activeDevice.name,
+        key: dashboardDeviceKey(activeDevice),
+        sample: dashboardSampleFor(state, activeDevice),
+        vramCapacityBytes: dashboardVramCapacityBytes(
+          activeDevice,
+          activeDevice.integrated === true || activeDevice.mobile === true ? state.sysinfo?.ram.totalBytes ?? null : null,
+        ),
+      }]
+    : [{
+        device: null,
+        label: 'System',
+        name: state.osGpu?.name ?? 'No GPU selected',
+        key: 'system',
+        sample: state.latestSample,
+        vramCapacityBytes: dashboardVramCapacityBytes(
+          state.osGpu,
+          state.osGpu?.vramBytes == null ? state.osGpu?.sharedMemoryBytes ?? state.sysinfo?.ram.totalBytes ?? null : null,
+        ),
+      }];
   const activeKeys = new Set(entries.map((entry) => entry.key));
   for (const key of dashboardPulseLanes.keys()) {
     if (!activeKeys.has(key)) dashboardPulseLanes.delete(key);
   }
-  return el('section', { class: 'card dashboard-pulse-card' }, [
+  return el('section', { class: 'card dashboard-pulse-card', dataset: { gpuCount: String(devices.length) } }, [
     el('div', { class: 'dashboard-pulse-heading' }, [
-      el('div', {}, [
-        el('span', { class: 'dashboard-eyebrow', text: 'Live telemetry' }),
-        el('h2', { class: 'card-title', text: 'Performance pulse' }),
+      el('div', { class: 'dashboard-pulse-heading-copy' }, [
+        el('span', { class: 'dashboard-eyebrow', text: 'GPU Telemetry' }),
+        el('h2', { class: 'card-title', text: 'Live Monitoring' }),
       ]),
       el('span', { class: `dashboard-pulse-device${entries.length ? '' : ' text-unknown' }`, text: `${entries.length} GPU${entries.length === 1 ? '' : 's'}` }),
     ]),
     el('div', { class: 'dashboard-pulse-lanes' }, entries.map((entry) => pulseLaneElement(
-      pulseLaneFor(entry.key), entry.label, entry.name, entry.sample,
+      pulseLaneFor(entry.key), entry.label, entry.name,
+      entry.device ? gpuIconPath(gpuIconKeyOf(entry.device.name, entry.device.gpuVendor, entry.device)) : null,
+      entry.device ? (() => {
+        const aib = aibOf(entry.device.pciSubsysVendorId, entry.device.pciSubsysId);
+        return dashboardRetailAssetPath({
+          name: entry.device.name,
+          gpuVendor: entry.device.gpuVendor,
+          integrated: entry.device.integrated,
+          mobile: entry.device.mobile,
+          aibVendor: aib?.vendor,
+          aibVendorId: entry.device.pciSubsysVendorId,
+          aibModel: aib?.model,
+        });
+      })() : null,
+      entry.device && (entry.device.integrated === true || /\b(?:uhd|iris|vega|integrated|igpu)\b/i.test(entry.device.name)) ? 'integrated' : 'discrete',
+      entry.sample,
+      entry.vramCapacityBytes === null ? null : entry.vramCapacityBytes / (1024 ** 3),
     ))),
   ]);
 }
 
 function updateDashboardPulse(ctx: PageContext): void {
   const state = ctx.store.get();
-  if (state.devices.length === 0) {
-    updatePulseLane(pulseLaneFor('system'), state.latestSample);
-    return;
-  }
-  for (const device of dashboardGpuOrder(state.devices)) {
-    updatePulseLane(pulseLaneFor(dashboardDeviceKey(device)), dashboardSampleFor(state, device));
-  }
+  const activeDevice = dashboardActiveDevice(state);
+  updatePulseLane(
+    pulseLaneFor(activeDevice ? dashboardDeviceKey(activeDevice) : 'system'),
+    activeDevice ? dashboardSampleFor(state, activeDevice) : state.latestSample,
+  );
 }
 
-function dashboardGpuCard(device: AppState['devices'][number], index: number, state: AppState): HTMLElement {
+function dashboardGpuCard(device: AppState['devices'][number], index: number, state: AppState, visible = true): HTMLElement {
   const sample = dashboardSampleFor(state, device);
   const rebar = rebarState(device.osController ? { rebarActive: device.osController.rebarActive } : null);
   const aib = aibOf(device.pciSubsysVendorId, device.pciSubsysId);
@@ -352,7 +597,7 @@ function dashboardGpuCard(device: AppState['devices'][number], index: number, st
   const memory = typeof sample?.memClockMhz === 'number' && Number.isFinite(sample.memClockMhz)
     ? sample.memClockMhz
     : null;
-  return el('section', { class: 'card device-card', dataset: { deviceKey: dashboardDeviceKey(device) } }, [
+  return el('section', { class: 'card device-card', hidden: !visible, dataset: { deviceKey: dashboardDeviceKey(device) } }, [
     el('div', { class: 'device-card-head' }, [
       el('div', { class: 'hardware-card-heading' }, [
         el('h2', { class: 'card-title', text: `GPU ${index}` }),
@@ -386,12 +631,14 @@ function dashboardGpuCard(device: AppState['devices'][number], index: number, st
   ]);
 }
 
-type DashboardActionKind = 'recording' | 'replay' | 'tuning';
+type DashboardActionKind = 'recording' | 'replay' | 'tuning' | 'profile' | 'graphics';
 
 const DASHBOARD_ACTION_PATHS: Record<DashboardActionKind, string> = {
   recording: 'M8 5v14l11-7L8 5Z',
   replay: 'M20 11a8 8 0 0 0-14-4L4 9M4 5v4h4M4 13a8 8 0 0 0 14 4l2-2M20 19v-4h-4',
   tuning: 'M4 7h16M4 12h16M4 17h16',
+  profile: 'M5 5h14v14H5zM8 9h8M8 13h5',
+  graphics: 'M4 17 9 12l3 3 5-7 3 3',
 };
 
 function captureModeRunning(status: AppState['recordingStatus'], mode: DashboardCaptureActionKind): boolean {
@@ -598,8 +845,10 @@ function healthCard(ctx: PageContext): HTMLElement {
   const osOnly = device?.synthetic === true && device.backendKind === 'os';
   const rows = dashboardHealthRows(ctx, device, osOnly);
   const devices = dashboardGpuOrder(s.devices);
+  const activeDevice = dashboardActiveDevice(s);
+  const activeKey = activeDevice ? dashboardDeviceKey(activeDevice) : null;
   const detectionRows = devices.length > 1
-    ? devices.map((gpu, index) => gpuDetectionPill(gpu, index, devices.length))
+    ? devices.map((gpu, index) => gpuDetectionPill(gpu, index, devices.length, dashboardDeviceKey(gpu) === activeKey))
     : rows.map((row) => healthRowEl(row, ctx));
 
   return el('section', { class: 'card health-card' }, [
@@ -611,8 +860,8 @@ function healthCard(ctx: PageContext): HTMLElement {
   ]);
 }
 
-function gpuDetectionPill(device: AppState['devices'][number], index: number, gpuCount: number): HTMLElement {
-  return el('div', { class: 'health-row health-gpu-detection-pill', 'data-row': `device-${index + 1}` }, [
+function gpuDetectionPill(device: AppState['devices'][number], index: number, gpuCount: number, visible = true): HTMLElement {
+  return el('div', { class: 'health-row health-gpu-detection-pill', hidden: !visible, 'data-row': `device-${index + 1}` }, [
     el('span', { class: 'status-dot health-dot status-ok', title: device.name }),
     el('span', { class: 'health-row-label', text: dashboardDeviceStatusLabel(index, gpuCount) }),
     el('span', { class: 'health-row-detail text-ok', text: device.name }),
@@ -763,17 +1012,22 @@ function dashboardControlCenter(ctx: PageContext): HTMLElement {
             captureNoteNode,
           ]),
         ]),
-        el('div', { class: 'dashboard-hub-actions' }, [
-          dashboardAction('Start Recording', '', 'Start a full recording', 'recording', true),
-          dashboardAction('Start Instant Replay', '', 'Keep the rolling buffer running', 'replay'),
-          dashboardAction('Open tuning', '#/tuning', 'GPU & fan controls', 'tuning'),
-        ]),
       ]),
       el('div', { class: 'dashboard-hub-details' }, [
         detail('last', 'Last capture', 'dashboard-hub-detail-wide'),
         detail('profile', 'Active profile'),
         detail('replay', 'Instant Replay window'),
         detail('storage', 'Storage'),
+      ]),
+    ]),
+    el('div', { class: 'dashboard-action-dock' }, [
+      el('span', { class: 'dashboard-action-dock-label', text: 'Quick actions' }),
+      el('div', { class: 'dashboard-hub-actions' }, [
+        dashboardAction('Start Recording', '', 'Start a full recording', 'recording', true),
+        dashboardAction('Start Instant Replay', '', 'Keep the rolling buffer running', 'replay'),
+        dashboardAction('Open tuning', '#/tuning', 'GPU & fan controls', 'tuning'),
+        dashboardAction('Profiles', '#/profiles', 'Save and apply presets', 'profile'),
+        dashboardAction('Graphics', '#/graphics', 'Display and 3D options', 'graphics'),
       ]),
     ]),
   ]);
@@ -816,6 +1070,8 @@ export const dashboardPage: Page = {
     // Dashboard is an inventory view in multi-GPU mode. Focus selection stays
     // on Tuning/Graphics; GPU cards are ordered from the complete inventory.
     const dashboardDevices = dashboardGpuOrder(s.devices);
+    const activeDashboardDevice = dashboardActiveDevice(s);
+    const activeDashboardKey = activeDashboardDevice ? dashboardDeviceKey(activeDashboardDevice) : null;
     const device = dashboardDevices[0] ?? null;
     const firstSample = device ? dashboardSampleFor(s, device) : s.latestSample;
     const osOnly = device?.synthetic === true && device.backendKind === 'os';
@@ -840,14 +1096,33 @@ export const dashboardPage: Page = {
     const cpuName = s.sysinfo?.cpu?.name ?? '';
     const gpuName = noIntelPresentation ? (s.osGpu?.name ?? '') : (device?.name ?? '');
     const gpuIcon = gpuIconPath(gpuIconKeyOf(gpuName, device?.gpuVendor, device ?? s.osGpu));
+    const deviceSelect = buildDeviceSelect(ctx.store, (id) => void ctx.selectDevice?.(id));
 
     clear(container);
     container.append(
-      el('h1', { class: 'page-title', text: 'Dashboard' }),
+      el('header', { class: 'dashboard-hud-header' }, [
+        el('div', { class: 'dashboard-hud-header-copy' }, [
+          el('h1', { class: 'dashboard-hud-title', text: 'Arc Power Dashboard' }),
+        ]),
+        el('div', { class: 'dashboard-hud-header-controls' }, [
+          ...(deviceSelect ? [
+            el('div', { class: 'dashboard-hud-selector' }, [
+              el('span', { class: 'dashboard-hud-selector-label', text: 'ACTIVE GPU' }),
+              deviceSelect,
+            ]),
+          ] : []),
+          el('div', { class: 'dashboard-hud-header-status' }, [
+            el('span', { class: 'dashboard-pulse-live-dot', 'aria-hidden': 'true' }),
+            el('span', { text: 'SYSTEM ONLINE' }),
+          ]),
+        ]),
+      ]),
 
       dashboardPulse(ctx),
 
-      el('div', { class: 'card-grid' }, [
+      // Inventory and health cards sit directly below the live-monitoring
+      // hero; the capture hub follows as the secondary action surface.
+      el('div', { class: 'card-grid dashboard-supporting-grid' }, [
         // --- M4-D: the CPU & memory card - BEFORE the GPU card. ---
         // M4-D2 (§9): the card title is "CPU & Memory". Fed by the
         // sysinfo:get payload (CIM at boot, mock fixture in --ui-verify);
@@ -944,17 +1219,15 @@ export const dashboardPage: Page = {
               ]),
             ]
           : device
-            ? [dashboardGpuCard(device, 1, s)]
+            ? [dashboardGpuCard(device, 1, s, activeDashboardKey === null || dashboardDeviceKey(device) === activeDashboardKey)]
             : [el('section', { class: 'card device-card' }, [el('div', { class: 'card-body', text: s.bootError ?? 'Searching for a graphics device…' })])]),
 
-        ...dashboardDevices.slice(1).map((gpu, index) => dashboardGpuCard(gpu, index + 2, s)),
+        ...dashboardDevices.slice(1).map((gpu, index) => dashboardGpuCard(gpu, index + 2, s, activeDashboardKey === null || dashboardDeviceKey(gpu) === activeDashboardKey)),
 
         // --- M3-A: the general GPU Status card (was the Service Status card) ---
         healthCard(ctx),
       ]),
 
-        // Performance Pulse above owns live telemetry; the Capture Hub
-      // keeps the bottom of the dashboard focused on actions and recent work.
       dashboardControlCenter(ctx),
     );
     void loadDashboardControlCenter(ctx);

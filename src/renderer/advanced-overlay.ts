@@ -229,7 +229,13 @@ function recordingQuickPatch(patch: RecordingSettingsPatch): void {
 
 function recordingQuickActive(mode: 'video' | 'replay'): boolean {
   const modes = recordingQuickStatus.activeModes;
-  if (modes) return mode === 'video' ? modes.video === true : modes.replay === true;
+  const starting = recordingQuickStatus.startingModes;
+  if (modes) {
+    return mode === 'video'
+      ? modes.video === true || starting?.video === true
+      : modes.replay === true || starting?.replay === true;
+  }
+  if (starting?.[mode] === true) return true;
   return recordingQuickStatus.running === true && recordingQuickStatus.mode === mode;
 }
 
@@ -1360,7 +1366,7 @@ function recordingQuickStatusState(): string {
   if (video && replay) return 'Recording + Instant Replay active';
   if (video) return 'Recording active';
   if (replay) return 'Instant Replay active';
-  if (recordingQuickStatus.available) return 'Ready to capture';
+  if (recordingQuickStatus.available || recordingQuickStatus.probeComplete) return 'Ready to capture';
   return 'Recording runtime unavailable';
 }
 
@@ -1608,6 +1614,8 @@ async function toggleRecordingQuickPill(checked: boolean): Promise<void> {
 function renderRecordingQuickActions(): HTMLElement {
   const video = recordingQuickActive('video');
   const replay = recordingQuickActive('replay');
+  const ready = !video && !replay
+    && (recordingQuickStatus.available === true || recordingQuickStatus.probeComplete === true);
   const instantReplaySaving = recordingQuickStatus.instantReplaySave?.status === 'saving';
   const disabled = recordingQuickActionBusy || recordingQuickDirty || recordingQuickApplying;
   return el('section', { class: 'adv-recording-panel adv-recording-capture-panel' }, [
@@ -1616,7 +1624,7 @@ function renderRecordingQuickActions(): HTMLElement {
         el('span', { class: 'adv-recording-eyebrow', text: 'Capture controls' }),
         el('h2', { class: 'adv-recording-panel-title', text: recordingQuickStatusState() }),
       ]),
-      el('span', { class: `adv-recording-status-dot${video || replay ? ' is-live' : ''}`, 'aria-hidden': 'true' }),
+      el('span', { class: `adv-recording-status-dot${video || replay ? ' is-live' : ready ? ' is-ready' : ''}`, 'aria-hidden': 'true' }),
     ]),
     el('p', { class: 'adv-recording-panel-note', text: recordingQuickSettings
       ? `${recordingQuickSettings.replayLengthSec}-second Instant Replay window · ${recordingQuickActionAvailable() ? 'ready when started' : 'runtime unavailable'}`
@@ -1814,9 +1822,10 @@ function renderRecording(): void {
     if (!recordingQuickLoading && !recordingQuickInitialized) void loadRecordingQuick();
     return;
   }
-  view.append(renderRecordingQuickActions(), renderRecordingQuickSettings(), renderStreamMode());
+  // Streaming controls are intentionally hidden until the OBS streaming
+  // feature is product-ready; capture settings remain available here.
+  view.append(renderRecordingQuickActions(), renderRecordingQuickSettings());
   contentEl.append(view);
-  if (!streamQuickStatus.connected && streamQuickStatus.state === 'disconnected') void loadStreamQuick();
 }
 
 // ---------------------------------------------------------------------------

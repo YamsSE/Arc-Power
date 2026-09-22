@@ -76,7 +76,15 @@ function showComplete({ uninstall = false, launched = false, rtss = null } = {})
   } else {
     const launchText = launched ? 'The Arc Power control panel is opening now.' : 'You can launch Arc Power from the Start Menu any time.';
     const rtssText = rtss?.installed
-      ? ' RTSS Overlay is ready for native FPS and frametime values.'
+      ? rtss?.launch?.started || rtss?.launch?.alreadyRunning
+        ? ' RTSS Overlay is ready for native FPS and frametime values.'
+        : rtss?.launch?.reason === 'executable-not-found'
+          ? ' RTSS was installed, but its executable could not be located for automatic launch; start it manually for the RTSS Overlay.'
+          : rtss?.launch?.reason === 'launch-failed'
+            ? ' RTSS was installed, but it could not be started automatically; start it manually for the RTSS Overlay.'
+          : rtss?.launch?.reason === 'untrusted-location'
+            ? ' RTSS was installed, but its user-writable location was not started by the elevated installer; start it manually for the RTSS Overlay.'
+          : ' RTSS FPS provider is installed; start it manually for the RTSS Overlay.'
       : rtss?.reason === 'not-requested'
         ? ' RTSS was skipped (optional); there is no RTSS Overlay, and FPS tracking will use the DXGI fallback with less complete results.'
         : ' RTSS could not be installed automatically; there is no RTSS Overlay, and FPS tracking will use the DXGI fallback with less complete results.';

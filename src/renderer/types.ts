@@ -556,12 +556,13 @@ export interface TelemetrySample {
    *  watts). The class is often ABSENT on desktops, so it honestly
    *  degrades to null ('-'). */
   cpuPowerW?: number | null;
-  /** GPU utilization percentage. Intel Arc prefers LibreHardwareMonitor's
-   *  Intel GCL device-wide load; Windows GPUEngine is the fallback when the
-   *  LHM value is unavailable. */
+  /** GPU utilization percentage. The native D3DKMT adapter/node reader is
+   *  preferred for the Task Manager-style busiest-engine value; the Windows
+   *  GPU Engine counter is its fallback, then LHM's Intel GCL load is used
+   *  only when neither Windows source is available. */
   gpuUtilPct?: number | null;
   /** Source used for gpuUtilPct; null when no trustworthy sample exists. */
-  gpuUtilSource?: 'libre-hardware-monitor' | 'windows-gpu-engine' | null;
+  gpuUtilSource?: 'libre-hardware-monitor' | 'windows-gpu-engine' | 'windows-d3dkmt' | null;
   /** M14: the system-wide USED RAM in bytes (GlobalMemoryStatusEx ->
    *  ullTotalPhys - ullAvailPhys - the Memory row's source). Composed
    *  into BOTH telemetry emit sites (the device + the no-device null
@@ -785,6 +786,8 @@ export interface ProfileSettingsState {
   startMinimized: boolean;
   /** M4-D: closing the window hides it to the tray instead of quitting. */
   closeToTray: boolean;
+  /** Capture runtime retention; absent on old files means enabled. */
+  memorySavingMode: boolean;
   /** M4-D2: the Monitoring "Log to file" toggle (absent on old files -> false). */
   monitorLogToFile: boolean;
   /** Monitoring metrics selected for the Log to file card (absent on old files -> all). */
@@ -998,6 +1001,7 @@ export interface GraphicsApplyResponse {
  *  main-side contract (backend.interface.js option lists); the scalingMode
  *  values are the driver's scaling-type FLAG names. */
 export interface DisplaySettings {
+  superResolution?: { enabled: boolean; width?: number; height?: number; refreshRate?: number };
   quantizationRange?: 'default' | 'limited' | 'full';
   wireFormat?: { model: 'RGB' | 'YCbCr420' | 'YCbCr422' | 'YCbCr444'; depth: number };
   /** Raw IGCL ordinary scaling type used behind the IGS-style view. */
@@ -1109,6 +1113,35 @@ export interface DisplayCapability<T> {
   source: string;
 }
 
+export interface DisplayResolutionMode {
+  width: number;
+  height: number;
+  refreshRate: number;
+  label?: string;
+  name?: string;
+  id?: string;
+}
+
+export interface DisplaySourceResolution {
+  width: number;
+  height: number;
+}
+
+export interface DisplaySuperResolutionCapability {
+  supported: boolean | null;
+  controllable: boolean;
+  reason: string | null;
+  source: string;
+  nativeResolution: { width: number; height: number } | null;
+  nativeRefreshRate: number | null;
+  currentSourceResolution: { width: number; height: number } | null;
+  currentSourceRefreshRate: number | null;
+  enabled: boolean;
+  modes: DisplayResolutionMode[];
+  customSourceModes: DisplaySourceResolution[];
+  presets: DisplayResolutionMode[];
+}
+
 /** M10b: the driver read-back (getDisplaySettings) - never throws; the
  *  { displays: [] } shape is the honest "no display outputs" degrade (the
  *  no-controls surface the page renders honestly). */
@@ -1151,6 +1184,7 @@ export interface DisplayState {
     saturation?: DisplayCapability<number>;
     brightness?: DisplayCapability<number>;
     contrast?: DisplayCapability<number>;
+    superResolution?: DisplaySuperResolutionCapability;
     supportedOptions: {
       scalingModes: string[];
       scalingMethods: string[];
@@ -1271,6 +1305,10 @@ export interface RecordingEngineState {
   mode: 'video' | 'replay' | null;
   /** Both capture modes may be active at the same time. */
   activeModes?: { video: boolean; replay: boolean };
+  /** A native start handshake is pending; it is not active until STARTED. */
+  startingModes?: { video: boolean; replay: boolean };
+  /** Global capture-runtime retention preference; absent legacy pushes mean on. */
+  memorySavingMode?: boolean;
   startedAt: number | null;
   sessionId?: string | null;
   error: string | null;

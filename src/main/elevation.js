@@ -16,25 +16,30 @@ import koffi from 'koffi';
 let cached = null;
 
 /**
- * Detect elevation once, cache forever. Never throws: a detection failure
- * degrades to `false` (the safe direction - a non-elevated assumption makes
- * applies go through the elevated worker, which always works; a false
- * "elevated" would silently produce non-persisting writes).
+ * Detect elevation once, cache forever. Never throws: a detection failure is
+ * returned as { elevated: false, verified: false } so callers can keep the
+ * safe non-admin behavior without confusing an unknown probe with a verified
+ * non-admin process.
  * @param {{ lib?: object, koffiMod?: object }} [deps] - injectable for tests
- * @returns {boolean}
+ * @returns {{ elevated: boolean, verified: boolean }}
  */
-export function isElevated({ lib: libDep, koffiMod = koffi } = {}) {
-  if (cached !== null) return cached;
+export function getElevationStatus({ lib: libDep, koffiMod = koffi } = {}) {
+  if (cached !== null) return { ...cached };
   try {
     const lib = libDep ?? koffiMod.load('shell32.dll');
     // IsUserAnAdmin returns BOOL (4 bytes) - bind as int32, not the 1-byte
     // koffi 'bool', to avoid a truncated register read.
     const isUserAnAdmin = lib.func('int32 IsUserAnAdmin(void)');
-    cached = isUserAnAdmin() !== 0;
+    cached = { elevated: isUserAnAdmin() !== 0, verified: true };
   } catch {
-    cached = false;
+    cached = { elevated: false, verified: false };
   }
-  return cached;
+  return { ...cached };
+}
+
+/** Return only the elevation bit for existing apply/elevation callers. */
+export function isElevated(deps = {}) {
+  return getElevationStatus(deps).elevated === true;
 }
 
 /**

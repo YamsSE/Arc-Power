@@ -75,6 +75,7 @@ import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
 import { toast } from '../components/toast.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
+import { activeDeviceLabel } from '../pure/device.ts';
 import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-editor.ts';
 import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import {
@@ -1313,7 +1314,6 @@ export const tuningPage: Page = {
           ]),
         ]),
         el('div', { class: 'oc-slider-row' }, [
-          valueField,
           el('div', { class: 'oc-slider' }, [
             el('div', { class: 'oc-track-fill' }),
             el('input', {
@@ -1330,6 +1330,7 @@ export const tuningPage: Page = {
               },
             }),
           ]),
+          valueField,
           valueText,
         ]),
         ...(vfCurveEditorEl ? [vfCurveEditorEl] : []),
@@ -1819,20 +1820,26 @@ export const tuningPage: Page = {
         renderFanEditor(viewContainer, ctx);
         return;
       }
-      const body: Array<Node | string> = [
-        generalActions,
+      const controlSurface = el('section', { class: 'card tuning-control-surface', 'aria-label': 'Tuning Controls' }, [
+        el('div', { class: 'tuning-control-heading' }, [
+          el('div', {}, [
+            el('span', { class: 'arc-section-kicker', text: 'CONTROL INSPECTOR' }),
+            el('h2', { class: 'card-title', text: 'Tuning Controls' }),
+          ]),
+          el('span', { class: 'tuning-control-context', text: 'SELECTED GPU' }),
+        ]),
         controls.length > 0
           ? el('div', { class: 'card-stack oc-stack' }, controls.map(buildCard))
           : el('div', { class: 'card', text: 'No overclocking controls are available on this device.' }),
+        generalActions,
 
         // M25: the Advanced (VRAM overclocking) section is REMOVED - VRAM
         // now lives in the main card stack (CONTROL_ORDER) below Core-Offset
         // on Battlemage devices. The gpuLock editor + vfCurve/vramVoltOffset
         // rows are gone per the user (profiles can still apply those values
         // via the state machinery - documented).
-
-      ];
-      viewContainer.append(...body);
+      ]);
+      viewContainer.append(controlSurface);
       lockCurrentNode = viewContainer.querySelector<HTMLElement>('.gpu-lock-current');
       // M17f: the power-limit card's sysman read-out - the boot one-shot
       // fetch (per-apply refreshes happen in the apply paths).
@@ -2108,7 +2115,7 @@ export const tuningPage: Page = {
       ]),
       el('div', { class: 'arc-page-hero-side tuning-gpu-selector' }, [
         el('span', { class: 'arc-hero-label', text: 'ACTIVE GPU' }),
-        ...(deviceSelect ? [deviceSelect] : [el('span', { class: 'arc-hero-value', text: 'Current adapter' })]),
+        ...(deviceSelect ? [deviceSelect] : [el('span', { class: 'arc-hero-value', text: activeDeviceLabel(ctx.store.get().devices) })]),
       ]),
     ]);
 

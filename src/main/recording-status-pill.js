@@ -20,11 +20,13 @@ const STATUS_CHANNEL = 'recording:state';
 function isCaptureActive(state) {
   if (!state || typeof state !== 'object') return false;
   const modes = state.activeModes;
-  if (modes && typeof modes === 'object' && (modes.video === true || modes.replay === true)) return true;
-  // Older Ascent envelopes can briefly carry an initialized activeModes
-  // object before the legacy running/mode fields catch up. Keep the fallback
-  // usable even when that object is present but still all-false; otherwise
-  // the pill misses the start transition and only becomes visible on stop.
+  const starting = state.startingModes;
+  if (modes && typeof modes === 'object') {
+    return modes.video === true || modes.replay === true
+      || (starting && typeof starting === 'object' && (starting.video === true || starting.replay === true))
+      || state.running === true && (state.mode === 'video' || state.mode === 'replay');
+  }
+  if (starting && typeof starting === 'object' && (starting.video === true || starting.replay === true)) return true;
   return state.running === true && (state.mode === 'video' || state.mode === 'replay');
 }
 

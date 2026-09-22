@@ -286,8 +286,6 @@ const ELECTRON_MODIFIERS = new Map([
   ['shift', 'Shift'],
 ]);
 
-const ELECTRON_MODIFIER_ORDER = ['CommandOrControl', 'Control', 'Alt', 'Shift'];
-
 function canonicalAccelerator(value) {
   if (typeof value !== 'string') return null;
   const parts = value.trim().replace(/\s+/g, '').split('+');
@@ -300,7 +298,9 @@ function canonicalAccelerator(value) {
     if (!modifier || modifiers.includes(modifier)) return null;
     modifiers.push(modifier);
   }
-  modifiers.sort((left, right) => ELECTRON_MODIFIER_ORDER.indexOf(left) - ELECTRON_MODIFIER_ORDER.indexOf(right));
+  // Electron accepts modifier combinations in either order. Preserve the
+  // user's order after spelling normalization so a configured accelerator is
+  // stable when it is displayed and reloaded (for example Alt+Control+F9).
   return [...modifiers, key].join('+');
 }
 

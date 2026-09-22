@@ -38,6 +38,7 @@ export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\p
 
 // The module-level session cache: "cached at boot (one query per session)".
 let cached = null;
+let inFlight = null;
 
 /**
  * The PowerShell CIM query: Win32_Processor (Name/NumberOfCores/
@@ -1056,19 +1057,25 @@ export function fallbackSysinfo() {
 }
 
 /**
- * Run the CIM query ONCE per session (module-level cache) with the
- * injectable execFile (tests pass a fake; the product path never runs
- * PowerShell in mock mode - main.js injects createMockSysinfo() there).
- * Any query failure (PowerShell absent, spawn error, timeout, garbage
- * output) falls back to os.cpus()/os.totalmem() - never throws. The query
- * timeout is SHORT (10 s - M4-D review F3): a hung PowerShell must not
- * block the first window for a minute (the real CIM query completes in
- * 1-5 s); the timeout rejection lands in the same os.cpus() fallback.
- * @param {{ execFile?: typeof execFile, powershellExe?: string, timeoutMs?: number }} [deps]
- * @returns {Promise<{ cpu: object, ram: object, videoControllers: object[] }>}
+ * Identify the specific fallback shape that can occur during a cold first
+ * launch. CPU name and total RAM remain populated in that shape, but the CIM
+ * details needed for Mainboard, RAM metadata, or OS GPU identity are absent.
+ * A partial snapshot therefore also gets the one bounded recovery attempt;
+ * genuinely unavailable fields still degrade honestly after that attempt.
  */
-export async function collectSysinfo(deps = {}) {
-  if (cached) return cached;
+export function isDegradedSysinfo(value) {
+  const board = value?.baseboard;
+  const hasBaseboard = [board?.manufacturer, board?.product]
+    .some((part) => typeof part === 'string' && part.trim().length > 0);
+  const ram = value?.ram;
+  const hasRamDetail = Number.isFinite(ram?.speedMhz)
+    || Number.isFinite(ram?.memoryType)
+    || (typeof ram?.manufacturer === 'string' && ram.manufacturer.trim().length > 0);
+  const hasControllers = Array.isArray(value?.videoControllers) && value.videoControllers.length > 0;
+  return !hasBaseboard || !hasRamDetail || !hasControllers;
+}
+
+async function collectSysinfoOnce(deps = {}) {
   const exec = deps.execFile ?? execFile;
   try {
     const { stdout } = await exec(
@@ -1122,6 +1129,56 @@ export async function collectSysinfo(deps = {}) {
     cached = fallbackSysinfo();
   }
   return cached;
+}
+
+/**
+ * Run the CIM query ONCE per session (module-level cache) with the
+ * injectable execFile (tests pass a fake; the product path never runs
+ * PowerShell in mock mode - main.js injects createMockSysinfo() there).
+ * Any query failure (PowerShell absent, spawn error, timeout, garbage
+ * output) falls back to os.cpus()/os.totalmem() - never throws. The normal
+ * path keeps the historical one-query/cache behavior; the real window path
+ * may opt into one bounded retry for a degraded cold-start snapshot.
+ * @param {{ execFile?: typeof execFile, powershellExe?: string, timeoutMs?: number, retryOnDegraded?: boolean, retryTimeoutMs?: number, retryDelayMs?: number }} [deps]
+ * @returns {Promise<{ cpu: object, ram: object, videoControllers: object[] }>}
+ */
+export async function collectSysinfo(deps = {}) {
+  const retryOnDegraded = deps.retryOnDegraded === true;
+  if (cached && !(retryOnDegraded && isDegradedSysinfo(cached))) return cached;
+  // A renderer and the startup sysStats lane can ask at the same time. Keep
+  // the normal one-query-per-session contract and share the bounded retry too.
+  if (inFlight) return inFlight;
+  inFlight = (async () => {
+    if (retryOnDegraded && cached && isDegradedSysinfo(cached)) cached = null;
+    const first = await collectSysinfoOnce(deps);
+    if (!retryOnDegraded || !isDegradedSysinfo(first)) return first;
+
+    const retryDelayMs = Number.isFinite(deps.retryDelayMs) && deps.retryDelayMs >= 0
+      ? Math.floor(deps.retryDelayMs)
+      : 100;
+    if (retryDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+
+    // Do not recurse through the public cache/retry gate. The second query is
+    // exactly one recovery attempt; if it is also degraded, keep the honest
+    // first fallback rather than turning a transient failure into a loop.
+    cached = null;
+    const retryTimeoutMs = Number.isFinite(deps.retryTimeoutMs) && deps.retryTimeoutMs > 0
+      ? Math.floor(deps.retryTimeoutMs)
+      : Math.min(Number.isFinite(deps.timeoutMs) ? deps.timeoutMs : 10_000, 5_000);
+    const retried = await collectSysinfoOnce({ ...deps, timeoutMs: retryTimeoutMs });
+    if (isDegradedSysinfo(retried)) {
+      // The public result and the module cache must describe the same
+      // snapshot. The second attempt is still allowed to populate the cache
+      // internally before we decide that the first fallback is the honest
+      // result to return.
+      cached = first;
+      return first;
+    }
+    return retried;
+  })().finally(() => {
+    inFlight = null;
+  });
+  return inFlight;
 }
 
 /**
