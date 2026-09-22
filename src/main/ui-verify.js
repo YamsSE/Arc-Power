@@ -1210,6 +1210,16 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `document.querySelector('.dashboard-pulse-metric[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent?.trim() === '42'`, 8000))) {
     fail(`M140: GPU utilization pulse is '${await js(`document.querySelector('.dashboard-pulse-metric[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent ?? ''`)}' (expected 42)`);
   }
+  const gaugeProgress = await js(`(() => {
+    const ring = document.querySelector('.dashboard-pulse-gauge-ring');
+    if (!ring) return 'no-ring';
+    return JSON.stringify({ pathLength: ring.getAttribute('pathLength'), dasharray: ring.getAttribute('stroke-dasharray'), offset: ring.getAttribute('stroke-dashoffset'), linecap: ring.getAttribute('stroke-linecap'), transition: getComputedStyle(ring).transitionProperty });
+  })()`);
+  const gaugeProgressState = gaugeProgress === 'no-ring' ? null : JSON.parse(gaugeProgress);
+  const gaugeDashValues = gaugeProgressState?.dasharray?.match(/[\d.]+/g)?.map(Number) ?? [];
+  if (!gaugeProgressState || gaugeProgressState.pathLength !== '100' || gaugeDashValues.length < 2 || gaugeDashValues[0] !== 42 || gaugeDashValues[1] !== 100 || gaugeProgressState.offset !== '0' || gaugeProgressState.linecap !== 'butt' || gaugeProgressState.transition !== 'stroke-dasharray') {
+    fail(`M140: GPU utilization ring does not show a fixed-start 42% arc: '${gaugeProgress}'`);
+  }
   if (multiGpuDashboard && !(await waitFor(win, `Array.from(document.querySelectorAll('.dashboard-pulse-lane')).length === ${dashboardGpuCount} && Array.from(document.querySelectorAll('.dashboard-pulse-lane')).every((lane) => lane.querySelector('[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent?.trim() === '42' && lane.querySelector('[data-pulse-metric="vram"] .dashboard-pulse-value')?.textContent?.trim() !== '-')`, 10000))) {
     fail(`M140: multi-GPU Performance Pulse did not populate both GPU lanes: '${await js(`JSON.stringify(Array.from(document.querySelectorAll('.dashboard-pulse-lane')).map((lane) => Array.from(lane.querySelectorAll('.dashboard-pulse-value')).map((n) => n.textContent.trim())))`)}'`);
   }
