@@ -1126,10 +1126,8 @@ export const dashboardPage: Page = {
 
       dashboardPulse(ctx),
 
-      // The action dock belongs directly below the hero; inventory and health
-      // cards remain secondary context underneath it.
-      dashboardControlCenter(ctx),
-
+      // Inventory and health cards sit directly below the live-monitoring
+      // hero; the capture hub follows as the secondary action surface.
       el('div', { class: 'card-grid dashboard-supporting-grid' }, [
         // --- M4-D: the CPU & memory card - BEFORE the GPU card. ---
         // M4-D2 (§9): the card title is "CPU & Memory". Fed by the
@@ -1236,6 +1234,7 @@ export const dashboardPage: Page = {
         healthCard(ctx),
       ]),
 
+      dashboardControlCenter(ctx),
     );
     void loadDashboardControlCenter(ctx);
     if (controlCenterRefreshTimer) clearInterval(controlCenterRefreshTimer);
