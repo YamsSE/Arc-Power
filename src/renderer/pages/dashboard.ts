@@ -569,8 +569,9 @@ function dashboardPulse(ctx: PageContext): HTMLElement {
   }
   return el('section', { class: 'card dashboard-pulse-card', dataset: { gpuCount: String(devices.length) } }, [
     el('div', { class: 'dashboard-pulse-heading' }, [
-      el('div', {}, [
-        el('h2', { class: 'card-title', text: 'GPU Telemetry: Live Monitoring' }),
+      el('div', { class: 'dashboard-pulse-heading-copy' }, [
+        el('span', { class: 'dashboard-eyebrow', text: 'GPU Telemetry' }),
+        el('h2', { class: 'card-title', text: 'Live Monitoring' }),
       ]),
       el('span', { class: `dashboard-pulse-device${entries.length ? '' : ' text-unknown' }`, text: `${entries.length} GPU${entries.length === 1 ? '' : 's'}` }),
     ]),
@@ -1107,9 +1108,7 @@ export const dashboardPage: Page = {
     container.append(
       el('header', { class: 'dashboard-hud-header' }, [
         el('div', { class: 'dashboard-hud-header-copy' }, [
-          el('span', { class: 'dashboard-eyebrow', text: 'ARC POWER / SYSTEM MONITOR' }),
           el('h1', { class: 'dashboard-hud-title', text: 'Arc Power Dashboard' }),
-          el('p', { class: 'dashboard-hud-subtitle', text: 'Live system context / physical GPU data' }),
         ]),
         el('div', { class: 'dashboard-hud-header-controls' }, [
           ...(deviceSelect ? [
