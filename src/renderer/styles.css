@@ -902,7 +902,7 @@ html, body {
 .dashboard-pulse-live-dot { width: 6px; height: 6px; border-radius: 50%; background: #52d5ad; }
 .dashboard-pulse-grid { display: grid; grid-template-columns: 1fr; gap: 6px; }
 .dashboard-pulse-metric { --pulse-metric-color: #35c8f4; position: relative; min-width: 0; min-height: 57px; overflow: hidden; padding: 7px 10px 6px; border: 1px solid color-mix(in srgb, var(--pulse-metric-color) 24%, #29435e); border-radius: 4px; background: linear-gradient(135deg, color-mix(in srgb, var(--pulse-metric-color) 7%, #102136), #0b192a 72%); box-shadow: inset 0 1px 0 rgba(150, 220, 242, .06); }
-.dashboard-pulse-metric::before { content: ''; position: absolute; top: 7px; left: 10px; width: 34px; height: 2px; border-radius: 999px; background: var(--pulse-metric-color); box-shadow: 0 0 8px color-mix(in srgb, var(--pulse-metric-color) 58%, transparent); opacity: .78; }
+.dashboard-pulse-metric::before { content: ''; position: absolute; top: 2px; left: 10px; z-index: 1; width: 34px; height: 2px; border-radius: 999px; background: var(--pulse-metric-color); box-shadow: 0 0 8px color-mix(in srgb, var(--pulse-metric-color) 58%, transparent); opacity: .86; }
 .dashboard-pulse-metric[data-pulse-metric="temperature"] { --pulse-metric-color: #f3b35b; }
 .dashboard-pulse-metric[data-pulse-metric="power"] { --pulse-metric-color: #b698f4; }
 .dashboard-pulse-metric[data-pulse-metric="vram"] { --pulse-metric-color: #52d5ad; }
