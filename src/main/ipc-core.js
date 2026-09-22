@@ -913,6 +913,13 @@ export function assertNoPayload(args, channel) {
   }
 }
 
+function validateIntelDriverDownloadIdentity(kind, version, channel) {
+  if (kind !== 'arc' && kind !== 'pro') throw new Error(`${channel}: invalid kind`);
+  if (typeof version !== 'string' || !/^\d{1,5}\.\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(version)) {
+    throw new Error(`${channel}: invalid version`);
+  }
+}
+
 /**
  * M151: classify an adapter for the startup focus preference. Explicit IGCL
  * integrated metadata is authoritative; synthetic OS-only rows may not carry
@@ -1143,6 +1150,12 @@ export async function resolveBootDeviceId(backend, store) {
  *   startup?: { get: () => Promise<{ valueExists: boolean, value: string | null, registration?: 'task' | 'run' }>, set: (enabled: boolean) => Promise<unknown>, registrationMode?: 'task' | 'run' },
  *   rtssStartup?: { get: () => Promise<object>, set: (enabled: boolean) => Promise<object>, registrationMode?: 'run' },
  *   driverInfo?: { get: () => Promise<{ driverDate: string | null }> },
+ *   intelDriverDownloadService?: {
+ *     getStatus: (kind: 'arc'|'pro', version: string) => Promise<object>,
+ *     startDownload: (kind: 'arc'|'pro', version: string, onProgress: (progress: object) => void) => Promise<object>,
+ *     cancelDownload: (kind: 'arc'|'pro') => Promise<object>,
+ *     installDownloaded: (kind: 'arc'|'pro', version: string) => Promise<object>,
+ *   },
  *   sysinfo?: { get: () => Promise<unknown> },  // M4-D: CIM system info (CPU/RAM/video controllers)
  *   windowOps?: {                              // M4-D: injected BrowserWindow ops (title-bar buttons)
  *     minimize: () => Promise<unknown>,
@@ -1229,6 +1242,7 @@ export function createIpcHandlers({
   rtssStartup = createMockRtssStartup(),
   driverInfo = createMockDriverInfo(),
   intelDriverUpdateService = createIntelDriverUpdateService(),
+  intelDriverDownloadService = null,
   driverMonitor = null,
   // M4-D: the sysinfo adapter. The DEFAULT is the MOCK fixture (never
   // spawns PowerShell); main.js injects the cached CIM result in the
@@ -2751,6 +2765,37 @@ export function createIpcHandlers({
       if (args.length !== 0) throw new Error('intel-driver-download-page-open takes one payload');
       if (kind !== 'arc' && kind !== 'pro') throw new Error('intel-driver-download-page-open: invalid kind');
       await openExternal(INTEL_DRIVER_PAGES[kind].officialPageUrl);
+    },
+
+    'intel-driver-download-status': async (kind, version, ...args) => {
+      if (args.length !== 0) throw new Error('intel-driver-download-status takes two payloads');
+      validateIntelDriverDownloadIdentity(kind, version, 'intel-driver-download-status');
+      if (!intelDriverDownloadService) throw new Error('Intel driver downloads are unavailable');
+      return intelDriverDownloadService.getStatus(kind, version);
+    },
+
+    'intel-driver-download-start': async (kind, version, licenseAccepted, ...args) => {
+      if (args.length !== 0) throw new Error('intel-driver-download-start takes three payloads');
+      validateIntelDriverDownloadIdentity(kind, version, 'intel-driver-download-start');
+      if (licenseAccepted !== true) throw new Error('Intel license agreement must be explicitly accepted');
+      if (!intelDriverDownloadService) throw new Error('Intel driver downloads are unavailable');
+      return intelDriverDownloadService.startDownload(kind, version, (progress) => {
+        emit('intel-driver-download:progress', progress);
+      });
+    },
+
+    'intel-driver-download-cancel': async (kind, ...args) => {
+      if (args.length !== 0) throw new Error('intel-driver-download-cancel takes one payload');
+      if (kind !== 'arc' && kind !== 'pro') throw new Error('intel-driver-download-cancel: invalid kind');
+      if (!intelDriverDownloadService) throw new Error('Intel driver downloads are unavailable');
+      return intelDriverDownloadService.cancelDownload(kind);
+    },
+
+    'intel-driver-install': async (kind, version, ...args) => {
+      if (args.length !== 0) throw new Error('intel-driver-install takes two payloads');
+      validateIntelDriverDownloadIdentity(kind, version, 'intel-driver-install');
+      if (!intelDriverDownloadService) throw new Error('Intel driver downloads are unavailable');
+      return intelDriverDownloadService.installDownloaded(kind, version);
     },
 
       'list-devices': async () => {

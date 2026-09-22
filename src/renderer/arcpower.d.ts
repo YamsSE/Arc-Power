@@ -82,6 +82,14 @@ export interface OcModeUpdatedPayload {
   revision: number;
 }
 
+export interface IntelDriverDownloadProgress {
+  kind: 'arc' | 'pro';
+  version: string;
+  bytesDownloaded: number;
+  totalBytes: number;
+  percent: number;
+}
+
 export interface ArcPowerApi {
   health(): Promise<HealthReport>;
   listDevices(): Promise<DeviceInfo[]>;
@@ -201,6 +209,16 @@ export interface ArcPowerApi {
   }>;
   /** Open one fixed official Intel driver page; renderer-supplied URLs are never accepted. */
   openIntelDriverDownloadPage(kind: 'arc' | 'pro'): Promise<void>;
+  /** Inspect whether the exact Intel release is retained locally; no path is exposed. */
+  intelDriverDownloadStatus(kind: 'arc' | 'pro', version: string): Promise<{ downloaded: boolean; sizeBytes: number | null }>;
+  /** Start a user-consented, streamed Intel driver download with integrity verification. */
+  intelDriverDownloadStart(kind: 'arc' | 'pro', version: string, acceptedIntelLicense: boolean): Promise<{ downloaded: true; sizeBytes: number }>;
+  /** Cancel an active Intel driver download for this package kind. */
+  intelDriverDownloadCancel(kind: 'arc' | 'pro'): Promise<{ cancelled: boolean }>;
+  /** Launch the verified Intel driver installer interactively, then quit Arc Power. */
+  intelDriverInstall(kind: 'arc' | 'pro', version: string): Promise<{ launched: true }>;
+  /** Subscribe to bounded package-download progress from the main process. */
+  onIntelDriverDownloadProgress(callback: (progress: IntelDriverDownloadProgress) => void): () => void;
   driverInfo(): Promise<{ driverDate: string | null }>;
   /** M2C-B B3: the app version for the header line ("Arc Power Ver. X.XX"). */
   appVersion(): Promise<{ version: string }>;

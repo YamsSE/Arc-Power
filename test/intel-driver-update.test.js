@@ -95,5 +95,10 @@ test('preload exposes the narrow window.arcPower API without a URL argument', ()
   const preload = fs.readFileSync(new URL('../src/preload.cjs', import.meta.url), 'utf8');
   assert.match(preload, /intelDriverUpdateCheck:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-update-check'\)/);
   assert.match(preload, /openIntelDriverDownloadPage:\s*\(kind\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-download-page-open',\s*kind\)/);
+  assert.match(preload, /intelDriverDownloadStatus:\s*\(kind, version\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-download-status',\s*kind,\s*version\)/);
+  assert.match(preload, /intelDriverDownloadStart:\s*\(kind, version, acceptedIntelLicense\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-download-start',\s*kind,\s*version,\s*acceptedIntelLicense\)/);
+  assert.match(preload, /intelDriverInstall:\s*\(kind, version\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-install',\s*kind,\s*version\)/);
+  assert.match(preload, /onIntelDriverDownloadProgress:\s*\(cb\)\s*=>\s*\{[\s\S]*?ipcRenderer\.on\('intel-driver-download:progress'/);
   assert.doesNotMatch(preload, /openIntelDriverDownloadPage:\s*\(url\)/);
+  assert.doesNotMatch(preload, /intelDriverDownloadStart:\s*\((?:url|filePath)\)/);
 });
