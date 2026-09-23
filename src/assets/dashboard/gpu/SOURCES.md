@@ -25,6 +25,13 @@ ratio of each model instead of stretching a card to fit.
 - `intel-arc-pro-reference.png` — Intel Arc Pro A60 single-slot product
   photograph; product family: <https://www.intel.com/content/www/us/en/products/details/discrete-gpus/arc/workstations/a-series.html>.
   Image source: <https://cdn.blueally.com/cpguard/images/workstation/a60/arc-pro-a60-top.png>.
+- `intel-arc-pro-b50.png` — Intel Arc Pro B50 product render, identified by
+  the card's printed `intel ARC PRO B50` model branding. White studio backdrop
+  removed and transparent margins trimmed; the hardware itself is unchanged.
+  Product page: <https://www.pccasegear.com/products/71824/intel-arc-b50-pro-gddr6-16gb>.
+  Image source: <https://files.pccasegear.com/images/33P6PEB0BB-add2.jpg>.
+  Intel's product datasheet confirms the B50-specific dual-slot design:
+  <https://www.intel.com/content/dam/www/central-libraries/us/en/documents/2026-03/datasheet-b50-gpu.pdf>.
 - `intel-igpu-chip.png` — Intel processor-package portrait used for integrated
   graphics; it is intentionally not a discrete Arc retail card.
 

@@ -20,13 +20,15 @@ import { healthRows, dashboardNeedsFullRender } from '../pure/status.ts';
 import type { DashboardSig, HealthRow } from '../pure/status.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
-import { shaderUnits } from '../pure/driver.ts';
+import { decodeDriverVersion, shaderUnits } from '../pure/driver.ts';
 import { cpuCardRows, rebarState, vramRowValue } from '../pure/sysinfo.ts';
 import { formatGpuMemoryGb } from '../pure/gpu-memory.ts';
 import { cpuIconKeyOf, cpuIconPath, gpuIconKeyOf, gpuIconPath } from '../pure/hardware-icons.ts';
 import { deviceHardwareKey } from '../pure/device.ts';
 import { dashboardDeviceStatusLabel, dashboardGpuOrder } from '../pure/dashboard.ts';
 import { dashboardRetailAssetPath } from '../pure/dashboard-retail-assets.ts';
+import { createIntelDriverCheckLoader, intelDriverKind, newerIntelRelease, type IntelDriverKind, type IntelDriverUpdateCheck } from '../pure/intel-driver-updates.ts';
+import { confirmIntelDriverInstall, showIntelDriverUpdateDialog } from '../components/intel-driver-update-dialog.ts';
 import { aibOf, aibOfPnpDeviceId } from '../pure/aib.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
@@ -78,8 +80,127 @@ const DASHBOARD_PULSE: Array<{ id: DashboardPulseId; label: string; unit: string
 ];
 
 const DASHBOARD_GAUGE_RADIUS = 42;
-const DASHBOARD_GAUGE_CIRCUMFERENCE = 2 * Math.PI * DASHBOARD_GAUGE_RADIUS;
 const DASHBOARD_HISTORY_LIMIT = TELEMETRY_HISTORY_POINTS;
+const intelDriverNoticeNodes = new Map<string, { row: HTMLElement; content: HTMLElement; kind: IntelDriverKind; installed: string; release?: import('../pure/intel-driver-updates.ts').IntelDriverRelease; downloaded: boolean; confirming: boolean; installing: boolean }>();
+const loadIntelDriverCheck = createIntelDriverCheckLoader(() => api.intelDriverUpdateCheck());
+type IntelDownloadStatus = { downloaded: boolean; sizeBytes: number | null };
+type IntelDashboardApi = {
+  intelDriverDownloadStatus(kind: IntelDriverKind, version: string): Promise<IntelDownloadStatus>;
+  intelDriverInstall(kind: IntelDriverKind, version: string): Promise<{ launched: true }>;
+};
+const intelDashboardApi = api as typeof api & IntelDashboardApi;
+
+export function intelDriverNoticeAction(downloaded: boolean): string {
+  return downloaded ? 'Install new Driver now' : 'New Driver Version Available';
+}
+
+export async function confirmIntelDriverInstallTransition(
+  entry: { downloaded: boolean; confirming: boolean; installing: boolean },
+  isCurrent: () => boolean,
+  confirm: () => Promise<boolean>,
+  install: () => void,
+  render: () => void,
+): Promise<boolean> {
+  if (!entry.downloaded || entry.confirming || entry.installing) return false;
+  entry.confirming = true;
+  render();
+  const confirmed = await confirm();
+  entry.confirming = false;
+  if (!confirmed || !isCurrent()) {
+    render();
+    return false;
+  }
+  entry.installing = true;
+  render();
+  install();
+  return true;
+}
+
+function renderIntelDriverAction(key: string): void {
+  const entry = intelDriverNoticeNodes.get(key);
+  const release = entry?.release;
+  if (!entry || !release || !entry.row.isConnected) return;
+  const action = intelDriverNoticeAction(entry.downloaded);
+  entry.content.replaceChildren(el('span', { class: 'intel-driver-update-notice' }, [
+    el('span', { class: 'intel-driver-update-versions', text: `${entry.installed} → ${release.version}` }),
+    el('button', {
+      class: 'btn intel-driver-update-button', type: 'button', text: action,
+      'aria-label': `${action}; Intel driver version ${release.version}`,
+      disabled: entry.confirming || entry.installing,
+      onClick: async () => {
+        if (!entry.downloaded) {
+          showIntelDriverUpdateDialog(entry.kind, entry.installed, release, false, () => {
+            for (const [noticeKey, notice] of intelDriverNoticeNodes) {
+              if (notice.kind !== entry.kind || notice.release?.version !== release.version) continue;
+              notice.downloaded = true;
+              renderIntelDriverAction(noticeKey);
+            }
+          });
+          return;
+        }
+        await confirmIntelDriverInstallTransition(
+          entry,
+          () => intelDriverNoticeNodes.get(key) === entry && entry.row.isConnected && entry.release === release,
+          confirmIntelDriverInstall,
+          () => {
+            void intelDashboardApi.intelDriverInstall(entry.kind, release.version).then(() => {
+              entry.installing = false;
+              renderIntelDriverAction(key);
+            }).catch(() => {
+              entry.installing = false;
+              void intelDashboardApi.intelDriverDownloadStatus(entry.kind, release.version).then((status) => {
+                if (intelDriverNoticeNodes.get(key) !== entry || entry.release !== release || !entry.row.isConnected) return;
+                entry.downloaded = status.downloaded;
+                renderIntelDriverAction(key);
+              }).catch(() => undefined);
+              toast('error', 'Intel driver installer failed', 'Could not launch the interactive installer. Your PC has not been changed. Please try again.');
+              renderIntelDriverAction(key);
+            });
+          },
+          () => renderIntelDriverAction(key),
+        );
+      },
+    }),
+  ]));
+}
+
+function renderIntelDriverNotice(key: string, check: IntelDriverUpdateCheck): void {
+  const entry = intelDriverNoticeNodes.get(key);
+  if (!entry || !entry.row.isConnected) return;
+  const release = newerIntelRelease(entry.kind, entry.installed, check);
+  if (!release) return;
+  entry.release = release;
+  entry.row.hidden = false;
+  renderIntelDriverAction(key);
+  void intelDashboardApi.intelDriverDownloadStatus(entry.kind, release.version).then((status) => {
+    if (intelDriverNoticeNodes.get(key) !== entry || entry.release !== release || !entry.row.isConnected) return;
+    // A slower startup status response must not overwrite a download that
+    // completed after this check began.
+    entry.downloaded = entry.downloaded || status.downloaded;
+    renderIntelDriverAction(key);
+  }).catch(() => undefined);
+}
+function dashboardUtilizationPercent(value: number | undefined): number | null {
+  return value === undefined || !Number.isFinite(value)
+    ? null
+    : Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function dashboardUtilizationArcPath(percent: number): string {
+  const startX = 52;
+  const startY = 52 - DASHBOARD_GAUGE_RADIUS;
+  if (percent <= 0) return `M ${startX} ${startY}`;
+  if (percent >= 100) {
+    const bottomY = 52 + DASHBOARD_GAUGE_RADIUS;
+    return `M ${startX} ${startY} A ${DASHBOARD_GAUGE_RADIUS} ${DASHBOARD_GAUGE_RADIUS} 0 0 1 ${startX} ${bottomY} A ${DASHBOARD_GAUGE_RADIUS} ${DASHBOARD_GAUGE_RADIUS} 0 0 1 ${startX} ${startY}`;
+  }
+  const angle = (percent / 100) * Math.PI * 2;
+  const endX = 52 + DASHBOARD_GAUGE_RADIUS * Math.sin(angle);
+  const endY = 52 - DASHBOARD_GAUGE_RADIUS * Math.cos(angle);
+  const largeArc = percent > 50 ? 1 : 0;
+  return `M ${startX} ${startY} A ${DASHBOARD_GAUGE_RADIUS} ${DASHBOARD_GAUGE_RADIUS} 0 ${largeArc} 1 ${endX.toFixed(3)} ${endY.toFixed(3)}`;
+}
+
 type DashboardPulseLane = {
   key: string;
   vramCapacityGiB: number | null;
@@ -92,7 +213,7 @@ type DashboardPulseLane = {
   rangeMinNodes: Map<DashboardPulseId, HTMLElement>;
   rangeMaxNodes: Map<DashboardPulseId, HTMLElement>;
   gaugeValueNode: HTMLElement | null;
-  gaugeRingNode: SVGCircleElement | null;
+  gaugeRingNode: SVGPathElement | null;
   runtimeNode: HTMLElement | null;
   peakNode: HTMLElement | null;
   averageNode: HTMLElement | null;
@@ -292,12 +413,10 @@ function updateSessionStats(lane: DashboardPulseLane): void {
 
 function updatePulseLane(lane: DashboardPulseLane, sample: TelemetrySample | null): void {
   rememberDashboardSample(lane, sample);
-  const utilization = sample ? pulseSampleValue('gpu-util', sample) : undefined;
-  if (lane.gaugeValueNode) lane.gaugeValueNode.textContent = utilization === undefined ? '-' : `${Math.round(utilization)}%`;
+  const utilization = dashboardUtilizationPercent(sample ? pulseSampleValue('gpu-util', sample) : undefined);
+  if (lane.gaugeValueNode) lane.gaugeValueNode.textContent = utilization === null ? '-' : `${utilization}%`;
   if (lane.gaugeRingNode) {
-    const progress = Math.max(0, Math.min(100, utilization ?? 0));
-    const visibleLength = DASHBOARD_GAUGE_CIRCUMFERENCE * (progress / 100);
-    lane.gaugeRingNode.setAttribute('stroke-dashoffset', `${DASHBOARD_GAUGE_CIRCUMFERENCE - visibleLength}`);
+    lane.gaugeRingNode.setAttribute('d', dashboardUtilizationArcPath(utilization ?? 0));
   }
   for (const metric of DASHBOARD_PULSE) {
     const valueNode = lane.valueNodes.get(metric.id);
@@ -453,16 +572,12 @@ function pulseLaneElement(
   lane.peakNode = el('strong', { text: '-' });
   lane.averageNode = el('strong', { text: '-' });
   lane.gaugeValueNode = el('strong', { class: 'dashboard-pulse-gauge-value', text: '-' });
-  lane.gaugeRingNode = svgEl('circle', {
+  lane.gaugeRingNode = svgEl('path', {
     class: 'dashboard-pulse-gauge-ring',
-    cx: 52,
-    cy: 52,
-    r: DASHBOARD_GAUGE_RADIUS,
+    d: 'M 52 10',
     fill: 'none',
     'stroke-width': 7,
-    'stroke-linecap': 'round',
-    'stroke-dasharray': `${DASHBOARD_GAUGE_CIRCUMFERENCE} ${DASHBOARD_GAUGE_CIRCUMFERENCE}`,
-    'stroke-dashoffset': DASHBOARD_GAUGE_CIRCUMFERENCE,
+    'stroke-linecap': 'butt',
     'aria-hidden': 'true',
   });
   const gaugeSvg = svgEl('svg', { class: 'dashboard-pulse-gauge-svg', viewBox: '0 0 104 104', 'aria-hidden': 'true' });
@@ -597,6 +712,29 @@ function dashboardGpuCard(device: AppState['devices'][number], index: number, st
   const memory = typeof sample?.memClockMhz === 'number' && Number.isFinite(sample.memClockMhz)
     ? sample.memClockMhz
     : null;
+  const intelKind = intelDriverKind(device.gpuVendor, device.name);
+  const installedDriver = decodeDriverVersion(device.osController?.driverVersion ?? device.driverVersion);
+  const driverRow = intelKind
+    ? el('div', { class: 'kv intel-driver-version-row', 'data-label': 'Driver version' }, [
+        el('span', { class: 'intel-driver-update-content', 'aria-live': 'polite', text: installedDriver ?? '-' }),
+      ])
+    : null;
+  if (driverRow && intelKind && installedDriver) {
+    const key = dashboardDeviceKey(device);
+    const entry = {
+      row: driverRow,
+      content: driverRow.querySelector('.intel-driver-update-content') as HTMLElement,
+      kind: intelKind,
+      installed: installedDriver,
+      downloaded: false,
+      confirming: false,
+      installing: false,
+    };
+    intelDriverNoticeNodes.set(key, entry);
+    void loadIntelDriverCheck().then((check) => {
+      if (check && intelDriverNoticeNodes.get(key) === entry) renderIntelDriverNotice(key, check);
+    });
+  }
   return el('section', { class: 'card device-card', hidden: !visible, dataset: { deviceKey: dashboardDeviceKey(device) } }, [
     el('div', { class: 'device-card-head' }, [
       el('div', { class: 'hardware-card-heading' }, [
@@ -606,6 +744,7 @@ function dashboardGpuCard(device: AppState['devices'][number], index: number, st
     ]),
     el('div', { class: 'card-body kv-grid' }, [
       el('div', { class: 'kv', 'data-label': 'GPU' }, [el('span', { text: device.name })]),
+      ...(driverRow ? [driverRow] : []),
       el('div', { class: 'kv', 'data-label': 'Board partner' }, [el('span', {
         class: aib ? undefined : 'text-unknown',
         text: aib ? (aib.model ? `${aib.vendor} (${aib.model})` : aib.vendor) : '-',
@@ -1099,6 +1238,7 @@ export const dashboardPage: Page = {
     const deviceSelect = buildDeviceSelect(ctx.store, (id) => void ctx.selectDevice?.(id));
 
     clear(container);
+    intelDriverNoticeNodes.clear();
     container.append(
       el('header', { class: 'dashboard-hud-header' }, [
         el('div', { class: 'dashboard-hud-header-copy' }, [

@@ -93,6 +93,12 @@ contextBridge.exposeInMainWorld('arcPower', {
   // via shell.openExternal (STRICTLY validated in ipc-core.js: https: +
   // github.com + the /YamsSE/Arc-Power path).
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  intelDriverUpdateCheck: () => ipcRenderer.invoke('intel-driver-update-check'),
+  openIntelDriverDownloadPage: (kind) => ipcRenderer.invoke('intel-driver-download-page-open', kind),
+  intelDriverDownloadStatus: (kind, version) => ipcRenderer.invoke('intel-driver-download-status', kind, version),
+  intelDriverDownloadStart: (kind, version, acceptedIntelLicense) => ipcRenderer.invoke('intel-driver-download-start', kind, version, acceptedIntelLicense),
+  intelDriverDownloadCancel: (kind) => ipcRenderer.invoke('intel-driver-download-cancel', kind),
+  intelDriverInstall: (kind, version) => ipcRenderer.invoke('intel-driver-install', kind, version),
   driverInfo: () => ipcRenderer.invoke('driver-info'),
   appVersion: () => ipcRenderer.invoke('app-version'),
   // M4-E: distribution kind - 'installed' | 'portable' | 'dev'
@@ -195,6 +201,11 @@ contextBridge.exposeInMainWorld('arcPower', {
     const listener = (_event, sample) => cb(sample);
     ipcRenderer.on('telemetry:sample', listener);
     return () => ipcRenderer.removeListener('telemetry:sample', listener);
+  },
+  onIntelDriverDownloadProgress: (cb) => {
+    const listener = (_event, progress) => cb(progress);
+    ipcRenderer.on('intel-driver-download:progress', listener);
+    return () => ipcRenderer.removeListener('intel-driver-download:progress', listener);
   },
   // M4-D: pushed window-maximize state (the title-bar max button icon
   // follows the live state; main sends on maximize/unmaximize).

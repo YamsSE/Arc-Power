@@ -13,6 +13,7 @@ import { createMonitorLog } from './monitor-log.js';
 import { isElevated as isElevatedReal } from './elevation.js';
 import { createGameTuningController } from './game-tuning.js';
 import { createRtssStartup } from './rtss-startup.js';
+import { createIntelDriverDownloadService } from './intel-driver-download.js';
 
 /**
  * Register every whitelisted handler on ipcMain. Returns a teardown that
@@ -90,6 +91,8 @@ import { createRtssStartup } from './rtss-startup.js';
  */
 export function registerIpc({ backend, store, getWindow, startup = createStartup(), rtssStartup = createRtssStartup(), driverInfo = createDriverInfo(), driverMonitor = null, sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), fpsLane = null, rtssOverlay = null, rtssFrameLimiter = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null, recordingStore = null, recordingCopyFile = async () => false, recordingEngine = null, recordingLifecycle = null, recordingEditor = null, stabilityLab = null, stabilityStore = null, stabilityWorkload = null, overlayLayoutStore = null, obsStream = null, applyOverlayLayout = async () => {}, chooseRecordingDirectory = async () => null, openRecordingFolder = async () => {}, refreshRecordingHotkeys = async () => null, getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }), recordingCaptureTargets = null, onRecordingActionResult = () => {}, onRecordingState = () => {}, getRecordingMemorySavingMode = () => true }) {
   const wheaMonitor = arguments[0]?.wheaMonitor ?? null;
+  const intelDriverDownloadService = arguments[0]?.intelDriverDownloadService
+    ?? createIntelDriverDownloadService({ appDataPath: app.getPath('appData'), appApi: app });
   const recordingRuntimeAcquire = arguments[0]?.recordingRuntimeAcquire
     ?? (async () => recordingEngine?.getState?.() ?? null);
   const recordingRuntimeRelease = arguments[0]?.recordingRuntimeRelease
@@ -102,6 +105,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     startup,
     rtssStartup,
     driverInfo,
+    intelDriverDownloadService,
     driverMonitor,
     sysinfo,
     windowOps,
@@ -181,6 +185,11 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       // Only push-style channels cross the window boundary; request/response
       // channels return their payload via the invoke promise.
       if (channel === 'stability:status') {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+        return;
+      }
+      if (channel === 'intel-driver-download:progress') {
         const win = getWindow();
         if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
         return;

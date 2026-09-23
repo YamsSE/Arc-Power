@@ -875,7 +875,7 @@ html, body {
 .dashboard-pulse-visual::before { content: ''; position: absolute; top: -14px; left: 12%; z-index: 0; width: 76%; height: 184px; border-radius: 50%; background: radial-gradient(ellipse at center, rgba(53, 200, 244, .11) 0%, rgba(53, 200, 244, .045) 46%, transparent 76%); filter: blur(10px); pointer-events: none; }
 .dashboard-pulse-visual > * { position: relative; z-index: 1; }
 .dashboard-pulse-identity { min-width: 0; display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 8px; }
-.dashboard-pulse-identity .hardware-card-icon { width: 48px; height: 48px; min-width: 48px; min-height: 48px; flex: 0 0 48px; padding: 0; border-color: #2a4964; background: #0c1a2b; }
+.dashboard-pulse-identity .hardware-card-icon { width: 48px; height: 48px; min-width: 48px; min-height: 48px; flex: 0 0 48px; padding: 0; border-color: #000; background: #0c1a2b; }
 .dashboard-pulse-identity-copy { min-width: 0; }
 .dashboard-pulse-identity-copy .card-title { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .dashboard-pulse-identity-note { display: block; margin-top: 4px; color: var(--text-dim); font: 9px var(--mono); text-transform: uppercase; }
@@ -892,9 +892,9 @@ html, body {
 .dashboard-retail-art-edge { fill: #17334a; stroke: #6ba7bd; }
 .dashboard-retail-art-integrated { width: 158px; height: 70px; }
 .dashboard-pulse-gauge { position: relative; display: grid; place-items: center; width: 132px; height: 132px; }
-.dashboard-pulse-gauge-svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); shape-rendering: geometricPrecision; }
+.dashboard-pulse-gauge-svg { position: absolute; inset: 0; width: 100%; height: 100%; shape-rendering: geometricPrecision; }
 .dashboard-pulse-gauge-track { stroke: #1d3148; }
-.dashboard-pulse-gauge-ring { stroke: #35c8f4; transition: stroke-dashoffset .2s ease; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 4px rgba(53, 200, 244, .34)); }
+.dashboard-pulse-gauge-ring { stroke: #35c8f4; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 4px rgba(53, 200, 244, .34)); }
 .dashboard-pulse-gauge-center { position: relative; z-index: 1; display: grid; place-items: center; gap: 4px; text-align: center; }
 .dashboard-pulse-gauge-value { color: var(--text); font: 700 27px/1 var(--font-display); font-variant-numeric: tabular-nums; }
 .dashboard-pulse-gauge-label { color: #6f8ba5; font: 8px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
@@ -1369,6 +1369,63 @@ input[type="number"] {
 .modal-device { color: var(--text-muted); font-size: 13px; margin-bottom: 12px; }
 .modal-text { color: var(--text); line-height: 1.55; margin: 0 0 20px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+.intel-driver-version-row[hidden] { display: none; }
+.intel-driver-update-content { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.intel-driver-update-notice {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 8px;
+  max-width: 100%;
+  padding: 4px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-inset));
+}
+.intel-driver-update-versions { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.intel-driver-update-button {
+  padding: 3px 8px;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border-strong));
+  background: transparent;
+  font-size: 11.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+.intel-driver-update-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--control-bg));
+}
+.intel-driver-update-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.intel-driver-dialog { width: min(480px, calc(100vw - 32px)); }
+.intel-driver-dialog-question { margin-top: 12px; font-weight: 650; }
+.intel-driver-dialog-versions { display: grid; gap: 8px; margin: 0 0 16px; }
+.intel-driver-dialog-versions > div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-inset); }
+.intel-driver-dialog-versions dt { color: var(--text-muted); }
+.intel-driver-dialog-versions dd { margin: 0; font-family: var(--font-mono); }
+.intel-driver-tabs { display: flex; gap: 4px; margin: 0 0 14px; border-bottom: 1px solid var(--border-strong); }
+.intel-driver-tab { padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-muted); cursor: pointer; }
+.intel-driver-tab.is-active { border-bottom-color: var(--accent); color: var(--text); }
+.intel-driver-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.intel-driver-tab-panel[hidden] { display: none; }
+.intel-driver-changelog-list { margin: 0; padding-left: 22px; }
+.intel-driver-changelog-list li + li { margin-top: 8px; }
+.intel-driver-changelog-empty { color: var(--text-muted); }
+.intel-driver-dialog-note { padding: 11px 12px; border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--bg-inset)); }
+.intel-driver-dialog-status:empty { display: none; }
+.intel-driver-dialog-actions { margin-top: 16px; }
+.intel-driver-license-link { display: inline-block; margin: 0 0 14px; color: var(--accent); }
+.intel-driver-license-label { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 12px; color: var(--text); font-size: 12.5px; }
+.intel-driver-license-checkbox { flex: 0 0 auto; margin: 3px 0 0; accent-color: var(--accent); }
+.intel-driver-progress-row { display: flex; align-items: center; gap: 10px; margin: 2px 0 14px; }
+.intel-driver-progress { flex: 1; width: 100%; height: 8px; accent-color: var(--accent); }
+.intel-driver-progress-label { min-width: 3.5em; color: var(--text-muted); font-size: 12px; text-align: right; }
+.intel-driver-progress-row:has(progress[value="0"]) { opacity: .65; }
+.intel-driver-license-link:focus-visible, .intel-driver-license-checkbox:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* --------------------------------------------------------------- stat tiles */
 
