@@ -66,7 +66,13 @@ export function dashboardRetailAssetPath(input: DashboardRetailAssetInput): stri
     if (input.integrated === true || isIntelIntegratedModel(normalizedModel)) {
       return `${ASSET_ROOT}intel-igpu-chip.png`;
     }
-    if (/\barc\s+pro\b|\bpro\s+arc\b/.test(normalizedModel)) return `${ASSET_ROOT}intel-arc-pro-reference.png`;
+    if (/\barc\s+pro\b|\bpro\s+arc\b/.test(normalizedModel)) {
+      if (hasModel('b50', normalizedModel)) return `${ASSET_ROOT}intel-arc-pro-b50.png`;
+      if (hasModel('a60', normalizedModel)) return `${ASSET_ROOT}intel-arc-pro-reference.png`;
+      // An unknown Pro SKU must not be presented as the A60; the caller keeps
+      // its generic GPU fallback until a verified model portrait is available.
+      return null;
+    }
     if (hasModel('a310', model) || hasModel('a380', model)) return `${ASSET_ROOT}intel-arc-a310-a380-reference.png`;
     if (hasModel('a750', model)) return `${ASSET_ROOT}intel-arc-a750.png`;
     if (hasModel('a770', model)) return `${ASSET_ROOT}intel-arc-a770.png`;

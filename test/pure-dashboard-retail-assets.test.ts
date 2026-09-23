@@ -9,13 +9,15 @@ import { aibOf } from '../src/renderer/pure/aib.ts';
 const path = (name: string) => `../assets/dashboard/gpu/${name}.png`;
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-test('dashboard retail assets route distinct Intel Arc families and compact/pro portraits', () => {
+test('dashboard retail assets route distinct Intel Arc models to matching portraits', () => {
   assert.equal(dashboardRetailAssetPath({ name: 'Intel Arc A750', gpuVendor: 'intel' }), path('intel-arc-a750'));
   assert.equal(dashboardRetailAssetPath({ name: 'Intel Arc A770', gpuVendor: 'intel' }), path('intel-arc-a770'));
   assert.equal(dashboardRetailAssetPath({ name: 'Intel Arc A310', gpuVendor: 'intel' }), path('intel-arc-a310-a380-reference'));
   assert.equal(dashboardRetailAssetPath({ name: 'Intel Arc A380', gpuVendor: 'intel' }), path('intel-arc-a310-a380-reference'));
   assert.equal(dashboardRetailAssetPath({ name: 'Intel Arc Pro A60', gpuVendor: 'intel' }), path('intel-arc-pro-reference'));
-  assert.equal(dashboardRetailAssetPath({ name: 'Intel(R) Arc(TM) Pro B50 Graphics', gpuVendor: 'intel' }), path('intel-arc-pro-reference'));
+  assert.equal(dashboardRetailAssetPath({ name: 'Intel(R) Arc(TM) Pro B50 Graphics', gpuVendor: 'intel' }), path('intel-arc-pro-b50'));
+  assert.equal(dashboardRetailAssetPath({ name: 'Intel Arc Pro B60 Graphics', gpuVendor: 'intel' }), null);
+  assert.equal(dashboardRetailAssetPath({ name: 'Intel Arc Pro A50 Graphics', gpuVendor: 'intel' }), null);
 });
 
 test('dashboard retail assets keep Intel Arc iGPUs on the Intel chip portrait', () => {
@@ -78,6 +80,7 @@ test('dashboard retail portraits share the B580/A770 display box', () => {
     'intel-arc-a770',
     'intel-arc-b580',
     'intel-arc-pro-reference',
+    'intel-arc-pro-b50',
     'intel-arc-b570-acer',
     'intel-arc-b570-asrock',
     'intel-arc-b570-sparkle',
