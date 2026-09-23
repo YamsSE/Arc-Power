@@ -1407,6 +1407,14 @@ input[type="number"] {
 .intel-driver-dialog-versions > div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-inset); }
 .intel-driver-dialog-versions dt { color: var(--text-muted); }
 .intel-driver-dialog-versions dd { margin: 0; font-family: var(--font-mono); }
+.intel-driver-tabs { display: flex; gap: 4px; margin: 0 0 14px; border-bottom: 1px solid var(--border-strong); }
+.intel-driver-tab { padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-muted); cursor: pointer; }
+.intel-driver-tab.is-active { border-bottom-color: var(--accent); color: var(--text); }
+.intel-driver-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.intel-driver-tab-panel[hidden] { display: none; }
+.intel-driver-changelog-list { margin: 0; padding-left: 22px; }
+.intel-driver-changelog-list li + li { margin-top: 8px; }
+.intel-driver-changelog-empty { color: var(--text-muted); }
 .intel-driver-dialog-note { padding: 11px 12px; border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--bg-inset)); }
 .intel-driver-dialog-status:empty { display: none; }
 .intel-driver-dialog-actions { margin-top: 16px; }

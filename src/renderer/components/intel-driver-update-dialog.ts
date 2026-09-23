@@ -70,6 +70,8 @@ export function showIntelDriverUpdateDialog(
   let unsubscribe: (() => void) | null = null;
   const status = el('p', { class: 'modal-text intel-driver-dialog-status', role: 'status', 'aria-live': 'polite' });
   const actions = el('div', { class: 'modal-actions intel-driver-dialog-actions' });
+  const downloadPanel = el('section', { class: 'intel-driver-tab-panel', id: 'intel-driver-download-panel', role: 'tabpanel', 'aria-labelledby': 'intel-driver-download-tab' });
+  const changelogPanel = el('section', { class: 'intel-driver-tab-panel', id: 'intel-driver-changelog-panel', role: 'tabpanel', 'aria-labelledby': 'intel-driver-changelog-tab', hidden: true });
   const close = () => {
     if (closed) return;
     closed = true;
@@ -122,6 +124,45 @@ export function showIntelDriverUpdateDialog(
     },
   });
 
+  const downloadTab = el('button', {
+    class: 'intel-driver-tab is-active', id: 'intel-driver-download-tab', type: 'button', role: 'tab',
+    'aria-controls': 'intel-driver-download-panel', 'aria-selected': 'true', tabindex: 0, text: 'Download',
+  });
+  const changelogTab = el('button', {
+    class: 'intel-driver-tab', id: 'intel-driver-changelog-tab', type: 'button', role: 'tab',
+    'aria-controls': 'intel-driver-changelog-panel', 'aria-selected': 'false', tabindex: -1, text: 'Changelog',
+  });
+  const selectTab = (showChangelog: boolean, moveFocus = false) => {
+    downloadTab.setAttribute('aria-selected', String(!showChangelog));
+    downloadTab.setAttribute('tabindex', showChangelog ? '-1' : '0');
+    downloadTab.classList.toggle('is-active', !showChangelog);
+    changelogTab.setAttribute('aria-selected', String(showChangelog));
+    changelogTab.setAttribute('tabindex', showChangelog ? '0' : '-1');
+    changelogTab.classList.toggle('is-active', showChangelog);
+    downloadPanel.hidden = showChangelog;
+    changelogPanel.hidden = !showChangelog;
+    if (moveFocus) (showChangelog ? changelogTab : downloadTab).focus();
+  };
+  const handleTabKeydown = (event: KeyboardEvent) => {
+    let showChangelog: boolean;
+    switch (event.key) {
+      case 'ArrowRight': showChangelog = event.currentTarget === downloadTab; break;
+      case 'ArrowLeft': showChangelog = event.currentTarget === downloadTab; break;
+      case 'Home': showChangelog = false; break;
+      case 'End': showChangelog = true; break;
+      default: return;
+    }
+    event.preventDefault();
+    selectTab(showChangelog, true);
+  };
+  downloadTab.addEventListener('click', () => selectTab(false));
+  changelogTab.addEventListener('click', () => selectTab(true));
+  downloadTab.addEventListener('keydown', handleTabKeydown);
+  changelogTab.addEventListener('keydown', handleTabKeydown);
+  changelogPanel.append(release.changelog.length
+    ? el('ul', { class: 'intel-driver-changelog-list' }, release.changelog.map((item) => el('li', { text: item })))
+    : el('p', { class: 'modal-text intel-driver-changelog-empty', text: 'No release highlights are available.' }));
+
   const license = el('input', { type: 'checkbox', class: 'intel-driver-license-checkbox', 'aria-label': 'I accept Intel’s Software License Agreement' }) as HTMLInputElement;
   const download = el('button', {
     class: 'btn btn-primary', type: 'button', text: 'Download', disabled: true,
@@ -168,14 +209,19 @@ export function showIntelDriverUpdateDialog(
         el('div', {}, [el('dt', { text: 'Latest Intel version' }), el('dd', { text: release.version })]),
         ...(release.releaseDate ? [el('div', {}, [el('dt', { text: 'Release date' }), el('dd', { text: release.releaseDate })])] : []),
       ]),
-      intelPageLink,
-      el('label', { class: 'intel-driver-license-label' }, [license, ' I accept Intel’s Software License Agreement']),
-      el('div', { class: 'intel-driver-progress-row' }, [progressBar, progressLabel]),
-      el('p', { class: 'modal-text intel-driver-dialog-note', text: 'Your PC manufacturer (OEM) may provide a driver tailored for your system. Driver installation is interactive; Arc Power will not install silently.' }),
-      status,
-      actions,
+      el('div', { class: 'intel-driver-tabs', role: 'tablist', 'aria-label': 'Intel driver details' }, [downloadTab, changelogTab]),
+      downloadPanel,
+      changelogPanel,
     ]),
   ]));
+  downloadPanel.append(
+    intelPageLink,
+    el('label', { class: 'intel-driver-license-label' }, [license, ' I accept Intel’s Software License Agreement']),
+    el('div', { class: 'intel-driver-progress-row' }, [progressBar, progressLabel]),
+    el('p', { class: 'modal-text intel-driver-dialog-note', text: 'Your PC manufacturer (OEM) may provide a driver tailored for your system. Driver installation is interactive; Arc Power will not install silently.' }),
+    status,
+    actions,
+  );
   if (downloaded) return;
   cancel.focus();
 }

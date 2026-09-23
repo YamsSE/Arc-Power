@@ -204,8 +204,8 @@ export interface ArcPowerApi {
   openExternal(url: string): Promise<void>;
   /** Read latest Intel Arc consumer/iGPU and Arc Pro driver metadata. */
   intelDriverUpdateCheck(): Promise<{
-    arc: { version: string; releaseDate: string | null; officialPageUrl: string } | null;
-    pro: { version: string; releaseDate: string | null; officialPageUrl: string } | null;
+    arc: { version: string; releaseDate: string | null; officialPageUrl: string; changelog: string[] } | null;
+    pro: { version: string; releaseDate: string | null; officialPageUrl: string; changelog: string[] } | null;
   }>;
   /** Open one fixed official Intel driver page; renderer-supplied URLs are never accepted. */
   openIntelDriverDownloadPage(kind: 'arc' | 'pro'): Promise<void>;

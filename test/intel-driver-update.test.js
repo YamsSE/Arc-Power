@@ -13,13 +13,13 @@ const response = (text, url) => ({
 
 test('Intel metadata parser accepts only a four-part driver version and normalizes an optional date', () => {
   assert.deepEqual(parseIntelDriverMetadata('<p>Intel® Graphics Driver 32.0.101.9030</p><p>Release Date: September 2, 2026</p>'), {
-    version: '32.0.101.9030', releaseDate: '2026-09-02',
+    version: '32.0.101.9030', releaseDate: '2026-09-02', changelog: [],
   });
   for (const value of ['32.0.101', '32.0.101.9030.1', '1.2.3.4', 'Driver 32.0.101.9030']) {
     assert.equal(parseIntelDriverMetadata(value), null, value);
   }
   assert.deepEqual(parseIntelDriverMetadata('Intel Graphics Driver 1.2.3.4 Release Date: 2026-02-30'), {
-    version: '1.2.3.4', releaseDate: null,
+    version: '1.2.3.4', releaseDate: null, changelog: [],
   });
 });
 
@@ -28,12 +28,96 @@ test('Intel metadata parser prefers Intel DownloadVersion and lastModifieddate m
     <meta name="DownloadVersion" content="32.0.101.8805-PRO">
     <meta name="lastModifieddate" content="2026-09-02T00:00:00Z">
   </head><body><p>Intel Graphics Driver 32.0.101.9030</p></body></html>`;
-  assert.deepEqual(parseIntelDriverMetadata(fixture), { version: '32.0.101.8805', releaseDate: '2026-09-02' });
+  assert.deepEqual(parseIntelDriverMetadata(fixture), { version: '32.0.101.8805', releaseDate: '2026-09-02', changelog: [] });
   assert.deepEqual(parseIntelDriverMetadata('<meta name="DownloadVersion" content="32.0.101.9030"><meta name="lastModifieddate" content="09/02/2026 00:00:00">'), {
-    version: '32.0.101.9030', releaseDate: '2026-09-02',
+    version: '32.0.101.9030', releaseDate: '2026-09-02', changelog: [],
   });
   assert.equal(parseIntelDriverMetadata('<meta name="DownloadVersion" content="32.0.101.8805.1">'), null,
     'a fifth numeric component is not accepted as a suffix');
+});
+
+test('Intel metadata extracts bounded text highlights from Arc and Pro sections', () => {
+  const arc = parseIntelDriverMetadata(`Intel Graphics Driver 32.0.101.9030<h2>Detailed Description</h2><h2>Highlights:</h2><ul>
+    <li>Improved stability &amp; performance<ul><li>Updated game profile</li></ul></li>
+    <li>Fixed <strong>display</strong> flicker</li>
+  </ul><h2>Specifications</h2><ul><li>Not a highlight</li></ul>`);
+  assert.deepEqual(arc.changelog, ['Improved stability & performance', 'Updated game profile', 'Fixed display flicker']);
+
+  const pro = parseIntelDriverMetadata(`Intel Graphics Driver 32.0.101.8805<h2>Detailed Description</h2><h3>Highlights of this Workstation Driver:</h3><ul><li>Certified application updates</li></ul>`);
+  assert.deepEqual(pro.changelog, ['Certified application updates']);
+
+  assert.deepEqual(parseIntelDriverMetadata('Intel Graphics Driver 32.0.101.9030<h2>Overview</h2><ul><li>Ordinary page content</li></ul>').changelog, []);
+});
+
+test('Intel metadata includes the main Highlights introduction and stops before support and product sections', () => {
+  const arc = parseIntelDriverMetadata(`Intel Graphics Driver 32.0.101.9030
+    <h2>Detailed Description</h2>
+    <p><strong>Highlights:</strong></p>
+    <p>Intel Game On Driver support for the latest titles, including:</p>
+    <ul><li>WARDOGS*</li><li>Nested parent<ul><li>Nested child</li></ul></li></ul>
+    <p><strong>OS Support:</strong></p><ul><li>Windows 11</li></ul>
+    <p>Products:</p><ul><li>Intel Arc Graphics</li></ul>`);
+  assert.deepEqual(arc.changelog, [
+    'Intel Game On Driver support for the latest titles, including:',
+    'WARDOGS*', 'Nested parent', 'Nested child',
+  ]);
+
+  const pro = parseIntelDriverMetadata(`Intel Graphics Driver 32.0.101.8805
+    <h2>Detailed Description</h2>
+    <p><b>Highlights of this Workstation Driver:</b></p>
+    <p>New features and fixes for professional applications.</p>
+    <ul><li>Application certification updates</li></ul>
+    <p>Platform Support</p><ul><li>Windows</li></ul>`);
+  assert.deepEqual(pro.changelog, [
+    'New features and fixes for professional applications.',
+    'Application certification updates',
+  ]);
+
+  const plain = parseIntelDriverMetadata('Intel Graphics Driver 32.0.101.9030<h2>Detailed Description</h2> Highlights: Game On support for: <ul><li>WARDOGS*</li></ul><h3>Notes</h3>Additional details');
+  assert.deepEqual(plain.changelog, ['Game On support for:', 'WARDOGS*']);
+});
+
+test('Intel metadata scopes Highlights to Detailed Description and ignores comment/script decoys', () => {
+  const parsed = parseIntelDriverMetadata(`Intel Graphics Driver 32.0.101.9030
+    <!-- <h2>Detailed Description</h2><p>Highlights: comment decoy</p><ul><li>Comment item</li></ul> -->
+    <script>var page = '<h2>Detailed Description</h2><p>Highlights: script decoy</p>';</script>
+    <h2>Detailed Description</h2><p><strong>Highlights:</strong></p>
+    <p>Actual driver highlights.</p><ul><li>Actual item</li></ul><h2>Other section</h2>
+    <p>Highlights: unrelated later content</p><ul><li>Must not leak</li></ul>`);
+  assert.deepEqual(parsed.changelog, ['Actual driver highlights.', 'Actual item']);
+
+  const missing = parseIntelDriverMetadata('Intel Graphics Driver 32.0.101.9030<p>Highlights: outside the required section</p><ul><li>Must not leak</li></ul>');
+  assert.deepEqual(missing.changelog, []);
+});
+
+test('Intel Pro highlights stop before OS Reference and Platform (OS Support)', () => {
+  const osReference = parseIntelDriverMetadata(`Intel Graphics Driver 32.0.101.8805
+    <h2>Detailed Description</h2><p><strong>Highlights of this Workstation Driver:</strong></p>
+    <p>Pro driver improvements.</p><ul><li>Certified applications</li></ul>
+    <p><strong>OS Reference:</strong></p><ul><li>Windows 11</li></ul>`);
+  assert.deepEqual(osReference.changelog, ['Pro driver improvements.', 'Certified applications']);
+
+  const platformSupport = parseIntelDriverMetadata(`Intel Graphics Driver 32.0.101.8805
+    <h2>Detailed Description</h2><p><strong>Highlights of this Workstation Driver:</strong></p>
+    <ul><li>Pro feature</li></ul><p>Platform (OS Support)</p><ul><li>Windows Server</li></ul>`);
+  assert.deepEqual(platformSupport.changelog, ['Pro feature']);
+});
+
+test('Intel metadata decodes named and numeric trademark entities in highlights', () => {
+  const parsed = parseIntelDriverMetadata(`Intel Graphics Driver 32.0.101.9030
+    <h2>Detailed Description</h2>
+    <p><strong>Highlights:</strong></p>
+    <p>Intel&reg; Game On&trade; support &#174; &#x2122; &amp;reg;</p>`);
+  assert.deepEqual(parsed.changelog, ['Intel® Game On™ support ® ™ &reg;']);
+});
+
+test('Intel metadata rejects malformed and oversized highlight lists', () => {
+  const malformed = parseIntelDriverMetadata('Intel Graphics Driver 32.0.101.9030<h2>Detailed Description</h2><h2>Highlights:</h2><ul><li>Missing closing item</ul>');
+  assert.deepEqual(malformed.changelog, []);
+  const oversized = parseIntelDriverMetadata(`Intel Graphics Driver 32.0.101.9030<h2>Detailed Description</h2><h2>Highlights:</h2><ul><li>${'x'.repeat(501)}</li></ul>`);
+  assert.deepEqual(oversized.changelog, []);
+  const tooMany = parseIntelDriverMetadata(`Intel Graphics Driver 32.0.101.9030<h2>Detailed Description</h2><h2>Highlights:</h2><ul>${'<li>Item</li>'.repeat(21)}</ul>`);
+  assert.deepEqual(tooMany.changelog, []);
 });
 
 test('Intel metadata service fetches fixed HTTPS pages, caches success, and serves stale success after failure', async () => {

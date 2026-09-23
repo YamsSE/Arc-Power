@@ -4,6 +4,7 @@ export interface IntelDriverRelease {
   version: string;
   releaseDate: string | null;
   officialPageUrl: string;
+  changelog: string[];
 }
 
 export interface IntelDriverUpdateCheck {

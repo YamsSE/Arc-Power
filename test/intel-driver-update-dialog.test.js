@@ -14,6 +14,15 @@ class FakeElement {
     this.className = '';
     this.parentNode = null;
     this.mutationObservers = new Set();
+    this.hidden = false;
+    this.classList = {
+      toggle: (name, force) => {
+        const classes = new Set(this.className.split(/\s+/).filter(Boolean));
+        if (force) classes.add(name);
+        else classes.delete(name);
+        this.className = [...classes].join(' ');
+      },
+    };
   }
   set textContent(value) {
     this._textContent = String(value);
@@ -26,6 +35,7 @@ class FakeElement {
   setAttribute(name, value) {
     this.attributes[name] = value;
     if (name === 'disabled') this.disabled = true;
+    if (name === 'hidden') this.hidden = true;
   }
   addEventListener(name, listener) {
     const listeners = this.listeners.get(name) ?? [];
@@ -50,15 +60,22 @@ class FakeElement {
     if (!removedNodes.length) return;
     for (const observer of this.mutationObservers) observer.notify(removedNodes);
   }
-  focus() {}
+  focus() { this.focusCount = (this.focusCount ?? 0) + 1; }
   async click() {
     if (this.disabled) return;
     for (const listener of this.listeners.get('click') ?? []) {
       await listener({ target: this, currentTarget: this, preventDefault() {} });
     }
   }
-  dispatch(name) {
-    for (const listener of this.listeners.get(name) ?? []) listener({ target: this, currentTarget: this });
+  dispatch(name, properties = {}) {
+    const event = {
+      target: this,
+      currentTarget: this,
+      ...properties,
+      preventDefault() { this.defaultPrevented = true; },
+    };
+    for (const listener of this.listeners.get(name) ?? []) listener(event);
+    return event;
   }
 }
 
@@ -86,7 +103,8 @@ function find(node, predicate) {
   return null;
 }
 
-function button(root, label) { return find(root, (node) => node.tagName === 'BUTTON' && node.textContent === label); }
+function button(root, label) { return find(root, (node) => node.tagName === 'BUTTON' && node.attributes.role !== 'tab' && node.textContent === label); }
+function tab(root, label) { return find(root, (node) => node.tagName === 'BUTTON' && node.attributes.role === 'tab' && node.textContent === label); }
 
 test('Intel driver popup gates downloads, tracks matching progress, cancels, and offers install choices', async () => {
   const originalDocument = globalThis.document;
@@ -127,7 +145,7 @@ test('Intel driver popup gates downloads, tracks matching progress, cancels, and
 
   try {
     const { confirmIntelDriverInstall, showIntelDriverUpdateDialog } = await import('../src/renderer/components/intel-driver-update-dialog.ts');
-    const release = { version: '32.0.101.8805', releaseDate: null, officialPageUrl: 'https://www.intel.com/unused-in-renderer' };
+    const release = { version: '32.0.101.8805', releaseDate: null, officialPageUrl: 'https://www.intel.com/unused-in-renderer', changelog: ['Improved graphics stability', '<script>remains text</script>'] };
     const root = (() => {
       const created = new FakeElement('div');
       created.setAttribute('id', 'modal-root');
@@ -165,6 +183,49 @@ test('Intel driver popup gates downloads, tracks matching progress, cancels, and
 
     showIntelDriverUpdateDialog('arc', '32.0.101.7000', release);
     download = button(root, 'Download');
+    const downloadTab = tab(root, 'Download');
+    const changelogTab = tab(root, 'Changelog');
+    const downloadPanel = find(root, (node) => node.attributes.id === 'intel-driver-download-panel');
+    const changelogPanel = find(root, (node) => node.attributes.id === 'intel-driver-changelog-panel');
+    assert.equal(downloadTab.attributes.role, 'tab');
+    assert.equal(changelogTab.attributes.role, 'tab');
+    assert.equal(downloadTab.attributes['aria-selected'], 'true');
+    assert.equal(downloadPanel.hidden, false);
+    assert.equal(changelogPanel.hidden, true);
+    let keyEvent = downloadTab.dispatch('keydown', { key: 'ArrowRight' });
+    assert.equal(keyEvent.defaultPrevented, true);
+    assert.equal(changelogTab.attributes['aria-selected'], 'true');
+    assert.equal(changelogTab.attributes.tabindex, '0');
+    assert.equal(changelogTab.focusCount, 1, 'ArrowRight moves focus to the next tab');
+    assert.equal(changelogPanel.hidden, false);
+    keyEvent = changelogTab.dispatch('keydown', { key: 'ArrowLeft' });
+    assert.equal(keyEvent.defaultPrevented, true);
+    assert.equal(downloadTab.attributes['aria-selected'], 'true');
+    assert.equal(downloadTab.focusCount, 1, 'ArrowLeft moves focus to the previous tab');
+    keyEvent = downloadTab.dispatch('keydown', { key: 'ArrowRight' });
+    assert.equal(changelogTab.attributes['aria-selected'], 'true');
+    keyEvent = changelogTab.dispatch('keydown', { key: 'ArrowRight' });
+    assert.equal(keyEvent.defaultPrevented, true);
+    assert.equal(downloadTab.attributes['aria-selected'], 'true', 'ArrowRight wraps to the first tab');
+    assert.equal(downloadPanel.hidden, false);
+    keyEvent = downloadTab.dispatch('keydown', { key: 'End' });
+    assert.equal(keyEvent.defaultPrevented, true);
+    assert.equal(changelogTab.attributes['aria-selected'], 'true', 'End selects the last tab');
+    assert.equal(changelogTab.focusCount, 3);
+    keyEvent = changelogTab.dispatch('keydown', { key: 'Home' });
+    assert.equal(keyEvent.defaultPrevented, true);
+    assert.equal(downloadTab.attributes['aria-selected'], 'true', 'Home selects the first tab');
+    assert.equal(downloadTab.focusCount, 3);
+    assert.match(changelogPanel.textContent, /Improved graphics stability/);
+    assert.match(changelogPanel.textContent, /<script>remains text<\/script>/, 'release highlights render as safe text');
+    await changelogTab.click();
+    assert.equal(changelogTab.attributes['aria-selected'], 'true');
+    assert.equal(changelogPanel.hidden, false);
+    assert.equal(downloadPanel.hidden, true);
+    await downloadTab.click();
+    assert.equal(downloadTab.attributes['aria-selected'], 'true');
+    assert.equal(downloadPanel.hidden, false);
+    assert.equal(changelogPanel.hidden, true);
     const license = find(root, (node) => node.tagName === 'INPUT' && node.attributes.type === 'checkbox');
     assert.ok(download.disabled, 'unchecked license disables Download');
     await download.click();
@@ -176,11 +237,17 @@ test('Intel driver popup gates downloads, tracks matching progress, cancels, and
     const downloadRequest = download.listeners.get('click')[0]({ target: download, currentTarget: download });
     assert.deepEqual(calls.start, [['arc', release.version, true]], 'only the explicit button starts download and passes acceptance');
     assert.equal(listeners.size, 1);
+    await changelogTab.click();
+    for (const listener of listeners) listener({ kind: 'arc', version: release.version, percent: 42 });
+    assert.equal(find(root, (node) => node.tagName === 'PROGRESS').value, 42, 'progress continues while the changelog tab is shown');
+    await downloadTab.click();
     const progress = find(root, (node) => node.tagName === 'PROGRESS');
+    assert.equal(license.checked, true, 'switching tabs preserves license acceptance');
+    assert.equal(progress.value, 42, 'switching tabs preserves the displayed progress');
     for (const listener of listeners) listener({ kind: 'pro', version: release.version, percent: 90 });
-    assert.equal(progress.value, 0, 'other driver kind progress is ignored');
+    assert.equal(progress.value, 42, 'other driver kind progress is ignored');
     for (const listener of listeners) listener({ kind: 'arc', version: '32.0.101.9999', percent: 70 });
-    assert.equal(progress.value, 0, 'other versions are ignored');
+    assert.equal(progress.value, 42, 'other versions are ignored');
     for (const listener of listeners) listener({ kind: 'arc', version: release.version, percent: 42 });
     assert.equal(progress.value, 42);
     assert.match(root.textContent, /42%/);
@@ -189,6 +256,9 @@ test('Intel driver popup gates downloads, tracks matching progress, cancels, and
     assert.equal(listeners.size, 0, 'progress listener is removed when download completes');
     assert.ok(button(root, 'Install Now'));
     assert.ok(button(root, 'Install Later'));
+    await changelogTab.click();
+    await downloadTab.click();
+    assert.ok(button(root, 'Install Now'), 'switching tabs preserves ready actions');
     await button(root, 'Install Later').click();
     assert.deepEqual(root.children, []);
 
@@ -203,7 +273,7 @@ test('Intel driver popup gates downloads, tracks matching progress, cancels, and
     assert.deepEqual(root.children, [], 'successful Install Now closes the popup');
 
     showIntelDriverUpdateDialog('pro', '32.0.101.7000', release);
-    const cancelDownload = find(root, (node) => node.tagName === 'BUTTON' && node.textContent === 'Download');
+    const cancelDownload = button(root, 'Download');
     const proLicense = find(root, (node) => node.tagName === 'INPUT');
     proLicense.checked = true;
     proLicense.dispatch('change');
@@ -221,6 +291,10 @@ test('Intel driver popup gates downloads, tracks matching progress, cancels, and
     assert.equal(listeners.size, 0, 'dismissing unsubscribes progress events');
     resolveStart({ downloaded: true, sizeBytes: 1 });
     await pendingStart;
+
+    showIntelDriverUpdateDialog('arc', '32.0.101.7000', { ...release, changelog: [] });
+    await tab(root, 'Changelog').click();
+    assert.match(root.textContent, /No release highlights are available\./, 'empty highlights have a clear fallback');
 
     const { confirmIntelDriverInstallTransition, intelDriverNoticeAction } = await import('../src/renderer/pages/dashboard.ts');
     assert.equal(intelDriverNoticeAction(false), 'New Driver Version Available');
