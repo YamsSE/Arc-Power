@@ -28,7 +28,7 @@ import { deviceHardwareKey } from '../pure/device.ts';
 import { dashboardDeviceStatusLabel, dashboardGpuOrder } from '../pure/dashboard.ts';
 import { dashboardRetailAssetPath } from '../pure/dashboard-retail-assets.ts';
 import { createIntelDriverCheckLoader, intelDriverKind, newerIntelRelease, type IntelDriverKind, type IntelDriverUpdateCheck } from '../pure/intel-driver-updates.ts';
-import { showIntelDriverUpdateDialog } from '../components/intel-driver-update-dialog.ts';
+import { confirmIntelDriverInstall, showIntelDriverUpdateDialog } from '../components/intel-driver-update-dialog.ts';
 import { aibOf, aibOfPnpDeviceId } from '../pure/aib.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
@@ -81,7 +81,7 @@ const DASHBOARD_PULSE: Array<{ id: DashboardPulseId; label: string; unit: string
 
 const DASHBOARD_GAUGE_RADIUS = 42;
 const DASHBOARD_HISTORY_LIMIT = TELEMETRY_HISTORY_POINTS;
-const intelDriverNoticeNodes = new Map<string, { row: HTMLElement; content: HTMLElement; kind: IntelDriverKind; installed: string; release?: import('../pure/intel-driver-updates.ts').IntelDriverRelease; downloaded: boolean; installing: boolean }>();
+const intelDriverNoticeNodes = new Map<string, { row: HTMLElement; content: HTMLElement; kind: IntelDriverKind; installed: string; release?: import('../pure/intel-driver-updates.ts').IntelDriverRelease; downloaded: boolean; confirming: boolean; installing: boolean }>();
 const loadIntelDriverCheck = createIntelDriverCheckLoader(() => api.intelDriverUpdateCheck());
 type IntelDownloadStatus = { downloaded: boolean; sizeBytes: number | null };
 type IntelDashboardApi = {
@@ -94,6 +94,28 @@ export function intelDriverNoticeAction(downloaded: boolean): string {
   return downloaded ? 'Install new Driver now' : 'New Driver Version Available';
 }
 
+export async function confirmIntelDriverInstallTransition(
+  entry: { downloaded: boolean; confirming: boolean; installing: boolean },
+  isCurrent: () => boolean,
+  confirm: () => Promise<boolean>,
+  install: () => void,
+  render: () => void,
+): Promise<boolean> {
+  if (!entry.downloaded || entry.confirming || entry.installing) return false;
+  entry.confirming = true;
+  render();
+  const confirmed = await confirm();
+  entry.confirming = false;
+  if (!confirmed || !isCurrent()) {
+    render();
+    return false;
+  }
+  entry.installing = true;
+  render();
+  install();
+  return true;
+}
+
 function renderIntelDriverAction(key: string): void {
   const entry = intelDriverNoticeNodes.get(key);
   const release = entry?.release;
@@ -104,8 +126,8 @@ function renderIntelDriverAction(key: string): void {
     el('button', {
       class: 'btn intel-driver-update-button', type: 'button', text: action,
       'aria-label': `${action}; Intel driver version ${release.version}`,
-      disabled: entry.installing,
-      onClick: () => {
+      disabled: entry.confirming || entry.installing,
+      onClick: async () => {
         if (!entry.downloaded) {
           showIntelDriverUpdateDialog(entry.kind, entry.installed, release, false, () => {
             for (const [noticeKey, notice] of intelDriverNoticeNodes) {
@@ -116,22 +138,27 @@ function renderIntelDriverAction(key: string): void {
           });
           return;
         }
-        if (entry.installing) return;
-        entry.installing = true;
-        renderIntelDriverAction(key);
-        void intelDashboardApi.intelDriverInstall(entry.kind, release.version).then(() => {
-          entry.installing = false;
-          renderIntelDriverAction(key);
-        }).catch(() => {
-          entry.installing = false;
-          void intelDashboardApi.intelDriverDownloadStatus(entry.kind, release.version).then((status) => {
-            if (intelDriverNoticeNodes.get(key) !== entry || entry.release !== release || !entry.row.isConnected) return;
-            entry.downloaded = status.downloaded;
-            renderIntelDriverAction(key);
-          }).catch(() => undefined);
-          toast('error', 'Intel driver installer failed', 'Could not launch the interactive installer. Your PC has not been changed. Please try again.');
-          renderIntelDriverAction(key);
-        });
+        await confirmIntelDriverInstallTransition(
+          entry,
+          () => intelDriverNoticeNodes.get(key) === entry && entry.row.isConnected && entry.release === release,
+          confirmIntelDriverInstall,
+          () => {
+            void intelDashboardApi.intelDriverInstall(entry.kind, release.version).then(() => {
+              entry.installing = false;
+              renderIntelDriverAction(key);
+            }).catch(() => {
+              entry.installing = false;
+              void intelDashboardApi.intelDriverDownloadStatus(entry.kind, release.version).then((status) => {
+                if (intelDriverNoticeNodes.get(key) !== entry || entry.release !== release || !entry.row.isConnected) return;
+                entry.downloaded = status.downloaded;
+                renderIntelDriverAction(key);
+              }).catch(() => undefined);
+              toast('error', 'Intel driver installer failed', 'Could not launch the interactive installer. Your PC has not been changed. Please try again.');
+              renderIntelDriverAction(key);
+            });
+          },
+          () => renderIntelDriverAction(key),
+        );
       },
     }),
   ]));
@@ -700,6 +727,7 @@ function dashboardGpuCard(device: AppState['devices'][number], index: number, st
       kind: intelKind,
       installed: installedDriver,
       downloaded: false,
+      confirming: false,
       installing: false,
     };
     intelDriverNoticeNodes.set(key, entry);

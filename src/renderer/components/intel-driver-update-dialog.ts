@@ -13,6 +13,44 @@ type DriverDownloadApi = {
 };
 const driverApi = api as typeof api & DriverDownloadApi;
 
+export function confirmIntelDriverInstall(): Promise<boolean> {
+  const root = document.getElementById(ROOT_ID) ?? (() => {
+    const created = el('div', { id: ROOT_ID });
+    document.body.append(created);
+    return created;
+  })();
+  root.replaceChildren();
+  return new Promise((resolve) => {
+    let settled = false;
+    let overlay: HTMLElement | null = null;
+    let observer: MutationObserver | null = null;
+    const finish = (confirmed: boolean) => {
+      if (settled) return;
+      settled = true;
+      observer?.disconnect();
+      observer = null;
+      if (overlay && root.contains(overlay)) root.replaceChildren();
+      resolve(confirmed);
+    };
+    const cancel = el('button', { class: 'btn', type: 'button', text: 'Cancel', onClick: () => finish(false) });
+    const install = el('button', { class: 'btn btn-primary', type: 'button', text: 'Install Driver', onClick: () => finish(true) });
+    const confirmationOverlay = el('div', { class: 'modal-overlay' }, [
+      el('div', { class: 'modal intel-driver-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'intel-driver-install-confirm-title', 'aria-describedby': 'intel-driver-install-confirm-description' }, [
+        el('h2', { class: 'modal-title', id: 'intel-driver-install-confirm-title', text: 'Install Intel Driver?' }),
+        el('p', { class: 'modal-text', id: 'intel-driver-install-confirm-description', text: 'The Intel interactive installer will open. Arc Power will close after it launches.' }),
+        el('div', { class: 'modal-actions intel-driver-dialog-actions' }, [cancel, install]),
+      ]),
+    ]);
+    overlay = confirmationOverlay;
+    root.append(confirmationOverlay);
+    observer = new MutationObserver((records) => {
+      if (records.some((record) => Array.from(record.removedNodes).includes(confirmationOverlay))) finish(false);
+    });
+    observer.observe(root, { childList: true });
+    cancel.focus();
+  });
+}
+
 export function showIntelDriverUpdateDialog(
   kind: IntelDriverKind,
   installed: string,
