@@ -54,6 +54,7 @@ test('Intel driver popup gates downloads, tracks matching progress, cancels, and
   const originalDocument = globalThis.document;
   const originalWindow = globalThis.window;
   const body = new FakeElement('body');
+  const documentListeners = new Map();
   const listeners = new Set();
   const calls = { start: [], cancel: [], install: [], opened: [] };
   let resolveStart;
@@ -74,7 +75,13 @@ test('Intel driver popup gates downloads, tracks matching progress, cancels, and
   };
   Object.defineProperty(globalThis, 'document', {
     configurable: true,
-    value: { body, createElement: (tagName) => new FakeElement(tagName), getElementById: (id) => body.children.find((child) => child.attributes.id === id) ?? null },
+    value: {
+      body,
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: (id) => body.children.find((child) => child.attributes.id === id) ?? null,
+      addEventListener: (name, listener) => documentListeners.set(name, [...(documentListeners.get(name) ?? []), listener]),
+      dispatch: (name, event) => { for (const listener of documentListeners.get(name) ?? []) listener(event); },
+    },
   });
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { arcPower: api } });
 
@@ -84,6 +91,18 @@ test('Intel driver popup gates downloads, tracks matching progress, cancels, and
     showIntelDriverUpdateDialog('arc', '32.0.101.7000', release);
     const root = body.children.find((child) => child.attributes.id === 'modal-root');
     let download = button(root, 'Download');
+    const overlay = find(root, (node) => node.className === 'modal-overlay');
+    await overlay.click();
+    assert.ok(button(root, 'Download'), 'backdrop click leaves the popup open');
+    assert.deepEqual(calls.cancel, [], 'backdrop click does not cancel a transfer');
+    globalThis.document.dispatch('keydown', { key: 'Escape' });
+    assert.ok(button(root, 'Download'), 'Escape leaves the popup open');
+    assert.deepEqual(calls.cancel, [], 'Escape does not cancel a transfer');
+    await button(root, 'Cancel').click();
+    assert.deepEqual(root.children, [], 'explicit Cancel closes the popup');
+
+    showIntelDriverUpdateDialog('arc', '32.0.101.7000', release);
+    download = button(root, 'Download');
     const license = find(root, (node) => node.tagName === 'INPUT' && node.attributes.type === 'checkbox');
     assert.ok(download.disabled, 'unchecked license disables Download');
     await download.click();
@@ -128,6 +147,13 @@ test('Intel driver popup gates downloads, tracks matching progress, cancels, and
     proLicense.dispatch('change');
     const pendingStart = cancelDownload.listeners.get('click')[0]({ target: cancelDownload, currentTarget: cancelDownload });
     assert.equal(listeners.size, 1);
+    const activeOverlay = find(root, (node) => node.className === 'modal-overlay');
+    await activeOverlay.click();
+    assert.ok(button(root, 'Cancel download'), 'backdrop click leaves the active download dialog open');
+    assert.deepEqual(calls.cancel, [], 'backdrop click does not cancel the active transfer');
+    globalThis.document.dispatch('keydown', { key: 'Escape' });
+    assert.ok(button(root, 'Cancel download'), 'Escape leaves the active download dialog open');
+    assert.deepEqual(calls.cancel, [], 'Escape does not cancel the active transfer');
     await button(root, 'Cancel download').click();
     assert.deepEqual(calls.cancel, ['pro'], 'dismissing during download cancels the backend operation');
     assert.equal(listeners.size, 0, 'dismissing unsubscribes progress events');

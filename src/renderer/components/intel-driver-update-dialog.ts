@@ -121,7 +121,7 @@ export function showIntelDriverUpdateDialog(
     renderReadyActions();
   } else actions.append(cancel, download);
 
-  root.append(el('div', { class: 'modal-overlay', onClick: (event: MouseEvent) => { if (event.target === event.currentTarget) close(); } }, [
+  root.append(el('div', { class: 'modal-overlay' }, [
     el('div', { class: 'modal intel-driver-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'intel-driver-dialog-title', 'aria-describedby': 'intel-driver-dialog-description' }, [
       el('h2', { class: 'modal-title', id: 'intel-driver-dialog-title', text: 'Intel Driver Update' }),
       el('p', { class: 'modal-text intel-driver-dialog-question', id: 'intel-driver-dialog-description', text: 'Review and download the Intel driver update.' }),
