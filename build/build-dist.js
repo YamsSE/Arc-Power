@@ -12,8 +12,6 @@ const dist = path.join(root, 'dist');
 const installer = path.join(dist, 'Arc-Power_Installer.exe');
 const portable = path.join(dist, 'Arc-Power_Portable.exe');
 const builderCli = path.join(root, 'node_modules', 'electron-builder', 'cli.js');
-const rceditCli = path.join(root, 'node_modules', 'electron-winstaller', 'vendor', 'rcedit.exe');
-const iconPath = path.join(root, 'build', 'icon.ico');
 const unpacked = path.join(dist, 'win-unpacked');
 const tempConfig = path.join(dist, 'build-dist-config.json');
 const packageJson = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -76,16 +74,9 @@ function runBuilder(target, extraArgs = []) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-function patchUnpackedExecutable() {
+function validateUnpackedExecutable() {
   const target = path.join(unpacked, 'Arc Power.exe');
-  if (!existsSync(target)) throw new Error(`missing packaged executable for icon patch: ${target}`);
-  const result = spawnSync(rceditCli, [target, '--set-icon', iconPath], {
-    cwd: root,
-    stdio: 'inherit',
-    windowsHide: true,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`rcedit failed for ${target} with exit code ${result.status}`);
+  if (!existsSync(target)) throw new Error(`missing packaged executable: ${target}`);
   validateWindowsExecutable(target);
 }
 
@@ -99,7 +90,7 @@ function validateWindowsExecutable(target) {
   if (!/<requestedExecutionLevel\b[^>]*\blevel="requireAdministrator"/i.test(text)) {
     throw new Error(`packaged executable is not administrator-elevated: ${target}`);
   }
-  // rcedit writes a five-image RT_GROUP_ICON resource from build/icon.ico.
+  // Electron Builder must provide a five-image RT_GROUP_ICON resource.
   // This catches a generic Electron/document resource before it reaches the
   // release folder while remaining independent of Windows' icon cache.
   const groupIconHeader = Buffer.from([0x00, 0x00, 0x01, 0x00, 0x05, 0x00]);
@@ -108,81 +99,9 @@ function validateWindowsExecutable(target) {
   }
 }
 
-function peImageEnd(buffer) {
-  if (buffer.length < 0x40 || buffer.readUInt16LE(0) !== 0x5a4d) {
-    throw new Error('portable wrapper does not start with a DOS header');
-  }
-  const peOffset = buffer.readUInt32LE(0x3c);
-  if (peOffset < 0x40 || peOffset + 24 > buffer.length || buffer.toString('ascii', peOffset, peOffset + 4) !== 'PE\0\0') {
-    throw new Error('portable wrapper does not contain a valid PE header');
-  }
-  const sectionCount = buffer.readUInt16LE(peOffset + 6);
-  const optionalHeaderSize = buffer.readUInt16LE(peOffset + 20);
-  const sectionsStart = peOffset + 24 + optionalHeaderSize;
-  if (sectionsStart + sectionCount * 40 > buffer.length) throw new Error('portable wrapper section table is truncated');
-  let end = sectionsStart + sectionCount * 40;
-  for (let index = 0; index < sectionCount; index += 1) {
-    const section = sectionsStart + index * 40;
-    const rawSize = buffer.readUInt32LE(section + 16);
-    const rawPointer = buffer.readUInt32LE(section + 20);
-    end = Math.max(end, rawPointer + rawSize);
-  }
-  return end;
-}
-
-// electron-builder signs the portable wrapper immediately before this build
-// script patches its PE stub icon. Windows can keep the signed file open for a
-// short handoff window, so a single write is racy even though the builder has
-// already returned. Retry only transient sharing/permission locks; genuine
-// build errors still fail immediately and remain visible to the caller.
-const FILE_LOCK_RETRIES = 20;
-const FILE_LOCK_RETRY_MS = 250;
-const syncSleep = (milliseconds) => {
-  const signal = new Int32Array(new SharedArrayBuffer(4));
-  Atomics.wait(signal, 0, 0, milliseconds);
-};
-function withFileLockRetry(operation) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return operation();
-    } catch (error) {
-      const retryable = error?.code === 'EBUSY' || error?.code === 'EPERM' || error?.code === 'EACCES';
-      if (!retryable || attempt >= FILE_LOCK_RETRIES) throw error;
-      syncSleep(FILE_LOCK_RETRY_MS);
-    }
-  }
-}
-
-function patchPortableWrapperIcon(artifactPath) {
-  // A portable EXE is an NSIS wrapper: its PE stub is followed by an
-  // integrity-sensitive installer payload. rcedit must receive only the PE
-  // stub; editing the complete wrapper destroys the NSIS payload and leaves
-  // Windows with a broken or generic shell entry.
-  const original = withFileLockRetry(() => readFileSync(artifactPath));
-  const imageEnd = peImageEnd(original);
-  if (imageEnd <= 0 || imageEnd >= original.length) throw new Error(`portable wrapper has no NSIS payload: ${artifactPath}`);
-  const stubPath = `${artifactPath}.icon-stub.tmp`;
-  try {
-    writeFileSync(stubPath, original.subarray(0, imageEnd));
-    const result = spawnSync(rceditCli, [stubPath, '--set-icon', iconPath], {
-      cwd: root,
-      stdio: 'inherit',
-      windowsHide: true,
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(`rcedit failed for portable stub ${artifactPath} with exit code ${result.status}`);
-    const brandedStub = readFileSync(stubPath);
-    if (brandedStub.length > imageEnd) throw new Error(`branded portable stub grew into the NSIS payload: ${artifactPath}`);
-    const patchedWrapper = Buffer.concat([
-      brandedStub,
-      Buffer.alloc(imageEnd - brandedStub.length),
-      original.subarray(imageEnd),
-    ]);
-    withFileLockRetry(() => writeFileSync(artifactPath, patchedWrapper));
-    validateWindowsExecutable(artifactPath);
-  } finally {
-    rmSync(stubPath, { force: true });
-  }
+function validatePortableArtifact(artifactPath) {
+  if (!existsSync(artifactPath)) throw new Error(`electron-builder did not produce ${artifactPath}`);
+  validateWindowsExecutable(artifactPath);
 }
 
 function buildUnpackedApp() {
@@ -192,25 +111,22 @@ function buildUnpackedApp() {
   } finally {
     rmSync(tempConfig, { force: true });
   }
-  patchUnpackedExecutable();
+  validateUnpackedExecutable();
 }
 
 function buildPortableArtifact(artifactName) {
   writeBuildConfig(artifactName);
   try {
     // Build the wrapper from the already-branded unpacked directory. A
-    // Portable wrapper embeds its own copy of the application; patching
-    // win-unpacked after creating the wrapper leaves that embedded copy with
-    // electron-builder's placeholder executable icon. The wrapper itself is
-    // branded below through a PE-stub-only edit so its NSIS payload remains
-    // intact.
+    // Portable wrapper embeds its own copy of the application. The generated
+    // configuration supplies the application icon and administrator
+    // manifest, so validate those resources directly after packaging.
     runBuilder('portable', ['--prepackaged', unpacked]);
   } finally {
     rmSync(tempConfig, { force: true });
   }
   const artifactPath = path.join(dist, artifactName);
-  if (!existsSync(artifactPath)) throw new Error(`electron-builder did not produce ${artifactPath}`);
-  patchPortableWrapperIcon(artifactPath);
+  validatePortableArtifact(artifactPath);
 }
 
 buildUnpackedApp();
