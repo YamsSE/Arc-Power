@@ -115,6 +115,106 @@ test('streams download progress, stores under appData, and enforces declared con
   finally { await bad.cleanup(); }
 });
 
+test('deletes only the exact downloaded installer and leaves its directory and other files', async () => {
+  const f = await fixture(fixtureFetcher());
+  const dir = path.join(f.appDataPath, 'ArcPower', 'DriverDownloads', 'arc', arcVersion);
+  const target = path.join(dir, 'gfx_win_101.exe');
+  const other = path.join(dir, 'notes.txt');
+  try {
+    await f.service.startDownload('arc', arcVersion);
+    await fs.promises.writeFile(other, 'keep this file');
+    assert.deepEqual(await f.service.deleteDownloaded('arc', arcVersion), { deleted: true });
+    assert.deepEqual(await f.service.deleteDownloaded('arc', arcVersion), { deleted: true }, 'deletion is idempotent');
+    await assert.rejects(() => fs.promises.lstat(target), { code: 'ENOENT' });
+    assert.equal(await fs.promises.readFile(other, 'utf8'), 'keep this file');
+    assert.ok((await fs.promises.stat(dir)).isDirectory());
+    assert.deepEqual(await f.service.getStatus('arc', arcVersion), { downloaded: false, sizeBytes: null });
+    await assert.rejects(() => f.service.deleteDownloaded('other', arcVersion), /invalid kind/);
+    await assert.rejects(() => f.service.deleteDownloaded('arc', '../other'), /invalid Intel driver version/);
+  } finally { await f.cleanup(); }
+});
+
+test('refuses unsafe or non-regular installer targets and symlinked ancestors', async (t) => {
+  const f = await fixture(fixtureFetcher());
+  const dir = path.join(f.appDataPath, 'ArcPower', 'DriverDownloads', 'arc', arcVersion);
+  const target = path.join(dir, 'gfx_win_101.exe');
+  try {
+    await fs.promises.mkdir(dir, { recursive: true });
+    await fs.promises.mkdir(target);
+    await assert.rejects(() => f.service.deleteDownloaded('arc', arcVersion), /regular file/);
+    await fs.promises.rm(target, { recursive: true });
+    const outside = path.join(f.root, 'outside.exe');
+    await fs.promises.writeFile(outside, exe);
+    let targetLinkCreated = true;
+    try { await fs.promises.symlink(outside, target, 'file'); }
+    catch (error) {
+      if (!['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) throw error;
+      targetLinkCreated = false;
+    }
+    if (targetLinkCreated) {
+      await assert.rejects(() => f.service.deleteDownloaded('arc', arcVersion), /reparse|symbolic|unsafe/i);
+      await fs.promises.unlink(target);
+    }
+    await fs.promises.rm(path.join(f.appDataPath, 'ArcPower'), { recursive: true });
+    const outsideDir = path.join(f.root, 'outside-dir');
+    await fs.promises.mkdir(outsideDir);
+    try { await fs.promises.symlink(outsideDir, path.join(f.appDataPath, 'ArcPower'), 'junction'); }
+    catch (error) {
+      if (!['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) throw error;
+      t.skip('junction creation is unavailable on this host');
+      return;
+    }
+    await assert.rejects(() => f.service.deleteDownloaded('arc', arcVersion), /reparse|symbolic/i);
+  } finally { await f.cleanup(); }
+});
+
+test('deletion cannot race active downloads or installs, and duplicate installs are rejected', async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'arc-intel-delete-race-'));
+  const appDataPath = path.join(root, 'appdata'); await fs.promises.mkdir(appDataPath);
+  let releasePage;
+  let pageRequested;
+  const requested = new Promise((resolve) => { pageRequested = resolve; });
+  const pageGate = new Promise((resolve) => { releasePage = resolve; });
+  const fetchImpl = async (url) => {
+    if (url.includes('/download/')) {
+      pageRequested();
+      await pageGate;
+      return response({ body: html(arcVersion), url });
+    }
+    return response({ body: exe, url });
+  };
+  const service = createIntelDriverDownloadService({ appDataPath, fetchImpl, appApi: { quit() {} }, intelDriverUpdateService: releaseLookup, spawnProcess() { const child = new EventEmitter(); child.unref = () => {}; queueMicrotask(() => child.emit('spawn')); return child; } });
+  try {
+    const downloading = service.startDownload('arc', arcVersion);
+    await requested;
+    await assert.rejects(() => service.deleteDownloaded('arc', arcVersion), /active/);
+    releasePage();
+    await downloading;
+    assert.deepEqual(await service.deleteDownloaded('arc', arcVersion), { deleted: true });
+    const dir = path.join(appDataPath, 'ArcPower', 'DriverDownloads', 'arc', arcVersion);
+    await assert.rejects(() => fs.promises.stat(path.join(dir, 'gfx_win_101.exe')), { code: 'ENOENT' });
+  } finally { releasePage(); await fs.promises.rm(root, { recursive: true, force: true }); }
+
+  const f = await fixture(fixtureFetcher());
+  let installPageRequested;
+  let releaseInstallPage;
+  const installRequested = new Promise((resolve) => { installPageRequested = resolve; });
+  const installGate = new Promise((resolve) => { releaseInstallPage = resolve; });
+  try {
+    await f.service.startDownload('arc', arcVersion);
+    const installService = createIntelDriverDownloadService({ appDataPath: f.appDataPath, fetchImpl: async (url) => {
+      if (url.includes('/download/')) { installPageRequested(); await installGate; }
+      return url.includes('/download/') ? response({ body: html(arcVersion), url }) : response({ body: exe, url });
+    }, appApi: { quit() {} }, intelDriverUpdateService: releaseLookup, spawnProcess() { const child = new EventEmitter(); child.unref = () => {}; queueMicrotask(() => child.emit('spawn')); return child; } });
+    const installing = installService.installDownloaded('arc', arcVersion);
+    await installRequested;
+    await assert.rejects(() => installService.deleteDownloaded('arc', arcVersion), /active/);
+    await assert.rejects(() => installService.installDownloaded('arc', arcVersion), /already active/);
+    releaseInstallPage();
+    assert.deepEqual(await installing, { launched: true });
+  } finally { releaseInstallPage?.(); await f.cleanup(); }
+});
+
 test('a crash-left partial is safely replaced by a fresh download', async () => {
   const f = await fixture(fixtureFetcher());
   const target = path.join(f.appDataPath, 'ArcPower', 'DriverDownloads', 'arc', arcVersion, 'gfx_win_101.exe');

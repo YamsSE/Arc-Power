@@ -504,17 +504,27 @@ html, body {
 .sidebar-link:hover { background: var(--bg-inset); color: var(--text); }
 .sidebar-link.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 
-.driver-library-page { display: grid; gap: 18px; }
+.driver-library-page { display: grid; gap: 18px; min-height: 0; }
 .driver-library-catalog-note { margin: 3px 0 0; color: var(--text-muted); font-size: 11px; }
-.driver-library-layout { display: grid; grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.6fr); gap: 16px; align-items: start; }
-.driver-library-list, .driver-library-details { min-width: 0; padding: 18px; }
+.driver-library-layout { display: grid; grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.6fr); gap: 16px; height: clamp(300px, calc(100vh - 340px), 720px); min-height: 0; align-items: stretch; }
+.driver-library-list, .driver-library-details { min-width: 0; min-height: 0; padding: 18px; }
+.driver-library-list { display: grid; grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; }
 .driver-library-list .card-title { margin: 0 0 12px; }
-.driver-library-search { width: 100%; margin-bottom: 12px; }
+.driver-library-search { appearance: none; width: 100%; min-width: 0; min-height: 36px; margin-bottom: 12px; padding: 7px 10px; border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border-strong)); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text); font: 500 12px var(--font); transition: border-color .12s, box-shadow .12s, background-color .12s; }
+.driver-library-search::placeholder { color: var(--text-muted); opacity: 1; }
+.driver-library-search:hover { border-color: var(--accent); }
+.driver-library-search:focus-visible { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent); }
+.driver-library-release-list { min-height: 0; overflow-y: auto; padding-right: 4px; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--accent-strong) var(--bg-inset); }
+.driver-library-release-list:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.driver-library-details { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--accent-strong) var(--bg-inset); }
 .driver-library-release { display: grid; width: 100%; gap: 5px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .driver-library-release + .driver-library-release { margin-top: 8px; }
 .driver-library-release:hover, .driver-library-release.is-selected { border-color: var(--accent); background: var(--accent-soft); }
 .driver-library-release span, .driver-library-empty { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .driver-library-release-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.driver-library-release-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; flex: 0 0 auto; }
+.driver-library-delete-download { white-space: nowrap; }
+.driver-library-delete-error { margin: 10px 0 0; font-size: 12px; }
 .driver-library-release-heading h2, .driver-library-changelog h3 { margin: 0 0 8px; font-size: 16px; }
 .driver-library-release-heading .page-subtitle { margin: 0; }
 .driver-library-changelog { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border); }
@@ -532,7 +542,10 @@ html, body {
 .driver-library-launch:hover, .driver-library-launch:focus-visible { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .driver-library-launch .sidebar-icon { width: 15px; height: 15px; }
 .rebar-pill-compact { font-size: 10px; padding: 1px 6px; line-height: 1.35; }
-@media (max-width: 760px) { .driver-library-layout { grid-template-columns: 1fr; } .driver-library-release-heading { flex-direction: column; } }
+@media (max-width: 760px) {
+  .driver-library-layout { grid-template-columns: 1fr; grid-template-rows: minmax(180px, .75fr) minmax(240px, 1.25fr); height: clamp(460px, calc(100vh - 300px), 840px); }
+  .driver-library-release-heading { flex-direction: column; }
+}
 
 /* M4-H/M-recording: the sidebar footer keeps the global capture status above
    the GitHub + Settings row. The GitHub icon uses the same mask-image pattern

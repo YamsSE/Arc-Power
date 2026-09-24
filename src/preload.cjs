@@ -100,6 +100,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   intelDriverDownloadStatus: (kind, version) => ipcRenderer.invoke('intel-driver-download-status', kind, version),
   intelDriverDownloadStart: (kind, version, acceptedIntelLicense) => ipcRenderer.invoke('intel-driver-download-start', kind, version, acceptedIntelLicense),
   intelDriverDownloadCancel: (kind) => ipcRenderer.invoke('intel-driver-download-cancel', kind),
+  intelDriverDownloadDelete: (kind, version) => ipcRenderer.invoke('intel-driver-download-delete', kind, version),
   intelDriverInstall: (kind, version) => ipcRenderer.invoke('intel-driver-install', kind, version),
   driverInfo: () => ipcRenderer.invoke('driver-info'),
   appVersion: () => ipcRenderer.invoke('app-version'),

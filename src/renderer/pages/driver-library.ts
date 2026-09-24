@@ -10,6 +10,7 @@ type DriverLibraryApi = {
   intelDriverLibrary(kind: IntelDriverKind): Promise<{ versions: string[]; partial: boolean }>;
   intelDriverRelease(kind: IntelDriverKind, version: string): Promise<IntelDriverRelease>;
   intelDriverDownloadStatus(kind: IntelDriverKind, version: string): Promise<{ downloaded: boolean; sizeBytes: number | null }>;
+  intelDriverDownloadDelete(kind: IntelDriverKind, version: string): Promise<{ deleted: true }>;
 };
 const libraryApi = api as typeof api & DriverLibraryApi;
 
@@ -41,6 +42,9 @@ export const driverLibraryPage: Page = {
     let selected: IntelDriverRelease | null = null;
     let selectedVersion: string | null = null;
     let downloaded = false;
+    let downloadStatusLoaded = false;
+    let deletingDownloadVersion: string | null = null;
+    let deleteErrorVersion: string | null = null;
     let requestId = 0;
     let detailsLoading = false;
     let detailsError = false;
@@ -70,13 +74,18 @@ export const driverLibraryPage: Page = {
 
     const updateDownloaded = (release: IntelDriverRelease) => {
       downloaded = false;
+      downloadStatusLoaded = false;
+      deleteErrorVersion = null;
+      renderDetails();
       void libraryApi.intelDriverDownloadStatus(kind!, release.version).then((status) => {
         if (selected !== release) return;
         downloaded = status.downloaded;
+        downloadStatusLoaded = true;
         renderDetails();
       }).catch(() => {
         if (selected !== release) return;
         downloaded = false;
+        downloadStatusLoaded = true;
         renderDetails();
       });
     };
@@ -85,6 +94,8 @@ export const driverLibraryPage: Page = {
       selectedVersion = version;
       selected = releaseCache.get(version) ?? null;
       downloaded = false;
+      downloadStatusLoaded = false;
+      deleteErrorVersion = null;
       detailsLoading = !selected;
       detailsError = false;
       const request = ++requestId;
@@ -120,13 +131,63 @@ export const driverLibraryPage: Page = {
         return;
       }
       const release = selected;
+      const releaseKind = kind;
+      const deleting = deletingDownloadVersion === release.version;
+      const deleteBusy = deletingDownloadVersion !== null;
+      const actions = el('div', { class: 'driver-library-release-actions' });
+      if (!downloadStatusLoaded) {
+        actions.append(el('button', {
+          class: 'btn btn-primary', type: 'button', disabled: true, text: 'Checking download…',
+        }));
+      } else {
+        actions.append(el('button', {
+          class: 'btn btn-primary', type: 'button',
+          disabled: deleteBusy,
+          text: downloaded ? 'Install downloaded driver' : 'Download and Install',
+          onClick: () => showIntelDriverUpdateDialog(releaseKind!, selectedInstalledVersion(), release, downloaded, () => {
+            if (selected === release) {
+              downloaded = true;
+              downloadStatusLoaded = true;
+              renderDetails();
+            }
+          }),
+        }));
+        if (downloaded) {
+          actions.append(el('button', {
+            class: 'btn btn-ghost btn-sm btn-danger-text driver-library-delete-download',
+            type: 'button', disabled: deleteBusy,
+            title: 'Delete the downloaded installer file. This does not uninstall the driver.',
+            'aria-label': `Delete the downloaded installer file for Intel driver ${release.version}`,
+            text: deleting ? 'Deleting…' : 'Delete Download',
+            onClick: () => {
+              if (!releaseKind || deletingDownloadVersion) return;
+              deletingDownloadVersion = release.version;
+              deleteErrorVersion = null;
+              renderDetails();
+              void libraryApi.intelDriverDownloadDelete(releaseKind, release.version).then((result) => {
+                if (result?.deleted !== true) throw new Error('The downloaded driver was not deleted');
+                if (selected === release) {
+                  downloaded = false;
+                  downloadStatusLoaded = true;
+                }
+              }).catch(() => {
+                if (selected === release) deleteErrorVersion = release.version;
+              }).finally(() => {
+                if (deletingDownloadVersion === release.version) deletingDownloadVersion = null;
+                if (selected === release) renderDetails();
+              });
+            },
+          }));
+        }
+      }
       details.append(
         el('div', { class: 'driver-library-release-heading' }, [
           el('div', {}, [el('h2', { text: `Intel Graphics Driver ${release.version}` }), el('p', { class: 'page-subtitle', text: `${releaseDate(release.releaseDate)} · ${sizeLabel(release.sizeBytes)}` })]),
-          el('button', { class: 'btn btn-primary', type: 'button', text: downloaded ? 'Install downloaded driver' : 'Download and Install', onClick: () => showIntelDriverUpdateDialog(kind!, selectedInstalledVersion(), release, downloaded, () => {
-            if (selected === release) { downloaded = true; renderDetails(); }
-          }) }),
+          actions,
         ]),
+        ...(deleteErrorVersion === release.version
+          ? [el('p', { class: 'driver-library-delete-error text-error', role: 'status', text: 'Could not delete the downloaded file. Please try again.' })]
+          : []),
         el('section', { class: 'driver-library-changelog' }, [
           el('h3', { text: 'Intel highlights and changelog' }),
           (release.changelogSections?.length || release.changelog.length)
@@ -165,35 +226,40 @@ export const driverLibraryPage: Page = {
         },
       }) as HTMLInputElement;
       list.append(search);
+      const versionScroller = el('div', {
+        class: 'driver-library-release-list', role: 'region', tabindex: 0,
+        'aria-label': 'Available driver versions',
+      });
+      list.append(versionScroller);
       if (restoreSearchFocus) {
         search.focus();
         search.setSelectionRange(caret, caret);
       }
       if (catalogError) {
-        list.append(el('p', { class: 'driver-library-empty text-error', text: 'Intel’s driver catalog is unavailable. Check your connection and reopen Driver Library to try again.' }));
+        versionScroller.append(el('p', { class: 'driver-library-empty text-error', text: 'Intel’s driver catalog is unavailable. Check your connection and reopen Driver Library to try again.' }));
         details.append(el('p', { class: 'driver-library-empty', text: 'Release details are unavailable.' }));
         return;
       }
       if (catalogLoading) {
-        list.append(el('p', { class: 'driver-library-empty', text: 'Loading Intel driver releases…' }));
+        versionScroller.append(el('p', { class: 'driver-library-empty', text: 'Loading Intel driver releases…' }));
         details.append(el('p', { class: 'driver-library-empty', text: 'Release details will appear when the catalog loads.' }));
         return;
       }
       if (catalogPartial) {
-        list.append(el('p', { class: 'driver-library-empty text-error', text: 'Some Intel version entries could not be read. This list may be incomplete.' }));
+        versionScroller.append(el('p', { class: 'driver-library-empty text-error', text: 'Some Intel version entries could not be read. This list may be incomplete.' }));
       }
       if (!versions.length) {
-        list.append(el('p', { class: 'driver-library-empty', text: 'No driver releases are currently available for this GPU family.' }));
+        versionScroller.append(el('p', { class: 'driver-library-empty', text: 'No driver releases are currently available for this GPU family.' }));
         details.append(el('p', { class: 'driver-library-empty', text: 'No release is available to select.' }));
         return;
       }
       const filteredVersions = versions.filter((version) => version.toLowerCase().includes(searchQuery.trim().toLowerCase()));
       if (!filteredVersions.length && searchQuery.trim()) {
-        list.append(el('p', { class: 'driver-library-empty', text: 'No driver versions match your search.' }));
+        versionScroller.append(el('p', { class: 'driver-library-empty', text: 'No driver versions match your search.' }));
       }
       for (const version of filteredVersions) {
         const isSelected = selectedVersion === version;
-        list.append(el('button', {
+        versionScroller.append(el('button', {
           class: `driver-library-release${isSelected ? ' is-selected' : ''}`,
           type: 'button', 'aria-pressed': String(isSelected),
           onClick: () => loadRelease(version),

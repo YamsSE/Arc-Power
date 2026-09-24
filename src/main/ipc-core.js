@@ -1154,6 +1154,7 @@ export async function resolveBootDeviceId(backend, store) {
  *     getStatus: (kind: 'arc'|'pro', version: string) => Promise<object>,
  *     startDownload: (kind: 'arc'|'pro', version: string, onProgress: (progress: object) => void) => Promise<object>,
  *     cancelDownload: (kind: 'arc'|'pro') => Promise<object>,
+ *     deleteDownloaded: (kind: 'arc'|'pro', version: string) => Promise<{ deleted: true }>,
  *     installDownloaded: (kind: 'arc'|'pro', version: string) => Promise<object>,
  *   },
  *   sysinfo?: { get: () => Promise<unknown> },  // M4-D: CIM system info (CPU/RAM/video controllers)
@@ -2804,6 +2805,13 @@ export function createIpcHandlers({
       if (kind !== 'arc' && kind !== 'pro') throw new Error('intel-driver-download-cancel: invalid kind');
       if (!intelDriverDownloadService) throw new Error('Intel driver downloads are unavailable');
       return intelDriverDownloadService.cancelDownload(kind);
+    },
+
+    'intel-driver-download-delete': async (kind, version, ...args) => {
+      if (args.length !== 0) throw new Error('intel-driver-download-delete takes two payloads');
+      validateIntelDriverDownloadIdentity(kind, version, 'intel-driver-download-delete');
+      if (!intelDriverDownloadService) throw new Error('Intel driver downloads are unavailable');
+      return intelDriverDownloadService.deleteDownloaded(kind, version);
     },
 
     'intel-driver-install': async (kind, version, ...args) => {

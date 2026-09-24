@@ -1264,6 +1264,32 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!routeCheckData.deviceId || libraryRouteData.routeId !== routeCheckData.deviceId || libraryRouteData.pageId !== routeCheckData.deviceId) {
     fail(`M31: Driver Library lost its card GPU context: ${libraryRoute}`);
   }
+  const libraryPresentation = await js(`(() => {
+    const search = document.querySelector('.driver-library-search');
+    const releaseList = document.querySelector('.driver-library-release-list');
+    const layout = document.querySelector('.driver-library-layout');
+    if (!search || !releaseList || !layout) return JSON.stringify({ present: false });
+    const probe = document.createElement('div');
+    probe.style.backgroundColor = 'var(--control-bg)';
+    document.body.append(probe);
+    const expectedSearchBackground = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const searchStyle = getComputedStyle(search);
+    const listStyle = getComputedStyle(releaseList);
+    const layoutHeight = Number.parseFloat(getComputedStyle(layout).height);
+    return JSON.stringify({
+      present: true,
+      themedSearch: searchStyle.backgroundColor === expectedSearchBackground,
+      scrollableList: listStyle.overflowY === 'auto',
+      boundedLayout: Number.isFinite(layoutHeight) && layoutHeight > 0 && layoutHeight <= 840,
+      layoutHeight,
+    });
+  })()`);
+  const libraryPresentationData = JSON.parse(libraryPresentation);
+  if (!libraryPresentationData.present || !libraryPresentationData.themedSearch || !libraryPresentationData.scrollableList || !libraryPresentationData.boundedLayout) {
+    fail(`M31: Driver Library search and release list are not themed and bounded: ${libraryPresentation}`);
+  }
+  step('m31-library-presentation', `Driver Library has a themed search field and a bounded scrolling release list (${libraryPresentationData.layoutHeight}px)`);
   await js(`location.hash = '#/dashboard'`);
   if (!(await waitFor(win, `!!document.querySelector('.card-grid .device-card:not([hidden])')`, 5000))) {
     fail('M31: returning from Driver Library did not restore the dashboard');

@@ -65,6 +65,8 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, intelDri
   if (typeof appApi?.quit !== 'function') throw new TypeError('appApi.quit is required');
   if (typeof fetchImpl !== 'function' || typeof spawnProcess !== 'function') throw new TypeError('fetchImpl and spawnProcess are required');
   const transfers = new Map();
+  const installs = new Map();
+  const deletions = new Map();
   const basePath = path.join(appDataPath, 'ArcPower', 'DriverDownloads');
   const filePath = (kind, version) => path.join(basePath, kind, version, `gfx_win_101.exe`);
   function validate(kind, version) {
@@ -176,6 +178,7 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, intelDri
   }
   async function startDownload(kind, version, onProgress = () => {}) {
     validate(kind, version);
+    if (installs.has(kind) || deletions.has(kind)) throw new Error('a driver operation is already active for this driver kind');
     if (transfers.has(kind)) throw new Error('a download is already active for this driver kind');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error('Intel download timed out')), TRANSFER_TIMEOUT_MS);
@@ -269,36 +272,67 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, intelDri
     transfer.controller.abort(new Error('Intel download cancelled'));
     return { cancelled: true };
   }
+  async function deleteDownloaded(kind, version) {
+    validate(kind, version);
+    if (transfers.has(kind) || installs.has(kind) || deletions.has(kind)) throw new Error('cannot delete a driver download while a driver operation is active');
+    const deletion = {};
+    deletions.set(kind, deletion);
+    const target = filePath(kind, version);
+    try {
+      await assertSafePath(target, false);
+      const stat = await fsImpl.promises.lstat(target);
+      if (!stat.isFile() || stat.isSymbolicLink() || (typeof stat.isReparsePoint === 'function' && stat.isReparsePoint())) {
+        throw new Error('Intel driver download is not a regular file');
+      }
+      const safe = openSafeRecordingFile(target, fsImpl);
+      if (!safe) throw new Error('Intel driver download path is unsafe');
+      try {
+        await assertSafePath(target, false);
+        if (!revalidateSafeRecordingFile(target, safe, fsImpl)) throw new Error('Intel driver download path changed before deletion');
+        await fsImpl.promises.unlink(target);
+      } finally { try { fsImpl.closeSync(safe.fd); } catch { /* best effort */ } }
+      return { deleted: true };
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { deleted: true };
+      throw error;
+    } finally { if (deletions.get(kind) === deletion) deletions.delete(kind); }
+  }
   async function installDownloaded(kind, version) {
     validate(kind, version);
-    const target = filePath(kind, version);
-    await assertSafePath(target, false);
-    const controller = new AbortController();
-    const metadata = await fetchPage(kind, version, controller.signal);
-    if (metadata.version !== version) throw new Error('Intel release version no longer matches expected version');
+    if (transfers.has(kind) || deletions.has(kind)) throw new Error('a download or deletion is already active for this driver kind');
+    if (installs.has(kind)) throw new Error('a driver install is already active for this driver kind');
+    const install = {};
+    installs.set(kind, install);
     try {
-      await verify(target, metadata);
-    } catch (error) {
-      if (!/unsafe path|path changed/i.test(error?.message ?? '')) {
-        try {
-          await assertSafePath(target, false);
-          const existing = await fsImpl.promises.lstat(target);
-          if (existing.isFile()) await fsImpl.promises.unlink(target);
-        } catch { /* leave unverifiable paths untouched */ }
+      const target = filePath(kind, version);
+      await assertSafePath(target, false);
+      const controller = new AbortController();
+      const metadata = await fetchPage(kind, version, controller.signal);
+      if (metadata.version !== version) throw new Error('Intel release version no longer matches expected version');
+      try {
+        await verify(target, metadata);
+      } catch (error) {
+        if (!/unsafe path|path changed/i.test(error?.message ?? '')) {
+          try {
+            await assertSafePath(target, false);
+            const existing = await fsImpl.promises.lstat(target);
+            if (existing.isFile()) await fsImpl.promises.unlink(target);
+          } catch { /* leave unverifiable paths untouched */ }
+        }
+        throw new Error('Saved Intel driver could not be verified. Download it again.');
       }
-      throw new Error('Saved Intel driver could not be verified. Download it again.');
-    }
-    await assertSafePath(target, false);
-    const child = spawnProcess(target, [], { detached: true, stdio: 'ignore', windowsHide: false });
-    await new Promise((resolve, reject) => {
-      const onError = (error) => { child.removeListener?.('spawn', onSpawn); reject(error); };
-      const onSpawn = () => { child.removeListener?.('error', onError); resolve(); };
-      child.once('error', onError);
-      child.once('spawn', onSpawn);
-    });
-    child.unref?.();
-    appApi?.quit?.();
-    return { launched: true };
+      await assertSafePath(target, false);
+      const child = spawnProcess(target, [], { detached: true, stdio: 'ignore', windowsHide: false });
+      await new Promise((resolve, reject) => {
+        const onError = (error) => { child.removeListener?.('spawn', onSpawn); reject(error); };
+        const onSpawn = () => { child.removeListener?.('error', onError); resolve(); };
+        child.once('error', onError);
+        child.once('spawn', onSpawn);
+      });
+      child.unref?.();
+      appApi?.quit?.();
+      return { launched: true };
+    } finally { if (installs.get(kind) === install) installs.delete(kind); }
   }
-  return { getStatus, startDownload, cancelDownload, installDownloaded };
+  return { getStatus, startDownload, cancelDownload, deleteDownloaded, installDownloaded };
 }

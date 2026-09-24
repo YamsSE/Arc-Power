@@ -298,6 +298,7 @@ test('preload exposes the narrow window.arcPower API without a URL argument', ()
   assert.match(preload, /openIntelDriverDownloadPage:\s*\(kind, version\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-download-page-open',\s*kind,\s*version\)/);
   assert.match(preload, /intelDriverDownloadStatus:\s*\(kind, version\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-download-status',\s*kind,\s*version\)/);
   assert.match(preload, /intelDriverDownloadStart:\s*\(kind, version, acceptedIntelLicense\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-download-start',\s*kind,\s*version,\s*acceptedIntelLicense\)/);
+  assert.match(preload, /intelDriverDownloadDelete:\s*\(kind, version\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-download-delete',\s*kind,\s*version\)/);
   assert.match(preload, /intelDriverInstall:\s*\(kind, version\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-install',\s*kind,\s*version\)/);
   assert.match(preload, /onIntelDriverDownloadProgress:\s*\(cb\)\s*=>\s*\{[\s\S]*?ipcRenderer\.on\('intel-driver-download:progress'/);
   assert.doesNotMatch(preload, /openIntelDriverDownloadPage:\s*\(url\)/);

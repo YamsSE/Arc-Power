@@ -229,6 +229,8 @@ export interface ArcPowerApi {
   intelDriverDownloadStart(kind: 'arc' | 'pro', version: string, acceptedIntelLicense: boolean): Promise<{ downloaded: true; sizeBytes: number }>;
   /** Cancel an active Intel driver download for this package kind. */
   intelDriverDownloadCancel(kind: 'arc' | 'pro'): Promise<{ cancelled: boolean }>;
+  /** Delete only the retained installer for this exact release; absent files are treated as deleted. */
+  intelDriverDownloadDelete(kind: 'arc' | 'pro', version: string): Promise<{ deleted: true }>;
   /** Launch the verified Intel driver installer interactively, then quit Arc Power. */
   intelDriverInstall(kind: 'arc' | 'pro', version: string): Promise<{ launched: true }>;
   /** Subscribe to bounded package-download progress from the main process. */
