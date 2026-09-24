@@ -2416,23 +2416,23 @@ export class IgclBackend {
           : false;
         const explicitControlContract = this._hasSysmanCapabilitySeam
           || typeof this._extended?.isTempCapable === 'function';
-        // Only cards with an evidence-backed Advanced power ceiling may be
-        // promoted to the shared Sysman ceiling. A listed card can be known
-        // without having a safe hard-coded power cap (currently A580); for
-        // those cards the driver-reported range remains authoritative instead
-        // of exposing a generic 315/375 W value that the apply path rejects.
+        // Only cards with an explicit Advanced power ceiling may be promoted
+        // to the shared Sysman ceiling. A listed card can intentionally omit
+        // a fixed cap; for those cards the driver-reported range remains
+        // authoritative instead of exposing a generic 315/375 W value that
+        // the apply path rejects.
         const advancedPowerLimit = deviceLimitsOf({
           pciDeviceId: dev.pciDeviceId ?? null,
           aibVendor: null,
           aibModel: null,
         }, { advanced: true })?.powerLimitW;
-        const hasEvidenceBackedAdvancedPowerCeiling = typeof advancedPowerLimit?.max === 'number'
+        const hasConfiguredAdvancedPowerCeiling = typeof advancedPowerLimit?.max === 'number'
           && Number.isFinite(advancedPowerLimit.max);
         if (!explicitControlContract) {
           delete caps.extendedControls;
           if (runtimeCapable && ocMode === 'advanced'
             && ((caps.ranges.powerLimitW?.units === 'W') || (caps.ranges.tempLimitC?.units === 'C'))) {
-            if (caps.ranges.powerLimitW?.units === 'W' && hasEvidenceBackedAdvancedPowerCeiling) {
+            if (caps.ranges.powerLimitW?.units === 'W' && hasConfiguredAdvancedPowerCeiling) {
               caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: SYSMAN_PL_MAX_W };
             }
             if (caps.ranges.tempLimitC?.units === 'C') {
@@ -2459,7 +2459,7 @@ export class IgclBackend {
             tempLimitC: Boolean(tempCapable && hasC),
           };
           if (ocMode === 'advanced' && (caps.extendedControls.powerLimitW || caps.extendedControls.tempLimitC)) {
-            if (caps.extendedControls.powerLimitW && hasEvidenceBackedAdvancedPowerCeiling) {
+            if (caps.extendedControls.powerLimitW && hasConfiguredAdvancedPowerCeiling) {
               caps.ranges.powerLimitW = { ...caps.ranges.powerLimitW, max: SYSMAN_PL_MAX_W };
             }
             if (caps.extendedControls.tempLimitC) {

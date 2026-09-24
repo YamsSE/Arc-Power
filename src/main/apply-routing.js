@@ -435,9 +435,9 @@ export function extendedRangesFor(caps) {
     }, { advanced: true });
     const plMax = typeof advanced?.powerLimitW?.max === 'number'
       ? advanced.powerLimitW.max
-      // A listed device can intentionally omit an app-invented Advanced
-      // ceiling (currently A580). Preserve the driver's live range instead
-      // of replacing it with the generic 315 W unlisted-card ceiling.
+      // A listed device can intentionally omit an app-defined Advanced
+      // ceiling. Preserve the driver's live range instead of replacing it
+      // with the generic 315 W unlisted-card ceiling.
       : advanced?.listed === true
         ? pl.max
         : EXTENDED_PL_MAX_W;
