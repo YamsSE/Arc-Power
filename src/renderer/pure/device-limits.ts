@@ -266,16 +266,21 @@ const A310_ROW: DeviceLimits = {
   tempLimitC: { max: 90 },
 };
 
-/**
- * The Arc A580 stock/advanced row deliberately does not invent a power cap.
- * The public driver/sysman range is the only trustworthy limit until an
- * A580-specific apply probe is available. Keeping powerLimitW absent also
- * prevents the generic 315 W Advanced ceiling from being advertised and then
- * rejected by the lower-end card's driver.
- */
-const A580_ROW: DeviceLimits = {
+/** The A580 power ceilings are user-approved: 180 W stock and 300 W
+ * Advanced for the Intel Limited Edition connector configuration. The
+ * voltage shape is deliberately identical in both modes; this change is
+ * power-only and preserves the existing negative-voltage route. */
+const A580_ROW_STOCK: DeviceLimits = {
   listed: true,
   gpuVoltOffsetV: { min: -0.500, step: 0.001 },
+  powerLimitW: { max: 180 },
+  tempLimitC: { max: 90 },
+};
+
+const A580_ROW_ADVANCED: DeviceLimits = {
+  listed: true,
+  gpuVoltOffsetV: { min: -0.500, step: 0.001 },
+  powerLimitW: { max: 300 },
   tempLimitC: { max: 90 },
 };
 
@@ -314,9 +319,9 @@ const LISTED_ROWS: Record<string, (input: DeviceLimitsInput, advanced: boolean) 
   // The A310: 0x56A6 (pci-ids-verified). PL 75 W for both shapes
   // (user-specified ceiling). TL 90 C.
   [A310_PCI_DEVICE_ID]: () => A310_ROW,
-  // A580: retain the live driver/sysman power range in both modes. Do not
-  // route it through the unlisted-card generic Advanced power ceiling.
-  [A580_PCI_DEVICE_ID]: () => A580_ROW,
+  // A580: the explicit stock ceiling drives its Advanced writer split;
+  // Advanced is capped at the user-approved 300 W. Voltage remains unchanged.
+  [A580_PCI_DEVICE_ID]: (_input, advanced) => advanced ? A580_ROW_ADVANCED : A580_ROW_STOCK,
 };
 
 /**

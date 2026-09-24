@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
-import { deviceGateThresholds, extendedRangesFor, ocModeRefusal } from '../src/main/apply-routing.js';
+import { deviceGateThresholds, extendedRangesFor, ocModeRefusal, splitByRuntime, OC_MODE_ADVANCED } from '../src/main/apply-routing.js';
 
 const overlay = fs.readFileSync(
   fileURLToPath(new URL('../src/renderer/advanced-overlay.ts', import.meta.url)),
@@ -120,16 +120,18 @@ test('OC mode writes reject stale physical identity and stale rollback mode', as
   assert.equal(backendMode, 'advanced');
 });
 
-test('A580 Advanced ranges preserve the driver power ceiling when no app ceiling exists', () => {
+test('A580 stock and Advanced wattage ceilings are explicit and keep the voltage floor unchanged', () => {
   const ranges = extendedRangesFor({
     pciDeviceId: '0x000056a2',
     ranges: {
       powerLimitW: { units: 'W', min: 50, max: 200 },
       tempLimitC: { units: 'C', min: 60, max: 90 },
+      gpuVoltOffsetV: { units: 'V', min: -0.500, max: 0.234, step: 0.005 },
     },
   });
-  assert.equal(ranges.powerLimitW.max, 200);
+  assert.equal(ranges.powerLimitW.max, 300);
   assert.equal(ranges.tempLimitC.max, 115);
+  assert.equal(ranges.gpuVoltOffsetV.min, -0.200, 'the existing routed negative-voltage safety floor remains intact');
 
   const unlisted = extendedRangesFor({
     pciDeviceId: '0x0000ffff',
@@ -138,12 +140,46 @@ test('A580 Advanced ranges preserve the driver power ceiling when no app ceiling
   assert.equal(unlisted.powerLimitW.max, 315);
 });
 
-test('A580 Advanced power gate follows the live driver ceiling', () => {
+test('A580 gates at 180 W stock and allows up to 300 W Advanced', () => {
   const ranges = {
-    powerLimitW: { units: 'W', min: 50, max: 200 },
+    powerLimitW: { units: 'W', min: 50, max: 300 },
     tempLimitC: { units: 'C', min: 60, max: 90 },
   };
-  assert.equal(deviceGateThresholds({ pciDeviceId: '0x000056a2' }, true, ranges).plMax, 200);
-  const refusal = ocModeRefusal('advanced', { powerLimitW: 250 }, ranges, { pciDeviceId: '0x000056a2' });
+  const a580 = { pciDeviceId: '0x000056a2' };
+  assert.equal(deviceGateThresholds(a580, false, ranges).plMax, 180);
+  assert.equal(deviceGateThresholds(a580, true, ranges).plMax, 300);
+  assert.equal(ocModeRefusal('stock', { powerLimitW: 180 }, ranges, a580), null);
+  assert.deepEqual(ocModeRefusal('stock', { powerLimitW: 181 }, ranges, a580)?.controls, ['powerLimitW']);
+  assert.equal(ocModeRefusal('advanced', { powerLimitW: 300 }, ranges, a580), null);
+  const refusal = ocModeRefusal('advanced', { powerLimitW: 301 }, ranges, a580);
   assert.deepEqual(refusal?.controls, ['powerLimitW']);
+});
+
+test('A580 Advanced routing changes at 180 W while other Alchemist routes keep their existing limits', () => {
+  const ranges = { powerLimitW: { units: 'W' } };
+  const a580 = { pciDeviceId: '0x000056a2' };
+  assert.deepEqual(splitByRuntime({ powerLimitW: 180 }, ranges, OC_MODE_ADVANCED, null, a580), {
+    driverstore: { powerLimitW: 180 }, extended: {},
+  });
+  for (const watts of [181, 210]) {
+    assert.deepEqual(splitByRuntime({ powerLimitW: watts }, ranges, OC_MODE_ADVANCED, null, a580), {
+      driverstore: {}, extended: { powerLimitW: watts },
+    });
+  }
+  assert.deepEqual(splitByRuntime({ powerLimitW: 300 }, ranges, OC_MODE_ADVANCED, {}, a580), {
+    driverstore: {}, extended: {},
+  }, '300 W is left to the existing Sysman-primary path');
+
+  const a380 = { pciDeviceId: '0x000056a5' };
+  assert.equal(deviceGateThresholds(a380, false).plMax, 66);
+  assert.equal(deviceGateThresholds(a380, true).plMax, 225);
+  assert.deepEqual(splitByRuntime({ powerLimitW: 67 }, ranges, OC_MODE_ADVANCED, null, a380), {
+    driverstore: {}, extended: { powerLimitW: 67 },
+  });
+  const a310 = { pciDeviceId: '0x000056a6' };
+  assert.equal(deviceGateThresholds(a310, false).plMax, 75);
+  assert.equal(deviceGateThresholds(a310, true).plMax, 75);
+  assert.deepEqual(splitByRuntime({ powerLimitW: 75 }, ranges, OC_MODE_ADVANCED, null, a310), {
+    driverstore: { powerLimitW: 75 }, extended: {},
+  });
 });
