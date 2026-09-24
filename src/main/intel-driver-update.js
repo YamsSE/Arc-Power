@@ -4,9 +4,11 @@
 export const INTEL_DRIVER_PAGES = Object.freeze({
   arc: Object.freeze({
     officialPageUrl: 'https://www.intel.com/content/www/us/en/download/785597/intel-arc-graphics-windows.html',
+    historicalPageUrl: 'https://www.intel.com/content/www/us/en/download/857252/historical-intel-arc-graphics-drivers.html',
   }),
   pro: Object.freeze({
     officialPageUrl: 'https://www.intel.com/content/www/us/en/download/741626/intel-arc-pro-graphics-windows.html',
+    historicalPageUrl: 'https://www.intel.com/content/www/us/en/download/857390/historical-intel-arc-pro-graphics-drivers.html',
   }),
 });
 
@@ -14,7 +16,7 @@ const FETCH_TIMEOUT_MS = 8000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_CHANGELOG_ITEMS = 20;
-const MAX_CHANGELOG_ITEM_LENGTH = 1200;
+const MAX_CHANGELOG_ITEM_LENGTH = 500;
 const MAX_CHANGELOG_LENGTH = 4000;
 const MAX_CATALOG_RELEASES = 100;
 const CATALOG_CACHE_TTL_MS = 15 * 60 * 1000;
@@ -37,21 +39,25 @@ function validOfficialUrl(value, expectedUrl) {
   }
 }
 
-function validReleaseUrl(value, kind) {
+export function validIntelDriverReleaseUrl(value, kind) {
   try {
-    const url = new URL(value, INTEL_DRIVER_PAGES[kind].officialPageUrl);
-    const familyPath = new URL(INTEL_DRIVER_PAGES[kind].officialPageUrl).pathname;
-    const familyId = familyPath.match(/\/download\/(\d+)\//i)?.[1];
-    const familySlug = familyPath.match(/\/download\/\d+\/([^/]+\.html)$/i)?.[1];
-    if (url.pathname === familyPath) {
-      return url.protocol === 'https:' && url.hostname === 'www.intel.com' && !url.port
-        && !url.username && !url.password && !url.search && !url.hash;
-    }
+    const pages = INTEL_DRIVER_PAGES[kind];
+    if (!pages) return false;
+    const url = new URL(value, pages.officialPageUrl);
+    if (url.protocol !== 'https:' || url.hostname !== 'www.intel.com' || url.port
+      || url.username || url.password || url.search || url.hash) return false;
+    const roots = [pages.officialPageUrl, pages.historicalPageUrl].map((pageUrl) => {
+      const parsed = new URL(pageUrl);
+      return {
+        pathname: parsed.pathname,
+        id: parsed.pathname.match(/\/download\/(\d+)\//i)?.[1],
+        slug: parsed.pathname.match(/\/download\/\d+\/([^/]+\.html)$/i)?.[1],
+      };
+    });
+    if (roots.some((root) => url.pathname === root.pathname)) return true;
     const match = url.pathname.match(/^\/content\/www\/us\/en\/download\/(\d+)\/(\d+)\/([^/]+\.html)$/i);
-    return url.protocol === 'https:' && url.hostname === 'www.intel.com' && !url.port
-      && !url.username && !url.password && !url.search && !url.hash
-      && match?.[1] === familyId && Boolean(match?.[2])
-      && match?.[3].toLowerCase() === familySlug?.toLowerCase();
+    return Boolean(match?.[2]) && roots.some((root) => match?.[1] === root.id
+      && match?.[3].toLowerCase() === root.slug?.toLowerCase());
   } catch { return false; }
 }
 
@@ -59,9 +65,9 @@ function releaseSelectorHtml(source) {
   return String(source ?? '').match(/<select\b(?=[^>]*\bid\s*=\s*(["'])version-driver-select\1)[^>]*>([\s\S]*?)<\/select\s*>/i)?.[2] ?? null;
 }
 
-function extractReleaseOptions(source, kind) {
+function extractReleaseOptions(source, kind, baseUrl = INTEL_DRIVER_PAGES[kind]?.officialPageUrl) {
   const select = releaseSelectorHtml(source);
-  if (!select) return [];
+  if (!select || !baseUrl) return [];
   const options = [];
   for (const match of select.matchAll(/<option\b([^>]*)>([\s\S]*?)<\/option\s*>/gi)) {
     const value = match[1].match(/\bvalue\s*=\s*(["'])(.*?)\1/i)?.[2];
@@ -69,8 +75,8 @@ function extractReleaseOptions(source, kind) {
     const version = decodeHtmlText(match[2]).match(/\b(\d{1,5}\.\d{1,5}\.\d{1,5}\.\d{1,5})\b/)?.[1];
     if (!version) continue;
     try {
-      const url = new URL(value, INTEL_DRIVER_PAGES[kind].officialPageUrl).href;
-      if (validReleaseUrl(url, kind)) options.push({ url, version });
+      const url = new URL(value, baseUrl).href;
+      if (validIntelDriverReleaseUrl(url, kind)) options.push({ url, version });
     } catch { /* Ignore malformed Intel option values. */ }
   }
   return [...new Map(options.map((option) => [option.version, option])).values()];
@@ -167,14 +173,13 @@ function extractChangelog(source) {
   const liStack = [];
   const listStack = [];
   const blockStack = [];
-  const events = [];
+  const entries = [];
   let looseText = '';
   let malformed = false;
-  let stopped = false;
   const stopLabel = /^(?:OS\s+Support|OS\s+Reference|Platform\s+Support|Platform\s*\(\s*OS\s+Support\s*\)|Notes?|Products?|Supported\s+Products|Products?\s+Supported)\s*(?::|$)/i;
   const flushLooseText = () => {
     const text = decodeHtmlText(looseText);
-    if (text) events.push({ order: events.length, text });
+    if (text) entries.push({ text, children: [] });
     looseText = '';
   };
 
@@ -185,7 +190,7 @@ function extractChangelog(source) {
       if (liStack.length) liStack[liStack.length - 1].text += `${value} `;
       else if (blockStack.length) blockStack[blockStack.length - 1].text += `${value} `;
       else {
-        if (stopLabel.test(decoded)) { stopped = true; break; }
+        if (stopLabel.test(decoded)) break;
         looseText += `${value} `;
       }
       continue;
@@ -202,8 +207,10 @@ function extractChangelog(source) {
       if (listStack.pop() !== name) { malformed = true; break; }
     } else if (!closing && name === 'li') {
       flushLooseText();
-      const item = { text: '', order: events.length };
-      events.push(item);
+      const item = { text: '', children: [] };
+      const parent = liStack[liStack.length - 1];
+      if (parent) parent.children.push(item);
+      else entries.push(item);
       liStack.push(item);
     } else if (/^<\/li\s*>/i.test(value)) {
       if (!liStack.length) { malformed = true; break; }
@@ -216,7 +223,6 @@ function extractChangelog(source) {
       const block = blockStack.pop();
       if (!block) continue;
       if (block.name !== name) { malformed = true; break; }
-      stopped = true;
       break;
     } else if (!closing && name === 'p') {
       flushLooseText();
@@ -225,8 +231,8 @@ function extractChangelog(source) {
       const block = blockStack.pop();
       if (!block) continue;
       if (block.name !== name) { malformed = true; break; }
-      if (stopLabel.test(decodeHtmlText(block.text))) { stopped = true; break; }
-      if (block.text.trim()) events.push({ order: events.length, text: decodeHtmlText(block.text) });
+      if (stopLabel.test(decodeHtmlText(block.text))) break;
+      if (block.text.trim()) entries.push({ text: decodeHtmlText(block.text), children: [] });
     } else if (name === 'br' && !closing) {
       if (liStack.length) liStack[liStack.length - 1].text += ' ';
       else if (blockStack.length) blockStack[blockStack.length - 1].text += ' ';
@@ -236,15 +242,54 @@ function extractChangelog(source) {
   flushLooseText();
   if (malformed || liStack.length || listStack.length || blockStack.length) return [];
 
-  const result = [];
+  const normalized = [];
   let totalLength = 0;
-  for (const { text: item } of events.sort((a, b) => a.order - b.order)) {
-    if (!item) continue;
-    if (result.length >= MAX_CHANGELOG_ITEMS) return [];
-    if (item.length > MAX_CHANGELOG_ITEM_LENGTH || totalLength + item.length > MAX_CHANGELOG_LENGTH) return [];
-    result.push(item);
-    totalLength += item.length;
+  let itemCount = 0;
+  let invalid = false;
+  const normalize = (item) => {
+    const text = String(item.text ?? '').replace(/\s+/g, ' ').trim();
+    if (text) {
+      itemCount++;
+      totalLength += text.length;
+      if (itemCount > MAX_CHANGELOG_ITEMS || text.length > MAX_CHANGELOG_ITEM_LENGTH || totalLength > MAX_CHANGELOG_LENGTH) invalid = true;
+    }
+    const children = item.children.map(normalize).filter(Boolean);
+    return text ? { text, children } : children.length ? { text: '', children } : null;
+  };
+  for (const entry of entries) {
+    const item = normalize(entry);
+    if (item) normalized.push(item);
   }
+  if (invalid) return [];
+
+  const result = [];
+  let activeHeading = null;
+  const toItem = (item) => ({
+    text: item.text,
+    kind: 'item',
+    ...(item.children.length ? { children: item.children.map(toItem) } : {}),
+  });
+  for (const item of normalized) {
+    if (!item.text) continue;
+    const entry = toItem(item);
+    if (/^(?:Intel(?:®)?\s+Game\s+On\b|Game\s+performance\s+improvements\b)/i.test(item.text) || /:\s*$/.test(item.text)) {
+      const heading = { text: item.text, kind: 'heading', ...(entry.children ? { children: entry.children } : { children: [] }) };
+      result.push(heading);
+      activeHeading = heading;
+    } else if (activeHeading) {
+      activeHeading.children.push(entry);
+    } else result.push(entry);
+  }
+  return result;
+}
+
+function flattenChangelog(entries) {
+  const result = [];
+  const visit = (entry) => {
+    if (entry.text) result.push(entry.text);
+    for (const child of entry.children ?? []) visit(child);
+  };
+  for (const entry of entries) visit(entry);
   return result;
 }
 
@@ -264,7 +309,15 @@ export function parseIntelDriverMetadata(source) {
     const dateMatch = text.match(/(?:release\s*date|date\s*released|published)\s*[:\-]?\s*((?:\d{4}[-/]\d{1,2}[-/]\d{1,2})|(?:\d{1,2}[/-]\d{1,2}[/-]\d{4})|(?:[A-Za-z]+\s+\d{1,2},?\s+\d{4}))/i);
     if (dateMatch) releaseDate = normalizeDate(dateMatch[1]);
   }
-  return { version, releaseDate, changelog: extractChangelog(source) };
+  const changelogSections = extractChangelog(source);
+  const changelog = flattenChangelog(changelogSections);
+  const hasChangelogStructure = changelogSections.some((entry) => entry.kind === 'heading' || entry.children?.length);
+  return {
+    version,
+    releaseDate,
+    changelog,
+    ...(hasChangelogStructure ? { changelogSections } : {}),
+  };
 }
 
 async function readBoundedBody(response, maxBytes) {
@@ -317,7 +370,7 @@ export function createIntelDriverUpdateService({
     } finally { clearTimeout(timer); }
   }
   async function fetchRelease(kind, url, signal = null) {
-    if (!validReleaseUrl(url, kind)) throw new Error('Intel release URL is not allowed');
+    if (!validIntelDriverReleaseUrl(url, kind)) throw new Error('Intel release URL is not allowed');
     const source = await fetchHtml(url, url, signal);
     const metadata = parseIntelDriverMetadata(source);
     if (!metadata) throw new Error('Intel driver metadata was not found');
@@ -361,18 +414,34 @@ export function createIntelDriverUpdateService({
       const pending = catalogRequests.get(kind);
       if (pending) return pending;
       const request = (async () => {
-        const latestUrl = INTEL_DRIVER_PAGES[kind].officialPageUrl;
-        const html = await fetchHtml(latestUrl);
-        const selector = releaseSelectorHtml(html);
-        const options = extractReleaseOptions(html, kind);
-        const selectorOptionCount = selector?.match(/<option\b/gi)?.length ?? 0;
-        const readableOptionCount = options.length;
-        const latest = parseIntelDriverMetadata(html);
-        if (latest && !options.some((option) => option.version === latest.version)) {
-          options.unshift({ url: latestUrl, version: latest.version });
+        const pages = INTEL_DRIVER_PAGES[kind];
+        const sources = await Promise.all([pages.officialPageUrl, pages.historicalPageUrl].map(async (pageUrl, index) => {
+          try {
+            const html = await fetchHtml(pageUrl);
+            const selector = releaseSelectorHtml(html);
+            const optionCount = selector
+              ? [...selector.matchAll(/<option\b([^>]*)>([\s\S]*?)<\/option\s*>/gi)]
+                .filter((match) => /\b\d{1,5}\.\d{1,5}\.\d{1,5}\.\d{1,5}\b/.test(decodeHtmlText(match[2]))).length
+              : 0;
+            const options = extractReleaseOptions(html, kind, pageUrl);
+            const latest = index === 0 ? parseIntelDriverMetadata(html) : null;
+            return { pageUrl, index, options, latest, partial: !selector || optionCount === 0 || options.length < optionCount };
+          } catch {
+            return { pageUrl, index, options: [], latest: null, partial: true };
+          }
+        }));
+        const options = [];
+        const seen = new Set();
+        for (const source of sources) {
+          for (const option of source.options) {
+            if (seen.has(option.version)) continue;
+            seen.add(option.version);
+            options.push(option);
+          }
         }
-        const partial = !selector || selectorOptionCount === 0
-          || readableOptionCount < selectorOptionCount || options.length > MAX_CATALOG_RELEASES;
+        const latest = sources.find((source) => source.index === 0)?.latest ?? null;
+        if (latest && !seen.has(latest.version)) options.unshift({ url: pages.officialPageUrl, version: latest.version });
+        const partial = sources.some((source) => source.partial) || options.length > MAX_CATALOG_RELEASES;
         const versions = options.slice(0, MAX_CATALOG_RELEASES).map((option) => option.version);
         if (!versions.length) throw new Error('Intel driver catalog contains no readable versions');
         const value = { versions, partial };
@@ -388,13 +457,22 @@ export function createIntelDriverUpdateService({
     },
     async resolveRelease(kind, version, signal = null) {
       if (!INTEL_DRIVER_PAGES[kind] || typeof version !== 'string' || !/^\d{1,5}\.\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(version)) throw new Error('invalid Intel driver release identity');
-      const selectorUrl = INTEL_DRIVER_PAGES[kind].officialPageUrl;
-      const selectorHtml = await fetchHtml(selectorUrl, selectorUrl, signal);
-      const availableReleases = extractReleaseOptions(selectorHtml, kind);
-      const latest = parseIntelDriverMetadata(selectorHtml);
-      const selected = availableReleases.find((release) => release.version === version)
-        ?? (latest?.version === version ? { url: selectorUrl, version } : null);
-      if (!selected || !validReleaseUrl(selected.url, kind)) throw new Error('Intel driver version is not available in the official catalog');
+      const pages = INTEL_DRIVER_PAGES[kind];
+      const sources = await Promise.all([pages.officialPageUrl, pages.historicalPageUrl].map(async (pageUrl, index) => {
+        try {
+          const html = await fetchHtml(pageUrl, pageUrl, signal);
+          return {
+            options: extractReleaseOptions(html, kind, pageUrl),
+            latest: index === 0 ? parseIntelDriverMetadata(html) : null,
+          };
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          return { options: [], latest: null };
+        }
+      }));
+      const selected = sources.flatMap((source) => source.options).find((release) => release.version === version)
+        ?? (sources[0].latest?.version === version ? { url: pages.officialPageUrl, version } : null);
+      if (!selected || !validIntelDriverReleaseUrl(selected.url, kind)) throw new Error('Intel driver version is not available in the official catalog');
       // Re-fetch only the selected, currently listed official detail page.
       const release = await fetchRelease(kind, selected.url, signal);
       if (release.version !== version) throw new Error('Intel release page version does not match the selected version');

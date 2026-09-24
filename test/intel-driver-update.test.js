@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { parseIntelDriverMetadata, createIntelDriverUpdateService, INTEL_DRIVER_PAGES } from '../src/main/intel-driver-update.js';
+import { parseIntelDriverMetadata, createIntelDriverUpdateService, INTEL_DRIVER_PAGES, validIntelDriverReleaseUrl } from '../src/main/intel-driver-update.js';
 
 const page = (version, releaseDate = '') => `<main>Intel Graphics Driver ${version}. ${releaseDate}</main>`;
 const response = (text, url) => ({
@@ -75,6 +75,70 @@ test('Intel metadata includes the main Highlights introduction and stops before 
 
   const plain = parseIntelDriverMetadata('Intel Graphics Driver 32.0.101.9030<h2>Detailed Description</h2> Highlights: Game On support for: <ul><li>WARDOGS*</li></ul><h3>Notes</h3>Additional details');
   assert.deepEqual(plain.changelog, ['Game On support for:', 'WARDOGS*']);
+});
+
+test('Intel release highlights preserve GPU sections, game groups, and nested improvements', () => {
+  const release = parseIntelDriverMetadata(`Intel Graphics Driver 32.0.101.9030
+    <h2>Detailed Description</h2><h2>Highlights:</h2><ul>
+      <li>Intel® Game On driver support on Intel® Arc™ B-series Graphics GPUs for:
+        <ul><li>1666: Amsterdam*</li></ul>
+      </li>
+      <li>Game performance improvements on Intel® Core™ Ultra Series 3 with built-in Intel® Arc™ GPUs for:
+        <ul>
+          <li>Assassin’s Creed Valhalla* (DX12)<ul><li>Up to 7% average FPS uplift at 1080p with Medium settings</li><li>Up to 11% average FPS uplift at 1080p with High settings</li></ul></li>
+          <li>Farming Simulator 2022* (DX12)<ul><li>Up to 13% average FPS uplift at 1080p with Medium settings</li></ul></li>
+        </ul>
+      </li>
+    </ul>`);
+
+  assert.deepEqual(release.changelog, [
+    'Intel® Game On driver support on Intel® Arc™ B-series Graphics GPUs for:',
+    '1666: Amsterdam*',
+    'Game performance improvements on Intel® Core™ Ultra Series 3 with built-in Intel® Arc™ GPUs for:',
+    'Assassin’s Creed Valhalla* (DX12)',
+    'Up to 7% average FPS uplift at 1080p with Medium settings',
+    'Up to 11% average FPS uplift at 1080p with High settings',
+    'Farming Simulator 2022* (DX12)',
+    'Up to 13% average FPS uplift at 1080p with Medium settings',
+  ]);
+  assert.deepEqual(release.changelogSections, [
+    { text: 'Intel® Game On driver support on Intel® Arc™ B-series Graphics GPUs for:', kind: 'heading', children: [
+      { text: '1666: Amsterdam*', kind: 'item' },
+    ] },
+    { text: 'Game performance improvements on Intel® Core™ Ultra Series 3 with built-in Intel® Arc™ GPUs for:', kind: 'heading', children: [
+      { text: 'Assassin’s Creed Valhalla* (DX12)', kind: 'item', children: [
+        { text: 'Up to 7% average FPS uplift at 1080p with Medium settings', kind: 'item' },
+        { text: 'Up to 11% average FPS uplift at 1080p with High settings', kind: 'item' },
+      ] },
+      { text: 'Farming Simulator 2022* (DX12)', kind: 'item', children: [
+        { text: 'Up to 13% average FPS uplift at 1080p with Medium settings', kind: 'item' },
+      ] },
+    ] },
+  ]);
+});
+
+test('Intel Arc Pro workstation highlights use the same GPU and game grouping', () => {
+  const release = parseIntelDriverMetadata(`Intel Graphics Driver 32.0.101.8805
+    <h2>Detailed Description</h2><h3>Highlights of this Workstation Driver:</h3>
+    <ul>
+      <li>Game performance improvements on Intel® Arc™ Pro GPUs for:
+        <ul><li>Autodesk Maya*<ul><li>Improved viewport rendering performance</li></ul></li></ul>
+      </li>
+      <li>Added GPU-specific support for:
+        <ul><li>Certified workstation applications*</li></ul>
+      </li>
+    </ul>`);
+
+  assert.deepEqual(release.changelogSections, [
+    { text: 'Game performance improvements on Intel® Arc™ Pro GPUs for:', kind: 'heading', children: [
+      { text: 'Autodesk Maya*', kind: 'item', children: [
+        { text: 'Improved viewport rendering performance', kind: 'item' },
+      ] },
+    ] },
+    { text: 'Added GPU-specific support for:', kind: 'heading', children: [
+      { text: 'Certified workstation applications*', kind: 'item' },
+    ] },
+  ]);
 });
 
 test('Intel metadata scopes Highlights to Detailed Description and ignores comment/script decoys', () => {
@@ -165,6 +229,59 @@ test('Intel metadata service aborts a request when its finite timeout elapses', 
   assert.deepEqual(await service.check(), { arc: null, pro: null });
 });
 
+test('Intel driver library merges current and historical releases and resolves an archived version', async () => {
+  const current = INTEL_DRIVER_PAGES.arc.officialPageUrl;
+  const historical = INTEL_DRIVER_PAGES.arc.historicalPageUrl;
+  const current9000 = '32.0.101.9000';
+  const overlap = '32.0.101.8826';
+  const archived = '32.0.101.7000';
+  const detailUrl = `${new URL(current).origin}/content/www/us/en/download/785597/123456/intel-arc-graphics-windows.html`;
+  const selector = (options, latest) => `<meta name="DownloadVersion" content="${latest}"><select id="version-driver-select">${options.map(([version, url]) => `<option value="${url}">Intel Graphics Driver ${version}</option>`).join('')}</select>`;
+  const pages = new Map([
+    [current, selector([
+      [current9000, '/content/www/us/en/download/785597/111111/intel-arc-graphics-windows.html'],
+      [overlap, '/content/www/us/en/download/785597/222222/intel-arc-graphics-windows.html'],
+    ], current9000)],
+    [historical, selector([
+      [overlap, '/content/www/us/en/download/785597/333333/intel-arc-graphics-windows.html'],
+      [archived, new URL(detailUrl).pathname],
+    ], overlap)],
+    [detailUrl, `<meta name="DownloadVersion" content="${archived}"><p>Intel Graphics Driver ${archived}</p><div>Size: 1.25 GB</div>`],
+  ]);
+  const service = createIntelDriverUpdateService({ fetchImpl: async (url) => {
+    const body = pages.get(url);
+    if (!body) throw new Error(`unexpected URL: ${url}`);
+    return response(body, url);
+  } });
+
+  const catalog = await service.library('arc');
+  assert.deepEqual(catalog, { versions: [current9000, overlap, archived], partial: false });
+  const release = await service.resolveRelease('arc', archived);
+  assert.equal(release.version, archived);
+  assert.equal(release.officialPageUrl, detailUrl);
+  assert.equal(release.sizeBytes, Math.round(1.25 * 1024 ** 3));
+  assert.equal(validIntelDriverReleaseUrl(detailUrl, 'arc'), true);
+  assert.equal(validIntelDriverReleaseUrl(
+    'https://www.intel.com/content/www/us/en/download/741626/123456/intel-arc-pro-graphics-windows.html',
+    'pro',
+  ), true);
+  assert.equal(validIntelDriverReleaseUrl(detailUrl, 'pro'), false);
+  assert.equal(validIntelDriverReleaseUrl(detailUrl.replace('www.intel.com', 'evil.example'), 'arc'), false);
+});
+
+test('Intel driver library keeps readable current releases and marks an unavailable history source partial', async () => {
+  const current = INTEL_DRIVER_PAGES.pro.officialPageUrl;
+  const version = '32.0.101.8805';
+  const html = `<meta name="DownloadVersion" content="${version}"><select id="version-driver-select"><option value="/content/www/us/en/download/741626/123456/intel-arc-pro-graphics-windows.html">Intel Graphics Driver ${version}</option></select>`;
+  const service = createIntelDriverUpdateService({ fetchImpl: async (url) => {
+    if (url === INTEL_DRIVER_PAGES.pro.historicalPageUrl) throw new Error('history unavailable');
+    if (url !== current) throw new Error(`unexpected URL: ${url}`);
+    return response(html, url);
+  } });
+
+  assert.deepEqual(await service.library('pro'), { versions: [version], partial: true });
+});
+
 test('download page choices are fixed official Intel URLs', () => {
   assert.deepEqual(Object.keys(INTEL_DRIVER_PAGES), ['arc', 'pro']);
   for (const pageInfo of Object.values(INTEL_DRIVER_PAGES)) {
@@ -178,7 +295,7 @@ test('download page choices are fixed official Intel URLs', () => {
 test('preload exposes the narrow window.arcPower API without a URL argument', () => {
   const preload = fs.readFileSync(new URL('../src/preload.cjs', import.meta.url), 'utf8');
   assert.match(preload, /intelDriverUpdateCheck:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-update-check'\)/);
-  assert.match(preload, /openIntelDriverDownloadPage:\s*\(kind\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-download-page-open',\s*kind\)/);
+  assert.match(preload, /openIntelDriverDownloadPage:\s*\(kind, version\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-download-page-open',\s*kind,\s*version\)/);
   assert.match(preload, /intelDriverDownloadStatus:\s*\(kind, version\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-download-status',\s*kind,\s*version\)/);
   assert.match(preload, /intelDriverDownloadStart:\s*\(kind, version, acceptedIntelLicense\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-download-start',\s*kind,\s*version,\s*acceptedIntelLicense\)/);
   assert.match(preload, /intelDriverInstall:\s*\(kind, version\)\s*=>\s*ipcRenderer\.invoke\('intel-driver-install',\s*kind,\s*version\)/);

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { createIntelDriverDownloadService, parseIntelDownloadPage } from '../src/main/intel-driver-download.js';
+import { INTEL_DRIVER_PAGES } from '../src/main/intel-driver-update.js';
 
 const arcVersion = '32.0.101.9030';
 const proVersion = '32.0.101.8805';
@@ -13,6 +14,7 @@ const exe = Buffer.from([0x4d, 0x5a, 1, 2, 3, 4]);
 const digest = (algorithm = 'sha512', data = exe) => createHash(algorithm).update(data).digest('hex');
 const mirrorFor = (version) => `https://downloadmirror.intel.com/123456/gfx_win_101.${version.split('.').at(-1)}.exe`;
 const mirror = mirrorFor(arcVersion);
+const releaseLookup = { resolveRelease: async (kind, version) => ({ version, officialPageUrl: INTEL_DRIVER_PAGES[kind].officialPageUrl }) };
 function html(version, { kind = 'arc', data = exe, algorithm = kind === 'arc' ? 'sha512' : 'sha256', size = data.length, url = mirrorFor(version), versionText = version } = {}) {
   const digestLabel = algorithm.toUpperCase();
   return `<meta name="DownloadVersion" content="${versionText}">
@@ -28,11 +30,11 @@ function response({ body, url, headers = {}, status = 200 }) {
     text: async () => bytes.toString('utf8'),
   };
 }
-async function fixture(fetchImpl) {
+async function fixture(fetchImpl, intelDriverUpdateService = releaseLookup) {
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'arc-intel-download-'));
   const appDataPath = path.join(root, 'appdata');
   await fs.promises.mkdir(appDataPath);
-  const service = createIntelDriverDownloadService({ appDataPath, appApi: { quit() {} }, fetchImpl });
+  const service = createIntelDriverDownloadService({ appDataPath, appApi: { quit() {} }, fetchImpl, intelDriverUpdateService });
   const cleanup = () => fs.promises.rm(root, { recursive: true, force: true });
   return { root, appDataPath, service, cleanup };
 }
@@ -74,6 +76,26 @@ test('parses Arc SHA512 and Pro SHA256 metadata and rejects malformed versions, 
   assert.ok(rounded.sizeToleranceBytes >= 52_000, 'the displayed one-decimal MB size is treated as rounded metadata');
 });
 
+test('downloads a historical release from its validated Intel archive page', async () => {
+  const historicalUrl = 'https://www.intel.com/content/www/us/en/download/857252/123456/historical-intel-arc-graphics-drivers.html';
+  const intelDriverUpdateService = {
+    async resolveRelease(kind, version) {
+      assert.equal(kind, 'arc');
+      assert.equal(version, arcVersion);
+      return { version, officialPageUrl: historicalUrl };
+    },
+  };
+  const fetchImpl = async (url) => {
+    if (url === historicalUrl) return response({ body: html(arcVersion), url });
+    if (url.startsWith('https://downloadmirror.intel.com/')) return response({ body: exe, url });
+    throw new Error(`unexpected URL: ${url}`);
+  };
+  const f = await fixture(fetchImpl, intelDriverUpdateService);
+  try {
+    assert.deepEqual(await f.service.startDownload('arc', arcVersion), { downloaded: true, sizeBytes: exe.length });
+  } finally { await f.cleanup(); }
+});
+
 test('streams download progress, stores under appData, and enforces declared content length', async () => {
   const f = await fixture(fixtureFetcher());
   try {
@@ -113,7 +135,7 @@ test('cancellation aborts the active stream and removes its partial file', async
     if (url.includes('/download/')) return response({ body: html(arcVersion), url });
     return { ok: true, status: 200, url, headers: { get: (name) => name.toLowerCase() === 'content-length' ? String(exe.length) : null }, body: new ReadableStream({ start(controller) { controller.enqueue(exe.subarray(0, 2)); } }) };
   };
-  const service = createIntelDriverDownloadService({ appDataPath, fetchImpl, appApi: { quit() {} } });
+  const service = createIntelDriverDownloadService({ appDataPath, fetchImpl, appApi: { quit() {} }, intelDriverUpdateService: releaseLookup });
   try {
     const pending = service.startDownload('arc', arcVersion);
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -134,7 +156,7 @@ test('checksum failure prevents install and removes partial download', async () 
       if (url.includes('/download/')) return response({ body: html(arcVersion).replace(digest(), '0'.repeat(128)), url });
       return result(url, options);
     };
-    const svc = createIntelDriverDownloadService({ appDataPath: f.appDataPath, fetchImpl: badDataFetcher, appApi: { quit() {} }, spawnProcess: () => { launched = true; throw new Error('must not launch'); } });
+    const svc = createIntelDriverDownloadService({ appDataPath: f.appDataPath, fetchImpl: badDataFetcher, appApi: { quit() {} }, intelDriverUpdateService: releaseLookup, spawnProcess: () => { launched = true; throw new Error('must not launch'); } });
     await assert.rejects(() => svc.installDownloaded('arc', arcVersion), /could not be verified/);
     assert.equal(launched, false);
     assert.deepEqual(await svc.getStatus('arc', arcVersion), { downloaded: false, sizeBytes: null }, 'an invalid retained installer is removed so the UI can offer a fresh download');
@@ -154,10 +176,10 @@ test('installation guards against a stale release and quits only after confirmed
   try {
     await f.service.startDownload('arc', arcVersion);
     let quits = 0; let calls = 0;
-    const stale = createIntelDriverDownloadService({ appDataPath: f.appDataPath, fetchImpl: fixtureFetcher({ version: '32.0.101.9999' }), appApi: { quit() { quits++; } }, spawnProcess() { calls++; } });
+    const stale = createIntelDriverDownloadService({ appDataPath: f.appDataPath, fetchImpl: fixtureFetcher({ version: '32.0.101.9999' }), appApi: { quit() { quits++; } }, intelDriverUpdateService: releaseLookup, spawnProcess() { calls++; } });
     await assert.rejects(() => stale.installDownloaded('arc', arcVersion), /no longer matches/);
     assert.equal(calls, 0); assert.equal(quits, 0);
-    const current = createIntelDriverDownloadService({ appDataPath: f.appDataPath, fetchImpl: fixtureFetcher(), appApi: { quit() { quits++; } }, spawnProcess(executable, args, options) {
+    const current = createIntelDriverDownloadService({ appDataPath: f.appDataPath, fetchImpl: fixtureFetcher(), appApi: { quit() { quits++; } }, intelDriverUpdateService: releaseLookup, spawnProcess(executable, args, options) {
       assert.match(executable, /gfx_win_101\.exe$/); assert.deepEqual(args, []); assert.equal(options.detached, true); assert.equal(options.stdio, 'ignore');
       const child = new EventEmitter(); child.unref = () => {}; queueMicrotask(() => child.emit('spawn')); return child;
     } });
@@ -173,7 +195,7 @@ test('rejects a symlinked download ancestor and never launches through it', asyn
   try { await fs.promises.symlink(outside, link, 'junction'); }
   catch (error) { await f.cleanup(); if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('junction creation is unavailable'); throw error; }
   let launches = 0;
-  const service = createIntelDriverDownloadService({ appDataPath: f.appDataPath, fetchImpl: fixtureFetcher(), appApi: { quit() {} }, spawnProcess() { launches++; } });
+  const service = createIntelDriverDownloadService({ appDataPath: f.appDataPath, fetchImpl: fixtureFetcher(), appApi: { quit() {} }, intelDriverUpdateService: releaseLookup, spawnProcess() { launches++; } });
   try {
     await assert.rejects(() => service.startDownload('arc', arcVersion), /reparse|symbolic/i);
     await assert.rejects(() => service.installDownloaded('arc', arcVersion), /reparse|symbolic/i);

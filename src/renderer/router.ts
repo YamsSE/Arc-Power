@@ -19,14 +19,14 @@ import type {
 // M6: the old #/overlay page (the Overlay Settings page) MOVED into the
 // Monitoring page as a sub-view in M9 - the PageId is gone; the old hash
 // redirects (pageFromHash) with the overlay view requested.
-// M8/M-recording: the sidebar order is deliberately fixed as Dashboard,
-// Tuning, Graphics, Recording, Monitoring, Profiles, Tweaks, Driver Library.
+// Page registration order is stable; Driver Library remains a routed page but
+// is launched from the Intel GPU card instead of occupying a sidebar slot.
 // Settings stays in the footer and is not part of the main navigation list.
 export type PageId = 'dashboard' | 'tuning' | 'graphics' | 'recording' | 'monitoring' | 'profiles' | 'tweaks' | 'driver-library' | 'settings';
 
 // M6-amd1/M9: the former Overlay tab was removed from the sidebar; its
 // settings now live inside Monitoring's Overlay view.
-// Settings remains in the footer; keep this exact order for the sidebar.
+// Settings remains in the footer. The sidebar renderer omits Driver Library.
 export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'graphics', 'recording', 'monitoring', 'profiles', 'tweaks', 'driver-library', 'settings'];
 
 export const NAV_LABELS: Record<PageId, string> = {

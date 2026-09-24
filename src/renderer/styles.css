@@ -505,9 +505,11 @@ html, body {
 .sidebar-link.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 
 .driver-library-page { display: grid; gap: 18px; }
+.driver-library-catalog-note { margin: 3px 0 0; color: var(--text-muted); font-size: 11px; }
 .driver-library-layout { display: grid; grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.6fr); gap: 16px; align-items: start; }
 .driver-library-list, .driver-library-details { min-width: 0; padding: 18px; }
 .driver-library-list .card-title { margin: 0 0 12px; }
+.driver-library-search { width: 100%; margin-bottom: 12px; }
 .driver-library-release { display: grid; width: 100%; gap: 5px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .driver-library-release + .driver-library-release { margin-top: 8px; }
 .driver-library-release:hover, .driver-library-release.is-selected { border-color: var(--accent); background: var(--accent-soft); }
@@ -516,7 +518,20 @@ html, body {
 .driver-library-release-heading h2, .driver-library-changelog h3 { margin: 0 0 8px; font-size: 16px; }
 .driver-library-release-heading .page-subtitle { margin: 0; }
 .driver-library-changelog { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border); }
-.driver-library-changelog ul { display: grid; gap: 8px; padding-left: 20px; color: var(--text-dim); line-height: 1.55; }
+.intel-driver-changelog-sections { display: grid; gap: 6px; color: var(--text-dim); line-height: 1.5; }
+.intel-driver-changelog-section-heading { margin: 8px 0 0; color: var(--text); font-size: 12px; font-weight: 650; }
+.intel-driver-changelog-list { display: grid; gap: 5px; margin: 0; padding-left: 19px; color: var(--text-dim); }
+.intel-driver-changelog-group > strong { color: var(--text); font-weight: 600; }
+.intel-driver-changelog-sections.is-nested { margin-top: 4px; padding-left: 14px; border-left: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border)); }
+.intel-driver-changelog-sections.is-nested .intel-driver-changelog-list { padding-left: 18px; }
+.driver-library-changelog .intel-driver-changelog-section-heading { font-size: 13px; }
+.intel-driver-dialog .intel-driver-changelog-list { gap: 4px; }
+.intel-driver-version-value, .dashboard-vram-value { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.dashboard-vram-separator { margin-inline: -3px; color: var(--text-muted); font-size: 11px; }
+.driver-library-launch { display: inline-grid; place-items: center; width: 24px; height: 24px; flex: 0 0 24px; padding: 3px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); background: transparent; cursor: pointer; }
+.driver-library-launch:hover, .driver-library-launch:focus-visible { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.driver-library-launch .sidebar-icon { width: 15px; height: 15px; }
+.rebar-pill-compact { font-size: 10px; padding: 1px 6px; line-height: 1.35; }
 @media (max-width: 760px) { .driver-library-layout { grid-template-columns: 1fr; } .driver-library-release-heading { flex-direction: column; } }
 
 /* M4-H/M-recording: the sidebar footer keeps the global capture status above
@@ -1430,6 +1445,8 @@ input[type="number"] {
 .intel-driver-tab-panel[hidden] { display: none; }
 .intel-driver-changelog-list { margin: 0; padding-left: 22px; }
 .intel-driver-changelog-list li + li { margin-top: 8px; }
+.intel-driver-changelog-sections .intel-driver-changelog-list { padding-left: 19px; }
+.intel-driver-changelog-sections .intel-driver-changelog-list li + li { margin-top: 4px; }
 .intel-driver-changelog-empty { color: var(--text-muted); }
 .intel-driver-dialog-note { padding: 11px 12px; border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--bg-inset)); }
 .intel-driver-dialog-status:empty { display: none; }

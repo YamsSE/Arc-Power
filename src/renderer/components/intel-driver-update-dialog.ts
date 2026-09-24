@@ -1,6 +1,7 @@
 import { el } from '../dom.ts';
 import type { IntelDriverKind, IntelDriverRelease } from '../pure/intel-driver-updates.ts';
 import { api } from '../ipc.ts';
+import { renderIntelDriverChangelog } from './intel-driver-changelog.ts';
 
 const ROOT_ID = 'modal-root';
 type DriverDownloadProgress = { kind: IntelDriverKind; version: string; bytesDownloaded: number; totalBytes: number; percent: number };
@@ -159,8 +160,8 @@ export function showIntelDriverUpdateDialog(
   changelogTab.addEventListener('click', () => selectTab(true));
   downloadTab.addEventListener('keydown', handleTabKeydown);
   changelogTab.addEventListener('keydown', handleTabKeydown);
-  changelogPanel.append(release.changelog.length
-    ? el('ul', { class: 'intel-driver-changelog-list' }, release.changelog.map((item) => el('li', { text: item })))
+  changelogPanel.append((release.changelogSections?.length || release.changelog.length)
+    ? renderIntelDriverChangelog(release)
     : el('p', { class: 'modal-text intel-driver-changelog-empty', text: 'No release highlights are available.' }));
 
   const license = el('input', { type: 'checkbox', class: 'intel-driver-license-checkbox', 'aria-label': 'I accept Intel’s Software License Agreement' }) as HTMLInputElement;

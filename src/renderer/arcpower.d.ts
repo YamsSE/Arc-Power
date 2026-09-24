@@ -61,6 +61,7 @@ import type {
   StreamStatus,
   VendorDeviceInfo,
 } from './types.ts';
+import type { IntelDriverChangelogEntry } from './pure/intel-driver-updates.ts';
 
 export interface DeviceSelectionPayload {
   deviceId: number;
@@ -94,6 +95,7 @@ export interface IntelDriverLibraryRelease {
   version: string;
   releaseDate: string | null;
   changelog: string[];
+  changelogSections?: IntelDriverChangelogEntry[];
   sizeBytes: number | null;
   officialPageUrl: string;
 }
@@ -212,8 +214,8 @@ export interface ArcPowerApi {
   openExternal(url: string): Promise<void>;
   /** Read latest Intel Arc consumer/iGPU and Arc Pro driver metadata. */
   intelDriverUpdateCheck(): Promise<{
-    arc: { version: string; releaseDate: string | null; officialPageUrl: string; changelog: string[] } | null;
-    pro: { version: string; releaseDate: string | null; officialPageUrl: string; changelog: string[] } | null;
+    arc: { version: string; releaseDate: string | null; officialPageUrl: string; changelog: string[]; changelogSections?: IntelDriverChangelogEntry[] } | null;
+    pro: { version: string; releaseDate: string | null; officialPageUrl: string; changelog: string[]; changelogSections?: IntelDriverChangelogEntry[] } | null;
   }>;
   /** List currently published Intel Arc or Arc Pro version numbers. */
   intelDriverLibrary(kind: 'arc' | 'pro'): Promise<{ versions: string[]; partial: boolean }>;

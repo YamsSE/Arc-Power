@@ -444,8 +444,8 @@ function renderSidebar() {
   clear(nav);
   // Settings remains in the sidebar footer. PAGE_IDS supplies the exact
   // main-tab order: Dashboard, Tuning, Graphics, Recording, Monitoring,
-  // Profiles, Tweaks, Driver Library.
-  const navIds = PAGE_IDS.filter((id) => id !== 'settings');
+  // Profiles and Tweaks. Driver Library is launched from the Intel GPU card.
+  const navIds = PAGE_IDS.filter((id) => id !== 'settings' && id !== 'driver-library');
   nav.append(
     // M4-D: the sidebar brand - "Arc Power" with "Power" ILLUMINATED
     // like the title bar (the blue gradient + glow) and a BOLD weight; the

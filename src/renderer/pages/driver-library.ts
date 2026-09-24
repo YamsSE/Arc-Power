@@ -4,6 +4,7 @@ import { api } from '../ipc.ts';
 import { intelDriverKind, type IntelDriverKind, type IntelDriverRelease } from '../pure/intel-driver-updates.ts';
 import { decodeDriverVersion } from '../pure/driver.ts';
 import { showIntelDriverUpdateDialog } from '../components/intel-driver-update-dialog.ts';
+import { renderIntelDriverChangelog } from '../components/intel-driver-changelog.ts';
 
 type DriverLibraryApi = {
   intelDriverLibrary(kind: IntelDriverKind): Promise<{ versions: string[]; partial: boolean }>;
@@ -23,6 +24,15 @@ function releaseDate(value: string | null): string {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString(undefined, { timeZone: 'UTC' });
 }
 
+function driverLibraryDeviceId(devices: Array<{ id: number }>, activeId: number | null, hash: string): number | null {
+  const requested = new URLSearchParams(hash.split('?')[1] ?? '').get('deviceId');
+  if (requested !== null && /^\d+$/.test(requested)) {
+    const id = Number(requested);
+    if (Number.isSafeInteger(id) && devices.some((device) => device.id === id)) return id;
+  }
+  return activeId;
+}
+
 export const driverLibraryPage: Page = {
   id: 'driver-library',
   render(container, ctx) {
@@ -38,18 +48,23 @@ export const driverLibraryPage: Page = {
     let catalogError = false;
     let catalogPartial = false;
     let catalogLoading = true;
+    let searchQuery = '';
     const root = el('div', { class: 'driver-library-page' });
     container.replaceChildren(root);
 
-    const selectedDeviceKind = (): IntelDriverKind | null => {
+    const selectedDevice = () => {
       const state = ctx.store.get();
-      const device = state.devices.find((item) => item.id === state.deviceId);
+      const deviceId = driverLibraryDeviceId(state.devices, state.deviceId, window.location.hash);
+      return state.devices.find((item) => item.id === deviceId) ?? null;
+    };
+
+    const selectedDeviceKind = (): IntelDriverKind | null => {
+      const device = selectedDevice();
       return device ? intelDriverKind(device.gpuVendor, device.name) : null;
     };
 
     const selectedInstalledVersion = (): string => {
-      const state = ctx.store.get();
-      const device = state.devices.find((item) => item.id === state.deviceId);
+      const device = selectedDevice();
       return decodeDriverVersion(device?.osController?.driverVersion ?? device?.driverVersion) ?? '—';
     };
 
@@ -114,20 +129,20 @@ export const driverLibraryPage: Page = {
         ]),
         el('section', { class: 'driver-library-changelog' }, [
           el('h3', { text: 'Intel highlights and changelog' }),
-          release.changelog.length
-            ? el('ul', {}, release.changelog.map((entry) => el('li', { text: entry })))
+          (release.changelogSections?.length || release.changelog.length)
+            ? renderIntelDriverChangelog(release)
             : el('p', { class: 'driver-library-empty', text: 'Intel has not published release highlights for this version.' }),
         ]),
       );
     };
 
-    const render = () => {
+    const render = (restoreSearchFocus = false, caret = 0) => {
       kind = selectedDeviceKind();
       clear(root);
       root.setAttribute('data-kind', String(kind));
-      root.setAttribute('data-device-id', String(ctx.store.get().deviceId));
+      root.setAttribute('data-device-id', String(selectedDevice()?.id ?? ''));
       root.append(el('header', { class: 'page-title-row' }, [
-        el('div', {}, [el('h1', { class: 'page-title', text: 'Driver Library' }), el('p', { class: 'page-subtitle', text: 'Intel releases for this GPU. Select a version to review its details and install.' })]),
+        el('div', {}, [el('h1', { class: 'page-title', text: 'Driver Library' }), el('p', { class: 'page-subtitle', text: 'Intel releases for this GPU. Select a version to review its details and install.' }), el('p', { class: 'driver-library-catalog-note', text: 'The catalog includes versions Intel currently exposes on its current and historical driver pages.' })]),
       ]));
       const layout = el('div', { class: 'driver-library-layout' });
       const list = el('section', { class: 'driver-library-list card', 'aria-label': 'Available Intel drivers' });
@@ -140,6 +155,20 @@ export const driverLibraryPage: Page = {
         return;
       }
       list.append(el('h2', { class: 'card-title', text: kind === 'pro' ? 'Intel Arc Pro drivers' : 'Intel Arc drivers' }));
+      const search = el('input', {
+        class: 'driver-library-search', type: 'search', placeholder: 'Search driver versions',
+        'aria-label': 'Search driver versions', value: searchQuery,
+        onInput: (event: Event) => {
+          const input = event.currentTarget as HTMLInputElement;
+          searchQuery = input.value;
+          render(true, input.selectionStart ?? searchQuery.length);
+        },
+      }) as HTMLInputElement;
+      list.append(search);
+      if (restoreSearchFocus) {
+        search.focus();
+        search.setSelectionRange(caret, caret);
+      }
       if (catalogError) {
         list.append(el('p', { class: 'driver-library-empty text-error', text: 'Intel’s driver catalog is unavailable. Check your connection and reopen Driver Library to try again.' }));
         details.append(el('p', { class: 'driver-library-empty', text: 'Release details are unavailable.' }));
@@ -158,7 +187,11 @@ export const driverLibraryPage: Page = {
         details.append(el('p', { class: 'driver-library-empty', text: 'No release is available to select.' }));
         return;
       }
-      for (const version of versions) {
+      const filteredVersions = versions.filter((version) => version.toLowerCase().includes(searchQuery.trim().toLowerCase()));
+      if (!filteredVersions.length && searchQuery.trim()) {
+        list.append(el('p', { class: 'driver-library-empty', text: 'No driver versions match your search.' }));
+      }
+      for (const version of filteredVersions) {
         const isSelected = selectedVersion === version;
         list.append(el('button', {
           class: `driver-library-release${isSelected ? ' is-selected' : ''}`,
@@ -188,13 +221,14 @@ export const driverLibraryPage: Page = {
     });
   },
   onUpdate(container, ctx) {
+    const state = ctx.store.get();
+    const selectedId = driverLibraryDeviceId(state.devices, state.deviceId, window.location.hash);
     const currentKind = (() => {
-      const state = ctx.store.get();
-      const device = state.devices.find((item) => item.id === state.deviceId);
+      const device = state.devices.find((item) => item.id === selectedId);
       return device ? intelDriverKind(device.gpuVendor, device.name) : null;
     })();
     const page = container.querySelector('.driver-library-page');
-    const deviceId = String(ctx.store.get().deviceId);
+    const deviceId = String(state.devices.find((item) => item.id === selectedId)?.id ?? '');
     if (page && (page.getAttribute('data-kind') !== String(currentKind) || page.getAttribute('data-device-id') !== deviceId)) {
       page.setAttribute('data-kind', String(currentKind));
       page.setAttribute('data-device-id', deviceId);

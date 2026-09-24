@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
-import { INTEL_DRIVER_PAGES } from './intel-driver-update.js';
+import { INTEL_DRIVER_PAGES, validIntelDriverReleaseUrl } from './intel-driver-update.js';
 import { openSafeRecordingFile, revalidateSafeRecordingFile } from './recording-media.js';
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
@@ -109,18 +109,7 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, intelDri
     if (!intelDriverUpdateService?.resolveRelease) throw new Error('Intel driver catalog is unavailable');
     const release = await intelDriverUpdateService.resolveRelease(kind, version, signal);
     const releaseUrl = release?.officialPageUrl;
-    let releasePath;
-    try { releasePath = new URL(releaseUrl); } catch { throw new Error('Intel release page is not valid'); }
-    const familyUrl = new URL(INTEL_DRIVER_PAGES[kind].officialPageUrl);
-    const familyId = familyUrl.pathname.match(/\/download\/(\d+)\//)?.[1];
-    const familySlug = familyUrl.pathname.match(/\/download\/\d+\/([^/]+\.html)$/i)?.[1];
-    const historicalPath = releasePath.pathname.match(/^\/content\/www\/us\/en\/download\/(\d+)\/(\d+)\/([^/]+\.html)$/i);
-    if (releasePath.protocol !== 'https:' || releasePath.hostname !== 'www.intel.com' || releasePath.port
-      || releasePath.username || releasePath.password || releasePath.search || releasePath.hash
-      || (releasePath.pathname !== familyUrl.pathname && (historicalPath?.[1] !== familyId
-        || !historicalPath?.[2] || historicalPath?.[3].toLowerCase() !== familySlug?.toLowerCase()))) {
-      throw new Error('Intel release page is not valid');
-    }
+    if (!validIntelDriverReleaseUrl(releaseUrl, kind)) throw new Error('Intel release page is not valid');
     const pageController = new AbortController();
     const timer = setTimeout(() => pageController.abort(new Error('Intel release page request timed out')), PAGE_TIMEOUT_MS);
     const combinedSignal = signal ? AbortSignal.any([signal, pageController.signal]) : pageController.signal;

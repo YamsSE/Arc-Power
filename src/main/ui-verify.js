@@ -450,9 +450,12 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // Tuning page. M6: 7 nav links - the Overlay Settings page (#/overlay)
   // joined the sidebar. M8: 8 nav links - the Graphics tab (#/graphics)
   // joined below Tuning. M9 moved the Overlay Settings content into Monitoring;
-  // M31 added Driver Library at the bottom.
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
-    fail('sidebar did not render (8 nav links expected - Overclocking + Fan merged into Tuning, the Graphics tab added in M8, the Overlay tab removed in M9)');
+  // M31 exposes Driver Library from the Intel GPU card, not the sidebar.
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - Overclocking + Fan merged into Tuning, the Graphics tab added in M8, the Overlay tab removed in M9)');
+  }
+  if (await js(`Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link-label')).some((label) => (label.textContent ?? '').trim() === 'Driver Library')`)) {
+    fail('Driver Library must not appear as a sidebar tab');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
@@ -623,7 +626,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // "Power" illuminated like the title bar, the brand BOLD.
   const sidebarIcons = await js(`Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link')).map((l) => ({ label: l.querySelector('.sidebar-link-label')?.textContent, hasIcon: !!l.querySelector('.sidebar-icon') }))`);
   if (!sidebarIcons.every((i) => i.hasIcon === true && i.label)) fail(`M4-D: every sidebar link must carry an icon + label: ${JSON.stringify(sidebarIcons)}`);
-  if (sidebarIcons.length !== 8) fail(`M31: expected 8 sidebar links with icons (Driver Library joined the bottom), got ${sidebarIcons.length}`);
+  if (sidebarIcons.length !== 7) fail(`M31: expected 7 sidebar links with icons (Driver Library is launched from the Intel GPU card), got ${sidebarIcons.length}`);
   // M8: the Graphics tab sits DIRECTLY BELOW Tuning in the sidebar DOM (the
   // planned order: dashboard / tuning / graphics / monitoring / ...).
   const navOrder = await js(`JSON.stringify(Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link-label')).map((l) => (l.textContent ?? '').trim()))`);
@@ -633,10 +636,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (graphicsIdx < 0 || graphicsIdx !== tuningIdx + 1) {
     fail(`M8: the Graphics tab must sit DIRECTLY BELOW Tuning in the sidebar (nav order '${navOrder}')`);
   }
-  const driverLibraryIdx = navLabels.indexOf('Driver Library');
-  if (driverLibraryIdx < 0 || driverLibraryIdx !== navLabels.length - 1) {
-    fail(`M31: Driver Library must be the last main tab in the sidebar (nav order '${navOrder}')`);
-  }
+  if (navLabels.includes('Driver Library')) fail(`M31: Driver Library must not appear in the sidebar (nav order '${navOrder}')`);
   step('m8-nav-position', `M8: the sidebar nav order is ${navOrder} - the Graphics tab sits directly below Tuning`);
   const sidebarPower = await js(`(() => {
     const el = document.querySelector('.sidebar-brand-power');
@@ -982,10 +982,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('m17c-control-bg', 'M17c: the --control-bg token renders on a select + a plain .btn + a checkbox in BOTH themes (the dark/light computed-style pins)');
 
   // M4-H (C1): the first GPU card - title 'GPU 1', the device name in a 'GPU' kv
-  // row under it (the CPU-card layout mirrored: title, then the 'CPU' kv
-  // row - the GPU card mirrors that with a 'GPU' row), NO Driver version
-  // row anywhere in the card (the health card keeps it - pinned below),
-  // Compute + Clocks + the standalone ReBAR pill stay.
+  // row under it, and the installed Intel driver row with its Driver Library
+  // launch button. The button routes by device id without changing selection.
   if (!(await waitFor(win, `(() => {
     const card = document.querySelector('.card-grid .device-card');
     if (!card) return false;
@@ -995,14 +993,14 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   })()`, 8000))) {
     fail(`M4-H: the GPU card layout is wrong (title '${await js(`document.querySelector('.device-card .card-title')?.textContent ?? ''`)}', GPU kv '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="GPU"]')?.textContent ?? ''`)}')`);
   }
-  if (await js(`!!document.querySelector('.card-grid .device-card .kv[data-label="Driver version"]')`)) {
-    fail('M4-H: the GPU card still renders the Driver version row (removed - the health card keeps it)');
+  if (!(await waitFor(win, `!!document.querySelector('.card-grid .device-card:not([hidden]) .kv[data-label="Driver version"]')`, 5000))) {
+    fail('M31: the Intel GPU card does not show its Driver version row');
   }
   const gpuNameKv = await js(`document.querySelector('.card-grid .device-card .kv[data-label="GPU"]')?.textContent ?? ''`);
   if (!(await waitFor(win, `document.body.textContent.includes('Xe Cores 32 - Shader Units 4096')`))) {
     fail('Xe cores / shader units line missing');
   }
-  // M17c/M17d: the Board partner row BELOW the Device row - '<AIB vendor>
+  // M17c/M17d: the Board partner row BELOW the Driver version row - '<AIB vendor>
   // (<model>)' from the caps AIB fields (the a770 mock's 0x1849/0x6001
   // pairing decodes ASRock / Phantom Gaming - M17d FLIP: the model drops
   // the trailing VRAM-amount token, the user's exact request).
@@ -1010,22 +1008,22 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const card = document.querySelector('.card-grid .device-card');
     const kvs = Array.from(card?.querySelectorAll('.kv') ?? []);
     const gpuIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'GPU');
+    const driverIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'Driver version');
     const aibIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'Board partner');
     const aibRow = kvs[aibIdx];
-    return aibIdx === gpuIdx + 1 && !!aibRow && (aibRow.textContent ?? '').trim() === 'ASRock (Phantom Gaming)';
+    return driverIdx === gpuIdx + 1 && aibIdx === driverIdx + 1 && !!aibRow && (aibRow.textContent ?? '').trim() === 'ASRock (Phantom Gaming)';
   })()`, 5000))) {
-    fail(`M17c: the Board partner row is '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="Board partner"]')?.textContent ?? ''`)}' (expected 'ASRock (Phantom Gaming)' directly below the Device row)`);
+    fail(`M17c: the Board partner row is '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="Board partner"]')?.textContent ?? ''`)}' (expected 'ASRock (Phantom Gaming)' directly below Driver version)`);
   }
-  step('m17c-board-partner', 'M17c/M17d: the Board partner row renders directly below the Device row - ASRock (Phantom Gaming) (the 0x1849/0x6001 decode, the VRAM amount stripped)');
+  step('m17c-board-partner', 'M17c/M17d: Board partner renders directly below Driver version - ASRock (Phantom Gaming) (the 0x1849/0x6001 decode, the VRAM amount stripped)');
   // The waiver status row lives in the HEALTH card (below), not on the
   // device card: no 'OC waiver' text in any device-card kv row.
   if (await js(`Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.textContent ?? '').includes('OC waiver'))`)) fail('M4-A: the device card still shows the waiver status (the row lives in the GPU Status card)');
   // B2: the chips footer ("Fan curve N points", power/volt/freq/temp notes)
-  // is GONE from the device card - no chips inside the card grid EXCEPT the
-  // M4-D ReBAR pill (a deliberate new chip, excluded here).
+  // is GONE from the device card - the compact ReBAR pill sits beside VRAM.
   const gridChips = await js(`document.querySelectorAll('.card-grid .chip:not(.rebar-pill)').length`);
   if (gridChips !== 0) fail(`B2: device card chips footer still renders ${gridChips} chips`);
-  step('device-card', 'device card: Xe Cores 32 - Shader Units 4096, no PCI row, no chips footer (ReBAR pill is the only chip)');
+  step('device-card', 'device card: Xe Cores 32 - Shader Units 4096, no PCI row or chips footer; Driver Library button stays with driver version');
 
   // M4-I (B2): the VRAM row below the Shader info - the same ceil contract
   // as formatDeviceName with the memType CARRIED ON THE DEVICE PAYLOAD
@@ -1035,7 +1033,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `(() => {
     const row = Array.from(document.querySelectorAll('.card-grid .device-card .kv'))
       .find((k) => (k.getAttribute('data-label') ?? '') === 'VRAM');
-    return row && (row.textContent ?? '').trim() === '16GB GDDR6';
+    return row?.querySelector('.dashboard-vram-value > span:first-child')?.textContent?.trim() === '16GB GDDR6';
   })()`, 5000))) {
     fail(`M4-I: the device-card VRAM row is '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="VRAM"]')?.textContent ?? ''`)}' (expected '16GB GDDR6' - ceil GiB + the payload memType)`);
   }
@@ -1235,20 +1233,46 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('m140-performance-pulse', `M140: compact Performance Pulse has '${pulseLabels}' with per-GPU utilization${multiGpuDashboard ? ' and VRAM values in both lanes' : ' 42%'}`);
 
-  // --- M4-D2 (§3): the ReBAR pill is STANDALONE (no label kv row) --------
-  // The mock fixture models a healthy setup: a multi-GiB BAR (rebarActive
-  // true -> green 'ReBAR on'). The row that used to wrap it ("Resizable
-  // BAR" kv) and the PCIe row are GONE.
-  if (await js(`!!document.querySelector('.card-grid .kv[data-label="Resizable BAR"]')`)) {
-    fail('M4-D2: the "Resizable BAR" label row is still rendered (the pill must be standalone)');
-  }
-  const rebarPill = await js(`(() => {
+  // --- M31: compact ReBAR pill shares the VRAM row -------------------------
+  const rebarLayout = await js(`(() => {
     const pill = document.querySelector('.card-grid .rebar-pill');
-    if (!pill) return 'no-pill';
-    return pill.textContent + '|' + pill.className;
+    const row = pill?.closest('.kv[data-label="VRAM"]');
+    return JSON.stringify({ text: pill?.textContent ?? '', className: pill?.className ?? '', inline: !!row, standalone: !!document.querySelector('.card-grid .kv-rebar') });
   })()`);
-  if (!/ReBAR on\|.*status-ok/.test(rebarPill)) fail(`M4-D2: the standalone ReBAR pill is '${rebarPill}' (expected the green 'ReBAR on')`);
-  step('m4d2-gpu-rows', `GPU card: ReBAR standalone pill '${rebarPill.split('|')[0]}' (green), no PCIe row, no Resizable BAR label row`);
+  const rebarLayoutData = JSON.parse(rebarLayout);
+  if (rebarLayoutData.text !== 'ReBAR on' || !rebarLayoutData.className.includes('status-ok') || !rebarLayoutData.className.includes('rebar-pill-compact') || !rebarLayoutData.inline || rebarLayoutData.standalone) {
+    fail(`M31: ReBAR must be compact and inline with VRAM: ${rebarLayout}`);
+  }
+  step('m31-vram-rebar', `GPU card: compact '${rebarLayoutData.text}' pill shares the VRAM row`);
+
+  const launchButton = await js(`document.querySelector('.card-grid .device-card:not([hidden]) .driver-library-launch')?.getAttribute('aria-label') ?? ''`);
+  if (launchButton !== 'Intel Driver Library') fail(`M31: the GPU card library button is labelled '${launchButton}'`);
+  const routeCheck = await js(`(() => {
+    const card = document.querySelector('.card-grid .device-card:not([hidden])');
+    return JSON.stringify({ deviceId: card?.dataset.deviceId ?? '', selected: document.querySelector('.device-select')?.value ?? null });
+  })()`);
+  const routeCheckData = JSON.parse(routeCheck);
+  await js(`document.querySelector('.card-grid .device-card:not([hidden]) .driver-library-launch')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.driver-library-page')`, 5000))) {
+    fail('M31: clicking Intel Driver Library did not open the Library page');
+  }
+  const libraryRoute = await js(`JSON.stringify({
+    routeId: new URLSearchParams(location.hash.split('?')[1] ?? '').get('deviceId'),
+    pageId: document.querySelector('.driver-library-page')?.getAttribute('data-device-id') ?? '',
+  })`);
+  const libraryRouteData = JSON.parse(libraryRoute);
+  if (!routeCheckData.deviceId || libraryRouteData.routeId !== routeCheckData.deviceId || libraryRouteData.pageId !== routeCheckData.deviceId) {
+    fail(`M31: Driver Library lost its card GPU context: ${libraryRoute}`);
+  }
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `!!document.querySelector('.card-grid .device-card:not([hidden])')`, 5000))) {
+    fail('M31: returning from Driver Library did not restore the dashboard');
+  }
+  const selectionAfterLibrary = await js(`document.querySelector('.device-select')?.value ?? null`);
+  if (routeCheckData.selected !== selectionAfterLibrary) {
+    fail(`M31: opening Driver Library changed the selected GPU from '${routeCheckData.selected}' to '${selectionAfterLibrary}'`);
+  }
+  step('m31-driver-library-entry', `GPU card button opened Driver Library for device ${routeCheckData.deviceId}; active GPU selection stayed unchanged`);
 
   // ONE general GPU STATUS card (M3-A + M3-C-I + M4-A + M16): FIVE rows,
   // honest per-row state, no Level Zero item, no IGCL detail line, NO
@@ -4936,8 +4960,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('m4h-save-override', `M4-H: override flow - button 'Override Profile', modal prefilled, active id '${m4hCreatedId}' overwritten (name -> 'M4H saved profile v2')`);
   // Reload check: a FRESH reload keeps the active profile + the button.
   await js(`location.reload()`);
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`, 15000))) {
-    fail('M4-H: the reload did not boot the shell (8 sidebar links expected - the Overlay tab moved into Monitoring in M9)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`, 15000))) {
+    fail('M4-H: the reload did not boot the shell (7 sidebar links expected - the Overlay tab moved into Monitoring in M9)');
   }
   await js(`location.hash = '#/tuning'`);
   await sleep(300);
@@ -6098,9 +6122,9 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   // M4-D2 (§7): 6 nav links (Overclocking + Fan merged into Tuning). M6: 7
   // nav links (the Overlay Settings page joined the sidebar). M8: 8 (the
   // Graphics tab joined below Tuning). M9 moved Overlay into Monitoring;
-  // M31 added Driver Library at the bottom.
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
-    fail('sidebar did not render (8 nav links expected - the Graphics tab joined in M8, the Overlay tab moved into Monitoring in M9)');
+  // M31 exposes Driver Library from the Intel GPU card, not the sidebar.
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - the Graphics tab joined in M8, the Overlay tab moved into Monitoring in M9)');
   }
   // M3-A (shared shell): the brand is text + blue bar (no logo image), and
   // the IGS indicator is gone everywhere.
@@ -6802,8 +6826,8 @@ export async function runLaptopSysinfoVerify(win) {
   const js = (code) => win.webContents.executeJavaScript(code);
 
   // --- 1. shell + the shared waiver boot step -------------------------------
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
-    fail('sidebar did not render (8 nav links expected)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected)');
   }
   await bootWaiverStep(win, js, waitFor);
   step('waiver-boot', 'boot waiver prompt handled (cancelled - the unaccepted session)');
@@ -6857,7 +6881,7 @@ export async function runSyntheticOsVerify(win) {
   const expectedDriver = nvidia ? '31.0.15.6262' : '31.0.12027.9001';
   const expectedVram = nvidia ? '4GB' : '8GB';
 
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
     fail('M30 synthetic OS: sidebar did not render');
   }
   const devices = await js(`window.arcPower.listDevices()`);
@@ -6880,7 +6904,11 @@ export async function runSyntheticOsVerify(win) {
   if (nvidia && !(await waitFor(win, `(document.querySelector('.device-card .kv[data-label="Clocks"]')?.textContent ?? '').trim() === '1965 MHz Core / 7010 MHz Memory'`, 8000))) {
     fail(`M30 synthetic OS: NVIDIA Clocks readout did not receive live telemetry (got '${await js(`document.querySelector('.device-card .kv[data-label="Clocks"]')?.textContent ?? ''`)}', expected '1965 MHz Core / 7010 MHz Memory')`);
   }
-  const dashboardRows = JSON.parse(await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.device-card .kv')).map((k) => [k.getAttribute('data-label') ?? 'ReBAR', (k.textContent ?? '').trim()])))`));
+  const dashboardRows = JSON.parse(await js(`JSON.stringify({
+    ...Object.fromEntries(Array.from(document.querySelectorAll('.device-card .kv')).map((k) => [k.getAttribute('data-label') ?? '', (k.textContent ?? '').trim()])),
+    VRAM: document.querySelector('.device-card .kv[data-label="VRAM"] .dashboard-vram-value > span:first-child')?.textContent?.trim() ?? '',
+    ReBAR: document.querySelector('.device-card .rebar-pill')?.textContent?.trim() ?? '',
+  })`));
   if (dashboardRows.GPU !== expectedName) fail(`M30 synthetic OS: GPU card name is '${dashboardRows.GPU}' (expected '${expectedName}')`);
   if (!dashboardRows['Driver version']?.includes(expectedDriver)) fail(`M30 synthetic OS: Driver version row is '${dashboardRows['Driver version']}' (expected '${expectedDriver}')`);
   if (dashboardRows.VRAM !== expectedVram) fail(`M30 synthetic OS: VRAM row is '${dashboardRows.VRAM}' (expected '${expectedVram}')`);
@@ -6941,8 +6969,8 @@ async function runZeroGpuVerify(win) {
   };
   const js = (code) => win.webContents.executeJavaScript(code);
 
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`, 10000))) {
-    fail('M30 zero-GPU: shell did not render (8 sidebar links expected)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`, 10000))) {
+    fail('M30 zero-GPU: shell did not render (7 sidebar links expected)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`M30 zero-GPU: sidebar brand is '${brand}'`);
@@ -7043,8 +7071,8 @@ export async function runNoIntelVerify(win) {
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
   // --- 1. shell renders ----------------------------------------------------
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
-    fail('sidebar did not render (8 nav links expected - the Overlay tab moved into Monitoring in M9)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
@@ -7164,7 +7192,7 @@ export async function runNoIntelVerify(win) {
   if (computeRowKv.trim() !== '2048 Cores') {
     fail(`M17d: the no-Intel Compute row is '${computeRowKv}' (expected '2048 Cores' - the NVML numGpuCores via the deviceInfo() seam)`);
   }
-  const vramRowKv = await js(`document.querySelector('.device-card .kv[data-label="VRAM"]')?.textContent ?? ''`);
+  const vramRowKv = await js(`document.querySelector('.device-card .kv[data-label="VRAM"] .dashboard-vram-value > span:first-child')?.textContent ?? ''`);
   if (vramRowKv.trim() !== '4GB') {
     fail(`M17d: the no-Intel VRAM row is '${vramRowKv}' (expected '4GB' - the deviceInfo() NVML total primary, 4 GiB on the GTX 980-class)`);
   }
@@ -7337,9 +7365,9 @@ export async function runTweaksApplyVerify(win) {
 
   // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
   // (the Graphics tab joined below Tuning). M9 moved Overlay into Monitoring;
-  // M31 added Driver Library at the bottom.
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
-    fail('sidebar did not render (8 nav links expected - the Overlay tab moved into Monitoring in M9)');
+  // M31 exposes Driver Library from the Intel GPU card, not the sidebar.
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
   // EVERY session; Cancel it BEFORE the tweaks flow (F4: no stray modal may
@@ -7520,9 +7548,9 @@ export async function runFanGateVerify(win, backend) {
 
   // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
   // (the Graphics tab joined below Tuning). M9 moved Overlay into Monitoring;
-  // M31 added Driver Library at the bottom.
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
-    fail('sidebar did not render (8 nav links expected - the Overlay tab moved into Monitoring in M9)');
+  // M31 exposes Driver Library from the Intel GPU card, not the sidebar.
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
+    fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   // M4-A/M4-B: the shared boot-step - the session boots unaccepted -> the
   // boot prompt appears exactly once -> Cancel it (the fan gate below then
