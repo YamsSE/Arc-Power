@@ -20,14 +20,14 @@ import type {
 // Monitoring page as a sub-view in M9 - the PageId is gone; the old hash
 // redirects (pageFromHash) with the overlay view requested.
 // M8/M-recording: the sidebar order is deliberately fixed as Dashboard,
-// Tuning, Graphics, Recording, Monitoring, Profiles, Tweaks. Settings stays
-// in the footer and is not part of the main navigation list.
-export type PageId = 'dashboard' | 'tuning' | 'graphics' | 'recording' | 'monitoring' | 'profiles' | 'tweaks' | 'settings';
+// Tuning, Graphics, Recording, Monitoring, Profiles, Tweaks, Driver Library.
+// Settings stays in the footer and is not part of the main navigation list.
+export type PageId = 'dashboard' | 'tuning' | 'graphics' | 'recording' | 'monitoring' | 'profiles' | 'tweaks' | 'driver-library' | 'settings';
 
 // M6-amd1/M9: the former Overlay tab was removed from the sidebar; its
 // settings now live inside Monitoring's Overlay view.
 // Settings remains in the footer; keep this exact order for the sidebar.
-export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'graphics', 'recording', 'monitoring', 'profiles', 'tweaks', 'settings'];
+export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'graphics', 'recording', 'monitoring', 'profiles', 'tweaks', 'driver-library', 'settings'];
 
 export const NAV_LABELS: Record<PageId, string> = {
   dashboard: 'Dashboard',
@@ -40,6 +40,7 @@ export const NAV_LABELS: Record<PageId, string> = {
   recording: 'Recording',
   profiles: 'Profiles',
   tweaks: 'Tweaks',
+  'driver-library': 'Driver Library',
   // M4-D: the Settings tab (Start with Windows / Start minimized / About).
   settings: 'Settings',
 };

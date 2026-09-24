@@ -2761,10 +2761,25 @@ export function createIpcHandlers({
       return intelDriverUpdateService.check();
     },
 
-    'intel-driver-download-page-open': async (kind, ...args) => {
-      if (args.length !== 0) throw new Error('intel-driver-download-page-open takes one payload');
+    'intel-driver-library': async (kind, ...args) => {
+      if (args.length !== 0) throw new Error('intel-driver-library takes one payload');
+      if (kind !== 'arc' && kind !== 'pro') throw new Error('intel-driver-library: invalid kind');
+      return intelDriverUpdateService.library(kind);
+    },
+
+    'intel-driver-release': async (kind, version, ...args) => {
+      if (args.length !== 0) throw new Error('intel-driver-release takes two payloads');
+      validateIntelDriverDownloadIdentity(kind, version, 'intel-driver-release');
+      return intelDriverUpdateService.resolveRelease(kind, version);
+    },
+
+    'intel-driver-download-page-open': async (kind, version, ...args) => {
+      if (args.length !== 0) throw new Error('intel-driver-download-page-open takes one or two payloads');
       if (kind !== 'arc' && kind !== 'pro') throw new Error('intel-driver-download-page-open: invalid kind');
-      await openExternal(INTEL_DRIVER_PAGES[kind].officialPageUrl);
+      if (version === undefined) return openExternal(INTEL_DRIVER_PAGES[kind].officialPageUrl);
+      validateIntelDriverDownloadIdentity(kind, version, 'intel-driver-download-page-open');
+      const release = await intelDriverUpdateService.resolveRelease(kind, version);
+      await openExternal(release.officialPageUrl);
     },
 
     'intel-driver-download-status': async (kind, version, ...args) => {

@@ -19,6 +19,7 @@ import { recordingPage } from './pages/recording.ts';
 import { profilesPage } from './pages/profiles.ts';
 import { tweaksPage } from './pages/tweaks.ts';
 import { settingsPage } from './pages/settings.ts';
+import { driverLibraryPage } from './pages/driver-library.ts';
 import { getLatestFpsSample, getMonitorLogToFile, filterMonitorLogSample, setMonitorLogMetrics, setMonitorLogToFile } from './log-state.ts';
 import { createDeviceSwitcher } from './device.ts';
 import { deviceHardwareKey, resolveBootDevice, resolveFeaturesetSwapSelection } from './pure/device.ts';
@@ -37,6 +38,7 @@ const PAGES: Record<PageId, Page> = {
   recording: recordingPage,
   profiles: profilesPage,
   tweaks: tweaksPage,
+  'driver-library': driverLibraryPage,
   settings: settingsPage,
 };
 
@@ -442,7 +444,7 @@ function renderSidebar() {
   clear(nav);
   // Settings remains in the sidebar footer. PAGE_IDS supplies the exact
   // main-tab order: Dashboard, Tuning, Graphics, Recording, Monitoring,
-  // Profiles, Tweaks.
+  // Profiles, Tweaks, Driver Library.
   const navIds = PAGE_IDS.filter((id) => id !== 'settings');
   nav.append(
     // M4-D: the sidebar brand - "Arc Power" with "Power" ILLUMINATED

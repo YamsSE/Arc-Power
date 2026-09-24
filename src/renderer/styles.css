@@ -499,9 +499,25 @@ html, body {
    frame-sync + override surface the tab controls). */
 .sidebar-icon-graphics { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M18 9V7c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-2h4V9h-4zm-6 7H4v-2h8v2zm0-4H4v-2h8v2zm0-4H4V7h8v2zm6 4h-4v-2h4v2zm0-4h-4V7h4v2z'/%3E%3C/svg%3E"); }
 .sidebar-icon-recording { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zm6 3v8l7-4-7-4z'/%3E%3C/svg%3E"); }
+.sidebar-icon-driver-library { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M4 3h16v2H4zm0 4h16v2H4zm0 4h10v2H4zm0 4h10v2H4zm0 4h10v2H4zm13-5 5 3-5 3z'/%3E%3C/svg%3E"); }
 
 .sidebar-link:hover { background: var(--bg-inset); color: var(--text); }
 .sidebar-link.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+.driver-library-page { display: grid; gap: 18px; }
+.driver-library-layout { display: grid; grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.6fr); gap: 16px; align-items: start; }
+.driver-library-list, .driver-library-details { min-width: 0; padding: 18px; }
+.driver-library-list .card-title { margin: 0 0 12px; }
+.driver-library-release { display: grid; width: 100%; gap: 5px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.driver-library-release + .driver-library-release { margin-top: 8px; }
+.driver-library-release:hover, .driver-library-release.is-selected { border-color: var(--accent); background: var(--accent-soft); }
+.driver-library-release span, .driver-library-empty { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.driver-library-release-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.driver-library-release-heading h2, .driver-library-changelog h3 { margin: 0 0 8px; font-size: 16px; }
+.driver-library-release-heading .page-subtitle { margin: 0; }
+.driver-library-changelog { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border); }
+.driver-library-changelog ul { display: grid; gap: 8px; padding-left: 20px; color: var(--text-dim); line-height: 1.55; }
+@media (max-width: 760px) { .driver-library-layout { grid-template-columns: 1fr; } .driver-library-release-heading { flex-direction: column; } }
 
 /* M4-H/M-recording: the sidebar footer keeps the global capture status above
    the GitHub + Settings row. The GitHub icon uses the same mask-image pattern

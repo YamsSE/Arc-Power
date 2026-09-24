@@ -90,6 +90,14 @@ export interface IntelDriverDownloadProgress {
   percent: number;
 }
 
+export interface IntelDriverLibraryRelease {
+  version: string;
+  releaseDate: string | null;
+  changelog: string[];
+  sizeBytes: number | null;
+  officialPageUrl: string;
+}
+
 export interface ArcPowerApi {
   health(): Promise<HealthReport>;
   listDevices(): Promise<DeviceInfo[]>;
@@ -207,8 +215,12 @@ export interface ArcPowerApi {
     arc: { version: string; releaseDate: string | null; officialPageUrl: string; changelog: string[] } | null;
     pro: { version: string; releaseDate: string | null; officialPageUrl: string; changelog: string[] } | null;
   }>;
+  /** List currently published Intel Arc or Arc Pro version numbers. */
+  intelDriverLibrary(kind: 'arc' | 'pro'): Promise<{ versions: string[]; partial: boolean }>;
+  /** Load the details for one version that is currently listed by Intel. */
+  intelDriverRelease(kind: 'arc' | 'pro', version: string): Promise<IntelDriverLibraryRelease>;
   /** Open one fixed official Intel driver page; renderer-supplied URLs are never accepted. */
-  openIntelDriverDownloadPage(kind: 'arc' | 'pro'): Promise<void>;
+  openIntelDriverDownloadPage(kind: 'arc' | 'pro', version?: string): Promise<void>;
   /** Inspect whether the exact Intel release is retained locally; no path is exposed. */
   intelDriverDownloadStatus(kind: 'arc' | 'pro', version: string): Promise<{ downloaded: boolean; sizeBytes: number | null }>;
   /** Start a user-consented, streamed Intel driver download with integrity verification. */

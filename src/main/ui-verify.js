@@ -449,10 +449,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // M4-D2 (§7): 6 nav links - the Overclocking + Fan pages merged into one
   // Tuning page. M6: 7 nav links - the Overlay Settings page (#/overlay)
   // joined the sidebar. M8: 8 nav links - the Graphics tab (#/graphics)
-  // joined below Tuning. M9: 7 again - the Overlay Settings content moved
-  // INTO the Monitoring page's Overlay view (the Overlay tab is gone).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - Overclocking + Fan merged into Tuning, the Graphics tab added in M8, the Overlay tab removed in M9)');
+  // joined below Tuning. M9 moved the Overlay Settings content into Monitoring;
+  // M31 added Driver Library at the bottom.
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - Overclocking + Fan merged into Tuning, the Graphics tab added in M8, the Overlay tab removed in M9)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
@@ -623,7 +623,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // "Power" illuminated like the title bar, the brand BOLD.
   const sidebarIcons = await js(`Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link')).map((l) => ({ label: l.querySelector('.sidebar-link-label')?.textContent, hasIcon: !!l.querySelector('.sidebar-icon') }))`);
   if (!sidebarIcons.every((i) => i.hasIcon === true && i.label)) fail(`M4-D: every sidebar link must carry an icon + label: ${JSON.stringify(sidebarIcons)}`);
-  if (sidebarIcons.length !== 7) fail(`M9: expected 7 sidebar links with icons (the Overlay tab moved into the Monitoring page in M9 - the Graphics tab joined in M8), got ${sidebarIcons.length}`);
+  if (sidebarIcons.length !== 8) fail(`M31: expected 8 sidebar links with icons (Driver Library joined the bottom), got ${sidebarIcons.length}`);
   // M8: the Graphics tab sits DIRECTLY BELOW Tuning in the sidebar DOM (the
   // planned order: dashboard / tuning / graphics / monitoring / ...).
   const navOrder = await js(`JSON.stringify(Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link-label')).map((l) => (l.textContent ?? '').trim()))`);
@@ -632,6 +632,10 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const tuningIdx = navLabels.indexOf('Tuning');
   if (graphicsIdx < 0 || graphicsIdx !== tuningIdx + 1) {
     fail(`M8: the Graphics tab must sit DIRECTLY BELOW Tuning in the sidebar (nav order '${navOrder}')`);
+  }
+  const driverLibraryIdx = navLabels.indexOf('Driver Library');
+  if (driverLibraryIdx < 0 || driverLibraryIdx !== navLabels.length - 1) {
+    fail(`M31: Driver Library must be the last main tab in the sidebar (nav order '${navOrder}')`);
   }
   step('m8-nav-position', `M8: the sidebar nav order is ${navOrder} - the Graphics tab sits directly below Tuning`);
   const sidebarPower = await js(`(() => {
@@ -4932,8 +4936,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('m4h-save-override', `M4-H: override flow - button 'Override Profile', modal prefilled, active id '${m4hCreatedId}' overwritten (name -> 'M4H saved profile v2')`);
   // Reload check: a FRESH reload keeps the active profile + the button.
   await js(`location.reload()`);
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`, 15000))) {
-    fail('M4-H: the reload did not boot the shell (7 sidebar links expected - the Overlay tab moved into Monitoring in M9)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`, 15000))) {
+    fail('M4-H: the reload did not boot the shell (8 sidebar links expected - the Overlay tab moved into Monitoring in M9)');
   }
   await js(`location.hash = '#/tuning'`);
   await sleep(300);
@@ -6093,10 +6097,10 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   // --- boot: shell + dropdown -----------------------------------------------
   // M4-D2 (§7): 6 nav links (Overclocking + Fan merged into Tuning). M6: 7
   // nav links (the Overlay Settings page joined the sidebar). M8: 8 (the
-  // Graphics tab joined below Tuning). M9: 7 again (the Overlay tab moved
-  // into the Monitoring page's Overlay view).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - the Graphics tab joined in M8, the Overlay tab moved into Monitoring in M9)');
+  // Graphics tab joined below Tuning). M9 moved Overlay into Monitoring;
+  // M31 added Driver Library at the bottom.
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - the Graphics tab joined in M8, the Overlay tab moved into Monitoring in M9)');
   }
   // M3-A (shared shell): the brand is text + blue bar (no logo image), and
   // the IGS indicator is gone everywhere.
@@ -6798,8 +6802,8 @@ export async function runLaptopSysinfoVerify(win) {
   const js = (code) => win.webContents.executeJavaScript(code);
 
   // --- 1. shell + the shared waiver boot step -------------------------------
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected)');
   }
   await bootWaiverStep(win, js, waitFor);
   step('waiver-boot', 'boot waiver prompt handled (cancelled - the unaccepted session)');
@@ -6853,7 +6857,7 @@ export async function runSyntheticOsVerify(win) {
   const expectedDriver = nvidia ? '31.0.15.6262' : '31.0.12027.9001';
   const expectedVram = nvidia ? '4GB' : '8GB';
 
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
     fail('M30 synthetic OS: sidebar did not render');
   }
   const devices = await js(`window.arcPower.listDevices()`);
@@ -6937,8 +6941,8 @@ async function runZeroGpuVerify(win) {
   };
   const js = (code) => win.webContents.executeJavaScript(code);
 
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`, 10000))) {
-    fail('M30 zero-GPU: shell did not render (7 sidebar links expected)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`, 10000))) {
+    fail('M30 zero-GPU: shell did not render (8 sidebar links expected)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`M30 zero-GPU: sidebar brand is '${brand}'`);
@@ -7039,8 +7043,8 @@ export async function runNoIntelVerify(win) {
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
   // --- 1. shell renders ----------------------------------------------------
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
@@ -7332,10 +7336,10 @@ export async function runTweaksApplyVerify(win) {
   const cancelKnob = process.env.RID_MOCK_REGAPPLY_CANCEL === '1';
 
   // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
-  // (the Graphics tab joined below Tuning). M9: 7 again (the Overlay tab
-  // moved into the Monitoring page's Overlay view).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
+  // (the Graphics tab joined below Tuning). M9 moved Overlay into Monitoring;
+  // M31 added Driver Library at the bottom.
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
   // EVERY session; Cancel it BEFORE the tweaks flow (F4: no stray modal may
@@ -7515,10 +7519,10 @@ export async function runFanGateVerify(win, backend) {
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
   // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
-  // (the Graphics tab joined below Tuning). M9: 7 again (the Overlay tab
-  // moved into the Monitoring page's Overlay view).
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
+  // (the Graphics tab joined below Tuning). M9 moved Overlay into Monitoring;
+  // M31 added Driver Library at the bottom.
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   // M4-A/M4-B: the shared boot-step - the session boots unaccepted -> the
   // boot prompt appears exactly once -> Cancel it (the fan gate below then

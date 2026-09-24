@@ -14,8 +14,11 @@ const FETCH_TIMEOUT_MS = 8000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_CHANGELOG_ITEMS = 20;
-const MAX_CHANGELOG_ITEM_LENGTH = 500;
+const MAX_CHANGELOG_ITEM_LENGTH = 1200;
 const MAX_CHANGELOG_LENGTH = 4000;
+const MAX_CATALOG_RELEASES = 100;
+const CATALOG_CACHE_TTL_MS = 15 * 60 * 1000;
+const PARTIAL_CATALOG_CACHE_TTL_MS = 60 * 1000;
 
 function validOfficialUrl(value, expectedUrl) {
   try {
@@ -32,6 +35,45 @@ function validOfficialUrl(value, expectedUrl) {
   } catch {
     return false;
   }
+}
+
+function validReleaseUrl(value, kind) {
+  try {
+    const url = new URL(value, INTEL_DRIVER_PAGES[kind].officialPageUrl);
+    const familyPath = new URL(INTEL_DRIVER_PAGES[kind].officialPageUrl).pathname;
+    const familyId = familyPath.match(/\/download\/(\d+)\//i)?.[1];
+    const familySlug = familyPath.match(/\/download\/\d+\/([^/]+\.html)$/i)?.[1];
+    if (url.pathname === familyPath) {
+      return url.protocol === 'https:' && url.hostname === 'www.intel.com' && !url.port
+        && !url.username && !url.password && !url.search && !url.hash;
+    }
+    const match = url.pathname.match(/^\/content\/www\/us\/en\/download\/(\d+)\/(\d+)\/([^/]+\.html)$/i);
+    return url.protocol === 'https:' && url.hostname === 'www.intel.com' && !url.port
+      && !url.username && !url.password && !url.search && !url.hash
+      && match?.[1] === familyId && Boolean(match?.[2])
+      && match?.[3].toLowerCase() === familySlug?.toLowerCase();
+  } catch { return false; }
+}
+
+function releaseSelectorHtml(source) {
+  return String(source ?? '').match(/<select\b(?=[^>]*\bid\s*=\s*(["'])version-driver-select\1)[^>]*>([\s\S]*?)<\/select\s*>/i)?.[2] ?? null;
+}
+
+function extractReleaseOptions(source, kind) {
+  const select = releaseSelectorHtml(source);
+  if (!select) return [];
+  const options = [];
+  for (const match of select.matchAll(/<option\b([^>]*)>([\s\S]*?)<\/option\s*>/gi)) {
+    const value = match[1].match(/\bvalue\s*=\s*(["'])(.*?)\1/i)?.[2];
+    if (!value) continue;
+    const version = decodeHtmlText(match[2]).match(/\b(\d{1,5}\.\d{1,5}\.\d{1,5}\.\d{1,5})\b/)?.[1];
+    if (!version) continue;
+    try {
+      const url = new URL(value, INTEL_DRIVER_PAGES[kind].officialPageUrl).href;
+      if (validReleaseUrl(url, kind)) options.push({ url, version });
+    } catch { /* Ignore malformed Intel option values. */ }
+  }
+  return [...new Map(options.map((option) => [option.version, option])).values()];
 }
 
 function stripMarkup(value) {
@@ -117,7 +159,7 @@ function extractChangelog(source) {
     return !/^Highlights(?:\s+of\s+this\s+Workstation\s+Driver)?$/i.test(title);
   });
   const detailSection = html.slice(detailStart, nextSection?.index ?? html.length);
-  const label = /Highlights(?:\s+of\s+this\s+Workstation\s+Driver)?\s*:/i.exec(detailSection);
+  const label = /Highlights(?:\s+of\s+this\s+Workstation\s+Driver)?\s*:?/i.exec(detailSection);
   if (!label) return [];
 
   const section = detailSection.slice(label.index + label[0].length);
@@ -261,6 +303,34 @@ export function createIntelDriverUpdateService({
   cacheTtlMs = CACHE_TTL_MS,
 } = {}) {
   const cache = new Map();
+  const catalogCache = new Map();
+  const catalogRequests = new Map();
+  async function fetchHtml(url, expectedUrl = url, signal = null) {
+    if (typeof fetchImpl !== 'function') throw new Error('fetch unavailable');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+      const response = await fetchImpl(url, { signal: requestSignal, redirect: 'error' });
+      if (!response.ok || !validOfficialUrl(response.url || expectedUrl, expectedUrl)) throw new Error('Intel metadata request failed validation');
+      return await readBoundedBody(response, maxResponseBytes);
+    } finally { clearTimeout(timer); }
+  }
+  async function fetchRelease(kind, url, signal = null) {
+    if (!validReleaseUrl(url, kind)) throw new Error('Intel release URL is not allowed');
+    const source = await fetchHtml(url, url, signal);
+    const metadata = parseIntelDriverMetadata(source);
+    if (!metadata) throw new Error('Intel driver metadata was not found');
+    const sizeMatch = source.match(/\bSize\b\s*:?\s*(?:<[^>]*>\s*)*(\d+(?:\.\d+)?)\s*(GB|MB|KB|bytes?)\b/i);
+    let sizeBytes = null;
+    if (sizeMatch) {
+      const unit = sizeMatch[2].toLowerCase();
+      const multiplier = unit.startsWith('g') ? 1024 ** 3 : unit.startsWith('m') ? 1024 ** 2 : unit.startsWith('k') ? 1024 : 1;
+      const parsedSize = Math.round(Number(sizeMatch[1]) * multiplier);
+      if (Number.isSafeInteger(parsedSize) && parsedSize > 0) sizeBytes = parsedSize;
+    }
+    return { ...metadata, sizeBytes, officialPageUrl: url };
+  }
   return {
     async check() {
       const result = { arc: null, pro: null };
@@ -271,29 +341,64 @@ export function createIntelDriverUpdateService({
           return;
         }
         try {
-          if (typeof fetchImpl !== 'function') throw new Error('fetch unavailable');
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), timeoutMs);
-          let response;
-          try {
-            response = await fetchImpl(config.officialPageUrl, { signal: controller.signal, redirect: 'error' });
-            if (!response.ok || !validOfficialUrl(response.url || config.officialPageUrl, config.officialPageUrl)) {
-              throw new Error('Intel metadata request failed validation');
-            }
-            const parsed = parseIntelDriverMetadata(await readBoundedBody(response, maxResponseBytes));
-            if (!parsed) throw new Error('Intel driver metadata was not found');
-            const value = { ...parsed, officialPageUrl: config.officialPageUrl };
-            cache.set(kind, { value, at: now() });
-            result[kind] = value;
-          } finally {
-            clearTimeout(timer);
-          }
+          const parsed = parseIntelDriverMetadata(await fetchHtml(config.officialPageUrl));
+          if (!parsed) throw new Error('Intel driver metadata was not found');
+          const value = { ...parsed, officialPageUrl: config.officialPageUrl };
+          cache.set(kind, { value, at: now() });
+          result[kind] = value;
         } catch {
           // A previous official result remains useful during a transient outage.
           result[kind] = cached?.value ?? null;
         }
       }));
       return result;
+    },
+    async library(kind) {
+      if (!INTEL_DRIVER_PAGES[kind]) throw new Error('invalid Intel driver catalog kind');
+      const currentTime = now();
+      const cached = catalogCache.get(kind);
+      if (cached && currentTime < cached.expiresAt) return cached.value;
+      const pending = catalogRequests.get(kind);
+      if (pending) return pending;
+      const request = (async () => {
+        const latestUrl = INTEL_DRIVER_PAGES[kind].officialPageUrl;
+        const html = await fetchHtml(latestUrl);
+        const selector = releaseSelectorHtml(html);
+        const options = extractReleaseOptions(html, kind);
+        const selectorOptionCount = selector?.match(/<option\b/gi)?.length ?? 0;
+        const readableOptionCount = options.length;
+        const latest = parseIntelDriverMetadata(html);
+        if (latest && !options.some((option) => option.version === latest.version)) {
+          options.unshift({ url: latestUrl, version: latest.version });
+        }
+        const partial = !selector || selectorOptionCount === 0
+          || readableOptionCount < selectorOptionCount || options.length > MAX_CATALOG_RELEASES;
+        const versions = options.slice(0, MAX_CATALOG_RELEASES).map((option) => option.version);
+        if (!versions.length) throw new Error('Intel driver catalog contains no readable versions');
+        const value = { versions, partial };
+        catalogCache.set(kind, {
+          value,
+          expiresAt: now() + (value.partial ? PARTIAL_CATALOG_CACHE_TTL_MS : CATALOG_CACHE_TTL_MS),
+        });
+        return value;
+      })();
+      catalogRequests.set(kind, request);
+      try { return await request; }
+      finally { if (catalogRequests.get(kind) === request) catalogRequests.delete(kind); }
+    },
+    async resolveRelease(kind, version, signal = null) {
+      if (!INTEL_DRIVER_PAGES[kind] || typeof version !== 'string' || !/^\d{1,5}\.\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(version)) throw new Error('invalid Intel driver release identity');
+      const selectorUrl = INTEL_DRIVER_PAGES[kind].officialPageUrl;
+      const selectorHtml = await fetchHtml(selectorUrl, selectorUrl, signal);
+      const availableReleases = extractReleaseOptions(selectorHtml, kind);
+      const latest = parseIntelDriverMetadata(selectorHtml);
+      const selected = availableReleases.find((release) => release.version === version)
+        ?? (latest?.version === version ? { url: selectorUrl, version } : null);
+      if (!selected || !validReleaseUrl(selected.url, kind)) throw new Error('Intel driver version is not available in the official catalog');
+      // Re-fetch only the selected, currently listed official detail page.
+      const release = await fetchRelease(kind, selected.url, signal);
+      if (release.version !== version) throw new Error('Intel release page version does not match the selected version');
+      return release;
     },
   };
 }

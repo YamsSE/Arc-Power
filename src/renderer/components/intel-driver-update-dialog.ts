@@ -9,7 +9,7 @@ type DriverDownloadApi = {
   intelDriverDownloadCancel(kind: IntelDriverKind): Promise<{ cancelled: boolean }>;
   intelDriverInstall(kind: IntelDriverKind, version: string): Promise<{ launched: true }>;
   onIntelDriverDownloadProgress(listener: (progress: DriverDownloadProgress) => void): () => void;
-  openIntelDriverDownloadPage(kind: IntelDriverKind): Promise<void>;
+  openIntelDriverDownloadPage(kind: IntelDriverKind, version: string): Promise<void>;
 };
 const driverApi = api as typeof api & DriverDownloadApi;
 
@@ -119,7 +119,7 @@ export function showIntelDriverUpdateDialog(
     text: 'Review Intel’s official driver page',
     onClick: async (event: MouseEvent) => {
       event.preventDefault();
-      try { await driverApi.openIntelDriverDownloadPage(kind); }
+      try { await driverApi.openIntelDriverDownloadPage(kind, release.version); }
       catch { status.textContent = 'Could not open Intel’s driver page. Please try again.'; }
     },
   });
@@ -206,8 +206,9 @@ export function showIntelDriverUpdateDialog(
       el('p', { class: 'modal-text intel-driver-dialog-question', id: 'intel-driver-dialog-description', text: 'Review and download the Intel driver update.' }),
       el('dl', { class: 'intel-driver-dialog-versions' }, [
         el('div', {}, [el('dt', { text: 'Installed version' }), el('dd', { text: installed })]),
-        el('div', {}, [el('dt', { text: 'Latest Intel version' }), el('dd', { text: release.version })]),
+        el('div', {}, [el('dt', { text: 'Selected Intel version' }), el('dd', { text: release.version })]),
         ...(release.releaseDate ? [el('div', {}, [el('dt', { text: 'Release date' }), el('dd', { text: release.releaseDate })])] : []),
+        ...(release.sizeBytes ? [el('div', {}, [el('dt', { text: 'Package size' }), el('dd', { text: formatDriverSize(release.sizeBytes) })])] : []),
       ]),
       el('div', { class: 'intel-driver-tabs', role: 'tablist', 'aria-label': 'Intel driver details' }, [downloadTab, changelogTab]),
       downloadPanel,
@@ -224,4 +225,8 @@ export function showIntelDriverUpdateDialog(
   );
   if (downloaded) return;
   cancel.focus();
+}
+
+function formatDriverSize(bytes: number): string {
+  return bytes >= 1024 ** 3 ? `${(bytes / (1024 ** 3)).toFixed(2)} GB` : `${(bytes / (1024 ** 2)).toFixed(0)} MB`;
 }

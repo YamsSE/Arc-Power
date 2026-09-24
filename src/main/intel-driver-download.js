@@ -60,7 +60,7 @@ export function parseIntelDownloadPage(source, kind) {
   return { version, url, sizeBytes, sizeToleranceBytes, algorithm, digest: sha[2].toLowerCase() };
 }
 
-export function createIntelDriverDownloadService({ appDataPath, appApi, fetchImpl = globalThis.fetch, spawnProcess = spawn, fsImpl = fs }) {
+export function createIntelDriverDownloadService({ appDataPath, appApi, intelDriverUpdateService = null, fetchImpl = globalThis.fetch, spawnProcess = spawn, fsImpl = fs }) {
   if (typeof appDataPath !== 'string' || !path.isAbsolute(appDataPath)) throw new TypeError('appDataPath must be absolute');
   if (typeof appApi?.quit !== 'function') throw new TypeError('appApi.quit is required');
   if (typeof fetchImpl !== 'function' || typeof spawnProcess !== 'function') throw new TypeError('fetchImpl and spawnProcess are required');
@@ -105,12 +105,27 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, fetchImp
     }
     throw new Error('too many Intel redirects');
   }
-  async function fetchPage(kind, signal) {
+  async function fetchPage(kind, version, signal) {
+    if (!intelDriverUpdateService?.resolveRelease) throw new Error('Intel driver catalog is unavailable');
+    const release = await intelDriverUpdateService.resolveRelease(kind, version, signal);
+    const releaseUrl = release?.officialPageUrl;
+    let releasePath;
+    try { releasePath = new URL(releaseUrl); } catch { throw new Error('Intel release page is not valid'); }
+    const familyUrl = new URL(INTEL_DRIVER_PAGES[kind].officialPageUrl);
+    const familyId = familyUrl.pathname.match(/\/download\/(\d+)\//)?.[1];
+    const familySlug = familyUrl.pathname.match(/\/download\/\d+\/([^/]+\.html)$/i)?.[1];
+    const historicalPath = releasePath.pathname.match(/^\/content\/www\/us\/en\/download\/(\d+)\/(\d+)\/([^/]+\.html)$/i);
+    if (releasePath.protocol !== 'https:' || releasePath.hostname !== 'www.intel.com' || releasePath.port
+      || releasePath.username || releasePath.password || releasePath.search || releasePath.hash
+      || (releasePath.pathname !== familyUrl.pathname && (historicalPath?.[1] !== familyId
+        || !historicalPath?.[2] || historicalPath?.[3].toLowerCase() !== familySlug?.toLowerCase()))) {
+      throw new Error('Intel release page is not valid');
+    }
     const pageController = new AbortController();
     const timer = setTimeout(() => pageController.abort(new Error('Intel release page request timed out')), PAGE_TIMEOUT_MS);
     const combinedSignal = signal ? AbortSignal.any([signal, pageController.signal]) : pageController.signal;
     try {
-      const response = await fetchWithRedirects(INTEL_DRIVER_PAGES[kind].officialPageUrl, combinedSignal, ['www.intel.com']);
+      const response = await fetchWithRedirects(releaseUrl, combinedSignal, ['www.intel.com']);
       const declared = Number(response.headers?.get?.('content-length'));
       if (Number.isFinite(declared) && declared > MAX_PAGE_BYTES) throw new Error('Intel release page is too large');
       let text;
@@ -132,7 +147,7 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, fetchImp
         text = await response.text();
         if (Buffer.byteLength(text) > MAX_PAGE_BYTES) throw new Error('Intel release page is too large');
       }
-      if (response.url && new URL(response.url).href !== INTEL_DRIVER_PAGES[kind].officialPageUrl) throw new Error('Intel release page URL changed');
+      if (response.url && new URL(response.url).href !== releaseUrl) throw new Error('Intel release page URL changed');
       return parseIntelDownloadPage(text, kind);
     } finally { clearTimeout(timer); }
   }
@@ -181,7 +196,7 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, fetchImp
     const partial = `${target}.part`;
     try {
       await assertSafePath(target);
-      const metadata = await fetchPage(kind, controller.signal);
+      const metadata = await fetchPage(kind, version, controller.signal);
       if (metadata.version !== version) throw new Error('Intel release version no longer matches expected version');
       if (await getStatus(kind, version).then((s) => s.downloaded)) {
         try {
@@ -270,7 +285,7 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, fetchImp
     const target = filePath(kind, version);
     await assertSafePath(target, false);
     const controller = new AbortController();
-    const metadata = await fetchPage(kind, controller.signal);
+    const metadata = await fetchPage(kind, version, controller.signal);
     if (metadata.version !== version) throw new Error('Intel release version no longer matches expected version');
     try {
       await verify(target, metadata);
