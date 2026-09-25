@@ -1290,6 +1290,32 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`M31: Driver Library search and release list are not themed and bounded: ${libraryPresentation}`);
   }
   step('m31-library-presentation', `Driver Library has a themed search field and a bounded scrolling release list (${libraryPresentationData.layoutHeight}px)`);
+  const libraryScrollProbe = await js(`(() => {
+    const list = document.querySelector('.driver-library-release-list');
+    const search = document.querySelector('.driver-library-search');
+    if (!list || !search) return JSON.stringify({ before: 0, after: 0 });
+    const fill = document.createElement('div');
+    fill.dataset.uiVerifyScrollFill = 'before';
+    fill.style.height = '1200px';
+    list.append(fill);
+    list.scrollTop = 320;
+    const before = list.scrollTop;
+    search.value = '__scroll_restore_probe__';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    const replacement = document.querySelector('.driver-library-release-list');
+    if (replacement) {
+      const replacementFill = document.createElement('div');
+      replacementFill.dataset.uiVerifyScrollFill = 'after';
+      replacementFill.style.height = '1200px';
+      replacement.append(replacementFill);
+    }
+    return JSON.stringify({ before, after: replacement?.scrollTop ?? 0 });
+  })()`);
+  const libraryScrollProbeData = JSON.parse(libraryScrollProbe);
+  if (libraryScrollProbeData.before < 200 || !(await waitFor(win, `Number(document.querySelector('.driver-library-release-list')?.scrollTop ?? 0) <= 2`, 1500))) {
+    fail(`M31: filtering the Driver Library did not return to the first matching release: before=${libraryScrollProbeData.before}, after=${await js(`document.querySelector('.driver-library-release-list')?.scrollTop ?? 0`)}`);
+  }
+  step('m31-library-filter-scroll', `Filtering the Driver Library returned its release list to the first result from ${libraryScrollProbeData.before}px`);
   await js(`location.hash = '#/dashboard'`);
   if (!(await waitFor(win, `!!document.querySelector('.card-grid .device-card:not([hidden])')`, 5000))) {
     fail('M31: returning from Driver Library did not restore the dashboard');
@@ -1299,6 +1325,33 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     fail(`M31: opening Driver Library changed the selected GPU from '${routeCheckData.selected}' to '${selectionAfterLibrary}'`);
   }
   step('m31-driver-library-entry', `GPU card button opened Driver Library for device ${routeCheckData.deviceId}; active GPU selection stayed unchanged`);
+  const pageScrollProbe = await js(`(() => {
+    const page = document.querySelector('#page');
+    if (!page) return JSON.stringify({ before: 0 });
+    const fill = document.createElement('div');
+    fill.dataset.uiVerifyPageScrollFill = 'true';
+    fill.style.height = '1400px';
+    page.append(fill);
+    page.scrollTop = 320;
+    const before = page.scrollTop;
+    window.dispatchEvent(new Event('hashchange'));
+    const replacementFill = document.createElement('div');
+    replacementFill.dataset.uiVerifyPageScrollFill = 'true';
+    replacementFill.style.height = '1400px';
+    page.append(replacementFill);
+    return JSON.stringify({ before });
+  })()`);
+  const pageScrollProbeData = JSON.parse(pageScrollProbe);
+  if (pageScrollProbeData.before < 200 || !(await waitFor(win, `Number(document.querySelector('#page')?.scrollTop ?? 0) >= ${pageScrollProbeData.before - 2}`, 1500))) {
+    fail(`Scroll preservation: rerendering the current page reset #page from ${pageScrollProbeData.before}px to ${await js(`document.querySelector('#page')?.scrollTop ?? 0`)}`);
+  }
+  step('scroll-preservation-page', `Rerendering the current page kept its scroll position at ${pageScrollProbeData.before}px`);
+  await new Promise((resolve) => setTimeout(resolve, 1250));
+  await js(`(() => {
+    document.querySelectorAll('[data-ui-verify-page-scroll-fill]').forEach((fill) => fill.remove());
+    const page = document.querySelector('#page');
+    if (page) page.scrollTop = 0;
+  })()`);
 
   // ONE general GPU STATUS card (M3-A + M3-C-I + M4-A + M16): FIVE rows,
   // honest per-row state, no Level Zero item, no IGCL detail line, NO

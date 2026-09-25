@@ -1,9 +1,10 @@
-import { el, clear } from '../dom.ts';
+import { el, clear, resetScrollPositions } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { intelDriverKind, type IntelDriverKind, type IntelDriverRelease } from '../pure/intel-driver-updates.ts';
 import { decodeDriverVersion } from '../pure/driver.ts';
 import { showIntelDriverUpdateDialog } from '../components/intel-driver-update-dialog.ts';
+import { showIntelDriverDownloadDeleteConfirm } from '../components/intel-driver-download-delete-dialog.ts';
 import { renderIntelDriverChangelog } from '../components/intel-driver-changelog.ts';
 
 type DriverLibraryApi = {
@@ -161,21 +162,26 @@ export const driverLibraryPage: Page = {
             text: deleting ? 'Deleting…' : 'Delete Download',
             onClick: () => {
               if (!releaseKind || deletingDownloadVersion) return;
-              deletingDownloadVersion = release.version;
-              deleteErrorVersion = null;
-              renderDetails();
-              void libraryApi.intelDriverDownloadDelete(releaseKind, release.version).then((result) => {
-                if (result?.deleted !== true) throw new Error('The downloaded driver was not deleted');
-                if (selected === release) {
-                  downloaded = false;
-                  downloadStatusLoaded = true;
+              void (async () => {
+                const confirmed = await showIntelDriverDownloadDeleteConfirm(release.version);
+                if (!confirmed || !root.isConnected || selected !== release || selectedVersion !== release.version || kind !== releaseKind || deletingDownloadVersion) return;
+                deletingDownloadVersion = release.version;
+                deleteErrorVersion = null;
+                renderDetails();
+                try {
+                  const result = await libraryApi.intelDriverDownloadDelete(releaseKind, release.version);
+                  if (result?.deleted !== true) throw new Error('The downloaded driver was not deleted');
+                  if (root.isConnected && selected === release && selectedVersion === release.version && kind === releaseKind) {
+                    downloaded = false;
+                    downloadStatusLoaded = true;
+                  }
+                } catch {
+                  if (root.isConnected && selected === release && selectedVersion === release.version && kind === releaseKind) deleteErrorVersion = release.version;
+                } finally {
+                  if (deletingDownloadVersion === release.version) deletingDownloadVersion = null;
+                  if (root.isConnected) renderDetails();
                 }
-              }).catch(() => {
-                if (selected === release) deleteErrorVersion = release.version;
-              }).finally(() => {
-                if (deletingDownloadVersion === release.version) deletingDownloadVersion = null;
-                if (selected === release) renderDetails();
-              });
+              })();
             },
           }));
         }
@@ -223,6 +229,12 @@ export const driverLibraryPage: Page = {
           const input = event.currentTarget as HTMLInputElement;
           searchQuery = input.value;
           render(true, input.selectionStart ?? searchQuery.length);
+          // A new query should show the first matching release, even though
+          // ordinary list rerenders preserve the reader's current position.
+          queueMicrotask(() => {
+            const releaseList = root.querySelector<HTMLElement>('.driver-library-release-list');
+            if (releaseList) resetScrollPositions(releaseList);
+          });
         },
       }) as HTMLInputElement;
       list.append(search);
