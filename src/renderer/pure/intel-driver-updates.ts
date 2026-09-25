@@ -1,10 +1,18 @@
 export type IntelDriverKind = 'arc' | 'pro';
 
+export interface IntelDriverChangelogEntry {
+  text: string;
+  kind: 'heading' | 'item';
+  children?: IntelDriverChangelogEntry[];
+}
+
 export interface IntelDriverRelease {
   version: string;
   releaseDate: string | null;
   officialPageUrl: string;
   changelog: string[];
+  changelogSections?: IntelDriverChangelogEntry[];
+  sizeBytes?: number | null;
 }
 
 export interface IntelDriverUpdateCheck {

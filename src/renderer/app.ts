@@ -4,7 +4,7 @@
 
 import { api } from './ipc.ts';
 import { stopTelemetry, startTelemetry } from './device.ts';
-import { el, clear } from './dom.ts';
+import { el, clear, preserveScrollPositions, resetScrollPositions } from './dom.ts';
 import { Store, currentPage, NAV_LABELS, PAGE_IDS } from './router.ts';
 import type { Page, PageId } from './router.ts';
 import { GpuHeader } from './components/header.ts';
@@ -19,6 +19,7 @@ import { recordingPage } from './pages/recording.ts';
 import { profilesPage } from './pages/profiles.ts';
 import { tweaksPage } from './pages/tweaks.ts';
 import { settingsPage } from './pages/settings.ts';
+import { driverLibraryPage } from './pages/driver-library.ts';
 import { getLatestFpsSample, getMonitorLogToFile, filterMonitorLogSample, setMonitorLogMetrics, setMonitorLogToFile } from './log-state.ts';
 import { createDeviceSwitcher } from './device.ts';
 import { deviceHardwareKey, resolveBootDevice, resolveFeaturesetSwapSelection } from './pure/device.ts';
@@ -37,6 +38,7 @@ const PAGES: Record<PageId, Page> = {
   recording: recordingPage,
   profiles: profilesPage,
   tweaks: tweaksPage,
+  'driver-library': driverLibraryPage,
   settings: settingsPage,
 };
 
@@ -420,16 +422,20 @@ let current: Page | null = null;
 
 function renderPage(id: PageId) {
   const container = document.getElementById('page') as HTMLElement;
+  const samePage = current?.id === id;
   // M2b review F4: the page being left stops its timers/subscriptions
   // (e.g. Monitoring's FPS poll) before the next page renders.
   current?.leave?.();
+  if (!samePage) resetScrollPositions(container);
   // Shared dropdown menus are portaled to document.body. Close the active
   // portal before replacing the page or device surface so stale options and
   // focus state cannot survive a navigation/rerender.
   closeDropdownMenus();
-  current = PAGES[id] ?? dashboardPage;
+  const page = PAGES[id] ?? dashboardPage;
+  current = page;
   try {
-    current.render(container, { store, selectDevice });
+    if (samePage) preserveScrollPositions(container, () => page.render(container, { store, selectDevice }));
+    else page.render(container, { store, selectDevice });
   } catch (err) {
     clear(container);
     container.append(el('p', { class: 'text-error', text: `Page failed to render: ${err instanceof Error ? err.message : String(err)}` }));
@@ -442,8 +448,8 @@ function renderSidebar() {
   clear(nav);
   // Settings remains in the sidebar footer. PAGE_IDS supplies the exact
   // main-tab order: Dashboard, Tuning, Graphics, Recording, Monitoring,
-  // Profiles, Tweaks.
-  const navIds = PAGE_IDS.filter((id) => id !== 'settings');
+  // Profiles and Tweaks. Driver Library is launched from the Intel GPU card.
+  const navIds = PAGE_IDS.filter((id) => id !== 'settings' && id !== 'driver-library');
   nav.append(
     // M4-D: the sidebar brand - "Arc Power" with "Power" ILLUMINATED
     // like the title bar (the blue gradient + glow) and a BOLD weight; the
@@ -538,7 +544,8 @@ async function boot() {
     header.render();
     if (current?.onUpdate) {
       const container = document.getElementById('page') as HTMLElement;
-      try { current.onUpdate(container, { store }); } catch { /* keep UI alive */ }
+      const page = current;
+      try { preserveScrollPositions(container, () => page.onUpdate?.(container, { store })); } catch { /* keep UI alive */ }
     }
   });
 

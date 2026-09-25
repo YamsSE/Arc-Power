@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
-import { INTEL_DRIVER_PAGES } from './intel-driver-update.js';
+import { INTEL_DRIVER_PAGES, validIntelDriverReleaseUrl } from './intel-driver-update.js';
 import { openSafeRecordingFile, revalidateSafeRecordingFile } from './recording-media.js';
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
@@ -60,11 +60,13 @@ export function parseIntelDownloadPage(source, kind) {
   return { version, url, sizeBytes, sizeToleranceBytes, algorithm, digest: sha[2].toLowerCase() };
 }
 
-export function createIntelDriverDownloadService({ appDataPath, appApi, fetchImpl = globalThis.fetch, spawnProcess = spawn, fsImpl = fs }) {
+export function createIntelDriverDownloadService({ appDataPath, appApi, intelDriverUpdateService = null, fetchImpl = globalThis.fetch, spawnProcess = spawn, fsImpl = fs }) {
   if (typeof appDataPath !== 'string' || !path.isAbsolute(appDataPath)) throw new TypeError('appDataPath must be absolute');
   if (typeof appApi?.quit !== 'function') throw new TypeError('appApi.quit is required');
   if (typeof fetchImpl !== 'function' || typeof spawnProcess !== 'function') throw new TypeError('fetchImpl and spawnProcess are required');
   const transfers = new Map();
+  const installs = new Map();
+  const deletions = new Map();
   const basePath = path.join(appDataPath, 'ArcPower', 'DriverDownloads');
   const filePath = (kind, version) => path.join(basePath, kind, version, `gfx_win_101.exe`);
   function validate(kind, version) {
@@ -105,12 +107,16 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, fetchImp
     }
     throw new Error('too many Intel redirects');
   }
-  async function fetchPage(kind, signal) {
+  async function fetchPage(kind, version, signal) {
+    if (!intelDriverUpdateService?.resolveRelease) throw new Error('Intel driver catalog is unavailable');
+    const release = await intelDriverUpdateService.resolveRelease(kind, version, signal);
+    const releaseUrl = release?.officialPageUrl;
+    if (!validIntelDriverReleaseUrl(releaseUrl, kind)) throw new Error('Intel release page is not valid');
     const pageController = new AbortController();
     const timer = setTimeout(() => pageController.abort(new Error('Intel release page request timed out')), PAGE_TIMEOUT_MS);
     const combinedSignal = signal ? AbortSignal.any([signal, pageController.signal]) : pageController.signal;
     try {
-      const response = await fetchWithRedirects(INTEL_DRIVER_PAGES[kind].officialPageUrl, combinedSignal, ['www.intel.com']);
+      const response = await fetchWithRedirects(releaseUrl, combinedSignal, ['www.intel.com']);
       const declared = Number(response.headers?.get?.('content-length'));
       if (Number.isFinite(declared) && declared > MAX_PAGE_BYTES) throw new Error('Intel release page is too large');
       let text;
@@ -132,7 +138,7 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, fetchImp
         text = await response.text();
         if (Buffer.byteLength(text) > MAX_PAGE_BYTES) throw new Error('Intel release page is too large');
       }
-      if (response.url && new URL(response.url).href !== INTEL_DRIVER_PAGES[kind].officialPageUrl) throw new Error('Intel release page URL changed');
+      if (response.url && new URL(response.url).href !== releaseUrl) throw new Error('Intel release page URL changed');
       return parseIntelDownloadPage(text, kind);
     } finally { clearTimeout(timer); }
   }
@@ -172,6 +178,7 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, fetchImp
   }
   async function startDownload(kind, version, onProgress = () => {}) {
     validate(kind, version);
+    if (installs.has(kind) || deletions.has(kind)) throw new Error('a driver operation is already active for this driver kind');
     if (transfers.has(kind)) throw new Error('a download is already active for this driver kind');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error('Intel download timed out')), TRANSFER_TIMEOUT_MS);
@@ -181,7 +188,7 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, fetchImp
     const partial = `${target}.part`;
     try {
       await assertSafePath(target);
-      const metadata = await fetchPage(kind, controller.signal);
+      const metadata = await fetchPage(kind, version, controller.signal);
       if (metadata.version !== version) throw new Error('Intel release version no longer matches expected version');
       if (await getStatus(kind, version).then((s) => s.downloaded)) {
         try {
@@ -265,36 +272,67 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, fetchImp
     transfer.controller.abort(new Error('Intel download cancelled'));
     return { cancelled: true };
   }
+  async function deleteDownloaded(kind, version) {
+    validate(kind, version);
+    if (transfers.has(kind) || installs.has(kind) || deletions.has(kind)) throw new Error('cannot delete a driver download while a driver operation is active');
+    const deletion = {};
+    deletions.set(kind, deletion);
+    const target = filePath(kind, version);
+    try {
+      await assertSafePath(target, false);
+      const stat = await fsImpl.promises.lstat(target);
+      if (!stat.isFile() || stat.isSymbolicLink() || (typeof stat.isReparsePoint === 'function' && stat.isReparsePoint())) {
+        throw new Error('Intel driver download is not a regular file');
+      }
+      const safe = openSafeRecordingFile(target, fsImpl);
+      if (!safe) throw new Error('Intel driver download path is unsafe');
+      try {
+        await assertSafePath(target, false);
+        if (!revalidateSafeRecordingFile(target, safe, fsImpl)) throw new Error('Intel driver download path changed before deletion');
+        await fsImpl.promises.unlink(target);
+      } finally { try { fsImpl.closeSync(safe.fd); } catch { /* best effort */ } }
+      return { deleted: true };
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { deleted: true };
+      throw error;
+    } finally { if (deletions.get(kind) === deletion) deletions.delete(kind); }
+  }
   async function installDownloaded(kind, version) {
     validate(kind, version);
-    const target = filePath(kind, version);
-    await assertSafePath(target, false);
-    const controller = new AbortController();
-    const metadata = await fetchPage(kind, controller.signal);
-    if (metadata.version !== version) throw new Error('Intel release version no longer matches expected version');
+    if (transfers.has(kind) || deletions.has(kind)) throw new Error('a download or deletion is already active for this driver kind');
+    if (installs.has(kind)) throw new Error('a driver install is already active for this driver kind');
+    const install = {};
+    installs.set(kind, install);
     try {
-      await verify(target, metadata);
-    } catch (error) {
-      if (!/unsafe path|path changed/i.test(error?.message ?? '')) {
-        try {
-          await assertSafePath(target, false);
-          const existing = await fsImpl.promises.lstat(target);
-          if (existing.isFile()) await fsImpl.promises.unlink(target);
-        } catch { /* leave unverifiable paths untouched */ }
+      const target = filePath(kind, version);
+      await assertSafePath(target, false);
+      const controller = new AbortController();
+      const metadata = await fetchPage(kind, version, controller.signal);
+      if (metadata.version !== version) throw new Error('Intel release version no longer matches expected version');
+      try {
+        await verify(target, metadata);
+      } catch (error) {
+        if (!/unsafe path|path changed/i.test(error?.message ?? '')) {
+          try {
+            await assertSafePath(target, false);
+            const existing = await fsImpl.promises.lstat(target);
+            if (existing.isFile()) await fsImpl.promises.unlink(target);
+          } catch { /* leave unverifiable paths untouched */ }
+        }
+        throw new Error('Saved Intel driver could not be verified. Download it again.');
       }
-      throw new Error('Saved Intel driver could not be verified. Download it again.');
-    }
-    await assertSafePath(target, false);
-    const child = spawnProcess(target, [], { detached: true, stdio: 'ignore', windowsHide: false });
-    await new Promise((resolve, reject) => {
-      const onError = (error) => { child.removeListener?.('spawn', onSpawn); reject(error); };
-      const onSpawn = () => { child.removeListener?.('error', onError); resolve(); };
-      child.once('error', onError);
-      child.once('spawn', onSpawn);
-    });
-    child.unref?.();
-    appApi?.quit?.();
-    return { launched: true };
+      await assertSafePath(target, false);
+      const child = spawnProcess(target, [], { detached: true, stdio: 'ignore', windowsHide: false });
+      await new Promise((resolve, reject) => {
+        const onError = (error) => { child.removeListener?.('spawn', onSpawn); reject(error); };
+        const onSpawn = () => { child.removeListener?.('error', onError); resolve(); };
+        child.once('error', onError);
+        child.once('spawn', onSpawn);
+      });
+      child.unref?.();
+      appApi?.quit?.();
+      return { launched: true };
+    } finally { if (installs.get(kind) === install) installs.delete(kind); }
   }
-  return { getStatus, startDownload, cancelDownload, installDownloaded };
+  return { getStatus, startDownload, cancelDownload, deleteDownloaded, installDownloaded };
 }
