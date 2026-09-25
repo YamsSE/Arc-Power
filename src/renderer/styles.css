@@ -537,11 +537,11 @@ html, body {
 .driver-library-changelog .intel-driver-changelog-section-heading { font-size: 13px; }
 .intel-driver-dialog .intel-driver-changelog-list { gap: 4px; }
 .intel-driver-version-value, .dashboard-vram-value { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
-.dashboard-vram-separator { margin-inline: -3px; color: var(--text-muted); font-size: 11px; }
+.dashboard-vram-separator { margin-inline: -1px; color: color-mix(in srgb, var(--accent) 72%, var(--text-muted)); font-size: 15px; font-weight: 700; line-height: 1; }
 .driver-library-launch { display: inline-grid; place-items: center; width: 24px; height: 24px; flex: 0 0 24px; padding: 3px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .driver-library-launch:hover, .driver-library-launch:focus-visible { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .driver-library-launch .sidebar-icon { width: 15px; height: 15px; }
-.rebar-pill-compact { font-size: 10px; padding: 1px 6px; line-height: 1.35; }
+.rebar-pill.rebar-pill-compact { min-height: 22px; font-size: 10.5px; font-weight: 700; letter-spacing: .015em; padding: 3px 8px; line-height: 1.25; }
 @media (max-width: 760px) {
   .driver-library-layout { grid-template-columns: 1fr; grid-template-rows: minmax(180px, .75fr) minmax(240px, 1.25fr); height: clamp(460px, calc(100vh - 300px), 840px); }
   .driver-library-release-heading { flex-direction: column; }
@@ -694,12 +694,14 @@ html, body {
   color: var(--success);
   border-color: color-mix(in srgb, var(--success) 45%, transparent);
   background: color-mix(in srgb, var(--success) 12%, transparent);
+  box-shadow: inset 0 1px color-mix(in srgb, white 8%, transparent), 0 2px 8px color-mix(in srgb, var(--success) 13%, transparent);
 }
 
 .rebar-pill.status-error {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 45%, transparent);
   background: color-mix(in srgb, var(--danger) 12%, transparent);
+  box-shadow: inset 0 1px color-mix(in srgb, white 8%, transparent), 0 2px 8px color-mix(in srgb, var(--danger) 11%, transparent);
 }
 
 .rebar-pill.status-unknown {

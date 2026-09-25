@@ -1237,10 +1237,22 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const rebarLayout = await js(`(() => {
     const pill = document.querySelector('.card-grid .rebar-pill');
     const row = pill?.closest('.kv[data-label="VRAM"]');
-    return JSON.stringify({ text: pill?.textContent ?? '', className: pill?.className ?? '', inline: !!row, standalone: !!document.querySelector('.card-grid .kv-rebar') });
+    const separator = row?.querySelector('.dashboard-vram-separator');
+    const pillStyle = pill ? getComputedStyle(pill) : null;
+    const separatorStyle = separator ? getComputedStyle(separator) : null;
+    return JSON.stringify({
+      text: pill?.textContent ?? '',
+      className: pill?.className ?? '',
+      inline: !!row,
+      standalone: !!document.querySelector('.card-grid .kv-rebar'),
+      separatorFontSize: parseFloat(separatorStyle?.fontSize ?? '0'),
+      pillHeight: pill?.getBoundingClientRect().height ?? 0,
+      pillPaddingLeft: pillStyle?.paddingLeft ?? '',
+      pillShadow: pillStyle?.boxShadow ?? 'none',
+    });
   })()`);
   const rebarLayoutData = JSON.parse(rebarLayout);
-  if (rebarLayoutData.text !== 'ReBAR on' || !rebarLayoutData.className.includes('status-ok') || !rebarLayoutData.className.includes('rebar-pill-compact') || !rebarLayoutData.inline || rebarLayoutData.standalone) {
+  if (rebarLayoutData.text !== 'ReBAR on' || !rebarLayoutData.className.includes('status-ok') || !rebarLayoutData.className.includes('rebar-pill-compact') || !rebarLayoutData.inline || rebarLayoutData.standalone || rebarLayoutData.separatorFontSize < 15 || rebarLayoutData.pillHeight < 22 || rebarLayoutData.pillPaddingLeft !== '8px' || rebarLayoutData.pillShadow === 'none') {
     fail(`M31: ReBAR must be compact and inline with VRAM: ${rebarLayout}`);
   }
   step('m31-vram-rebar', `GPU card: compact '${rebarLayoutData.text}' pill shares the VRAM row`);
