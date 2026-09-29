@@ -441,7 +441,7 @@ export class ProfileStore {
    * files -> the defaults (off / 'P' / 'right'; the M5 overlaySettings
    * pattern, NO schema bump - NO scale key, the panel is a fixed compact
    * size).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, rtssOnBoot?: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, monitorLogMetrics?: string[], deviceId: number|null, theme: 'dark'|'midnight'|'light', memorySavingMode: boolean, overlayEnabled: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, recordingToastsEnabled: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, rtssOnBoot?: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, monitorLogMetrics?: string[], deviceId: number|null, theme: 'dark'|'midnight'|'light', memorySavingMode: boolean, overlayEnabled: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayLabelColor: string, overlayValueColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, recordingToastsEnabled: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -493,6 +493,8 @@ export class ProfileStore {
         // to the M17g DEFAULT set (the user's 11 ON / the others OFF - the
         // M6 full-set default FLIPS) - same absent-field mechanism.
         overlayColor: OVERLAY_COLOR_DEFAULT,
+        overlayLabelColor: OVERLAY_COLOR_DEFAULT,
+        overlayValueColor: OVERLAY_COLOR_DEFAULT,
         overlayStats: [...OVERLAY_STATS_DEFAULT],
         overlayDeviceKeys: null,
         // M7b: the background box - absent -> off, black, 0.5 opacity (the
@@ -551,7 +553,7 @@ export class ProfileStore {
       memorySavingMode: data.memorySavingMode !== false,
       overlayEnabled: data.overlayEnabled === true,
       overlayHotkeyLetter: typeof data.overlayHotkeyLetter === 'string'
-        && /^[A-Za-z]$/.test(data.overlayHotkeyLetter)
+        && (/^[A-Za-z]$/.test(data.overlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(data.overlayHotkeyLetter))
         ? data.overlayHotkeyLetter
         : 'O',
       overlayPosition: OVERLAY_POSITIONS.includes(data.overlayPosition)
@@ -562,6 +564,10 @@ export class ProfileStore {
         && /^#[0-9a-fA-F]{6}$/.test(data.overlayColor)
         ? data.overlayColor
         : OVERLAY_COLOR_DEFAULT,
+      overlayLabelColor: typeof data.overlayLabelColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(data.overlayLabelColor)
+        ? data.overlayLabelColor : (typeof data.overlayColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(data.overlayColor) ? data.overlayColor : OVERLAY_COLOR_DEFAULT),
+      overlayValueColor: typeof data.overlayValueColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(data.overlayValueColor)
+        ? data.overlayValueColor : (typeof data.overlayColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(data.overlayColor) ? data.overlayColor : OVERLAY_COLOR_DEFAULT),
       // M35: absent means all enumerated GPUs; a saved list is keyed by
       // durable hardware identity rather than volatile enumeration indexes.
       overlayDeviceKeys: normalizeOverlayDeviceKeys(data.overlayDeviceKeys),
@@ -603,7 +609,7 @@ export class ProfileStore {
       // NO scale key - the panel is a fixed compact size.
       advancedOverlayEnabled: data.advancedOverlayEnabled === true,
       advancedOverlayHotkeyLetter: typeof data.advancedOverlayHotkeyLetter === 'string'
-        && /^[A-Za-z]$/.test(data.advancedOverlayHotkeyLetter)
+        && (/^[A-Za-z]$/.test(data.advancedOverlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(data.advancedOverlayHotkeyLetter))
         ? data.advancedOverlayHotkeyLetter
         : 'P',
       advancedOverlayPosition: ADVANCED_OVERLAY_POSITIONS.includes(data.advancedOverlayPosition)
@@ -662,7 +668,7 @@ export class ProfileStore {
       // direct callers).
       overlayEnabled: settings.overlayEnabled === true,
       overlayHotkeyLetter: typeof settings.overlayHotkeyLetter === 'string'
-        && /^[A-Za-z]$/.test(settings.overlayHotkeyLetter)
+        && (/^[A-Za-z]$/.test(settings.overlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(settings.overlayHotkeyLetter))
         ? settings.overlayHotkeyLetter
         : 'O',
       overlayPosition: OVERLAY_POSITIONS.includes(settings.overlayPosition)
@@ -675,6 +681,12 @@ export class ProfileStore {
         && /^#[0-9a-fA-F]{6}$/.test(settings.overlayColor)
         ? settings.overlayColor
         : OVERLAY_COLOR_DEFAULT,
+      overlayLabelColor: typeof settings.overlayLabelColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.overlayLabelColor)
+        ? settings.overlayLabelColor
+        : typeof settings.overlayColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.overlayColor) ? settings.overlayColor : OVERLAY_COLOR_DEFAULT,
+      overlayValueColor: typeof settings.overlayValueColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.overlayValueColor)
+        ? settings.overlayValueColor
+        : typeof settings.overlayColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.overlayColor) ? settings.overlayColor : OVERLAY_COLOR_DEFAULT,
       // M35: null retains the all-GPU default; a non-empty list persists
       // only the user's selected durable hardware keys.
       overlayDeviceKeys: normalizeOverlayDeviceKeys(settings.overlayDeviceKeys),
@@ -712,7 +724,7 @@ export class ProfileStore {
       // panel is a fixed compact size.
       advancedOverlayEnabled: settings.advancedOverlayEnabled === true,
       advancedOverlayHotkeyLetter: typeof settings.advancedOverlayHotkeyLetter === 'string'
-        && /^[A-Za-z]$/.test(settings.advancedOverlayHotkeyLetter)
+        && (/^[A-Za-z]$/.test(settings.advancedOverlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(settings.advancedOverlayHotkeyLetter))
         ? settings.advancedOverlayHotkeyLetter
         : 'P',
       advancedOverlayPosition: ADVANCED_OVERLAY_POSITIONS.includes(settings.advancedOverlayPosition)

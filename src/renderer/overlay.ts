@@ -97,6 +97,8 @@ let ramTotalBytes: number | null = null;
 // M6: the pushed color + stats (undefined until the first push -> the
 // stock white + the full stat set - the overlayLines defaults).
 let color: string = '#ffffff';
+let labelColor = '#ffffff';
+let valueColor = '#ffffff';
 let stats: unknown = undefined;
 // M17b (2c): the chip-name row labels - the pushed overlayChipNames flag +
 // the boot names fetch (api.listDevices() + api.sysinfo() ONCE - the
@@ -449,7 +451,11 @@ api.onOverlaySettings((settings) => {
   // must recolor BOTH - the old hardcoded '#ffffff' stroke would betray a
   // color change). Garbage degrades to the stock white.
   color = isValidOverlayColor(s.color) ? s.color : '#ffffff';
+  labelColor = isValidOverlayColor(s.labelColor) ? s.labelColor : color;
+  valueColor = isValidOverlayColor(s.valueColor) ? s.valueColor : color;
   document.documentElement.style.setProperty('--overlay-color', color);
+  document.documentElement.style.setProperty('--overlay-label-color', labelColor);
+  document.documentElement.style.setProperty('--overlay-value-color', valueColor);
   document.documentElement.style.setProperty('--capframex-accent', color);
   // M7b (fix 4): the background box - the two CSS vars via CSSOM (the
   // same CSP-safe pattern) + the .visible class from overlayBgEnabled.
@@ -634,12 +640,12 @@ function positionOverlayDivider(maxLabelLen: number): void {
     gpu2El, vram2El, ...extraRowElements.flatMap((row) => [row.gpu, row.vram]),
   ];
   const row = rows.find((candidate) => {
-    const node = candidate.firstChild;
+    const node = candidate.querySelector<HTMLElement>('.overlay-row-label')?.firstChild;
     return getComputedStyle(candidate).display !== 'none'
       && node?.nodeType === Node.TEXT_NODE
       && (node.textContent?.length ?? 0) >= maxLabelLen + 2;
   });
-  const node = row?.firstChild;
+  const node = row?.querySelector<HTMLElement>('.overlay-row-label')?.firstChild ?? null;
   if (!row || !node || node.nodeType !== Node.TEXT_NODE) {
     dividerEl.style.removeProperty('left');
     return;
@@ -682,6 +688,28 @@ function capValue(value: unknown, suffix: string, decimals = 0): string {
 function capGb(value: unknown): number | null {
   const n = capNumber(value);
   return n === null ? null : n / 1e9;
+}
+
+function setColorizedOverlayRow(element: HTMLElement, line: string): void {
+  const match = line.match(/^(.*?)(\s{2,})(.*)$/);
+  if (!match) {
+    if (element.id === 'overlay-api' && line.trim()) {
+      const values = document.createElement('span');
+      values.className = 'overlay-row-values';
+      values.textContent = line.trim();
+      element.replaceChildren(values);
+    } else {
+      element.replaceChildren();
+    }
+    return;
+  }
+  const header = document.createElement('span');
+  header.className = 'overlay-row-label';
+  header.textContent = match[1] + match[2];
+  const values = document.createElement('span');
+  values.className = 'overlay-row-values';
+  values.textContent = match[3];
+  element.replaceChildren(header, values);
 }
 
 function capGpuTitle(sample: TelemetrySample | null, device: OverlayDeviceIdentity | null, ordinal: number): string {
@@ -791,27 +819,22 @@ function renderCapframex(displaySample: TelemetrySample | null): void {
     const name = document.createElement('span');
     name.className = 'capframex-title-label';
     name.textContent = capGpuTitle(sample, device, ordinal);
-    const clocks = document.createElement('span');
-    clocks.className = 'capframex-clock';
-    if (enabled.has('gpu-clock')) {
-      clocks.textContent = capValue(sample?.gpuClockMhz, ' MHz');
-      title.append(clocks);
-    }
-    if (enabled.has('gpu-mem-clock')) {
-      const memClock = document.createElement('span');
-      memClock.className = 'capframex-memory-clock';
-      memClock.textContent = capValue(sample?.memClockMhz, ' MHz');
-      title.append(memClock);
-    }
     title.prepend(name);
     section.append(title);
-    capStatRow(section, enabled, 'gpu-util', 'GPU Load', [capValue(sample?.utilPct ?? sample?.gpuUtilPct, ' %')]);
+    const gpuLoad = [capValue(sample?.utilPct ?? sample?.gpuUtilPct, ' %')];
+    if (enabled.has('gpu-clock')) gpuLoad.push(capValue(sample?.gpuClockMhz, ' MHz'));
+    if (enabled.has('gpu-util') || enabled.has('gpu-clock')) capRow(section, 'GPU Load', gpuLoad);
     capStatRow(section, enabled, 'gpu-temp', 'GPU Temp', [capValue(sample?.tempC, ' °C')]);
-    capStatRow(section, enabled, 'gpu-voltage', 'GPU Voltage', [capValue(sample?.gpuVoltageV, ' V', 3)]);
-    capStatRow(section, enabled, 'gpu-power', 'GPU Power', [capValue(sample?.powerW, ' W', 1)]);
+    const powerValues = [];
+    if (enabled.has('gpu-voltage')) powerValues.push(capValue(sample?.gpuVoltageV, ' V', 3));
+    if (enabled.has('gpu-power')) powerValues.push(capValue(sample?.powerW, ' W', 1));
+    if (powerValues.length) capRow(section, 'GPU Power', powerValues);
     capStatRow(section, enabled, 'gpu-fan', 'GPU Fan', [capValue(sample?.fanRpm?.[0], ' RPM')]);
-    capStatRow(section, enabled, 'gpu-vram', 'VRAM', [capValue(capGb(sample?.gpuMemUsedBytes), ' GB', 1)]);
-    capStatRow(section, enabled, 'gpu-vram-temp', 'VRAM Temp', [capValue(sample?.vramTempC ?? sample?.memTempC, ' °C')]);
+    const vramValues = [];
+    if (enabled.has('gpu-mem-clock')) vramValues.push(capValue(sample?.memClockMhz, ' MHz'));
+    if (enabled.has('gpu-vram')) vramValues.push(capValue(capGb(sample?.gpuMemUsedBytes), ' GB', 1));
+    if (enabled.has('gpu-vram-temp')) vramValues.push(capValue(sample?.vramTempC ?? sample?.memTempC, ' °C'));
+    if (vramValues.length) capRow(section, 'VRAM', vramValues);
     capframexGpuSections.append(section);
   });
 
@@ -937,23 +960,23 @@ function render(): void {
     };
   });
 
-  fpsEl.textContent = paddedLines.fpsLine;
-  cpuEl.textContent = paddedLines.cpuLine;
-  memoryEl.textContent = paddedLines.memoryLine;
-  gpuEl.textContent = primaryNumber === null ? paddedLines.gpuLine : numberedRow(paddedLines.gpuLine, 'GPU', primaryNumber, maxLabelLen);
-  vramEl.textContent = primaryNumber === null ? paddedLines.vramLine : numberedRow(paddedLines.vramLine, 'VRAM', primaryNumber, maxLabelLen);
+  setColorizedOverlayRow(fpsEl, paddedLines.fpsLine);
+  setColorizedOverlayRow(cpuEl, paddedLines.cpuLine);
+  setColorizedOverlayRow(memoryEl, paddedLines.memoryLine);
+  setColorizedOverlayRow(gpuEl, primaryNumber === null ? paddedLines.gpuLine : numberedRow(paddedLines.gpuLine, 'GPU', primaryNumber, maxLabelLen));
+  setColorizedOverlayRow(vramEl, primaryNumber === null ? paddedLines.vramLine : numberedRow(paddedLines.vramLine, 'VRAM', primaryNumber, maxLabelLen));
   gpu2El.style.display = hasSecondary ? 'block' : 'none';
   vram2El.style.display = hasSecondary ? 'block' : 'none';
   gpu2El.textContent = '';
   vram2El.textContent = '';
   for (const { index, ordinal, lines: secondaryLines } of paddedSecondaryRows) {
     const row = index === 0 ? { gpu: gpu2El, vram: vram2El } : extraRowElements[index - 1];
-    row.gpu.textContent = chipNamesEnabled
+    setColorizedOverlayRow(row.gpu, chipNamesEnabled
       ? secondaryLines.gpuLine
-      : numberedRow(secondaryLines.gpuLine, 'GPU', ordinal, maxLabelLen);
-    row.vram.textContent = numberedRow(secondaryLines.vramLine, 'VRAM', ordinal, maxLabelLen);
+      : numberedRow(secondaryLines.gpuLine, 'GPU', ordinal, maxLabelLen));
+    setColorizedOverlayRow(row.vram, numberedRow(secondaryLines.vramLine, 'VRAM', ordinal, maxLabelLen));
   }
-  apiEl.textContent = paddedLines.apiLine;
+  setColorizedOverlayRow(apiEl, paddedLines.apiLine);
   // M6/M6-amd2: the frametime stat is NOT a line - it toggles the canvas
   // strip's AND the value line's visibility together (a fully-off line
   // writes '' into its KEPT div, but the strip + the number are HIDDEN -

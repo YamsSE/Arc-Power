@@ -72,7 +72,7 @@ function showComplete({ uninstall = false, launched = false, rtss = null } = {})
   statusCard.hidden = false;
   statusTitle.textContent = uninstall ? 'Arc Power removal is in progress' : 'Arc Power is ready';
   if (uninstall) {
-    statusDetail.textContent = 'Your profiles are kept. This window is closing while the application files and Windows registration are cleaned up.';
+    statusDetail.textContent = 'This window is closing while Arc Power files, profiles, settings, telemetry logs, shortcuts, and Windows registration are removed.';
   } else {
     const launchText = launched ? 'The Arc Power control panel is opening now.' : 'You can launch Arc Power from the Start Menu any time.';
     const rtssText = rtss?.installed
@@ -93,7 +93,7 @@ function showComplete({ uninstall = false, launched = false, rtss = null } = {})
   primaryButton.textContent = uninstall ? 'CLOSE' : 'CLOSE SETUP';
   cancelButton.hidden = true;
   progressArea.hidden = false;
-  setProgress(uninstall ? 96 : 100, uninstall ? 'Removal in progress — closing' : 'Installation complete');
+  setProgress(uninstall ? 96 : 100, uninstall ? 'Removal in progress, closing' : 'Installation complete');
   if (uninstall) {
     const closeAfterPaint = () => setTimeout(closeInstaller, 120);
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(closeAfterPaint);
@@ -158,7 +158,7 @@ if (mode === 'uninstall') {
   setView('idle');
   $('eyebrow').textContent = 'ARC POWER / UNINSTALL';
   $('headline').innerHTML = 'Clear the<br><span>runway.</span>';
-  $('lede').textContent = 'This removes the Arc Power application, shortcuts and Windows registration. Your durable ArcPower profiles stay safely in place.';
+  $('lede').textContent = 'This removes Arc Power, including saved profiles, settings, telemetry logs, shortcuts, and Windows registration.';
   installForm.hidden = true;
   primaryButton.textContent = 'REMOVE ARC POWER';
   cancelButton.textContent = 'KEEP ARC POWER';

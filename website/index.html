@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arc Power - Overclocking &amp; Tuning for Intel Arc GPUs</title>
-  <meta name="description" content="Overclock and tune Intel Arc GPUs through Intel's official IGCL API. Multi-GPU, fan curves, live telemetry, an in-game overlay and graphics tuning - no reverse engineering, no daemons.">
-  <meta property="og:title" content="Arc Power - Overclocking &amp; Tuning for Intel Arc GPUs">
-  <meta property="og:description" content="The overclocking tool for Intel Arc GPUs. Multi-GPU, fan curves, live telemetry, in-game overlay, graphics tuning - built on Intel's official IGCL API.">
+  <title>Arc Power 1.2 | Intel Arc GPU Control</title>
+  <meta name="description" content="Arc Power 1.2 brings Intel Arc GPU tuning, live telemetry, in-game overlays, profiles, graphics settings, and the Driver Library to Windows.">
+  <meta property="og:title" content="Arc Power 1.2 | Intel Arc GPU Control">
+  <meta property="og:description" content="Tune and monitor Intel Arc GPUs, configure in-game overlays, manage profiles, and browse Intel releases with the Driver Library.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://yamsse.github.io/Arc-Power/">
   <meta property="og:image" content="https://yamsse.github.io/Arc-Power/assets/og.png">
@@ -30,7 +30,7 @@
     <a class="nav-brand" href="#top">
       <img class="nav-logo" src="assets/ArcPowerIcon.png" alt="Arc Power logo" width="28" height="28">
       <span class="nav-name">Arc&nbsp;Power</span>
-      <span class="nav-ver mono">1.1.7</span>
+      <span class="nav-ver mono">1.2.0</span>
     </a>
     <div class="nav-links" id="navLinks">
       <a href="#features">Features</a>
@@ -70,10 +70,9 @@
           Arc <span class="grad-text">Power</span>
         </h1>
         <p class="hero-sub">
-          An open-source overclocking and tuning tool for Intel Arc GPUs - in the spirit of
-          MSI Afterburner and AMD Adrenaline, built on Intel's official Graphics Control
-          Library (IGCL). Multi-GPU support, five UI themes, live telemetry, an in-game
-          overlay and graphics tuning. No reverse-engineering. No third-party daemons.
+          One place to tune, monitor, and manage Intel Arc graphics. Version 1.2 brings
+          driver browsing into the same app as live telemetry, profiles, graphics settings,
+          and configurable in-game overlays.
         </p>
         <div class="hero-actions">
           <div class="hero-actions-row">
@@ -151,6 +150,12 @@
       </div>
     </header>
 
+    <section class="wrap release-callout glass" aria-label="Version 1.2 release">
+      <div><span class="kicker mono">VERSION 1.2</span><h2>Driver Library is included</h2>
+      <p>Browse available Intel Arc and Arc Pro driver releases, review version details, and manage downloaded installers from Arc Power.</p></div>
+      <a class="btn btn-primary" href="https://github.com/YamsSE/Arc-Power/releases/latest" target="_blank" rel="noopener">Get Version 1.2</a>
+    </section>
+
     <!-- ============================== STATS ============================== -->
     <section class="stats wrap" aria-label="Key numbers">
       <div class="stat glass">
@@ -175,7 +180,7 @@
     <section class="wrap section" id="features">
       <div class="section-head">
         <span class="kicker mono">Key points</span>
-        <h2>Everything you need to<br>unlock your Arc GPU</h2>
+        <h2>Control, monitor, and manage<br>your Arc system</h2>
       </div>
       <div class="feature-grid">
         <article class="card glass reveal">
@@ -255,6 +260,13 @@
           <h3>Installer &amp; packaging</h3>
           <p>Shipped as a portable EXE and a proper installer. Distributed builds request administrator access so hardware-control and logon applies have the access they need.</p>
         </article>
+        <article class="card glass reveal">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/><path d="M7 2v4M17 2v4"/></svg>
+          </div>
+          <h3>Intel Driver Library</h3>
+          <p>Included in Version 1.2. Browse available Intel Arc and Arc Pro driver versions, review release details, and manage downloaded installers.</p>
+        </article>
       </div>
     </section>
 
@@ -263,7 +275,7 @@
       <div class="section-head">
         <span class="kicker mono">Hardware</span>
         <h2>Supported GPUs</h2>
-        <p class="section-sub">Capability limits, ranges, steps and units are read from the GPU at launch - never hardcoded. The UI only shows what your device actually supports.</p>
+        <p class="section-sub">Limits, ranges, steps, and units come from the selected GPU and driver. Arc Power shows only the controls your device supports.</p>
       </div>
       <div class="gpu-table glass reveal">
         <div class="gpu-row gpu-head mono">

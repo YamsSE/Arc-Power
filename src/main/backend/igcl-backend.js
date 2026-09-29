@@ -75,6 +75,7 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
 import { isLegacyBakedB580VfCurve, isLegacyStockVfCurve, prepareVfCurveForDriver, rebaseB580VfCurveToNativeGrid } from '../../renderer/pure/vf-curve.ts';
+import { validateVfCurveReadback } from './vf-curve-readback.js';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
@@ -154,13 +155,6 @@ const VF_READ_RETRY_SETTLE_MS = 25;
 // success.
 const VF_READBACK_MAX_ATTEMPTS = 5;
 const VF_READBACK_SETTLE_MS = 50;
-// The B-series grid can quantize a requested point by a few native steps
-// (the observed 20 MHz example is the reason this is separate from the exact
-// read-back tolerance). A normalized result must stay near the requested
-// payload on every point; an arbitrary changed curve is still a refusal.
-const VF_NORMALIZED_VOLTAGE_TOLERANCE_MV = 10;
-const VF_NORMALIZED_FREQUENCY_TOLERANCE_MHZ = 50;
-
 function isPowerTelemetryV2CompatibilityError(result) {
   return POWER_TELEMETRY_V2_COMPATIBILITY_ERRORS.has(result);
 }
@@ -6589,7 +6583,6 @@ export class IgclBackend {
                 const pointsEqual = (left, right) => Array.isArray(left) && Array.isArray(right)
                   && left.length === right.length
                   && left.every((point, index) => point.Voltage === right[index]?.Voltage && point.Frequency === right[index]?.Frequency);
-                const pointsChanged = (left, right) => !pointsEqual(left, right);
                 const pointsBuf = koffi.alloc('ctl_voltage_frequency_point_t', points.length);
                 const pointSize = koffi.sizeof('ctl_voltage_frequency_point_t');
                 points.forEach((point, index) => {
@@ -6607,86 +6600,37 @@ export class IgclBackend {
                   fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
                 } else {
                   // IGS follows the driver's LIVE table after a successful
-                  // write. Drivers quantize voltage/frequency to their own
-                  // native grid (the B580, for example, rounded 796/1731 to
-                  // 795/1720), so an exact request comparison would report a
-                  // false failure. Accept an ordered, in-range LIVE table when
-                  // it demonstrably changed from the LIVE before-image; keep
-                  // the silent-no-op refusal for an unchanged table.
-                  const validateVfReadBack = (readBack) => {
-                    if (!readBack.ok) {
-                      return { ok: false, message: `VF curve write succeeded but read-back failed: ${readBack.message}` };
-                    }
-                    if (readBack.points.length !== points.length) {
-                      return { ok: false, message: `VF curve read-back ${readBack.points.length} points != requested ${points.length}` };
-                    }
-                    let previousVoltage = 0;
-                    let previousFrequency = 0;
-                    let validLive = true;
-                    for (let i = 0; i < readBack.points.length; i++) {
-                      const pt = readBack.points[i];
-                      const inRange = pt.Voltage / 1000 >= curveRange.voltageMinV
-                        && pt.Voltage / 1000 <= curveRange.voltageMaxV
-                        && pt.Frequency >= curveRange.freqMinMhz
-                        && pt.Frequency <= curveRange.freqMaxMhz;
-                      if (!Number.isFinite(pt.Voltage) || !Number.isFinite(pt.Frequency)
-                        || !inRange
-                        || (i > 0 && (pt.Voltage <= previousVoltage || pt.Frequency < previousFrequency))) {
-                        validLive = false;
-                        break;
-                      }
-                      previousVoltage = pt.Voltage;
-                      previousFrequency = pt.Frequency;
-                    }
-                    if (!validLive) {
-                      return { ok: false, message: 'VF curve read-back is not a valid ordered LIVE curve within the driver range' };
-                    }
-                    if (readBack.points.every((pt, index) =>
-                      Math.abs(pt.Voltage - points[index].Voltage) <= 1
-                      && Math.abs(pt.Frequency - points[index].Frequency) <= 1)) {
-                      return { ok: true, normalized: false };
-                    }
-                    const closeEnoughToRequestedGrid = readBack.points.every((pt, index) =>
-                      Math.abs(pt.Voltage - points[index].Voltage) <= VF_NORMALIZED_VOLTAGE_TOLERANCE_MV
-                      && Math.abs(pt.Frequency - points[index].Frequency) <= VF_NORMALIZED_FREQUENCY_TOLERANCE_MHZ);
-                    if (liveBefore.ok && closeEnoughToRequestedGrid
-                      && pointsChanged(points, liveBefore.points) && pointsChanged(readBack.points, liveBefore.points)) {
-                      return {
-                        ok: true,
-                        normalized: true,
-                        message: 'The driver normalized the requested VF values; the changed LIVE curve is active.',
-                      };
-                    }
-                    const mismatch = readBack.points.findIndex((pt, index) =>
-                      Math.abs(pt.Voltage - points[index].Voltage) > 1
-                      || Math.abs(pt.Frequency - points[index].Frequency) > 1);
-                    const index = mismatch < 0 ? 0 : mismatch;
-                    return {
-                      ok: false,
-                      message: `VF curve point ${index} read-back ${readBack.points[index].Voltage} mV / ${readBack.points[index].Frequency} MHz != requested ${points[index].Voltage} mV / ${points[index].Frequency} MHz`,
-                    };
-                  };
+                  // write. Intel documents that the applied LIVE curve can
+                  // differ from the request; accept that only after a valid
+                  // changed read-back and return the actual curve to the UI.
                   let v;
                   for (let readAttempt = 0; readAttempt < VF_READBACK_MAX_ATTEMPTS; readAttempt += 1) {
                     const readBack = await this._readVfCurvePointsWithRetry(dev.handle, 1, 0);
-                    v = validateVfReadBack(readBack);
+                    v = validateVfCurveReadback({
+                      readBack,
+                      requestedPoints: points,
+                      liveBefore,
+                      curveRange,
+                      allowDriverNormalization: isBattlemageGpuName(caps.deviceName, caps),
+                    });
                     if (v.ok || readAttempt === VF_READBACK_MAX_ATTEMPTS - 1
                       || !readBack.ok || !liveBefore.ok
                       || !pointsEqual(readBack.points, liveBefore.points)) break;
                     // Some B-series driver builds return SUCCESS before their
                     // asynchronous LIVE table update is visible. Retry only
-                    // that unchanged-before-image case; a changed mismatch or
-                    // an invalid read remains a real verification failure.
+                    // that unchanged-before-image case; invalid read-backs
+                    // remain real verification failures.
                     await new Promise((resolve) => setTimeout(resolve, VF_READBACK_SETTLE_MS));
                   }
                   result.perControl.vfCurve = {
                     ok: v.ok,
-                    readBackEqual: v.ok,
+                    readBackEqual: v.exact === true,
                     normalized: v.normalized === true,
-                    errorCode: v.ok ? undefined : 'io-failed',
+                    errorCode: v.ok ? undefined : (v.errorCode ?? 'io-failed'),
+                    driverAdjusted: v.driverAdjusted === true,
+                    silentNoop: v.silentNoop === true,
                     message: v.message,
-                    // F3 silent no-op: SUCCESS from the write with a mismatch on re-read.
-                    silentNoop: setResult === CTL_RESULT.SUCCESS && !v.ok,
+                    ...(Array.isArray(v.appliedCurve) ? { readBackCurve: v.appliedCurve } : {}),
                   };
                   if (!v.ok) result.ok = false;
                 }

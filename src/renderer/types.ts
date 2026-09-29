@@ -14,6 +14,7 @@ export type OcErrorCode =
   | 'unavailable-symbol'
   | 'invalid-argument'
   | 'permission-denied'
+  | 'driver-adjustment-out-of-range'
   | 'io-failed';
 
 export type FanMode = 'auto' | 'curve' | 'fixed';
@@ -164,6 +165,12 @@ export interface PerControlResult {
    *  message here; hard errors are mapped via pure/errors.ts errorMessage). */
   message?: string;
   readBackEqual?: boolean;
+  /** The driver changed a valid custom VF curve; readBackCurve holds the live curve. */
+  driverAdjusted?: boolean;
+  /** Exact=false but successful when the driver reports its verified grid-normalized values. */
+  normalized?: boolean;
+  /** The authoritative live VF points reported after a verified apply. */
+  readBackCurve?: Array<{ voltageV: number; freqMhz: number }>;
   /** F3: the driver returned SUCCESS but the read-back did not change (silent no-op - must NOT be reported as applied). */
   silentNoop?: boolean;
   /** The driver saved the requested GPU scaler preference while the active
@@ -695,6 +702,8 @@ export interface OverlaySettings {
    *  stock white). Applied via CSSOM to the lines + the frametime canvas
    *  stroke by the overlay renderer. */
   color: string;
+  labelColor?: string;
+  valueColor?: string;
   /** M24: the overlay THEME ('arc' the product default - the Intel-Arc
    *  harness redesign; 'classic' the original HUD, one click away via the
    *  Overlay Settings Theme row). NOTE: the PUSHED-PAYLOAD name shortens to
@@ -808,6 +817,8 @@ export interface ProfileSettingsState {
   /** M6: the overlay text color (absent on old files -> '#ffffff' - the
    *  stock white; same absent-field mechanism, NO schema bump). */
   overlayColor: string;
+  overlayLabelColor: string;
+  overlayValueColor: string;
   /** M6: the enabled overlay stat ids (M17g: absent on old files -> the
    *  DEFAULT set - the user's 11 ON / the others OFF, the M6 full-set
    *  default FLIPS; same absent-field mechanism, NO schema bump). */

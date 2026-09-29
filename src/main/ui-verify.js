@@ -449,10 +449,13 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // M4-D2 (§7): 6 nav links - the Overclocking + Fan pages merged into one
   // Tuning page. M6: 7 nav links - the Overlay Settings page (#/overlay)
   // joined the sidebar. M8: 8 nav links - the Graphics tab (#/graphics)
-  // joined below Tuning. M9: 7 again - the Overlay Settings content moved
-  // INTO the Monitoring page's Overlay view (the Overlay tab is gone).
+  // joined below Tuning. M9 moved the Overlay Settings content into Monitoring;
+  // M31 exposes Driver Library from the Intel GPU card, not the sidebar.
   if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
     fail('sidebar did not render (7 nav links expected - Overclocking + Fan merged into Tuning, the Graphics tab added in M8, the Overlay tab removed in M9)');
+  }
+  if (await js(`Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link-label')).some((label) => (label.textContent ?? '').trim() === 'Driver Library')`)) {
+    fail('Driver Library must not appear as a sidebar tab');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
@@ -623,7 +626,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // "Power" illuminated like the title bar, the brand BOLD.
   const sidebarIcons = await js(`Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link')).map((l) => ({ label: l.querySelector('.sidebar-link-label')?.textContent, hasIcon: !!l.querySelector('.sidebar-icon') }))`);
   if (!sidebarIcons.every((i) => i.hasIcon === true && i.label)) fail(`M4-D: every sidebar link must carry an icon + label: ${JSON.stringify(sidebarIcons)}`);
-  if (sidebarIcons.length !== 7) fail(`M9: expected 7 sidebar links with icons (the Overlay tab moved into the Monitoring page in M9 - the Graphics tab joined in M8), got ${sidebarIcons.length}`);
+  if (sidebarIcons.length !== 7) fail(`M31: expected 7 sidebar links with icons (Driver Library is launched from the Intel GPU card), got ${sidebarIcons.length}`);
   // M8: the Graphics tab sits DIRECTLY BELOW Tuning in the sidebar DOM (the
   // planned order: dashboard / tuning / graphics / monitoring / ...).
   const navOrder = await js(`JSON.stringify(Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link-label')).map((l) => (l.textContent ?? '').trim()))`);
@@ -633,6 +636,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (graphicsIdx < 0 || graphicsIdx !== tuningIdx + 1) {
     fail(`M8: the Graphics tab must sit DIRECTLY BELOW Tuning in the sidebar (nav order '${navOrder}')`);
   }
+  if (navLabels.includes('Driver Library')) fail(`M31: Driver Library must not appear in the sidebar (nav order '${navOrder}')`);
   step('m8-nav-position', `M8: the sidebar nav order is ${navOrder} - the Graphics tab sits directly below Tuning`);
   const sidebarPower = await js(`(() => {
     const el = document.querySelector('.sidebar-brand-power');
@@ -791,9 +795,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // 'Arc Power Ver. 1.0.0'. M17e (round-2 N1): the 1.0.1 bump - the pinned
   // text is EXACTLY 'Arc Power Ver. 1.0.1 Beta' - the 1.0.1-beta.1 bump;
   // the suffix logic keeps the Beta line only for -beta.x versions).
-  // M177: the 1.1.7 release pins the titlebar version surface.
-  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.1.7'`))) {
-    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.1.7')`);
+  // The 1.2.0 release pins the titlebar version surface.
+  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.2.0'`))) {
+    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.2.0')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -978,10 +982,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('m17c-control-bg', 'M17c: the --control-bg token renders on a select + a plain .btn + a checkbox in BOTH themes (the dark/light computed-style pins)');
 
   // M4-H (C1): the first GPU card - title 'GPU 1', the device name in a 'GPU' kv
-  // row under it (the CPU-card layout mirrored: title, then the 'CPU' kv
-  // row - the GPU card mirrors that with a 'GPU' row), NO Driver version
-  // row anywhere in the card (the health card keeps it - pinned below),
-  // Compute + Clocks + the standalone ReBAR pill stay.
+  // row under it, and the installed Intel driver row with its Driver Library
+  // launch button. The button routes by device id without changing selection.
   if (!(await waitFor(win, `(() => {
     const card = document.querySelector('.card-grid .device-card');
     if (!card) return false;
@@ -991,14 +993,14 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   })()`, 8000))) {
     fail(`M4-H: the GPU card layout is wrong (title '${await js(`document.querySelector('.device-card .card-title')?.textContent ?? ''`)}', GPU kv '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="GPU"]')?.textContent ?? ''`)}')`);
   }
-  if (await js(`!!document.querySelector('.card-grid .device-card .kv[data-label="Driver version"]')`)) {
-    fail('M4-H: the GPU card still renders the Driver version row (removed - the health card keeps it)');
+  if (!(await waitFor(win, `!!document.querySelector('.card-grid .device-card:not([hidden]) .kv[data-label="Driver version"]')`, 5000))) {
+    fail('M31: the Intel GPU card does not show its Driver version row');
   }
   const gpuNameKv = await js(`document.querySelector('.card-grid .device-card .kv[data-label="GPU"]')?.textContent ?? ''`);
   if (!(await waitFor(win, `document.body.textContent.includes('Xe Cores 32 - Shader Units 4096')`))) {
     fail('Xe cores / shader units line missing');
   }
-  // M17c/M17d: the Board partner row BELOW the Device row - '<AIB vendor>
+  // M17c/M17d: the Board partner row BELOW the Driver version row - '<AIB vendor>
   // (<model>)' from the caps AIB fields (the a770 mock's 0x1849/0x6001
   // pairing decodes ASRock / Phantom Gaming - M17d FLIP: the model drops
   // the trailing VRAM-amount token, the user's exact request).
@@ -1006,22 +1008,22 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     const card = document.querySelector('.card-grid .device-card');
     const kvs = Array.from(card?.querySelectorAll('.kv') ?? []);
     const gpuIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'GPU');
+    const driverIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'Driver version');
     const aibIdx = kvs.findIndex((k) => (k.getAttribute('data-label') ?? '') === 'Board partner');
     const aibRow = kvs[aibIdx];
-    return aibIdx === gpuIdx + 1 && !!aibRow && (aibRow.textContent ?? '').trim() === 'ASRock (Phantom Gaming)';
+    return driverIdx === gpuIdx + 1 && aibIdx === driverIdx + 1 && !!aibRow && (aibRow.textContent ?? '').trim() === 'ASRock (Phantom Gaming)';
   })()`, 5000))) {
-    fail(`M17c: the Board partner row is '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="Board partner"]')?.textContent ?? ''`)}' (expected 'ASRock (Phantom Gaming)' directly below the Device row)`);
+    fail(`M17c: the Board partner row is '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="Board partner"]')?.textContent ?? ''`)}' (expected 'ASRock (Phantom Gaming)' directly below Driver version)`);
   }
-  step('m17c-board-partner', 'M17c/M17d: the Board partner row renders directly below the Device row - ASRock (Phantom Gaming) (the 0x1849/0x6001 decode, the VRAM amount stripped)');
+  step('m17c-board-partner', 'M17c/M17d: Board partner renders directly below Driver version - ASRock (Phantom Gaming) (the 0x1849/0x6001 decode, the VRAM amount stripped)');
   // The waiver status row lives in the HEALTH card (below), not on the
   // device card: no 'OC waiver' text in any device-card kv row.
   if (await js(`Array.from(document.querySelectorAll('.card-grid .kv')).some((k) => (k.textContent ?? '').includes('OC waiver'))`)) fail('M4-A: the device card still shows the waiver status (the row lives in the GPU Status card)');
   // B2: the chips footer ("Fan curve N points", power/volt/freq/temp notes)
-  // is GONE from the device card - no chips inside the card grid EXCEPT the
-  // M4-D ReBAR pill (a deliberate new chip, excluded here).
+  // is GONE from the device card - the compact ReBAR pill sits beside VRAM.
   const gridChips = await js(`document.querySelectorAll('.card-grid .chip:not(.rebar-pill)').length`);
   if (gridChips !== 0) fail(`B2: device card chips footer still renders ${gridChips} chips`);
-  step('device-card', 'device card: Xe Cores 32 - Shader Units 4096, no PCI row, no chips footer (ReBAR pill is the only chip)');
+  step('device-card', 'device card: Xe Cores 32 - Shader Units 4096, no PCI row or chips footer; Driver Library button stays with driver version');
 
   // M4-I (B2): the VRAM row below the Shader info - the same ceil contract
   // as formatDeviceName with the memType CARRIED ON THE DEVICE PAYLOAD
@@ -1031,7 +1033,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `(() => {
     const row = Array.from(document.querySelectorAll('.card-grid .device-card .kv'))
       .find((k) => (k.getAttribute('data-label') ?? '') === 'VRAM');
-    return row && (row.textContent ?? '').trim() === '16GB GDDR6';
+    return row?.querySelector('.dashboard-vram-value > span:first-child')?.textContent?.trim() === '16GB GDDR6';
   })()`, 5000))) {
     fail(`M4-I: the device-card VRAM row is '${await js(`document.querySelector('.card-grid .device-card .kv[data-label="VRAM"]')?.textContent ?? ''`)}' (expected '16GB GDDR6' - ceil GiB + the payload memType)`);
   }
@@ -1231,20 +1233,137 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('m140-performance-pulse', `M140: compact Performance Pulse has '${pulseLabels}' with per-GPU utilization${multiGpuDashboard ? ' and VRAM values in both lanes' : ' 42%'}`);
 
-  // --- M4-D2 (§3): the ReBAR pill is STANDALONE (no label kv row) --------
-  // The mock fixture models a healthy setup: a multi-GiB BAR (rebarActive
-  // true -> green 'ReBAR on'). The row that used to wrap it ("Resizable
-  // BAR" kv) and the PCIe row are GONE.
-  if (await js(`!!document.querySelector('.card-grid .kv[data-label="Resizable BAR"]')`)) {
-    fail('M4-D2: the "Resizable BAR" label row is still rendered (the pill must be standalone)');
-  }
-  const rebarPill = await js(`(() => {
+  // --- M31: compact ReBAR pill shares the VRAM row -------------------------
+  const rebarLayout = await js(`(() => {
     const pill = document.querySelector('.card-grid .rebar-pill');
-    if (!pill) return 'no-pill';
-    return pill.textContent + '|' + pill.className;
+    const row = pill?.closest('.kv[data-label="VRAM"]');
+    const separator = row?.querySelector('.dashboard-vram-separator');
+    const pillStyle = pill ? getComputedStyle(pill) : null;
+    const separatorStyle = separator ? getComputedStyle(separator) : null;
+    return JSON.stringify({
+      text: pill?.textContent ?? '',
+      className: pill?.className ?? '',
+      inline: !!row,
+      standalone: !!document.querySelector('.card-grid .kv-rebar'),
+      separatorFontSize: parseFloat(separatorStyle?.fontSize ?? '0'),
+      pillHeight: pill?.getBoundingClientRect().height ?? 0,
+      pillPaddingLeft: pillStyle?.paddingLeft ?? '',
+      pillShadow: pillStyle?.boxShadow ?? 'none',
+    });
   })()`);
-  if (!/ReBAR on\|.*status-ok/.test(rebarPill)) fail(`M4-D2: the standalone ReBAR pill is '${rebarPill}' (expected the green 'ReBAR on')`);
-  step('m4d2-gpu-rows', `GPU card: ReBAR standalone pill '${rebarPill.split('|')[0]}' (green), no PCIe row, no Resizable BAR label row`);
+  const rebarLayoutData = JSON.parse(rebarLayout);
+  if (rebarLayoutData.text !== 'ReBAR on' || !rebarLayoutData.className.includes('status-ok') || !rebarLayoutData.className.includes('rebar-pill-compact') || !rebarLayoutData.inline || rebarLayoutData.standalone || rebarLayoutData.separatorFontSize < 15 || rebarLayoutData.pillHeight < 22 || rebarLayoutData.pillPaddingLeft !== '8px' || rebarLayoutData.pillShadow === 'none') {
+    fail(`M31: ReBAR must be compact and inline with VRAM: ${rebarLayout}`);
+  }
+  step('m31-vram-rebar', `GPU card: compact '${rebarLayoutData.text}' pill shares the VRAM row`);
+
+  const launchButton = await js(`document.querySelector('.card-grid .device-card:not([hidden]) .driver-library-launch')?.getAttribute('aria-label') ?? ''`);
+  if (launchButton !== 'Intel Driver Library') fail(`M31: the GPU card library button is labelled '${launchButton}'`);
+  const routeCheck = await js(`(() => {
+    const card = document.querySelector('.card-grid .device-card:not([hidden])');
+    return JSON.stringify({ deviceId: card?.dataset.deviceId ?? '', selected: document.querySelector('.device-select')?.value ?? null });
+  })()`);
+  const routeCheckData = JSON.parse(routeCheck);
+  await js(`document.querySelector('.card-grid .device-card:not([hidden]) .driver-library-launch')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.driver-library-page')`, 5000))) {
+    fail('M31: clicking Intel Driver Library did not open the Library page');
+  }
+  const libraryRoute = await js(`JSON.stringify({
+    routeId: new URLSearchParams(location.hash.split('?')[1] ?? '').get('deviceId'),
+    pageId: document.querySelector('.driver-library-page')?.getAttribute('data-device-id') ?? '',
+  })`);
+  const libraryRouteData = JSON.parse(libraryRoute);
+  if (!routeCheckData.deviceId || libraryRouteData.routeId !== routeCheckData.deviceId || libraryRouteData.pageId !== routeCheckData.deviceId) {
+    fail(`M31: Driver Library lost its card GPU context: ${libraryRoute}`);
+  }
+  const libraryPresentation = await js(`(() => {
+    const search = document.querySelector('.driver-library-search');
+    const releaseList = document.querySelector('.driver-library-release-list');
+    const layout = document.querySelector('.driver-library-layout');
+    if (!search || !releaseList || !layout) return JSON.stringify({ present: false });
+    const probe = document.createElement('div');
+    probe.style.backgroundColor = 'var(--control-bg)';
+    document.body.append(probe);
+    const expectedSearchBackground = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const searchStyle = getComputedStyle(search);
+    const listStyle = getComputedStyle(releaseList);
+    const layoutHeight = Number.parseFloat(getComputedStyle(layout).height);
+    return JSON.stringify({
+      present: true,
+      themedSearch: searchStyle.backgroundColor === expectedSearchBackground,
+      scrollableList: listStyle.overflowY === 'auto',
+      boundedLayout: Number.isFinite(layoutHeight) && layoutHeight > 0 && layoutHeight <= 840,
+      layoutHeight,
+    });
+  })()`);
+  const libraryPresentationData = JSON.parse(libraryPresentation);
+  if (!libraryPresentationData.present || !libraryPresentationData.themedSearch || !libraryPresentationData.scrollableList || !libraryPresentationData.boundedLayout) {
+    fail(`M31: Driver Library search and release list are not themed and bounded: ${libraryPresentation}`);
+  }
+  step('m31-library-presentation', `Driver Library has a themed search field and a bounded scrolling release list (${libraryPresentationData.layoutHeight}px)`);
+  const libraryScrollProbe = await js(`(() => {
+    const list = document.querySelector('.driver-library-release-list');
+    const search = document.querySelector('.driver-library-search');
+    if (!list || !search) return JSON.stringify({ before: 0, after: 0 });
+    const fill = document.createElement('div');
+    fill.dataset.uiVerifyScrollFill = 'before';
+    fill.style.height = '1200px';
+    list.append(fill);
+    list.scrollTop = 320;
+    const before = list.scrollTop;
+    search.value = '__scroll_restore_probe__';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    const replacement = document.querySelector('.driver-library-release-list');
+    if (replacement) {
+      const replacementFill = document.createElement('div');
+      replacementFill.dataset.uiVerifyScrollFill = 'after';
+      replacementFill.style.height = '1200px';
+      replacement.append(replacementFill);
+    }
+    return JSON.stringify({ before, after: replacement?.scrollTop ?? 0 });
+  })()`);
+  const libraryScrollProbeData = JSON.parse(libraryScrollProbe);
+  if (libraryScrollProbeData.before < 200 || !(await waitFor(win, `Number(document.querySelector('.driver-library-release-list')?.scrollTop ?? 0) <= 2`, 1500))) {
+    fail(`M31: filtering the Driver Library did not return to the first matching release: before=${libraryScrollProbeData.before}, after=${await js(`document.querySelector('.driver-library-release-list')?.scrollTop ?? 0`)}`);
+  }
+  step('m31-library-filter-scroll', `Filtering the Driver Library returned its release list to the first result from ${libraryScrollProbeData.before}px`);
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `!!document.querySelector('.card-grid .device-card:not([hidden])')`, 5000))) {
+    fail('M31: returning from Driver Library did not restore the dashboard');
+  }
+  const selectionAfterLibrary = await js(`document.querySelector('.device-select')?.value ?? null`);
+  if (routeCheckData.selected !== selectionAfterLibrary) {
+    fail(`M31: opening Driver Library changed the selected GPU from '${routeCheckData.selected}' to '${selectionAfterLibrary}'`);
+  }
+  step('m31-driver-library-entry', `GPU card button opened Driver Library for device ${routeCheckData.deviceId}; active GPU selection stayed unchanged`);
+  const pageScrollProbe = await js(`(() => {
+    const page = document.querySelector('#page');
+    if (!page) return JSON.stringify({ before: 0 });
+    const fill = document.createElement('div');
+    fill.dataset.uiVerifyPageScrollFill = 'true';
+    fill.style.height = '1400px';
+    page.append(fill);
+    page.scrollTop = 320;
+    const before = page.scrollTop;
+    window.dispatchEvent(new Event('hashchange'));
+    const replacementFill = document.createElement('div');
+    replacementFill.dataset.uiVerifyPageScrollFill = 'true';
+    replacementFill.style.height = '1400px';
+    page.append(replacementFill);
+    return JSON.stringify({ before });
+  })()`);
+  const pageScrollProbeData = JSON.parse(pageScrollProbe);
+  if (pageScrollProbeData.before < 200 || !(await waitFor(win, `Number(document.querySelector('#page')?.scrollTop ?? 0) >= ${pageScrollProbeData.before - 2}`, 1500))) {
+    fail(`Scroll preservation: rerendering the current page reset #page from ${pageScrollProbeData.before}px to ${await js(`document.querySelector('#page')?.scrollTop ?? 0`)}`);
+  }
+  step('scroll-preservation-page', `Rerendering the current page kept its scroll position at ${pageScrollProbeData.before}px`);
+  await new Promise((resolve) => setTimeout(resolve, 1250));
+  await js(`(() => {
+    document.querySelectorAll('[data-ui-verify-page-scroll-fill]').forEach((fill) => fill.remove());
+    const page = document.querySelector('#page');
+    if (page) page.scrollTop = 0;
+  })()`);
 
   // ONE general GPU STATUS card (M3-A + M3-C-I + M4-A + M16): FIVE rows,
   // honest per-row state, no Level Zero item, no IGCL detail line, NO
@@ -5124,9 +5243,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 // M11: the 1.0 Release - no suffix (the "Alpha" scheme is gone). M17e
 // (round-2 N1): the 1.0.1 bump joins the flips; M21: the 1.0.1-beta.1 bump
 // - the Settings row is the exact 'Arc Power Ver. 1.0.1 Beta' text (the
-// M177: the 1.1.7 stable bump - Settings displays 'Arc Power Ver. 1.1.7'.
-if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.1.7'`))) {
-fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.1.7')`);
+// The 1.2.0 stable bump - Settings displays 'Arc Power Ver. 1.2.0'.
+if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.2.0'`))) {
+fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.2.0')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -5174,7 +5293,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
       fail('M4-D: Start minimized did not persist startMinimized=false');
     }
   }
-step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save; Log to file is intentionally absent here; version row 1.1.7');
+step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save; Log to file is intentionally absent here; version row 1.2.0');
   // Start with Windows round trip + the honest shared-registration state. The
   // Settings checkbox shows ON whenever the registration exists - the profile's
   // start-at-boot (ocOnBoot) can own it (F6: never a false mismatch).
@@ -6093,8 +6212,8 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   // --- boot: shell + dropdown -----------------------------------------------
   // M4-D2 (§7): 6 nav links (Overclocking + Fan merged into Tuning). M6: 7
   // nav links (the Overlay Settings page joined the sidebar). M8: 8 (the
-  // Graphics tab joined below Tuning). M9: 7 again (the Overlay tab moved
-  // into the Monitoring page's Overlay view).
+  // Graphics tab joined below Tuning). M9 moved Overlay into Monitoring;
+  // M31 exposes Driver Library from the Intel GPU card, not the sidebar.
   if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
     fail('sidebar did not render (7 nav links expected - the Graphics tab joined in M8, the Overlay tab moved into Monitoring in M9)');
   }
@@ -6876,7 +6995,11 @@ export async function runSyntheticOsVerify(win) {
   if (nvidia && !(await waitFor(win, `(document.querySelector('.device-card .kv[data-label="Clocks"]')?.textContent ?? '').trim() === '1965 MHz Core / 7010 MHz Memory'`, 8000))) {
     fail(`M30 synthetic OS: NVIDIA Clocks readout did not receive live telemetry (got '${await js(`document.querySelector('.device-card .kv[data-label="Clocks"]')?.textContent ?? ''`)}', expected '1965 MHz Core / 7010 MHz Memory')`);
   }
-  const dashboardRows = JSON.parse(await js(`JSON.stringify(Object.fromEntries(Array.from(document.querySelectorAll('.device-card .kv')).map((k) => [k.getAttribute('data-label') ?? 'ReBAR', (k.textContent ?? '').trim()])))`));
+  const dashboardRows = JSON.parse(await js(`JSON.stringify({
+    ...Object.fromEntries(Array.from(document.querySelectorAll('.device-card .kv')).map((k) => [k.getAttribute('data-label') ?? '', (k.textContent ?? '').trim()])),
+    VRAM: document.querySelector('.device-card .kv[data-label="VRAM"] .dashboard-vram-value > span:first-child')?.textContent?.trim() ?? '',
+    ReBAR: document.querySelector('.device-card .rebar-pill')?.textContent?.trim() ?? '',
+  })`));
   if (dashboardRows.GPU !== expectedName) fail(`M30 synthetic OS: GPU card name is '${dashboardRows.GPU}' (expected '${expectedName}')`);
   if (!dashboardRows['Driver version']?.includes(expectedDriver)) fail(`M30 synthetic OS: Driver version row is '${dashboardRows['Driver version']}' (expected '${expectedDriver}')`);
   if (dashboardRows.VRAM !== expectedVram) fail(`M30 synthetic OS: VRAM row is '${dashboardRows.VRAM}' (expected '${expectedVram}')`);
@@ -7160,7 +7283,7 @@ export async function runNoIntelVerify(win) {
   if (computeRowKv.trim() !== '2048 Cores') {
     fail(`M17d: the no-Intel Compute row is '${computeRowKv}' (expected '2048 Cores' - the NVML numGpuCores via the deviceInfo() seam)`);
   }
-  const vramRowKv = await js(`document.querySelector('.device-card .kv[data-label="VRAM"]')?.textContent ?? ''`);
+  const vramRowKv = await js(`document.querySelector('.device-card .kv[data-label="VRAM"] .dashboard-vram-value > span:first-child')?.textContent ?? ''`);
   if (vramRowKv.trim() !== '4GB') {
     fail(`M17d: the no-Intel VRAM row is '${vramRowKv}' (expected '4GB' - the deviceInfo() NVML total primary, 4 GiB on the GTX 980-class)`);
   }
@@ -7332,8 +7455,8 @@ export async function runTweaksApplyVerify(win) {
   const cancelKnob = process.env.RID_MOCK_REGAPPLY_CANCEL === '1';
 
   // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
-  // (the Graphics tab joined below Tuning). M9: 7 again (the Overlay tab
-  // moved into the Monitoring page's Overlay view).
+  // (the Graphics tab joined below Tuning). M9 moved Overlay into Monitoring;
+  // M31 exposes Driver Library from the Intel GPU card, not the sidebar.
   if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
     fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
@@ -7515,8 +7638,8 @@ export async function runFanGateVerify(win, backend) {
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
   // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
-  // (the Graphics tab joined below Tuning). M9: 7 again (the Overlay tab
-  // moved into the Monitoring page's Overlay view).
+  // (the Graphics tab joined below Tuning). M9 moved Overlay into Monitoring;
+  // M31 exposes Driver Library from the Intel GPU card, not the sidebar.
   if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
     fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
@@ -8473,14 +8596,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     ];
     const maxLen = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--overlay-label-w'));
     const offset = maxLen + 2; // the ONE rule: every value starts at maxLabelLen + 2 ch
-    const withText = els.filter((el) => el !== null && el.firstChild !== null && el.firstChild.nodeType === 3);
-    const starts = withText.map((el) => {
-      const node = el.firstChild;
-      const range = document.createRange();
-      range.setStart(node, Math.min(offset, node.textContent.length));
-      range.setEnd(node, node.textContent.length);
-      return range.getBoundingClientRect().left;
-    });
+    const withText = els
+      .map((el) => el?.querySelector('.overlay-row-values'))
+      .filter((el) => el && (el.textContent ?? '').trim());
+    const starts = withText.map((el) => el.getBoundingClientRect().left);
     const d = divider.getBoundingClientRect();
     return {
       ok: withText.length >= 5
@@ -9264,16 +9383,14 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   await js(`(() => {
     const i = document.querySelector('.settings-hotkey-input');
     if (!i) return;
-    // M23: 'X' - NOT 'P' (the advanced overlay's STOCK letter; the M23
-    // collision envelope correctly rejects a HUD save of 'P').
-    i.value = 'X';
-    i.dispatchEvent(new Event('change'));
+    // Use two modifiers and a key, matching the Recording shortcut grammar.
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', code: 'KeyX', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
   })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayHotkeyLetter === 'X')`, 5000))) {
-    fail('M5: the Overlay Settings page letter save did not persist overlayHotkeyLetter=X');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayHotkeyLetter === 'Control+Shift+X')`, 5000))) {
+    fail('M5: the Overlay Settings page chord save did not persist overlayHotkeyLetter=Control+Shift+X');
   }
-  if (!hotkeyProbe.registrations.includes('Control+X')) {
-    fail(`M5: the letter save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
+  if (!hotkeyProbe.registrations.includes('Control+Shift+X')) {
+    fail(`M5: the chord save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
   }
   const s4 = await js(`window.arcPower.overlayGetState()`);
   if (s4.hotkeyRegistered !== false) fail('M5: hotkeyRegistered must read false after the faked register failure');
@@ -9281,17 +9398,17 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail('M5: the Overlay Settings page does not show the honest hotkey-register-failure note after the faked failure + letter save');
   }
   const inputValue = await js(`document.querySelector('.settings-hotkey-input')?.value ?? ''`);
-  if (inputValue !== 'X') fail(`M5: the Overlay Settings hotkey input reads '${inputValue}' (expected 'X' after the save)`);
-  step('m5-hotkey-failure-note', `mid-run faked register failure + letter save 'X' -> probe re-registered 'Control+X', hotkeyRegistered false, the honest note appears (input '${inputValue}')`);
+  if (inputValue !== 'Control+Shift+X') fail(`M5: the Overlay Settings hotkey input reads '${inputValue}' (expected 'Control+Shift+X' after the save)`);
+  step('m5-hotkey-failure-note', `mid-run faked register failure + chord save 'Control+Shift+X' -> probe re-registered the same chord, hotkeyRegistered false, the honest note appears (input '${inputValue}')`);
 
   // Restore the deterministic session end (like the theme-dark-final step):
-  // letter O + a successful registration -> the note disappears, and the
+  // Control+O + a successful registration -> the note disappears, and the
   // geometry back to the defaults (a crashed run must never bleed into the
   // next overlay variant; the M6 color/stats pins already restored the
   // stock white + the full stat set above, and the RTSS-only appearance
   // remains Classic here).
   hotkeyProbe.failRegister = false;
-  await js(`window.arcPower.profilesSettingsSave({ overlayHotkeyLetter: 'O', overlayPosition: 'top-left', overlayScale: 1 })`);
+  await js(`window.arcPower.profilesSettingsSave({ overlayHotkeyLetter: 'Control+O', overlayPosition: 'top-left', overlayScale: 1 })`);
   await sleep(500);
   const s5 = await js(`window.arcPower.overlayGetState()`);
   if (s5.hotkeyRegistered !== true) fail('M5: hotkeyRegistered did not recover after the failure fake was cleared');
@@ -9311,7 +9428,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`)) {
     fail('M5: the hotkey-failure note is still visible after the successful re-registration (the page must re-query get-state on every render)');
   }
-  step('m5-hotkey-restore', `restore: letter O + failRegister cleared -> 'Control+O' re-registered, hotkeyRegistered true, note gone; geometry back to top-left / scale 1`);
+  step('m5-hotkey-restore', `restore: Control+O + failRegister cleared -> shortcut re-registered, hotkeyRegistered true, note gone; geometry back to top-left / scale 1`);
 
   // M24: verify the current hook-free Arc Power Overlay provider and its
   // single frametime surface, then restore RTSS.
@@ -10151,8 +10268,8 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   }
   step('m23-readout', `M23: the live readout strip renders honest telemetry values - temp '${await ojs(`document.getElementById('adv-readout-temp')?.textContent ?? ''`)}', fan '${await ojs(`document.getElementById('adv-readout-fan')?.textContent ?? ''`)}', power '${await ojs(`document.getElementById('adv-readout-power')?.textContent ?? ''`)}', VRAM '${await ojs(`document.getElementById('adv-readout-memory')?.textContent ?? ''`)}' (the third consumer of the sample stream)`);
 
-  // (7) the hotkey collision: saving the advanced letter equal to the HUD
-  // letter is refused with a toast (the renderer refuses - the ENVELOPE
+  // (7) the hotkey collision: saving an advanced chord equal to the HUD
+  // chord is refused with a toast (the renderer refuses - the ENVELOPE
   // rejection is unit-tested elsewhere; pin the toast UX here). Both cards
   // enforce symmetrically. The HUD letter is seeded 'O' (main.js resets it
   // under the knob) and the advanced letter 'P'.
@@ -10164,14 +10281,13 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (!(await waitFor(win, `!!document.querySelector('.settings-advanced-hotkey-input')`, 8000))) {
     fail('M23: the Overlay view did not render the advanced hotkey input');
   }
-  // (7a) the ADVANCED card side: save the advanced letter = the HUD letter
-  // ('O') -> the envelope rejects (collision) -> the honest toast + the
+  // (7a) the ADVANCED card side: save Control+O = the legacy HUD O chord
+  // -> the envelope rejects (collision) -> the honest toast + the
   // input reverts + the store is untouched.
   await clearToasts();
   await js(`(() => {
     const i = document.querySelector('.settings-advanced-hotkey-input');
-    i.value = 'O';
-    i.dispatchEvent(new Event('change'));
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', code: 'KeyO', ctrlKey: true, bubbles: true, cancelable: true }));
   })()`);
   if (!(await waitFor(win, `!!document.querySelector('.toast-error') && (document.body.textContent ?? '').includes('Advanced overlay hotkey could not be changed')`, 8000))) {
     fail(`M23: the colliding advanced-letter save did not surface the honest toast (toasts='${await js(`Array.from(document.querySelectorAll('.toast')).map((t) => (t.textContent ?? '').slice(0, 60)).join(' | ')`)}')`);
@@ -10180,13 +10296,13 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
     fail('M23: the colliding advanced-letter save must NOT persist (advancedOverlayHotkeyLetter must stay P - the envelope rejected it)');
   }
   const advInputValue = await js(`document.querySelector('.settings-advanced-hotkey-input')?.value ?? ''`);
-  if (advInputValue !== 'P') fail(`M23: the advanced hotkey input reads '${advInputValue}' (expected 'P' - the renderer reverts the rejected save)`);
-  // (7b) the HUD card side, symmetrically: save the HUD letter = the
-  // advanced letter ('P') -> the same envelope rejection -> the HUD toast.
+  if (advInputValue !== 'Control+P') fail(`M23: the advanced hotkey input reads '${advInputValue}' (expected 'Control+P' - the renderer reverts the rejected save)`);
+  // (7b) the HUD card side, symmetrically: save Control+P = the advanced
+  // legacy P chord -> the same envelope rejection -> the HUD toast.
   await clearToasts();
   await js(`(() => {
     const i = document.querySelector('.settings-hotkey-input:not(.settings-advanced-hotkey-input)');
-    if (i) { i.value = 'P'; i.dispatchEvent(new Event('change')); }
+    if (i) i.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', code: 'KeyP', ctrlKey: true, bubbles: true, cancelable: true }));
   })()`);
   if (!(await waitFor(win, `!!document.querySelector('.toast-error') && (document.body.textContent ?? '').includes('Overlay hotkey could not be changed')`, 8000))) {
     fail(`M23: the colliding HUD-letter save did not surface the honest toast (toasts='${await js(`Array.from(document.querySelectorAll('.toast')).map((t) => (t.textContent ?? '').slice(0, 60)).join(' | ')`)}')`);
@@ -10194,7 +10310,7 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayHotkeyLetter === 'O')`, 5000))) {
     fail('M23: the colliding HUD-letter save must NOT persist (overlayHotkeyLetter must stay O - the symmetric envelope rejection)');
   }
-  step('m23-collision', `M23: the hotkey COLLISION - saving the advanced letter 'O' (= the HUD letter) is refused with the honest toast + the input reverts ('${advInputValue}') + the store stays 'P'; the HUD card enforces symmetrically (HUD 'P' -> the HUD toast + the store stays 'O')`);
+  step('m23-collision', `M23: Control+O and Control+P legacy chord collisions are refused symmetrically; the toast appears, the input reverts ('${advInputValue}'), and neither persisted shortcut changes`);
 
   // (8) the Settings card (Overlay view): the advanced hotkey card renders +
   // a letter save re-registers through the probe + the honest
@@ -10202,38 +10318,36 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (!(await js(`!!document.querySelector('.overlay-hotkey-card .overlay-advanced-hotkey-row .settings-advanced-hotkey-input')`))) {
     fail('M23: the Overlay view has no merged Advanced controls in the Hotkey card');
   }
-  // (8a) a letter save re-registers through the counting probe.
+  // (8a) a two-modifier chord save re-registers through the counting probe.
   await clearToasts();
   await js(`(() => {
     const i = document.querySelector('.settings-advanced-hotkey-input');
-    i.value = 'K';
-    i.dispatchEvent(new Event('change'));
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
   })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'K')`, 5000))) {
-    fail('M23: the advanced letter save did not persist advancedOverlayHotkeyLetter=K');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'Control+Shift+K')`, 5000))) {
+    fail('M23: the advanced chord save did not persist advancedOverlayHotkeyLetter=Control+Shift+K');
   }
-  if (!hotkeyProbe.registrations.includes('Control+K')) {
-    fail(`M23: the advanced letter save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
+  if (!hotkeyProbe.registrations.includes('Control+Shift+K')) {
+    fail(`M23: the advanced chord save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
   }
   if (!(await waitFor(win, `window.arcPower.advancedOverlayGetState().then((s) => s.hotkeyRegistered === true)`, 5000))) {
     fail('M23: hotkeyRegistered must stay true after the successful letter save');
   }
   // (8b) the honest register-failure note: the probe fakes a failure (the
-  // mid-run settable fake) -> a letter save re-registers through the probe
+  // mid-run settable fake) -> an Alt+Shift chord save re-registers through the probe
   // (registrations still accumulate) but the LIVE flag reads false -> the
   // Advanced card's every-render re-query shows the honest note.
   hotkeyProbe.failRegister = true;
   await clearToasts();
   await js(`(() => {
     const i = document.querySelector('.settings-advanced-hotkey-input');
-    i.value = 'L';
-    i.dispatchEvent(new Event('change'));
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', code: 'KeyL', altKey: true, shiftKey: true, bubbles: true, cancelable: true }));
   })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'L')`, 5000))) {
-    fail('M23: the advanced letter save did not persist advancedOverlayHotkeyLetter=L');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'Alt+Shift+L')`, 5000))) {
+    fail('M23: the advanced chord save did not persist advancedOverlayHotkeyLetter=Alt+Shift+L');
   }
-  if (!hotkeyProbe.registrations.includes('Control+L')) {
-    fail(`M23: the letter save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
+  if (!hotkeyProbe.registrations.includes('Alt+Shift+L')) {
+    fail(`M23: the chord save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
   }
   if (!(await waitFor(win, `window.arcPower.advancedOverlayGetState().then((s) => s.hotkeyRegistered === false)`, 5000))) {
     fail('M23: hotkeyRegistered must read false after the faked register failure');
@@ -10241,17 +10355,16 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`, 5000))) {
     fail('M23: the Advanced card does not show the honest hotkey-register-failure note after the faked failure + letter save');
   }
-  // (8c) restore the deterministic session end: clear the fake + save 'P' ->
-  // re-registered 'Control+P' + hotkeyRegistered true + the note disappears
+  // (8c) restore the deterministic session end: clear the fake + save Control+P ->
+  // the shortcut re-registers + hotkeyRegistered true + the note disappears
   // (the every-render get-state re-query).
   hotkeyProbe.failRegister = false;
   await js(`(() => {
     const i = document.querySelector('.settings-advanced-hotkey-input');
-    i.value = 'P';
-    i.dispatchEvent(new Event('change'));
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', code: 'KeyP', ctrlKey: true, bubbles: true, cancelable: true }));
   })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'P')`, 5000))) {
-    fail('M23: the restore letter save did not persist advancedOverlayHotkeyLetter=P');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'Control+P')`, 5000))) {
+    fail('M23: the restore chord save did not persist advancedOverlayHotkeyLetter=Control+P');
   }
   if (!hotkeyProbe.registrations.includes('Control+P')) {
     fail(`M23: the restore letter save did not re-register 'Control+P' (got ${JSON.stringify(hotkeyProbe.registrations)})`);
@@ -10272,7 +10385,7 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`)) {
     fail('M23: the hotkey-failure note is still visible after the successful re-registration (the page must re-query get-state on every render)');
   }
-  step('m23-settings-card', `M23: the Overlay-view Advanced card - letter save 'K' persisted + re-registered 'Control+K' (probe ${JSON.stringify(hotkeyProbe.registrations)}) + hotkeyRegistered true; the faked failure + save 'L' -> re-registered 'Control+L' + hotkeyRegistered false + the honest note appears; cleared + save 'P' -> re-registered 'Control+P' + hotkeyRegistered true + the note gone`);
+  step('m23-settings-card', `M23: the Overlay-view Advanced card saves Control+Shift+K and Alt+Shift+L, re-registers those exact chords, reports registration failures honestly, and restores Control+P`);
 
   // M23 (the shared close-to-tray ending): the main window's closed handler
   // destroys the panel + unregisters its hotkey (the lifecycle rule) - the

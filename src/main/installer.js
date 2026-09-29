@@ -185,6 +185,7 @@ function windowsPaths() {
   return {
     appData,
     localAppData,
+    documents: app.getPath('documents'),
     desktop: app.getPath('desktop'),
   };
 }
@@ -567,7 +568,7 @@ async function scheduleUninstall(plan) {
     summaryPath,
   }), { encoding: 'utf8', mode: 0o600 });
   try {
-    await new Promise((resolve, reject) => {
+    const handoff = await new Promise((resolve, reject) => {
       let child;
       try {
         child = spawn(powershell, [
@@ -606,6 +607,7 @@ async function scheduleUninstall(plan) {
         })
         .catch(reject);
     });
+    return handoff;
   } catch (cause) {
     const statusAfterFailure = await readLastUninstallStatus(tempDir);
     if (!isUninstallAttemptActive(statusAfterFailure, isProcessAlive)) {

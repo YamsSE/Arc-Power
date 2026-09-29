@@ -52,7 +52,7 @@ import { runSmoke } from './smoke.js';
 import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runLaptopSysinfoVerify, runOverlayVerify, runGraphicsVerify, runNoSysmanVerify, runAdvancedOverlayVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
-import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, resolvePreferredDevice, clampOverlayScale, waiverProbeDue, pushRecordingActionResult } from './ipc-core.js';
+import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, resolvePreferredDevice, clampOverlayScale, overlayHotkeysCollide, validateOverlayHotkeyLetter, waiverProbeDue, pushRecordingActionResult } from './ipc-core.js';
 import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT, OVERLAY_RENDERERS } from './store/profile-store.js';
 import { GameProfileStore } from './store/game-profile-store.js';
 import { RecordingStore } from './store/recording-store.js';
@@ -2412,6 +2412,8 @@ async function main() {
         position: initialOverlaySettings.overlayPosition,
         scale: initialOverlaySettings.overlayScale,
         color: initialOverlaySettings.overlayColor,
+        labelColor: initialOverlaySettings.overlayLabelColor ?? initialOverlaySettings.overlayColor,
+        valueColor: initialOverlaySettings.overlayValueColor ?? initialOverlaySettings.overlayColor,
         // RTSS is the only telemetry surface; legacy persisted theme and
         // background values must never alter its Classic output.
         theme: 'classic',
@@ -3063,10 +3065,12 @@ async function main() {
     rtssOverlayVisible = !rtssOverlayVisible;
     rtssOverlay.setVisible(rtssOverlayVisible);
   };
+  const overlayAcceleratorOf = (value, fallback) => {
+    try { return validateOverlayHotkeyLetter(value); } catch { return validateOverlayHotkeyLetter(fallback); }
+  };
   const registerOverlayHotkey = (letter) => {
     if (!overlayHandle && !rtssOverlay) return;
-    const normalized = typeof letter === 'string' && /^[A-Za-z]$/.test(letter) ? letter.toUpperCase() : 'O';
-    const accel = `Control+${normalized}`;
+    const accel = overlayAcceleratorOf(letter, 'O');
     if (uiVerify) {
       overlayHotkeyProbe.registrations.push(accel);
       overlayHotkeyProbe.failRegister = overlayHotkeyProbe.failRegister === true;
@@ -3138,6 +3142,8 @@ async function main() {
         position: settings.overlayPosition,
         scale: settings.overlayScale,
         color: settings.overlayColor,
+        labelColor: settings.overlayLabelColor ?? settings.overlayColor,
+        valueColor: settings.overlayValueColor ?? settings.overlayColor,
         stats: settings.overlayStats,
         deviceKeys: settings.overlayDeviceKeys,
         overlayChipNames: settings.overlayChipNames === true,
@@ -3155,6 +3161,8 @@ async function main() {
         position: settings.overlayPosition,
         scale: settings.overlayScale,
         color: settings.overlayColor,
+        labelColor: settings.overlayLabelColor ?? settings.overlayColor,
+        valueColor: settings.overlayValueColor ?? settings.overlayColor,
         // Keep stale profile values from reviving the removed Arc/background
         // RTSS variants. The publisher itself enforces this too.
         theme: 'classic',
@@ -3189,7 +3197,7 @@ async function main() {
       position: OVERLAY_POSITIONS.includes(settings.overlayPosition) ? settings.overlayPosition : 'top-left',
       scale: clampOverlayScale(settings.overlayScale),
       hotkeyLetter: typeof settings.overlayHotkeyLetter === 'string'
-        && /^[A-Za-z]$/.test(settings.overlayHotkeyLetter)
+        && (/^[A-Za-z]$/.test(settings.overlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(settings.overlayHotkeyLetter))
         ? settings.overlayHotkeyLetter
         : 'O',
       // M6: the text color + the enabled stats ride the same envelope -
@@ -3200,6 +3208,8 @@ async function main() {
       color: typeof settings.overlayColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.overlayColor)
         ? settings.overlayColor
         : '#ffffff',
+      labelColor: settings.overlayLabelColor ?? settings.overlayColor,
+      valueColor: settings.overlayValueColor ?? settings.overlayColor,
       stats: Array.isArray(settings.overlayStats) ? settings.overlayStats : undefined,
       // M35: the selected overlay GPU identities ride the same settings
       // envelope so the renderer can restart only the requested telemetry
@@ -3269,7 +3279,7 @@ async function main() {
     let bootLetter = 'O';
     try {
       const s = store.loadSettingsSync() ?? {};
-      if (typeof s.overlayHotkeyLetter === 'string' && /^[A-Za-z]$/.test(s.overlayHotkeyLetter)) {
+      if (typeof s.overlayHotkeyLetter === 'string' && (/^[A-Za-z]$/.test(s.overlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(s.overlayHotkeyLetter))) {
         bootLetter = s.overlayHotkeyLetter;
       }
     } catch { /* default O */ }
@@ -3278,7 +3288,7 @@ async function main() {
     let bootLetter = 'O';
     try {
       const s = store.loadSettingsSync() ?? {};
-      if (typeof s.overlayHotkeyLetter === 'string' && /^[A-Za-z]$/.test(s.overlayHotkeyLetter)) {
+      if (typeof s.overlayHotkeyLetter === 'string' && (/^[A-Za-z]$/.test(s.overlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(s.overlayHotkeyLetter))) {
         bootLetter = s.overlayHotkeyLetter;
       }
     } catch { /* default O */ }
@@ -3358,8 +3368,7 @@ async function main() {
   const advancedOverlayHotkeyProbe = { registrations: [], failRegister: false };
   const registerAdvancedOverlayHotkey = (letter) => {
     if (!advancedOverlayHandle) return;
-    const normalized = typeof letter === 'string' && /^[A-Za-z]$/.test(letter) ? letter.toUpperCase() : 'P';
-    const accel = `Control+${normalized}`;
+    const accel = overlayAcceleratorOf(letter, 'P');
     if (uiVerify) {
       advancedOverlayHotkeyProbe.registrations.push(accel);
       advancedOverlayHandle.setHotkeyRegistered(!advancedOverlayHotkeyProbe.failRegister);
@@ -3401,10 +3410,7 @@ async function main() {
       position: settings.advancedOverlayPosition === 'left' || settings.advancedOverlayPosition === 'right'
         ? settings.advancedOverlayPosition
         : 'right',
-      hotkeyLetter: typeof settings.advancedOverlayHotkeyLetter === 'string'
-        && /^[A-Za-z]$/.test(settings.advancedOverlayHotkeyLetter)
-        ? settings.advancedOverlayHotkeyLetter
-        : 'P',
+      hotkeyLetter: overlayAcceleratorOf(settings.advancedOverlayHotkeyLetter, 'P'),
       theme: normalizeTheme(settings.theme),
       stats: Array.isArray(settings.overlayStats) ? settings.overlayStats : OVERLAY_STATS_DEFAULT,
     }, { preserveVisibility });
@@ -3434,25 +3440,21 @@ async function main() {
     let bootLetter = 'P';
     try {
       const s = store.loadSettingsSync() ?? {};
-      if (typeof s.advancedOverlayHotkeyLetter === 'string' && /^[A-Za-z]$/.test(s.advancedOverlayHotkeyLetter)) {
-        bootLetter = s.advancedOverlayHotkeyLetter;
-      }
+      bootLetter = overlayAcceleratorOf(s.advancedOverlayHotkeyLetter, 'P');
     } catch { /* default P */ }
-    // M23 (step-5 N1): the upgrade-path collision reconcile. A PRE-M23
-    // persisted HUD letter 'P' + the new advanced default 'P' would
-    // register TWO same-app Control+P accelerators back to back - same-app
+    // M23 (step-5 N1): reconcile collisions between both persisted overlay
+    // accelerators, including legacy single-letter Control+letter values.
+    // Same-app
     // register REPLACES and returns true, so one hotkey dies silently with
     // hotkeyRegistered still true on both cards. At BOOT and on a later
     // re-enable, skip the advanced registration and surface the honest state.
-    let hudBootLetter = 'O';
+    let hudBootAccelerator = overlayAcceleratorOf('O', 'O');
     try {
       const s = store.loadSettingsSync() ?? {};
-      if (typeof s.overlayHotkeyLetter === 'string' && /^[A-Za-z]$/.test(s.overlayHotkeyLetter)) {
-        hudBootLetter = s.overlayHotkeyLetter.toUpperCase();
-      }
+      hudBootAccelerator = overlayAcceleratorOf(s.overlayHotkeyLetter, 'O');
     } catch { /* default O */ }
-    if (bootLetter.toUpperCase() === hudBootLetter) {
-      console.log(`[advanced-overlay] boot hotkey ${bootLetter.toUpperCase()} collides with the HUD letter - the advanced registration is SKIPPED (the honest note shows; the user picks another letter)`);
+    if (overlayHotkeysCollide(overlayAcceleratorOf(bootLetter, 'P'), hudBootAccelerator)) {
+      console.log(`[advanced-overlay] boot hotkey ${overlayAcceleratorOf(bootLetter, 'P')} collides with the HUD hotkey - the advanced registration is SKIPPED (the honest note shows; the user picks another shortcut)`);
       advancedOverlayHandle.setHotkeyRegistered(false);
     } else {
       registerAdvancedOverlayHotkey(bootLetter);
@@ -3485,9 +3487,7 @@ async function main() {
       let letter = 'P';
       try {
         const s = store.loadSettingsSync() ?? {};
-        if (typeof s.advancedOverlayHotkeyLetter === 'string' && /^[A-Za-z]$/.test(s.advancedOverlayHotkeyLetter)) {
-          letter = s.advancedOverlayHotkeyLetter;
-        }
+        letter = overlayAcceleratorOf(s.advancedOverlayHotkeyLetter, 'P');
       } catch { /* default P */ }
       registerAdvancedOverlayHotkey(letter);
     }

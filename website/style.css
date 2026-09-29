@@ -54,6 +54,19 @@ a:hover { text-decoration: underline; }
   border-radius: var(--radius);
 }
 
+.release-callout {
+  display: flex; align-items: center; justify-content: space-between; gap: 28px;
+  margin-top: 12px; padding: 26px 30px;
+  border-color: var(--border-strong);
+  background: linear-gradient(110deg, rgba(76,194,255,0.12), rgba(19,26,43,0.84) 58%);
+}
+.release-callout h2 { margin: 4px 0 6px; font-size: clamp(21px, 3vw, 28px); letter-spacing: -0.035em; }
+.release-callout p { max-width: 680px; color: var(--muted); font-size: 14px; }
+.release-callout .btn { flex: 0 0 auto; }
+@media (max-width: 620px) {
+  .release-callout { align-items: flex-start; flex-direction: column; padding: 22px; }
+}
+
 /* ---------- ambient background ---------- */
 .bg-grid {
   position: fixed; inset: 0; z-index: -3; pointer-events: none;

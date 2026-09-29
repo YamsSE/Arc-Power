@@ -1,6 +1,7 @@
 import { el } from '../dom.ts';
 import type { IntelDriverKind, IntelDriverRelease } from '../pure/intel-driver-updates.ts';
 import { api } from '../ipc.ts';
+import { renderIntelDriverChangelog } from './intel-driver-changelog.ts';
 
 const ROOT_ID = 'modal-root';
 type DriverDownloadProgress = { kind: IntelDriverKind; version: string; bytesDownloaded: number; totalBytes: number; percent: number };
@@ -9,7 +10,7 @@ type DriverDownloadApi = {
   intelDriverDownloadCancel(kind: IntelDriverKind): Promise<{ cancelled: boolean }>;
   intelDriverInstall(kind: IntelDriverKind, version: string): Promise<{ launched: true }>;
   onIntelDriverDownloadProgress(listener: (progress: DriverDownloadProgress) => void): () => void;
-  openIntelDriverDownloadPage(kind: IntelDriverKind): Promise<void>;
+  openIntelDriverDownloadPage(kind: IntelDriverKind, version: string): Promise<void>;
 };
 const driverApi = api as typeof api & DriverDownloadApi;
 
@@ -119,7 +120,7 @@ export function showIntelDriverUpdateDialog(
     text: 'Review Intel’s official driver page',
     onClick: async (event: MouseEvent) => {
       event.preventDefault();
-      try { await driverApi.openIntelDriverDownloadPage(kind); }
+      try { await driverApi.openIntelDriverDownloadPage(kind, release.version); }
       catch { status.textContent = 'Could not open Intel’s driver page. Please try again.'; }
     },
   });
@@ -159,8 +160,8 @@ export function showIntelDriverUpdateDialog(
   changelogTab.addEventListener('click', () => selectTab(true));
   downloadTab.addEventListener('keydown', handleTabKeydown);
   changelogTab.addEventListener('keydown', handleTabKeydown);
-  changelogPanel.append(release.changelog.length
-    ? el('ul', { class: 'intel-driver-changelog-list' }, release.changelog.map((item) => el('li', { text: item })))
+  changelogPanel.append((release.changelogSections?.length || release.changelog.length)
+    ? renderIntelDriverChangelog(release)
     : el('p', { class: 'modal-text intel-driver-changelog-empty', text: 'No release highlights are available.' }));
 
   const license = el('input', { type: 'checkbox', class: 'intel-driver-license-checkbox', 'aria-label': 'I accept Intel’s Software License Agreement' }) as HTMLInputElement;
@@ -206,8 +207,9 @@ export function showIntelDriverUpdateDialog(
       el('p', { class: 'modal-text intel-driver-dialog-question', id: 'intel-driver-dialog-description', text: 'Review and download the Intel driver update.' }),
       el('dl', { class: 'intel-driver-dialog-versions' }, [
         el('div', {}, [el('dt', { text: 'Installed version' }), el('dd', { text: installed })]),
-        el('div', {}, [el('dt', { text: 'Latest Intel version' }), el('dd', { text: release.version })]),
+        el('div', {}, [el('dt', { text: 'Selected Intel version' }), el('dd', { text: release.version })]),
         ...(release.releaseDate ? [el('div', {}, [el('dt', { text: 'Release date' }), el('dd', { text: release.releaseDate })])] : []),
+        ...(release.sizeBytes ? [el('div', {}, [el('dt', { text: 'Package size' }), el('dd', { text: formatDriverSize(release.sizeBytes) })])] : []),
       ]),
       el('div', { class: 'intel-driver-tabs', role: 'tablist', 'aria-label': 'Intel driver details' }, [downloadTab, changelogTab]),
       downloadPanel,
@@ -224,4 +226,8 @@ export function showIntelDriverUpdateDialog(
   );
   if (downloaded) return;
   cancel.focus();
+}
+
+function formatDriverSize(bytes: number): string {
+  return bytes >= 1024 ** 3 ? `${(bytes / (1024 ** 3)).toFixed(2)} GB` : `${(bytes / (1024 ** 2)).toFixed(0)} MB`;
 }

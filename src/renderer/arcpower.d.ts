@@ -61,6 +61,7 @@ import type {
   StreamStatus,
   VendorDeviceInfo,
 } from './types.ts';
+import type { IntelDriverChangelogEntry } from './pure/intel-driver-updates.ts';
 
 export interface DeviceSelectionPayload {
   deviceId: number;
@@ -88,6 +89,15 @@ export interface IntelDriverDownloadProgress {
   bytesDownloaded: number;
   totalBytes: number;
   percent: number;
+}
+
+export interface IntelDriverLibraryRelease {
+  version: string;
+  releaseDate: string | null;
+  changelog: string[];
+  changelogSections?: IntelDriverChangelogEntry[];
+  sizeBytes: number | null;
+  officialPageUrl: string;
 }
 
 export interface ArcPowerApi {
@@ -204,17 +214,23 @@ export interface ArcPowerApi {
   openExternal(url: string): Promise<void>;
   /** Read latest Intel Arc consumer/iGPU and Arc Pro driver metadata. */
   intelDriverUpdateCheck(): Promise<{
-    arc: { version: string; releaseDate: string | null; officialPageUrl: string; changelog: string[] } | null;
-    pro: { version: string; releaseDate: string | null; officialPageUrl: string; changelog: string[] } | null;
+    arc: { version: string; releaseDate: string | null; officialPageUrl: string; changelog: string[]; changelogSections?: IntelDriverChangelogEntry[] } | null;
+    pro: { version: string; releaseDate: string | null; officialPageUrl: string; changelog: string[]; changelogSections?: IntelDriverChangelogEntry[] } | null;
   }>;
+  /** List currently published Intel Arc or Arc Pro version numbers. */
+  intelDriverLibrary(kind: 'arc' | 'pro'): Promise<{ versions: string[]; partial: boolean }>;
+  /** Load the details for one version that is currently listed by Intel. */
+  intelDriverRelease(kind: 'arc' | 'pro', version: string): Promise<IntelDriverLibraryRelease>;
   /** Open one fixed official Intel driver page; renderer-supplied URLs are never accepted. */
-  openIntelDriverDownloadPage(kind: 'arc' | 'pro'): Promise<void>;
+  openIntelDriverDownloadPage(kind: 'arc' | 'pro', version?: string): Promise<void>;
   /** Inspect whether the exact Intel release is retained locally; no path is exposed. */
   intelDriverDownloadStatus(kind: 'arc' | 'pro', version: string): Promise<{ downloaded: boolean; sizeBytes: number | null }>;
   /** Start a user-consented, streamed Intel driver download with integrity verification. */
   intelDriverDownloadStart(kind: 'arc' | 'pro', version: string, acceptedIntelLicense: boolean): Promise<{ downloaded: true; sizeBytes: number }>;
   /** Cancel an active Intel driver download for this package kind. */
   intelDriverDownloadCancel(kind: 'arc' | 'pro'): Promise<{ cancelled: boolean }>;
+  /** Delete only the retained installer for this exact release; absent files are treated as deleted. */
+  intelDriverDownloadDelete(kind: 'arc' | 'pro', version: string): Promise<{ deleted: true }>;
   /** Launch the verified Intel driver installer interactively, then quit Arc Power. */
   intelDriverInstall(kind: 'arc' | 'pro', version: string): Promise<{ launched: true }>;
   /** Subscribe to bounded package-download progress from the main process. */

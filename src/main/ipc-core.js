@@ -474,13 +474,29 @@ export function sanitizeDisplaySettings(payload) {
  * @returns {string}
  */
 export function validateOverlayHotkeyLetter(v) {
-  if (typeof v !== 'string' || !/^[A-Za-z]$/.test(v)) {
-    throw new Error('overlayHotkeyLetter must be a single letter (A-Z or a-z)');
+  if (typeof v !== 'string') {
+    throw new Error('overlayHotkeyLetter must be a modifier and a letter, number, or function key');
   }
-  // Normalize to UPPERCASE at persist time - every consumer (the
-  // globalShortcut accelerator, the Settings card text) uses the uppercase
-  // form; a stored lowercase letter must never slip through.
-  return v.toUpperCase();
+  // Accept existing persisted letters as the historical Control+letter
+  // chord, then validate the same grammar used by recording hotkeys.
+  const source = /^[A-Za-z]$/.test(v) ? `Control+${v}` : v;
+  const pieces = source.split('+');
+  const key = pieces.pop();
+  const modifiers = pieces.map((part) => part.toLowerCase());
+  if (!key || !/^(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(key)
+    || modifiers.length === 0
+    || modifiers.some((part) => !['control', 'ctrl', 'alt', 'shift'].includes(part))
+    || new Set(modifiers).size !== modifiers.length) {
+    throw new Error('overlayHotkeyLetter must be a modifier chord such as Control+O or Alt+F9');
+  }
+  const canonicalModifiers = ['control', 'alt', 'shift'].filter((modifier) => modifiers.includes(modifier)
+    || modifier === 'control' && modifiers.includes('ctrl'));
+  return [...canonicalModifiers.map((part) => part === 'control' ? 'Control' : part[0].toUpperCase() + part.slice(1)), key.toUpperCase()].join('+');
+}
+
+/** Compare legacy single-letter settings and modern overlay accelerators. */
+export function overlayHotkeysCollide(left, right) {
+  return validateOverlayHotkeyLetter(left) === validateOverlayHotkeyLetter(right);
 }
 
 /**
@@ -1154,6 +1170,7 @@ export async function resolveBootDeviceId(backend, store) {
  *     getStatus: (kind: 'arc'|'pro', version: string) => Promise<object>,
  *     startDownload: (kind: 'arc'|'pro', version: string, onProgress: (progress: object) => void) => Promise<object>,
  *     cancelDownload: (kind: 'arc'|'pro') => Promise<object>,
+ *     deleteDownloaded: (kind: 'arc'|'pro', version: string) => Promise<{ deleted: true }>,
  *     installDownloaded: (kind: 'arc'|'pro', version: string) => Promise<object>,
  *   },
  *   sysinfo?: { get: () => Promise<unknown> },  // M4-D: CIM system info (CPU/RAM/video controllers)
@@ -2761,10 +2778,25 @@ export function createIpcHandlers({
       return intelDriverUpdateService.check();
     },
 
-    'intel-driver-download-page-open': async (kind, ...args) => {
-      if (args.length !== 0) throw new Error('intel-driver-download-page-open takes one payload');
+    'intel-driver-library': async (kind, ...args) => {
+      if (args.length !== 0) throw new Error('intel-driver-library takes one payload');
+      if (kind !== 'arc' && kind !== 'pro') throw new Error('intel-driver-library: invalid kind');
+      return intelDriverUpdateService.library(kind);
+    },
+
+    'intel-driver-release': async (kind, version, ...args) => {
+      if (args.length !== 0) throw new Error('intel-driver-release takes two payloads');
+      validateIntelDriverDownloadIdentity(kind, version, 'intel-driver-release');
+      return intelDriverUpdateService.resolveRelease(kind, version);
+    },
+
+    'intel-driver-download-page-open': async (kind, version, ...args) => {
+      if (args.length !== 0) throw new Error('intel-driver-download-page-open takes one or two payloads');
       if (kind !== 'arc' && kind !== 'pro') throw new Error('intel-driver-download-page-open: invalid kind');
-      await openExternal(INTEL_DRIVER_PAGES[kind].officialPageUrl);
+      if (version === undefined) return openExternal(INTEL_DRIVER_PAGES[kind].officialPageUrl);
+      validateIntelDriverDownloadIdentity(kind, version, 'intel-driver-download-page-open');
+      const release = await intelDriverUpdateService.resolveRelease(kind, version);
+      await openExternal(release.officialPageUrl);
     },
 
     'intel-driver-download-status': async (kind, version, ...args) => {
@@ -2789,6 +2821,13 @@ export function createIpcHandlers({
       if (kind !== 'arc' && kind !== 'pro') throw new Error('intel-driver-download-cancel: invalid kind');
       if (!intelDriverDownloadService) throw new Error('Intel driver downloads are unavailable');
       return intelDriverDownloadService.cancelDownload(kind);
+    },
+
+    'intel-driver-download-delete': async (kind, version, ...args) => {
+      if (args.length !== 0) throw new Error('intel-driver-download-delete takes two payloads');
+      validateIntelDriverDownloadIdentity(kind, version, 'intel-driver-download-delete');
+      if (!intelDriverDownloadService) throw new Error('Intel driver downloads are unavailable');
+      return intelDriverDownloadService.deleteDownloaded(kind, version);
     },
 
     'intel-driver-install': async (kind, version, ...args) => {
@@ -4988,6 +5027,12 @@ export function createIpcHandlers({
           overlayColor: patch.overlayColor === undefined
             ? cur.overlayColor
             : validateOverlayColor(patch.overlayColor),
+          overlayLabelColor: patch.overlayLabelColor === undefined
+            ? (patch.overlayColor === undefined ? (cur.overlayLabelColor ?? cur.overlayColor) : validateOverlayColor(patch.overlayColor))
+            : validateOverlayColor(patch.overlayLabelColor),
+          overlayValueColor: patch.overlayValueColor === undefined
+            ? (patch.overlayColor === undefined ? (cur.overlayValueColor ?? cur.overlayColor) : validateOverlayColor(patch.overlayColor))
+            : validateOverlayColor(patch.overlayValueColor),
           overlayStats: patch.overlayStats === undefined
             ? cur.overlayStats
             : normalizeOverlayStats(patch.overlayStats),
@@ -5064,9 +5109,8 @@ export function createIpcHandlers({
             ? cur.advancedOverlayPosition
             : validateAdvancedOverlayPosition(patch.advancedOverlayPosition),
         };
-        // M23 THE CROSS-FIELD LETTER-COLLISION REJECTION AT THE ENVELOPE
-        // (the STRUCTURAL guard - the renderer toasts are UX only): the two
-        // hotkeys share ONE modifier pair (Control + <letter>), and
+        // M23 THE CROSS-FIELD HOTKEY-COLLISION REJECTION AT THE ENVELOPE
+        // (the STRUCTURAL guard - the renderer toasts are UX only):
         // globalShortcut collisions within the SAME app are SILENT (a
         // register REPLACES the same-app registration and returns true - a
         // colliding pair in the store would kill one hotkey with
@@ -5075,27 +5119,24 @@ export function createIpcHandlers({
         // persisted letters would collide - on BOTH sides, symmetrically:
         // an advancedOverlayHotkeyLetter equal to the effective
         // overlayHotkeyLetter, and an overlayHotkeyLetter equal to the
-        // effective advancedOverlayHotkeyLetter. The comparison uses the
-        // NORMALIZED UPPERCASE form (the letters persist uppercase - a
-        // lowercase patch colliding with an uppercase persisted letter must
-        // reject). The rejection throws BEFORE the store write - the store
+        // effective advancedOverlayHotkeyLetter. Legacy letters normalize
+        // to Control+<letter>; chord accelerators compare in canonical form.
+        // The rejection throws BEFORE the store write - the store
         // stays unchanged, the save answers the honest error.
+        const effectiveOverlayHotkey = patch.overlayHotkeyLetter === undefined
+          ? cur.overlayHotkeyLetter
+          : patch.overlayHotkeyLetter;
+        const effectiveAdvancedHotkey = patch.advancedOverlayHotkeyLetter === undefined
+          ? cur.advancedOverlayHotkeyLetter
+          : patch.advancedOverlayHotkeyLetter;
         if (patch.advancedOverlayHotkeyLetter !== undefined) {
-          const advLetter = validateOverlayHotkeyLetter(patch.advancedOverlayHotkeyLetter);
-          const hudLetter = patch.overlayHotkeyLetter !== undefined
-            ? validateOverlayHotkeyLetter(patch.overlayHotkeyLetter)
-            : cur.overlayHotkeyLetter;
-          if (advLetter === hudLetter) {
-            throw new Error('advancedOverlayHotkeyLetter must differ from the overlay hotkey letter (the Control+<letter> hotkeys would collide)');
+          if (overlayHotkeysCollide(effectiveAdvancedHotkey, effectiveOverlayHotkey)) {
+            throw new Error('advancedOverlayHotkeyLetter must differ from the overlay hotkey (the accelerators would collide)');
           }
         }
         if (patch.overlayHotkeyLetter !== undefined) {
-          const hudLetter = validateOverlayHotkeyLetter(patch.overlayHotkeyLetter);
-          const advLetter = patch.advancedOverlayHotkeyLetter !== undefined
-            ? validateOverlayHotkeyLetter(patch.advancedOverlayHotkeyLetter)
-            : cur.advancedOverlayHotkeyLetter;
-          if (hudLetter === advLetter) {
-            throw new Error('overlayHotkeyLetter must differ from the advanced overlay hotkey letter (the Control+<letter> hotkeys would collide)');
+          if (overlayHotkeysCollide(effectiveOverlayHotkey, effectiveAdvancedHotkey)) {
+            throw new Error('overlayHotkeyLetter must differ from the advanced overlay hotkey (the accelerators would collide)');
           }
         }
         // M4-D2 (plan F4): derive the startup registration from the merged
@@ -5153,7 +5194,7 @@ export function createIpcHandlers({
         // persists but onOverlaySettings never fires and the HUD never
         // re-renders (the switch would only apply on the next boot).
         const overlayChanged = {};
-        for (const key of ['overlayEnabled', 'overlayRenderer', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme', 'overlayRecordingPill']) {
+        for (const key of ['overlayEnabled', 'overlayRenderer', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayLabelColor', 'overlayValueColor', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme', 'overlayRecordingPill']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) overlayChanged[key] = next[key];
         }
         if (Object.keys(overlayChanged).length > 0) {

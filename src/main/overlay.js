@@ -133,9 +133,10 @@ function normalizeSettings(raw = {}) {
   const scale = typeof raw.scale === 'number' && Number.isFinite(raw.scale)
     ? Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, raw.scale))
     : 1.0;
-  const hotkeyLetter = typeof raw.hotkeyLetter === 'string' && /^[A-Za-z]$/.test(raw.hotkeyLetter)
-    ? raw.hotkeyLetter.toUpperCase()
-    : 'O';
+  const hotkeyLetter = typeof raw.hotkeyLetter === 'string'
+    && (/^[A-Za-z]$/.test(raw.hotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(raw.hotkeyLetter))
+    ? (/^[A-Za-z]$/.test(raw.hotkeyLetter) ? `Control+${raw.hotkeyLetter.toUpperCase()}` : raw.hotkeyLetter)
+    : 'Control+O';
   const renderer = OVERLAY_RENDERERS.includes(raw.renderer) ? raw.renderer : 'rtss';
   // M6: the text color (a /^#[0-9a-fA-F]{6}$/ hex - the stock white
   // default) + the enabled stats (known ids, deduped; absent/garbage ->
@@ -147,6 +148,8 @@ function normalizeSettings(raw = {}) {
   const color = typeof raw.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.color)
     ? raw.color
     : OVERLAY_COLOR_DEFAULT;
+  const labelColor = typeof raw.labelColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.labelColor) ? raw.labelColor : color;
+  const valueColor = typeof raw.valueColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.valueColor) ? raw.valueColor : color;
   // M7b: the background box - enabled off / black / 0.5 opacity when
   // absent or garbage (the same absent-field mechanism).
   const bgColor = typeof raw.overlayBgColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.overlayBgColor)
@@ -180,6 +183,8 @@ function normalizeSettings(raw = {}) {
     scale,
     hotkeyLetter,
     color,
+    labelColor,
+    valueColor,
     deviceKeys,
     stats,
     overlayBgEnabled: raw.overlayBgEnabled === true,
@@ -388,6 +393,8 @@ export function createOverlayWindow({ getOverlaySettings, deferBuild = false }) 
     // them via CSSOM on every settings push (a color/stats change must
     // re-render the HUD immediately, not on the next telemetry tick).
     color: applied.color,
+    labelColor: applied.labelColor,
+    valueColor: applied.valueColor,
     stats: applied.stats,
     deviceKeys: applied.deviceKeys,
     // M7b: the background box rides the same push - without the three

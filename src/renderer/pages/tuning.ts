@@ -1980,6 +1980,13 @@ export const tuningPage: Page = {
         for (const [key, per] of Object.entries(result.perControl)) {
           const range = caps.ranges[key];
           if (!per.ok) {
+            if (key === 'vfCurve' && Array.isArray(per.readBackCurve)) {
+              const liveCurve = normalizeVfCurvePoints(per.readBackCurve, curveBounds, vfEditorMaxPoints);
+              vfCurveApplied = liveCurve.map((point) => ({ ...point }));
+              vfCurveDraft = liveCurve.map((point) => ({ ...point }));
+              vfCurveNativeApplyDraft = null;
+              vfCurveWasApplied = false;
+            }
             // F3 instant: refusals carry the composed actionable message;
             // hard errors keep the errorCode mapping (M17d item 0b: the
             // preference is the shared applyFailureText - the per-control
@@ -1999,7 +2006,13 @@ export const tuningPage: Page = {
               // successful native STOCK reset therefore clears the native
               // payload slot while keeping the visible draft comparable to
               // the applied baseline.
-              vfCurveApplied = vfCurveDraft.map((point) => ({ ...point }));
+              const readBackCurve = Array.isArray(per.readBackCurve)
+                ? per.readBackCurve
+                : currentState?.vfCurve;
+              const appliedCurve = Array.isArray(readBackCurve) && readBackCurve.length >= 2
+                ? normalizeVfCurvePoints(readBackCurve, curveBounds, vfEditorMaxPoints)
+                : vfCurveDraft;
+              vfCurveApplied = appliedCurve.map((point) => ({ ...point }));
               vfCurveDraft = vfCurveApplied.map((point) => ({ ...point }));
               vfCurveNativeApplyDraft = null;
               vfCurveWasApplied = true;
@@ -2010,7 +2023,12 @@ export const tuningPage: Page = {
             // so the offset applies can no longer reach this reference; the
             // LOCK editor's own apply path owns the appliedLock sync.
             if (!isNoopApply(key, settings, before as DeviceState)) {
-              toast('success', `${CONTROL_LABELS[key] ?? key} applied`, typeof wanted === 'number' && range ? formatControlValue(wanted, key, range, caps.deviceName) : '');
+              const detail = key === 'vfCurve' && per.normalized === true
+                ? 'The driver adjusted the curve to its supported grid.'
+                : typeof wanted === 'number' && range
+                  ? formatControlValue(wanted, key, range, caps.deviceName)
+                  : '';
+              toast('success', `${CONTROL_LABELS[key] ?? key} applied`, detail);
             }
             setCardResult(key === 'vfCurve' ? 'gpuFreqOffsetMhz' : key, true, isNoopApply(key, settings, before as DeviceState) ? 'No change' : 'Applied');
             // per.ok && no-op -> silent (M2b-B): nothing changed, no toast.

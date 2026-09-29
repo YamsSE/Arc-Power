@@ -716,7 +716,12 @@ function dashboardGpuCard(device: AppState['devices'][number], index: number, st
   const installedDriver = decodeDriverVersion(device.osController?.driverVersion ?? device.driverVersion);
   const driverRow = intelKind
     ? el('div', { class: 'kv intel-driver-version-row', 'data-label': 'Driver version' }, [
-        el('span', { class: 'intel-driver-update-content', 'aria-live': 'polite', text: installedDriver ?? '-' }),
+        el('span', { class: 'intel-driver-version-value' }, [
+          el('span', { class: 'intel-driver-update-content', 'aria-live': 'polite', text: installedDriver ?? '-' }),
+          el('button', { class: 'driver-library-launch', type: 'button', title: 'Intel Driver Library', 'aria-label': 'Intel Driver Library', onClick: () => { window.location.hash = `#/driver-library?deviceId=${encodeURIComponent(String(device.id))}`; } }, [
+            el('span', { class: 'sidebar-icon sidebar-icon-driver-library', 'aria-hidden': 'true' }),
+          ]),
+        ]),
       ])
     : null;
   if (driverRow && intelKind && installedDriver) {
@@ -735,7 +740,7 @@ function dashboardGpuCard(device: AppState['devices'][number], index: number, st
       if (check && intelDriverNoticeNodes.get(key) === entry) renderIntelDriverNotice(key, check);
     });
   }
-  return el('section', { class: 'card device-card', hidden: !visible, dataset: { deviceKey: dashboardDeviceKey(device) } }, [
+  return el('section', { class: 'card device-card', hidden: !visible, dataset: { deviceKey: dashboardDeviceKey(device), deviceId: String(device.id) } }, [
     el('div', { class: 'device-card-head' }, [
       el('div', { class: 'hardware-card-heading' }, [
         el('h2', { class: 'card-title', text: `GPU ${index}` }),
@@ -759,13 +764,14 @@ function dashboardGpuCard(device: AppState['devices'][number], index: number, st
         class: 'kv-clocks',
         text: `${core ?? '--'} MHz Core / ${memory ?? '--'} MHz Memory`,
       })]),
-      el('div', { class: 'kv', 'data-label': 'VRAM' }, [el('span', { text: vramRowValue(device.vramBytes, device.memType) })]),
+      el('div', { class: 'kv', 'data-label': 'VRAM' }, [el('span', { class: 'dashboard-vram-value' }, [
+        el('span', { text: vramRowValue(device.vramBytes, device.memType) }),
+        el('span', { class: 'dashboard-vram-separator', 'aria-hidden': 'true', text: '·' }),
+        el('span', { class: `chip rebar-pill rebar-pill-compact status-${rebar.level}`, text: rebar.label }),
+      ])]),
       ...(sharedMemoryBytesOf(device, null) !== null
         ? [el('div', { class: 'kv', 'data-label': 'Shared GPU Memory' }, [el('span', { text: `${formatGpuMemoryGb(sharedMemoryBytesOf(device, null))} GB` })])]
         : []),
-      el('div', { class: 'kv kv-rebar' }, [
-        el('span', { class: `chip rebar-pill status-${rebar.level}`, text: rebar.label }),
-      ]),
     ]),
   ]);
 }
@@ -1347,13 +1353,14 @@ export const dashboardPage: Page = {
                       : '-',
                   })]),
                   el('div', { class: 'kv', 'data-label': 'Clocks' }, [el('span', { class: 'kv-clocks', text: noIntelClocksText(firstSample) })]),
-                  el('div', { class: 'kv', 'data-label': 'VRAM' }, [el('span', { text: vramRowValue(s.vendorInfo?.vramBytes ?? s.osGpu?.vramBytes, null) })]),
+                  el('div', { class: 'kv', 'data-label': 'VRAM' }, [el('span', { class: 'dashboard-vram-value' }, [
+                    el('span', { text: vramRowValue(s.vendorInfo?.vramBytes ?? s.osGpu?.vramBytes, null) }),
+                    el('span', { class: 'dashboard-vram-separator', 'aria-hidden': 'true', text: '·' }),
+                    el('span', { class: `chip rebar-pill rebar-pill-compact status-${osRebar.level}`, text: osRebar.label }),
+                  ])]),
                   ...(sharedMemoryBytesOf(null, s.osGpu) !== null
                     ? [el('div', { class: 'kv', 'data-label': 'Shared GPU Memory' }, [el('span', { text: `${formatGpuMemoryGb(sharedMemoryBytesOf(null, s.osGpu))} GB` })])]
                     : []),
-                  el('div', { class: 'kv kv-rebar' }, [
-                    el('span', { class: `chip rebar-pill status-${osRebar.level}`, text: osRebar.label }),
-                  ]),
                 ]),
                 el('p', { class: 'card-note', text: 'Non supported GPU - overclocking requires an Intel Arc GPU; this state is permanent on non-Intel machines.' }),
               ]),

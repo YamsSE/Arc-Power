@@ -163,6 +163,14 @@ function colorHex(value, fallback = '#ffffff') {
   return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value.slice(1).toUpperCase() : fallback.slice(1).toUpperCase();
 }
 
+function coloredRow(label, fields, settings) {
+  if (!fields.length) return '';
+  if (settings?.formatTagsSupported === false) return `${escapeRtssValue(label)} ${fields.map(escapeRtssValue).join(' ')}`;
+  const left = colorHex(settings?.labelColor ?? settings?.color);
+  const right = colorHex(settings?.valueColor ?? settings?.color);
+  return `<C0=${left}><C0>${escapeRtssValue(label)}<C1=${right}><C1> ${fields.map(escapeRtssValue).join(' ')}<C>`;
+}
+
 function positionTag(position) {
   switch (position) {
     case 'top-right': return '<P2>';
@@ -178,7 +186,7 @@ function scaleTag(scale, theme = 'arc') {
   // slider is 0.5..2.0 in quarter-size steps. RTSS accepts an explicit font
   // size, so use 4/6/8/10/12/14/16px equivalents instead of rounding adjacent
   // quarter steps onto the same native zoom level.
-  const fontSize = Math.max(4, Math.min(16, Math.round(clamp(scale, 0.5, 2, 1) * 8)));
+  const fontSize = Math.max(8, Math.min(28, Math.round(clamp(scale, 0.5, 2, 1) * 14)));
   // Raster3D supports the FNT face/weight/zoom tag. Use a distinct face for
   // the two persisted themes so switching themes remains visible on RTSS,
   // whose native surface cannot consume Arc Power's HTML/CSS theme tokens.
@@ -254,10 +262,6 @@ function normalizeGpu(gpu, index) {
   };
 }
 
-function row(label, fields) {
-  return fields.length > 0 ? `${label} ${fields.join(' ')}` : '';
-}
-
 function gpuOrdinalOf(gpu, fallbackIndex, deviceOrdinals) {
   if (deviceOrdinals instanceof Map) {
     for (const alias of gpu.aliases) {
@@ -312,14 +316,14 @@ function formatGpuRows(telemetry, settings, stats, deviceOrdinals = null) {
     if (statEnabled(stats, 'gpu-temp')) gpuFields.push(`${numberText(gpu.temp)}°C`);
     if (statEnabled(stats, 'gpu-power')) gpuFields.push(`${numberText(gpu.power, 1)} W`);
     if (statEnabled(stats, 'gpu-fan')) gpuFields.push(`${numberText(gpu.fan)} RPM`);
-    const gpuRow = row(label, gpuFields);
+    const gpuRow = coloredRow(label, gpuFields, settings);
     if (gpuRow) rows.push(gpuRow);
 
     const vramFields = [];
     if (statEnabled(stats, 'gpu-mem-clock')) vramFields.push(`${numberText(gpu.memClock)} MHz`);
     if (statEnabled(stats, 'gpu-vram')) vramFields.push(byteSizeToGb(gpu.vram));
     if (statEnabled(stats, 'gpu-vram-temp')) vramFields.push(`${numberText(gpu.vramTemp)}°C`);
-    const vramRow = row(`VRAM${ordinal}`, vramFields);
+    const vramRow = coloredRow(`VRAM${ordinal}`, vramFields, settings);
     if (vramRow) rows.push(vramRow);
   });
   return rows;
@@ -360,6 +364,7 @@ export function buildRtssTelemetryText({
   deviceOrdinals = null,
 } = {}) {
   const stats = statsOf(settings);
+  const rowSettings = { ...settings, formatTagsSupported };
   const lines = [];
   const addRow = (line) => { if (line) lines.push(line); };
 
@@ -369,33 +374,33 @@ export function buildRtssTelemetryText({
   if (statEnabled(stats, 'fps-1pct-low')) fpsFields.push(`1% ${numberText(fps?.low1Pct)}`);
   if (statEnabled(stats, 'fps-01pct-low')) fpsFields.push(`0.1% ${numberText(fps?.low01Pct)}`);
   if (statEnabled(stats, 'fps-99pct')) fpsFields.push(`99% ${numberText(fps?.p99)}`);
-  addRow(row('FPS', fpsFields));
+  addRow(coloredRow('FPS', fpsFields, rowSettings));
 
   const cpuFields = [];
   if (statEnabled(stats, 'cpu-util')) cpuFields.push(`${numberText(telemetry.cpuUtilPct ?? telemetry.cpuUsage ?? telemetry.cpuPercent)}%`);
   if (statEnabled(stats, 'cpu-clock')) cpuFields.push(`${numberText(finite(telemetry.cpuFreqMhz) ? telemetry.cpuFreqMhz / 1000 : null, 1)} GHz`);
   if (statEnabled(stats, 'cpu-temp')) cpuFields.push(`${numberText(telemetry.cpuTempC ?? telemetry.cpuTemperatureC)}°C`);
   if (statEnabled(stats, 'cpu-power')) cpuFields.push(`${numberText(telemetry.cpuPowerW, 1)} W`);
-  addRow(row('CPU', cpuFields));
+  addRow(coloredRow('CPU', cpuFields, rowSettings));
 
   if (statEnabled(stats, 'memory-util')) {
     const ramBytes = finite(telemetry.memoryUsedBytes)
       ? telemetry.memoryUsedBytes
       : finite(telemetry.memoryUsedMb) ? telemetry.memoryUsedMb * 1_000_000 : finite(telemetry.ramUsedMb) ? telemetry.ramUsedMb * 1_000_000 : null;
-    addRow(row('RAM', [ramSizeToGb(ramBytes)]));
+    addRow(coloredRow('RAM', [ramSizeToGb(ramBytes)], rowSettings));
   }
 
-  formatGpuRows(telemetry, settings, stats, deviceOrdinals).forEach(addRow);
+  formatGpuRows(telemetry, rowSettings, stats, deviceOrdinals).forEach(addRow);
 
   if (statEnabled(stats, 'api')) {
     const api = canonicalizeRtssApi(fps?.api ?? telemetry.api ?? '');
-    if (api) addRow(api);
+    if (api) addRow(formatTagsSupported ? coloredRow('API', [api], rowSettings) : api);
   }
   if (statEnabled(stats, 'frametime')) {
-    addRow(row('Frametime', [`${numberText(fps?.frameTimeMs ?? telemetry.frameTimeMs, 2)} ms`]));
+    addRow(coloredRow('Frametime', [`${numberText(fps?.frameTimeMs ?? telemetry.frameTimeMs, 2)} ms`], rowSettings));
   }
 
-  const body = lines.map(escapeRtssValue).join('\n');
+  const body = lines.join('\n');
   const graph = formatTagsSupported && graphObjectTagsSupported && statEnabled(stats, 'frametime')
     ? `\n<OBJ=${Math.max(0, graphObjectOffset >>> 0).toString(16).padStart(8, '0').toUpperCase()}>`
     : '';
@@ -404,7 +409,7 @@ export function buildRtssTelemetryText({
   const prefix = [
     positionTag(settings.position),
     scaleTag(settings.scale, 'classic'),
-    `<C0=${colorHex(settings.color)}><C0>`,
+    `<C0=${colorHex(settings.labelColor ?? settings.color)}><C0><C1=${colorHex(settings.valueColor ?? settings.color)}><C1>`,
   ].join('');
   return `${prefix}${body}${graph}`.slice(0, RTSS_OSD_MAX_TEXT);
 }
