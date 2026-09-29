@@ -16,7 +16,12 @@ export type OcErrorCode =
   | 'permission-denied'
   | 'driver-adjustment-out-of-range'
   | 'driver-noop'
-  | 'io-failed';
+  | 'io-failed'
+  | 'driver-adjusted'
+  | 'readback-unverified'
+  | 'driver-invalid-readback'
+  | 'vf-write-blocked'
+  | 'dependency-failed';
 
 export type FanMode = 'auto' | 'curve' | 'fixed';
 
@@ -716,6 +721,8 @@ export interface OverlaySettings {
   /** M6: the ENABLED overlay stat ids (the canonical OVERLAY_STAT_IDS; the
    *  full set the stock default - a stat off -> its field/line vanishes). */
   stats: string[];
+  /** Display unit used for all CPU/GPU/VRAM temperatures. */
+  temperatureUnit: 'C' | 'F';
   /** M35: selected overlay GPU durable keys; null means monitor all. */
   deviceKeys: string[] | null;
   /** M7b (fix 4): the background box behind the HUD - the box is shown
@@ -796,7 +803,7 @@ export interface ProfileSettingsState {
   startMinimized: boolean;
   /** M4-D: closing the window hides it to the tray instead of quitting. */
   closeToTray: boolean;
-  /** Capture runtime retention; absent on old files means enabled. */
+  /** Capture runtime retention; absent on old files means disabled. */
   memorySavingMode: boolean;
   /** M4-D2: the Monitoring "Log to file" toggle (absent on old files -> false). */
   monitorLogToFile: boolean;
@@ -820,6 +827,8 @@ export interface ProfileSettingsState {
   overlayColor: string;
   overlayLabelColor: string;
   overlayValueColor: string;
+  /** Display unit shared by RTSS and Arc Power overlay temperature values. */
+  overlayTemperatureUnit: 'C' | 'F';
   /** M6: the enabled overlay stat ids (M17g: absent on old files -> the
    *  DEFAULT set - the user's 11 ON / the others OFF, the M6 full-set
    *  default FLIPS; same absent-field mechanism, NO schema bump). */

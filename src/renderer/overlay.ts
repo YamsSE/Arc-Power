@@ -34,7 +34,7 @@
 // and the number - a stat off hides them together.
 
 import { api } from './ipc.ts';
-import { overlayLines, apiLabelOf, normalizeOverlayStats, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor, clampOverlayBgOpacity, clampOverlayPollMs, OVERLAY_BG_COLOR_DEFAULT, isValidOverlayTheme, OVERLAY_THEME_DEFAULT, isValidOverlayRenderer } from './pure/overlay.ts';
+import { overlayLines, apiLabelOf, normalizeOverlayStats, deriveFrameTimeMs, formatFrametime, clampOverlayScale, isValidOverlayColor, clampOverlayBgOpacity, clampOverlayPollMs, OVERLAY_BG_COLOR_DEFAULT, isValidOverlayTheme, OVERLAY_THEME_DEFAULT, isValidOverlayRenderer, isValidOverlayTemperatureUnit, formatOverlayTemperature } from './pure/overlay.ts';
 // M17b (2c): the chip-name cut-down rules (pure; the boot names fetch
 // derives the row labels from the sysinfo fixture/real names).
 import { chipLabelGpu, chipLabelCpu, humanCpuName, humanGpuName } from './pure/chip-label.ts';
@@ -100,6 +100,7 @@ let color: string = '#ffffff';
 let labelColor = '#ffffff';
 let valueColor = '#ffffff';
 let stats: unknown = undefined;
+let temperatureUnit: 'C' | 'F' = 'C';
 // M17b (2c): the chip-name row labels - the pushed overlayChipNames flag +
 // the boot names fetch (api.listDevices() + api.sysinfo() ONCE - the
 // existing bootFpsLoop deviceGet is NOT a names fetch). The labels derive
@@ -453,6 +454,8 @@ api.onOverlaySettings((settings) => {
   color = isValidOverlayColor(s.color) ? s.color : '#ffffff';
   labelColor = isValidOverlayColor(s.labelColor) ? s.labelColor : color;
   valueColor = isValidOverlayColor(s.valueColor) ? s.valueColor : color;
+  temperatureUnit = isValidOverlayTemperatureUnit(s.temperatureUnit) ? s.temperatureUnit : 'C';
+  document.documentElement.dataset.overlayTemperatureUnit = temperatureUnit;
   document.documentElement.style.setProperty('--overlay-color', color);
   document.documentElement.style.setProperty('--overlay-label-color', labelColor);
   document.documentElement.style.setProperty('--overlay-value-color', valueColor);
@@ -690,6 +693,10 @@ function capGb(value: unknown): number | null {
   return n === null ? null : n / 1e9;
 }
 
+function capTemperature(valueC: unknown): string {
+  return formatOverlayTemperature(capNumber(valueC), temperatureUnit);
+}
+
 function setColorizedOverlayRow(element: HTMLElement, line: string): void {
   const match = line.match(/^(.*?)(\s{2,})(.*)$/);
   if (!match) {
@@ -821,19 +828,19 @@ function renderCapframex(displaySample: TelemetrySample | null): void {
     name.textContent = capGpuTitle(sample, device, ordinal);
     title.prepend(name);
     section.append(title);
-    const gpuLoad = [capValue(sample?.utilPct ?? sample?.gpuUtilPct, ' %')];
-    if (enabled.has('gpu-clock')) gpuLoad.push(capValue(sample?.gpuClockMhz, ' MHz'));
+    const gpuLoad = [capValue(sample?.utilPct ?? sample?.gpuUtilPct, '%')];
+    if (enabled.has('gpu-clock')) gpuLoad.push(capValue(sample?.gpuClockMhz, 'MHz'));
     if (enabled.has('gpu-util') || enabled.has('gpu-clock')) capRow(section, 'GPU Load', gpuLoad);
-    capStatRow(section, enabled, 'gpu-temp', 'GPU Temp', [capValue(sample?.tempC, ' °C')]);
+    capStatRow(section, enabled, 'gpu-temp', 'GPU Temp', [capTemperature(sample?.tempC)]);
     const powerValues = [];
-    if (enabled.has('gpu-voltage')) powerValues.push(capValue(sample?.gpuVoltageV, ' V', 3));
-    if (enabled.has('gpu-power')) powerValues.push(capValue(sample?.powerW, ' W', 1));
+    if (enabled.has('gpu-voltage')) powerValues.push(capValue(sample?.gpuVoltageV, 'V', 3));
+    if (enabled.has('gpu-power')) powerValues.push(capValue(sample?.powerW, 'W', 1));
     if (powerValues.length) capRow(section, 'GPU Power', powerValues);
-    capStatRow(section, enabled, 'gpu-fan', 'GPU Fan', [capValue(sample?.fanRpm?.[0], ' RPM')]);
+    capStatRow(section, enabled, 'gpu-fan', 'GPU Fan', [capValue(sample?.fanRpm?.[0], 'RPM')]);
     const vramValues = [];
-    if (enabled.has('gpu-mem-clock')) vramValues.push(capValue(sample?.memClockMhz, ' MHz'));
-    if (enabled.has('gpu-vram')) vramValues.push(capValue(capGb(sample?.gpuMemUsedBytes), ' GB', 1));
-    if (enabled.has('gpu-vram-temp')) vramValues.push(capValue(sample?.vramTempC ?? sample?.memTempC, ' °C'));
+    if (enabled.has('gpu-mem-clock')) vramValues.push(capValue(sample?.memClockMhz, 'MHz'));
+    if (enabled.has('gpu-vram')) vramValues.push(capValue(capGb(sample?.gpuMemUsedBytes), 'GB', 1));
+    if (enabled.has('gpu-vram-temp')) vramValues.push(capTemperature(sample?.vramTempC ?? sample?.memTempC));
     if (vramValues.length) capRow(section, 'VRAM', vramValues);
     capframexGpuSections.append(section);
   });
@@ -849,28 +856,28 @@ function renderCapframex(displaySample: TelemetrySample | null): void {
   const cpuSection = capframexCpuTitle?.parentElement;
   if (cpuSection) {
     [...cpuSection.querySelectorAll<HTMLElement>('.capframex-row')].forEach((row) => row.remove());
-    capStatRow(cpuSection, enabled, 'cpu-clock', 'CPU Clock', [capValue(displaySample?.cpuFreqMhz, ' MHz')]);
-    capStatRow(cpuSection, enabled, 'cpu-util', 'CPU Load', [capValue(displaySample?.cpuUtilPct, ' %')]);
-    const packageValues = [capValue(displaySample?.cpuPowerW, ' W', 1)];
-    if (enabled.has('cpu-temp')) packageValues.push(capValue(displaySample?.cpuTempC, ' °C'));
+    capStatRow(cpuSection, enabled, 'cpu-clock', 'CPU Clock', [capValue(displaySample?.cpuFreqMhz, 'MHz')]);
+    capStatRow(cpuSection, enabled, 'cpu-util', 'CPU Load', [capValue(displaySample?.cpuUtilPct, '%')]);
+    const packageValues = [capValue(displaySample?.cpuPowerW, 'W', 1)];
+    if (enabled.has('cpu-temp')) packageValues.push(capTemperature(displaySample?.cpuTempC));
     capStatRow(cpuSection, enabled, 'cpu-power', 'CPU Package', packageValues);
-    if (enabled.has('cpu-temp') && !enabled.has('cpu-power')) capStatRow(cpuSection, enabled, 'cpu-temp', 'CPU Temp', [capValue(displaySample?.cpuTempC, ' °C')]);
+    if (enabled.has('cpu-temp') && !enabled.has('cpu-power')) capStatRow(cpuSection, enabled, 'cpu-temp', 'CPU Temp', [capTemperature(displaySample?.cpuTempC)]);
   }
   if (capframexMemory) {
     const used = capGb(displaySample?.memoryUsedBytes);
     const total = capGb(ramTotalBytes);
-    capframexMemory.textContent = used !== null && total !== null ? `${used.toFixed(1)}/${total.toFixed(1)} GB` : '-';
+    capframexMemory.textContent = used !== null && total !== null ? `${used.toFixed(1)}/${total.toFixed(1)}GB` : '-';
   }
   if (capframexMemoryRow) capframexMemoryRow.hidden = !enabled.has('memory-util');
   const apiLabel = apiLabelOf(latestApi);
   if (capframexApi) capframexApi.textContent = apiLabel ?? '';
   if (capframexApiRow) capframexApiRow.hidden = !enabled.has('api') || !apiLabel;
-  if (capframexAvg) capframexAvg.textContent = capValue(latestAvgFps, ' FPS');
-  if (capframexLow1) capframexLow1.textContent = capValue(latestLow1Pct, ' FPS');
-  if (capframexLow01) capframexLow01.textContent = capValue(latestLow01Pct, ' FPS');
-  if (capframexP99) capframexP99.textContent = capValue(latestP99, ' FPS');
-  if (capframexPerformance) capframexPerformance.textContent = capValue(latestFps, ' FPS');
-  if (capframexFrametimeValue) capframexFrametimeValue.textContent = capValue(latestFrameTime, ' ms', 1);
+  if (capframexAvg) capframexAvg.textContent = capValue(latestAvgFps, 'FPS');
+  if (capframexLow1) capframexLow1.textContent = capValue(latestLow1Pct, 'FPS');
+  if (capframexLow01) capframexLow01.textContent = capValue(latestLow01Pct, 'FPS');
+  if (capframexP99) capframexP99.textContent = capValue(latestP99, 'FPS');
+  if (capframexPerformance) capframexPerformance.textContent = capValue(latestFps, 'FPS');
+  if (capframexFrametimeValue) capframexFrametimeValue.textContent = capValue(latestFrameTime, 'ms', 1);
   if (capframexSummary) {
     capframexSummary.hidden = !['fps', 'fps-avg', 'fps-1pct-low', 'fps-01pct-low', 'fps-99pct', 'frametime'].some((id) => enabled.has(id));
     const summaryItems = capframexSummary.querySelectorAll<HTMLElement>(':scope > div');
@@ -892,7 +899,7 @@ function render(): void {
   const lines = overlayLines(
     displaySample, latestFps, stats, latestLow1Pct, latestP99, latestApi,
     latestAvgFps, latestLow01Pct, displaySample?.memoryUsedBytes ?? null,
-    chipNamesEnabled ? { chipLabels: { cpu: cpuChipLabel, gpu: gpuChipLabel } } : undefined,
+    chipNamesEnabled ? { chipLabels: { cpu: cpuChipLabel, gpu: gpuChipLabel }, temperatureUnit } : { temperatureUnit },
   );
   const hasSecondary = secondaryDeviceIds.length > 0;
   const primaryOrdinal = overlayDisplayOrdinal > 0 ? overlayDisplayOrdinal : 1;
@@ -906,8 +913,8 @@ function render(): void {
       secondary, null, stats, null, null, null, null, null,
       secondary?.memoryUsedBytes ?? null,
       chipNamesEnabled
-        ? { chipLabels: { cpu: null, gpu: secondaryGpuChipLabels[index] ?? null } }
-        : undefined,
+        ? { chipLabels: { cpu: null, gpu: secondaryGpuChipLabels[index] ?? null }, temperatureUnit }
+        : { temperatureUnit },
     );
     return {
       index,
@@ -938,8 +945,8 @@ function render(): void {
   ];
   const maxLabelLen = Math.max(4, ...labelLengths);
   const primaryOptions = chipNamesEnabled
-    ? { chipLabels: { cpu: cpuChipLabel, gpu: gpuChipLabel }, labelWidth: maxLabelLen }
-    : { labelWidth: maxLabelLen };
+    ? { chipLabels: { cpu: cpuChipLabel, gpu: gpuChipLabel }, labelWidth: maxLabelLen, temperatureUnit }
+    : { labelWidth: maxLabelLen, temperatureUnit };
   const paddedLines = overlayLines(
     displaySample, latestFps, stats, latestLow1Pct, latestP99, latestApi,
     latestAvgFps, latestLow01Pct, displaySample?.memoryUsedBytes ?? null,
@@ -947,8 +954,8 @@ function render(): void {
   );
   const paddedSecondaryRows = secondaryRows.map(({ sample, gpuLabel, index, ordinal }) => {
     const options = chipNamesEnabled
-      ? { chipLabels: { cpu: null, gpu: gpuLabel }, labelWidth: maxLabelLen }
-      : { labelWidth: maxLabelLen };
+      ? { chipLabels: { cpu: null, gpu: gpuLabel }, labelWidth: maxLabelLen, temperatureUnit }
+      : { labelWidth: maxLabelLen, temperatureUnit };
     return {
       index,
       ordinal,

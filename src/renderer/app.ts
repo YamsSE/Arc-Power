@@ -49,7 +49,7 @@ const INITIAL_RECORDING_STATUS: RecordingEngineState = {
   available: false,
   running: false,
   mode: null,
-  memorySavingMode: true,
+  memorySavingMode: false,
   startedAt: null,
   error: CAPTURE_ENGINE_IDLE_MESSAGE,
   encoders: [],
@@ -63,7 +63,7 @@ let globalRecordingStatus: RecordingEngineState = INITIAL_RECORDING_STATUS;
 let globalRecordingTimer: number | null = null;
 let unsubscribeGlobalRecordingState: (() => void) | null = null;
 let unsubscribeGlobalRecordingSettings: (() => void) | null = null;
-let recordingMemorySavingMode = true;
+let recordingMemorySavingMode = false;
 
 function recordingElapsed(startedAt: number | null | undefined): string {
   if (!Number.isFinite(startedAt)) return '00:00:00';
@@ -79,7 +79,7 @@ function updateGlobalRecordingWidget(target?: HTMLElement): void {
   if (!root) return;
   const running = globalRecordingStatus.running === true;
   const loading = !globalRecordingStatus.probeComplete && globalRecordingStatus.error === 'Loading capture engine…';
-  const memorySavingMode = globalRecordingStatus.memorySavingMode !== false && recordingMemorySavingMode !== false;
+  const memorySavingMode = globalRecordingStatus.memorySavingMode === true && recordingMemorySavingMode === true;
   const idle = memorySavingMode
     && !globalRecordingStatus.probeComplete
     && globalRecordingStatus.error === CAPTURE_ENGINE_IDLE_MESSAGE;
@@ -524,15 +524,15 @@ async function boot() {
   }
   if (!unsubscribeGlobalRecordingSettings) {
     unsubscribeGlobalRecordingSettings = api.onRecordingSettingsUpdated((next) => {
-      recordingMemorySavingMode = next?.memorySavingMode !== false;
+      recordingMemorySavingMode = next?.memorySavingMode === true;
       updateGlobalRecordingWidget();
     });
   }
   void api.recordingSettingsGet().then((settings) => {
-    recordingMemorySavingMode = settings?.memorySavingMode !== false;
+    recordingMemorySavingMode = settings?.memorySavingMode === true;
     updateGlobalRecordingWidget();
   }).catch(() => {
-    // The default remains the safe memory-saving state when settings are unavailable.
+    // Missing settings use the stock warm-runtime state.
   });
   void api.recordingStatus().then((next) => {
     setGlobalRecordingStatus(next);

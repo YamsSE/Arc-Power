@@ -55,7 +55,8 @@
  * IGCL OC error surface, decoupled from raw ctl_result_t values so the
  * sidecar/mock can map 1:1).
  * @typedef {'waiver-not-set'|'out-of-range'|'locked-mode'|'reset-required'
- *   |'unsupported'|'unavailable-symbol'|'invalid-argument'|'permission-denied'|'io-failed'} OcErrorCode
+ *   |'unsupported'|'unavailable-symbol'|'invalid-argument'|'permission-denied'|'io-failed'
+ *   |'driver-adjusted'|'readback-unverified'|'driver-invalid-readback'|'vf-write-blocked'|'dependency-failed'} OcErrorCode
  */
 
 /**
@@ -281,11 +282,13 @@
  *   listDevices(): Promise<DeviceInfo[]>,
  *   getCapabilities(deviceId: number): Promise<Capabilities>,
  *   getCurrentSettings(deviceId: number): Promise<DeviceState>,
- *   applySettings(deviceId: number, s: Settings, opts?: { snapToStep?: boolean }): Promise<ApplyResult>,
+ *   applySettings(deviceId: number, s: Settings, opts?: { snapToStep?: boolean, profileApply?: boolean }): Promise<ApplyResult>,
  *   //   opts.snapToStep defaults to true (product applies snap to the
  *   //   capability step); false writes the value back exactly - reserved for
  *   //   the smoke no-op round trip so an off-grid current value (e.g. the
  *   //   A770's 48.3 MHz offset) is written back unchanged.
+ *   //   profileApply marks a routed profile/boot load so IGCL preserves its
+ *   //   STOCK versus custom VF profile ordering.
  *   resetToDefaults(deviceId: number): Promise<void>,
  *   setWaiverAccepted(deviceId: number): Promise<void>,
    *   // Restore a persisted waiver acceptance into the IN-MEMORY flag ONLY -

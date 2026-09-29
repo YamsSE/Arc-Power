@@ -596,6 +596,14 @@ export function validateOverlayTheme(v) {
   return v;
 }
 
+/** The shared display unit for every overlay temperature field. */
+export function validateOverlayTemperatureUnit(v) {
+  if (v !== 'C' && v !== 'F') {
+    throw new Error('overlayTemperatureUnit must be one of: C, F');
+  }
+  return v;
+}
+
 /**
  * M7b: clamp the background box opacity to 0..1 (garbage degrades to the
  * 0.5 default - the same clamp semantics as the overlay scale; the slider
@@ -1386,7 +1394,7 @@ export function createIpcHandlers({
   // DIRECTLY to the panel window.
   onAdvancedOverlaySettings = async () => {},
   onRecordingMemorySavingSettings = async () => {},
-  getRecordingMemorySavingMode = () => true,
+  getRecordingMemorySavingMode = () => false,
   // M23: the panel's custom close op - the dedicated 'advanced-overlay:close'
   // channel's handler (the DEFAULT is a no-op; main.js wires it to the panel
   // handle's session hide - the main window is never closed by the panel).
@@ -4026,8 +4034,8 @@ export function createIpcHandlers({
       },
       'recording-runtime-probe': async (...args) => {
         assertNoPayload(args, 'recording-runtime-probe');
-        if (!recordingEngine?.probe) return { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [], memorySavingMode: getRecordingMemorySavingMode() !== false, hotkeys: getRecordingHotkeyState() };
-        return { ...(await recordingEngine.probe()), memorySavingMode: getRecordingMemorySavingMode() !== false, hotkeys: getRecordingHotkeyState() };
+        if (!recordingEngine?.probe) return { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [], memorySavingMode: getRecordingMemorySavingMode() === true, hotkeys: getRecordingHotkeyState() };
+        return { ...(await recordingEngine.probe()), memorySavingMode: getRecordingMemorySavingMode() === true, hotkeys: getRecordingHotkeyState() };
       },
       'recording-runtime-acquire': async (...args) => {
         assertNoPayload(args, 'recording-runtime-acquire');
@@ -4039,7 +4047,7 @@ export function createIpcHandlers({
       },
       'recording-status': async (...args) => {
         assertNoPayload(args, 'recording-status');
-        return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [] }), memorySavingMode: getRecordingMemorySavingMode() !== false, hotkeys: getRecordingHotkeyState() };
+        return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [] }), memorySavingMode: getRecordingMemorySavingMode() === true, hotkeys: getRecordingHotkeyState() };
       },
       'recording-start': async (...args) => {
         assertNoPayload(args, 'recording-start');
@@ -5033,6 +5041,9 @@ export function createIpcHandlers({
           overlayValueColor: patch.overlayValueColor === undefined
             ? (patch.overlayColor === undefined ? (cur.overlayValueColor ?? cur.overlayColor) : validateOverlayColor(patch.overlayColor))
             : validateOverlayColor(patch.overlayValueColor),
+          overlayTemperatureUnit: patch.overlayTemperatureUnit === undefined
+            ? (cur.overlayTemperatureUnit === 'F' ? 'F' : 'C')
+            : validateOverlayTemperatureUnit(patch.overlayTemperatureUnit),
           overlayStats: patch.overlayStats === undefined
             ? cur.overlayStats
             : normalizeOverlayStats(patch.overlayStats),
@@ -5087,9 +5098,9 @@ export function createIpcHandlers({
             : patch.recordingToastsEnabled === true,
           // The capture-runtime retention preference is global, but it rides
           // this read-modify-write envelope so unrelated settings saves
-          // cannot reset it. Missing legacy values default to memory saving.
+          // cannot reset it. Missing legacy values default to a warm runtime.
           memorySavingMode: patch.memorySavingMode === undefined
-            ? cur.memorySavingMode !== false
+            ? cur.memorySavingMode === true
             : patch.memorySavingMode === true,
           // M23: the ADVANCED-overlay fields (the Overlay view's Advanced
           // card persists them through this channel - the M5 overlaySettings
@@ -5194,7 +5205,7 @@ export function createIpcHandlers({
         // persists but onOverlaySettings never fires and the HUD never
         // re-renders (the switch would only apply on the next boot).
         const overlayChanged = {};
-        for (const key of ['overlayEnabled', 'overlayRenderer', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayLabelColor', 'overlayValueColor', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme', 'overlayRecordingPill']) {
+        for (const key of ['overlayEnabled', 'overlayRenderer', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayLabelColor', 'overlayValueColor', 'overlayTemperatureUnit', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme', 'overlayRecordingPill']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) overlayChanged[key] = next[key];
         }
         if (Object.keys(overlayChanged).length > 0) {

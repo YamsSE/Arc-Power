@@ -45,6 +45,11 @@ const ERROR_MESSAGES: Record<OcErrorCode, string> = {
   'driver-adjustment-out-of-range': 'The driver changed the VF curve beyond the supported normalization range. The editor shows the live curve, but the apply was not accepted.',
   'driver-noop': 'IGCL returned success, but the live VF curve stayed unchanged during verification, so the apply was not accepted.',
   'io-failed': 'The GPU driver did not accept the value (read-back mismatch).',
+  'driver-adjusted': 'The GPU driver changed one or more VF points. The requested draft remains available for editing.',
+  'readback-unverified': 'The current LIVE VF curve could not be verified before the write, so no curve write was sent.',
+  'driver-invalid-readback': 'The driver returned an invalid LIVE VF curve.',
+  'vf-write-blocked': 'VF-curve writes are disabled for this B580 driver build because safe writes and STOCK restore could not be verified. The live curve can still be read.',
+  'dependency-failed': 'This control was skipped because a required tuning change did not verify.',
 };
 
 /**

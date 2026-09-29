@@ -185,6 +185,7 @@ function normalizeSettings(raw = {}) {
     color,
     labelColor,
     valueColor,
+    temperatureUnit: (raw.temperatureUnit ?? raw.overlayTemperatureUnit) === 'F' ? 'F' : 'C',
     deviceKeys,
     stats,
     overlayBgEnabled: raw.overlayBgEnabled === true,
@@ -395,6 +396,7 @@ export function createOverlayWindow({ getOverlaySettings, deferBuild = false }) 
     color: applied.color,
     labelColor: applied.labelColor,
     valueColor: applied.valueColor,
+    temperatureUnit: applied.temperatureUnit,
     stats: applied.stats,
     deviceKeys: applied.deviceKeys,
     // M7b: the background box rides the same push - without the three

@@ -18,7 +18,7 @@ Controls depend on the capabilities reported by the selected device and its driv
 | GPU | Architecture | Verified support |
 |---|---|---|
 | Arc A3 / A5 / A7 series | Alchemist | **Verified - Working** |
-| Arc B580 / B570 | Battlemage | **Verified - Working** |
+| Arc B580 / B570 | Battlemage | **Verified, with B580 VF writes currently blocked on driver 32.0.101.9033** |
 | Arc Pro B50 | Battlemage (pro) | **Verified - Tweaks & Telemetry only** |
 | Arc iGPU | Alchemist & Battlemage | **Verified - Tweaks & Telemetry only** |
 
@@ -61,6 +61,8 @@ The default overlay shortcuts are **CTRL+O** for the Arc Power overlay and **CTR
 ## Safety and troubleshooting
 
 Overclocking can damage hardware and may void warranties. Monitor temperatures, power, and stability. Arc Power uses reported or verified device limits and checks applied values by reading them back. A failed read-back is reported as a failed apply.
+
+Custom VF curve writes are currently disabled for the Arc B580 on Intel driver 32.0.101.9033. Safe live tests showed the driver remapping the curve, and a STOCK restore could not be verified. Arc Power keeps the live curve readable and refuses changed-curve writes on this driver build.
 
 - **A control is unavailable:** the selected GPU or driver does not report that capability.
 - **An apply requests permission:** approve the Windows UAC prompt. The installed build is recommended for startup applies.

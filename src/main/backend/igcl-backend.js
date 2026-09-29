@@ -74,7 +74,7 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 // bSupported:false - the probe-3 evidence).
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
-import { isLegacyBakedB580VfCurve, isLegacyStockVfCurve, prepareVfCurveForDriver, rebaseB580VfCurveToNativeGrid } from '../../renderer/pure/vf-curve.ts';
+import { isValidNativeVfCurve, prepareVfCurveForDriver, vfCurveNeedsWrite } from '../../renderer/pure/vf-curve.ts';
 import { readVfCurveAfterWrite } from './vf-curve-readback.js';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
@@ -103,22 +103,23 @@ const POWER_TELEMETRY_V2_COMPATIBILITY_ERRORS = new Set([
   CTL_RESULT.ERROR_NOT_AVAILABLE,
 ]);
 
-// A freshly initialized B-series driver can reject the first custom VF write
-// while its overclock service is becoming ready. One bounded replay handles
-// only transient native results; persistent or capability errors still reach
-// the caller unchanged.
-const RETRYABLE_VF_WRITE_RESULTS = new Set([
-  CTL_RESULT.ERROR_DATA_WRITE,
-  CTL_RESULT.ERROR_OS_CALL,
-  CTL_RESULT.ERROR_KMD_CALL,
-  CTL_RESULT.ERROR_NOT_AVAILABLE,
-  // The first B580 apply can surface the device-unavailable form while the
-  // newly initialized overclock service is attaching. It is transient only
-  // when the single immediate replay succeeds; a persistent result remains
-  // the driver's refusal.
-  CTL_RESULT.ERROR_DEVICE_UNAVAILABLE,
-  CTL_RESULT.ERROR_RETRY_OPERATION,
-]);
+// Live-safe probing on this exact B580 IGCL driver build showed that even
+// stock-derived frequency-only edits can remap the whole LIVE curve, and a
+// subsequent STOCK write could not be verified. Keep reads and exact no-ops
+// available, but do not send another native VF write until this driver is
+// independently shown to behave safely.
+const VF_CURVE_WRITE_BLOCKED_DRIVER = Object.freeze({
+  pciDeviceId: '0x0000e20b',
+  deviceName: /\bB580\b/i,
+  driverVersion: '0x0020000000652349',
+});
+
+function vfCurveWriteBlockReason(device) {
+  if (String(device?.pciDeviceId ?? '').toLowerCase() !== VF_CURVE_WRITE_BLOCKED_DRIVER.pciDeviceId
+    || !VF_CURVE_WRITE_BLOCKED_DRIVER.deviceName.test(String(device?.name ?? ''))
+    || String(device?.driverVersion ?? '').toLowerCase() !== VF_CURVE_WRITE_BLOCKED_DRIVER.driverVersion) return null;
+  return 'Arc Power has disabled VF-curve writes for this B580 driver build because live testing produced large curve remaps and the STOCK restore could not be verified. No VF write was sent. The live curve remains readable.';
+}
 
 // The VF read-modify-write transaction needs a current STOCK/LIVE table before
 // it can safely submit a profile.  On Battlemage, the first read can race the
@@ -2505,6 +2506,10 @@ export class IgclBackend {
             state: vfProbe.state ?? 'unsupported',
             reason: vfProbe.reason ?? 'The driver did not expose a readable custom VF curve surface.',
           };
+        const vfWriteBlock = vfCurveWriteBlockReason(dev);
+        if (vfWriteBlock && caps.controls.vfCurve) {
+          caps.controlStatus.vfCurve = { state: 'runtime-refused', reason: vfWriteBlock };
+        }
         // M17e (round-1 S3): the per-device gpuLock bounds - derived from the
         // props' gpuVFCurveVoltageLimit / gpuVFCurveFrequencyLimit (the
         // bounds the custom-VF-curve validation references) THROUGH the units
@@ -5995,49 +6000,217 @@ export class IgclBackend {
     const units = await this._ocUnitsOf(deviceId);
     const result = { ok: true, perControl: {} };
 
-    // Profiles created by older builds can contain the B-series STOCK VF
-    // table on a voltage grid from another driver revision. The compatibility
-    // path recognizes that complete legacy fingerprint before any scalar
-    // writes so startup, tray, elevated, and renderer loads agree. Legitimate
-    // custom voltage coordinates remain intact and are still sent to the
-    // driver's native writer.
+    // Fail closed on the exact B580 driver build observed to remap custom
+    // curves. Compare against the verified LIVE table first so profiles that
+    // already match the device remain harmless no-ops. This shared preflight
+    // runs before any scalar or fan setters, covering manual, profile, boot,
+    // and STOCK-restore requests with one policy.
+    const vfWriteBlock = vfCurveWriteBlockReason(dev);
+    let verifiedBlockedVfCurve = null;
+    if (vfWriteBlock && settings.vfCurve !== null && settings.vfCurve !== undefined) {
+      const live = await this._readVfCurvePointsWithRetry(dev.handle, 1, 0);
+      const liveCanonical = live?.ok === true
+        ? live.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
+        : null;
+      const nativeRange = caps.vfCurveRange ?? {
+        voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 0, freqMaxMhz: 4300, maxPoints: 32,
+      };
+      // A blocked-driver no-op is valid only when the caller already supplied
+      // an exact native table. Never round malformed/off-grid profile data
+      // into the observed LIVE curve and acknowledge it as the same state.
+      const requestedNative = Array.isArray(settings.vfCurve)
+        ? prepareVfCurveForDriver(settings.vfCurve, nativeRange)
+        : null;
+      const exactLiveNoop = liveCanonical
+        && requestedNative
+        && isValidNativeVfCurve(liveCanonical, nativeRange)
+        && isValidNativeVfCurve(requestedNative, nativeRange)
+        && !vfCurveNeedsWrite(requestedNative, liveCanonical);
+      settings = { ...settings };
+      delete settings.vfCurve;
+      if (exactLiveNoop) {
+        // Keep the user's requested shape for the later dependency policy,
+        // while withholding the native write. Otherwise a profile whose
+        // custom curve already matches LIVE could have its scalar offsets
+        // applied after this branch erased the curve from the request.
+        verifiedBlockedVfCurve = requestedNative;
+        result.perControl.vfCurve = {
+          ok: true,
+          readBackEqual: true,
+          readBackCurve: liveCanonical,
+        };
+      } else {
+        result.ok = false;
+        result.perControl.vfCurve = {
+          ok: false,
+          errorCode: 'vf-write-blocked',
+          message: liveCanonical
+            ? vfWriteBlock
+            : `${vfWriteBlock} The current LIVE curve could not be verified, so the requested change was refused.`,
+        };
+        for (const key of ['gpuVoltOffsetV', 'gpuFreqOffsetMhz']) {
+          if (settings[key] === null || settings[key] === undefined) continue;
+          result.perControl[key] = {
+            ok: false,
+            errorCode: 'dependency-failed',
+            message: 'This core offset was not applied because the associated VF-curve change was refused.',
+          };
+          delete settings[key];
+        }
+      }
+    }
+
+    // The custom curve and scalar core offsets share the same driver tuning
+    // surface. Refuse a mixed manual request before any related setter rather
+    // than report an exact curve and then let a later offset change alter
+    // LIVE. Profile applies have their own explicit STOCK/custom policy.
+    const coreOffsetKeys = ['gpuFreqOffsetMhz', 'gpuVoltOffsetV'];
+    const suppliedCoreOffsetKeys = coreOffsetKeys.filter((key) =>
+      settings[key] !== null && settings[key] !== undefined);
+    const vfCurveForDependencyCheck = settings.vfCurve ?? verifiedBlockedVfCurve;
+    if (opts.profileApply !== true
+      && vfCurveForDependencyCheck !== null && vfCurveForDependencyCheck !== undefined
+      && suppliedCoreOffsetKeys.length > 0) {
+      settings = { ...settings };
+      delete settings.vfCurve;
+      for (const key of suppliedCoreOffsetKeys) {
+        delete settings[key];
+        result.perControl[key] = {
+          ok: false,
+          errorCode: 'dependency-failed',
+          message: 'This core offset was not applied because core offsets cannot be combined with a custom VF curve.',
+        };
+      }
+      result.perControl.vfCurve = {
+        ok: false,
+        errorCode: 'dependency-failed',
+        message: 'The custom VF curve and core offsets cannot be applied in one request because both change the same tuning surface. No curve or core offset was written.',
+      };
+      result.ok = false;
+    }
+
+    // A profile's exact STOCK table is a reset operation and must run before
+    // its scalar core offsets. A custom table owns the core VF shape, so
+    // conflicting scalar offsets are omitted. Never infer or rewrite custom
+    // curve coordinates from a remembered value fingerprint.
+    let profileStockCurveReset = false;
+    let profileStockCurveUnknown = false;
+    let profileStockCurveUnknownOffsets = [];
+    const profileVfCurve = settings.vfCurve ?? verifiedBlockedVfCurve;
     if (opts.profileApply === true && isBattlemageGpuName(caps.deviceName, caps)
-      && Array.isArray(settings.vfCurve)) {
+      && Array.isArray(profileVfCurve)) {
       const out = { ...settings };
       if (caps.controls.vfCurve !== true
         && caps.controlStatus?.vfCurve?.state !== 'runtime-refused') {
-        delete out.vfCurve;
+        // Without a readable/writable VF surface, a saved curve may be STOCK
+        // or custom. Preserve it for the normal unsupported-control result
+        // and withhold dependent scalar offsets until STOCK is verifiable.
+        profileStockCurveUnknown = true;
+        profileStockCurveUnknownOffsets = ['gpuVoltOffsetV', 'gpuFreqOffsetMhz']
+          .filter((key) => settings[key] !== null && settings[key] !== undefined);
       } else {
         const stock = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
-        const live = stock.ok || stock.fallbackToLive
-          ? await this._readVfCurvePointsWithRetry(dev.handle, 1, 0)
-          : { ok: false, points: [], result: stock.result, message: stock.message };
-        const native = stock.ok ? stock : (stock.fallbackToLive ? live : stock);
-        const nativeCanonical = native.ok
-          ? native.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
-          : null;
-        const liveCanonical = live.ok
-          ? live.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
-          : null;
-        const bakedB580 = nativeCanonical && isLegacyBakedB580VfCurve(settings.vfCurve, nativeCanonical);
-        if (nativeCanonical
-          && (isLegacyStockVfCurve(settings.vfCurve, nativeCanonical, settings.gpuFreqOffsetMhz) || bakedB580)) {
-          delete out.vfCurve;
-          if (bakedB580 && !Number.isFinite(out.gpuFreqOffsetMhz)) out.gpuFreqOffsetMhz = 100;
+        if (stock.ok) {
+          const stockCurve = stock.points.map((point) => ({
+            voltageV: point.Voltage / 1000,
+            freqMhz: point.Frequency,
+          }));
+          const requestedStockCurve = profileVfCurve.map((point) => ({
+            voltageV: Math.round(point.voltageV * 1000) / 1000,
+            freqMhz: Math.round(point.freqMhz),
+          }));
+          profileStockCurveReset = !vfCurveNeedsWrite(requestedStockCurve, stockCurve);
         } else {
-          // A custom VF table is authoritative for the core voltage/frequency
-          // shape. Older profiles could carry either scalar offset, which
-          // makes the driver apply the scalar first and then reject the curve
-          // transaction.
-          delete out.gpuVoltOffsetV;
-          delete out.gpuFreqOffsetMhz;
-          const rebased = nativeCanonical
-            ? rebaseB580VfCurveToNativeGrid(settings.vfCurve, nativeCanonical, liveCanonical)
-            : null;
-          if (rebased) out.vfCurve = rebased;
+          // If STOCK cannot be read, we cannot tell whether this saved curve
+          // is a reset. Keep trying the requested curve below, but do not
+          // silently discard the profile's dependent core offsets.
+          profileStockCurveUnknown = true;
+          profileStockCurveUnknownOffsets = ['gpuVoltOffsetV', 'gpuFreqOffsetMhz']
+            .filter((key) => settings[key] !== null && settings[key] !== undefined);
         }
       }
+      if (!profileStockCurveReset) {
+        for (const key of ['gpuVoltOffsetV', 'gpuFreqOffsetMhz']) {
+          const value = settings[key];
+          if (typeof value === 'number' && Number.isFinite(value) && Math.abs(value) > 0.001) {
+            result.perControl[key] = {
+              ok: false,
+              errorCode: 'dependency-failed',
+              message: profileStockCurveUnknown
+                ? 'This profile core offset was not applied because its VF curve is unavailable and STOCK identity cannot be verified.'
+                : 'This profile core offset was not applied because its custom VF curve owns the same tuning surface.',
+            };
+            result.ok = false;
+          }
+        }
+        delete out.gpuVoltOffsetV;
+        delete out.gpuFreqOffsetMhz;
+        if (profileStockCurveUnknownOffsets.length > 0) result.ok = false;
+      }
       settings = out;
+    }
+
+    if (profileStockCurveUnknown) {
+      for (const key of profileStockCurveUnknownOffsets) {
+        result.perControl[key] = {
+          ok: false,
+          errorCode: 'dependency-failed',
+          message: 'Core offset was not applied because the profile STOCK VF curve could not be read and verified before applying the profile.',
+        };
+      }
+    }
+
+    // Restore STOCK before profile scalar offsets. Intel's VF write and the
+    // Battlemage scalar core offsets address the same tuning surface; doing
+    // STOCK last would erase the profile offsets, while applying offsets
+    // before a custom curve can make the custom write fail.
+    if (profileStockCurveReset) {
+      const requestedCurve = profileVfCurve;
+      const profileOffsets = ['gpuVoltOffsetV', 'gpuFreqOffsetMhz']
+        .filter((key) => settings[key] !== null && settings[key] !== undefined);
+      let resetResult;
+      try {
+        resetResult = await this.applySettings(deviceId, { vfCurve: requestedCurve }, {
+          ...opts,
+          profileApply: false,
+        });
+      } catch (error) {
+        resetResult = {
+          ok: false,
+          perControl: {
+            vfCurve: {
+              ok: false,
+              errorCode: 'io-failed',
+              message: `STOCK VF curve restore failed: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          },
+        };
+      }
+      const vfResult = resetResult?.perControl?.vfCurve ?? {
+        ok: false,
+        errorCode: 'io-failed',
+        message: 'STOCK VF curve restore returned no result',
+      };
+      const reportedVfResult = vfResult.errorCode === 'dependency-failed'
+        && /offsets to zero/i.test(String(vfResult.message ?? ''))
+        ? {
+            ...vfResult,
+            message: 'This profile\'s STOCK VF curve cannot be applied while current GPU core offsets are active. Reset both core offsets to zero, then apply the profile again.',
+          }
+        : vfResult;
+      result.perControl.vfCurve = reportedVfResult;
+      if (vfResult.ok !== true || vfResult.readBackEqual !== true) {
+        result.ok = false;
+        for (const key of profileOffsets) {
+          result.perControl[key] = {
+            ok: false,
+            errorCode: 'dependency-failed',
+            message: 'Core offset was not applied because the profile STOCK VF curve did not match the driver read-back.',
+          };
+          delete settings[key];
+        }
+      }
+      delete settings.vfCurve;
     }
 
     // M17e (round-1 S1b): the UNIVERSAL lock-vs-offset normalization - a
@@ -6580,49 +6753,85 @@ export class IgclBackend {
                 // the native write shape; on Battlemage the two tables can
                 // legitimately differ after an active tuning change.
                 const liveBefore = await this._readVfCurvePointsWithRetry(dev.handle, 1, 0);
-                const pointsEqual = (left, right) => Array.isArray(left) && Array.isArray(right)
-                  && left.length === right.length
-                  && left.every((point, index) => point.Voltage === right[index]?.Voltage && point.Frequency === right[index]?.Frequency);
-                const pointsBuf = koffi.alloc('ctl_voltage_frequency_point_t', points.length);
-                const pointSize = koffi.sizeof('ctl_voltage_frequency_point_t');
-                points.forEach((point, index) => {
-                  koffi.encode(pointsBuf, index * pointSize, 'ctl_voltage_frequency_point_t', point);
-                });
-                let setResult = CTL_RESULT.ERROR_UNKNOWN;
-                for (let attempt = 0; attempt < 2; attempt += 1) {
-                  setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, pointsBuf);
-                  if (setResult === CTL_RESULT.SUCCESS || !RETRYABLE_VF_WRITE_RESULTS.has(setResult) || attempt === 1) break;
-                  // Let the driver's overclock service finish the transient
-                  // initialization before the single bounded replay.
-                  await new Promise((resolve) => setTimeout(resolve, 25));
-                }
-                if (setResult !== CTL_RESULT.SUCCESS) {
-                  fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
-                } else {
-                  // IGS follows the driver's LIVE table after a successful
-                  // write. Intel documents that the applied LIVE curve can
-                  // differ from the request; accept that only after a valid
-                  // changed read-back and return the actual curve to the UI.
-                  const v = await readVfCurveAfterWrite({
-                    readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
-                    requestedPoints: points,
-                    liveBefore,
-                    curveRange,
-                    allowDriverNormalization: isBattlemageGpuName(caps.deviceName, caps),
-                    maxAttempts: VF_READBACK_MAX_ATTEMPTS,
-                    pollIntervalMs: VF_READBACK_SETTLE_MS,
-                  });
+                const liveCanonical = liveBefore?.ok === true
+                  ? liveBefore.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
+                  : null;
+                if (liveCanonical && !vfCurveNeedsWrite(preparedCurve, liveCanonical)) {
                   result.perControl.vfCurve = {
-                    ok: v.ok,
-                    readBackEqual: v.exact === true,
-                    normalized: v.normalized === true,
-                    errorCode: v.ok ? undefined : (v.errorCode ?? 'io-failed'),
-                    driverAdjusted: v.driverAdjusted === true,
-                    silentNoop: v.silentNoop === true,
-                    message: v.message,
-                    ...(Array.isArray(v.appliedCurve) ? { readBackCurve: v.appliedCurve } : {}),
+                    ok: true,
+                    readBackEqual: true,
+                    normalized: false,
+                    readBackCurve: liveBefore.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency })),
                   };
-                  if (!v.ok) result.ok = false;
+                } else {
+                  if (liveBefore?.ok !== true || liveBefore.points.length !== points.length
+                    || !isValidNativeVfCurve(liveCanonical, curveRange)) {
+                    fail('vfCurve', 'readback-unverified', 'The current LIVE VF curve could not be verified as a valid ordered curve with the requested point count. No curve write was sent.');
+                  } else {
+                    const readCurrentOffset = (control, unitField) => {
+                      if (caps.controls[control] !== true) return { ok: false, value: null };
+                      const getter = lib[this._v2GetterName(control)];
+                      if (this._isUnavailable(getter)) return { ok: false, value: null };
+                      try {
+                        const buffer = koffi.alloc('double', 1);
+                        const getResult = getter(dev.handle, buffer);
+                        if (getResult !== CTL_RESULT.SUCCESS) return { ok: false, value: null };
+                        const unit = units ? units[unitField] : 0;
+                        const value = igclToCanonical(koffi.decode(buffer, 'double'), unit);
+                        return Number.isFinite(value) ? { ok: true, value } : { ok: false, value: null };
+                      } catch {
+                        return { ok: false, value: null };
+                      }
+                    };
+                    const currentFrequencyOffset = readCurrentOffset('gpuFreqOffset', 'gpuFreqOffset');
+                    const currentVoltageOffset = readCurrentOffset('gpuVoltOffset', 'gpuVoltOffset');
+                    const hasUnknownOffset = !currentFrequencyOffset.ok || !currentVoltageOffset.ok;
+                    const hasActiveOffset = [currentFrequencyOffset.value, currentVoltageOffset.value]
+                      .some((value) => Number.isFinite(value) && Math.abs(value) > 0.001);
+                    if (hasUnknownOffset) {
+                      fail('vfCurve', 'dependency-failed', 'The active GPU core offsets could not be read, so the VF curve was not written. Verify both core offsets before applying a curve.');
+                    } else if (hasActiveOffset) {
+                      fail('vfCurve', 'dependency-failed', 'Reset the GPU core frequency and voltage offsets to zero before applying a custom VF curve. The driver uses both controls on the same tuning surface.');
+                    } else {
+                      const pointsBuf = koffi.alloc('ctl_voltage_frequency_point_t', points.length);
+                      const pointSize = koffi.sizeof('ctl_voltage_frequency_point_t');
+                      points.forEach((point, index) => {
+                        koffi.encode(pointsBuf, index * pointSize, 'ctl_voltage_frequency_point_t', point);
+                      });
+                      // A native write that reports a transient error can
+                      // still have changed driver state. Never replay a VF
+                      // setter automatically; surface the original result.
+                      const setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, pointsBuf);
+                      if (setResult !== CTL_RESULT.SUCCESS) {
+                        fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+                      } else {
+                        // Submit the exact requested table, then verify the LIVE
+                        // table point-for-point. Intel documents that LIVE can
+                        // differ slightly after a write but publishes no numeric
+                        // bound; do not silently accept a curve that may have
+                        // moved away from the requested values.
+                        const v = await readVfCurveAfterWrite({
+                          readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+                          requestedPoints: points,
+                          liveBefore,
+                          curveRange,
+                          maxAttempts: VF_READBACK_MAX_ATTEMPTS,
+                          pollIntervalMs: VF_READBACK_SETTLE_MS,
+                        });
+                        result.perControl.vfCurve = {
+                          ok: v.ok,
+                          readBackEqual: v.exact === true,
+                          normalized: v.normalized === true,
+                          errorCode: v.ok ? undefined : (v.errorCode ?? 'io-failed'),
+                          driverAdjusted: v.driverAdjusted === true,
+                          silentNoop: v.silentNoop === true,
+                          message: v.message,
+                          ...(Array.isArray(v.appliedCurve) ? { readBackCurve: v.appliedCurve } : {}),
+                        };
+                        if (!v.ok) result.ok = false;
+                      }
+                    }
+                  }
                 }
               }
             }

@@ -809,7 +809,7 @@ function renderReplaySettings(): HTMLElement {
   const memorySaving = el('input', {
     type: 'checkbox',
     class: 'settings-checkbox',
-    checked: working?.memorySavingMode !== false,
+    checked: working?.memorySavingMode === true,
     'aria-label': 'Memory Saving Mode',
   }) as HTMLInputElement;
   memorySaving.addEventListener('change', () => stagePatch({ memorySavingMode: memorySaving.checked }));

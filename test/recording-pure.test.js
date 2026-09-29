@@ -8,14 +8,54 @@ import { recordingEditorOperationTimeoutMs } from '../src/main/recording-editor.
 import { buildAscentStartPayload } from '../src/main/recording-engine.js';
 import { createRecordingActionHandler } from '../src/main/recording-hotkeys.js';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
+import { ProfileStore } from '../src/main/store/profile-store.js';
 
-test('memory saving defaults to enabled', () => {
-  assert.equal(normalizeRecordingSettings({}).memorySavingMode, true);
+test('memory saving defaults to disabled', () => {
+  assert.equal(normalizeRecordingSettings({}).memorySavingMode, false);
+});
+
+test('memory saving can be explicitly enabled', () => {
+  assert.equal(normalizeRecordingSettings({ memorySavingMode: true }).memorySavingMode, true);
 });
 
 test('memory saving can be disabled', () => {
   assert.equal(normalizeRecordingSettings({ memorySavingMode: false }).memorySavingMode, false);
+});
+
+test('recording status defaults memory saving off and preserves explicit true', async () => {
+  const createHandlers = (getRecordingMemorySavingMode) => createIpcHandlers({
+    backend: { async listDevices() { return []; } },
+    store: { async loadSettings() { return {}; } },
+    recordingEngine: { getState: () => ({ available: true, running: false }) },
+    getRecordingMemorySavingMode,
+    emit() {},
+  }).handlers;
+
+  assert.equal((await createHandlers()['recording-status']()).memorySavingMode, false);
+  assert.equal((await createHandlers(() => true)['recording-status']()).memorySavingMode, true);
+});
+
+test('ProfileStore defaults memory saving off and preserves explicit choices', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-memory-saving-'));
+  try {
+    const store = new ProfileStore({ dir });
+    assert.equal((await store.loadSettings()).memorySavingMode, false);
+
+    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ theme: 'dark' }));
+    assert.equal((await store.loadSettings()).memorySavingMode, false);
+
+    await store.saveSettings({ memorySavingMode: true });
+    await store.saveSettings({ theme: 'midnight' });
+    assert.equal((await store.loadSettings()).memorySavingMode, true);
+
+    await store.saveSettings({ memorySavingMode: false });
+    assert.equal((await store.loadSettings()).memorySavingMode, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('control aliases normalize', () => {

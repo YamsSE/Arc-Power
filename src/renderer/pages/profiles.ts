@@ -30,7 +30,6 @@ import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pu
 import { chipLabelGpu } from '../pure/chip-label.ts';
 import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import { controlDisplay, formatValue } from '../pure/slider.ts';
-import { isLegacyStockVfCurve } from '../pure/vf-curve.ts';
 import { normalizeBattlemageProfileSettings } from '../pure/profile-compat.ts';
 import type { AppState } from '../router.ts';
 import type { Capabilities, DeviceInfo, DeviceState, FlipMode, FrameGenOverride, GameCatalogEntry, GameGpuProfile, GameProfileCapabilities, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, RangeInfo, Settings, StartupGetState } from '../types.ts';
@@ -247,18 +246,11 @@ export function settingsFromState(state: DeviceState): Settings {
   // profile-load RE-write the table (flipping the mode back to curve) -
   // auto never carries a table.
   if (state.fanCurve && state.fanMode !== 'auto') out.fanCurve = state.fanCurve;
-  // Battlemage exposes the driver's STOCK VF table in every read-back. That
-  // table is not a user tuning choice, and persisting it makes an ordinary
-  // offset profile replay both the core offset and a custom VF write. The
-  // driver accepts those controls independently, but refuses the conflicting
-  // pair during a profile load. Persist VF only when it differs from the
-  // driver-owned default (older runtimes without a default still preserve
-  // the curve so they remain loadable). Keep the scalar read-back in the
-  // saved profile for the card summary; profileSettingsForCapabilities drops
-  // the conflicting core scalars at apply time.
-  if (state.vfCurve && state.vfCurve.length >= 2
-    && (!Array.isArray(state.vfCurveDefault)
-      || !isLegacyStockVfCurve(state.vfCurve, state.vfCurveDefault, state.gpuFreqOffsetMhz))) {
+  // Profiles preserve the entire current table, including STOCK. When
+  // reloaded later, the saved curve must be reapplied even if LIVE has since
+  // changed. The Battlemage compatibility path drops conflicting scalar
+  // offsets while retaining these exact points.
+  if (state.vfCurve && state.vfCurve.length >= 2) {
     out.vfCurve = state.vfCurve.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz }));
   }
   return out;

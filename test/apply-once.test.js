@@ -2,6 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyOnce, classifyOutcome } from '../src/main/apply-once.js';
 
+test('applyOnce forwards profile policy to the backend', async () => {
+  const expectedOpts = { profileApply: true };
+  let receivedOpts = null;
+  const backend = {
+    async applySettings(_deviceId, _settings, opts) {
+      receivedOpts = opts;
+      return { ok: true, perControl: { vfCurve: { ok: true, readBackEqual: true } } };
+    },
+  };
+
+  const out = await applyOnce({
+    backend,
+    deviceId: 0,
+    settings: { vfCurve: [] },
+    opts: expectedOpts,
+  });
+
+  assert.equal(out.result.ok, true);
+  assert.equal(receivedOpts, expectedOpts);
+});
+
 test('VF curve refusals preserve the driver diagnostic for the tuning UI', async () => {
   const diagnostic = 'IGCL ERROR_KMD_CALL (0x0000000f)';
   const backend = {

@@ -76,11 +76,24 @@ test('Arc Power overlay text is bold and outlined while values stay inside their
 
 test('CapFrameX groups GPU clocks, power readings, and VRAM readings with their matching rows', () => {
   assert.match(overlaySrc, /gpuLoad\.push\(capValue\(sample\?\.gpuClockMhz/);
+  assert.match(overlaySrc, /gpuClockMhz, 'MHz'/);
   assert.match(overlaySrc, /powerValues\.push\(capValue\(sample\?\.gpuVoltageV/);
+  assert.match(overlaySrc, /gpuVoltageV, 'V'/);
   assert.match(overlaySrc, /powerValues\.push\(capValue\(sample\?\.powerW/);
+  assert.match(overlaySrc, /powerW, 'W'/);
   assert.match(overlaySrc, /vramValues\.push\(capValue\(sample\?\.memClockMhz/);
-  assert.match(overlaySrc, /vramValues\.push\(capValue\(sample\?\.vramTempC/);
+  assert.match(overlaySrc, /memClockMhz, 'MHz'/);
+  assert.match(overlaySrc, /vramValues\.push\(capTemperature\(sample\?\.vramTempC \?\? sample\?\.memTempC\)/);
   assert.match(overlaySrc, /capRow\(section, 'VRAM', vramValues\)/);
+});
+
+test('Arc Power overlay uses the shared temperature unit and compact value suffixes', () => {
+  assert.match(settingsSrc, /overlay-temperature-unit-toggle/);
+  assert.match(overlaySrc, /temperatureUnit = isValidOverlayTemperatureUnit\(s\.temperatureUnit\)/);
+  assert.match(overlayMainSrc, /raw\.temperatureUnit \?\? raw\.overlayTemperatureUnit/);
+  assert.match(overlaySrc, /capTemperature\(sample\?\.tempC\)/);
+  assert.match(overlaySrc, /capValue\(latestFrameTime, 'ms'/);
+  assert.match(overlaySrc, /\$\{total\.toFixed\(1\)\}GB/);
 });
 
 test('Overlay shortcuts use the Recording modal picker and show complete accelerators', () => {

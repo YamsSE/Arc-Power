@@ -55,6 +55,12 @@ const numberText = (value, digits = 0, fallback = '-') => {
   const out = rounded(value, digits);
   return out === null ? fallback : String(out);
 };
+function temperatureText(value, settings) {
+  const unit = settings?.temperatureUnit === 'F' ? 'F' : 'C';
+  const celsius = finite(value) ? value : null;
+  const displayed = unit === 'F' && celsius !== null ? (celsius * 9) / 5 + 32 : celsius;
+  return `${numberText(displayed)}°${unit}`;
+}
 const has = (value, key) => Object.prototype.hasOwnProperty.call(value ?? {}, key);
 
 // RTSS consumes ANSI hypertext. Keep line breaks/tabs, drop all other control
@@ -65,7 +71,7 @@ function safeRtssText(value, { lineBreaks = true, backspace = false } = {}) {
   let out = '';
   for (const char of source) {
     const code = char.charCodeAt(0);
-    if (code >= 0x20 && code <= 0x7E) out += char;
+    if ((code >= 0x20 && code <= 0x7E) || char === '°') out += char;
     else if (backspace && char === '\b') out += char;
     else if (lineBreaks && (char === '\n' || char === '\r' || char === '\t')) out += char;
   }
@@ -311,18 +317,18 @@ function formatGpuRows(telemetry, settings, stats, deviceOrdinals = null) {
       : `GPU${ordinal}`;
     const gpuFields = [];
     if (statEnabled(stats, 'gpu-util')) gpuFields.push(`${numberText(gpu.util)}%`);
-    if (statEnabled(stats, 'gpu-clock')) gpuFields.push(`${numberText(gpu.clock)} MHz`);
-    if (statEnabled(stats, 'gpu-voltage')) gpuFields.push(`${numberText(gpu.voltage, 3)} V`);
-    if (statEnabled(stats, 'gpu-temp')) gpuFields.push(`${numberText(gpu.temp)}°C`);
-    if (statEnabled(stats, 'gpu-power')) gpuFields.push(`${numberText(gpu.power, 1)} W`);
-    if (statEnabled(stats, 'gpu-fan')) gpuFields.push(`${numberText(gpu.fan)} RPM`);
+    if (statEnabled(stats, 'gpu-clock')) gpuFields.push(`${numberText(gpu.clock)}MHz`);
+    if (statEnabled(stats, 'gpu-voltage')) gpuFields.push(`${numberText(gpu.voltage, 3)}V`);
+    if (statEnabled(stats, 'gpu-temp')) gpuFields.push(temperatureText(gpu.temp, settings));
+    if (statEnabled(stats, 'gpu-power')) gpuFields.push(`${numberText(gpu.power, 1)}W`);
+    if (statEnabled(stats, 'gpu-fan')) gpuFields.push(`${numberText(gpu.fan)}RPM`);
     const gpuRow = coloredRow(label, gpuFields, settings);
     if (gpuRow) rows.push(gpuRow);
 
     const vramFields = [];
-    if (statEnabled(stats, 'gpu-mem-clock')) vramFields.push(`${numberText(gpu.memClock)} MHz`);
+    if (statEnabled(stats, 'gpu-mem-clock')) vramFields.push(`${numberText(gpu.memClock)}MHz`);
     if (statEnabled(stats, 'gpu-vram')) vramFields.push(byteSizeToGb(gpu.vram));
-    if (statEnabled(stats, 'gpu-vram-temp')) vramFields.push(`${numberText(gpu.vramTemp)}°C`);
+    if (statEnabled(stats, 'gpu-vram-temp')) vramFields.push(temperatureText(gpu.vramTemp, settings));
     const vramRow = coloredRow(`VRAM${ordinal}`, vramFields, settings);
     if (vramRow) rows.push(vramRow);
   });
@@ -378,9 +384,9 @@ export function buildRtssTelemetryText({
 
   const cpuFields = [];
   if (statEnabled(stats, 'cpu-util')) cpuFields.push(`${numberText(telemetry.cpuUtilPct ?? telemetry.cpuUsage ?? telemetry.cpuPercent)}%`);
-  if (statEnabled(stats, 'cpu-clock')) cpuFields.push(`${numberText(finite(telemetry.cpuFreqMhz) ? telemetry.cpuFreqMhz / 1000 : null, 1)} GHz`);
-  if (statEnabled(stats, 'cpu-temp')) cpuFields.push(`${numberText(telemetry.cpuTempC ?? telemetry.cpuTemperatureC)}°C`);
-  if (statEnabled(stats, 'cpu-power')) cpuFields.push(`${numberText(telemetry.cpuPowerW, 1)} W`);
+  if (statEnabled(stats, 'cpu-clock')) cpuFields.push(`${numberText(finite(telemetry.cpuFreqMhz) ? telemetry.cpuFreqMhz / 1000 : null, 1)}GHz`);
+  if (statEnabled(stats, 'cpu-temp')) cpuFields.push(temperatureText(telemetry.cpuTempC ?? telemetry.cpuTemperatureC, settings));
+  if (statEnabled(stats, 'cpu-power')) cpuFields.push(`${numberText(telemetry.cpuPowerW, 1)}W`);
   addRow(coloredRow('CPU', cpuFields, rowSettings));
 
   if (statEnabled(stats, 'memory-util')) {
@@ -397,7 +403,7 @@ export function buildRtssTelemetryText({
     if (api) addRow(formatTagsSupported ? coloredRow('API', [api], rowSettings) : api);
   }
   if (statEnabled(stats, 'frametime')) {
-    addRow(coloredRow('Frametime', [`${numberText(fps?.frameTimeMs ?? telemetry.frameTimeMs, 2)} ms`], rowSettings));
+    addRow(coloredRow('Frametime', [`${numberText(fps?.frameTimeMs ?? telemetry.frameTimeMs, 2)}ms`], rowSettings));
   }
 
   const body = lines.join('\n');
@@ -470,6 +476,7 @@ function defaultBindings() {
     const kernel32 = koffi.load('kernel32.dll');
     const mapView = kernel32.func('MapViewOfFile', 'void*', ['void*', 'uint32', 'uint32', 'uint32', 'size_t']);
     const open = kernel32.func('OpenFileMappingW', 'void*', ['uint32', 'bool', 'str16']);
+    const wideCharToMultiByte = kernel32.func('WideCharToMultiByte', 'int32', ['uint32', 'uint32', 'str16', 'int32', 'void*', 'int32', 'void*', 'void*']);
     const virtualQuery = kernel32.func('VirtualQuery', 'size_t', ['void*', 'void*', 'size_t']);
     const pointerSize = process.arch === 'x64' || process.arch === 'arm64' ? 8 : 4;
     const querySize = pointerSize === 8 ? 48 : 28;
@@ -505,6 +512,18 @@ function defaultBindings() {
       // processes without asking Electron for an external ArrayBuffer view.
       compareExchange32: (view, offset, exchange, comparand) => {
         return atomic.compareExchange(view, offset, exchange, comparand);
+      },
+      // RTSS's shared-memory strings use the current Windows ANSI code page.
+      // CP_ACP (0) keeps degree symbols valid on non-Western Windows locales.
+      encodeText: (text) => {
+        const required = Number(wideCharToMultiByte(0, 0, text, -1, null, 0, null, null));
+        if (!Number.isSafeInteger(required) || required < 1) throw new Error('Could not size RTSS ANSI text');
+        const buffer = Buffer.alloc(required);
+        const written = Number(wideCharToMultiByte(0, 0, text, -1, buffer, buffer.length, null, null));
+        if (!Number.isSafeInteger(written) || written < 1 || written > buffer.length || buffer[written - 1] !== 0) {
+          throw new Error('Could not encode RTSS ANSI text');
+        }
+        return buffer.subarray(0, written - 1);
       },
       unmap: kernel32.func('UnmapViewOfFile', 'int32', ['void*']),
       close: kernel32.func('CloseHandle', 'int32', ['void*']),
@@ -612,9 +631,10 @@ export function createRtssOsdPublisher(deps = {}) {
   const writeBytes = (offset, value, size, { preserveBackspace = false } = {}) => {
     if (!bounds(offset, size)) throw new RangeError('RTSS OSD write is outside mapped view');
     const buffer = Buffer.alloc(size);
+    const encodeText = deps.encodeText ?? bindings?.encodeText ?? ((text) => Buffer.from(text.replaceAll('°', '\xB0'), 'latin1'));
     const source = Buffer.isBuffer(value)
       ? value
-      : Buffer.from(safeRtssText(value, { backspace: preserveBackspace }), 'ascii');
+      : encodeText(safeRtssText(value, { backspace: preserveBackspace }));
     const copySize = Buffer.isBuffer(value) ? Math.min(size, source.length) : Math.min(Math.max(0, size - 1), source.length);
     source.copy(buffer, 0, 0, copySize);
     if (deps.writeBytes) return deps.writeBytes(view, offset, buffer);

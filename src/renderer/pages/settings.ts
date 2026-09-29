@@ -84,7 +84,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       startWithWindows: envelope.settings.startWithWindows === true,
       startMinimized: envelope.settings.startMinimized === true,
       closeToTray: envelope.settings.closeToTray === true,
-      memorySavingMode: envelope.settings.memorySavingMode !== false,
+      memorySavingMode: envelope.settings.memorySavingMode === true,
       // M4-D2 (r2 F6): the mismatch formula also reads the profile's
       // start-at-boot intent (ocOnBoot + activeProfileId) - the startup
       // registration is shared, so the Settings checkbox can legitimately be ON because
@@ -393,7 +393,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     render();
     try {
       const result = await api.profilesSettingsSave({ memorySavingMode: checked });
-      persisted.memorySavingMode = result.memorySavingMode !== false;
+      persisted.memorySavingMode = result.memorySavingMode === true;
       toast(checked ? 'success' : 'info', checked ? 'Memory Saving Mode enabled' : 'Memory Saving Mode disabled', checked
         ? 'The capture runtime will unload when idle.'
         : 'The capture runtime will stay ready for faster starts.');

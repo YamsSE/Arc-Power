@@ -71,10 +71,9 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
   },
   captureColorMode: 'auto',
   showCursor: false,
-  // Keep the bundled capture runtime lazy and release it again whenever no
-  // recording work is active. Users can disable this from the Recorder page
-  // when they prefer the runtime to remain warm after it has been started.
-  memorySavingMode: true,
+  // Keep the bundled capture runtime warm after first start by default.
+  // Users can opt into releasing it while idle from the Recorder page.
+  memorySavingMode: false,
   replayLengthSec: 30,
   instantReplayAutoStart: false,
   replayMarkersEnabled: true,
@@ -341,7 +340,7 @@ export function normalizeRecordingSettings(raw = {}) {
       ? source.captureColorMode
       : DEFAULT_RECORDING_SETTINGS.captureColorMode,
     showCursor: source.showCursor === true,
-    memorySavingMode: source.memorySavingMode !== false,
+    memorySavingMode: source.memorySavingMode === true,
     replayLengthSec: Math.min(3600, Math.max(5, replayLength)),
     audio: normalizeRecordingAudioSettings({ ...DEFAULT_RECORDING_SETTINGS.audio, ...(source.audio ?? {}) }),
     hotkeys: {

@@ -14,21 +14,20 @@ const observedByB580 = [
   [830, 2960], [880, 3090], [930, 3180], [980, 3200], [1030, 3210],
 ].map(([Voltage, Frequency]) => ({ Voltage, Frequency }));
 
-test('B580 material driver normalization is applied and returned as the active VF curve', () => {
+test('a materially different valid LIVE curve is not accepted as a normalized apply', () => {
   const out = validateVfCurveReadback({
     readBack: { ok: true, points: observedByB580 },
     requestedPoints: requested,
     liveBefore: { ok: true, points: before },
     curveRange,
-    allowDriverNormalization: true,
   });
 
-  assert.equal(out.ok, true);
+  assert.equal(out.ok, false);
   assert.equal(out.exact, false);
-  assert.equal(out.normalized, true);
+  assert.equal(out.normalized, false);
   assert.equal(out.driverAdjusted, true);
-  assert.equal(out.errorCode, undefined);
-  assert.match(out.message, /applied a normalized VF curve/);
+  assert.equal(out.errorCode, 'driver-adjusted');
+  assert.match(out.message, /point 1 is 580 mV/);
   assert.equal(out.appliedCurve[0].voltageV, 0.58);
   assert.equal(out.appliedCurve[0].freqMhz, 1640);
 });
@@ -46,12 +45,12 @@ test('unchanged LIVE data remains a failure and is returned for the editor after
   assert.equal(out.driverAdjusted, false);
   assert.equal(out.errorCode, 'driver-noop');
   assert.deepEqual(out.appliedCurve[0], { voltageV: 0.57, freqMhz: 1550 });
-  assert.match(out.message, /LIVE curve remained unchanged during verification/);
+  assert.match(out.message, /LIVE VF curve remained unchanged during verification/);
   assert.match(out.message, /Point 10 requested 1020 mV \/ 3210 MHz; LIVE remains 1020 mV \/ 3230 MHz/);
   assert.match(out.message, /No change was observed/);
 });
 
-test('B580 valid LIVE normalization just outside the captured tolerance is accepted as active', () => {
+test('a small valid driver rewrite is still unverified without a measured tolerance', () => {
   const normalizedLive = observedByB580.map((point) => ({ ...point }));
   normalizedLive[0].Frequency += 1;
   const normalized = validateVfCurveReadback({
@@ -59,18 +58,17 @@ test('B580 valid LIVE normalization just outside the captured tolerance is accep
     requestedPoints: requested,
     liveBefore: { ok: true, points: before },
     curveRange,
-    allowDriverNormalization: true,
   });
-  assert.equal(normalized.ok, true);
+  assert.equal(normalized.ok, false);
   assert.equal(normalized.exact, false);
   assert.equal(normalized.driverAdjusted, true);
-  assert.equal(normalized.normalized, true);
-  assert.equal(normalized.errorCode, undefined);
+  assert.equal(normalized.normalized, false);
+  assert.equal(normalized.errorCode, 'driver-adjusted');
   assert.deepEqual(normalized.appliedCurve, normalizedLive.map((point) => ({
     voltageV: point.Voltage / 1000,
     freqMhz: point.Frequency,
   })));
-  assert.match(normalized.message, /applied a normalized VF curve/);
+  assert.match(normalized.message, /apply was not verified/);
 
   const malformed = normalizedLive.map((point) => ({ ...point }));
   malformed[4].Voltage = malformed[3].Voltage;
@@ -79,13 +77,13 @@ test('B580 valid LIVE normalization just outside the captured tolerance is accep
     requestedPoints: requested,
     liveBefore: { ok: true, points: before },
     curveRange,
-    allowDriverNormalization: true,
   });
   assert.equal(invalidOut.ok, false);
+  assert.equal(invalidOut.errorCode, 'driver-invalid-readback');
   assert.match(invalidOut.message, /valid ordered LIVE curve/);
 });
 
-test('non-Battlemage driver adjustments do not qualify for B580 normalization', () => {
+test('a valid but changed LIVE curve is not accepted solely because its shape is valid', () => {
   const out = validateVfCurveReadback({
     readBack: { ok: true, points: observedByB580 },
     requestedPoints: requested,
@@ -93,8 +91,9 @@ test('non-Battlemage driver adjustments do not qualify for B580 normalization', 
     curveRange,
   });
   assert.equal(out.ok, false);
-  assert.equal(out.errorCode, 'driver-adjustment-out-of-range');
-  assert.match(out.message, /supported normalization policy/);
+  assert.equal(out.normalized, false);
+  assert.equal(out.errorCode, 'driver-adjusted');
+  assert.match(out.message, /apply was not verified/);
 });
 
 test('a valid read-back is returned for display when the before-image cannot prove the apply', () => {
@@ -106,13 +105,13 @@ test('a valid read-back is returned for display when the before-image cannot pro
   });
 
   assert.equal(out.ok, false);
-  assert.equal(out.errorCode, 'io-failed');
-  assert.equal(out.driverAdjusted, true);
+  assert.equal(out.errorCode, 'readback-unverified');
+  assert.equal(out.driverAdjusted, false);
   assert.deepEqual(out.appliedCurve[0], { voltageV: 0.58, freqMhz: 1640 });
   assert.match(out.message, /before-image could not be verified/);
 });
 
-test('a one-unit change is not misreported as an exact read-back', () => {
+test('a one MHz read-back difference is not reported as an applied curve', () => {
   const oneUnitReadBack = requested.map((point) => ({ ...point }));
   oneUnitReadBack[9].Frequency += 1;
   const out = validateVfCurveReadback({
@@ -120,12 +119,12 @@ test('a one-unit change is not misreported as an exact read-back', () => {
     requestedPoints: requested,
     liveBefore: { ok: true, points: before },
     curveRange,
-    allowDriverNormalization: true,
   });
 
-  assert.equal(out.ok, true);
+  assert.equal(out.ok, false);
   assert.equal(out.exact, false);
-  assert.equal(out.normalized, true);
+  assert.equal(out.normalized, false);
+  assert.equal(out.errorCode, 'driver-adjusted');
 });
 
 test('VF verification polls unchanged before-image data until the LIVE curve changes', async () => {
@@ -136,6 +135,30 @@ test('VF verification polls unchanged before-image data until the LIVE curve cha
     readCurve: async () => {
       reads += 1;
       return { ok: true, points: reads < 3 ? before : landed };
+    },
+    requestedPoints: requested,
+    liveBefore: { ok: true, points: before },
+    curveRange,
+    maxAttempts: 5,
+    pollIntervalMs: 100,
+    wait: async (ms) => waits.push(ms),
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.exact, true);
+  assert.equal(reads, 3);
+  assert.deepEqual(waits, [100, 100]);
+});
+
+test('VF verification keeps polling through a valid intermediate mismatch until the exact request lands', async () => {
+  const intermediate = requested.map((point) => ({ ...point }));
+  intermediate[4].Frequency += 1;
+  let reads = 0;
+  const waits = [];
+  const out = await readVfCurveAfterWrite({
+    readCurve: async () => {
+      reads += 1;
+      return { ok: true, points: reads < 3 ? intermediate : requested };
     },
     requestedPoints: requested,
     liveBefore: { ok: true, points: before },

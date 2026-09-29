@@ -51,6 +51,8 @@ import {
   clampOverlayPollMs,
   clampOverlayBgOpacity,
   OVERLAY_BG_COLOR_DEFAULT,
+  isValidOverlayTemperatureUnit,
+  createOverlayTemperatureUnitChangeHandler,
   // M23: the ADVANCED overlay's anchored-edge mirror (pure/overlay.ts - the
   // HUD's lockstep family; the persisted-truth owner is profile-store.js).
   ADVANCED_OVERLAY_POSITIONS,
@@ -115,6 +117,7 @@ interface PersistedOverlay {
   color: string;
   labelColor: string;
   valueColor: string;
+  temperatureUnit: 'C' | 'F';
   backgroundEnabled: boolean;
   backgroundColor: string;
   backgroundOpacity: number;
@@ -214,6 +217,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       color: isValidOverlayColor(s.overlayColor) ? s.overlayColor : '#ffffff',
       labelColor: isValidOverlayColor(s.overlayLabelColor) ? s.overlayLabelColor : (isValidOverlayColor(s.overlayColor) ? s.overlayColor : '#ffffff'),
       valueColor: isValidOverlayColor(s.overlayValueColor) ? s.overlayValueColor : (isValidOverlayColor(s.overlayColor) ? s.overlayColor : '#ffffff'),
+      temperatureUnit: isValidOverlayTemperatureUnit(s.overlayTemperatureUnit) ? s.overlayTemperatureUnit : 'C',
       backgroundEnabled: s.overlayBgEnabled === true,
       backgroundColor: isValidOverlayColor(s.overlayBgColor) ? s.overlayBgColor : OVERLAY_BG_COLOR_DEFAULT,
       backgroundOpacity: clampOverlayBgOpacity(s.overlayBgOpacity),
@@ -620,6 +624,20 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       el('div', { class: 'settings-row overlay-value-color-row' }, [
         el('span', { class: 'settings-row-label', text: 'Right row color' }), valueColorInput,
       ]),
+      el('div', { class: 'settings-row overlay-temperature-unit-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Temperature unit' }),
+        el('label', { class: 'boot-toggle overlay-temperature-unit-toggle-label', title: 'Use Celsius when off, Fahrenheit when on, in both RTSS and Arc Power overlays.' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox overlay-temperature-unit-toggle',
+            dataset: { setting: 'overlayTemperatureUnit' },
+            checked: persisted.temperatureUnit === 'F',
+            disabled: temperatureUnitSaving,
+            onchange: (ev: Event) => void onTemperatureUnitChange((ev.target as HTMLInputElement).checked ? 'F' : 'C'),
+          }),
+          el('span', { text: 'Use Fahrenheit (°F)' }),
+        ]),
+      ]),
       el('div', { class: 'settings-row overlay-scale-row' }, [
         el('span', { class: 'settings-row-label', text: 'Size' }),
         el('input', {
@@ -963,6 +981,17 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast('error', 'Overlay color could not be changed', err instanceof Error ? err.message : String(err));
     }
   };
+
+  let temperatureUnitSaving = false;
+  const onTemperatureUnitChange = createOverlayTemperatureUnitChangeHandler({
+    getCurrentUnit: () => persisted.temperatureUnit,
+    setCurrentUnit: (unit) => { persisted.temperatureUnit = unit; },
+    save: (unit) => api.profilesSettingsSave({ overlayTemperatureUnit: unit }),
+    getToggle: () => root.querySelector<HTMLInputElement>('.overlay-temperature-unit-toggle'),
+    setSaving: (saving) => { temperatureUnitSaving = saving; },
+    onSaved: (unit) => toast('success', 'Temperature unit changed', `Both overlays now use °${unit}.`),
+    onError: (err) => toast('error', 'Temperature unit could not be changed', err instanceof Error ? err.message : String(err)),
+  });
 
   const onScaleChange = async (scale: number): Promise<void> => {
     const clamped = clampOverlayScale(scale);

@@ -123,7 +123,7 @@ export function classifyOutcome(per) {
 export async function applyOnce({ backend, deviceId, settings, opts = {}, log = () => {} }) {
   const started = Date.now();
   log(`[apply] single attempt for [${Object.keys(settings).join(', ')}]`);
-  const attemptResult = await backend.applySettings(deviceId, settings);
+  const attemptResult = await backend.applySettings(deviceId, settings, opts);
   const perControl = { ...(attemptResult.perControl ?? {}) };
   for (const [key, per] of Object.entries(perControl)) {
     if (!per) continue;

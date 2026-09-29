@@ -1804,7 +1804,7 @@ async function main() {
   // neither exists, the engine can close its child again.
   let recordingRuntimeDemand = 0;
   const recordingMemorySavingEnabled = () => {
-    try { return store.loadSettingsSync()?.memorySavingMode !== false; } catch { return true; }
+    try { return store.loadSettingsSync()?.memorySavingMode === true; } catch { return false; }
   };
   const recordingEngine = createAscentEngine({
     // A disabled Memory Saving Mode is an explicit warm-runtime lease. It
@@ -1948,7 +1948,7 @@ async function main() {
   // capture demand is released. Turning it back on closes it at the next idle
   // boundary. A failed/corrupt sidecar must never make the runtime immortal.
   const recordingMemorySavingModeEnabled = () => {
-    try { return recordingStore.loadSync()?.settings?.memorySavingMode !== false; } catch { return true; }
+    try { return recordingStore.loadSync()?.settings?.memorySavingMode === true; } catch { return false; }
   };
   // Serialize page-lease transitions with idle shutdown. Without this queue,
   // a Recording page could re-enter while the previous page's Ascent child
@@ -2414,6 +2414,7 @@ async function main() {
         color: initialOverlaySettings.overlayColor,
         labelColor: initialOverlaySettings.overlayLabelColor ?? initialOverlaySettings.overlayColor,
         valueColor: initialOverlaySettings.overlayValueColor ?? initialOverlaySettings.overlayColor,
+        temperatureUnit: initialOverlaySettings.overlayTemperatureUnit,
         // RTSS is the only telemetry surface; legacy persisted theme and
         // background values must never alter its Classic output.
         theme: 'classic',
@@ -3144,6 +3145,7 @@ async function main() {
         color: settings.overlayColor,
         labelColor: settings.overlayLabelColor ?? settings.overlayColor,
         valueColor: settings.overlayValueColor ?? settings.overlayColor,
+        temperatureUnit: settings.overlayTemperatureUnit,
         stats: settings.overlayStats,
         deviceKeys: settings.overlayDeviceKeys,
         overlayChipNames: settings.overlayChipNames === true,
@@ -3163,6 +3165,7 @@ async function main() {
         color: settings.overlayColor,
         labelColor: settings.overlayLabelColor ?? settings.overlayColor,
         valueColor: settings.overlayValueColor ?? settings.overlayColor,
+        temperatureUnit: settings.overlayTemperatureUnit,
         // Keep stale profile values from reviving the removed Arc/background
         // RTSS variants. The publisher itself enforces this too.
         theme: 'classic',
@@ -3210,6 +3213,7 @@ async function main() {
         : '#ffffff',
       labelColor: settings.overlayLabelColor ?? settings.overlayColor,
       valueColor: settings.overlayValueColor ?? settings.overlayColor,
+      temperatureUnit: settings.overlayTemperatureUnit,
       stats: Array.isArray(settings.overlayStats) ? settings.overlayStats : undefined,
       // M35: the selected overlay GPU identities ride the same settings
       // envelope so the renderer can restart only the requested telemetry
