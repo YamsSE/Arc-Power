@@ -66,7 +66,7 @@ const require = createRequire(import.meta.url);
 // when no electron app exists (tests).
 const PKG_VERSION = require('../../package.json').version ?? '0.0.0';
 
-const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'bitrateKbps', 'captureTarget', 'captureColorMode', 'showCursor', 'memorySavingMode', 'replayLengthSec', 'instantReplayAutoStart', 'replayMarkersEnabled', 'hotkeys', 'audio']);
+const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'rateControl', 'bitrateKbps', 'maxBitrateKbps', 'rateControlQuality', 'captureTarget', 'captureColorMode', 'showCursor', 'memorySavingMode', 'replayLengthSec', 'instantReplayAutoStart', 'replayMarkersEnabled', 'hotkeys', 'audio']);
 export { recordingAbsolutePath };
 
 const execFileAsync = promisify(execFile);
@@ -211,6 +211,10 @@ function recordingPatch(patch) {
   if (patch.resolution !== undefined && !RECORDING_RESOLUTIONS.some((item) => item.id === patch.resolution)) throw new Error('recording-settings-save: invalid resolution');
   if (patch.encoderId !== undefined && (typeof patch.encoderId !== 'string' || patch.encoderId.length > 128)) throw new Error('recording-settings-save: invalid encoder id');
   if (patch.bitrateKbps !== undefined && (typeof patch.bitrateKbps !== 'number' || !Number.isFinite(patch.bitrateKbps) || patch.bitrateKbps <= 0)) throw new Error('recording-settings-save: bitrate must be a positive number');
+  if (patch.maxBitrateKbps !== undefined && (typeof patch.maxBitrateKbps !== 'number' || !Number.isFinite(patch.maxBitrateKbps) || patch.maxBitrateKbps <= 0)) throw new Error('recording-settings-save: maximum bitrate must be a positive number');
+  if (patch.rateControl !== undefined && !['CBR', 'VBR', 'CQP', 'ICQ'].includes(patch.rateControl)) throw new Error('recording-settings-save: invalid rate control');
+  if (patch.rateControlQuality !== undefined && (!Number.isSafeInteger(patch.rateControlQuality) || patch.rateControlQuality < 1 || patch.rateControlQuality > 63)) throw new Error('recording-settings-save: quality must be an integer from 1 to 63');
+  if (patch.rateControl === 'ICQ' && patch.rateControlQuality !== undefined && patch.rateControlQuality > 51) throw new Error('recording-settings-save: ICQ quality must be an integer from 1 to 51');
   if (patch.captureColorMode !== undefined && !RECORDING_CAPTURE_COLOR_MODES.includes(patch.captureColorMode)) throw new Error('recording-settings-save: invalid capture color mode');
   if (patch.showCursor !== undefined && typeof patch.showCursor !== 'boolean') throw new Error('recording-settings-save: show cursor must be a boolean');
   if (patch.memorySavingMode !== undefined && typeof patch.memorySavingMode !== 'boolean') throw new Error('recording-settings-save: memory saving mode must be a boolean');

@@ -2398,10 +2398,15 @@ async function main() {
   // the overlay lifecycle objects below; the publisher can safely queue its
   // first sample until that lane is available.
   let fpsLane = null;
+  let rtssCpuNamePromise = null;
   const rtssOverlay = mock
     ? null
     : createRtssOsdPublisher({
         getFpsSample: async () => fpsLane?.poll(0) ?? null,
+        getCpuName: async () => {
+          rtssCpuNamePromise ??= Promise.resolve(sysinfo?.get?.()).then((info) => info?.cpu?.name ?? null, () => null);
+          return rtssCpuNamePromise;
+        },
       });
   if (rtssOverlay) {
     try {

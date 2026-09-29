@@ -197,7 +197,7 @@ test('B580 scalar core offsets are skipped when the requested STOCK curve fails 
   assert.deepEqual(calls, ['vf-write'], 'a native VF write is never automatically replayed');
 });
 
-test('B580 adjusted STOCK read-back is unverified and withholds scalar core offsets', async () => {
+test('B580 normalized STOCK read-back is shown but withholds scalar core offsets', async () => {
   const { backend, calls } = fixture({ adjustReadBack: true });
   const result = await backend.applySettings(0, {
     vfCurve: stockCanonical,
@@ -205,10 +205,10 @@ test('B580 adjusted STOCK read-back is unverified and withholds scalar core offs
     gpuVoltOffsetV: 25,
   }, { profileApply: true });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.perControl.vfCurve.ok, false);
-  assert.equal(result.perControl.vfCurve.normalized, false);
-  assert.equal(result.perControl.vfCurve.errorCode, 'driver-adjusted');
+  assert.equal(result.ok, false, 'dependent non-zero offsets remain withheld');
+  assert.equal(result.perControl.vfCurve.ok, true);
+  assert.equal(result.perControl.vfCurve.normalized, true);
+  assert.equal(result.perControl.vfCurve.readBackEqual, false);
   assert.equal(result.perControl.gpuFreqOffsetMhz.errorCode, 'dependency-failed');
   assert.equal(result.perControl.gpuVoltOffsetV.errorCode, 'dependency-failed');
   assert.deepEqual(calls, ['vf-write'], 'offset setters do not follow a non-exact STOCK restore');
@@ -262,7 +262,7 @@ test('B580 VF writes stop when the LIVE before-image cannot be verified', async 
 
   assert.equal(result.ok, false);
   assert.equal(result.perControl.vfCurve.ok, false);
-  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
+  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unverified');
   assert.deepEqual(calls, [], 'no native write is sent without a verified before-image');
 });
 

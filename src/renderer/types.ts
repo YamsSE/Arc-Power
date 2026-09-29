@@ -1294,10 +1294,14 @@ export interface RecordingSettings {
   fps: number;
   resolution: RecordingResolution;
   encoderId: string;
+  rateControl: 'CBR' | 'VBR' | 'CQP' | 'ICQ';
   bitrateKbps: number;
+  maxBitrateKbps: number;
+  rateControlQuality: number;
   captureTarget: RecordingCaptureTarget;
   captureColorMode: RecordingCaptureColorMode;
   showCursor: boolean;
+  /** Global preference shown in Settings; retained here for legacy IPC readers. */
   memorySavingMode: boolean;
   replayLengthSec: number;
   instantReplayAutoStart: boolean;

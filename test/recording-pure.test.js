@@ -82,6 +82,83 @@ test('H264 recording starts with a keyframe-safe QSV payload', () => {
   assert.equal(payload.video_settings?.video_encoder?.bframes, 0);
 });
 
+test('rate-control settings normalize legacy data and persist through RecordingStore', async () => {
+  assert.deepEqual(
+    (({ rateControl, maxBitrateKbps, rateControlQuality }) => ({ rateControl, maxBitrateKbps, rateControlQuality }))(normalizeRecordingSettings({})),
+    { rateControl: 'CBR', maxBitrateKbps: 8000, rateControlQuality: 23 },
+  );
+  assert.equal(normalizeRecordingSettings({ rateControl: 'not-a-mode' }).rateControl, 'CBR');
+  assert.equal(normalizeRecordingSettings({ bitrateKbps: 9000, maxBitrateKbps: 1000 }).maxBitrateKbps, 9000);
+  assert.equal(normalizeRecordingSettings({ bitrateKbps: 700000, maxBitrateKbps: 1000 }).maxBitrateKbps, 700000);
+  assert.equal(normalizeRecordingSettings({ bitrateKbps: 700000, maxBitrateKbps: 900000 }).maxBitrateKbps, 900000);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-recording-rate-control-'));
+  try {
+    const store = new (await import('../src/main/store/recording-store.js')).RecordingStore({ dir });
+    const saved = await store.saveSettings({ rateControl: 'VBR', bitrateKbps: 9000, maxBitrateKbps: 12000, rateControlQuality: 31 });
+    const loaded = await store.settings();
+    assert.equal(saved.rateControl, 'VBR');
+    assert.equal(loaded.rateControl, 'VBR');
+    assert.equal(loaded.bitrateKbps, 9000);
+    assert.equal(loaded.maxBitrateKbps, 12000);
+    assert.equal(loaded.rateControlQuality, 31);
+    await store.saveSettings({ encoderId: 'obs_qsv11_av1', rateControl: 'CQP', rateControlQuality: 63 });
+    assert.equal((await store.settings()).rateControlQuality, 63);
+    await store.saveSettings({ encoderId: 'obs_qsv11_v2' });
+    assert.equal((await store.settings()).rateControlQuality, 51, 'switching from AV1 CQP to H264 clamps the saved draft');
+    await store.saveSettings({ rateControl: 'ICQ' });
+    assert.equal((await store.settings()).rateControlQuality, 51, 'ICQ never preserves an AV1-only CQP value');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('QSV rate-control modes map to real encoder settings without CBR override', () => {
+  const payloadFor = (rateControl) => buildAscentStartPayload(
+    normalizeRecordingSettings({
+      encoderId: 'obs_qsv11_v2', rateControl,
+      bitrateKbps: 7000, maxBitrateKbps: 11000, rateControlQuality: 29,
+    }),
+    'C:\\Temp\\arc-power-test.mp4',
+  ).video_settings.video_encoder;
+  const cbr = payloadFor('CBR');
+  assert.equal(cbr.rate_control, 'CBR');
+  assert.equal(cbr.cbr, true);
+  assert.equal(cbr.bitrate, 7000);
+  assert.equal(cbr.max_bitrate, 7000);
+  const vbr = payloadFor('VBR');
+  assert.equal(vbr.rate_control, 'VBR');
+  assert.equal(vbr.cbr, false);
+  assert.equal(vbr.bitrate, 7000);
+  assert.equal(vbr.max_bitrate, 11000);
+  const cqp = payloadFor('CQP');
+  assert.equal(cqp.rate_control, 'CQP');
+  assert.equal(cqp.cbr, false);
+  assert.equal(cqp.cqp, 29);
+  assert.equal('bitrate' in cqp, false);
+  const icq = payloadFor('ICQ');
+  assert.equal(icq.rate_control, 'ICQ');
+  assert.equal(icq.cbr, false);
+  assert.equal(icq.icq_quality, 29);
+  assert.equal('bitrate' in icq, false);
+  const highTarget = buildAscentStartPayload(
+    normalizeRecordingSettings({ encoderId: 'obs_qsv11_v2', rateControl: 'VBR', bitrateKbps: 700000, maxBitrateKbps: 1000 }),
+    'C:\\Temp\\arc-power-test.mp4',
+  ).video_settings.video_encoder;
+  assert.equal(highTarget.bitrate, 700000);
+  assert.equal(highTarget.max_bitrate, 700000, 'normalization raises max bitrate to the target without capping the target');
+});
+
+test('Recording rate-control IPC rejects invalid modes and out-of-range quality', async () => {
+  const handlers = createIpcHandlers({ backend: { async listDevices() { return []; } }, emit() {} }).handlers;
+  await assert.rejects(handlers['recording-settings-save']({ rateControl: 'VBR2' }), /invalid rate control/);
+  await assert.rejects(handlers['recording-settings-save']({ rateControlQuality: 0 }), /quality must be an integer/);
+  await assert.rejects(handlers['recording-settings-save']({ rateControlQuality: 64 }), /quality must be an integer/);
+  await assert.rejects(handlers['recording-settings-save']({ rateControl: 'ICQ', rateControlQuality: 52 }), /ICQ quality must be an integer/);
+  const highBitrateResult = await handlers['recording-settings-save']({ bitrateKbps: 700000, maxBitrateKbps: 900000 });
+  assert.equal(highBitrateResult.settings.bitrateKbps, 700000);
+  assert.equal(highBitrateResult.settings.maxBitrateKbps, 900000);
+});
+
 test('successful replay shortcut requests idle runtime shutdown', async () => {
   let shutdowns = 0;
   let result = null;

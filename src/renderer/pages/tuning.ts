@@ -1993,10 +1993,7 @@ export const tuningPage: Page = {
         for (const [key, per] of Object.entries(result.perControl)) {
           const range = caps.ranges[key];
           if (!per.ok) {
-            // Keep the user's requested points in place when LIVE differs.
-            // Replacing the draft with read-back made every point appear to
-            // teleport after a driver normalization or an unverified write.
-            // `currentState` above still records the actual driver state.
+            // Keep the requested draft on a failed or unverified write.
             // F3 instant: refusals carry the composed actionable message;
             // hard errors keep the errorCode mapping (M17d item 0b: the
             // preference is the shared applyFailureText - the per-control
@@ -2022,9 +2019,8 @@ export const tuningPage: Page = {
             const wanted = settings[key as keyof typeof settings];
             if (typeof wanted === 'number') applied[key] = wanted;
             if (key === 'vfCurve' && Array.isArray(settings.vfCurve)) {
-              // A successful write is represented by the exact verified LIVE
-              // curve. A failed or driver-remapped write keeps the requested
-              // draft available for correction.
+              // IGCL may normalize a successful write. Show its validated
+              // LIVE result so the editor always reflects the applied curve.
               const readBackCurve = Array.isArray(per.readBackCurve)
                 ? per.readBackCurve
                 : currentState?.vfCurve;
@@ -2048,8 +2044,12 @@ export const tuningPage: Page = {
                 : '';
               toast(
                 'success',
-                `${CONTROL_LABELS[key] ?? key} applied`,
-                detail,
+                key === 'vfCurve' && per.normalized === true
+                  ? 'VF curve applied (driver adjusted)'
+                  : `${CONTROL_LABELS[key] ?? key} applied`,
+                key === 'vfCurve' && per.normalized === true
+                  ? 'The driver adjusted the requested curve. The editor now shows the LIVE curve.'
+                  : detail,
               );
             }
             setCardResult(
@@ -2057,7 +2057,9 @@ export const tuningPage: Page = {
               true,
               isNoopApply(key, settings, before as DeviceState)
                 ? 'No change'
-                : 'Applied',
+                : key === 'vfCurve' && per.normalized === true
+                  ? 'Applied (driver adjusted)'
+                  : 'Applied',
             );
             // per.ok && no-op -> silent (M2b-B): nothing changed, no toast.
           }

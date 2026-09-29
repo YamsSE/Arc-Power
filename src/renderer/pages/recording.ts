@@ -9,7 +9,7 @@ import { showRecordingClipDeleteConfirm } from '../components/recording-delete-d
 import { showRecordingShareDialog, type RecordingShareDialogHandle } from '../components/recording-share-dialog.ts';
 import { showRecordingHotkeyDialog } from '../components/recording-hotkey-dialog.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
-import { recordingBitrateRange, recordingEncoderIdIsGlobal, recordingEncoderNameForId, recordingEncoderSelectionLabel, recordingGlobalEncoderOptions, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage, recordingPhysicalSelectionForId } from '../pure/recording.ts';
+import { parseRecordingEncoderSelection, recordingBitrateRange, recordingEncoderIdIsGlobal, recordingEncoderNameForId, recordingEncoderSelectionLabel, recordingGlobalEncoderOptions, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage, recordingPhysicalSelectionForId } from '../pure/recording.ts';
 import { clampRecordingEditorRange, normalizeRecordingEditorClipName, recordingEditorResumePosition, recordingEditorSelectionFromRatios, recordingEditorSeekTargetMs, recordingEditorTimelineMsFromRatio } from '../pure/recording-editor.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
@@ -324,6 +324,12 @@ function updateRecordingApplyButton(): void {
 function stagePatch(patch: RecordingSettingsPatch, rerender = true): void {
   if (!settings) return;
   draftSettings = mergeRecordingSettings(draftSettings ?? settings, patch);
+  const codecId = parseRecordingEncoderSelection(draftSettings.encoderId)?.codec ?? draftSettings.encoderId;
+  const qualityMax = draftSettings.rateControl === 'CQP' && codecId === 'obs_qsv11_av1' ? 63 : 51;
+  draftSettings.rateControlQuality = Math.min(qualityMax, Math.max(1, draftSettings.rateControlQuality));
+  if (draftSettings.rateControl === 'VBR') {
+    draftSettings.maxBitrateKbps = Math.max(draftSettings.bitrateKbps, draftSettings.maxBitrateKbps);
+  }
   settingsDirty = JSON.stringify(draftSettings) !== JSON.stringify(settings);
   updateRecordingApplyButton();
   if (rerender) render();
@@ -337,11 +343,13 @@ function recordingSettingsPatchFrom(value: RecordingSettings): RecordingSettings
     fps: value.fps,
     resolution: value.resolution,
     encoderId: value.encoderId,
+    rateControl: value.rateControl,
     bitrateKbps: value.bitrateKbps,
+    maxBitrateKbps: value.maxBitrateKbps,
+    rateControlQuality: value.rateControlQuality,
     captureTarget: { ...value.captureTarget },
     captureColorMode: value.captureColorMode,
     showCursor: value.showCursor,
-    memorySavingMode: value.memorySavingMode,
     replayLengthSec: value.replayLengthSec,
     instantReplayAutoStart: value.instantReplayAutoStart,
     replayMarkersEnabled: value.replayMarkersEnabled,
@@ -755,6 +763,7 @@ function renderQualitySettings(): HTMLElement {
   const fps = el('div', { class: 'recording-fps-control' }, [fpsSelect, customFps]);
   const selectedResolution = working?.resolution ?? '1080p';
   const bitrateRange = recordingBitrateRange(selectedResolution);
+  const rateControl = working?.rateControl ?? 'CBR';
   const bitrate = el('input', {
     class: 'recording-number',
     type: 'number',
@@ -770,6 +779,43 @@ function renderQualitySettings(): HTMLElement {
     ?? working?.encoderId
     ?? 'automatic';
   const encoder = select(selectedEncoder, encoderOptions(selectedEncoder), 'Encoder', (value) => stagePatch({ encoderId: value }));
+  const rateControlSelect = select(rateControl, [['CBR', 'CBR'], ['VBR', 'VBR'], ['CQP', 'CQP'], ['ICQ', 'ICQ']], 'Rate control', (value) => stagePatch({ rateControl: value }));
+  const maxBitrate = el('input', {
+    class: 'recording-number', type: 'number', min: working?.bitrateKbps ?? 1, step: 'any',
+    value: working?.maxBitrateKbps ?? working?.bitrateKbps ?? bitrateRange.default,
+  }) as HTMLInputElement;
+  maxBitrate.title = 'Maximum bitrate in Kbps';
+  maxBitrate.addEventListener('input', () => {
+    const value = Number(maxBitrate.value);
+    if (Number.isFinite(value) && value > 0) {
+      const normalized = Math.max(Number(bitrate.value) || 1, value);
+      maxBitrate.value = String(normalized);
+      maxBitrate.min = String(Number(bitrate.value) || 1);
+      stagePatch({ maxBitrateKbps: normalized }, false);
+    }
+  });
+  bitrate.addEventListener('input', () => {
+    const value = Number(bitrate.value);
+    if (Number.isFinite(value) && value > 0) {
+      maxBitrate.min = String(value);
+      if (rateControl === 'VBR' && Number(maxBitrate.value) < value) {
+        maxBitrate.value = String(value);
+        stagePatch({ bitrateKbps: value, maxBitrateKbps: value }, false);
+      }
+    }
+  });
+  const selectedCodec = parseRecordingEncoderSelection(selectedEncoder)?.codec ?? selectedEncoder;
+  const qualityMax = rateControl === 'CQP' && selectedCodec === 'obs_qsv11_av1' ? 63 : 51;
+  const rateQuality = el('input', {
+    class: 'recording-number', type: 'number', min: 1, max: qualityMax, step: 1,
+    value: working?.rateControlQuality ?? 23,
+  }) as HTMLInputElement;
+  rateQuality.title = rateControl === 'CQP' ? 'Quantizer quality (lower values preserve more detail)' : 'ICQ quality from 1 to 51';
+  rateQuality.addEventListener('change', () => {
+    const value = Math.min(qualityMax, Math.max(1, Math.round(Number(rateQuality.value) || 23)));
+    rateQuality.value = String(value);
+    stagePatch({ rateControlQuality: value }, false);
+  });
   const resolution = select(selectedResolution, RESOLUTIONS, 'Resolution', (value) => stagePatch({ resolution: value }));
   return el('section', { class: 'recording-panel' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
@@ -780,12 +826,17 @@ function renderQualitySettings(): HTMLElement {
     fieldGroup('Frame rate', fps),
       field('Resolution', resolution),
       field('Encoder', encoder),
-      field('Bitrate (Kbps)', bitrate),
+      field('Rate control', rateControlSelect),
+      ...(rateControl === 'CBR' || rateControl === 'VBR' ? [field('Bitrate (Kbps)', bitrate)] : []),
+      ...(rateControl === 'VBR' ? [field('Maximum bitrate (Kbps)', maxBitrate)] : []),
+      ...(rateControl === 'CQP' || rateControl === 'ICQ' ? [field(rateControl === 'CQP' ? 'Quantizer' : 'Quality', rateQuality)] : []),
     ]),
     renderGpuEncoderInventory(),
     el('div', { class: 'recording-quality-meta' }, [
-      el('span', { class: 'recording-quality-meta-item' }, [el('span', { text: 'Bitrate Recommendation' }), el('strong', { text: bitrateRange.label })]),
-      el('span', { class: 'recording-quality-meta-item' }, [el('span', { text: 'Estimated video size' }), el('strong', { text: `≈ ${estimatedVideoSizePerMinute(Number(working?.bitrateKbps ?? bitrateRange.default))} / min` })]),
+      ...(rateControl === 'CBR' || rateControl === 'VBR' ? [
+        el('span', { class: 'recording-quality-meta-item' }, [el('span', { text: 'Bitrate Recommendation' }), el('strong', { text: bitrateRange.label })]),
+        el('span', { class: 'recording-quality-meta-item' }, [el('span', { text: 'Estimated video size' }), el('strong', { text: `≈ ${estimatedVideoSizePerMinute(Number(working?.bitrateKbps ?? bitrateRange.default))} / min` })]),
+      ] : []),
     ]),
     el('p', { class: 'recording-panel-note recording-quality-note', text: status.running
       ? 'Active capture uses the applied profile.'
@@ -806,13 +857,6 @@ function renderReplaySettings(): HTMLElement {
   replay.addEventListener('change', () => stagePatch({ replayLengthSec: Number(replay.value) }));
   const autoStart = el('input', { type: 'checkbox', class: 'settings-checkbox', checked: working?.instantReplayAutoStart === true, 'aria-label': 'Auto-start Instant Replay' }) as HTMLInputElement;
   autoStart.addEventListener('change', () => stagePatch({ instantReplayAutoStart: autoStart.checked }));
-  const memorySaving = el('input', {
-    type: 'checkbox',
-    class: 'settings-checkbox',
-    checked: working?.memorySavingMode === true,
-    'aria-label': 'Memory Saving Mode',
-  }) as HTMLInputElement;
-  memorySaving.addEventListener('change', () => stagePatch({ memorySavingMode: memorySaving.checked }));
   const toggleCard = (title: string, note: string, input: HTMLInputElement): HTMLElement => el('div', { class: 'recording-replay-toggle-card' }, [
     el('div', { class: 'recording-replay-toggle-copy' }, [el('strong', { text: title }), el('span', { class: 'recording-field-note', text: note })]),
     el('label', { class: 'recording-check-row' }, [input]),
@@ -824,7 +868,6 @@ function renderReplaySettings(): HTMLElement {
     ]),
     field('Seconds to keep available', replay, 'Saved when you press Save Instant Replay.'),
     toggleCard('Auto-start Instant Replay after launch', 'Start the rolling buffer once Arc Power finishes launching.', autoStart),
-    toggleCard('Memory Saving Mode', 'On releases the capture runtime whenever recording, replay, and clip work are idle. Off keeps it warm after it has been started.', memorySaving),
   ]);
 }
 

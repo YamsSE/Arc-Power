@@ -75,7 +75,7 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
 import { isValidNativeVfCurve, prepareVfCurveForDriver, vfCurveNeedsWrite } from '../../renderer/pure/vf-curve.ts';
-import { readStableVfCurve, readVfCurveAfterWrite } from './vf-curve-readback.js';
+import { readStableVfCurve, readVfCurveAfterWrite, readVfCurveOnce } from './vf-curve-readback.js';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
@@ -6687,7 +6687,7 @@ export class IgclBackend {
               // LIVE is the before-image for no-op detection. STOCK is only
               // the native write shape; on Battlemage the two tables can
               // legitimately differ after an active tuning change.
-              const liveBefore = await readStableVfCurve({
+              const liveBefore = await readVfCurveOnce({
                 readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
               });
               const liveCanonical = liveBefore?.ok === true
@@ -6703,8 +6703,8 @@ export class IgclBackend {
                   readBackCurve: liveBefore.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency })),
                 };
               } else if (!liveIsValid) {
-                fail('vfCurve', liveBefore?.errorCode === 'readback-unstable' ? 'readback-unstable' : 'readback-unverified', liveBefore?.errorCode === 'readback-unstable'
-                  ? liveBefore.message
+                fail('vfCurve', 'readback-unverified', liveBefore?.message
+                  ? `The current LIVE VF curve could not be verified as a valid ordered curve with the requested point count. No curve write was sent. ${liveBefore.message}`
                   : 'The current LIVE VF curve could not be verified as a valid ordered curve with the requested point count. No curve write was sent.');
               } else {
                 const preparedCurve = prepareVfCurveForDriver(curve, curveRange);
@@ -6750,11 +6750,10 @@ export class IgclBackend {
                         if (setResult !== CTL_RESULT.SUCCESS) {
                           fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
                         } else {
-                          // Submit the exact requested table, then verify the LIVE
-                          // table point-for-point. Driver range step sizes are
-                          // checked before this call, so a changed LIVE shape is
-                          // surfaced as a failed apply instead of accepted as the
-                          // requested curve.
+                          // Submit the requested table, then read LIVE once
+                          // after a bounded settle delay. IGCL may normalize a
+                          // successful write, so the validated LIVE table is
+                          // the applied result shown by the editor.
                           const v = await readVfCurveAfterWrite({
                             readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
                             requestedPoints: points,

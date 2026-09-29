@@ -1,8 +1,5 @@
-// A successful native return is not enough to claim the requested curve
-// landed exactly. Verify LIVE and distinguish an actual driver adjustment
-// from an I/O failure. The caller invokes this verifier only after the native
-// setter succeeds. Only an exact point-for-point LIVE match is verified as
-// applied; mismatches retain the requested draft and report the observed data.
+// IGCL can normalize a successful custom VF write. Verify the resulting LIVE
+// table and distinguish a valid driver normalization from a no-op or bad read.
 const DEFAULT_VF_READBACK_ATTEMPTS = 21;
 const DEFAULT_VF_READBACK_INTERVAL_MS = 100;
 const DEFAULT_VF_CONSENSUS_ATTEMPTS = 5;
@@ -56,6 +53,35 @@ export async function readStableVfCurve({
   };
 }
 
+/** Read one LIVE sample for an apply transaction. Unlike passive state reads,
+ * apply before/after images must follow IGCL's write-then-read semantics and
+ * must not be blocked by a repeated-read quorum. Semantic curve validation is
+ * performed by the caller before accepting this sample. */
+export async function readVfCurveOnce({ readCurve } = {}) {
+  if (typeof readCurve !== 'function') {
+    return { ok: false, points: [], errorCode: 'readback-unverified', message: 'LIVE VF read callback is unavailable.' };
+  }
+  try {
+    const result = await readCurve();
+    if (result?.ok === true && Array.isArray(result.points)) {
+      return { ok: true, points: result.points.map((point) => ({ ...point })) };
+    }
+    return {
+      ok: false,
+      points: [],
+      errorCode: result?.errorCode ?? 'readback-unverified',
+      message: result?.message ?? 'The driver did not return a LIVE VF curve.',
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      points: [],
+      errorCode: 'readback-unverified',
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function toCanonicalCurve(points) {
   return points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }));
 }
@@ -106,11 +132,10 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
   const requestedDiffersFromBefore = hasBeforeImage && !pointsEqual(requestedPoints, liveBefore.points);
   const liveDiffersFromBefore = hasBeforeImage && !pointsEqual(readBack.points, liveBefore.points);
   if (readBack.points.length !== requestedPoints.length) {
-    const verifiedDriverChange = requestedDiffersFromBefore && liveDiffersFromBefore;
     return {
       ok: false,
-      errorCode: verifiedDriverChange ? 'driver-adjusted' : 'readback-unverified',
-      driverAdjusted: verifiedDriverChange,
+      errorCode: 'driver-invalid-readback',
+      driverAdjusted: false,
       appliedCurve,
       message: `The driver returned ${readBack.points.length} LIVE VF points for a ${requestedPoints.length}-point request. The requested draft was kept unchanged.`,
     };
@@ -121,20 +146,14 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
   }
 
   if (requestedDiffersFromBefore && liveDiffersFromBefore) {
-    const mismatch = readBack.points.findIndex((point, index) =>
-      point.Voltage !== requestedPoints[index].Voltage
-        || point.Frequency !== requestedPoints[index].Frequency);
-    const index = Math.max(0, mismatch);
-    const requested = requestedPoints[index];
-    const actual = readBack.points[index];
     return {
-      ok: false,
+      ok: true,
       exact: false,
-      normalized: false,
+      normalized: true,
+      readBackEqual: false,
       driverAdjusted: true,
-      errorCode: 'driver-adjusted',
       appliedCurve,
-      message: `The driver returned a different LIVE VF curve after the write: point ${index + 1} is ${actual.Voltage} mV / ${actual.Frequency} MHz, while the request was ${requested.Voltage} mV / ${requested.Frequency} MHz. The apply was not verified, and your requested draft was kept unchanged.`,
+      message: 'Applied. The driver adjusted the requested VF curve; the editor now shows the LIVE curve.',
     };
   }
   if (hasBeforeImage && liveDiffersFromBefore) {
@@ -172,9 +191,8 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
 }
 
 /**
- * Verify a VF write while allowing the driver's LIVE table to settle. Poll
- * only with read-only calls until an exact match appears or the bounded
- * settle window expires. A native write is never replayed here.
+ * Verify a VF write using one validated LIVE read after a bounded settle
+ * delay. A native write is never replayed here.
  */
 export async function readVfCurveAfterWrite({
   readCurve,
@@ -193,34 +211,12 @@ export async function readVfCurveAfterWrite({
       curveRange,
     });
   }
-  const attempts = Number.isInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : 1;
-  const intervalMs = Number.isFinite(pollIntervalMs) && pollIntervalMs >= 0 ? pollIntervalMs : 0;
-  let validation = null;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const readBack = await readStableVfCurve({
-      readCurve,
-      maxAttempts: DEFAULT_VF_CONSENSUS_ATTEMPTS,
-      quorum: DEFAULT_VF_CONSENSUS_QUORUM,
-      // Keep each quorum batch immediate; the outer loop owns the bounded
-      // settle cadence so five-sample verification retains its two-second cap.
-      pollIntervalMs: 0,
-      wait,
-    });
-    validation = validateVfCurveReadback({
-      readBack,
-      requestedPoints,
-      liveBefore,
-      curveRange,
-    });
-    const exactMatch = validation.ok === true && validation.exact === true;
-    // A quorum miss means LIVE is still transient. Keep sampling within the
-    // bounded settle window, but never replay the native setter. A stable,
-    // semantically invalid table is terminal because another identical
-    // quorum cannot make that observed table valid.
-    const mayStillSettle = validation.errorCode === 'readback-unstable'
-      || (readBack?.ok === true && validation.errorCode !== 'driver-invalid-readback');
-    if (exactMatch || !mayStillSettle || attempt === attempts - 1) return validation;
-    await wait(intervalMs);
-  }
-  return validation;
+  const requestedDelayMs = Number.isFinite(pollIntervalMs) && pollIntervalMs >= 0 ? pollIntervalMs : 0;
+  const intervalMs = Math.min(requestedDelayMs, 1000);
+  // Keep a bounded single settle delay. maxAttempts remains accepted for
+  // compatibility with existing callers, but no longer triggers read loops.
+  void maxAttempts;
+  if (intervalMs > 0) await wait(intervalMs);
+  const readBack = await readVfCurveOnce({ readCurve });
+  return validateVfCurveReadback({ readBack, requestedPoints, liveBefore, curveRange });
 }

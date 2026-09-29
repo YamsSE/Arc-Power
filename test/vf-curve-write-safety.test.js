@@ -121,10 +121,9 @@ function sequenceLiveReads(backend, samples) {
   };
 }
 
-test('a single transient LIVE voltage shift does not teleport the editor or trigger a write', async () => {
+test('a valid one-shot LIVE before-image is sufficient for the no-op check', async () => {
   const { backend, writes } = fixture();
-  const shifted = liveDefault.map((point) => ({ ...point, Voltage: point.Voltage + 75 }));
-  sequenceLiveReads(backend, [shifted, liveDefault, liveDefault, liveDefault, liveDefault]);
+  sequenceLiveReads(backend, [liveDefault]);
   const result = await backend.applySettings(0, { vfCurve: canonical(liveDefault) });
 
   assert.equal(result.ok, true);
@@ -133,18 +132,18 @@ test('a single transient LIVE voltage shift does not teleport the editor or trig
   assert.deepEqual(writes, []);
 });
 
-test('an unstable LIVE before-image refuses the curve write', async () => {
-  const { backend, writes } = fixture();
-  const unstable = Array.from({ length: 5 }, (_, sample) => liveDefault.map((point) => ({
-    ...point,
-    Voltage: point.Voltage + sample,
-  })));
-  sequenceLiveReads(backend, unstable);
+test('an invalid LIVE before-image refuses the curve write without a quorum error', async () => {
+  const malformed = [
+    { Voltage: 700, Frequency: 1100 },
+    { Voltage: 900, Frequency: 2100 },
+    { Voltage: 800, Frequency: 2600 },
+  ];
+  const { backend, writes } = fixture({ live: malformed });
   const result = await backend.applySettings(0, { vfCurve: canonical(stock) });
 
   assert.equal(result.ok, false);
-  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
-  assert.match(result.perControl.vfCurve.message, /stable 3-of-5 read quorum/);
+  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unverified');
+  assert.doesNotMatch(result.perControl.vfCurve.message, /read quorum/);
   assert.deepEqual(writes, []);
 });
 
@@ -272,7 +271,7 @@ test('B580 STOCK profile submits and verifies the exact driver STOCK table', asy
   assert.deepEqual(canonical(live), stockCanonical);
 });
 
-test('B580 refuses to report a driver-remapped curve as an exact apply', async () => {
+test('B580 reports a valid driver-remapped curve as normalized success', async () => {
   const requested = [
     { voltageV: 0.75, freqMhz: 1500 },
     { voltageV: 0.85, freqMhz: 2200 },
@@ -287,10 +286,15 @@ test('B580 refuses to report a driver-remapped curve as an exact apply', async (
   });
   const result = await backend.applySettings(0, { vfCurve: requested });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.perControl.vfCurve.errorCode, 'driver-adjusted');
+  assert.equal(result.ok, true);
+  assert.equal(result.perControl.vfCurve.errorCode, undefined);
   assert.equal(result.perControl.vfCurve.readBackEqual, false);
-  assert.equal(result.perControl.vfCurve.normalized, false);
+  assert.equal(result.perControl.vfCurve.normalized, true);
+  assert.equal(result.perControl.vfCurve.ok, true);
+  assert.deepEqual(result.perControl.vfCurve.readBackCurve, requested.map((point) => ({
+    voltageV: point.voltageV + 0.001,
+    freqMhz: point.freqMhz + 10,
+  })));
   assert.deepEqual(writes, ['vf']);
 });
 

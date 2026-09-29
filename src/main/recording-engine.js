@@ -469,14 +469,16 @@ export function buildAscentStartPayload(settings, outputPath, recorderType = ASC
         // default while retaining the user-controlled CBR bitrate.
         preset: 'quality',
         target_usage: 'quality',
-        rate_control: 'CBR',
-        // Older bundled Ascent builds read this legacy flag when selecting
-        // their rate-control path. Keep it alongside the explicit modern
-        // value so every included runtime stays on quality CBR instead of
-        // silently falling back to its default quality mode.
-        cbr: true,
-        bitrate: settings.bitrateKbps,
-        max_bitrate: settings.bitrateKbps,
+        rate_control: settings.rateControl,
+        // Legacy Ascent builds honor `cbr` ahead of rate_control. Keep it
+        // aligned with the selected mode so it cannot override VBR/quality.
+        cbr: settings.rateControl === 'CBR',
+        ...(settings.rateControl === 'CBR' || settings.rateControl === 'VBR' ? {
+          bitrate: settings.bitrateKbps,
+          max_bitrate: settings.rateControl === 'CBR' ? settings.bitrateKbps : settings.maxBitrateKbps,
+        } : {}),
+        ...(settings.rateControl === 'CQP' ? { cqp: Math.min(settings.rateControlQuality, runtimeEncoderId.includes('av1') ? 63 : 51) } : {}),
+        ...(settings.rateControl === 'ICQ' ? { icq_quality: Math.min(settings.rateControlQuality, 51) } : {}),
         profile: encoderProfileOf(runtimeEncoderId),
         // H.264 QSV output must begin with an immediately decodable GOP. The
         // bundled runtime can otherwise emit a short B-frame lead-in before

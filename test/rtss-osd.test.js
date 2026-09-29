@@ -155,6 +155,42 @@ test('formatter respects legacy text mode without leaking format tags', () => {
   assert.doesNotMatch(text, /<[^>]+>/);
 });
 
+test('CPU chip label follows the opt-in setting and falls back when the name is absent', () => {
+  const args = { telemetry: { cpuUtilPct: 42 }, cpuName: 'Intel(R) Core(TM) i7-14700K CPU @ 3.40GHz', settings: { stats: ['cpu-util'], overlayChipNames: true } };
+  assert.match(visibleText(buildRtssTelemetryText(args)), /i7 14700K 42%/);
+  assert.match(visibleText(buildRtssTelemetryText({ ...args, settings: { ...args.settings, overlayChipNames: false } })), /CPU 42%/);
+  assert.match(visibleText(buildRtssTelemetryText({ ...args, cpuName: null })), /CPU 42%/);
+});
+
+test('publisher samples the CPU name only when chip labels are enabled', async () => {
+  const name = 'Intel(R) Core(TM) i7-14700K CPU @ 3.40GHz';
+  const enabledFixture = makeMap(0x2000E, '', 0, 4608);
+  let enabledNameReads = 0;
+  const enabled = createRtssOsdPublisher({
+    open: () => 1,
+    map: () => enabledFixture.map,
+    getCpuName: async () => { enabledNameReads += 1; return name; },
+  });
+  enabled.updateSettings({ enabled: true, overlayChipNames: true, stats: ['cpu-util'] });
+  assert.equal(await enabled.publish({ telemetry: { cpuUtilPct: 42 } }), true);
+  const enabledText = enabledFixture.map.toString('ascii', enabledFixture.offset + enabledFixture.entrySize + 512, enabledFixture.offset + enabledFixture.entrySize + 4096).replaceAll('\0', '');
+  assert.match(visibleText(enabledText), /i7 14700K 42%/);
+  assert.equal(enabledNameReads, 1);
+
+  const disabledFixture = makeMap(0x2000E, '', 0, 4608);
+  let disabledNameReads = 0;
+  const disabled = createRtssOsdPublisher({
+    open: () => 1,
+    map: () => disabledFixture.map,
+    getCpuName: async () => { disabledNameReads += 1; return name; },
+  });
+  disabled.updateSettings({ enabled: true, overlayChipNames: false, stats: ['cpu-util'] });
+  assert.equal(disabled.publish({ telemetry: { cpuUtilPct: 42 } }), true);
+  const disabledText = disabledFixture.map.toString('ascii', disabledFixture.offset + disabledFixture.entrySize + 512, disabledFixture.offset + disabledFixture.entrySize + 4096).replaceAll('\0', '');
+  assert.match(visibleText(disabledText), /CPU 42%/);
+  assert.equal(disabledNameReads, 0);
+});
+
 test('formatter uses compact units and the shared temperature unit with ANSI degree bytes', () => {
   const args = {
     telemetry: {

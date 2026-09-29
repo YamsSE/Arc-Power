@@ -63,6 +63,26 @@ function temperatureText(value, settings) {
 }
 const has = (value, key) => Object.prototype.hasOwnProperty.call(value ?? {}, key);
 
+// Keep RTSS CPU labels aligned with the overlay's chipLabelCpu cut-down.
+function chipLabelCpu(name) {
+  const source = typeof name === 'string' ? name.trim() : '';
+  if (!source) return null;
+  const ryzen = source.match(/\bRyzen\s+([3579])\s+(\S+)/i);
+  if (ryzen) return `R${ryzen[1]} ${ryzen[2]}`;
+  const threadripper = source.match(/\bRyzen\s+Threadripper\b/i);
+  if (threadripper) {
+    const model = source.slice(threadripper.index + threadripper[0].length).split(/[^A-Za-z0-9]+/).filter(Boolean).join(' ');
+    return model ? `TR ${model}` : 'TR';
+  }
+  const xeon = /\bXeon\b/i.test(source) ? source.replace(/\bE5-([A-Za-z0-9]+)\b/i, '$1') : source;
+  const kept = xeon.split(/\s+/)
+    .filter((token) => !/^\d+(?:\.\d+)?(?:ghz|mhz|khz)$/i.test(token))
+    .join(' ').split(/[^A-Za-z0-9]+/).filter(Boolean)
+    .filter((token) => !new Set(['intel', 'amd', 'core', 'r', 'tm', 'cpu']).has(token.toLowerCase()));
+  while (kept.length && new Set(['eight', 'quad', 'dual', 'six', 'twelve', 'core', 'processor']).has(kept.at(-1).toLowerCase())) kept.pop();
+  return kept.length ? kept.join(' ') : null;
+}
+
 // RTSS consumes ANSI hypertext. Keep line breaks/tabs, drop all other control
 // and non-ASCII characters, and never allow a user-provided value to become a
 // format tag. Format tags emitted by this module are added after escaping.
@@ -362,6 +382,7 @@ export function encodeRtssGraphObject({ values = [], width = -32, height = -5, m
  */
 export function buildRtssTelemetryText({
   telemetry = {},
+  cpuName = null,
   fps = {},
   settings = {},
   graphObjectTagsSupported = false,
@@ -387,7 +408,8 @@ export function buildRtssTelemetryText({
   if (statEnabled(stats, 'cpu-clock')) cpuFields.push(`${numberText(finite(telemetry.cpuFreqMhz) ? telemetry.cpuFreqMhz / 1000 : null, 1)}GHz`);
   if (statEnabled(stats, 'cpu-temp')) cpuFields.push(temperatureText(telemetry.cpuTempC ?? telemetry.cpuTemperatureC, settings));
   if (statEnabled(stats, 'cpu-power')) cpuFields.push(`${numberText(telemetry.cpuPowerW, 1)}W`);
-  addRow(coloredRow('CPU', cpuFields, rowSettings));
+  const cpuLabel = settings?.overlayChipNames === true ? chipLabelCpu(cpuName) : null;
+  addRow(coloredRow(cpuLabel ?? 'CPU', cpuFields, rowSettings));
 
   if (statEnabled(stats, 'memory-util')) {
     const ramBytes = finite(telemetry.memoryUsedBytes)
@@ -569,6 +591,7 @@ function sampleTime(sample) {
 export function createRtssOsdPublisher(deps = {}) {
   const now = deps.now ?? (() => Date.now());
   const getFpsSample = typeof deps.getFpsSample === 'function' ? deps.getFpsSample : null;
+  const getCpuName = typeof deps.getCpuName === 'function' ? deps.getCpuName : null;
   const bindings = deps.open && deps.map ? deps : defaultBindings();
   let handle = null;
   let view = null;
@@ -900,6 +923,7 @@ export function createRtssOsdPublisher(deps = {}) {
         ? payload
         : payload.text ?? buildRtssTelemetryText({
             telemetry,
+            cpuName: payload.cpuName,
             fps: fps ?? {},
             settings,
             formatTagsSupported: version >= RTSS_OSD_FORMAT_VERSION,
@@ -929,14 +953,20 @@ export function createRtssOsdPublisher(deps = {}) {
 
   const publish = (payload = {}) => {
     if (stopped) return false;
-    const needsSample = typeof payload !== 'string' && payload.fps === undefined && getFpsSample;
+    const needsFps = typeof payload !== 'string' && payload.fps === undefined && getFpsSample;
+    const needsCpuName = typeof payload !== 'string' && settings.overlayChipNames === true && getCpuName;
+    const needsSample = needsFps || needsCpuName;
     const task = async () => {
       let fps = payload?.fps;
-      if (needsSample) {
+      let cpuName = payload?.cpuName;
+      if (needsFps) {
         try { fps = await getFpsSample(); } catch { fps = null; }
       }
+      if (needsCpuName && !cpuName) {
+        try { cpuName = await getCpuName(); } catch { cpuName = null; }
+      }
       if (stopped) return false;
-      return publishNow(payload, fps);
+      return publishNow(cpuName ? { ...payload, cpuName } : payload, fps);
     };
     if (!needsSample && !writeTail) return publishNow(payload, payload?.fps);
     const prior = writeTail ?? Promise.resolve();
