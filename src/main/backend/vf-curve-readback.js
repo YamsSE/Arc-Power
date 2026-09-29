@@ -3,10 +3,10 @@
 // is a normalized success only when the before-image proves the write changed
 // the active curve. Always return a valid read-back so the editor can show
 // what the driver currently has, even when the apply cannot be verified.
-// Bound success to the largest per-point change in the captured B580 LIVE
-// trace. Do not accept an arbitrary valid-but-different curve as normalized.
-const B580_NORMALIZED_VOLTAGE_DELTA_MV = 10;
-const B580_NORMALIZED_FREQUENCY_DELTA_MHZ = 90;
+// The caller invokes this verifier only after the native setter succeeds.
+// Battlemage may normalize the requested curve according to driver policy, so
+// verify that LIVE is valid and changed from the before-image instead of
+// imposing a tolerance inferred from a single captured trace.
 const DEFAULT_VF_READBACK_ATTEMPTS = 21;
 const DEFAULT_VF_READBACK_INTERVAL_MS = 100;
 
@@ -55,11 +55,7 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
   const changedRequestedCurve = liveBefore?.ok === true && !pointsEqual(requestedPoints, liveBefore.points);
   const changedLiveCurve = liveBefore?.ok === true && !pointsEqual(readBack.points, liveBefore.points);
   if (liveBefore?.ok === true && changedRequestedCurve && changedLiveCurve) {
-    const withinObservedB580Envelope = allowDriverNormalization === true
-      && readBack.points.every((point, index) =>
-        Math.abs(point.Voltage - requestedPoints[index].Voltage) <= B580_NORMALIZED_VOLTAGE_DELTA_MV
-        && Math.abs(point.Frequency - requestedPoints[index].Frequency) <= B580_NORMALIZED_FREQUENCY_DELTA_MHZ);
-    if (withinObservedB580Envelope) {
+    if (allowDriverNormalization === true) {
       return {
         ok: true,
         exact: false,
@@ -69,7 +65,6 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
         message: 'The driver applied a normalized VF curve. The editor now shows the active LIVE curve.',
       };
     }
-    const envelopeLabel = allowDriverNormalization === true ? 'the observed B580 normalization envelope' : 'the supported normalization policy';
     return {
       ok: false,
       exact: false,
@@ -77,7 +72,7 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
       driverAdjusted: true,
       errorCode: 'driver-adjustment-out-of-range',
       appliedCurve,
-      message: `The driver returned a VF curve outside ${envelopeLabel}. The editor now shows the active LIVE curve, but this apply was not accepted.`,
+      message: 'The driver returned a different LIVE VF curve that does not match the supported normalization policy. The editor now shows the active curve, but this apply was not accepted.',
     };
   }
   if (liveBefore?.ok === true && changedLiveCurve) {

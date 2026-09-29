@@ -51,24 +51,28 @@ test('unchanged LIVE data remains a failure and is returned for the editor after
   assert.match(out.message, /No change was observed/);
 });
 
-test('a changed curve outside the observed B580 envelope is not applied but remains visible', () => {
-  const changed = observedByB580.map((point) => ({ ...point }));
-  changed[0].Frequency += 1;
-  const mismatch = validateVfCurveReadback({
-    readBack: { ok: true, points: changed },
+test('B580 valid LIVE normalization just outside the captured tolerance is accepted as active', () => {
+  const normalizedLive = observedByB580.map((point) => ({ ...point }));
+  normalizedLive[0].Frequency += 1;
+  const normalized = validateVfCurveReadback({
+    readBack: { ok: true, points: normalizedLive },
     requestedPoints: requested,
     liveBefore: { ok: true, points: before },
     curveRange,
     allowDriverNormalization: true,
   });
-  assert.equal(mismatch.ok, false);
-  assert.equal(mismatch.driverAdjusted, true);
-  assert.equal(mismatch.normalized, false);
-  assert.equal(mismatch.errorCode, 'driver-adjustment-out-of-range');
-  assert.deepEqual(mismatch.appliedCurve[0], { voltageV: 0.58, freqMhz: 1641 });
-  assert.match(mismatch.message, /outside the observed B580 normalization envelope/);
+  assert.equal(normalized.ok, true);
+  assert.equal(normalized.exact, false);
+  assert.equal(normalized.driverAdjusted, true);
+  assert.equal(normalized.normalized, true);
+  assert.equal(normalized.errorCode, undefined);
+  assert.deepEqual(normalized.appliedCurve, normalizedLive.map((point) => ({
+    voltageV: point.Voltage / 1000,
+    freqMhz: point.Frequency,
+  })));
+  assert.match(normalized.message, /applied a normalized VF curve/);
 
-  const malformed = observedByB580.map((point) => ({ ...point }));
+  const malformed = normalizedLive.map((point) => ({ ...point }));
   malformed[4].Voltage = malformed[3].Voltage;
   const invalidOut = validateVfCurveReadback({
     readBack: { ok: true, points: malformed },
