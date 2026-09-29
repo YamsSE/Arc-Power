@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateVfCurveReadback } from '../src/main/backend/vf-curve-readback.js';
+import { readVfCurveAfterWrite, validateVfCurveReadback } from '../src/main/backend/vf-curve-readback.js';
 
 const curveRange = { voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 0, freqMaxMhz: 4300 };
 const before = [
@@ -43,9 +43,12 @@ test('unchanged LIVE data remains a failure and is returned for the editor after
 
   assert.equal(out.ok, false);
   assert.equal(out.silentNoop, true);
-  assert.equal(out.driverAdjusted, true);
+  assert.equal(out.driverAdjusted, false);
+  assert.equal(out.errorCode, 'driver-noop');
   assert.deepEqual(out.appliedCurve[0], { voltageV: 0.57, freqMhz: 1550 });
-  assert.match(out.message, /LIVE curve did not change/);
+  assert.match(out.message, /LIVE curve remained unchanged during verification/);
+  assert.match(out.message, /Point 10 requested 1020 mV \/ 3210 MHz; LIVE remains 1020 mV \/ 3230 MHz/);
+  assert.match(out.message, /No change was observed/);
 });
 
 test('a changed curve outside the observed B580 envelope is not applied but remains visible', () => {
@@ -119,4 +122,71 @@ test('a one-unit change is not misreported as an exact read-back', () => {
   assert.equal(out.ok, true);
   assert.equal(out.exact, false);
   assert.equal(out.normalized, true);
+});
+
+test('VF verification polls unchanged before-image data until the LIVE curve changes', async () => {
+  const landed = requested.map((point) => ({ ...point }));
+  let reads = 0;
+  const waits = [];
+  const out = await readVfCurveAfterWrite({
+    readCurve: async () => {
+      reads += 1;
+      return { ok: true, points: reads < 3 ? before : landed };
+    },
+    requestedPoints: requested,
+    liveBefore: { ok: true, points: before },
+    curveRange,
+    maxAttempts: 5,
+    pollIntervalMs: 100,
+    wait: async (ms) => waits.push(ms),
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.exact, true);
+  assert.equal(reads, 3);
+  assert.deepEqual(waits, [100, 100]);
+});
+
+test('VF verification stops polling on a driver no-op and never repeats a write', async () => {
+  let reads = 0;
+  const waits = [];
+  const out = await readVfCurveAfterWrite({
+    readCurve: async () => {
+      reads += 1;
+      return { ok: true, points: before };
+    },
+    requestedPoints: requested,
+    liveBefore: { ok: true, points: before },
+    curveRange,
+    maxAttempts: 4,
+    pollIntervalMs: 50,
+    wait: async (ms) => waits.push(ms),
+  });
+
+  assert.equal(out.ok, false);
+  assert.equal(out.errorCode, 'driver-noop');
+  assert.equal(out.silentNoop, true);
+  assert.equal(reads, 4);
+  assert.deepEqual(waits, [50, 50, 50]);
+});
+
+test('default VF verification allows a bounded two-second LIVE settle window', async () => {
+  let reads = 0;
+  const waits = [];
+  const out = await readVfCurveAfterWrite({
+    readCurve: async () => {
+      reads += 1;
+      return { ok: true, points: before };
+    },
+    requestedPoints: requested,
+    liveBefore: { ok: true, points: before },
+    curveRange,
+    wait: async (ms) => waits.push(ms),
+  });
+
+  assert.equal(out.errorCode, 'driver-noop');
+  assert.equal(reads, 21);
+  assert.equal(waits.length, 20);
+  assert.deepEqual(new Set(waits), new Set([100]));
+  assert.equal(waits.reduce((sum, ms) => sum + ms, 0), 2000);
 });

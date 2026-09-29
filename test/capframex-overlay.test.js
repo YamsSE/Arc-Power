@@ -67,6 +67,13 @@ test('CapFrameX-style renderer honors the shared chip-name label toggle', () => 
   assert.match(overlaySrc, /cpuName\.textContent = chipNamesEnabled[\s\S]*cpuChipLabel/);
 });
 
+test('Arc Power overlay text is bold and outlined while values stay inside their columns', () => {
+  assert.match(overlayCss, /#capframex-root,\s*#capframex-root \*:not\(canvas\)\s*\{[^}]*font-weight:\s*700/);
+  assert.match(overlayCss, /-webkit-text-stroke:\s*1px rgba\(0, 0, 0, 0\.95\)/);
+  assert.match(overlayCss, /\.capframex-row > span:not\(\.capframex-label\)[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis/);
+  assert.match(overlayCss, /\.capframex-label \{[^}]*text-overflow:\s*ellipsis/);
+});
+
 test('CapFrameX groups GPU clocks, power readings, and VRAM readings with their matching rows', () => {
   assert.match(overlaySrc, /gpuLoad\.push\(capValue\(sample\?\.gpuClockMhz/);
   assert.match(overlaySrc, /powerValues\.push\(capValue\(sample\?\.gpuVoltageV/);
@@ -76,13 +83,24 @@ test('CapFrameX groups GPU clocks, power readings, and VRAM readings with their 
   assert.match(overlaySrc, /capRow\(section, 'VRAM', vramValues\)/);
 });
 
-test('Overlay shortcut uses the Recording modifier and key capture grammar', () => {
-  assert.match(settingsSrc, /recordingAcceleratorFromKeyboardEvent\(ev\)/);
-  assert.match(settingsSrc, /ev\.ctrlKey \|\| ev\.altKey \|\| ev\.shiftKey/);
-  assert.match(settingsSrc, /settings-advanced-hotkey-input[\s\S]*recordingAcceleratorFromKeyboardEvent\(ev\)/);
+test('Overlay shortcuts use the Recording modal picker and show complete accelerators', () => {
+  assert.match(settingsSrc, /import \{ showRecordingHotkeyDialog \} from '\.\.\/components\/recording-hotkey-dialog\.ts'/);
+  assert.match(settingsSrc, /showRecordingHotkeyDialog\('HUD overlay',[\s\S]*onHotkeyLetterChange\(next\)/);
+  assert.match(settingsSrc, /showRecordingHotkeyDialog\('Advanced overlay',[\s\S]*onAdvancedHotkeyLetterChange\(next\)/);
+  assert.equal((settingsSrc.match(/requireModifier: true/g) ?? []).length, 2);
+  assert.match(settingsSrc, /class: 'recording-hotkey settings-hotkey-input'/);
+  assert.match(settingsSrc, /class: 'recording-hotkey settings-hotkey-input settings-advanced-hotkey-input'/);
+  assert.match(settingsSrc, /text: displayOverlayHotkey\(persisted\.hotkeyLetter\)/);
+  assert.match(settingsSrc, /text: displayOverlayHotkey\(persisted\.advHotkeyLetter\)/);
+  assert.doesNotMatch(settingsSrc, /recordingAcceleratorFromKeyboardEvent/);
+  assert.doesNotMatch(settingsSrc, /overlay-hotkey-fixed|text: 'CTRL \+'/);
   assert.match(settingsSrc, /profilesSettingsSave\(\{ overlayHotkeyLetter: v \}\)/);
   assert.match(settingsSrc, /profilesSettingsSave\(\{ advancedOverlayHotkeyLetter: v \}\)/);
-  assert.match(settingsSrc, /Press a modifier and key combination/);
+  const dialogSrc = read('src/renderer/components/recording-hotkey-dialog.ts');
+  assert.match(dialogSrc, /recordingAcceleratorFromKeyboardEvent\(event\)/);
+  assert.match(dialogSrc, /Ctrl, Alt, and Shift can be combined/);
+  assert.match(dialogSrc, /options\.requireModifier && !\(event\.ctrlKey \|\| event\.altKey \|\| event\.shiftKey\)/);
+  assert.match(dialogSrc, /Add Ctrl, Alt, or Shift to the key/);
 });
 
 test('overlay shortcut chords canonicalize and legacy hotkeys collide by registered accelerator', () => {

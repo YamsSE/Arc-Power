@@ -75,7 +75,7 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
 import { isLegacyBakedB580VfCurve, isLegacyStockVfCurve, prepareVfCurveForDriver, rebaseB580VfCurveToNativeGrid } from '../../renderer/pure/vf-curve.ts';
-import { validateVfCurveReadback } from './vf-curve-readback.js';
+import { readVfCurveAfterWrite } from './vf-curve-readback.js';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
@@ -150,11 +150,11 @@ const VF_READ_RETRY_SETTLE_MS = 25;
 // A successful B-series custom-curve write can become visible in LIVE only
 // after the KMD's asynchronous table update completes. Keep this poll small
 // and explicit: it is entered only when LIVE is still exactly the before
-// image, and a changed mismatch remains a refusal. Five reads give the first
-// apply a 200 ms settle window without turning a real read-back failure into
-// success.
-const VF_READBACK_MAX_ATTEMPTS = 5;
-const VF_READBACK_SETTLE_MS = 50;
+// image, and a changed mismatch remains a refusal. Twenty-one reads at
+// 100 ms intervals give the first apply up to 2 seconds for LIVE to settle,
+// without turning a real read-back failure into success.
+const VF_READBACK_MAX_ATTEMPTS = 21;
+const VF_READBACK_SETTLE_MS = 100;
 function isPowerTelemetryV2CompatibilityError(result) {
   return POWER_TELEMETRY_V2_COMPATIBILITY_ERRORS.has(result);
 }
@@ -6603,25 +6603,15 @@ export class IgclBackend {
                   // write. Intel documents that the applied LIVE curve can
                   // differ from the request; accept that only after a valid
                   // changed read-back and return the actual curve to the UI.
-                  let v;
-                  for (let readAttempt = 0; readAttempt < VF_READBACK_MAX_ATTEMPTS; readAttempt += 1) {
-                    const readBack = await this._readVfCurvePointsWithRetry(dev.handle, 1, 0);
-                    v = validateVfCurveReadback({
-                      readBack,
-                      requestedPoints: points,
-                      liveBefore,
-                      curveRange,
-                      allowDriverNormalization: isBattlemageGpuName(caps.deviceName, caps),
-                    });
-                    if (v.ok || readAttempt === VF_READBACK_MAX_ATTEMPTS - 1
-                      || !readBack.ok || !liveBefore.ok
-                      || !pointsEqual(readBack.points, liveBefore.points)) break;
-                    // Some B-series driver builds return SUCCESS before their
-                    // asynchronous LIVE table update is visible. Retry only
-                    // that unchanged-before-image case; invalid read-backs
-                    // remain real verification failures.
-                    await new Promise((resolve) => setTimeout(resolve, VF_READBACK_SETTLE_MS));
-                  }
+                  const v = await readVfCurveAfterWrite({
+                    readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+                    requestedPoints: points,
+                    liveBefore,
+                    curveRange,
+                    allowDriverNormalization: isBattlemageGpuName(caps.deviceName, caps),
+                    maxAttempts: VF_READBACK_MAX_ATTEMPTS,
+                    pollIntervalMs: VF_READBACK_SETTLE_MS,
+                  });
                   result.perControl.vfCurve = {
                     ok: v.ok,
                     readBackEqual: v.exact === true,

@@ -7,6 +7,8 @@
 // trace. Do not accept an arbitrary valid-but-different curve as normalized.
 const B580_NORMALIZED_VOLTAGE_DELTA_MV = 10;
 const B580_NORMALIZED_FREQUENCY_DELTA_MHZ = 90;
+const DEFAULT_VF_READBACK_ATTEMPTS = 21;
+const DEFAULT_VF_READBACK_INTERVAL_MS = 100;
 
 function pointsEqual(left, right) {
   return Array.isArray(left) && Array.isArray(right)
@@ -96,7 +98,7 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
   const index = mismatch < 0 ? 0 : mismatch;
   const silentNoop = liveBefore?.ok === true && changedRequestedCurve && !changedLiveCurve;
   const message = silentNoop
-    ? 'The driver acknowledged the VF write but the LIVE curve did not change.'
+    ? `IGCL reported success, but the LIVE curve remained unchanged during verification. Point ${index + 1} requested ${requestedPoints[index].Voltage} mV / ${requestedPoints[index].Frequency} MHz; LIVE remains ${readBack.points[index].Voltage} mV / ${readBack.points[index].Frequency} MHz. No change was observed.`
     : liveBefore?.ok !== true
       ? 'The driver returned a different LIVE VF curve, but the before-image could not be verified. The editor now shows the active curve.'
         : !changedRequestedCurve
@@ -106,10 +108,57 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
     ok: false,
     exact: false,
     normalized: false,
-    driverAdjusted: true,
+    driverAdjusted: !silentNoop,
     silentNoop,
-    errorCode: 'io-failed',
+    errorCode: silentNoop ? 'driver-noop' : 'io-failed',
     appliedCurve,
     message,
   };
+}
+
+/**
+ * Verify a VF write while allowing the driver's LIVE table to settle. This
+ * retries read-only LIVE reads only when the requested curve differs from the
+ * before-image and the driver still returns that exact before-image. The
+ * native write is never replayed here.
+ */
+export async function readVfCurveAfterWrite({
+  readCurve,
+  requestedPoints,
+  liveBefore,
+  curveRange,
+  allowDriverNormalization = false,
+  maxAttempts = DEFAULT_VF_READBACK_ATTEMPTS,
+  pollIntervalMs = DEFAULT_VF_READBACK_INTERVAL_MS,
+  wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  if (typeof readCurve !== 'function') {
+    return validateVfCurveReadback({
+      readBack: { ok: false, message: 'LIVE VF read callback is unavailable' },
+      requestedPoints,
+      liveBefore,
+      curveRange,
+      allowDriverNormalization,
+    });
+  }
+  const attempts = Number.isInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : 1;
+  const intervalMs = Number.isFinite(pollIntervalMs) && pollIntervalMs >= 0 ? pollIntervalMs : 0;
+  let validation = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const readBack = await readCurve();
+    validation = validateVfCurveReadback({
+      readBack,
+      requestedPoints,
+      liveBefore,
+      curveRange,
+      allowDriverNormalization,
+    });
+    const awaitingLiveUpdate = readBack?.ok === true
+      && liveBefore?.ok === true
+      && !pointsEqual(requestedPoints, liveBefore.points)
+      && pointsEqual(readBack.points, liveBefore.points);
+    if (validation.ok || !awaitingLiveUpdate || attempt === attempts - 1) return validation;
+    await wait(intervalMs);
+  }
+  return validation;
 }

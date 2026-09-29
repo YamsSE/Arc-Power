@@ -21,6 +21,27 @@ test('VF curve refusals preserve the driver diagnostic for the tuning UI', async
   assert.equal(out.result.perControl.vfCurve.message, diagnostic);
 });
 
+test('a successful native VF no-op remains a distinct, unapplied result', async () => {
+  const diagnostic = 'IGCL reported success, but the LIVE curve remained unchanged during verification. No change was observed.';
+  const backend = {
+    async applySettings() {
+      return {
+        ok: false,
+        perControl: {
+          vfCurve: { ok: false, errorCode: 'driver-noop', silentNoop: true, message: diagnostic },
+        },
+      };
+    },
+  };
+
+  const out = await applyOnce({ backend, deviceId: 0, settings: { vfCurve: [] } });
+  assert.equal(out.result.ok, false);
+  assert.equal(out.result.perControl.vfCurve.ok, false);
+  assert.equal(out.result.perControl.vfCurve.errorCode, 'driver-noop');
+  assert.equal(out.result.perControl.vfCurve.message, diagnostic);
+  assert.equal(classifyOutcome(out.result.perControl.vfCurve), 'hard');
+});
+
 test('other control refusals keep the established generic wording', async () => {
   const backend = {
     async applySettings() {

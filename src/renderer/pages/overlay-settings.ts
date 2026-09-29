@@ -15,8 +15,7 @@
 //     + the SIZE slider (the existing overlayScale) + M9 the POSITION
 //     select (the standalone Position card is REMOVED - the corner lives
 //     in the Appearance card);
-//   - Hotkey - the letter input (CTRL + fixed - the letter is the only
-//     changeable part) + the register-failure note + the get-state re-query
+//   - Hotkey - the accelerator picker + the register-failure note + the get-state re-query
 //     on every render (the Settings-card pattern - the honest note never
 //     goes stale);
 //   - the honest notes at the bottom (topmost/MPO + the FPS/frametime data
@@ -34,7 +33,7 @@ import type { PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
-import { recordingAcceleratorFromKeyboardEvent } from '../pure/recording-hotkey.ts';
+import { showRecordingHotkeyDialog } from '../components/recording-hotkey-dialog.ts';
 import {
   OVERLAY_POSITIONS,
   OVERLAY_POSITION_LABELS,
@@ -146,6 +145,10 @@ interface OverlayStatGroup {
   label: string;
   note: string;
   stats: readonly string[];
+}
+
+function displayOverlayHotkey(value: string): string {
+  return /^[A-Za-z]$/.test(value) ? `Control+${value.toUpperCase()}` : value;
 }
 
 // Keep the persisted stat ids and their order untouched. The groups are a
@@ -638,32 +641,40 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ...backgroundControls,
     ]);
 
-    // M25: the overlay shortcuts and Advanced overlay edge select live in
-    // one compact card. Both shortcuts use the Recording modifier grammar.
-    const hotkeyInput = el('input', {
-      type: 'text',
-      class: 'settings-hotkey-input',
-      readonly: true,
-      value: persisted.hotkeyLetter.length === 1 ? `Control+${persisted.hotkeyLetter.toUpperCase()}` : persisted.hotkeyLetter,
-      placeholder: 'Press a key combination',
-      title: 'Press a modifier and key combination to assign the overlay shortcut',
-      onkeydown: (ev: KeyboardEvent) => {
-        ev.preventDefault();
-        const accelerator = recordingAcceleratorFromKeyboardEvent(ev);
-        if (accelerator && (ev.ctrlKey || ev.altKey || ev.shiftKey)) void onHotkeyLetterChange(accelerator);
+    // M25: use the Recording modal while requiring a modifier for global
+    // overlay shortcuts, then display the complete accelerator.
+    const hotkeyInput = el('button', {
+      type: 'button',
+      class: 'recording-hotkey settings-hotkey-input',
+      'aria-label': `HUD overlay hotkey: ${displayOverlayHotkey(persisted.hotkeyLetter)}`,
+      text: displayOverlayHotkey(persisted.hotkeyLetter),
+      title: 'Choose the key combination for the overlay shortcut',
+      onClick: () => {
+        void showRecordingHotkeyDialog('HUD overlay', displayOverlayHotkey(persisted.hotkeyLetter), { requireModifier: true }).then(async (next) => {
+          if (next === null) {
+            hotkeyInput.focus();
+            return;
+          }
+          await onHotkeyLetterChange(next);
+          root.querySelector<HTMLButtonElement>('.settings-hotkey-input:not(.settings-advanced-hotkey-input)')?.focus();
+        });
       },
     });
-    const advancedHotkeyInput = el('input', {
-      type: 'text',
-      class: 'settings-hotkey-input settings-advanced-hotkey-input',
-      readonly: true,
-      value: persisted.advHotkeyLetter.length === 1 ? `Control+${persisted.advHotkeyLetter.toUpperCase()}` : persisted.advHotkeyLetter,
-      placeholder: 'Press a key combination',
-      title: 'Press a modifier and key combination to assign the advanced overlay shortcut',
-      onkeydown: (ev: KeyboardEvent) => {
-        ev.preventDefault();
-        const accelerator = recordingAcceleratorFromKeyboardEvent(ev);
-        if (accelerator && (ev.ctrlKey || ev.altKey || ev.shiftKey)) void onAdvancedHotkeyLetterChange(accelerator);
+    const advancedHotkeyInput = el('button', {
+      type: 'button',
+      class: 'recording-hotkey settings-hotkey-input settings-advanced-hotkey-input',
+      'aria-label': `Advanced overlay hotkey: ${displayOverlayHotkey(persisted.advHotkeyLetter)}`,
+      text: displayOverlayHotkey(persisted.advHotkeyLetter),
+      title: 'Choose the key combination for the advanced overlay shortcut',
+      onClick: () => {
+        void showRecordingHotkeyDialog('Advanced overlay', displayOverlayHotkey(persisted.advHotkeyLetter), { requireModifier: true }).then(async (next) => {
+          if (next === null) {
+            advancedHotkeyInput.focus();
+            return;
+          }
+          await onAdvancedHotkeyLetterChange(next);
+          root.querySelector<HTMLButtonElement>('.settings-advanced-hotkey-input')?.focus();
+        });
       },
     });
     const advancedPositionSelect = buildDropdown(persisted.advPosition, ADVANCED_OVERLAY_POSITIONS.map((p) => ({
@@ -698,7 +709,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       el('div', { class: 'overlay-subsection-label', text: 'Advanced panel' }),
       el('div', { class: 'settings-row overlay-advanced-hotkey-row' }, [
         el('span', { class: 'settings-row-label', text: 'Advanced' }),
-        el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
         advancedHotkeyInput,
       ]),
       el('div', { class: 'settings-row overlay-advanced-position-row' }, [
@@ -1021,20 +1031,24 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const onHotkeyLetterChange = async (letter: string): Promise<void> => {
-    const input = root.querySelector<HTMLInputElement>('.settings-hotkey-input');
+    const input = root.querySelector<HTMLButtonElement>('.settings-hotkey-input:not(.settings-advanced-hotkey-input)');
     const v = letter.trim();
     if (!/^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(v)) {
       toast('error', 'Overlay hotkey', 'Use a modifier and a letter, number, or function key.');
-      if (input) input.value = persisted.hotkeyLetter.length === 1 ? `Control+${persisted.hotkeyLetter.toUpperCase()}` : persisted.hotkeyLetter;
+      if (input) input.textContent = displayOverlayHotkey(persisted.hotkeyLetter);
       return;
     }
     try {
       await api.profilesSettingsSave({ overlayHotkeyLetter: v });
       persisted.hotkeyLetter = v;
+      if (input) {
+        input.textContent = v;
+        input.setAttribute('aria-label', `HUD overlay hotkey: ${v}`);
+      }
       toast('success', 'Overlay hotkey changed', `The overlay toggles with ${v}.`);
     } catch (err) {
       toast('error', 'Overlay hotkey could not be changed', err instanceof Error ? err.message : String(err));
-      if (input) input.value = persisted.hotkeyLetter.length === 1 ? `Control+${persisted.hotkeyLetter.toUpperCase()}` : persisted.hotkeyLetter;
+      if (input) input.textContent = displayOverlayHotkey(persisted.hotkeyLetter);
       return;
     }
     // The register-failure note must follow the live registration state
@@ -1078,20 +1092,24 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const onAdvancedHotkeyLetterChange = async (letter: string): Promise<void> => {
-    const input = root.querySelector<HTMLInputElement>('.settings-advanced-hotkey-input');
+    const input = root.querySelector<HTMLButtonElement>('.settings-advanced-hotkey-input');
     const v = letter.trim();
     if (!/^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(v)) {
       toast('error', 'Advanced overlay hotkey', 'Use a modifier and a letter, number, or function key.');
-      if (input) input.value = persisted.advHotkeyLetter.length === 1 ? `Control+${persisted.advHotkeyLetter.toUpperCase()}` : persisted.advHotkeyLetter;
+      if (input) input.textContent = displayOverlayHotkey(persisted.advHotkeyLetter);
       return;
     }
     try {
       await api.profilesSettingsSave({ advancedOverlayHotkeyLetter: v });
       persisted.advHotkeyLetter = v;
+      if (input) {
+        input.textContent = v;
+        input.setAttribute('aria-label', `Advanced overlay hotkey: ${v}`);
+      }
       toast('success', 'Advanced overlay hotkey changed', `The panel toggles with ${v}.`);
     } catch (err) {
       toast('error', 'Advanced overlay hotkey could not be changed', err instanceof Error ? err.message : String(err));
-      if (input) input.value = persisted.advHotkeyLetter.length === 1 ? `Control+${persisted.advHotkeyLetter.toUpperCase()}` : persisted.advHotkeyLetter;
+      if (input) input.textContent = displayOverlayHotkey(persisted.advHotkeyLetter);
       return;
     }
     // The register-failure note must follow the live registration state

@@ -15,6 +15,7 @@ export type OcErrorCode =
   | 'invalid-argument'
   | 'permission-denied'
   | 'driver-adjustment-out-of-range'
+  | 'driver-noop'
   | 'io-failed';
 
 export type FanMode = 'auto' | 'curve' | 'fixed';

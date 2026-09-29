@@ -43,6 +43,18 @@ body {
   text-shadow: none;
 }
 
+/* The active Arc Power renderer is built from capframex-* elements. Give
+   every text-bearing descendant the same crisp edge as the legacy rows so
+   colored labels and values remain legible over bright scenes. The canvas
+   is excluded because its chart is drawn independently. */
+#capframex-root,
+#capframex-root *:not(canvas) {
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+  -webkit-text-stroke: 1px rgba(0, 0, 0, 0.95);
+  paint-order: stroke fill;
+}
+
 html[data-overlay-renderer="capframex"] #capframex-root { display: block; }
 html[data-overlay-renderer="capframex"] #overlay-root {
   background: transparent;
@@ -157,7 +169,7 @@ html[data-overlay-bg="disabled"] .capframex-panel::after {
 }
 
 .capframex-label { overflow: hidden; color: var(--overlay-label-color, #b17cff); text-overflow: ellipsis; white-space: nowrap; }
-.capframex-row > span:not(.capframex-label) { grid-column: 3; color: var(--overlay-value-color, #ffe800); font-weight: 700; white-space: nowrap; text-align: right; }
+.capframex-row > span:not(.capframex-label) { grid-column: 3; min-width: 0; overflow: hidden; color: var(--overlay-value-color, #ffe800); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 .capframex-row > span:not(.capframex-label):nth-child(2):not(:last-child) { grid-column: 2; }
 .capframex-cpu-title { color: var(--overlay-label-color, #ff3d48); }
 .capframex-cpu-section .capframex-label { color: var(--overlay-label-color, #ff5057); }
@@ -166,7 +178,7 @@ html[data-overlay-bg="disabled"] .capframex-panel::after {
 .capframex-memory-row .capframex-label { color: var(--overlay-label-color, #91d9ee); }
 .capframex-api-row { display: grid; grid-template-columns: minmax(0, 1fr) 5.8rem 6.4rem; align-items: baseline; column-gap: 0.85rem; margin: 0.02rem 0 0.3rem; color: var(--overlay-value-color, #ffffff); font-size: 0.9rem; font-weight: 700; }
 .capframex-api-row .capframex-label { grid-column: 1; color: var(--overlay-label-color, #ffffff); }
-.capframex-api-row > span:last-child { grid-column: 3; text-align: right; }
+.capframex-api-row > span:last-child { grid-column: 3; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: right; }
 
 .capframex-summary {
   display: grid;
@@ -189,7 +201,7 @@ html[data-overlay-bg="disabled"] .capframex-panel::after {
 }
 .capframex-summary-label { grid-column: 1; display: block; color: var(--overlay-label-color, #5bd5ff); font-size: 0.9rem; white-space: nowrap; }
 .capframex-summary strong,
-.capframex-summary span:last-child { color: var(--overlay-value-color, #5bd5ff); font-size: 0.9rem; font-weight: 700; white-space: nowrap; }
+.capframex-summary span:last-child { min-width: 0; overflow: hidden; color: var(--overlay-value-color, #5bd5ff); font-size: 0.9rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .capframex-summary strong { grid-column: 3; margin-right: 0.25rem; color: var(--overlay-value-color, #5bd5ff); font-size: 0.9rem; font-weight: 700; text-align: right; white-space: nowrap; }
 /* Single FPS metrics terminate in the right value track. */
 #capframex-performance { grid-column: 3; }
@@ -210,7 +222,7 @@ html[data-overlay-bg="disabled"] .capframex-panel::after {
   font-size: 0.72rem;
 }
 
-.capframex-chart-heading span:last-child { color: var(--overlay-value-color, #5bd5ff); font-weight: 700; }
+.capframex-chart-heading span:last-child { min-width: 0; overflow: hidden; color: var(--overlay-value-color, #5bd5ff); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .capframex-chart-heading small { color: #8e93aa; font-size: 0.86em; font-weight: 500; }
 .capframex-chart-plot { position: relative; height: 3.15rem; margin-top: 0.1rem; }
 .capframex-chart { display: block; width: 100%; height: 100%; }
@@ -362,14 +374,10 @@ html[data-overlay-theme="arc"] .overlay-line {
      color - the var fallback keeps the M5 look before the first push). */
   color: var(--overlay-color, #ffffff);
   white-space: pre;
-  /* The readability outline over any scene (the RTSS look - a dark
-     shadow around the bright text). */
-  text-shadow:
-    0 0 2px #000,
-    0 0 2px #000,
-    1px 1px 2px #000,
-    -1px -1px 2px #000;
-  -webkit-text-stroke: 0.2px currentColor;
+  /* A crisp dark edge keeps both rows legible over bright or busy game
+     scenes. The subtle shadow adds separation without softening the glyphs. */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+  -webkit-text-stroke: 1px rgba(0, 0, 0, 0.95);
   paint-order: stroke fill;
 }
 .overlay-row-label { color: var(--overlay-label-color, #ffffff); }

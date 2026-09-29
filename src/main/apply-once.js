@@ -12,11 +12,13 @@
 //     the IGS-on requirement wording was based on the wrong root cause and
 //     is REMOVED (M2C-C).
 //
-// Therefore: ONE attempt per control. Zero waiting, zero progress UI, no
-// cancellation, no budgets, no backoff, no retry label. The silent-noop
-// detection STAYS exactly as strong as it was (SUCCESS + read-back unchanged
-// = per-control FAIL, NEVER "applied"). The elevation-aware delayed
-// re-verification lives in the routing layer (apply-routing.js).
+// Therefore: ONE backend call per apply. This orchestration layer adds no
+// retries, cancellation, progress UI, or retry label. Backend-specific write
+// policy stays in the backend, which may use bounded read-only polling to
+// verify that a successful write reached the live state. Silent-noop
+// detection stays fail-closed (SUCCESS + unchanged read-back = FAIL, never
+// "applied"). Elevation-aware delayed re-verification lives in
+// apply-routing.js.
 
 /**
  * Hard (never-retried, not-a-refusal) canonical error codes. These keep
@@ -33,6 +35,7 @@ export const HARD_ERROR_CODES = new Set([
   'unsupported',
   'unavailable-symbol',
   'driver-adjustment-out-of-range',
+  'driver-noop',
 ]);
 
 /**
@@ -93,8 +96,8 @@ export function classifyOutcome(per) {
 }
 
 /**
- * Apply `settings` exactly ONCE (instant): one backend call, zero waiting,
- * no retries, no budgets, no cancellation. The result is the backend's
+ * Apply `settings` with exactly one backend call and no wrapper-level retry.
+ * The backend owns any bounded write/readback policy. The result is the backend's
  * honest per-control verdict; refusals (incl. the silent no-op - SUCCESS +
  * unchanged read-back, flagged silentNoop by the backend) get the plain
  * refusal message attached so the UI can toast it verbatim, and are NEVER
