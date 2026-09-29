@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   moveVfPoint,
+  moveVfFrequencyPoint,
   normalizeVfCurvePoints,
   prepareVfCurveForDriver,
   sameVfCurve,
@@ -17,6 +18,8 @@ const range = {
   voltageMaxV: 1.5,
   freqMinMhz: 400,
   freqMaxMhz: 4300,
+  voltageStepV: 0.001,
+  frequencyStepMhz: 10,
   maxPoints: 10,
 };
 const live = [
@@ -50,6 +53,24 @@ test('editing one point preserves every other point and point index', () => {
     assert.deepEqual(moved[index], live[index], `point ${index + 1} changed`);
   }
   assert.deepEqual(moved[4], { voltageV: 0.775, freqMhz: 2800 });
+});
+
+test('B580 curve edits snap to the reported 10 MHz step without moving neighboring points', () => {
+  const stockCurve = [
+    [0.67, 1020], [0.72, 1730], [0.77, 2090], [0.82, 2420], [0.87, 2630],
+    [0.92, 2830], [0.97, 2960], [1.02, 3090], [1.07, 3210], [1.12, 3210],
+  ].map(([voltageV, freqMhz]) => ({ voltageV, freqMhz }));
+  const moved = moveVfPoint(stockCurve, 8, 1.07, 3195, range);
+  assert.equal(moved[8].freqMhz, 3200);
+  assert.equal(moved[9].freqMhz, 3210);
+  for (let index = 0; index < stockCurve.length; index += 1) {
+    if (index === 8) continue;
+    assert.deepEqual(moved[index], stockCurve[index]);
+  }
+
+  const movedFrequency = moveVfFrequencyPoint(stockCurve, 8, 3195, range);
+  assert.equal(movedFrequency[8].freqMhz, 3200);
+  assert.equal(movedFrequency[9].freqMhz, 3210);
 });
 
 test('a clean editor follows external profile state while an edited draft stays put', () => {
@@ -173,8 +194,11 @@ test('profile persistence distinguishes every custom point change from exact sto
   assert.equal(sameVfCurve(custom, live, 0, 0), false);
 });
 
-test('driver preparation rejects curves requiring coordinate rounding or monotonic repair', () => {
+test('driver preparation rejects curves requiring coordinate rounding, native-step rounding, or monotonic repair', () => {
   assert.deepEqual(prepareVfCurveForDriver(live, range), live);
+  const offNativeStep = live.map((point) => ({ ...point }));
+  offNativeStep[8].freqMhz = 3195;
+  assert.equal(prepareVfCurveForDriver(offNativeStep, range), null);
   const fractionalFrequency = live.map((point) => ({ ...point }));
   fractionalFrequency[3].freqMhz += 0.4;
   assert.equal(prepareVfCurveForDriver(fractionalFrequency, range), null);

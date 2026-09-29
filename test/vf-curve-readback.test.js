@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readVfCurveAfterWrite, validateVfCurveReadback } from '../src/main/backend/vf-curve-readback.js';
+import { readStableVfCurve, readVfCurveAfterWrite, validateVfCurveReadback } from '../src/main/backend/vf-curve-readback.js';
 
 const curveRange = { voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 0, freqMaxMhz: 4300 };
 const before = [
@@ -13,6 +13,41 @@ const observedByB580 = [
   [580, 1640], [630, 2070], [680, 2390], [730, 2620], [780, 2810],
   [830, 2960], [880, 3090], [930, 3180], [980, 3200], [1030, 3210],
 ].map(([Voltage, Frequency]) => ({ Voltage, Frequency }));
+
+test('stable LIVE read ignores one transient voltage-shift sample', async () => {
+  const shifted = before.map((point) => ({ ...point, Voltage: point.Voltage + 75 }));
+  const samples = [shifted, before, before, before, before];
+  let reads = 0;
+  const result = await readStableVfCurve({
+    readCurve: async () => ({ ok: true, points: samples[reads++] }),
+    pollIntervalMs: 0,
+    wait: async () => {},
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.consensus, 4);
+  assert.deepEqual(result.points, before);
+  assert.equal(reads, 5);
+});
+
+test('stable LIVE read fails closed when no curve reaches quorum', async () => {
+  let reads = 0;
+  const result = await readStableVfCurve({
+    readCurve: async () => {
+      const sample = reads++;
+      return {
+        ok: true,
+        points: before.map((point) => ({ ...point, Voltage: point.Voltage + sample })),
+      };
+    },
+    pollIntervalMs: 0,
+    wait: async () => {},
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'readback-unstable');
+  assert.deepEqual(result.points, []);
+});
 
 test('a materially different valid LIVE curve is not accepted as a normalized apply', () => {
   const out = validateVfCurveReadback({
@@ -134,7 +169,7 @@ test('VF verification polls unchanged before-image data until the LIVE curve cha
   const out = await readVfCurveAfterWrite({
     readCurve: async () => {
       reads += 1;
-      return { ok: true, points: reads < 3 ? before : landed };
+      return { ok: true, points: reads <= 5 ? before : landed };
     },
     requestedPoints: requested,
     liveBefore: { ok: true, points: before },
@@ -146,8 +181,8 @@ test('VF verification polls unchanged before-image data until the LIVE curve cha
 
   assert.equal(out.ok, true);
   assert.equal(out.exact, true);
-  assert.equal(reads, 3);
-  assert.deepEqual(waits, [100, 100]);
+  assert.equal(reads, 10, 'the second stable five-read batch confirms the settled curve');
+  assert.deepEqual(waits, [100]);
 });
 
 test('VF verification keeps polling through a valid intermediate mismatch until the exact request lands', async () => {
@@ -158,7 +193,7 @@ test('VF verification keeps polling through a valid intermediate mismatch until 
   const out = await readVfCurveAfterWrite({
     readCurve: async () => {
       reads += 1;
-      return { ok: true, points: reads < 3 ? intermediate : requested };
+      return { ok: true, points: reads <= 5 ? intermediate : requested };
     },
     requestedPoints: requested,
     liveBefore: { ok: true, points: before },
@@ -170,8 +205,34 @@ test('VF verification keeps polling through a valid intermediate mismatch until 
 
   assert.equal(out.ok, true);
   assert.equal(out.exact, true);
-  assert.equal(reads, 3);
-  assert.deepEqual(waits, [100, 100]);
+  assert.equal(reads, 10, 'the second stable five-read batch confirms the settled curve');
+  assert.deepEqual(waits, [100]);
+});
+
+test('VF verification continues bounded read-only polling after an unstable quorum', async () => {
+  let reads = 0;
+  const waits = [];
+  const out = await readVfCurveAfterWrite({
+    readCurve: async () => {
+      const sample = reads++;
+      if (sample < 5) {
+        const unstable = before.map((point) => ({ ...point, Voltage: point.Voltage + sample }));
+        return { ok: true, points: unstable };
+      }
+      return { ok: true, points: requested };
+    },
+    requestedPoints: requested,
+    liveBefore: { ok: true, points: before },
+    curveRange,
+    maxAttempts: 2,
+    pollIntervalMs: 100,
+    wait: async (ms) => waits.push(ms),
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.exact, true);
+  assert.equal(reads, 10, 'one unstable quorum is followed by one stable exact quorum');
+  assert.deepEqual(waits, [100]);
 });
 
 test('VF verification stops polling on a driver no-op and never repeats a write', async () => {
@@ -193,7 +254,7 @@ test('VF verification stops polling on a driver no-op and never repeats a write'
   assert.equal(out.ok, false);
   assert.equal(out.errorCode, 'driver-noop');
   assert.equal(out.silentNoop, true);
-  assert.equal(reads, 4);
+  assert.equal(reads, 20, 'each of four no-op observations requires a five-read quorum');
   assert.deepEqual(waits, [50, 50, 50]);
 });
 
@@ -212,7 +273,7 @@ test('default VF verification allows a bounded two-second LIVE settle window', a
   });
 
   assert.equal(out.errorCode, 'driver-noop');
-  assert.equal(reads, 21);
+  assert.equal(reads, 105, 'each settle observation is stabilized by five immediate LIVE reads');
   assert.equal(waits.length, 20);
   assert.deepEqual(new Set(waits), new Set([100]));
   assert.equal(waits.reduce((sum, ms) => sum + ms, 0), 2000);

@@ -20,7 +20,6 @@ export type OcErrorCode =
   | 'driver-adjusted'
   | 'readback-unverified'
   | 'driver-invalid-readback'
-  | 'vf-write-blocked'
   | 'dependency-failed';
 
 export type FanMode = 'auto' | 'curve' | 'fixed';
@@ -105,6 +104,9 @@ export interface VfCurveRange {
   voltageMaxV: number;
   freqMinMhz: number;
   freqMaxMhz: number;
+  /** Native spacing exposed by ctl_oc_control_info_t, when available. */
+  voltageStepV?: number;
+  frequencyStepMhz?: number;
   maxPoints: number;
 }
 

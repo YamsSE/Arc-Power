@@ -26,11 +26,14 @@ function fixture({
   live = liveDefault.map((point) => ({ ...point })),
   frequencyOffset = 0,
   voltageOffset = 0,
+  writeTransform = (points) => points,
 } = {}) {
   const writes = [];
   const scalarWrites = [];
+  const nativeEvents = [];
   const libs = {
     ctlOverclockReadVFCurve(_handle, type, _details, countBuffer, pointsBuffer) {
+      nativeEvents.push(pointsBuffer === null ? `read-${type}-count` : `read-${type}-table`);
       const points = type === 0 ? stock : live;
       if (pointsBuffer === null) {
         koffi.encode(countBuffer, 'uint32', points.length);
@@ -44,16 +47,24 @@ function fixture({
     },
     ctlOverclockWriteCustomVFCurve(_handle, count, pointsBuffer) {
       writes.push('vf');
+      nativeEvents.push('write');
       const size = koffi.sizeof('ctl_voltage_frequency_point_t');
-      live.splice(0, live.length, ...Array.from({ length: count }, (_, index) =>
-        koffi.decode(pointsBuffer, index * size, 'ctl_voltage_frequency_point_t')));
+      const writtenPoints = Array.from({ length: count }, (_, index) =>
+        koffi.decode(pointsBuffer, index * size, 'ctl_voltage_frequency_point_t'));
+      live.splice(0, live.length, ...writeTransform(writtenPoints));
+      return CTL_RESULT.SUCCESS;
+    },
+    ctlOverclockWaiverSet() {
+      nativeEvents.push('waiver');
       return CTL_RESULT.SUCCESS;
     },
     ctlOverclockGpuFrequencyOffsetGetV2(_handle, buffer) {
+      nativeEvents.push('get-frequency-offset');
       koffi.encode(buffer, 'double', frequencyOffset);
       return CTL_RESULT.SUCCESS;
     },
     ctlOverclockGpuMaxVoltageOffsetGetV2(_handle, buffer) {
+      nativeEvents.push('get-voltage-offset');
       koffi.encode(buffer, 'double', voltageOffset);
       return CTL_RESULT.SUCCESS;
     },
@@ -80,6 +91,8 @@ function fixture({
       voltageMaxV: 1.5,
       freqMinMhz: 400,
       freqMaxMhz: 4300,
+      voltageStepV: 0.001,
+      frequencyStepMhz: 10,
       maxPoints: 32,
     },
     ranges: {
@@ -96,10 +109,46 @@ function fixture({
   });
   backend.getCapabilities = async () => caps;
   backend._ocUnitsOf = async () => ({ gpuFreqOffset: 0, gpuVoltOffset: 11 });
-  return { backend, writes, scalarWrites, live };
+  return { backend, writes, scalarWrites, nativeEvents, live };
 }
 
-test('known unsafe B580 driver keeps an exact LIVE curve as a no-op without native writes', async () => {
+function sequenceLiveReads(backend, samples) {
+  const nativeRead = backend._readVfCurvePoints.bind(backend);
+  let index = 0;
+  backend._readVfCurvePoints = (handle, type = 1, details = 0) => {
+    if (type !== 1 || index >= samples.length) return nativeRead(handle, type, details);
+    return { ok: true, points: samples[index++].map((point) => ({ ...point })) };
+  };
+}
+
+test('a single transient LIVE voltage shift does not teleport the editor or trigger a write', async () => {
+  const { backend, writes } = fixture();
+  const shifted = liveDefault.map((point) => ({ ...point, Voltage: point.Voltage + 75 }));
+  sequenceLiveReads(backend, [shifted, liveDefault, liveDefault, liveDefault, liveDefault]);
+  const result = await backend.applySettings(0, { vfCurve: canonical(liveDefault) });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.perControl.vfCurve.readBackEqual, true);
+  assert.deepEqual(result.perControl.vfCurve.readBackCurve, canonical(liveDefault));
+  assert.deepEqual(writes, []);
+});
+
+test('an unstable LIVE before-image refuses the curve write', async () => {
+  const { backend, writes } = fixture();
+  const unstable = Array.from({ length: 5 }, (_, sample) => liveDefault.map((point) => ({
+    ...point,
+    Voltage: point.Voltage + sample,
+  })));
+  sequenceLiveReads(backend, unstable);
+  const result = await backend.applySettings(0, { vfCurve: canonical(stock) });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
+  assert.match(result.perControl.vfCurve.message, /stable 3-of-5 read quorum/);
+  assert.deepEqual(writes, []);
+});
+
+test('B580 exact LIVE curve is a no-op without native writes', async () => {
   const live = liveDefault.map((point) => ({ ...point }));
   const { backend, writes } = fixture({ driverVersion: knownUnsafeDriverVersion, live });
   const result = await backend.applySettings(0, { vfCurve: canonical(live) });
@@ -110,7 +159,20 @@ test('known unsafe B580 driver keeps an exact LIVE curve as a no-op without nati
   assert.deepEqual(writes, []);
 });
 
-test('known unsafe B580 driver rejects fractional points that round to the LIVE curve', async () => {
+test('B580 exact off-grid LIVE curve is acknowledged without native writes', async () => {
+  const live = liveDefault.map((point) => ({ ...point }));
+  live[1].Frequency = 2105;
+  live[2].Frequency = 2605;
+  const { backend, writes } = fixture({ driverVersion: knownUnsafeDriverVersion, live });
+  const result = await backend.applySettings(0, { vfCurve: canonical(live) });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.perControl.vfCurve.ok, true);
+  assert.equal(result.perControl.vfCurve.readBackEqual, true);
+  assert.deepEqual(writes, [], 'an already-matching curve needs no grid validation or setter');
+});
+
+test('B580 rejects fractional coordinates before sending a native write', async () => {
   const { backend, writes, scalarWrites } = fixture({ driverVersion: knownUnsafeDriverVersion });
   const roundedLookalike = canonical(liveDefault);
   roundedLookalike[0].voltageV += 0.0004;
@@ -119,12 +181,26 @@ test('known unsafe B580 driver rejects fractional points that round to the LIVE 
 
   assert.equal(result.ok, false);
   assert.equal(result.perControl.vfCurve.ok, false);
-  assert.equal(result.perControl.vfCurve.errorCode, 'vf-write-blocked');
+  assert.equal(result.perControl.vfCurve.errorCode, 'out-of-range');
   assert.deepEqual(writes, []);
   assert.deepEqual(scalarWrites, []);
 });
 
-test('known unsafe B580 exact custom-curve profile no-op still blocks conflicting offsets', async () => {
+test('B580 refuses a frequency outside the driver-reported 10 MHz grid before writing', async () => {
+  const { backend, writes, scalarWrites } = fixture({ driverVersion: knownUnsafeDriverVersion });
+  const offGrid = canonical(liveDefault);
+  offGrid[2].freqMhz = 2595;
+  const result = await backend.applySettings(0, { vfCurve: offGrid });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.perControl.vfCurve.ok, false);
+  assert.equal(result.perControl.vfCurve.errorCode, 'out-of-range');
+  assert.match(result.perControl.vfCurve.message, /driver voltage and frequency steps/);
+  assert.deepEqual(writes, []);
+  assert.deepEqual(scalarWrites, []);
+});
+
+test('B580 exact custom-curve profile no-op still blocks conflicting offsets', async () => {
   const { backend, writes, scalarWrites } = fixture({ driverVersion: knownUnsafeDriverVersion });
   const result = await backend.applySettings(0, {
     vfCurve: canonical(liveDefault),
@@ -159,22 +235,63 @@ test('B580 profile refuses core offsets while VF capability is unavailable', asy
   assert.deepEqual(scalarWrites, [], 'profile offsets are withheld when STOCK identity cannot be read');
 });
 
-test('known unsafe B580 driver blocks changed VF and dependent profile offsets before any setter', async () => {
-  const { backend, writes, scalarWrites } = fixture({ driverVersion: knownUnsafeDriverVersion });
+test('B580 submits changed custom curves and withholds conflicting profile offsets', async () => {
+  const { backend, writes, scalarWrites, nativeEvents, live } = fixture({ driverVersion: knownUnsafeDriverVersion });
+  const requested = [
+    { voltageV: 0.75, freqMhz: 1500 },
+    { voltageV: 0.85, freqMhz: 2200 },
+    { voltageV: 0.95, freqMhz: 2700 },
+  ];
+  await backend.restoreWaiverState(0, true);
   const result = await backend.applySettings(0, {
-    vfCurve: stockCanonical,
+    vfCurve: requested,
     gpuFreqOffsetMhz: 75,
     gpuVoltOffsetV: 25,
   }, { profileApply: true });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.perControl.vfCurve.ok, false);
-  assert.equal(result.perControl.vfCurve.errorCode, 'vf-write-blocked');
-  assert.match(result.perControl.vfCurve.message, /No VF write was sent/);
+  assert.equal(result.ok, false, 'dependent profile offsets remain withheld for a custom curve');
+  assert.equal(result.perControl.vfCurve.ok, true);
+  assert.equal(result.perControl.vfCurve.readBackEqual, true);
   assert.equal(result.perControl.gpuFreqOffsetMhz.errorCode, 'dependency-failed');
   assert.equal(result.perControl.gpuVoltOffsetV.errorCode, 'dependency-failed');
-  assert.deepEqual(writes, []);
-  assert.deepEqual(scalarWrites, []);
+  assert.deepEqual(writes, ['vf']);
+  assert.deepEqual(scalarWrites, [], 'conflicting core offsets are not written');
+  assert.equal(nativeEvents.filter((event) => event === 'waiver').length, 1);
+  assert.equal(nativeEvents[nativeEvents.indexOf('write') - 1], 'waiver', 'replay the accepted waiver immediately before the one curve write');
+  assert.deepEqual(canonical(live), requested);
+});
+
+test('B580 STOCK profile submits and verifies the exact driver STOCK table', async () => {
+  const { backend, writes, live } = fixture({ driverVersion: knownUnsafeDriverVersion });
+  const result = await backend.applySettings(0, { vfCurve: stockCanonical }, { profileApply: true });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.perControl.vfCurve.ok, true);
+  assert.equal(result.perControl.vfCurve.readBackEqual, true);
+  assert.deepEqual(writes, ['vf']);
+  assert.deepEqual(canonical(live), stockCanonical);
+});
+
+test('B580 refuses to report a driver-remapped curve as an exact apply', async () => {
+  const requested = [
+    { voltageV: 0.75, freqMhz: 1500 },
+    { voltageV: 0.85, freqMhz: 2200 },
+    { voltageV: 0.95, freqMhz: 2700 },
+  ];
+  const { backend, writes } = fixture({
+    driverVersion: knownUnsafeDriverVersion,
+    writeTransform: (points) => points.map((point) => ({
+      Voltage: point.Voltage + 1,
+      Frequency: point.Frequency + 10,
+    })),
+  });
+  const result = await backend.applySettings(0, { vfCurve: requested });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.perControl.vfCurve.errorCode, 'driver-adjusted');
+  assert.equal(result.perControl.vfCurve.readBackEqual, false);
+  assert.equal(result.perControl.vfCurve.normalized, false);
+  assert.deepEqual(writes, ['vf']);
 });
 
 test('malformed finite LIVE before-image prevents a VF write on other driver builds', async () => {

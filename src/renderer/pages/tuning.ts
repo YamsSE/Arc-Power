@@ -193,6 +193,7 @@ let vfCurveDefaultDisplay: Array<{ voltageV: number; freqMhz: number }> | null =
 let vfCurveDefault: Array<{ voltageV: number; freqMhz: number }> | null = null;
 let vfCurveWasApplied = false;
 let activeVfEditingCleanup: (() => void) | null = null;
+let redrawVfCurveEditor: (() => void) | null = null;
 // M17f: the power-limit card's sysman PL1/PL2 read-out line - the
 // Level Zero Sysman layer's sustained (PL1) + burst (PL2) limits. The
 // freshness = per-apply (the apply paths re-fetch) + one-shot at render
@@ -271,6 +272,7 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   vfCurveWasApplied = false;
   activeVfEditingCleanup?.();
   activeVfEditingCleanup = null;
+  redrawVfCurveEditor = null;
   cards.clear();
   valueNodes.clear();
   valueInputs.clear();
@@ -900,7 +902,7 @@ export const tuningPage: Page = {
                 dataset: { readoutField: 'voltage' },
                 min: vfVoltageMv(curveBounds.voltageMinV),
                 max: vfVoltageMv(curveBounds.voltageMaxV),
-                step: 1,
+                step: Math.max(1, Math.round((curveBounds.voltageStepV ?? 0.001) * 1000)),
                 onchange: (event: Event) => onEditPoint(Number(hoverReadout?.dataset['idx'] ?? 0), Number((event.target as HTMLInputElement).value), event.target as HTMLInputElement, 'voltage'),
                 'aria-label': 'Voltage in millivolts',
               }),
@@ -913,7 +915,7 @@ export const tuningPage: Page = {
                 dataset: { readoutField: 'frequency' },
                 min: Math.round(curveBounds.freqMinMhz),
                 max: Math.round(curveBounds.freqMaxMhz),
-                step: 1,
+                step: curveBounds.frequencyStepMhz ?? 1,
                 onchange: (event: Event) => onEditPoint(Number(hoverReadout?.dataset['idx'] ?? 0), Number((event.target as HTMLInputElement).value), event.target as HTMLInputElement, 'frequency'),
               }),
             ]),
@@ -953,6 +955,7 @@ export const tuningPage: Page = {
         drawVfCurve(svg);
         renderDots();
       };
+      redrawVfCurveEditor = redraw;
       redraw();
       host.append(
         el('p', {
@@ -2019,23 +2022,18 @@ export const tuningPage: Page = {
             const wanted = settings[key as keyof typeof settings];
             if (typeof wanted === 'number') applied[key] = wanted;
             if (key === 'vfCurve' && Array.isArray(settings.vfCurve)) {
-              // The editor baseline is its compact display projection. A
-              // successful native STOCK reset therefore clears the native
-              // payload slot. When IGCL accepts a valid driver-adjusted
-              // curve, keep the user's requested draft visible instead of
-              // replacing it with a curve that appears to teleport.
+              // A successful write is represented by the exact verified LIVE
+              // curve. A failed or driver-remapped write keeps the requested
+              // draft available for correction.
               const readBackCurve = Array.isArray(per.readBackCurve)
                 ? per.readBackCurve
                 : currentState?.vfCurve;
               const appliedCurve = Array.isArray(readBackCurve) && readBackCurve.length >= 2
                 ? normalizeVfCurvePoints(readBackCurve, curveBounds, vfEditorMaxPoints)
                 : vfCurveDraft;
-              if (per.normalized === true) {
-                vfCurveApplied = vfCurveDraft.map((point) => ({ ...point }));
-              } else {
-                vfCurveApplied = appliedCurve.map((point) => ({ ...point }));
-                vfCurveDraft = vfCurveApplied.map((point) => ({ ...point }));
-              }
+              vfCurveApplied = appliedCurve.map((point) => ({ ...point }));
+              vfCurveDraft = vfCurveApplied.map((point) => ({ ...point }));
+              redrawVfCurveEditor?.();
               vfCurveNativeApplyDraft = null;
               vfCurveWasApplied = true;
             }
@@ -2045,14 +2043,12 @@ export const tuningPage: Page = {
             // so the offset applies can no longer reach this reference; the
             // LOCK editor's own apply path owns the appliedLock sync.
             if (!isNoopApply(key, settings, before as DeviceState)) {
-              const detail = key === 'vfCurve' && per.normalized === true
-                ? (per.message ?? 'IGCL applied a driver-adjusted LIVE curve. Your requested draft remains visible.')
-                : typeof wanted === 'number' && range
-                  ? formatControlValue(wanted, key, range, caps.deviceName)
-                  : '';
+              const detail = typeof wanted === 'number' && range
+                ? formatControlValue(wanted, key, range, caps.deviceName)
+                : '';
               toast(
-                key === 'vfCurve' && per.normalized === true ? 'warn' : 'success',
-                key === 'vfCurve' && per.normalized === true ? 'Driver adjusted VF curve' : `${CONTROL_LABELS[key] ?? key} applied`,
+                'success',
+                `${CONTROL_LABELS[key] ?? key} applied`,
                 detail,
               );
             }
@@ -2061,7 +2057,7 @@ export const tuningPage: Page = {
               true,
               isNoopApply(key, settings, before as DeviceState)
                 ? 'No change'
-                : (key === 'vfCurve' && per.normalized === true ? 'Applied; driver adjusted' : 'Applied'),
+                : 'Applied',
             );
             // per.ok && no-op -> silent (M2b-B): nothing changed, no toast.
           }
@@ -2249,6 +2245,7 @@ export const tuningPage: Page = {
         vfCurveDraft = normalizeVfCurvePoints(s.state.vfCurve, bounds, Math.min(VF_EDITOR_MAX_POINTS, bounds.maxPoints));
         vfCurveApplied = vfCurveDraft.map((point) => ({ ...point }));
         vfCurveWasApplied = true;
+        redrawVfCurveEditor?.();
       }
       // Re-sync slider values from the driver for controls that were never
       // applied in this render (external state changes - profile load, tray

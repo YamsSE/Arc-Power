@@ -56,7 +56,7 @@
  * sidecar/mock can map 1:1).
  * @typedef {'waiver-not-set'|'out-of-range'|'locked-mode'|'reset-required'
  *   |'unsupported'|'unavailable-symbol'|'invalid-argument'|'permission-denied'|'io-failed'
- *   |'driver-adjusted'|'readback-unverified'|'driver-invalid-readback'|'vf-write-blocked'|'dependency-failed'} OcErrorCode
+ *   |'driver-adjusted'|'readback-unverified'|'driver-invalid-readback'|'dependency-failed'} OcErrorCode
  */
 
 /**
@@ -191,7 +191,7 @@
  *     powerLimit?: boolean, tempLimit?: boolean, vfCurve?: boolean,
  *   },
  *   ranges: Record<string, { min: number, max: number, step: number, default: number, units: string }>,
- *   vfCurveRange?: { voltageMinV: number, voltageMaxV: number, freqMinMhz: number, freqMaxMhz: number, maxPoints: number },
+ *   vfCurveRange?: { voltageMinV: number, voltageMaxV: number, freqMinMhz: number, freqMaxMhz: number, voltageStepV?: number, frequencyStepMhz?: number, maxPoints: number },
  *   fan: { canControl: boolean, modes: string[], maxRpm: number, maxCurvePoints: number, speedUnits?: 'percent'|'rpm' },
  * }} Capabilities
  */

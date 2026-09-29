@@ -156,6 +156,32 @@ test('custom VF profile reports incompatible non-zero offsets instead of silentl
   assert.equal(offsets.gpuVoltOffset, 0);
 });
 
+test('custom VF profile applies explicit zero offsets before writing its curve', async () => {
+  const { backend, calls, live, offsets } = fixture({
+    activeOffsets: { gpuFreqOffset: 25, gpuVoltOffset: 10 },
+  });
+  const customCurve = [
+    { voltageV: 0.7, freqMhz: 1150 },
+    { voltageV: 0.8, freqMhz: 2150 },
+  ];
+  const result = await backend.applySettings(0, {
+    vfCurve: customCurve,
+    gpuFreqOffsetMhz: 0,
+    gpuVoltOffsetV: 0,
+  }, { profileApply: true });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.perControl.gpuFreqOffsetMhz.readBackEqual, true);
+  assert.equal(result.perControl.gpuVoltOffsetV.readBackEqual, true);
+  assert.equal(result.perControl.vfCurve.readBackEqual, true);
+  assert.deepEqual(calls, ['frequency-offset', 'voltage-offset', 'vf-write']);
+  assert.deepEqual(offsets, { gpuFreqOffset: 0, gpuVoltOffset: 0 });
+  assert.deepEqual(live, [
+    { Voltage: 700, Frequency: 1150 },
+    { Voltage: 800, Frequency: 2150 },
+  ]);
+});
+
 test('B580 scalar core offsets are skipped when the requested STOCK curve fails verification', async () => {
   const { backend, calls } = fixture({ writeResult: CTL_RESULT.ERROR_DATA_WRITE });
   const result = await backend.applySettings(0, {
@@ -236,7 +262,7 @@ test('B580 VF writes stop when the LIVE before-image cannot be verified', async 
 
   assert.equal(result.ok, false);
   assert.equal(result.perControl.vfCurve.ok, false);
-  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unverified');
+  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
   assert.deepEqual(calls, [], 'no native write is sent without a verified before-image');
 });
 

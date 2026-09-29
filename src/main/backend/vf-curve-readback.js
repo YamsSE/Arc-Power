@@ -5,12 +5,55 @@
 // applied; mismatches retain the requested draft and report the observed data.
 const DEFAULT_VF_READBACK_ATTEMPTS = 21;
 const DEFAULT_VF_READBACK_INTERVAL_MS = 100;
+const DEFAULT_VF_CONSENSUS_ATTEMPTS = 5;
+const DEFAULT_VF_CONSENSUS_QUORUM = 3;
 
 function pointsEqual(left, right) {
   return Array.isArray(left) && Array.isArray(right)
     && left.length === right.length
     && left.every((point, index) => point.Voltage === right[index]?.Voltage
       && point.Frequency === right[index]?.Frequency);
+}
+
+/** Read a stable LIVE snapshot without allowing a one-off driver response to
+ * become application state or a write before-image. STOCK reads intentionally
+ * remain independent and must not be mixed into this consensus. */
+export async function readStableVfCurve({
+  readCurve,
+  maxAttempts = DEFAULT_VF_CONSENSUS_ATTEMPTS,
+  quorum = DEFAULT_VF_CONSENSUS_QUORUM,
+  pollIntervalMs = DEFAULT_VF_READBACK_INTERVAL_MS,
+  wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+  if (typeof readCurve !== 'function') {
+    return { ok: false, points: [], errorCode: 'readback-unverified', message: 'LIVE VF read callback is unavailable.' };
+  }
+  const attempts = Number.isInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : DEFAULT_VF_CONSENSUS_ATTEMPTS;
+  const required = Number.isInteger(quorum) && quorum > 0 ? quorum : DEFAULT_VF_CONSENSUS_QUORUM;
+  if (required > attempts) {
+    return { ok: false, points: [], errorCode: 'readback-unverified', message: 'LIVE VF stability quorum exceeds the read limit.' };
+  }
+  const intervalMs = Number.isFinite(pollIntervalMs) && pollIntervalMs >= 0 ? pollIntervalMs : 0;
+  const observations = [];
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = await readCurve();
+    if (result?.ok === true && Array.isArray(result.points)) observations.push(result.points);
+    if (attempt < attempts - 1 && intervalMs > 0) await wait(intervalMs);
+  }
+  const counts = [];
+  for (const points of observations) {
+    const match = counts.find((entry) => pointsEqual(entry.points, points));
+    if (match) match.count += 1;
+    else counts.push({ points, count: 1 });
+  }
+  const stable = counts.find((entry) => entry.count >= required);
+  if (stable) return { ok: true, points: stable.points.map((point) => ({ ...point })), consensus: stable.count };
+  return {
+    ok: false,
+    points: [],
+    errorCode: 'readback-unstable',
+    message: `The LIVE VF curve did not produce a stable ${required}-of-${attempts} read quorum. No curve state was accepted.`,
+  };
 }
 
 function toCanonicalCurve(points) {
@@ -22,8 +65,10 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
   if (!readBack?.ok) {
     return {
       ok: false,
-      errorCode: 'io-failed',
-      message: `VF curve write succeeded but read-back failed: ${readBack?.message ?? 'unknown read failure'}`,
+      errorCode: readBack?.errorCode ?? 'io-failed',
+      message: readBack?.errorCode === 'readback-unstable'
+        ? `VF curve write succeeded, but ${readBack.message}`
+        : `VF curve write succeeded but read-back failed: ${readBack?.message ?? 'unknown read failure'}`,
     };
   }
   if (!Array.isArray(requestedPoints)) {
@@ -152,7 +197,15 @@ export async function readVfCurveAfterWrite({
   const intervalMs = Number.isFinite(pollIntervalMs) && pollIntervalMs >= 0 ? pollIntervalMs : 0;
   let validation = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const readBack = await readCurve();
+    const readBack = await readStableVfCurve({
+      readCurve,
+      maxAttempts: DEFAULT_VF_CONSENSUS_ATTEMPTS,
+      quorum: DEFAULT_VF_CONSENSUS_QUORUM,
+      // Keep each quorum batch immediate; the outer loop owns the bounded
+      // settle cadence so five-sample verification retains its two-second cap.
+      pollIntervalMs: 0,
+      wait,
+    });
     validation = validateVfCurveReadback({
       readBack,
       requestedPoints,
@@ -160,7 +213,12 @@ export async function readVfCurveAfterWrite({
       curveRange,
     });
     const exactMatch = validation.ok === true && validation.exact === true;
-    const mayStillSettle = readBack?.ok === true && validation.errorCode !== 'driver-invalid-readback';
+    // A quorum miss means LIVE is still transient. Keep sampling within the
+    // bounded settle window, but never replay the native setter. A stable,
+    // semantically invalid table is terminal because another identical
+    // quorum cannot make that observed table valid.
+    const mayStillSettle = validation.errorCode === 'readback-unstable'
+      || (readBack?.ok === true && validation.errorCode !== 'driver-invalid-readback');
     if (exactMatch || !mayStillSettle || attempt === attempts - 1) return validation;
     await wait(intervalMs);
   }

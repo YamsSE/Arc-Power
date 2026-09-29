@@ -57,6 +57,28 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function stepForRange(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && (value as number) > 0 ? value as number : fallback;
+}
+
+function snapToGridWithin(value: number, min: number, max: number, origin: number, step: number): number | null {
+  if (min > max || !Number.isFinite(step) || step <= 0) return null;
+  const epsilon = 1e-9;
+  const minIndex = Math.ceil((min - origin) / step - epsilon);
+  const maxIndex = Math.floor((max - origin) / step + epsilon);
+  if (minIndex > maxIndex) return null;
+  const requestedIndex = Math.round(((Number.isFinite(value) ? value : min) - origin) / step);
+  const index = Math.min(maxIndex, Math.max(minIndex, requestedIndex));
+  const snapped = origin + index * step;
+  return Number(snapped.toFixed(6));
+}
+
+function isOnGrid(value: number, origin: number, step: number): boolean {
+  if (!Number.isFinite(value) || !Number.isFinite(origin) || !Number.isFinite(step) || step <= 0) return false;
+  const gridPosition = (value - origin) / step;
+  return Math.abs(gridPosition - Math.round(gridPosition)) <= 1e-7;
+}
+
 function legalMaxPoints(range: VfCurveRange, requested: number): number {
   const driverMax = Number.isFinite(range.maxPoints) && range.maxPoints > 0
     ? Math.floor(range.maxPoints)
@@ -90,8 +112,9 @@ export function prepareVfCurveForDriver(
     && Number.isFinite(point.freqMhz)
     && point.voltageV >= range.voltageMinV
     && point.voltageV <= range.voltageMaxV
-    && Math.abs(point.voltageV * 1000 - Math.round(point.voltageV * 1000)) < 1e-7
+    && isOnGrid(point.voltageV, range.voltageMinV, stepForRange(range.voltageStepV, 0.001))
     && Number.isInteger(point.freqMhz)
+    && isOnGrid(point.freqMhz, range.freqMinMhz, stepForRange(range.frequencyStepMhz, 1))
     && point.freqMhz >= minFrequency
     && point.freqMhz <= maxFrequency
     && (index === 0 || (point.voltageV > points[index - 1].voltageV
@@ -163,10 +186,12 @@ export function moveVfPoint(
   const freqMin = Math.max(range.freqMinMhz, previous ? previous.freqMhz : range.freqMinMhz);
   const freqMax = Math.min(range.freqMaxMhz, following ? following.freqMhz : range.freqMaxMhz);
   if (voltageMin > voltageMax || freqMin > freqMax) return next;
-  next[index] = {
-    voltageV: Number(clamp(Number.isFinite(voltageV) ? voltageV : current.voltageV, voltageMin, voltageMax).toFixed(3)),
-    freqMhz: Math.round(clamp(Number.isFinite(freqMhz) ? freqMhz : current.freqMhz, freqMin, freqMax)),
-  };
+  const voltageStep = stepForRange(range.voltageStepV, 0.001);
+  const frequencyStep = stepForRange(range.frequencyStepMhz, 1);
+  const snappedVoltage = snapToGridWithin(voltageV, voltageMin, voltageMax, range.voltageMinV, voltageStep);
+  const snappedFrequency = snapToGridWithin(freqMhz, freqMin, freqMax, range.freqMinMhz, frequencyStep);
+  if (snappedVoltage === null || snappedFrequency === null) return next;
+  next[index] = { voltageV: snappedVoltage, freqMhz: snappedFrequency };
   return next;
 }
 
@@ -185,11 +210,11 @@ export function moveVfFrequencyPoint(
   const following = next[index + 1];
   const freqMin = Math.max(range.freqMinMhz, previous ? previous.freqMhz : range.freqMinMhz);
   const freqMax = Math.min(range.freqMaxMhz, following ? following.freqMhz : range.freqMaxMhz);
-  if (freqMin > freqMax) return next;
-  next[index] = {
-    ...current,
-    freqMhz: Math.round(clamp(Number.isFinite(freqMhz) ? freqMhz : current.freqMhz, freqMin, freqMax)),
-  };
+  const snappedFrequency = snapToGridWithin(
+    freqMhz, freqMin, freqMax, range.freqMinMhz, stepForRange(range.frequencyStepMhz, 1),
+  );
+  if (snappedFrequency === null) return next;
+  next[index] = { ...current, freqMhz: snappedFrequency };
   return next;
 }
 
