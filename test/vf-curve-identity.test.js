@@ -5,6 +5,7 @@ import {
   moveVfFrequencyPoint,
   normalizeVfCurvePoints,
   prepareVfCurveForDriver,
+  selectVfCurveEditorCurve,
   sameVfCurve,
   shouldSyncVfCurveFromState,
   vfCurveNeedsWrite,
@@ -30,6 +31,31 @@ const live = [
 test('normalization preserves exact valid live point order and coordinates', () => {
   const offsetGrid = live.map((point, index) => ({ ...point, voltageV: point.voltageV + (index ? 0.003 : 0) }));
   assert.deepEqual(normalizeVfCurvePoints(offsetGrid, range, 10), offsetGrid);
+});
+
+test('editor falls back to an exact STOCK reference when LIVE is unavailable', () => {
+  const stock = live.map((point) => ({ ...point }));
+  const selection = selectVfCurveEditorCurve(null, stock, range);
+  assert.equal(selection.source, 'stock-reference');
+  assert.deepEqual(selection.points, stock);
+  assert.notEqual(selection.points, stock, 'the reference is an independent editor copy');
+});
+
+test('editor prefers valid LIVE over STOCK and never repairs invalid tables', () => {
+  const stock = live.map((point) => ({ ...point }));
+  const current = live.map((point) => ({ ...point }));
+  current[4].freqMhz += 10;
+  assert.deepEqual(selectVfCurveEditorCurve(current, stock, range), {
+    source: 'live',
+    points: current,
+  });
+
+  const invalidStock = stock.map((point) => ({ ...point }));
+  invalidStock[5].freqMhz = invalidStock[4].freqMhz - 10;
+  assert.deepEqual(selectVfCurveEditorCurve(null, invalidStock, range), {
+    source: 'unavailable',
+    points: [],
+  });
 });
 
 test('invalid tables fail closed and driver tables above ten points are never truncated', () => {

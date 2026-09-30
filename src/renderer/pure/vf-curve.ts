@@ -15,6 +15,13 @@ export interface VfCurvePoint {
   freqMhz: number;
 }
 
+export type VfCurveEditorSource = 'live' | 'stock-reference' | 'unavailable';
+
+export interface VfCurveEditorSelection {
+  source: VfCurveEditorSource;
+  points: VfCurvePoint[];
+}
+
 export const VF_EDITOR_MAX_POINTS = 10;
 export const VF_MIN_POINTS = 2;
 
@@ -166,6 +173,25 @@ export function isValidNativeVfCurve(
     const previous = points[index - 1];
     return point.voltageV > previous.voltageV && point.freqMhz >= previous.freqMhz;
   });
+}
+
+/**
+ * Select the curve to show when opening the editor. A verified LIVE table is
+ * authoritative; if LIVE is temporarily unreadable, a verified STOCK table
+ * remains useful as a clearly labelled reference. Never repair either table.
+ */
+export function selectVfCurveEditorCurve(
+  live: VfCurvePoint[] | null | undefined,
+  stock: VfCurvePoint[] | null | undefined,
+  range: VfCurveRange,
+): VfCurveEditorSelection {
+  const liveValid = isValidNativeVfCurve(live, range);
+  const stockValid = isValidNativeVfCurve(stock, range);
+  const points = liveValid ? live : stockValid ? stock : [];
+  return {
+    source: liveValid ? 'live' : stockValid ? 'stock-reference' : 'unavailable',
+    points: points.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz })),
+  };
 }
 
 /** Move one point while keeping voltage ascending and frequency non-decreasing. */

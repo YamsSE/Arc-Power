@@ -6172,6 +6172,113 @@ export async function runGraphicsVerify(win, backend) {
 // a live swap round trip through the dropdown, and (b580 only) a
 // percent-unit apply round trip. Runs against MockBackend like the default.
 
+async function runB580VfStockReferenceUiCheck(win) {
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const fail = (message) => { throw new UiVerifyFailure(message); };
+
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid .kv')).some((row) => (row.getAttribute('data-label') ?? '') === 'Compute')`, 10000))) {
+    fail('B580 VF STOCK-reference check could not wait for mock GPU capabilities');
+  }
+  const waiver = await js(`window.arcPower.waiverGet(0)`);
+  if (waiver?.accepted !== true) {
+    const accepted = await js(`window.arcPower.waiverAccept(0)`);
+    if (accepted?.accepted !== true) fail('B580 VF STOCK-reference check could not accept the mock waiver');
+  }
+
+  await js(`location.hash = '#/tuning'`);
+  await sleep(250);
+  await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((button) => button.textContent.trim() === 'Voltage-Frequency Curve')?.click()`);
+  if (!(await waitFor(win, `(() => {
+    const state = window.arcPower.getCurrentSettings(0);
+    return state.then((value) => value.vfCurve === null && Array.isArray(value.vfCurveDefault)
+      && document.querySelectorAll('.vf-curve-dot').length === value.vfCurveDefault.length);
+  })()`, 8000))) {
+    fail('B580 VF STOCK-reference check did not draw STOCK while LIVE was unavailable');
+  }
+  const state = await js(`window.arcPower.getCurrentSettings(0)`);
+  const chart = await js(`(() => {
+    const dots = Array.from(document.querySelectorAll('.vf-curve-dot'));
+    const card = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"]');
+    return {
+      note: card?.querySelector('.vf-curve-editor .card-note')?.textContent ?? '',
+      dotCount: dots.length,
+      referenceDots: dots.every((dot) => dot.getAttribute('role') === 'img'
+        && dot.getAttribute('tabindex') === '-1'
+        && dot.getAttribute('aria-label')?.startsWith('STOCK reference point')),
+      applyHidden: card?.querySelector('.oc-chip-apply')?.hidden ?? null,
+      resetDisabled: card?.querySelector('.oc-card-actions .btn-ghost')?.disabled ?? null,
+    };
+  })()`);
+  if (!Array.isArray(state.vfCurveDefault) || chart.dotCount !== state.vfCurveDefault.length
+    || !chart.referenceDots || chart.applyHidden !== true || chart.resetDisabled !== false
+    || !chart.note.includes("driver's STOCK curve for reference")) {
+    fail(`B580 VF STOCK-reference state was not shown safely: ${JSON.stringify(chart)}`);
+  }
+
+  await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-card-actions .btn-ghost')?.click()`);
+  if (!(await waitFor(win, `(() => {
+    const card = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"]');
+    return !!card && !card.querySelector('.oc-chip-apply')?.hidden
+      && !document.querySelector('.floating-apply')?.hidden;
+  })()`, 5000))) {
+    fail('B580 VF STOCK-reference check could not stage Reset to default');
+  }
+  return 'B580 mock: valid STOCK is shown as a read-only reference when LIVE is unavailable; reset remains stageable';
+}
+
+async function runB580VfDraftNoteUiCheck(win) {
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const fail = (message) => { throw new UiVerifyFailure(message); };
+
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid .kv')).some((row) => (row.getAttribute('data-label') ?? '') === 'Compute')`, 10000))) {
+    fail('B580 VF draft-note check could not wait for mock GPU capabilities');
+  }
+  const waiver = await js(`window.arcPower.waiverGet(0)`);
+  if (waiver?.accepted !== true) {
+    const accepted = await js(`window.arcPower.waiverAccept(0)`);
+    if (accepted?.accepted !== true) fail('B580 VF draft-note check could not accept the mock waiver');
+  }
+
+  await js(`location.hash = '#/tuning'`);
+  await sleep(250);
+  await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((button) => button.textContent.trim() === 'Voltage-Frequency Curve')?.click()`);
+  if (!(await waitFor(win, `document.querySelectorAll('.vf-curve-dot').length >= 2`, 8000))) {
+    fail('B580 VF draft-note check could not open a valid LIVE curve');
+  }
+  const edit = await js(`(() => {
+    const dot = document.querySelector('.vf-curve-dot[data-idx="0"]');
+    if (!dot) return false;
+    dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 1, clientY: 1 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 1, clientY: 1 }));
+    const input = document.querySelector('.vf-curve-readout-input[data-readout-field="frequency"]');
+    if (!input || input.readOnly) return false;
+    input.value = String(Number(input.value) + 1);
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    const card = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"]');
+    const note = card?.querySelector('.vf-curve-editor .card-note')?.textContent ?? '';
+    return {
+      note,
+      applyVisible: card?.querySelector('.oc-chip-apply')?.hidden === false,
+      editedFrequency: Number(document.querySelector('.vf-curve-readout-input[data-readout-field="frequency"]')?.value),
+    };
+  })()`);
+  if (!edit || !edit.note.includes('unapplied VF curve draft')
+    || edit.note.includes('LIVE VF read-back is unavailable') || !edit.applyVisible) {
+    fail(`B580 VF draft-note state was not explained accurately: ${JSON.stringify(edit)}`);
+  }
+  await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply')?.click()`);
+  if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((state) => state.vfCurve?.[0]?.freqMhz === ${edit.editedFrequency})`, 8000))) {
+    fail('B580 VF draft-note check could not apply the edited curve through the mock UI');
+  }
+  const appliedNote = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .vf-curve-editor .card-note')?.textContent ?? ''`);
+  if (!appliedNote.includes('Hover a point for values') || appliedNote.includes('unapplied VF curve draft')) {
+    fail(`B580 VF applied curve retained a stale draft note: ${appliedNote}`);
+  }
+  return 'B580 mock: editing a readable LIVE curve shows an unapplied-draft note without claiming LIVE is unavailable';
+}
+
 async function runB580VfResetUiCheck(win, backend = null) {
   const js = (code) => win.webContents.executeJavaScript(code);
   const fail = (message) => { throw new UiVerifyFailure(message); };
@@ -6364,6 +6471,24 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   const selected = await js(`document.querySelector('.featureset-select').value`);
   if (selected !== fsId) fail(`current selection is '${selected}' (expected '${fsId}')`);
   step('boot', `shell + dropdown rendered: ${options.join(', ')} (current '${selected}')`);
+
+  if (process.env.RID_MOCK_VF_STOCK_REFERENCE_VERIFY === '1') {
+    if (fsId !== 'b580') fail('RID_MOCK_VF_STOCK_REFERENCE_VERIFY requires RID_MOCK_FEATURESET=b580');
+    step('vf-stock-reference-ui', await runB580VfStockReferenceUiCheck(win));
+    await runCloseToTrayProbe(win);
+    console.log(`\nUI VERIFY OK (featureset: ${fsId})\n` + steps.map((s) => '  ' + s).join('\n'));
+    app.exit(0);
+    return;
+  }
+
+  if (process.env.RID_MOCK_VF_DRAFT_NOTE_VERIFY === '1') {
+    if (fsId !== 'b580') fail('RID_MOCK_VF_DRAFT_NOTE_VERIFY requires RID_MOCK_FEATURESET=b580');
+    step('vf-draft-note-ui', await runB580VfDraftNoteUiCheck(win));
+    await runCloseToTrayProbe(win);
+    console.log(`\nUI VERIFY OK (featureset: ${fsId})\n` + steps.map((s) => '  ' + s).join('\n'));
+    app.exit(0);
+    return;
+  }
 
   if (process.env.RID_MOCK_VF_RESET_VERIFY === '1') {
     if (fsId !== 'b580') fail('RID_MOCK_VF_RESET_VERIFY requires RID_MOCK_FEATURESET=b580');

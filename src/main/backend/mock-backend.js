@@ -758,7 +758,11 @@ export class MockBackend {
   _buildState(fs) {
     const state = {
       gpuLock: fs.supportedControls.includes('gpuLock') ? { voltageV: 0, freqMhz: 0 } : null,
-      vfCurve: Array.isArray(fs.vfCurve) ? fs.vfCurve.map((p) => ({ ...p })) : null,
+      // UI verification can model the IGCL case where STOCK remains
+      // readable while LIVE fails its stability quorum.
+      vfCurve: Array.isArray(fs.vfCurve) && process.env.RID_MOCK_VF_LIVE_UNAVAILABLE !== '1'
+        ? fs.vfCurve.map((p) => ({ ...p }))
+        : null,
       // The fixture's curve is the driver's STOCK table. Keep it separate
       // from the mutable LIVE table so reset never redefines its own default
       // after a custom apply.

@@ -1783,6 +1783,7 @@ input[type="number"] {
 .vf-curve-grid { stroke: color-mix(in srgb, var(--accent) 28%, var(--border-strong)); stroke-width: 0.7; vector-effect: non-scaling-stroke; }
 .vf-curve-grid-edge { stroke: color-mix(in srgb, var(--accent) 42%, var(--border-strong)); stroke-width: 1; }
 .vf-curve-line { fill: none; stroke: var(--accent); stroke-width: 0.9; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.vf-curve-line-reference { stroke-dasharray: 2.5 1.5; opacity: .78; }
 .vf-curve-dots { position: absolute; inset: 0; }
 .vf-curve-dot {
   position: absolute;
@@ -1797,6 +1798,8 @@ input[type="number"] {
   transition: background .12s ease, border-color .12s ease, box-shadow .12s ease, transform .12s ease;
 }
 .vf-curve-dot:hover { background: var(--accent-soft); transform: translate(-50%, -50%) scale(1.12); }
+.vf-curve-dot-reference { cursor: help; touch-action: auto; }
+.vf-curve-dot-reference:hover { transform: translate(-50%, -50%) scale(1.04); }
 .vf-curve-dot:active { cursor: grabbing; }
 .vf-curve-dot:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent); }
 /* IGS-like selected point: a clean light centre keeps the active node
