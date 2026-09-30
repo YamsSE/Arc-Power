@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readStableVfCurve, readVfCurveAfterWrite, readVfCurveOnce, validateVfCurveReadback } from '../src/main/backend/vf-curve-readback.js';
+import { readStableVfCurve, readStableVfCurvePreflight, readVfCurveAfterWrite, readVfCurveOnce, validateVfCurveReadback } from '../src/main/backend/vf-curve-readback.js';
 
 const curveRange = { voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 0, freqMaxMhz: 4300 };
 const before = [
@@ -65,7 +65,41 @@ test('stable LIVE read fails closed when no curve reaches quorum', async () => {
   assert.deepEqual(result.points, []);
 });
 
-test('a materially different valid LIVE curve is rejected and the draft is preserved', () => {
+test('preflight retries one failed quorum and accepts only a complete later quorum', async () => {
+  let reads = 0;
+  const result = await readStableVfCurvePreflight({
+    readCurve: async () => {
+      const index = reads++;
+      return { ok: true, points: index < 5
+        ? before.map((point) => ({ ...point, Voltage: point.Voltage + index + 1 }))
+        : before };
+    },
+    pollIntervalMs: 0,
+    wait: async () => {},
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.consensus, 5);
+  assert.equal(reads, 10);
+  assert.deepEqual(result.points, before);
+});
+
+test('preflight refuses two failed quorums without accepting the latest sample', async () => {
+  let reads = 0;
+  const result = await readStableVfCurvePreflight({
+    readCurve: async () => {
+      const index = reads++;
+      return { ok: true, points: before.map((point) => ({ ...point, Voltage: point.Voltage + index + 1 })) };
+    },
+    pollIntervalMs: 0,
+    wait: async () => {},
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'readback-unstable');
+  assert.deepEqual(result.points, []);
+  assert.equal(reads, 10);
+});
+
+test('a materially different stable LIVE curve is reported as adjusted, not accepted', () => {
   const out = validateVfCurveReadback({
     readBack: { ok: true, points: observedByB580 },
     requestedPoints: requested,
@@ -122,7 +156,7 @@ test('a small valid driver rewrite is accepted and malformed tables remain rejec
     voltageV: point.Voltage / 1000,
     freqMhz: point.Frequency,
   })));
-  assert.match(normalized.message, /LIVE curve/);
+  assert.match(normalized.message, /editor now shows the applied LIVE curve/);
 
   const malformed = normalizedLive.map((point) => ({ ...point }));
   malformed[4].Voltage = malformed[3].Voltage;
@@ -137,7 +171,7 @@ test('a small valid driver rewrite is accepted and malformed tables remain rejec
   assert.match(invalidOut.message, /valid ordered LIVE curve/);
 });
 
-test('a valid changed LIVE curve is accepted only when it differs from the before-image', () => {
+test('a changed LIVE curve within one reported step is accepted as driver-adjusted', () => {
   const normalizedLive = requested.map((point) => ({ ...point }));
   normalizedLive[0].Frequency += 10;
   const out = validateVfCurveReadback({
@@ -147,10 +181,12 @@ test('a valid changed LIVE curve is accepted only when it differs from the befor
     curveRange: { ...curveRange, voltageStepV: 0.01, frequencyStepMhz: 10 },
   });
   assert.equal(out.ok, true);
+  assert.equal(out.driverAdjusted, true);
   assert.equal(out.normalized, true);
+  assert.equal(out.readBackEqual, false);
 });
 
-test('a 10 MHz rewrite is rejected when the driver reports no frequency step', () => {
+test('a changed curve is rejected when step metadata is absent', () => {
   const normalizedLive = requested.map((point) => ({ ...point }));
   normalizedLive[0].Frequency += 10;
   const out = validateVfCurveReadback({
@@ -161,6 +197,7 @@ test('a 10 MHz rewrite is rejected when the driver reports no frequency step', (
   });
   assert.equal(out.ok, false);
   assert.equal(out.errorCode, 'driver-adjusted');
+  assert.equal(out.normalized, false);
   assert.match(out.message, /outside the one-step normalization tolerance/);
 });
 
@@ -228,7 +265,7 @@ test('a valid read-back is returned for display when the before-image cannot pro
   assert.match(out.message, /before-image could not be verified/);
 });
 
-test('a valid one MHz driver normalization is reported as applied', () => {
+test('a valid one MHz driver adjustment is reported as applied', () => {
   const oneUnitReadBack = requested.map((point) => ({ ...point }));
   oneUnitReadBack[9].Frequency += 1;
   const out = validateVfCurveReadback({
@@ -241,9 +278,11 @@ test('a valid one MHz driver normalization is reported as applied', () => {
   assert.equal(out.ok, true);
   assert.equal(out.exact, false);
   assert.equal(out.normalized, true);
+  assert.equal(out.driverAdjusted, true);
+  assert.equal(out.readBackEqual, false);
 });
 
-test('VF verification accepts a stable LIVE quorum within one driver step after settling', async () => {
+test('VF verification adopts the stable LIVE quorum within one driver step', async () => {
   const landed = requested.map((point) => ({ ...point }));
   landed[0].Frequency += 10;
   let reads = 0;
@@ -265,6 +304,8 @@ test('VF verification accepts a stable LIVE quorum within one driver step after 
 
   assert.equal(out.ok, true);
   assert.equal(out.normalized, true);
+  assert.equal(out.driverAdjusted, true);
+  assert.equal(out.readBackEqual, false);
   assert.equal(reads, 5, 'the read-back must reach a 3-of-5 LIVE quorum');
   assert.deepEqual(waits, [3000, 100, 100, 100, 100]);
 });

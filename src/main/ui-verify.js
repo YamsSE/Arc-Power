@@ -1597,8 +1597,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     // b580's percent ranges (the swap response carries device-0's pair).
     const swapFsTo = (id) => js(`(() => {
       const s = document.querySelector('.featureset-select');
-      s.value = '${id}';
-      s.dispatchEvent(new Event('change', { bubbles: true }));
+      s?.click();
+      document.querySelector('.shared-dropdown-menu [role="option"][data-value="${id}"]')?.click();
     })()`);
     await swapFsTo('b580');
     if (!(await waitFor(win, `window.arcPower.listDevices().then((devices) => devices.some((d) => d.synthetic !== true && d.backendKind !== 'os' && (d.name ?? '').includes('B580')))` , 8000))) {
@@ -2614,8 +2614,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     // with the reverted 'Core clock' title.
     const lockSwapTo = (id) => js(`(() => {
       const s = document.querySelector('.featureset-select');
-      s.value = '${id}';
-      s.dispatchEvent(new Event('change', { bubbles: true }));
+      s?.click();
+      document.querySelector('.shared-dropdown-menu [role="option"][data-value="${id}"]')?.click();
     })()`);
     await lockSwapTo('a750');
     if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '190 W'`, 8000))) {
@@ -3274,7 +3274,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `!!document.querySelector('.featureset-select')`))) {
     fail('M2D: featureset dropdown missing in mock mode');
   }
-  const fsOptions = await js(`Array.from(document.querySelectorAll('.featureset-select option')).map((o) => o.value)`);
+  const fsOptions = await js(`Array.from(document.querySelector('.featureset-select')?.options ?? []).map((o) => o.dataset.value)`);
   // M17c/M17d: the a750 + the Acer AIB variant joined the distribution
   // (6 options).
   if (fsOptions.length !== 6) fail(`M2D: dropdown lists ${fsOptions.length} featuresets (expected 6)`);
@@ -3288,8 +3288,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const swapTo = (id) => js(`(() => {
     try {
       const s = document.querySelector('.featureset-select');
-      s.value = '${id}';
-      s.dispatchEvent(new Event('change', { bubbles: true }));
+      s?.click();
+      document.querySelector('.shared-dropdown-menu [role="option"][data-value="${id}"]')?.click();
       return 'ok';
     } catch (e) { return 'ERR: ' + (e && e.stack ? e.stack : String(e)); }
   })()`);
@@ -3339,6 +3339,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (vfGridShape.lines !== 11 || vfGridShape.axis !== 3 || vfGridShape.points < 2) {
     fail(`M170: Voltage-Frequency Curve grid shape is wrong: ${vfGrid}`);
   }
+
   await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((b) => (b.textContent ?? '').trim() === 'Offset')?.click()`);
   step('vf-grid', `Battlemage curve editor renders a compact coordinate grid (${vfGridShape.lines} grid lines, ${vfGridShape.axis} frequency ticks, ${vfGridShape.points} draggable points)`);
   step('fs-swap-b580', `swap -> b580: PL readout '217 W', user-facing watt units, gpuLock unsupported, vfCurve supported, VRAM clock editor present`);
@@ -6171,6 +6172,135 @@ export async function runGraphicsVerify(win, backend) {
 // a live swap round trip through the dropdown, and (b580 only) a
 // percent-unit apply round trip. Runs against MockBackend like the default.
 
+async function runB580VfResetUiCheck(win, backend = null) {
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const fail = (message) => { throw new UiVerifyFailure(message); };
+  const gotoView = async (label) => {
+    await js(`(() => {
+      const button = Array.from(document.querySelectorAll('.tuning-view-btn')).find((item) => item.textContent.trim() === '${label}');
+      if (button && !button.classList.contains('active')) button.click();
+    })()`);
+    await sleep(250);
+  };
+
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid .kv')).some((row) => (row.getAttribute('data-label') ?? '') === 'Compute')`, 10000))) {
+    fail('B580 VF reset check could not wait for mock GPU capabilities');
+  }
+
+  if (await js(`!!document.querySelector('.modal')`)) {
+    await js(`document.querySelector('.modal button.btn-danger')?.click()`);
+    if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('B580 VF reset check could not accept the mock waiver');
+  }
+  const waiver = await js(`window.arcPower.waiverGet(0)`);
+  if (waiver?.accepted !== true) {
+    const accepted = await js(`window.arcPower.waiverAccept(0)`);
+    if (accepted?.accepted !== true) fail('B580 VF reset check could not accept the mock waiver');
+  }
+
+  await js(`location.hash = '#/tuning'`);
+  await sleep(250);
+  await gotoView('Tuning');
+  const stock = await js(`window.arcPower.getCurrentSettings(0).then((state) => state.vfCurveDefault)`);
+  if (!Array.isArray(stock) || stock.length < 2) fail('B580 VF reset check has no STOCK curve');
+
+  const changedCurve = stock.map((point) => ({ ...point }));
+  changedCurve[changedCurve.length - 1].freqMhz += 10;
+  const changed = await js(`window.arcPower.applySettings(0, ${JSON.stringify({ vfCurve: changedCurve })})`);
+  if (changed?.result?.perControl?.vfCurve?.ok !== true) {
+    fail(`B580 VF reset check could not stage a changed LIVE curve: ${JSON.stringify(changed?.result ?? changed)}`);
+  }
+
+  // Establish active offsets through the UI before staging the reset. This
+  // reproduces the state where the real backend correctly refuses a VF
+  // write until both offsets are cleared, while keeping the mock curve
+  // unchanged for the UI flow assertions below.
+  const setOffsetAndApply = async (control, value, field) => {
+    await js(`(() => {
+      const input = document.querySelector('.oc-card[data-control="${control}"] input[type="range"]');
+      if (!input) return false;
+      input.value = '${value}';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    const applySelector = `.oc-card[data-control="${control}"] .oc-chip-apply`;
+    if (!(await waitFor(win, `(() => { const button = document.querySelector('${applySelector}'); return !!button && !button.hidden; })()`, 5000))) {
+      fail(`B580 VF reset check could not draft ${control}=${value}`);
+    }
+    await js(`document.querySelector('${applySelector}')?.click()`);
+    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((state) => state.${field} === ${value})`, 8000))) {
+      fail(`B580 VF reset check could not apply ${control}=${value}`);
+    }
+  };
+  await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((button) => button.textContent.trim() === 'Offset')?.click()`);
+  await setOffsetAndApply('gpuFreqOffsetMhz', 50, 'gpuFreqOffsetMhz');
+  await setOffsetAndApply('gpuVoltOffsetV', 10, 'gpuVoltOffsetV');
+  const customWithOffsets = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (JSON.stringify(customWithOffsets.vfCurve) !== JSON.stringify(changedCurve)) {
+    fail(`B580 VF reset check changed the custom curve while setting offsets: ${JSON.stringify(customWithOffsets.vfCurve)}`);
+  }
+
+  await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((button) => button.textContent.trim() === 'Voltage-Frequency Curve')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.vf-curve-stage')`))) fail('B580 VF reset check could not open the curve editor');
+  const hasReset = await js(`!!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-card-actions .btn-ghost')`);
+  if (!hasReset) fail('B580 VF reset check found no curve reset action');
+  await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-card-actions .btn-ghost')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.floating-apply') && !document.querySelector('.floating-apply').hidden`))) {
+    fail('B580 VF reset action did not stage an apply');
+  }
+  const stagedState = await js(`JSON.stringify({ card: document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply')?.hidden ?? null, floating: document.querySelector('.floating-apply')?.hidden ?? null, pending: document.querySelector('.tuning-pending-summary')?.textContent ?? null })`);
+
+  await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((button) => button.textContent.trim() === 'Offset')?.click()`);
+  const canApply = await js(`(() => {
+    const card = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply');
+    const floating = document.querySelector('.floating-apply');
+    return JSON.stringify({ cardExists: !!card, cardHidden: card?.hidden ?? null, floatingExists: !!floating, floatingHidden: floating?.hidden ?? null, mode: Array.from(document.querySelectorAll('.oc-vf-mode-btn')).map((button) => [button.textContent.trim(), button.classList.contains('active')]), pending: document.querySelector('.tuning-pending-summary')?.textContent ?? null });
+  })()`);
+  const applyState = JSON.parse(canApply);
+  if (!applyState.cardExists || applyState.cardHidden || !applyState.floatingExists || applyState.floatingHidden) {
+    fail(`switching to Offset mode discarded the staged B580 STOCK reset: staged=${stagedState}, after=${canApply}`);
+  }
+
+  if (!backend || typeof backend.injectFail !== 'function') {
+    fail('B580 VF reset check needs the mock backend failure-injection hook');
+  }
+  backend.injectFail('vfCurve', 'io-failed', true);
+  await js(`document.querySelectorAll('.toast').forEach((toast) => toast.remove())`);
+  await js(`document.querySelector('.floating-apply')?.click()`);
+  if (!(await waitFor(win, `(() => { const result = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .tuning-card-result'); return !!result && !result.hidden && result.textContent.trim() === 'Not applied'; })()`, 8000))) {
+    fail('B580 VF reset check did not retain the staged STOCK reset after an injected VF apply failure');
+  }
+  const failedApplyState = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (JSON.stringify(failedApplyState.vfCurve) !== JSON.stringify(changedCurve)) {
+    fail('B580 VF reset check changed LIVE after the injected apply failure');
+  }
+
+  const resetAndApplyOffset = async (control, field) => {
+    await js(`document.querySelector('.oc-card[data-control="${control}"] .oc-card-actions .btn-ghost')?.click()`);
+    const applySelector = `.oc-card[data-control="${control}"] .oc-chip-apply`;
+    if (!(await waitFor(win, `(() => { const button = document.querySelector('${applySelector}'); return !!button && !button.hidden; })()`, 5000))) {
+      fail(`B580 VF reset check could not expose the ${control} offset Apply action`);
+    }
+    await js(`document.querySelector('${applySelector}')?.click()`);
+    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((state) => state.${field} === 0)`, 8000))) {
+      fail(`B580 VF reset check could not clear ${control}`);
+    }
+    const afterOffsetReset = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (JSON.stringify(afterOffsetReset.vfCurve) !== JSON.stringify(changedCurve)) {
+      fail(`clearing ${control} discarded the staged VF reset or changed LIVE`);
+    }
+  };
+  await resetAndApplyOffset('gpuFreqOffsetMhz', 'gpuFreqOffsetMhz');
+  await resetAndApplyOffset('gpuVoltOffsetV', 'gpuVoltOffsetV');
+
+  await js(`document.querySelectorAll('.toast').forEach((toast) => toast.remove())`);
+  await js(`document.querySelector('.floating-apply')?.click()`);
+  if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((state) => JSON.stringify(state.vfCurve) === JSON.stringify(state.vfCurveDefault))`, 8000))) {
+    fail('applying the staged B580 VF reset did not restore the exact STOCK table');
+  }
+  return 'B580 mock: failed curve apply retained the STOCK reset; Offset-mode card actions cleared both offsets, and Floating Apply restored the exact STOCK table';
+}
+
 /**
  * @param {import('electron').BrowserWindow} win
  * @param {string} fsId the RID_MOCK_FEATURESET value driving this run
@@ -6223,14 +6353,26 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   if (await js(`document.body.textContent.includes('Service Status')`)) fail('M3-A: "Service Status" still rendered');
   if (await js(`document.body.textContent.includes('IGS')`)) fail('M3-A: IGS still surfaced as a status item');
   if (!(await waitFor(win, `!!document.querySelector('.badge-mock')`))) fail('mock badge missing');
-  if (!(await waitFor(win, `!!document.querySelector('.featureset-select')`))) fail('featureset dropdown missing in mock mode');
-  const options = await js(`Array.from(document.querySelectorAll('.featureset-select option')).map((o) => o.value)`);
+  if (!(await waitFor(win, `!!document.querySelector('.featureset-select') && document.querySelector('.featureset-select').options.length === 6`, 10000))) {
+    const count = await js(`document.querySelector('.featureset-select')?.options.length ?? 0`);
+    fail(`featureset dropdown missing or still loading in mock mode; rendered ${count} custom options`);
+  }
+  const options = await js(`Array.from(document.querySelector('.featureset-select').options).map((o) => o.dataset.value)`);
   // M17c/M17d: the a750 + the Acer AIB variant joined the distribution
   // (6 files).
   if (options.length !== 6) fail(`dropdown lists ${options.length} featuresets (expected 6)`);
   const selected = await js(`document.querySelector('.featureset-select').value`);
   if (selected !== fsId) fail(`current selection is '${selected}' (expected '${fsId}')`);
   step('boot', `shell + dropdown rendered: ${options.join(', ')} (current '${selected}')`);
+
+  if (process.env.RID_MOCK_VF_RESET_VERIFY === '1') {
+    if (fsId !== 'b580') fail('RID_MOCK_VF_RESET_VERIFY requires RID_MOCK_FEATURESET=b580');
+    step('vf-reset-ui', await runB580VfResetUiCheck(win, backend));
+    await runCloseToTrayProbe(win);
+    console.log(`\nUI VERIFY OK (featureset: ${fsId})\n` + steps.map((s) => '  ' + s).join('\n'));
+    app.exit(0);
+    return;
+  }
 
   // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
   // EVERY session; Cancel it BEFORE the per-featureset assertions (F4: the
@@ -6432,6 +6574,8 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
       if (!vramMeta.includes('MHz')) fail(`M4J (D): the VRAM card meta line does not show MHz units: '${vramMeta}'`);
       if (await js(`!!document.querySelector('.oc-mode-col-mode')`)) fail('M4J (D): the Battlemage Stock/Advanced toggle is visible');
       step('oc-b580', `b580: 5 cards, PL '${plRange}', readout '${plValue}', freq ${b580FreqMin}..${b580FreqMax} MHz, volt '${b580VoltRange}', no Stock/Advanced toggle, no preset chips (M3-C-G), VRAM card 2375..3000 MHz step 1`);
+
+      step('vf-reset-ui', await runB580VfResetUiCheck(win, backend));
     } else if (fsId === 'a750' || fsId === 'acer-a750') {
       // M17c/M17d (round-1 N2 + round-1 S1): the a750 slider maxes are
       // AUTOMATED here (the user-hardware-only pin becomes a mock variant;
@@ -6713,8 +6857,8 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   // --- live swap round trip through the dropdown ----------------------------
   const swapTo = (id) => js(`(() => {
     const s = document.querySelector('.featureset-select');
-    s.value = '${id}';
-    s.dispatchEvent(new Event('change', { bubbles: true }));
+    s?.click();
+    document.querySelector('.shared-dropdown-menu [role="option"][data-value="${id}"]')?.click();
   })()`);
   await gotoOverclocking();
   await swapTo('a770');

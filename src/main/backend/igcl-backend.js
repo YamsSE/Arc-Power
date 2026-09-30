@@ -75,7 +75,7 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
 import { isValidNativeVfCurve, prepareVfCurveForDriver, vfCurveNeedsWrite } from '../../renderer/pure/vf-curve.ts';
-import { readStableVfCurve, readVfCurveAfterWrite } from './vf-curve-readback.js';
+import { readStableVfCurve, readStableVfCurvePreflight, readVfCurveAfterWrite } from './vf-curve-readback.js';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
@@ -6706,10 +6706,9 @@ export class IgclBackend {
           vfStatus?.reason ?? 'custom VF curve not supported on this device',
         );
       } else {
-        // Intel's sample sets the accepted waiver only after reading the
-        // source table, immediately before submitting the edited points. Keep
-        // the consent replay at the native setter boundary so no extra LIVE
-        // or offset reads intervene.
+        // Replay the accepted waiver before the final source and LIVE reads.
+        // That final snapshot guards the one setter against preflight state
+        // changing while the rest of this transaction is prepared.
         const replayVfWaiver = () => {
           if (this._waiverAccepted.get(deviceId) !== true || this._allowAutoWaiver) return true;
           if (this._isUnavailable(lib.ctlOverclockWaiverSet)) {
@@ -6753,12 +6752,13 @@ export class IgclBackend {
             // driver builds expose only LIVE, so fall back to that read without
             // changing the write payload shape.
             const stockProbe = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
+            const sourceType = stockProbe.ok ? 0 : (stockProbe.fallbackToLive ? 1 : null);
             const native = stockProbe.ok
-              ? await readStableVfCurve({
+              ? await readStableVfCurvePreflight({
                 readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 0, 0),
               })
               : (stockProbe.fallbackToLive
-                ? await readStableVfCurve({
+                ? await readStableVfCurvePreflight({
                   readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
                 })
                 : stockProbe);
@@ -6773,7 +6773,7 @@ export class IgclBackend {
               // LIVE is the before-image for no-op detection. STOCK is only
               // the native write shape; on Battlemage the two tables can
               // legitimately differ after an active tuning change.
-              const liveBefore = await readStableVfCurve({
+              const liveBefore = await readStableVfCurvePreflight({
                 readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
               });
               const liveCanonical = liveBefore?.ok === true
@@ -6832,33 +6832,63 @@ export class IgclBackend {
                       // still have changed driver state. Never replay a VF
                       // setter automatically; surface the original result.
                       if (replayVfWaiver()) {
-                        const setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, pointsBuf);
-                        if (setResult !== CTL_RESULT.SUCCESS) {
-                          fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+                        const sourceNow = await this._readVfCurvePointsWithRetry(dev.handle, sourceType, 0);
+                        const liveNow = await this._readVfCurvePointsWithRetry(dev.handle, 1, 0);
+                        const matchesPreflight = (current, prior) => current.ok === true
+                          && current.points.length === prior.points.length
+                          && current.points.every((point, index) => point.Voltage === prior.points[index].Voltage
+                            && point.Frequency === prior.points[index].Frequency);
+                        if (!sourceNow.ok || !liveNow.ok) {
+                          fail('vfCurve', 'readback-unverified', 'The final STOCK/LIVE VF source snapshot could not be read after waiver replay. No curve write was sent.');
+                        } else if (!matchesPreflight(sourceNow, native) || !matchesPreflight(liveNow, liveBefore)) {
+                          fail('vfCurve', 'readback-unstable', 'The STOCK/LIVE VF source changed after preflight. No curve write was sent. Read the current curve and try again.');
                         } else {
-                          // Submit once, allow the driver to settle, then
-                          // require a stable LIVE quorum. Only exact writes or
-                          // one-step quantization are accepted as applied.
-                          const v = await readVfCurveAfterWrite({
-                            readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
-                            requestedPoints: points,
-                            liveBefore,
-                            curveRange,
-                            maxAttempts: VF_READBACK_MAX_ATTEMPTS,
-                            quorum: Math.ceil(VF_READBACK_MAX_ATTEMPTS * 0.7),
-                            pollIntervalMs: VF_READBACK_SETTLE_MS,
-                          });
-                          result.perControl.vfCurve = {
-                            ok: v.ok,
-                            readBackEqual: v.exact === true,
-                            normalized: v.normalized === true,
-                            errorCode: v.ok ? undefined : (v.errorCode ?? 'io-failed'),
-                            driverAdjusted: v.driverAdjusted === true,
-                            silentNoop: v.silentNoop === true,
-                            message: v.message,
-                            ...(Array.isArray(v.appliedCurve) ? { readBackCurve: v.appliedCurve } : {}),
-                          };
-                          if (!v.ok) result.ok = false;
+                          // IGS or another tuning client can change either
+                          // scalar offset while the waiver and source reads
+                          // above are awaiting the driver. Recheck both
+                          // synchronously at the native setter boundary so
+                          // the zero-offset requirement cannot go stale.
+                          const finalFrequencyOffset = readCurrentOffset('gpuFreqOffset', 'gpuFreqOffset');
+                          const finalVoltageOffset = readCurrentOffset('gpuVoltOffset', 'gpuVoltOffset');
+                          const finalOffsetUnknown = !finalFrequencyOffset.ok || !finalVoltageOffset.ok;
+                          const finalOffsetActive = [finalFrequencyOffset.value, finalVoltageOffset.value]
+                            .some((value) => Number.isFinite(value) && Math.abs(value) > 0.001);
+                          if (finalOffsetUnknown) {
+                            fail('vfCurve', 'dependency-failed', 'The GPU core offsets could not be rechecked immediately before the VF write. No curve write was sent. Verify both core offsets are zero and try again.');
+                          } else if (finalOffsetActive) {
+                            fail('vfCurve', 'dependency-failed', 'A GPU core offset changed while preparing the VF curve. No curve write was sent. Reset both core offsets to zero and try again.');
+                          } else {
+                            const setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, pointsBuf);
+                            if (setResult !== CTL_RESULT.SUCCESS) {
+                              fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+                            } else {
+                              // Submit once, allow the driver to settle, then
+                              // require a stable LIVE quorum. IGCL documents
+                              // that LIVE may be adjusted after a successful
+                              // write, so the validated LIVE result is returned
+                              // to the editor instead of resending the stale draft.
+                              const v = await readVfCurveAfterWrite({
+                                readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+                                requestedPoints: points,
+                                liveBefore,
+                                curveRange,
+                                maxAttempts: VF_READBACK_MAX_ATTEMPTS,
+                                quorum: Math.ceil(VF_READBACK_MAX_ATTEMPTS * 0.7),
+                                pollIntervalMs: VF_READBACK_SETTLE_MS,
+                              });
+                              result.perControl.vfCurve = {
+                                ok: v.ok,
+                                readBackEqual: v.exact === true,
+                                normalized: v.normalized === true,
+                                errorCode: v.ok ? undefined : (v.errorCode ?? 'io-failed'),
+                                driverAdjusted: v.driverAdjusted === true,
+                                silentNoop: v.silentNoop === true,
+                                message: v.message,
+                                ...(Array.isArray(v.appliedCurve) ? { readBackCurve: v.appliedCurve } : {}),
+                              };
+                              if (!v.ok) result.ok = false;
+                            }
+                          }
                         }
                       }
                     }

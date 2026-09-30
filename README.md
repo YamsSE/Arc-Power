@@ -63,7 +63,7 @@ The default overlay shortcuts are **CTRL+O** for the Arc Power overlay and **CTR
 
 Overclocking can damage hardware and may void warranties. Monitor temperatures, power, and stability. Arc Power uses reported or verified device limits and checks applied values by reading them back. A failed read-back is reported as a failed apply.
 
-VF curve points follow the voltage and frequency steps reported by the driver. Arc Power reads back the complete LIVE curve after each write and reports success only when it exactly matches the requested points. A driver-adjusted curve or an unchanged curve is reported as a failed apply. B580 curve behavior still needs a successful hardware verification against IGS. Keep both GPU core offsets at zero before applying a custom curve.
+VF curve points follow the voltage and frequency steps reported by the driver. Arc Power reads back the complete LIVE curve after each write. An exact match succeeds; a difference of at most one reported driver step per point is shown as a driver adjustment. Larger remaps, unstable read-back, and a write that leaves LIVE unchanged are reported as a failed apply, with the requested draft preserved. B580 curve behavior still needs a successful hardware verification against IGS. Keep both GPU core offsets at zero before applying a custom curve.
 
 - **A control is unavailable:** the selected GPU or driver does not report that capability.
 - **An apply requests permission:** approve the Windows UAC prompt. The installed build is recommended for startup applies.

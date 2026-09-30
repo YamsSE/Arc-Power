@@ -1714,7 +1714,11 @@ export class MockBackend {
     }
 
     if (settings.vfCurve) {
-      if (!caps.controls.vfCurve) {
+      if (this._failOn.vfCurve) {
+        result.perControl.vfCurve = { ok: false, errorCode: this._failOn.vfCurve, message: 'injected failure (vfCurve)' };
+        result.ok = false;
+        this._consumeFailOnce('vfCurve');
+      } else if (!caps.controls.vfCurve) {
         result.perControl.vfCurve = { ok: false, errorCode: 'unsupported', message: 'custom VF curve not supported on this device' };
         result.ok = false;
       } else {

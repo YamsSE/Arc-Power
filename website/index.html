@@ -302,7 +302,7 @@
           <span class="chip chip-ok">Verified<span class="chip-sub">- Tweaks &amp; Telemetry only</span></span>
         </div>
       </div>
-      <p class="section-sub">VF points follow the voltage and frequency steps reported by the driver. Arc Power reads back the full LIVE curve and reports success only when it exactly matches the requested points. A driver-adjusted or unchanged curve is reported as a failed apply. B580 behavior still needs successful hardware verification against IGS.</p>
+      <p class="section-sub">VF points follow the voltage and frequency steps reported by the driver. Arc Power reads back the full LIVE curve. Exact matches succeed; differences of at most one reported driver step per point are shown as driver adjustments. Larger remaps, unstable read-back, and a write that leaves LIVE unchanged fail verification while preserving the requested draft. B580 behavior still needs successful hardware verification against IGS.</p>
     </section>
 
     <!-- ============================== SAFETY ============================== -->

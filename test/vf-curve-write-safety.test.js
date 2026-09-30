@@ -26,11 +26,17 @@ function fixture({
   live = liveDefault.map((point) => ({ ...point })),
   frequencyOffset = 0,
   voltageOffset = 0,
+  frequencyOffsetReads = null,
+  voltageOffsetReads = null,
   writeTransform = (points) => points,
 } = {}) {
   const writes = [];
   const scalarWrites = [];
   const nativeEvents = [];
+  const frequencyOffsetSequence = frequencyOffsetReads ?? [frequencyOffset];
+  const voltageOffsetSequence = voltageOffsetReads ?? [voltageOffset];
+  let frequencyOffsetReadIndex = 0;
+  let voltageOffsetReadIndex = 0;
   const libs = {
     ctlOverclockReadVFCurve(_handle, type, _details, countBuffer, pointsBuffer) {
       nativeEvents.push(pointsBuffer === null ? `read-${type}-count` : `read-${type}-table`);
@@ -60,12 +66,14 @@ function fixture({
     },
     ctlOverclockGpuFrequencyOffsetGetV2(_handle, buffer) {
       nativeEvents.push('get-frequency-offset');
-      koffi.encode(buffer, 'double', frequencyOffset);
+      const value = frequencyOffsetSequence[Math.min(frequencyOffsetReadIndex++, frequencyOffsetSequence.length - 1)];
+      koffi.encode(buffer, 'double', value);
       return CTL_RESULT.SUCCESS;
     },
     ctlOverclockGpuMaxVoltageOffsetGetV2(_handle, buffer) {
       nativeEvents.push('get-voltage-offset');
-      koffi.encode(buffer, 'double', voltageOffset);
+      const value = voltageOffsetSequence[Math.min(voltageOffsetReadIndex++, voltageOffsetSequence.length - 1)];
+      koffi.encode(buffer, 'double', value);
       return CTL_RESULT.SUCCESS;
     },
     ctlOverclockGpuFrequencyOffsetSetV2() {
@@ -151,8 +159,8 @@ test('an invalid LIVE before-image refuses the curve write without a quorum erro
   assert.deepEqual(writes, []);
 });
 
-test('an unstable LIVE before-image refuses a B580 curve write', async () => {
-  const samples = Array.from({ length: 5 }, (_, read) => liveDefault.map((point, index) => ({
+test('an unstable LIVE before-image refuses a B580 curve write after the bounded retry', async () => {
+  const samples = Array.from({ length: 10 }, (_, read) => liveDefault.map((point, index) => ({
     ...point,
     Voltage: point.Voltage + read + index,
   })));
@@ -167,7 +175,7 @@ test('an unstable LIVE before-image refuses a B580 curve write', async () => {
 });
 
 test('an unstable STOCK table refuses a B580 curve write and is never used as a reset source', async () => {
-  const unstableStockReads = Array.from({ length: 5 }, (_, read) => stock.map((point, index) => ({
+  const unstableStockReads = Array.from({ length: 10 }, (_, read) => stock.map((point, index) => ({
     ...point,
     Voltage: point.Voltage + read + index + 1,
   })));
@@ -180,6 +188,68 @@ test('an unstable STOCK table refuses a B580 curve write and is never used as a 
   assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
   assert.match(result.perControl.vfCurve.message, /stable 3-of-5 read quorum/);
   assert.deepEqual(writes, []);
+});
+
+test('a transient failed LIVE preflight quorum retries and then writes once', async () => {
+  const unstable = Array.from({ length: 5 }, (_, read) => liveDefault.map((point) => ({
+    ...point,
+    Voltage: point.Voltage + read + 1,
+  })));
+  const { backend, writes } = fixture();
+  sequenceLiveReads(backend, [...unstable, ...Array(5).fill(liveDefault)]);
+  const result = await backend.applySettings(0, { vfCurve: stockCanonical });
+
+  assert.equal(result.perControl.vfCurve.ok, true);
+  assert.equal(result.perControl.vfCurve.readBackEqual, true);
+  assert.deepEqual(writes, ['vf']);
+});
+
+test('a changed STOCK source after waiver replay refuses the setter', async () => {
+  const changedStock = stock.map((point) => ({ ...point }));
+  changedStock[1].Frequency += 10;
+  const { backend, writes, nativeEvents } = fixture();
+  sequenceCurveReads(backend, 0, [...Array(6).fill(stock), changedStock]);
+  await backend.restoreWaiverState(0, true);
+  const result = await backend.applySettings(0, { vfCurve: stockCanonical });
+
+  assert.equal(result.perControl.vfCurve.ok, false);
+  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
+  assert.match(result.perControl.vfCurve.message, /STOCK\/LIVE VF source changed after preflight/);
+  assert.deepEqual(writes, []);
+  assert.equal(nativeEvents.filter((event) => event === 'waiver').length, 1);
+});
+
+test('a changed LIVE before-image after waiver replay refuses the setter', async () => {
+  const changedLive = liveDefault.map((point) => ({ ...point }));
+  changedLive[1].Frequency += 10;
+  const { backend, writes, nativeEvents } = fixture();
+  sequenceLiveReads(backend, [...Array(5).fill(liveDefault), changedLive]);
+  await backend.restoreWaiverState(0, true);
+  const result = await backend.applySettings(0, { vfCurve: stockCanonical });
+
+  assert.equal(result.perControl.vfCurve.ok, false);
+  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
+  assert.deepEqual(writes, []);
+  assert.equal(nativeEvents.filter((event) => event === 'waiver').length, 1);
+});
+
+test('a core offset that changes after final curve reads refuses the setter', async (t) => {
+  for (const scenario of [
+    { name: 'frequency', options: { frequencyOffsetReads: [0, 50] } },
+    { name: 'voltage', options: { voltageOffsetReads: [0, 10] } },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const { backend, writes, nativeEvents } = fixture(scenario.options);
+      await backend.restoreWaiverState(0, true);
+      const result = await backend.applySettings(0, { vfCurve: stockCanonical });
+
+      assert.equal(result.perControl.vfCurve.ok, false);
+      assert.equal(result.perControl.vfCurve.errorCode, 'dependency-failed');
+      assert.match(result.perControl.vfCurve.message, /changed while preparing/);
+      assert.deepEqual(writes, []);
+      assert.equal(nativeEvents.at(-1), 'get-voltage-offset');
+    });
+  }
 });
 
 test('getCapabilities keeps B580 VF controls visible after a refused probe and unstable STOCK preflight never writes', async () => {
@@ -248,7 +318,7 @@ test('getCapabilities keeps B580 VF controls visible after a refused probe and u
   assert.equal(capability.controls.vfCurve, true);
   assert.deepEqual(capability.controlStatus.vfCurve, { state: 'runtime-refused', reason: probeReason });
 
-  const unstableStockReads = Array.from({ length: 5 }, (_, read) => stock.map((point, index) => ({
+  const unstableStockReads = Array.from({ length: 10 }, (_, read) => stock.map((point, index) => ({
     ...point,
     Voltage: point.Voltage + read + index + 1,
   })));
@@ -401,7 +471,12 @@ test('B580 submits changed custom curves and withholds conflicting profile offse
   assert.deepEqual(writes, ['vf']);
   assert.deepEqual(scalarWrites, [], 'conflicting core offsets are not written');
   assert.equal(nativeEvents.filter((event) => event === 'waiver').length, 1);
-  assert.equal(nativeEvents[nativeEvents.indexOf('write') - 1], 'waiver', 'replay the accepted waiver immediately before the one curve write');
+  const waiverIndex = nativeEvents.indexOf('waiver');
+  const writeIndex = nativeEvents.indexOf('write');
+  assert.deepEqual(nativeEvents.slice(waiverIndex + 1, writeIndex), [
+    'read-0-count', 'read-0-table', 'read-1-count', 'read-1-table',
+    'get-frequency-offset', 'get-voltage-offset',
+  ], 'replay the accepted waiver before the final STOCK/LIVE source snapshot and the one curve write');
   assert.deepEqual(canonical(live), requested);
 });
 
@@ -416,7 +491,7 @@ test('B580 STOCK profile submits and verifies the exact driver STOCK table', asy
   assert.deepEqual(canonical(live), stockCanonical);
 });
 
-test('B580 reports a valid driver-remapped curve as normalized success', async () => {
+test('B580 adopts a valid driver-remapped curve and does not submit it again', async () => {
   const requested = [
     { voltageV: 0.75, freqMhz: 1500 },
     { voltageV: 0.85, freqMhz: 2200 },
@@ -436,11 +511,18 @@ test('B580 reports a valid driver-remapped curve as normalized success', async (
   assert.equal(result.perControl.vfCurve.readBackEqual, false);
   assert.equal(result.perControl.vfCurve.normalized, true);
   assert.equal(result.perControl.vfCurve.ok, true);
-  assert.deepEqual(result.perControl.vfCurve.readBackCurve, requested.map((point) => ({
+  assert.equal(result.perControl.vfCurve.driverAdjusted, true);
+  const appliedCurve = requested.map((point) => ({
     voltageV: point.voltageV + 0.001,
     freqMhz: point.freqMhz + 10,
-  })));
+  }));
+  assert.deepEqual(result.perControl.vfCurve.readBackCurve, appliedCurve);
   assert.deepEqual(writes, ['vf']);
+
+  const repeated = await backend.applySettings(0, { vfCurve: appliedCurve });
+  assert.equal(repeated.perControl.vfCurve.ok, true);
+  assert.equal(repeated.perControl.vfCurve.readBackEqual, true);
+  assert.deepEqual(writes, ['vf'], 'a later Apply of LIVE state must be a no-op');
 });
 
 test('malformed finite LIVE before-image prevents a VF write on other driver builds', async () => {

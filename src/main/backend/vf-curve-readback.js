@@ -1,5 +1,5 @@
-// IGCL can normalize a successful custom VF write. Verify the resulting LIVE
-// table and distinguish a valid driver normalization from a no-op or bad read.
+// Verify the resulting LIVE table after a custom VF write and distinguish a
+// changed driver result from a no-op or bad read.
 const DEFAULT_VF_READBACK_INTERVAL_MS = 100;
 const DEFAULT_VF_CONSENSUS_ATTEMPTS = 5;
 const DEFAULT_VF_CONSENSUS_QUORUM = 3;
@@ -74,6 +74,14 @@ export async function readStableVfCurve({
     errorCode: 'readback-unstable',
     message: `The VF curve did not produce a stable ${required}-of-${attempts} read quorum through the latest read. No curve state was accepted.`,
   };
+}
+
+/** Retry a failed preflight quorum once. Each accepted snapshot must still
+ * independently satisfy the full read quorum, including its latest sample. */
+export async function readStableVfCurvePreflight(options = {}) {
+  const first = await readStableVfCurve(options);
+  if (first.ok || !['readback-unverified', 'readback-unstable'].includes(first.errorCode)) return first;
+  return readStableVfCurve(options);
 }
 
 /** Read one LIVE sample for an apply transaction. Unlike passive state reads,
@@ -165,24 +173,24 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
   }
 
   if (pointsEqual(readBack.points, requestedPoints)) {
-    return { ok: true, exact: true, normalized: false, appliedCurve };
+    return { ok: true, exact: true, readBackEqual: true, normalized: false, driverAdjusted: false, appliedCurve };
   }
 
   if (requestedDiffersFromBefore && liveDiffersFromBefore) {
-    // Only call a changed value driver normalization when IGCL reported the
-    // corresponding native step. Unknown step metadata means exact match is
-    // the only evidence-backed acceptance rule; never invent a 10 MHz step.
+    const index = readBack.points.findIndex((point, pointIndex) =>
+      point.Voltage !== requestedPoints[pointIndex].Voltage
+      || point.Frequency !== requestedPoints[pointIndex].Frequency);
     const voltageToleranceMv = Number.isFinite(curveRange?.voltageStepV) && curveRange.voltageStepV > 0
       ? Math.max(1, Math.round(curveRange.voltageStepV * 1000))
       : 0;
     const frequencyToleranceMhz = Number.isFinite(curveRange?.frequencyStepMhz) && curveRange.frequencyStepMhz > 0
       ? Math.max(1, Math.round(curveRange.frequencyStepMhz))
       : 0;
-    const outsideNormalizationTolerance = readBack.points.findIndex((point, index) =>
-      Math.abs(point.Voltage - requestedPoints[index].Voltage) > voltageToleranceMv
-      || Math.abs(point.Frequency - requestedPoints[index].Frequency) > frequencyToleranceMhz);
+    const outsideNormalizationTolerance = readBack.points.findIndex((point, pointIndex) =>
+      Math.abs(point.Voltage - requestedPoints[pointIndex].Voltage) > voltageToleranceMv
+      || Math.abs(point.Frequency - requestedPoints[pointIndex].Frequency) > frequencyToleranceMhz);
     if (outsideNormalizationTolerance >= 0) {
-      const index = outsideNormalizationTolerance;
+      const mismatchIndex = outsideNormalizationTolerance;
       return {
         ok: false,
         exact: false,
@@ -191,17 +199,20 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
         driverAdjusted: true,
         errorCode: 'driver-adjusted',
         appliedCurve,
-        message: `The driver returned a stable LIVE VF curve outside the one-step normalization tolerance. Point ${index + 1} requested ${requestedPoints[index].Voltage} mV / ${requestedPoints[index].Frequency} MHz; LIVE is ${readBack.points[index].Voltage} mV / ${readBack.points[index].Frequency} MHz. The requested draft was kept unchanged.`,
+        message: `The driver returned a stable LIVE VF curve outside the one-step normalization tolerance. Point ${mismatchIndex + 1} requested ${requestedPoints[mismatchIndex].Voltage} mV / ${requestedPoints[mismatchIndex].Frequency} MHz; LIVE is ${readBack.points[mismatchIndex].Voltage} mV / ${readBack.points[mismatchIndex].Frequency} MHz. The requested draft was kept unchanged.`,
       };
     }
     return {
+      // IGCL permits a successful setter to land within a small native-step
+      // normalization of the request. Use that stable LIVE table as the
+      // applied state so a one-step remap is not resent on the next Apply.
       ok: true,
       exact: false,
-      normalized: true,
       readBackEqual: false,
+      normalized: true,
       driverAdjusted: true,
       appliedCurve,
-      message: 'Applied. The driver adjusted the requested VF curve; the editor now shows the LIVE curve.',
+      message: `The driver applied a stable LIVE VF curve different from the request. Point ${index + 1} requested ${requestedPoints[index].Voltage} mV / ${requestedPoints[index].Frequency} MHz; LIVE is ${readBack.points[index].Voltage} mV / ${readBack.points[index].Frequency} MHz. The editor now shows the applied LIVE curve.`,
     };
   }
   if (hasBeforeImage && liveDiffersFromBefore) {
@@ -230,7 +241,7 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
     ok: false,
     exact: false,
     normalized: false,
-      driverAdjusted: requestedDiffersFromBefore && liveDiffersFromBefore,
+    driverAdjusted: requestedDiffersFromBefore && liveDiffersFromBefore,
     silentNoop,
     errorCode: silentNoop ? 'driver-noop' : 'readback-unverified',
     appliedCurve,

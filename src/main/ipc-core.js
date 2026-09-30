@@ -33,6 +33,8 @@ import { collectHealth } from './health.js';
 import { createIntelDriverUpdateService, INTEL_DRIVER_PAGES } from './intel-driver-update.js';
 import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_SCALING_METHOD_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual, deviceHardwareKey, isIntegratedStyleDevice } from './backend/units.js';
+import { isBattlemageGpuName } from '../renderer/pure/hardware-icons.ts';
+import { isValidNativeVfCurve } from '../renderer/pure/vf-curve.ts';
 import { pnpParts } from './gpu-inventory.js';
 import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createMockRegistryApply } from './registry-apply.js';
@@ -293,6 +295,8 @@ const MAX_CURVE_POINTS = 32;
 // Reset read-back tolerance (canonical units; a reset must land on the
 // capability default within this).
 const RESET_VERIFY_EPS = 1e-6;
+const RESET_VERIFY_ATTEMPTS = 5;
+const RESET_VERIFY_INTERVAL_MS = 1500;
 // M5: the RTSS overlay scale range (mirrored in pure/overlay.ts). The
 // native provider has four integer font zoom levels, represented here as
 // Quarter-size increments keep the existing persisted range compatible while
@@ -1212,6 +1216,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   bootApplyOutcome?: () => ({ ok: boolean, detail: string, at: number } | null),  // M4N: the window-path boot apply's outcome record (main.js injects it; null when no boot apply ran this session)
  *   oldIgcl?: object,            // bundled-2023-runtime adapter (apply-routing)
  *   applyRunner?: object|null,   // elevation-aware apply runner (elevated-apply)
+ *   resetVerifyWait?: (ms: number) => Promise<void>, // injectable reset read-back delay for tests
  *   isElevated?: () => boolean,  // elevation probe for the app-elevated channel
  *   mock?: {                     // M2D: mock-only featureset control. When null
  *                                // (real mode) the mock:* channels are NOT
@@ -1366,6 +1371,7 @@ export function createIpcHandlers({
   // (applies run in-process) - safe for tests and mock mode.
   oldIgcl = createNullOldIgcl(),
   applyRunner = null,
+  resetVerifyWait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   isElevated = detectElevated,
   mock = null,
   // M5: the injected overlay-window ops. The DEFAULT is the honest
@@ -3457,19 +3463,13 @@ export function createIpcHandlers({
           }
         }
         let state = null;
+        let hasWorkerState = false;
         if (applyRunner?.needsWorker?.()) {
           const out = await applyRunner.reset(deviceId, target?.deviceKey ?? null, resetPhysicalTarget);
-          state = out.state;
+          state = out?.state ?? null;
+          hasWorkerState = true;
         } else {
           await backend.resetToDefaults(deviceId);
-          try {
-            state = await backend.getCurrentSettings(deviceId);
-          } catch (err) {
-            throw new Error(`reset-to-defaults backend state read-back unavailable: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        }
-        if (!state || typeof state !== 'object') {
-          throw new Error('reset-to-defaults backend state read-back unavailable');
         }
         // No success claims without verification (plan §5): confirm the
         // supported OC controls moved to their capability defaults
@@ -3477,21 +3477,58 @@ export function createIpcHandlers({
         // config, so only OC controls are checked. gpuLock is expected
         // unlocked (0,0) after a reset.
         const caps = await backend.getCapabilities(deviceId);
-        const mismatched = [];
-        for (const [key, range] of Object.entries(caps.ranges)) {
-          const value = state?.[key];
-          if (value !== null && value !== undefined && range && !nearlyEqual(value, range.default, RESET_VERIFY_EPS)) {
-            mismatched.push(`${key}: read-back ${value} != default ${range.default}`);
+        let diagnostic = 'reset-to-defaults backend state read-back unavailable';
+        for (let attempt = 0; attempt < RESET_VERIFY_ATTEMPTS; attempt += 1) {
+          if (attempt > 0) await resetVerifyWait(RESET_VERIFY_INTERVAL_MS);
+          let readError = null;
+          if (!hasWorkerState || attempt > 0) {
+            try {
+              state = await backend.getCurrentSettings(deviceId);
+            } catch (err) {
+              state = null;
+              readError = err;
+            }
           }
+          if (!state || typeof state !== 'object') {
+            diagnostic = `reset-to-defaults backend state read-back unavailable${readError === null ? '' : `: ${readError instanceof Error ? readError.message : String(readError)}`}`;
+            continue;
+          }
+          const mismatched = [];
+          for (const [key, range] of Object.entries(caps.ranges)) {
+            const value = state?.[key];
+            if (value !== null && value !== undefined && range && !nearlyEqual(value, range.default, RESET_VERIFY_EPS)) {
+              mismatched.push(`${key}: read-back ${value} != default ${range.default}`);
+            }
+          }
+          if (caps.controls.gpuLock && state?.gpuLock
+            && (!nearlyEqual(state.gpuLock.voltageV, 0, RESET_VERIFY_EPS) || !nearlyEqual(state.gpuLock.freqMhz, 0, RESET_VERIFY_EPS))) {
+            mismatched.push(`gpuLock: read-back ${state.gpuLock.voltageV}V/${state.gpuLock.freqMhz}MHz != unlocked (0,0)`);
+          }
+          if (isBattlemageGpuName(caps.deviceName, caps)) {
+            const range = caps.controls.vfCurve === true ? caps.vfCurveRange : null;
+            const stock = state.vfCurveDefault;
+            const live = state.vfCurve;
+            const valid = range
+              && isValidNativeVfCurve(stock, range)
+              && isValidNativeVfCurve(live, range)
+              && stock.every((point) => Number.isSafeInteger(Math.round(point.voltageV * 1000))
+                && Math.abs(point.voltageV * 1000 - Math.round(point.voltageV * 1000)) <= RESET_VERIFY_EPS
+                && Number.isSafeInteger(point.freqMhz))
+              && live.every((point) => Number.isSafeInteger(Math.round(point.voltageV * 1000))
+                && Math.abs(point.voltageV * 1000 - Math.round(point.voltageV * 1000)) <= RESET_VERIFY_EPS
+                && Number.isSafeInteger(point.freqMhz));
+            if (!valid) {
+              mismatched.push('VF curve: valid STOCK and LIVE read-back unavailable');
+            } else if (stock.length !== live.length || !stock.every((point, index) =>
+              Math.round(point.voltageV * 1000) === Math.round(live[index].voltageV * 1000)
+              && point.freqMhz === live[index].freqMhz)) {
+              mismatched.push('VF curve: LIVE points do not exactly match STOCK mV/MHz points');
+            }
+          }
+          if (mismatched.length === 0) return { state };
+          diagnostic = `reset-to-defaults verification failed: ${mismatched.join('; ')}`;
         }
-        if (caps.controls.gpuLock && state?.gpuLock
-          && (!nearlyEqual(state.gpuLock.voltageV, 0, RESET_VERIFY_EPS) || !nearlyEqual(state.gpuLock.freqMhz, 0, RESET_VERIFY_EPS))) {
-          mismatched.push(`gpuLock: read-back ${state.gpuLock.voltageV}V/${state.gpuLock.freqMhz}MHz != unlocked (0,0)`);
-        }
-        if (mismatched.length > 0) {
-          throw new Error(`reset-to-defaults verification failed: ${mismatched.join('; ')}`);
-        }
-        return { state };
+        throw new Error(diagnostic);
       },
 
       'waiver-get': async (deviceId) => {

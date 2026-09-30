@@ -242,7 +242,7 @@ test('B580 scalar core offsets are skipped when the requested STOCK curve fails 
   assert.deepEqual(calls, ['vf-write'], 'a native VF write is never automatically replayed');
 });
 
-test('B580 normalized STOCK read-back is shown but withholds scalar core offsets', async () => {
+test('B580 adjusted STOCK read-back is accepted as LIVE but withholds scalar core offsets', async () => {
   const { backend, calls } = fixture({ adjustReadBack: true });
   const result = await backend.applySettings(0, {
     vfCurve: stockCanonical,
@@ -253,10 +253,39 @@ test('B580 normalized STOCK read-back is shown but withholds scalar core offsets
   assert.equal(result.ok, false, 'dependent non-zero offsets remain withheld');
   assert.equal(result.perControl.vfCurve.ok, true);
   assert.equal(result.perControl.vfCurve.normalized, true);
+  assert.equal(result.perControl.vfCurve.errorCode, undefined);
   assert.equal(result.perControl.vfCurve.readBackEqual, false);
   assert.equal(result.perControl.gpuFreqOffsetMhz.errorCode, 'dependency-failed');
   assert.equal(result.perControl.gpuVoltOffsetV.errorCode, 'dependency-failed');
   assert.deepEqual(calls, ['vf-write'], 'offset setters do not follow a non-exact STOCK restore');
+});
+
+test('the next apply of the accepted LIVE curve is a no-op, not a repeated remap', async () => {
+  const { backend, calls, live } = fixture({ adjustReadBack: true });
+  const requestedCurve = [
+    { voltageV: 0.7, freqMhz: 1150 },
+    { voltageV: 0.8, freqMhz: 2150 },
+  ];
+
+  const first = await backend.applySettings(0, { vfCurve: requestedCurve });
+  assert.equal(first.perControl.vfCurve.ok, true);
+  assert.equal(first.perControl.vfCurve.driverAdjusted, true);
+  assert.deepEqual(first.perControl.vfCurve.readBackCurve, [
+    { voltageV: 0.7, freqMhz: 1151 },
+    { voltageV: 0.8, freqMhz: 2150 },
+  ]);
+  assert.deepEqual(calls, ['vf-write']);
+
+  const second = await backend.applySettings(0, {
+    vfCurve: first.perControl.vfCurve.readBackCurve,
+  });
+  assert.equal(second.perControl.vfCurve.ok, true);
+  assert.equal(second.perControl.vfCurve.readBackEqual, true);
+  assert.deepEqual(calls, ['vf-write'], 'the stable LIVE curve must not be written again');
+  assert.deepEqual(live, [
+    { Voltage: 700, Frequency: 1151 },
+    { Voltage: 800, Frequency: 2150 },
+  ]);
 });
 
 test('B580 profile refuses VF and dependent offsets when STOCK preflight cannot be read', async () => {
