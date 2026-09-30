@@ -137,6 +137,26 @@ const TUNING_TRANSACTION_LOCK_HELD = Symbol('tuning-transaction-lock-held');
 // the native setter.
 const VF_READBACK_MAX_ATTEMPTS = 21;
 const VF_READBACK_SETTLE_MS = 100;
+
+// The Battlemage VF editor is an API-capability surface, while a successful
+// live read is only a prerequisite for a specific write transaction. Keep the
+// controls visible when IGCL exposes both symbols but a runtime probe is
+// refused; applySettings still requires stable STOCK and LIVE preflight.
+export function battlemageVfCurveCapability({ battlemage, readAvailable, writeAvailable, probe } = {}) {
+  if (!battlemage) {
+    return { supported: false, status: { state: 'unsupported', reason: 'Custom VF curves are only exposed for Battlemage adapters.' } };
+  }
+  if (!readAvailable) {
+    return { supported: false, status: { state: 'unsupported', reason: 'ctlOverclockReadVFCurve is unavailable in the IGCL runtime' } };
+  }
+  if (!writeAvailable) {
+    return { supported: false, status: { state: 'unsupported', reason: 'ctlOverclockWriteCustomVFCurve is unavailable in the IGCL runtime' } };
+  }
+  return probe?.ok === true
+    ? { supported: true, status: { state: 'available', reason: null } }
+    : { supported: true, status: { state: 'runtime-refused', reason: probe?.reason ?? 'The IGCL runtime refused the VF curve read probe.' } };
+}
+
 function isPowerTelemetryV2CompatibilityError(result) {
   return POWER_TELEMETRY_V2_COMPATIBILITY_ERRORS.has(result);
 }
@@ -2471,23 +2491,27 @@ export class IgclBackend {
         // Custom live VF curves are a Battlemage surface. Alchemist exposes
         // the legacy symbols on some runtimes but rejects this curve ABI.
         const battlemage = isBattlemageGpuName(dev.name, dev);
+        const vfReaderAvailable = !this._isUnavailable(lib.ctlOverclockReadVFCurve);
         const vfWriterAvailable = !this._isUnavailable(lib.ctlOverclockWriteCustomVFCurve);
-        const vfProbe = battlemage && vfWriterAvailable
+        const vfProbe = battlemage && vfReaderAvailable && vfWriterAvailable
           ? await this._vfCurveReadable(dev.handle)
           : {
             ok: false,
             state: 'unsupported',
-            reason: battlemage
-              ? 'ctlOverclockWriteCustomVFCurve is unavailable in the IGCL runtime'
-              : 'Custom VF curves are only exposed for Battlemage adapters.',
+            reason: !battlemage
+              ? 'Custom VF curves are only exposed for Battlemage adapters.'
+              : !vfReaderAvailable
+                ? 'ctlOverclockReadVFCurve is unavailable in the IGCL runtime'
+                : 'ctlOverclockWriteCustomVFCurve is unavailable in the IGCL runtime',
           };
-        caps.controls.vfCurve = battlemage && vfWriterAvailable && vfProbe.ok === true;
-        caps.controlStatus.vfCurve = caps.controls.vfCurve
-          ? { state: 'available', reason: null }
-          : {
-            state: vfProbe.state ?? 'unsupported',
-            reason: vfProbe.reason ?? 'The driver did not expose a readable custom VF curve surface.',
-          };
+        const vfCapability = battlemageVfCurveCapability({
+          battlemage,
+          readAvailable: vfReaderAvailable,
+          writeAvailable: vfWriterAvailable,
+          probe: vfProbe,
+        });
+        caps.controls.vfCurve = vfCapability.supported;
+        caps.controlStatus.vfCurve = vfCapability.status;
         // M17e (round-1 S3): the per-device gpuLock bounds - derived from the
         // props' gpuVFCurveVoltageLimit / gpuVFCurveFrequencyLimit (the
         // bounds the custom-VF-curve validation references) THROUGH the units

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import koffi from 'koffi';
-import { IgclBackend } from '../src/main/backend/igcl-backend.js';
+import { battlemageVfCurveCapability, IgclBackend } from '../src/main/backend/igcl-backend.js';
 import { CTL_RESULT } from '../src/main/backend/igcl-bindings.js';
 
 const stock = [
@@ -180,6 +180,92 @@ test('an unstable STOCK table refuses a B580 curve write and is never used as a 
   assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
   assert.match(result.perControl.vfCurve.message, /stable 3-of-5 read quorum/);
   assert.deepEqual(writes, []);
+});
+
+test('getCapabilities keeps B580 VF controls visible after a refused probe and unstable STOCK preflight never writes', async () => {
+  const probeReason = 'VF STOCK read failed (ERROR_KMD_CALL)';
+  const supportedInfo = (units, min, max, step, Default = 0) => ({
+    bSupported: true,
+    bRelative: true,
+    bReference: false,
+    units,
+    min,
+    max,
+    step,
+    Default,
+    reference: 0,
+  });
+  const unsupportedInfo = {
+    bSupported: false,
+    bRelative: false,
+    bReference: false,
+    units: 0,
+    min: 0,
+    max: 0,
+    step: 0,
+    Default: 0,
+    reference: 0,
+  };
+  const properties = {
+    Size: koffi.sizeof('ctl_oc_properties_t'),
+    Version: 1,
+    bSupported: true,
+    gpuFrequencyOffset: supportedInfo(0, -100, 100, 1),
+    gpuVoltageOffset: supportedInfo(11, 0, 100, 1),
+    vramFrequencyOffset: unsupportedInfo,
+    vramVoltageOffset: unsupportedInfo,
+    powerLimit: unsupportedInfo,
+    temperatureLimit: unsupportedInfo,
+    vramMemSpeedLimit: unsupportedInfo,
+    gpuVFCurveVoltageLimit: supportedInfo(3, 0.4, 1.5, 0.001, 0.7),
+    gpuVFCurveFrequencyLimit: supportedInfo(0, 400, 4300, 10, 1000),
+  };
+  const lib = {
+    ctlOverclockGetProperties(_handle, buffer) {
+      koffi.encode(buffer, 'ctl_oc_properties_t', properties);
+      return CTL_RESULT.SUCCESS;
+    },
+    ctlOverclockGpuFrequencyOffsetGetV2() {},
+    ctlOverclockGpuFrequencyOffsetSetV2() {},
+    ctlOverclockGpuMaxVoltageOffsetGetV2() {},
+    ctlOverclockGpuMaxVoltageOffsetSetV2() {},
+    ctlOverclockReadVFCurve() {},
+    ctlOverclockWriteCustomVFCurve() {},
+  };
+  const capabilityBackend = new IgclBackend({ lib, findDll: () => null });
+  capabilityBackend._device = async () => ({
+    handle: 'fake-adapter',
+    name: 'Intel Arc B580 Graphics',
+    pciDeviceId: '0x0000e20b',
+    driverVersion: 'test-driver',
+  });
+  capabilityBackend._vfCurveReadable = async () => ({
+    ok: false,
+    state: 'runtime-refused',
+    reason: probeReason,
+  });
+  const capability = await capabilityBackend.getCapabilities(0);
+  assert.equal(capability.controls.vfCurve, true);
+  assert.deepEqual(capability.controlStatus.vfCurve, { state: 'runtime-refused', reason: probeReason });
+
+  const unstableStockReads = Array.from({ length: 5 }, (_, read) => stock.map((point, index) => ({
+    ...point,
+    Voltage: point.Voltage + read + index + 1,
+  })));
+  const { backend, writes } = fixture();
+  backend.getCapabilities = async () => capability;
+  sequenceCurveReads(backend, 0, unstableStockReads);
+  const result = await backend.applySettings(0, { vfCurve: canonical(liveDefault) });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
+  assert.deepEqual(writes, [], 'runtime capability visibility must not bypass stable STOCK write preflight');
+});
+
+test('Battlemage VF remains unsupported when either IGCL symbol is missing or for other adapters', () => {
+  assert.equal(battlemageVfCurveCapability({ battlemage: true, readAvailable: false, writeAvailable: true }).supported, false);
+  assert.equal(battlemageVfCurveCapability({ battlemage: true, readAvailable: true, writeAvailable: false }).supported, false);
+  assert.equal(battlemageVfCurveCapability({ battlemage: false, readAvailable: true, writeAvailable: true }).supported, false);
 });
 
 test('overlapping B580 applies serialize through each LIVE read-back', async () => {

@@ -957,12 +957,18 @@ export const tuningPage: Page = {
       };
       redrawVfCurveEditor = redraw;
       redraw();
+      const vfRuntimeRefusal = caps.controlStatus?.vfCurve?.state === 'runtime-refused'
+        ? caps.controlStatus.vfCurve.reason
+        : null;
+      const vfProbeNote = vfRuntimeRefusal
+        ? ` The initial IGCL curve-read probe was refused: ${vfRuntimeRefusal}. Applying performs fresh stable curve checks before any write.`
+        : '';
       host.append(
         el('p', {
           class: 'card-note',
           text: vfCurveDraft.length >= 2
-            ? `Hover a point for values; click to edit voltage or frequency. The driver-defined point count stays fixed. Voltage ${vfVoltageMv(curveBounds.voltageMinV)}–${vfVoltageMv(curveBounds.voltageMaxV)} mV · frequency ${Math.round(curveBounds.freqMinMhz)}–${Math.round(curveBounds.freqMaxMhz)} MHz. Set both core offsets to zero before applying. Core offsets cannot be combined with a custom curve.`
-            : 'The driver curve is missing or invalid. It is not being reshaped; refresh GPU state before editing or applying.',
+            ? `Hover a point for values; click to edit voltage or frequency. The driver-defined point count stays fixed. Voltage ${vfVoltageMv(curveBounds.voltageMinV)}–${vfVoltageMv(curveBounds.voltageMaxV)} mV · frequency ${Math.round(curveBounds.freqMinMhz)}–${Math.round(curveBounds.freqMaxMhz)} MHz. Set both core offsets to zero before applying. Core offsets cannot be combined with a custom curve.${vfProbeNote}`
+            : `The driver curve is missing or invalid. It is not being reshaped; refresh GPU state before editing or applying.${vfProbeNote}`,
         }),
         el('div', { class: 'vf-curve-point-count' }, [pointCountNode]),
         stage,
