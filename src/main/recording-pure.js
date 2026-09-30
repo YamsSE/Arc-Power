@@ -115,7 +115,7 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
     sourceMode: 'system',
     customProcesses: [],
   },
-  hotkeys: { start: 'F9', stop: 'F10', saveClip: 'F8', screenshot: 'F7', marker: 'F6' },
+  hotkeys: { toggle: 'F9', saveClip: 'F8', screenshot: 'F7', marker: 'F6' },
 });
 export const RECORDING_MARKER_MAX_COUNT = 500;
 export const RECORDING_MARKER_LABEL_MAX_LENGTH = 80;
@@ -364,6 +364,16 @@ export function normalizeRecordingSettings(raw = {}) {
     : DEFAULT_RECORDING_SETTINGS.rateControlQuality;
   const replayLength = Number.isFinite(source.replayLengthSec) ? Math.round(source.replayLengthSec) : DEFAULT_RECORDING_SETTINGS.replayLengthSec;
   const hotkeys = source.hotkeys && typeof source.hotkeys === 'object' ? source.hotkeys : {};
+  // Prefer an explicitly saved toggle, including an empty value. For older
+  // settings, retain a customized Start key; if Start is still the historic
+  // F9 default but Stop was customized, carry that Stop key into the toggle.
+  const legacyStart = normalizeHotkey(hotkeys.start, DEFAULT_RECORDING_SETTINGS.hotkeys.toggle);
+  const legacyStop = normalizeHotkey(hotkeys.stop, 'F10');
+  const toggleHotkey = Object.hasOwn(hotkeys, 'toggle')
+    ? normalizeHotkey(hotkeys.toggle, DEFAULT_RECORDING_SETTINGS.hotkeys.toggle)
+    : legacyStart !== DEFAULT_RECORDING_SETTINGS.hotkeys.toggle
+      ? legacyStart
+      : legacyStop !== 'F10' ? legacyStop : legacyStart;
   return {
     location: boundedString(source.location, DEFAULT_RECORDING_SETTINGS.location, 4096),
     runtimePath: boundedString(source.runtimePath, DEFAULT_RECORDING_SETTINGS.runtimePath, 4096),
@@ -386,8 +396,7 @@ export function normalizeRecordingSettings(raw = {}) {
     replayLengthSec: Math.min(3600, Math.max(5, replayLength)),
     audio: normalizeRecordingAudioSettings({ ...DEFAULT_RECORDING_SETTINGS.audio, ...(source.audio ?? {}) }),
     hotkeys: {
-      start: normalizeHotkey(hotkeys.start, DEFAULT_RECORDING_SETTINGS.hotkeys.start),
-      stop: normalizeHotkey(hotkeys.stop, DEFAULT_RECORDING_SETTINGS.hotkeys.stop),
+      toggle: toggleHotkey,
       saveClip: normalizeHotkey(hotkeys.saveClip, DEFAULT_RECORDING_SETTINGS.hotkeys.saveClip),
       screenshot: normalizeHotkey(hotkeys.screenshot, DEFAULT_RECORDING_SETTINGS.hotkeys.screenshot),
       marker: normalizeHotkey(hotkeys.marker, DEFAULT_RECORDING_SETTINGS.hotkeys.marker),

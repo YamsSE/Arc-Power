@@ -112,16 +112,20 @@ function fixture({
   return { backend, writes, scalarWrites, nativeEvents, live };
 }
 
-function sequenceLiveReads(backend, samples) {
+function sequenceCurveReads(backend, type, samples) {
   const nativeRead = backend._readVfCurvePoints.bind(backend);
   let index = 0;
-  backend._readVfCurvePoints = (handle, type = 1, details = 0) => {
-    if (type !== 1 || index >= samples.length) return nativeRead(handle, type, details);
+  backend._readVfCurvePoints = (handle, curveType = 1, details = 0) => {
+    if (curveType !== type || index >= samples.length) return nativeRead(handle, curveType, details);
     return { ok: true, points: samples[index++].map((point) => ({ ...point })) };
   };
 }
 
-test('a valid one-shot LIVE before-image is sufficient for the no-op check', async () => {
+function sequenceLiveReads(backend, samples) {
+  sequenceCurveReads(backend, 1, samples);
+}
+
+test('a matching stable LIVE before-image is sufficient for the no-op check', async () => {
   const { backend, writes } = fixture();
   sequenceLiveReads(backend, [liveDefault]);
   const result = await backend.applySettings(0, { vfCurve: canonical(liveDefault) });
@@ -145,6 +149,61 @@ test('an invalid LIVE before-image refuses the curve write without a quorum erro
   assert.equal(result.perControl.vfCurve.errorCode, 'readback-unverified');
   assert.doesNotMatch(result.perControl.vfCurve.message, /read quorum/);
   assert.deepEqual(writes, []);
+});
+
+test('an unstable LIVE before-image refuses a B580 curve write', async () => {
+  const samples = Array.from({ length: 5 }, (_, read) => liveDefault.map((point, index) => ({
+    ...point,
+    Voltage: point.Voltage + read + index,
+  })));
+  const { backend, writes } = fixture();
+  sequenceLiveReads(backend, samples);
+  const result = await backend.applySettings(0, { vfCurve: stockCanonical });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
+  assert.match(result.perControl.vfCurve.message, /stable 3-of-5 read quorum/);
+  assert.deepEqual(writes, []);
+});
+
+test('an unstable STOCK table refuses a B580 curve write and is never used as a reset source', async () => {
+  const unstableStockReads = Array.from({ length: 5 }, (_, read) => stock.map((point, index) => ({
+    ...point,
+    Voltage: point.Voltage + read + index + 1,
+  })));
+  const samples = [stock, ...unstableStockReads];
+  const { backend, writes } = fixture();
+  sequenceCurveReads(backend, 0, samples);
+  const result = await backend.applySettings(0, { vfCurve: stockCanonical });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
+  assert.match(result.perControl.vfCurve.message, /stable 3-of-5 read quorum/);
+  assert.deepEqual(writes, []);
+});
+
+test('overlapping B580 applies serialize through each LIVE read-back', async () => {
+  const { backend, writes } = fixture();
+  const firstCurve = canonical(liveDefault);
+  firstCurve[1].freqMhz += 10;
+  const secondCurve = canonical(liveDefault);
+  secondCurve[2].freqMhz += 10;
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, delay, ...args) => originalSetTimeout(callback, 0, ...args);
+  try {
+    const [first, second] = await Promise.all([
+      backend.applySettings(0, { vfCurve: firstCurve }),
+      backend.applySettings(0, { vfCurve: secondCurve }),
+    ]);
+
+    assert.equal(first.ok, true);
+    assert.equal(second.ok, true);
+    assert.deepEqual(first.perControl.vfCurve.readBackCurve, firstCurve);
+    assert.deepEqual(second.perControl.vfCurve.readBackCurve, secondCurve);
+    assert.deepEqual(writes, ['vf', 'vf']);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
 });
 
 test('B580 exact LIVE curve is a no-op without native writes', async () => {

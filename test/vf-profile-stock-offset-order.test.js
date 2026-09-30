@@ -19,21 +19,26 @@ function fixture({
   writeResult = CTL_RESULT.SUCCESS,
   adjustReadBack = false,
   stockReadUnavailable = false,
+  stockReadSequence = null,
   liveReadUnavailable = false,
   activeOffsets = {},
 } = {}) {
   const live = customLive.map((point) => ({ ...point }));
   const calls = [];
   const offsets = { gpuFreqOffset: 0, gpuVoltOffset: 0, ...activeOffsets };
+  let stockReadIndex = 0;
   const lib = {
     ctlOverclockReadVFCurve(_handle, type, _details, countBuffer, pointsBuffer) {
       if (type === 0 && stockReadUnavailable) return CTL_RESULT.ERROR_NOT_AVAILABLE;
       if (type === 1 && liveReadUnavailable) return CTL_RESULT.ERROR_DATA_READ;
-      const points = type === 0 ? stock : live;
+      const points = type === 0
+        ? (stockReadSequence?.[Math.min(stockReadIndex, stockReadSequence.length - 1)] ?? stock)
+        : live;
       if (pointsBuffer === null) {
         koffi.encode(countBuffer, 'uint32', points.length);
         return CTL_RESULT.SUCCESS;
       }
+      if (type === 0 && Array.isArray(stockReadSequence)) stockReadIndex += 1;
       const size = koffi.sizeof('ctl_voltage_frequency_point_t');
       points.forEach((point, index) => {
         koffi.encode(pointsBuffer, index * size, 'ctl_voltage_frequency_point_t', point);
@@ -86,6 +91,8 @@ function fixture({
       voltageMaxV: 1.5,
       freqMinMhz: 400,
       freqMaxMhz: 4300,
+      voltageStepV: 0.001,
+      frequencyStepMhz: 1,
       maxPoints: 32,
     },
     ranges: {
@@ -115,6 +122,44 @@ test('B580 STOCK profile restores its curve before applying saved scalar core of
   assert.deepEqual(live, stock);
   assert.equal(offsets.gpuFreqOffset, 75);
   assert.equal(offsets.gpuVoltOffset, 25);
+});
+
+test('B580 profile identifies STOCK only after transient first STOCK read settles', async () => {
+  const transient = stock.map((point) => ({ ...point, Voltage: point.Voltage + 50 }));
+  const { backend, calls, offsets } = fixture({
+    stockReadSequence: [transient, stock, stock, stock, stock, stock],
+  });
+  const result = await backend.applySettings(0, {
+    vfCurve: stockCanonical,
+    gpuFreqOffsetMhz: 75,
+    gpuVoltOffsetV: 25,
+  }, { profileApply: true });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.perControl.vfCurve.ok, true);
+  assert.deepEqual(calls, ['vf-write', 'frequency-offset', 'voltage-offset']);
+  assert.deepEqual(offsets, { gpuFreqOffset: 75, gpuVoltOffset: 25 });
+});
+
+test('B580 profile with unstable STOCK preflight refuses the curve and dependent core offsets', async () => {
+  const unstable = Array.from({ length: 5 }, (_, read) => stock.map((point, index) => ({
+    ...point,
+    Voltage: point.Voltage + read + index + 1,
+  })));
+  const { backend, calls, offsets } = fixture({ stockReadSequence: [stock, ...unstable, stock] });
+  const result = await backend.applySettings(0, {
+    vfCurve: stockCanonical,
+    gpuFreqOffsetMhz: 75,
+    gpuVoltOffsetV: 25,
+  }, { profileApply: true });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.perControl.vfCurve.ok, false);
+  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
+  assert.equal(result.perControl.gpuFreqOffsetMhz.errorCode, 'dependency-failed');
+  assert.equal(result.perControl.gpuVoltOffsetV.errorCode, 'dependency-failed');
+  assert.deepEqual(calls, []);
+  assert.deepEqual(offsets, { gpuFreqOffset: 0, gpuVoltOffset: 0 });
 });
 
 test('B580 STOCK profile leaves existing core offsets untouched when curve apply refuses them', async () => {
@@ -214,7 +259,7 @@ test('B580 normalized STOCK read-back is shown but withholds scalar core offsets
   assert.deepEqual(calls, ['vf-write'], 'offset setters do not follow a non-exact STOCK restore');
 });
 
-test('B580 profile reports dependent core offsets when STOCK preflight cannot be read', async () => {
+test('B580 profile refuses VF and dependent offsets when STOCK preflight cannot be read', async () => {
   const { backend, calls, offsets } = fixture({ stockReadUnavailable: true });
   const result = await backend.applySettings(0, {
     vfCurve: stockCanonical,
@@ -223,17 +268,18 @@ test('B580 profile reports dependent core offsets when STOCK preflight cannot be
   }, { profileApply: true });
 
   assert.equal(result.ok, false);
-  assert.equal(result.perControl.vfCurve.ok, true, 'the requested curve write is still attempted');
+  assert.equal(result.perControl.vfCurve.ok, false, 'an unidentified profile curve is not written');
+  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unverified');
   assert.equal(result.perControl.gpuFreqOffsetMhz.ok, false);
   assert.equal(result.perControl.gpuFreqOffsetMhz.errorCode, 'dependency-failed');
   assert.equal(result.perControl.gpuVoltOffsetV.ok, false);
   assert.equal(result.perControl.gpuVoltOffsetV.errorCode, 'dependency-failed');
-  assert.deepEqual(calls, ['vf-write'], 'offset setters are withheld when STOCK state is unknown');
+  assert.deepEqual(calls, [], 'curve and offset setters are withheld when STOCK state is unknown');
   assert.equal(offsets.gpuFreqOffset, 0);
   assert.equal(offsets.gpuVoltOffset, 0);
 });
 
-test('routed STOCK profile apply forwards profile policy and withholds offsets when STOCK identity is unavailable', async () => {
+test('routed STOCK profile apply refuses VF and offsets when STOCK identity is unavailable', async () => {
   const { backend, calls, caps } = fixture({ stockReadUnavailable: true });
   const out = await executeApply({
     backend,
@@ -250,10 +296,11 @@ test('routed STOCK profile apply forwards profile policy and withholds offsets w
   });
 
   assert.equal(out.result.ok, false);
-  assert.equal(out.result.perControl.vfCurve.ok, true, 'profile policy allows the readable LIVE-shaped curve attempt');
+  assert.equal(out.result.perControl.vfCurve.ok, false, 'profile policy refuses an unidentified curve');
+  assert.equal(out.result.perControl.vfCurve.errorCode, 'readback-unverified');
   assert.equal(out.result.perControl.gpuFreqOffsetMhz.errorCode, 'dependency-failed');
   assert.equal(out.result.perControl.gpuVoltOffsetV.errorCode, 'dependency-failed');
-  assert.deepEqual(calls, ['vf-write'], 'routed profile offsets stay withheld when STOCK identity is unknown');
+  assert.deepEqual(calls, [], 'routed profile writes stay withheld when STOCK identity is unknown');
 });
 
 test('B580 VF writes stop when the LIVE before-image cannot be verified', async () => {

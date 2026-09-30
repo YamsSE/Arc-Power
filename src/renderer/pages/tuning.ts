@@ -2019,8 +2019,8 @@ export const tuningPage: Page = {
             const wanted = settings[key as keyof typeof settings];
             if (typeof wanted === 'number') applied[key] = wanted;
             if (key === 'vfCurve' && Array.isArray(settings.vfCurve)) {
-              // IGCL may normalize a successful write. Show its validated
-              // LIVE result so the editor always reflects the applied curve.
+              // IGCL may quantize a successful write by one driver step. Show
+              // that validated LIVE result as the applied curve.
               const readBackCurve = Array.isArray(per.readBackCurve)
                 ? per.readBackCurve
                 : currentState?.vfCurve;

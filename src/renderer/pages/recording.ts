@@ -980,7 +980,7 @@ function renderAudioSettings(): HTMLElement {
 
 function renderHotkeys(): HTMLElement {
   const working = settingsForRender();
-  const make = (key: 'start' | 'stop' | 'saveClip' | 'screenshot', label: string, description: string): HTMLElement => {
+  const make = (key: 'toggle' | 'saveClip' | 'screenshot', label: string, description: string): HTMLElement => {
     const current = working?.hotkeys[key] ?? '';
     const focusPicker = (): void => {
       document.querySelector<HTMLButtonElement>(`[data-recording-hotkey="${key}"]`)?.focus();
@@ -1019,8 +1019,7 @@ function renderHotkeys(): HTMLElement {
       el('span', { class: 'recording-panel-badge', text: 'Global' }),
     ]),
     el('p', { class: 'recording-panel-note', text: 'Works from any window.' }),
-    make('start', 'Start recording', 'Begin a full video capture.'),
-    make('stop', 'Stop capture', 'Finish the active video or Instant Replay buffer.'),
+    make('toggle', 'Start / stop recording', 'Begin or finish video capture. Instant Replay continues independently.'),
     make('saveClip', 'Save Instant Replay', 'Export the configured Instant Replay window.'),
     make('screenshot', 'Screenshot', 'Save the selected display or window as a PNG.'),
   ]);
@@ -1046,7 +1045,7 @@ function renderFirstCaptureSetup(): HTMLElement | null {
       quickSetupItem('Save to', compactPath(working.location)),
       quickSetupItem('Video', `${captureProfileLabel(working)}`),
       quickSetupItem('Audio', audio),
-      quickSetupItem('Hotkeys', `${working.hotkeys.start} / ${working.hotkeys.stop} / ${working.hotkeys.saveClip} / ${working.hotkeys.screenshot}`),
+      quickSetupItem('Hotkeys', `${working.hotkeys.toggle || 'Off'} / ${working.hotkeys.saveClip || 'Off'} / ${working.hotkeys.screenshot || 'Off'}`),
     ]),
   ]);
 }

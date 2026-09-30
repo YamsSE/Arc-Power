@@ -1237,7 +1237,7 @@ export interface DisplayApplyResponse {
 export type RecordingMode = 'manual' | 'clips';
 export type RecordingTab = 'manual' | 'clips' | 'audio';
 export type RecordingResolution = 'default' | '480p' | '720p' | '900p' | '1080p' | '1440p' | '4k';
-export interface RecordingHotkeys { start: string; stop: string; saveClip: string; screenshot: string; marker: string; }
+export interface RecordingHotkeys { toggle: string; saveClip: string; screenshot: string; marker: string; }
 export type RecordingAudioSourceMode = 'system' | 'custom';
 export type RecordingCaptureTargetType = 'display' | 'window';
 export type RecordingCaptureColorMode = 'auto' | 'sdr' | 'hdr';

@@ -75,7 +75,7 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
 import { isValidNativeVfCurve, prepareVfCurveForDriver, vfCurveNeedsWrite } from '../../renderer/pure/vf-curve.ts';
-import { readStableVfCurve, readVfCurveAfterWrite, readVfCurveOnce } from './vf-curve-readback.js';
+import { readStableVfCurve, readVfCurveAfterWrite } from './vf-curve-readback.js';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
@@ -129,13 +129,12 @@ const VF_STOCK_LIVE_FALLBACK_RESULTS = new Set([
 ]);
 const VF_READ_RETRY_MAX_ATTEMPTS = 3;
 const VF_READ_RETRY_SETTLE_MS = 25;
+const TUNING_TRANSACTION_LOCK_HELD = Symbol('tuning-transaction-lock-held');
 
-// A successful B-series custom-curve write can become visible in LIVE only
-// after the KMD's asynchronous table update completes. Keep this poll small
-// and explicit: it is entered only when LIVE is still exactly the before
-// image, and a changed mismatch remains a refusal. Twenty-one reads at
-// 100 ms intervals give the first apply up to 2 seconds for LIVE to settle,
-// without turning a real read-back failure into success.
+// B580 can report a temporary LIVE table after a custom-curve write, then
+// settle to a different table. Wait 3 seconds and require a strong 15-of-21
+// stable LIVE quorum before accepting a normalized result. This never replays
+// the native setter.
 const VF_READBACK_MAX_ATTEMPTS = 21;
 const VF_READBACK_SETTLE_MS = 100;
 function isPowerTelemetryV2CompatibilityError(result) {
@@ -1367,6 +1366,7 @@ export class IgclBackend {
       : (opts.lib ? null : superResolutionStateFile());
     this._superResolutionPersisted = readSuperResolutionState(this._superResolutionStateFile);
     this._displayApplyLocks = new Map();
+    this._tuningTransactionLocks = new Map();
     // Keep the complete color state only after a verified pixel-transform
     // write. A fresh process never assumes that the driver's transform is
     // neutral; the GET path establishes that before exposing a writable row.
@@ -2521,8 +2521,8 @@ export class IgclBackend {
           if (voltageMaxV > voltageMinV && freqMaxMhz > freqMinMhz) {
             caps.vfCurveRange = {
               voltageMinV, voltageMaxV, freqMinMhz, freqMaxMhz,
-              voltageStepV: Number.isFinite(voltageStepV) && voltageStepV > 0 ? voltageStepV : 0.001,
-              frequencyStepMhz: Number.isFinite(frequencyStepMhz) && frequencyStepMhz > 0 ? frequencyStepMhz : 1,
+              ...(Number.isFinite(voltageStepV) && voltageStepV > 0 ? { voltageStepV } : {}),
+              ...(Number.isFinite(frequencyStepMhz) && frequencyStepMhz > 0 ? { frequencyStepMhz } : {}),
               maxPoints: 32,
             };
           }
@@ -2823,13 +2823,20 @@ export class IgclBackend {
     // Use the same full count+payload read as the apply path. A count-only
     // probe can advertise a curve while the driver still refuses the payload
     // read, and a transient KMD response must not be cached as unsupported.
-    const stock = await this._readVfCurvePointsWithRetry(handle, 0, 0);
-    if (stock.ok) return { ok: true, state: 'available', reason: null };
+    const stockProbe = await this._readVfCurvePointsWithRetry(handle, 0, 0);
+    if (stockProbe.ok) {
+      const stock = await readStableVfCurve({
+        readCurve: () => this._readVfCurvePointsWithRetry(handle, 0, 0),
+      });
+      return stock.ok
+        ? { ok: true, state: 'available', reason: null }
+        : { ok: false, state: 'runtime-refused', reason: stock.message };
+    }
     // Only an explicit API-surface absence permits the documented LIVE-only
     // fallback. KMD/OS/device failures are retried above and remain an honest
     // runtime refusal instead of silently changing the write contract.
-    if (!stock.fallbackToLive) {
-      return { ok: false, state: 'runtime-refused', reason: stock.message };
+    if (!stockProbe.fallbackToLive) {
+      return { ok: false, state: 'runtime-refused', reason: stockProbe.message };
     }
     const live = await readStableVfCurve({
       readCurve: () => this._readVfCurvePointsWithRetry(handle, 1, 0),
@@ -3037,13 +3044,12 @@ export class IgclBackend {
     // point list. Native point count/order are retained exactly.
     if (caps.controls.vfCurve && !this._isUnavailable(lib.ctlOverclockReadVFCurve)) {
       const decodeCurve = async (type) => {
-        // STOCK remains a distinct native read. Only LIVE uses consensus so
-        // transient voltage-coordinate shifts never reach renderer state.
-        const native = type === 0
-          ? this._readVfCurvePoints(dev.handle, type, 0)
-          : await readStableVfCurve({
-            readCurve: () => this._readVfCurvePoints(dev.handle, type, 0),
-          });
+        // Both native surfaces can return a transient point table while the
+        // B580 overclock service is updating. Never let a one-off STOCK read
+        // become the reset draft, and keep LIVE on the same quorum contract.
+        const native = await readStableVfCurve({
+          readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, type, 0),
+        });
         if (!native.ok || native.points.length < 2) return null;
         return native.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }));
       };
@@ -5986,6 +5992,34 @@ export class IgclBackend {
    * 48.3 MHz offset) is written back EXACTLY as read - never changed.
    */
   async applySettings(deviceId, settings = {}, opts = {}) {
+    if (opts?.[TUNING_TRANSACTION_LOCK_HELD] === true) {
+      return this._applySettingsUnlocked(deviceId, settings, opts);
+    }
+    return this._withTuningTransactionLock(deviceId, () => this._applySettingsUnlocked(deviceId, settings, {
+      ...opts,
+      [TUNING_TRANSACTION_LOCK_HELD]: true,
+    }));
+  }
+
+  async _withTuningTransactionLock(deviceId, operation) {
+    if (!(this._tuningTransactionLocks instanceof Map)) this._tuningTransactionLocks = new Map();
+    const dev = await this._device(deviceId);
+    const lockKey = String(dev.deviceKey ?? deviceHardwareKey(dev) ?? `device-id:${deviceId}`);
+    const previous = this._tuningTransactionLocks.get(lockKey) ?? Promise.resolve();
+    let release;
+    const turn = new Promise((resolve) => { release = resolve; });
+    const queued = previous.then(() => turn);
+    this._tuningTransactionLocks.set(lockKey, queued);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this._tuningTransactionLocks.get(lockKey) === queued) this._tuningTransactionLocks.delete(lockKey);
+    }
+  }
+
+  async _applySettingsUnlocked(deviceId, settings = {}, opts = {}) {
     await this._device(deviceId);
     const caps = await this.getCapabilities(deviceId);
     const lib = this._libOrThrow();
@@ -6028,6 +6062,8 @@ export class IgclBackend {
     // curve coordinates from a remembered value fingerprint.
     let profileStockCurveReset = false;
     let profileStockCurveUnknown = false;
+    let profileStockCurveUnknownReason = null;
+    let profileStockCurveUnknownErrorCode = 'readback-unverified';
     let profileStockCurveUnknownOffsets = [];
     const profileVfCurve = settings.vfCurve;
     if (opts.profileApply === true && isBattlemageGpuName(caps.deviceName, caps)
@@ -6039,10 +6075,19 @@ export class IgclBackend {
         // or custom. Preserve it for the normal unsupported-control result
         // and withhold dependent scalar offsets until STOCK is verifiable.
         profileStockCurveUnknown = true;
+        profileStockCurveUnknownReason = caps.controlStatus?.vfCurve?.reason ?? 'The STOCK VF curve is unavailable.';
+        profileStockCurveUnknownErrorCode = caps.controlStatus?.vfCurve?.state === 'unsupported'
+          ? 'unsupported'
+          : 'readback-unverified';
         profileStockCurveUnknownOffsets = ['gpuVoltOffsetV', 'gpuFreqOffsetMhz']
           .filter((key) => settings[key] !== null && settings[key] !== undefined);
       } else {
-        const stock = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
+        const stockProbe = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
+        const stock = stockProbe.ok
+          ? await readStableVfCurve({
+            readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 0, 0),
+          })
+          : stockProbe;
         if (stock.ok) {
           const stockCurve = stock.points.map((point) => ({
             voltageV: point.Voltage / 1000,
@@ -6054,13 +6099,24 @@ export class IgclBackend {
           }));
           profileStockCurveReset = !vfCurveNeedsWrite(requestedStockCurve, stockCurve);
         } else {
-          // If STOCK cannot be read, we cannot tell whether this saved curve
-          // is a reset. Keep trying the requested curve below, but do not
-          // silently discard the profile's dependent core offsets.
+          // A profile curve cannot safely be treated as STOCK or custom when
+          // the driver's STOCK table is not stable. Refuse the curve write
+          // rather than risk applying a stale STOCK profile as a custom curve.
           profileStockCurveUnknown = true;
+          profileStockCurveUnknownReason = stock.message ?? 'The STOCK VF curve could not be read reliably.';
+          profileStockCurveUnknownErrorCode = stock.errorCode ?? 'readback-unverified';
           profileStockCurveUnknownOffsets = ['gpuVoltOffsetV', 'gpuFreqOffsetMhz']
             .filter((key) => settings[key] !== null && settings[key] !== undefined);
         }
+      }
+      if (profileStockCurveUnknown) {
+        result.perControl.vfCurve = {
+          ok: false,
+          errorCode: profileStockCurveUnknownErrorCode,
+          message: `This profile VF curve was not written because STOCK identity could not be verified. ${profileStockCurveUnknownReason}`,
+        };
+        result.ok = false;
+        delete out.vfCurve;
       }
       if (!profileStockCurveReset) {
         const canResetOffsetsBeforeCustomCurve = !profileStockCurveUnknown;
@@ -6672,12 +6728,18 @@ export class IgclBackend {
             // old renderer bundles cannot send an invalid payload. A few
             // driver builds expose only LIVE, so fall back to that read without
             // changing the write payload shape.
-            const stock = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
-            const native = stock.ok
-              ? stock
-              : (stock.fallbackToLive ? await this._readVfCurvePointsWithRetry(dev.handle, 1, 0) : stock);
+            const stockProbe = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
+            const native = stockProbe.ok
+              ? await readStableVfCurve({
+                readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 0, 0),
+              })
+              : (stockProbe.fallbackToLive
+                ? await readStableVfCurve({
+                  readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+                })
+                : stockProbe);
             if (!native.ok) {
-              fail('vfCurve', igclErrorCode(native.result) ?? 'io-failed', native.message);
+              fail('vfCurve', native.errorCode ?? igclErrorCode(native.result) ?? 'io-failed', native.message);
             } else if (native.points.length !== curve.length) {
               fail('vfCurve', 'out-of-range', `Battlemage requires the driver's current ${native.points.length}-point simplified VF table; point count cannot be changed`);
             } else if (native.points.some((point, index) => index > 0
@@ -6687,7 +6749,7 @@ export class IgclBackend {
               // LIVE is the before-image for no-op detection. STOCK is only
               // the native write shape; on Battlemage the two tables can
               // legitimately differ after an active tuning change.
-              const liveBefore = await readVfCurveOnce({
+              const liveBefore = await readStableVfCurve({
                 readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
               });
               const liveCanonical = liveBefore?.ok === true
@@ -6703,7 +6765,7 @@ export class IgclBackend {
                   readBackCurve: liveBefore.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency })),
                 };
               } else if (!liveIsValid) {
-                fail('vfCurve', 'readback-unverified', liveBefore?.message
+                fail('vfCurve', liveBefore?.errorCode ?? 'readback-unverified', liveBefore?.message
                   ? `The current LIVE VF curve could not be verified as a valid ordered curve with the requested point count. No curve write was sent. ${liveBefore.message}`
                   : 'The current LIVE VF curve could not be verified as a valid ordered curve with the requested point count. No curve write was sent.');
               } else {
@@ -6750,16 +6812,16 @@ export class IgclBackend {
                         if (setResult !== CTL_RESULT.SUCCESS) {
                           fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
                         } else {
-                          // Submit the requested table, then read LIVE once
-                          // after a bounded settle delay. IGCL may normalize a
-                          // successful write, so the validated LIVE table is
-                          // the applied result shown by the editor.
+                          // Submit once, allow the driver to settle, then
+                          // require a stable LIVE quorum. Only exact writes or
+                          // one-step quantization are accepted as applied.
                           const v = await readVfCurveAfterWrite({
                             readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
                             requestedPoints: points,
                             liveBefore,
                             curveRange,
                             maxAttempts: VF_READBACK_MAX_ATTEMPTS,
+                            quorum: Math.ceil(VF_READBACK_MAX_ATTEMPTS * 0.7),
                             pollIntervalMs: VF_READBACK_SETTLE_MS,
                           });
                           result.perControl.vfCurve = {
@@ -6798,6 +6860,10 @@ export class IgclBackend {
   }
 
   async resetToDefaults(deviceId) {
+    return this._withTuningTransactionLock(deviceId, () => this._resetToDefaultsUnlocked(deviceId));
+  }
+
+  async _resetToDefaultsUnlocked(deviceId) {
     await this._device(deviceId);
     const lib = this._libOrThrow();
     const dev = await this._device(deviceId);

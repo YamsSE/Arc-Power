@@ -1,9 +1,9 @@
 // IGCL can normalize a successful custom VF write. Verify the resulting LIVE
 // table and distinguish a valid driver normalization from a no-op or bad read.
-const DEFAULT_VF_READBACK_ATTEMPTS = 21;
 const DEFAULT_VF_READBACK_INTERVAL_MS = 100;
 const DEFAULT_VF_CONSENSUS_ATTEMPTS = 5;
 const DEFAULT_VF_CONSENSUS_QUORUM = 3;
+const DEFAULT_VF_POST_WRITE_SETTLE_MS = 3000;
 
 function pointsEqual(left, right) {
   return Array.isArray(left) && Array.isArray(right)
@@ -12,9 +12,8 @@ function pointsEqual(left, right) {
       && point.Frequency === right[index]?.Frequency);
 }
 
-/** Read a stable LIVE snapshot without allowing a one-off driver response to
- * become application state or a write before-image. STOCK reads intentionally
- * remain independent and must not be mixed into this consensus. */
+/** Read a stable VF snapshot without allowing a one-off driver response to
+ * become application state or a write before-image. */
 export async function readStableVfCurve({
   readCurve,
   maxAttempts = DEFAULT_VF_CONSENSUS_ATTEMPTS,
@@ -23,7 +22,7 @@ export async function readStableVfCurve({
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
   if (typeof readCurve !== 'function') {
-    return { ok: false, points: [], errorCode: 'readback-unverified', message: 'LIVE VF read callback is unavailable.' };
+    return { ok: false, points: [], errorCode: 'readback-unverified', message: 'VF read callback is unavailable.' };
   }
   const attempts = Number.isInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : DEFAULT_VF_CONSENSUS_ATTEMPTS;
   const required = Number.isInteger(quorum) && quorum > 0 ? quorum : DEFAULT_VF_CONSENSUS_QUORUM;
@@ -32,9 +31,18 @@ export async function readStableVfCurve({
   }
   const intervalMs = Number.isFinite(pollIntervalMs) && pollIntervalMs >= 0 ? pollIntervalMs : 0;
   const observations = [];
+  let latestReadOk = false;
+  let latestResult = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const result = await readCurve();
-    if (result?.ok === true && Array.isArray(result.points)) observations.push(result.points);
+    try {
+      const result = await readCurve();
+      latestResult = result;
+      latestReadOk = result?.ok === true && Array.isArray(result.points);
+      if (latestReadOk) observations.push(result.points);
+    } catch {
+      latestReadOk = false;
+      latestResult = null;
+    }
     if (attempt < attempts - 1 && intervalMs > 0) await wait(intervalMs);
   }
   const counts = [];
@@ -44,12 +52,27 @@ export async function readStableVfCurve({
     else counts.push({ points, count: 1 });
   }
   const stable = counts.find((entry) => entry.count >= required);
-  if (stable) return { ok: true, points: stable.points.map((point) => ({ ...point })), consensus: stable.count };
+  const latestObservation = observations.at(-1);
+  // The most recent native read must belong to the accepted quorum. This
+  // rejects a stale majority if the driver transitions late in the poll
+  // window, even when the earlier curve still accounts for enough samples.
+  if (stable && latestReadOk && pointsEqual(stable.points, latestObservation)) {
+    return { ok: true, points: stable.points.map((point) => ({ ...point })), consensus: stable.count };
+  }
+  if (observations.length === 0) {
+    return {
+      ok: false,
+      points: [],
+      errorCode: 'readback-unverified',
+      result: latestResult?.result,
+      message: latestResult?.message ?? 'The VF curve could not be read during the stability check.',
+    };
+  }
   return {
     ok: false,
     points: [],
     errorCode: 'readback-unstable',
-    message: `The LIVE VF curve did not produce a stable ${required}-of-${attempts} read quorum. No curve state was accepted.`,
+    message: `The VF curve did not produce a stable ${required}-of-${attempts} read quorum through the latest read. No curve state was accepted.`,
   };
 }
 
@@ -146,6 +169,31 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
   }
 
   if (requestedDiffersFromBefore && liveDiffersFromBefore) {
+    // Only call a changed value driver normalization when IGCL reported the
+    // corresponding native step. Unknown step metadata means exact match is
+    // the only evidence-backed acceptance rule; never invent a 10 MHz step.
+    const voltageToleranceMv = Number.isFinite(curveRange?.voltageStepV) && curveRange.voltageStepV > 0
+      ? Math.max(1, Math.round(curveRange.voltageStepV * 1000))
+      : 0;
+    const frequencyToleranceMhz = Number.isFinite(curveRange?.frequencyStepMhz) && curveRange.frequencyStepMhz > 0
+      ? Math.max(1, Math.round(curveRange.frequencyStepMhz))
+      : 0;
+    const outsideNormalizationTolerance = readBack.points.findIndex((point, index) =>
+      Math.abs(point.Voltage - requestedPoints[index].Voltage) > voltageToleranceMv
+      || Math.abs(point.Frequency - requestedPoints[index].Frequency) > frequencyToleranceMhz);
+    if (outsideNormalizationTolerance >= 0) {
+      const index = outsideNormalizationTolerance;
+      return {
+        ok: false,
+        exact: false,
+        normalized: false,
+        readBackEqual: false,
+        driverAdjusted: true,
+        errorCode: 'driver-adjusted',
+        appliedCurve,
+        message: `The driver returned a stable LIVE VF curve outside the one-step normalization tolerance. Point ${index + 1} requested ${requestedPoints[index].Voltage} mV / ${requestedPoints[index].Frequency} MHz; LIVE is ${readBack.points[index].Voltage} mV / ${readBack.points[index].Frequency} MHz. The requested draft was kept unchanged.`,
+      };
+    }
     return {
       ok: true,
       exact: false,
@@ -191,16 +239,18 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
 }
 
 /**
- * Verify a VF write using one validated LIVE read after a bounded settle
- * delay. A native write is never replayed here.
+ * Verify a VF write using a stable LIVE quorum after a bounded settle delay.
+ * A native write is never replayed here.
  */
 export async function readVfCurveAfterWrite({
   readCurve,
   requestedPoints,
   liveBefore,
   curveRange,
-  maxAttempts = DEFAULT_VF_READBACK_ATTEMPTS,
+  maxAttempts = DEFAULT_VF_CONSENSUS_ATTEMPTS,
+  quorum = DEFAULT_VF_CONSENSUS_QUORUM,
   pollIntervalMs = DEFAULT_VF_READBACK_INTERVAL_MS,
+  settleDelayMs = DEFAULT_VF_POST_WRITE_SETTLE_MS,
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
   if (typeof readCurve !== 'function') {
@@ -211,12 +261,26 @@ export async function readVfCurveAfterWrite({
       curveRange,
     });
   }
-  const requestedDelayMs = Number.isFinite(pollIntervalMs) && pollIntervalMs >= 0 ? pollIntervalMs : 0;
-  const intervalMs = Math.min(requestedDelayMs, 1000);
-  // Keep a bounded single settle delay. maxAttempts remains accepted for
-  // compatibility with existing callers, but no longer triggers read loops.
-  void maxAttempts;
-  if (intervalMs > 0) await wait(intervalMs);
-  const readBack = await readVfCurveOnce({ readCurve });
+  // The B580 driver can return a valid-looking transitional table shortly
+  // after a successful write, then settle to a different LIVE curve. Never
+  // publish that one-shot sample as the applied state. Wait for the native
+  // write to settle, then require a repeated LIVE quorum without replaying
+  // the setter.
+  const requestedSettleMs = Number.isFinite(settleDelayMs) && settleDelayMs >= 0 ? settleDelayMs : 0;
+  const boundedSettleMs = Math.min(requestedSettleMs, 5000);
+  if (boundedSettleMs > 0) await wait(boundedSettleMs);
+  const stable = await readStableVfCurve({
+    readCurve,
+    maxAttempts,
+    quorum,
+    pollIntervalMs,
+    wait,
+  });
+  const readBack = stable.ok
+    ? stable
+    : {
+      ...stable,
+      errorCode: stable.errorCode ?? 'readback-unstable',
+    };
   return validateVfCurveReadback({ readBack, requestedPoints, liveBefore, curveRange });
 }

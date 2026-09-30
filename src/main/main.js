@@ -1610,6 +1610,9 @@ async function main() {
     applyRunner = createApplyRunner({
       isElevated,
       execPath: process.execPath,
+      // Timeout quarantines must survive Arc Power cache cleanup and process
+      // restarts. Keep them beside the durable profiles under %APPDATA%.
+      quarantineDirectory: path.join(app.getPath('appData'), 'ArcPower', 'TuningQuarantine'),
       // Dev mode (`electron .`): process.execPath is electron.exe - the
       // worker spawn must pass the app path along. Packaged EXEs ignore it.
       appPath: process.defaultApp ? app.getAppPath() : null,

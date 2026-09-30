@@ -42,6 +42,35 @@ test('uninstall cleanup owns the exact ArcPower profile and removes only Arc Pow
   assert.ok(!plan.cleanupPaths.includes(monitorLogPath), 'the telemetry folder is not recursively deleted with user files');
 });
 
+test('uninstall fails closed before stopping processes or deleting paths when tuning safety is uncertain', () => {
+  const plan = makePlan();
+  const script = createUninstallCleanupScript({
+    pid: 1234,
+    plan,
+    scriptPath: path.join(path.resolve('test-fixtures', 'Temp'), 'arc-power-uninstall.ps1'),
+    recoveryCommand: 'powershell.exe -File recovery.ps1',
+    recoveryDisplayIcon: 'powershell.exe,0',
+  });
+  const guardIndex = script.indexOf('$tuningQuarantineBlockReason = Get-TuningQuarantineBlockReason');
+  const stopProcessesIndex = script.indexOf('Stop-OwnedProcesses', guardIndex);
+  const deletePathsIndex = script.indexOf('foreach ($cleanupPath in $cleanupPaths)', guardIndex);
+  assert.ok(guardIndex >= 0 && guardIndex < stopProcessesIndex && stopProcessesIndex < deletePathsIndex,
+    'the guard runs before process termination and every owned-path deletion');
+  assert.match(script, /Join-Path|ArcPower\\TuningQuarantine/);
+  assert.match(script, /arcpower-tuning-quarantine-\*\.json/);
+  assert.match(script, /\$markerFile\.PSIsContainer/,
+    'a directory masquerading as a safety marker fails closed');
+  assert.match(script, /ConvertFrom-Json -ErrorAction Stop/);
+  assert.match(script, /GPU tuning safety data is invalid/,
+    'malformed or incomplete marker data blocks cleanup');
+  assert.match(script, /\[string\]\$marker\.bootSessionId -eq \$bootSessionId/,
+    'a marker from this Windows boot session blocks cleanup');
+  assert.match(script, /could not verify GPU tuning safety/i,
+    'boot-session query failures also block cleanup');
+  assert.match(script, /Restart Windows before uninstalling Arc Power/,
+    'the failure explains how to safely retry uninstall');
+});
+
 test('installation plan rejects an install path that overlaps durable ArcPower data', () => {
   assert.throws(() => makePlan({ installDir: profilePath }), /must not equal, contain, or be contained by/);
   assert.throws(() => makePlan({ installDir: monitorLogPath }), /must not overlap the Arc Power telemetry log path/);

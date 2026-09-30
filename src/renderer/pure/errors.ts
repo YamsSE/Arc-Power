@@ -45,7 +45,7 @@ const ERROR_MESSAGES: Record<OcErrorCode, string> = {
   'driver-adjustment-out-of-range': 'The driver changed the VF curve beyond the supported normalization range. The editor shows the live curve, but the apply was not accepted.',
   'driver-noop': 'IGCL returned success, but the live VF curve stayed unchanged during verification, so the apply was not accepted.',
   'io-failed': 'The GPU driver did not accept the value (read-back mismatch).',
-  'driver-adjusted': 'The GPU driver changed one or more VF points. The requested draft remains available for editing.',
+  'driver-adjusted': 'The GPU driver returned a VF curve beyond one reported driver step. The apply was not accepted, and the requested draft remains available for editing.',
   'readback-unverified': 'The current LIVE VF curve could not be verified before the write, so no curve write was sent.',
   'driver-invalid-readback': 'The driver returned an invalid LIVE VF curve.',
   'dependency-failed': 'This control was skipped because a required tuning change did not verify.',
