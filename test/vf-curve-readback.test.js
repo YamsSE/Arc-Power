@@ -14,6 +14,54 @@ const observedByB580 = [
   [830, 2960], [880, 3090], [930, 3180], [980, 3200], [1030, 3210],
 ].map(([Voltage, Frequency]) => ({ Voltage, Frequency }));
 
+test('Battlemage adopts one valid driver-authoritative LIVE result without quorum or settle delay', async () => {
+  let reads = 0;
+  const result = await readVfCurveAfterWrite({
+    readCurve: async () => { reads += 1; return { ok: true, points: observedByB580 }; },
+    requestedPoints: requested, liveBefore: { ok: true, points: before }, curveRange,
+    driverAuthoritative: true,
+    wait: async () => assert.fail('Battlemage must not wait for a quorum'),
+  });
+  assert.equal(reads, 1);
+  assert.equal(result.ok, true);
+  assert.equal(result.exact, false);
+  assert.equal(result.normalized, true);
+  assert.deepEqual(result.appliedCurve, observedByB580.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency })));
+});
+
+test('Battlemage reports unchanged LIVE honestly after driver success', () => {
+  const result = validateVfCurveReadback({
+    readBack: { ok: true, points: before }, requestedPoints: requested,
+    liveBefore: { ok: true, points: before }, curveRange, driverAuthoritative: true,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.exact, false);
+  assert.equal(result.normalized, true);
+});
+
+test('Battlemage adopts the observed voltage-edit grid remap after a successful setter', () => {
+  const stockFrequencies = [1550, 2000, 2340, 2580, 2780, 2830, 3060, 3180, 3210, 3230];
+  const stockPoints = stockFrequencies.map((Frequency, index) => ({ Voltage: 776 + index * 50, Frequency }));
+  const requestedPoints = stockPoints.map((point) => ({ ...point }));
+  requestedPoints[5] = { Voltage: 1036, Frequency: 2820 };
+  const livePoints = stockPoints.map((point) => ({ ...point }));
+  livePoints[5] = { Voltage: 1026, Frequency: 2790 };
+  const options = {
+    readBack: { ok: true, points: livePoints },
+    requestedPoints,
+    liveBefore: { ok: true, points: stockPoints },
+    curveRange: { ...curveRange, voltageStepV: 0.001, frequencyStepMhz: 10 },
+  };
+  const legacy = validateVfCurveReadback(options);
+  assert.equal(legacy.ok, false);
+  assert.equal(legacy.errorCode, 'driver-adjusted');
+  const result = validateVfCurveReadback({ ...options, driverAuthoritative: true });
+  assert.equal(result.ok, true);
+  assert.equal(result.exact, false);
+  assert.equal(result.normalized, true);
+  assert.deepEqual(result.appliedCurve, livePoints.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency })));
+});
+
 test('stable LIVE read ignores one transient voltage-shift sample', async () => {
   const shifted = before.map((point) => ({ ...point, Voltage: point.Voltage + 75 }));
   const samples = [shifted, before, before, before, before];

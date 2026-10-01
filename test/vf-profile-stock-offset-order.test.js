@@ -124,7 +124,7 @@ test('B580 STOCK profile restores its curve before applying saved scalar core of
   assert.equal(offsets.gpuVoltOffset, 25);
 });
 
-test('B580 profile identifies STOCK only after transient first STOCK read settles', async () => {
+test('B580 profile treats the first valid differing STOCK as custom without rebasing', async () => {
   const transient = stock.map((point) => ({ ...point, Voltage: point.Voltage + 50 }));
   const { backend, calls, offsets } = fixture({
     stockReadSequence: [transient, stock, stock, stock, stock, stock],
@@ -135,13 +135,13 @@ test('B580 profile identifies STOCK only after transient first STOCK read settle
     gpuVoltOffsetV: 25,
   }, { profileApply: true });
 
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
   assert.equal(result.perControl.vfCurve.ok, true);
-  assert.deepEqual(calls, ['vf-write', 'frequency-offset', 'voltage-offset']);
-  assert.deepEqual(offsets, { gpuFreqOffset: 75, gpuVoltOffset: 25 });
+  assert.deepEqual(calls, ['vf-write']);
+  assert.deepEqual(offsets, { gpuFreqOffset: 0, gpuVoltOffset: 0 });
 });
 
-test('B580 profile with unstable STOCK preflight refuses the curve and dependent core offsets', async () => {
+test('B580 profile uses valid STOCK snapshots without requiring a quorum', async () => {
   const unstable = Array.from({ length: 5 }, (_, read) => stock.map((point, index) => ({
     ...point,
     Voltage: point.Voltage + read + index + 1,
@@ -153,13 +153,10 @@ test('B580 profile with unstable STOCK preflight refuses the curve and dependent
     gpuVoltOffsetV: 25,
   }, { profileApply: true });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.perControl.vfCurve.ok, false);
-  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
-  assert.equal(result.perControl.gpuFreqOffsetMhz.errorCode, 'dependency-failed');
-  assert.equal(result.perControl.gpuVoltOffsetV.errorCode, 'dependency-failed');
-  assert.deepEqual(calls, []);
-  assert.deepEqual(offsets, { gpuFreqOffset: 0, gpuVoltOffset: 0 });
+  assert.equal(result.ok, true);
+  assert.equal(result.perControl.vfCurve.ok, true);
+  assert.deepEqual(calls, ['vf-write', 'frequency-offset', 'voltage-offset']);
+  assert.deepEqual(offsets, { gpuFreqOffset: 75, gpuVoltOffset: 25 });
 });
 
 test('B580 STOCK profile leaves existing core offsets untouched when curve apply refuses them', async () => {

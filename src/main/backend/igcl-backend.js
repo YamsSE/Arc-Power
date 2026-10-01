@@ -75,7 +75,7 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
 import { isValidNativeVfCurve, prepareVfCurveForDriver, vfCurveNeedsWrite } from '../../renderer/pure/vf-curve.ts';
-import { readStableVfCurve, readStableVfCurvePreflight, readVfCurveAfterWrite } from './vf-curve-readback.js';
+import { readStableVfCurve, readStableVfCurvePreflight, readVfCurveAfterWrite, readVfCurveOnce } from './vf-curve-readback.js';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
@@ -156,7 +156,7 @@ function uniformVfVoltageShiftMv(left, right, toleranceMv = VF_UNIFORM_VOLTAGE_D
 // The Battlemage VF editor is an API-capability surface, while a successful
 // live read is only a prerequisite for a specific write transaction. Keep the
 // controls visible when IGCL exposes both symbols but a runtime probe is
-// refused; applySettings still requires stable STOCK and LIVE preflight.
+// refused; applySettings still requires valid fresh STOCK and LIVE preflight.
 export function battlemageVfCurveCapability({ battlemage, readAvailable, writeAvailable, probe } = {}) {
   if (!battlemage) {
     return { supported: false, status: { state: 'unsupported', reason: 'Custom VF curves are only exposed for Battlemage adapters.' } };
@@ -2864,10 +2864,7 @@ export class IgclBackend {
     // read, and a transient KMD response must not be cached as unsupported.
     const stockProbe = await this._readVfCurvePointsWithRetry(handle, 0, 0);
     if (stockProbe.ok) {
-      const stock = await readStableVfCurve({
-        readCurve: () => this._readVfCurvePointsWithRetry(handle, 0, 0),
-        uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
-      });
+      const stock = this._validateVfSnapshot(stockProbe);
       return stock.ok
         ? { ok: true, state: 'available', reason: null }
         : { ok: false, state: 'runtime-refused', reason: stock.message };
@@ -2878,13 +2875,25 @@ export class IgclBackend {
     if (!stockProbe.fallbackToLive) {
       return { ok: false, state: 'runtime-refused', reason: stockProbe.message };
     }
-    const live = await readStableVfCurve({
-      readCurve: () => this._readVfCurvePointsWithRetry(handle, 1, 0),
-      uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
-    });
+    const live = await this._readVfCurveSnapshot(handle, 1);
     return live.ok
       ? { ok: true, state: 'available', reason: null }
       : { ok: false, state: 'runtime-refused', reason: live.message };
+  }
+
+  _validateVfSnapshot(snapshot, range = null) {
+    if (!snapshot.ok) return snapshot;
+    const canonical = snapshot.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }));
+    const limits = range ?? { voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 0, freqMaxMhz: 4300, maxPoints: 32 };
+    return isValidNativeVfCurve(canonical, limits)
+      ? snapshot
+      : { ok: false, points: [], errorCode: 'driver-invalid-readback', message: 'The driver returned an invalid ordered VF curve within the supported range.' };
+  }
+
+  async _readVfCurveSnapshot(handle, type, range = null) {
+    return this._validateVfSnapshot(await readVfCurveOnce({
+      readCurve: () => this._readVfCurvePointsWithRetry(handle, type, 0),
+    }), range);
   }
 
   /**
@@ -3080,8 +3089,8 @@ export class IgclBackend {
     }
 
     // VF curves are the native Battlemage simplified tables. STOCK and LIVE
-    // are separate driver surfaces and may be stable across different read
-    // windows. Read each independently for display; apply revalidates both
+    // are separate driver surfaces with independently moving voltage origins.
+    // Read each once for display; apply revalidates both
     // native source tables immediately before its single setter call.
     // Never infer STOCK from renderer state or a synthetic point list.
     if (caps.controls.vfCurve && !this._isUnavailable(lib.ctlOverclockReadVFCurve)) {
@@ -3093,31 +3102,36 @@ export class IgclBackend {
         // Only an explicit API-surface absence permits LIVE-only operation.
         // A readable LIVE table remains useful for editing, but it is never
         // represented as the STOCK reset target.
-        const live = await readStableVfCurvePreflight({
-          readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
-          uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
-        });
+        const live = isBattlemageGpuName(caps.deviceName, caps)
+          ? await this._readVfCurveSnapshot(dev.handle, 1, caps.vfCurveRange)
+          : await readStableVfCurvePreflight({
+            readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+            uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+          });
         if (live.ok) {
           const canonical = toCanonical(live.points);
           state.vfCurve = canonical.map((point) => ({ ...point }));
         }
       } else {
-        // Do not treat one transient failed STOCK probe as proof that the
-        // curve is unavailable. The bounded stable read below gets its own
-        // retry and still fails closed if the native table cannot be verified.
-        const stock = await readStableVfCurvePreflight({
-          readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 0, 0),
-          uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
-        });
-        const live = await readStableVfCurvePreflight({
-          readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
-          uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
-        });
+        // Native errors receive bounded retries; a successful Battlemage
+        // snapshot needs semantic validation rather than a repeated quorum.
+        const stock = isBattlemageGpuName(caps.deviceName, caps)
+          ? this._validateVfSnapshot(stockProbe, caps.vfCurveRange)
+          : await readStableVfCurvePreflight({
+            readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 0, 0),
+            uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+          });
+        const live = isBattlemageGpuName(caps.deviceName, caps)
+          ? await this._readVfCurveSnapshot(dev.handle, 1, caps.vfCurveRange)
+          : await readStableVfCurvePreflight({
+            readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+            uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+          });
         if (stock.ok) state.vfCurveDefault = toCanonical(stock.points);
         if (live.ok) state.vfCurve = toCanonical(live.points);
-        // Preserve whichever independently stable curve is available. The
+        // Preserve whichever independently valid curve is available. The
         // renderer labels STOCK-only data as a read-only reference, while
-        // writes still require fresh stable STOCK and LIVE before-images.
+        // writes still require fresh valid STOCK and LIVE before-images.
       }
       if (state.vfCurve || state.vfCurveDefault) state.vfCurveUnits = 'V';
     }
@@ -6152,7 +6166,7 @@ export class IgclBackend {
           .filter((key) => settings[key] !== null && settings[key] !== undefined);
       } else {
         const stockProbe = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
-        const stock = stockProbe.ok
+        const stock = isBattlemageGpuName(caps.deviceName, caps) ? this._validateVfSnapshot(stockProbe, caps.vfCurveRange) : stockProbe.ok
           ? await readStableVfCurve({
             readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 0, 0),
             uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
@@ -6270,7 +6284,7 @@ export class IgclBackend {
         : vfResult;
       result.perControl.vfCurve = reportedVfResult;
       const acceptedUniformVoltageShift = Number.isInteger(vfResult.uniformVoltageShiftMv)
-        && Math.abs(vfResult.uniformVoltageShiftMv) <= VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV;
+        && (isBattlemageGpuName(caps.deviceName, caps) || Math.abs(vfResult.uniformVoltageShiftMv) <= VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV);
       if (vfResult.ok !== true || (vfResult.readBackEqual !== true && !acceptedUniformVoltageShift)) {
         result.ok = false;
         for (const key of profileOffsets) {
@@ -6810,30 +6824,32 @@ export class IgclBackend {
             let native;
             let liveBefore;
             if (stockProbe.fallbackToLive) {
-              // Preserve the explicit API-unavailable fallback: a stable
+              // Preserve the explicit API-unavailable fallback: a valid
               // LIVE table supplies both native shape and the before-image.
-              native = await readStableVfCurvePreflight({
-                readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
-                uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
-              });
+              native = isBattlemageGpuName(caps.deviceName, caps)
+                ? await this._readVfCurveSnapshot(dev.handle, 1, curveRange)
+                : await readStableVfCurvePreflight({
+                  readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+                  uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+                });
               liveBefore = native;
             } else {
-              // Do not skip the quorum/retry path after a transient initial
-              // probe failure. Only the explicit fallback means STOCK is not
-              // supported on this API surface.
-              // STOCK defines the native write shape; LIVE is the current
-              // before-image and may legitimately contain a different curve.
-              // Stabilize each surface independently, then require the final
-              // source reads to preserve both curve shapes after the waiver
-              // replay before the setter is allowed to run.
-              native = await readStableVfCurvePreflight({
-                readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 0, 0),
-                uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
-              });
-              liveBefore = await readStableVfCurvePreflight({
-                readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
-                uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
-              });
+              // STOCK defines the native point count; LIVE is the current
+              // before-image and may contain a different curve. Successful
+              // Battlemage reads are accepted once after validation; native
+              // errors retain their existing bounded retry policy.
+              native = isBattlemageGpuName(caps.deviceName, caps)
+                ? this._validateVfSnapshot(stockProbe, curveRange)
+                : await readStableVfCurvePreflight({
+                  readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 0, 0),
+                  uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+                });
+              liveBefore = isBattlemageGpuName(caps.deviceName, caps)
+                ? await this._readVfCurveSnapshot(dev.handle, 1, curveRange)
+                : await readStableVfCurvePreflight({
+                  readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+                  uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+                });
             }
             if (!native.ok) {
               fail('vfCurve', native.errorCode ?? igclErrorCode(native.result) ?? 'io-failed', native.message);
@@ -6915,7 +6931,9 @@ export class IgclBackend {
                             freqMhz: point.Frequency,
                           }));
                           return isValidNativeVfCurve(currentCanonical, curveRange)
-                            && uniformVfVoltageShiftMv(currentCanonical, priorCanonical) !== null;
+                            && current.points.length === prior.points.length
+                            && uniformVfVoltageShiftMv(currentCanonical, priorCanonical,
+                              isBattlemageGpuName(caps.deviceName, caps) ? Infinity : VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV) !== null;
                         };
                         if (!sourceNow.ok || !liveNow.ok) {
                           fail('vfCurve', 'readback-unverified', 'The final STOCK/LIVE VF source snapshot could not be read after waiver replay. No curve write was sent.');
@@ -6924,9 +6942,9 @@ export class IgclBackend {
                         } else {
                           // A reset intent is resolved from this final fresh
                           // STOCK read, never from the renderer's cached table.
-                          // The stable preflight above still proves the native
-                          // shape, and the bounded common-shift check proves
-                          // this latest table has not been reshaped.
+                          // The final snapshot proves the native point count,
+                          // ordering, and supported ranges; moving voltage
+                          // origins do not rewrite a custom request.
                           if (resetToDefault) {
                             points = sourceNow.points.map((point) => ({
                               Voltage: point.Voltage,
@@ -6957,13 +6975,18 @@ export class IgclBackend {
                             if (setResult !== CTL_RESULT.SUCCESS) {
                               fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
                             } else {
-                              // Submit once, allow the driver to settle, then
-                              // require a stable LIVE quorum. IGCL documents
-                              // that LIVE may be adjusted after a successful
-                              // write, so the validated LIVE result is returned
-                              // to the editor instead of resending the stale draft.
+                              // IGS refreshes STOCK then LIVE after its one
+                              // successful setter. Battlemage accepts that
+                              // validated LIVE property as the applied value.
+                              const driverAuthoritative = isBattlemageGpuName(caps.deviceName, caps);
                               const v = await readVfCurveAfterWrite({
-                                readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+                                readCurve: async () => {
+                                  if (!driverAuthoritative) return this._readVfCurvePointsWithRetry(dev.handle, 1, 0);
+                                  const stockAfter = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
+                                  const liveAfter = await this._readVfCurveSnapshot(dev.handle, 1, curveRange);
+                                  const stockValid = this._validateVfSnapshot(stockAfter, curveRange);
+                                  return stockValid.ok || stockAfter.fallbackToLive ? liveAfter : stockValid;
+                                },
                                 requestedPoints: points,
                                 liveBefore,
                                 curveRange,
@@ -6971,6 +6994,7 @@ export class IgclBackend {
                                 quorum: Math.ceil(VF_READBACK_MAX_ATTEMPTS * 0.7),
                                 pollIntervalMs: VF_READBACK_SETTLE_MS,
                                 uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+                                driverAuthoritative,
                               });
                               result.perControl.vfCurve = {
                                 ok: v.ok,

@@ -3525,8 +3525,12 @@ export function createIpcHandlers({
                 && Number.isSafeInteger(point.freqMhz));
             if (!valid) {
               mismatched.push('VF curve: valid STOCK and LIVE read-back unavailable');
-            } else if (stock.length !== live.length || !stock.every((point, index) =>
-              Math.round(point.voltageV * 1000) === Math.round(live[index].voltageV * 1000)
+              } else if (stock.length !== live.length || !stock.every((point, index) =>
+                // Separate native STOCK/LIVE calls can observe different
+                // common voltage origins on Battlemage. A reset must retain
+                // the exact native spacing and frequencies, not that origin.
+                Math.round(point.voltageV * 1000) - Math.round(stock[0].voltageV * 1000)
+                  === Math.round(live[index].voltageV * 1000) - Math.round(live[0].voltageV * 1000)
               && point.freqMhz === live[index].freqMhz)) {
               mismatched.push('VF curve: LIVE points do not exactly match STOCK mV/MHz points');
             }

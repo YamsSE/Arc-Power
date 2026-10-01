@@ -149,6 +149,7 @@ export function validateVfCurveReadback({
   liveBefore,
   curveRange,
   uniformVoltageShiftToleranceMv = 0,
+  driverAuthoritative = false,
 } = {}) {
   if (!readBack?.ok) {
     return {
@@ -208,6 +209,19 @@ export function validateVfCurveReadback({
 
   if (pointsEqual(readBack.points, requestedPoints)) {
     return { ok: true, exact: true, readBackEqual: true, normalized: false, driverAdjusted: false, appliedCurve };
+  }
+
+  // IGS accepts the refreshed LIVE property after a successful setter. A
+  // moving voltage origin or driver normalization is an observed result,
+  // rather than grounds to replay or reject the successful native write.
+  if (driverAuthoritative) {
+    const shift = uniformVoltageShiftMv(readBack.points, requestedPoints, Infinity);
+    return {
+      ok: true, exact: false, readBackEqual: false, normalized: true,
+      driverAdjusted: true, appliedCurve,
+      ...(shift !== null ? { uniformVoltageShiftMv: shift } : {}),
+      message: 'IGCL reported success. The editor now shows the validated LIVE curve returned by the driver, which differs from the requested coordinates.',
+    };
   }
 
   const requestedVoltageShift = uniformVoltageShiftMv(readBack.points, requestedPoints, voltageToleranceMv);
@@ -312,8 +326,15 @@ export async function readVfCurveAfterWrite({
   pollIntervalMs = DEFAULT_VF_READBACK_INTERVAL_MS,
   settleDelayMs = DEFAULT_VF_POST_WRITE_SETTLE_MS,
   uniformVoltageShiftToleranceMv = 0,
+  driverAuthoritative = false,
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
+  if (driverAuthoritative) {
+    return validateVfCurveReadback({
+      readBack: await readVfCurveOnce({ readCurve }),
+      requestedPoints, liveBefore, curveRange, driverAuthoritative,
+    });
+  }
   if (typeof readCurve !== 'function') {
     return validateVfCurveReadback({
       readBack: { ok: false, message: 'LIVE VF read callback is unavailable' },
