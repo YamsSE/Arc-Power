@@ -1,4 +1,4 @@
-# Arc Power 1.2
+# Arc Power Ver. 1.2
 
 Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.2 includes the Driver Library, which lets you browse available Intel driver releases and manage downloaded installers.
 
@@ -20,11 +20,9 @@ Controls depend on the capabilities reported by the selected device and its driv
 |---|---|---|
 | Arc A3 / A5 / A7 series | Alchemist | **Verified - Working** |
 | Arc B580 / B570 | Battlemage | VF writes use driver-reported steps and require exact LIVE read-back |
-| Arc Pro B50 | Battlemage (pro) | **Verified - Tweaks & Telemetry only** |
+| Arc Pro A & B Series | Alchemist & Battlemage| **Verified - Tweaks & Telemetry only** |
 | Arc iGPU | Alchemist & Battlemage | **Verified - Tweaks & Telemetry only** |
 
-- [x] Battlemage controls and telemetry
-- [ ] B580 VF curve apply verified against IGS behavior
 
 AMD and NVIDIA adapters may appear for telemetry when their vendor libraries are available. Tuning controls require an Intel Arc GPU.
 
