@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arc Power - Overclocking &amp; Tuning for Intel Arc GPUs</title>
-  <meta name="description" content="Overclock and tune Intel Arc GPUs through Intel's official IGCL API. Multi-GPU, fan curves, live telemetry, an in-game overlay and graphics tuning - no reverse engineering, no daemons.">
-  <meta property="og:title" content="Arc Power - Overclocking &amp; Tuning for Intel Arc GPUs">
-  <meta property="og:description" content="The overclocking tool for Intel Arc GPUs. Multi-GPU, fan curves, live telemetry, in-game overlay, graphics tuning - built on Intel's official IGCL API.">
+  <title>Arc Power 1.2 | Intel Arc GPU Control</title>
+  <meta name="description" content="Arc Power 1.2 brings Intel Arc GPU tuning, live telemetry, in-game overlays, profiles, graphics settings, and the Driver Library to Windows.">
+  <meta property="og:title" content="Arc Power 1.2 | Intel Arc GPU Control">
+  <meta property="og:description" content="Tune and monitor Intel Arc GPUs, configure in-game overlays, manage profiles, and browse Intel releases with the Driver Library.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://yamsse.github.io/Arc-Power/">
   <meta property="og:image" content="https://yamsse.github.io/Arc-Power/assets/og.png">
@@ -30,7 +30,7 @@
     <a class="nav-brand" href="#top">
       <img class="nav-logo" src="assets/ArcPowerIcon.png" alt="Arc Power logo" width="28" height="28">
       <span class="nav-name">Arc&nbsp;Power</span>
-      <span class="nav-ver mono">1.1.7</span>
+      <span class="nav-ver mono">1.2.0</span>
     </a>
     <div class="nav-links" id="navLinks">
       <a href="#features">Features</a>
@@ -70,10 +70,9 @@
           Arc <span class="grad-text">Power</span>
         </h1>
         <p class="hero-sub">
-          An open-source overclocking and tuning tool for Intel Arc GPUs - in the spirit of
-          MSI Afterburner and AMD Adrenaline, built on Intel's official Graphics Control
-          Library (IGCL). Multi-GPU support, five UI themes, live telemetry, an in-game
-          overlay and graphics tuning. No reverse-engineering. No third-party daemons.
+          One place to tune, monitor, and manage Intel Arc graphics. Version 1.2 brings
+          driver browsing into the same app as live telemetry, profiles, graphics settings,
+          configurable in-game overlays, and recording controls.
         </p>
         <div class="hero-actions">
           <div class="hero-actions-row">
@@ -151,6 +150,12 @@
       </div>
     </header>
 
+    <section class="wrap release-callout glass" aria-label="Version 1.2 release">
+      <div><span class="kicker mono">VERSION 1.2</span><h2>Driver Library is included</h2>
+      <p>Browse available Intel Arc and Arc Pro driver releases, review version details, and manage downloaded installers from Arc Power.</p></div>
+      <a class="btn btn-primary" href="https://github.com/YamsSE/Arc-Power/releases/latest" target="_blank" rel="noopener">Get Version 1.2</a>
+    </section>
+
     <!-- ============================== STATS ============================== -->
     <section class="stats wrap" aria-label="Key numbers">
       <div class="stat glass">
@@ -175,7 +180,7 @@
     <section class="wrap section" id="features">
       <div class="section-head">
         <span class="kicker mono">Key points</span>
-        <h2>Everything you need to<br>unlock your Arc GPU</h2>
+        <h2>Control, monitor, and manage<br>your Arc system</h2>
       </div>
       <div class="feature-grid">
         <article class="card glass reveal">
@@ -218,7 +223,14 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
           </div>
           <h3>In-game overlay</h3>
-          <p>A click-through, always-on-top stats overlay - clocks, temps, FPS with 1% Low / 99% FPS percentiles and a frametime polyline. Hotkey toggle, 4-corner positioning, size, text colors, an optional background and a configurable polling rate.</p>
+          <p>A click-through, always-on-top stats overlay - clocks, temperatures, FPS with 1% Low / 99% FPS percentiles and a frametime polyline. Choose optional CPU/GPU chip labels, Celsius or Fahrenheit for both Arc Power and RTSS overlays, and compact value units. Configure the hotkey, position, size, colors, background and polling rate.</p>
+        </article>
+        <article class="card glass reveal">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9v6l5-3-5-3Z"/></svg>
+          </div>
+          <h3>Recording &amp; Instant Replay</h3>
+          <p>Capture video and save replay clips with configurable encoders and CBR, VBR, CQP or ICQ rate control. A global Start / stop recording hotkey works from any window. Memory Saving Mode is available in Settings and is off by default.</p>
         </article>
         <article class="card glass reveal">
           <div class="card-icon">
@@ -255,6 +267,13 @@
           <h3>Installer &amp; packaging</h3>
           <p>Shipped as a portable EXE and a proper installer. Distributed builds request administrator access so hardware-control and logon applies have the access they need.</p>
         </article>
+        <article class="card glass reveal">
+          <div class="card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/><path d="M7 2v4M17 2v4"/></svg>
+          </div>
+          <h3>Intel Driver Library</h3>
+          <p>Included in Version 1.2. Browse available Intel Arc and Arc Pro driver versions, review release details, and manage downloaded installers.</p>
+        </article>
       </div>
     </section>
 
@@ -263,7 +282,7 @@
       <div class="section-head">
         <span class="kicker mono">Hardware</span>
         <h2>Supported GPUs</h2>
-        <p class="section-sub">Capability limits, ranges, steps and units are read from the GPU at launch - never hardcoded. The UI only shows what your device actually supports.</p>
+        <p class="section-sub">Limits, ranges, steps, and units come from the selected GPU and driver. Arc Power shows only the controls your device supports.</p>
       </div>
       <div class="gpu-table glass reveal">
         <div class="gpu-row gpu-head mono">
@@ -277,7 +296,7 @@
         <div class="gpu-row">
           <span class="gpu-name"><img src="assets/ArcPowerIcon.png" alt="" width="18" height="18">Arc B580 / B570</span>
           <span>Battlemage</span>
-          <span class="chip chip-ok">Verified<span class="chip-sub">- Working</span></span>
+          <span class="chip chip-warn">VF curves<span class="chip-sub">- LIVE read-back checked</span></span>
         </div>
         <div class="gpu-row">
           <span class="gpu-name"><img src="assets/ArcPowerIcon.png" alt="" width="18" height="18">Arc Pro B50</span>
@@ -290,6 +309,7 @@
           <span class="chip chip-ok">Verified<span class="chip-sub">- Tweaks &amp; Telemetry only</span></span>
         </div>
       </div>
+      <p class="section-sub">VF points follow the voltage and frequency steps reported by the driver. Arc Power reads back the full LIVE curve. Exact matches succeed; differences of at most one reported driver step per point are shown as driver adjustments. Larger remaps, unstable read-back, and a write that leaves LIVE unchanged fail verification while preserving the requested draft. B580 behavior still needs successful hardware verification against IGS.</p>
     </section>
 
     <!-- ============================== SAFETY ============================== -->

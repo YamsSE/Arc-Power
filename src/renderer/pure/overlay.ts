@@ -54,6 +54,72 @@ export const OVERLAY_THEMES: readonly string[] = ['classic', 'arc'];
 /** M24: the product-default overlay theme ('arc' - the redesign; the
  *  persisted-truth owner is profile-store.js, keep both in lockstep). */
 export const OVERLAY_THEME_DEFAULT = 'arc';
+export type OverlayTemperatureUnit = 'C' | 'F';
+export const OVERLAY_TEMPERATURE_UNIT_DEFAULT: OverlayTemperatureUnit = 'C';
+
+export function isValidOverlayTemperatureUnit(value: unknown): value is OverlayTemperatureUnit {
+  return value === 'C' || value === 'F';
+}
+
+export interface OverlayTemperatureUnitToggle {
+  checked: boolean;
+  disabled: boolean;
+}
+
+/** Persist a shared temperature unit and resync the current settings control.
+ * The control is looked up again after saving because other settings can
+ * rebuild the page while this request is pending. */
+export function createOverlayTemperatureUnitChangeHandler(options: {
+  getCurrentUnit: () => OverlayTemperatureUnit;
+  setCurrentUnit: (unit: OverlayTemperatureUnit) => void;
+  save: (unit: OverlayTemperatureUnit) => Promise<unknown>;
+  getToggle: () => OverlayTemperatureUnitToggle | null;
+  setSaving: (saving: boolean) => void;
+  onSaved: (unit: OverlayTemperatureUnit) => void;
+  onError: (error: unknown) => void;
+}): (unit: OverlayTemperatureUnit) => Promise<void> {
+  let saving = false;
+  return async (unit) => {
+    let toggle = options.getToggle();
+    if (!isValidOverlayTemperatureUnit(unit)) return;
+    if (saving) {
+      if (toggle) toggle.checked = options.getCurrentUnit() === 'F';
+      return;
+    }
+    if (unit === options.getCurrentUnit()) return;
+    const previous = options.getCurrentUnit();
+    saving = true;
+    options.setSaving(true);
+    if (toggle) toggle.disabled = true;
+    try {
+      try {
+        await options.save(unit);
+      } catch (error) {
+        options.setCurrentUnit(previous);
+        options.onError(error);
+        return;
+      }
+      options.setCurrentUnit(unit);
+      options.onSaved(unit);
+    } finally {
+      saving = false;
+      options.setSaving(false);
+      // Query after the await: render() can replace this input during save.
+      toggle = options.getToggle();
+      if (toggle) {
+        toggle.checked = options.getCurrentUnit() === 'F';
+        toggle.disabled = false;
+      }
+    }
+  };
+}
+
+export function formatOverlayTemperature(valueC: number | null, preferredUnit: unknown = OVERLAY_TEMPERATURE_UNIT_DEFAULT): string {
+  if (valueC === null || !Number.isFinite(valueC)) return '-';
+  const unit = isValidOverlayTemperatureUnit(preferredUnit) ? preferredUnit : OVERLAY_TEMPERATURE_UNIT_DEFAULT;
+  const value = unit === 'F' ? valueC * 9 / 5 + 32 : valueC;
+  return `${Math.round(value)}°${unit}`;
+}
 
 /** Optional overlay presentation providers. RTSS remains the default; the
  * CapFrameX-style provider is Arc Power's independent hook-free renderer. */
@@ -505,6 +571,8 @@ function unit(v: number | null, fmt: (n: number) => string, suffix: string): str
 export interface OverlayLinesOpts {
   /** M17b: the chip-name row labels (null/absent -> the stock prefixes). */
   chipLabels?: { cpu?: string | null; gpu?: string | null };
+  /** Shared overlay temperature unit; telemetry samples remain Celsius. */
+  temperatureUnit?: OverlayTemperatureUnit;
   /** M154: the renderer-wide label column width. Primary and secondary GPU
    * rows pass the same width so a long chip label cannot move the divider
    * without moving every value column with it. */
@@ -580,7 +648,7 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   if (enabled.has('cpu-clock')) cpuFields.push(unit(cpuFreqMhz, (n) => ghzFreq(n), 'GHz'));
   // M17b: the temp fields round to whole degrees (Math.round - the AMD
   // SMN die temp is 0.125 °C/LSB, so 60.5 renders '61°C', never '60.5°C').
-  if (enabled.has('cpu-temp')) cpuFields.push(unit(cpuTemp, (n) => String(Math.round(n)), '°C'));
+  if (enabled.has('cpu-temp')) cpuFields.push(formatOverlayTemperature(cpuTemp, opts?.temperatureUnit));
   // M13: the CPU wattage - after the temp, toFixed(1) (the GPU watt format).
   if (enabled.has('cpu-power')) cpuFields.push(unit(cpuPower, (n) => n.toFixed(1), 'W'));
   // M14: the Memory row - the memory-util stat only ('RAM 12.4GB' - the
@@ -590,7 +658,7 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   const gpuFields: string[] = [];
   if (enabled.has('gpu-util')) gpuFields.push(pct(gpuUtil));
   if (enabled.has('gpu-clock')) gpuFields.push(unit(gpuClock, (n) => String(n), 'MHz'));
-  if (enabled.has('gpu-temp')) gpuFields.push(unit(gpuTemp, (n) => String(Math.round(n)), '°C'));
+  if (enabled.has('gpu-temp')) gpuFields.push(formatOverlayTemperature(gpuTemp, opts?.temperatureUnit));
   // M16: the GPU voltage - a GPU-row field between the temp and the power
   // fields (volts with 3 decimals - the mock 0.652 reads '0.652V'; the
   // honest '-' when null). The amended shape: NO standalone Voltage row.
@@ -610,7 +678,7 @@ export function overlayLines(sample: OverlaySample | null | undefined, fps: numb
   if (enabled.has('gpu-vram') && (s.gpuMemorySource !== 'shared' || isUsableGpuMemoryBytes(vram))) {
     vramFields.push(unit(vram, (n) => gbValue(n), 'GB'));
   }
-  if (enabled.has('gpu-vram-temp')) vramFields.push(unit(vramTemp, (n) => String(Math.round(n)), '°C'));
+  if (enabled.has('gpu-vram-temp')) vramFields.push(formatOverlayTemperature(vramTemp, opts?.temperatureUnit));
   // M18/M19b: the header-divider column labels - the SIX labeled rows (the
   // cpu/gpu entries carry the chip labels when enabled); M19b: the api
   // entry joins - the API row is the SIXTH labeled row of the divider

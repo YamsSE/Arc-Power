@@ -441,7 +441,7 @@ export class ProfileStore {
    * files -> the defaults (off / 'P' / 'right'; the M5 overlaySettings
    * pattern, NO schema bump - NO scale key, the panel is a fixed compact
    * size).
-   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, rtssOnBoot?: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, monitorLogMetrics?: string[], deviceId: number|null, theme: 'dark'|'midnight'|'light', memorySavingMode: boolean, overlayEnabled: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, recordingToastsEnabled: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
+   * @returns {Promise<{ waiverAccepted: boolean, ocOnBoot: boolean, activeProfileId: string|null, activeProfileIds?: Record<string,string>, ocMode: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted: boolean, startWithWindows: boolean, rtssOnBoot?: boolean, startMinimized: boolean, closeToTray: boolean, monitorLogToFile: boolean, monitorLogMetrics?: string[], deviceId: number|null, theme: 'dark'|'midnight'|'light', memorySavingMode: boolean, overlayEnabled: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter: string, overlayPosition: string, overlayScale: number, overlayColor: string, overlayLabelColor: string, overlayValueColor: string, overlayTemperatureUnit: 'C'|'F', overlayStats: string[], overlayBgEnabled: boolean, overlayBgColor: string, overlayBgOpacity: number, overlayChipNames: boolean, overlayPollMs: number, overlayTheme: 'classic'|'arc', overlayRecordingPill: boolean, recordingToastsEnabled: boolean, advancedOverlayEnabled: boolean, advancedOverlayHotkeyLetter: string, advancedOverlayPosition: 'left'|'right' }>}
    */
   async loadSettings() {
     const data = this._readMigrated(this.settingsPath, 'settings');
@@ -478,10 +478,9 @@ export class ProfileStore {
         deviceId: null,
         deviceKey: null,
         theme: 'dark',
-        // Capture runtime retention defaults to memory saving. The field is
-        // additive so old settings files gain the preference without a
-        // schema migration.
-        memorySavingMode: true,
+        // The default keeps the capture runtime warm after first start.
+        // The additive field needs no schema migration.
+        memorySavingMode: false,
         // M5: the software-overlay settings. Absent on old files -> the
         // defaults (enabled off, letter 'O', top-left, scale 1.0 - the same
         // absent-field mechanism, NO schema bump).
@@ -493,6 +492,9 @@ export class ProfileStore {
         // to the M17g DEFAULT set (the user's 11 ON / the others OFF - the
         // M6 full-set default FLIPS) - same absent-field mechanism.
         overlayColor: OVERLAY_COLOR_DEFAULT,
+        overlayLabelColor: OVERLAY_COLOR_DEFAULT,
+        overlayValueColor: OVERLAY_COLOR_DEFAULT,
+        overlayTemperatureUnit: 'C',
         overlayStats: [...OVERLAY_STATS_DEFAULT],
         overlayDeviceKeys: null,
         // M7b: the background box - absent -> off, black, 0.5 opacity (the
@@ -546,12 +548,12 @@ export class ProfileStore {
       deviceId: Number.isInteger(data.deviceId) && data.deviceId >= 0 ? data.deviceId : null,
       deviceKey: typeof data.deviceKey === 'string' && data.deviceKey.length > 0 ? data.deviceKey : null,
       theme: THEMES.includes(data.theme) ? data.theme : 'dark',
-      // Keep the bundled capture runtime unloaded while idle by default;
-      // only an explicit false opts into the higher-RAM warm-runtime mode.
-      memorySavingMode: data.memorySavingMode !== false,
+      // Missing legacy values keep the runtime warm. Preserve an explicitly
+      // saved true opt-in to memory saving.
+      memorySavingMode: data.memorySavingMode === true,
       overlayEnabled: data.overlayEnabled === true,
       overlayHotkeyLetter: typeof data.overlayHotkeyLetter === 'string'
-        && /^[A-Za-z]$/.test(data.overlayHotkeyLetter)
+        && (/^[A-Za-z]$/.test(data.overlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(data.overlayHotkeyLetter))
         ? data.overlayHotkeyLetter
         : 'O',
       overlayPosition: OVERLAY_POSITIONS.includes(data.overlayPosition)
@@ -562,6 +564,13 @@ export class ProfileStore {
         && /^#[0-9a-fA-F]{6}$/.test(data.overlayColor)
         ? data.overlayColor
         : OVERLAY_COLOR_DEFAULT,
+      overlayLabelColor: typeof data.overlayLabelColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(data.overlayLabelColor)
+        ? data.overlayLabelColor : (typeof data.overlayColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(data.overlayColor) ? data.overlayColor : OVERLAY_COLOR_DEFAULT),
+      overlayValueColor: typeof data.overlayValueColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(data.overlayValueColor)
+        ? data.overlayValueColor : (typeof data.overlayColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(data.overlayColor) ? data.overlayColor : OVERLAY_COLOR_DEFAULT),
+      // Temperature telemetry is always stored in Celsius; the overlay unit
+      // is a shared display preference and defaults to Celsius for old files.
+      overlayTemperatureUnit: data.overlayTemperatureUnit === 'F' ? 'F' : 'C',
       // M35: absent means all enumerated GPUs; a saved list is keyed by
       // durable hardware identity rather than volatile enumeration indexes.
       overlayDeviceKeys: normalizeOverlayDeviceKeys(data.overlayDeviceKeys),
@@ -603,7 +612,7 @@ export class ProfileStore {
       // NO scale key - the panel is a fixed compact size.
       advancedOverlayEnabled: data.advancedOverlayEnabled === true,
       advancedOverlayHotkeyLetter: typeof data.advancedOverlayHotkeyLetter === 'string'
-        && /^[A-Za-z]$/.test(data.advancedOverlayHotkeyLetter)
+        && (/^[A-Za-z]$/.test(data.advancedOverlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(data.advancedOverlayHotkeyLetter))
         ? data.advancedOverlayHotkeyLetter
         : 'P',
       advancedOverlayPosition: ADVANCED_OVERLAY_POSITIONS.includes(data.advancedOverlayPosition)
@@ -634,7 +643,7 @@ export class ProfileStore {
   }
 
   /**
-   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, rtssOnBoot?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, monitorLogMetrics?: string[], deviceId?: number|null, theme?: 'dark'|'midnight'|'light', memorySavingMode?: boolean, overlayEnabled?: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, recordingToastsEnabled?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
+   * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, rtssOnBoot?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, monitorLogMetrics?: string[], deviceId?: number|null, theme?: 'dark'|'midnight'|'light', memorySavingMode?: boolean, overlayEnabled?: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayTemperatureUnit?: 'C'|'F', overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, recordingToastsEnabled?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
   async saveSettings(settings) {
     const persisted = {
@@ -656,13 +665,13 @@ export class ProfileStore {
       theme: THEMES.includes(settings.theme) ? settings.theme : 'dark',
       memorySavingMode: settings.memorySavingMode !== undefined
         ? settings.memorySavingMode === true
-        : this._settingsCache?.memorySavingMode !== false,
+        : this._settingsCache?.memorySavingMode === true,
       // M5: the software-overlay settings - validated on save like the
       // theme (the channel validates first; the store fallback covers
       // direct callers).
       overlayEnabled: settings.overlayEnabled === true,
       overlayHotkeyLetter: typeof settings.overlayHotkeyLetter === 'string'
-        && /^[A-Za-z]$/.test(settings.overlayHotkeyLetter)
+        && (/^[A-Za-z]$/.test(settings.overlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(settings.overlayHotkeyLetter))
         ? settings.overlayHotkeyLetter
         : 'O',
       overlayPosition: OVERLAY_POSITIONS.includes(settings.overlayPosition)
@@ -675,6 +684,13 @@ export class ProfileStore {
         && /^#[0-9a-fA-F]{6}$/.test(settings.overlayColor)
         ? settings.overlayColor
         : OVERLAY_COLOR_DEFAULT,
+      overlayLabelColor: typeof settings.overlayLabelColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.overlayLabelColor)
+        ? settings.overlayLabelColor
+        : typeof settings.overlayColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.overlayColor) ? settings.overlayColor : OVERLAY_COLOR_DEFAULT,
+      overlayValueColor: typeof settings.overlayValueColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.overlayValueColor)
+        ? settings.overlayValueColor
+        : typeof settings.overlayColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(settings.overlayColor) ? settings.overlayColor : OVERLAY_COLOR_DEFAULT,
+      overlayTemperatureUnit: settings.overlayTemperatureUnit === 'F' ? 'F' : 'C',
       // M35: null retains the all-GPU default; a non-empty list persists
       // only the user's selected durable hardware keys.
       overlayDeviceKeys: normalizeOverlayDeviceKeys(settings.overlayDeviceKeys),
@@ -712,7 +728,7 @@ export class ProfileStore {
       // panel is a fixed compact size.
       advancedOverlayEnabled: settings.advancedOverlayEnabled === true,
       advancedOverlayHotkeyLetter: typeof settings.advancedOverlayHotkeyLetter === 'string'
-        && /^[A-Za-z]$/.test(settings.advancedOverlayHotkeyLetter)
+        && (/^[A-Za-z]$/.test(settings.advancedOverlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(settings.advancedOverlayHotkeyLetter))
         ? settings.advancedOverlayHotkeyLetter
         : 'P',
       advancedOverlayPosition: ADVANCED_OVERLAY_POSITIONS.includes(settings.advancedOverlayPosition)
@@ -744,7 +760,7 @@ export class ProfileStore {
     if (rtssOnBoot !== undefined) persisted.rtssOnBoot = rtssOnBoot === true;
     const memorySavingMode = settings.memorySavingMode !== undefined
       ? settings.memorySavingMode === true
-      : this._settingsCache?.memorySavingMode !== false;
+      : this._settingsCache?.memorySavingMode === true;
     persisted.memorySavingMode = memorySavingMode;
     const recordingToastsEnabled = settings.recordingToastsEnabled !== undefined
       ? settings.recordingToastsEnabled === true

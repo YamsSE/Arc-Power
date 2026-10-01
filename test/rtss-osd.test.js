@@ -13,6 +13,7 @@ const makeMap = (version = 0x2000E, owner = '', busy = 0, entrySize = version >=
   if (owner) map.write(owner, offset + entrySize + 256, 'ascii');
   return { map, entrySize, offset };
 };
+const visibleText = (text) => text.replace(/<[^>]+>/g, '');
 
 test('formatter emits RTSS-native tags and keeps telemetry values bounded', () => {
   const args = {
@@ -52,16 +53,17 @@ test('formatter emits RTSS-native tags and keeps telemetry values bounded', () =
   };
   const first = buildRtssTelemetryText(args);
   assert.equal(first, buildRtssTelemetryText(args));
-  assert.match(first, /<P8><FNT=Tahoma,16,700,1><C0=12ABEF><C0>/);
+  assert.match(first, /<P8><FNT=Tahoma,28,700,1><C0=12ABEF><C0>/);
+  assert.match(first, /<C0=12ABEF><C0>FPS<C1=12ABEF><C1> 144 AVG 140/);
   assert.match(first, /B580/);
   assert.doesNotMatch(first, /Intel\(R\) Arc\(TM\)|Arc B580|Graphics/);
-  assert.match(first, /FPS 144 AVG 140 1% 99 0\.1% 88 99% 101/);
+  assert.match(visibleText(first), /FPS 144 AVG 140 1% 99 0\.1% 88 99% 101/);
   assert.doesNotMatch(first, /1% Low|0\.1% Low|99% FPS/);
-  assert.match(first, /CPU 42% 4\.3 GHz 61C 125\.5 W/);
-  assert.match(first, /VRAM1 2187 MHz 4GB 73C/);
+  assert.match(visibleText(first), /CPU 42% 4\.3GHz 61°C 125\.5W/);
+  assert.match(visibleText(first), /VRAM1 2187MHz 4GB 73°C/);
   assert.match(first, /DX12/);
-  assert.doesNotMatch(first, /API DX12/);
-  assert.match(first, /Frametime 6\.94 ms/);
+  assert.match(visibleText(first), /API DX12/);
+  assert.match(visibleText(first), /Frametime 6\.94ms/);
   assert.doesNotMatch(first, /\bFT\b/);
   assert.doesNotMatch(first, /[\x00\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/);
   assert.ok(Buffer.byteLength(first, 'ascii') <= 4095);
@@ -72,13 +74,13 @@ test('formatter maps every quarter-size setting to a distinct RTSS font size', (
     buildRtssTelemetryText({ telemetry: { api: 'dx12' }, settings: { scale, stats: ['api'] } })
       .match(/<FNT=[^>]+>/)?.[0]);
   assert.deepEqual(tags, [
-    '<FNT=Tahoma,4,700,1>',
-    '<FNT=Tahoma,6,700,1>',
     '<FNT=Tahoma,8,700,1>',
-    '<FNT=Tahoma,10,700,1>',
-    '<FNT=Tahoma,12,700,1>',
+    '<FNT=Tahoma,11,700,1>',
     '<FNT=Tahoma,14,700,1>',
-    '<FNT=Tahoma,16,700,1>',
+    '<FNT=Tahoma,18,700,1>',
+    '<FNT=Tahoma,21,700,1>',
+    '<FNT=Tahoma,25,700,1>',
+    '<FNT=Tahoma,28,700,1>',
   ]);
 });
 
@@ -103,8 +105,8 @@ test('formatter prefers native device-wide GPU activity over the WMI fallback', 
     },
     settings: { overlayChipNames: true, stats: ['gpu-util'] },
   });
-  assert.match(text, /B580 78%/);
-  assert.doesNotMatch(text, /B580 21%/);
+  assert.match(visibleText(text), /B580 78%/);
+  assert.doesNotMatch(visibleText(text), /B580 21%/);
 });
 
 test('formatter keeps physical GPU ordinals when a non-display adapter is selected alone', () => {
@@ -113,8 +115,8 @@ test('formatter keeps physical GPU ordinals when a non-display adapter is select
     settings: { stats: ['gpu-clock', 'gpu-temp'] },
     deviceOrdinals: new Map([['pci:display', 1], ['pci:secondary', 2]]),
   });
-  assert.match(text, /GPU2 2000 MHz 60C/);
-  assert.doesNotMatch(text, /GPU1 2000 MHz/);
+  assert.match(visibleText(text), /GPU2 2000MHz 60°C/);
+  assert.doesNotMatch(visibleText(text), /GPU1 2000MHz/);
 });
 
 test('formatter disambiguates duplicate compact GPU model labels', () => {
@@ -128,18 +130,18 @@ test('formatter disambiguates duplicate compact GPU model labels', () => {
     settings: { overlayChipNames: true, stats: ['gpu-util'] },
     deviceOrdinals: new Map([['pci:display', 1], ['pci:secondary', 2]]),
   });
-  assert.match(text, /A770 80%/);
-  assert.match(text, /A770 Secondary 60%/);
+  assert.match(visibleText(text), /A770 80%/);
+  assert.match(visibleText(text), /A770 Secondary 60%/);
 });
 
-test('formatter canonicalizes RTSS API values and omits the API row label', () => {
+test('formatter canonicalizes RTSS API values and colors the API header separately', () => {
   for (const [input, expected] of [
     ['vulkan', 'VULKAN'], ['opengl', 'OGL'], ['dx10', 'DX10'], ['dx11', 'DX11'],
     ['dx12', 'DX12'], ['dx9', 'DX9'], ['dxgi', 'DXGI'], ['d3d9', 'DX9'], ['other', 'OTHER'],
   ]) {
     const text = buildRtssTelemetryText({ telemetry: { api: input }, settings: { stats: ['api'] } });
-    assert.equal(text, `<P0><FNT=Tahoma,8,700,1><C0=FFFFFF><C0>${expected}`);
-    assert.doesNotMatch(text, /API/);
+    assert.equal(text, `<P0><FNT=Tahoma,14,700,1><C0=FFFFFF><C0><C1=FFFFFF><C1><C0=FFFFFF><C0>API<C1=FFFFFF><C1> ${expected}<C>`);
+    assert.match(visibleText(text), /API/);
   }
 });
 
@@ -149,8 +151,107 @@ test('formatter respects legacy text mode without leaking format tags', () => {
     settings: { stats: ['cpu-util', 'gpu-clock', 'gpu-temp'] },
     formatTagsSupported: false,
   });
-  assert.equal(text, 'CPU 42%\nGPU1 2000 MHz 60C');
+  assert.equal(text, 'CPU 42%\nGPU1 2000MHz 60°C');
   assert.doesNotMatch(text, /<[^>]+>/);
+});
+
+test('CPU chip label follows the opt-in setting and falls back when the name is absent', () => {
+  const args = { telemetry: { cpuUtilPct: 42 }, cpuName: 'Intel(R) Core(TM) i7-14700K CPU @ 3.40GHz', settings: { stats: ['cpu-util'], overlayChipNames: true } };
+  assert.match(visibleText(buildRtssTelemetryText(args)), /i7 14700K 42%/);
+  assert.match(visibleText(buildRtssTelemetryText({ ...args, settings: { ...args.settings, overlayChipNames: false } })), /CPU 42%/);
+  assert.match(visibleText(buildRtssTelemetryText({ ...args, cpuName: null })), /CPU 42%/);
+});
+
+test('publisher samples the CPU name only when chip labels are enabled', async () => {
+  const name = 'Intel(R) Core(TM) i7-14700K CPU @ 3.40GHz';
+  const enabledFixture = makeMap(0x2000E, '', 0, 4608);
+  let enabledNameReads = 0;
+  const enabled = createRtssOsdPublisher({
+    open: () => 1,
+    map: () => enabledFixture.map,
+    getCpuName: async () => { enabledNameReads += 1; return name; },
+  });
+  enabled.updateSettings({ enabled: true, overlayChipNames: true, stats: ['cpu-util'] });
+  assert.equal(await enabled.publish({ telemetry: { cpuUtilPct: 42 } }), true);
+  const enabledText = enabledFixture.map.toString('ascii', enabledFixture.offset + enabledFixture.entrySize + 512, enabledFixture.offset + enabledFixture.entrySize + 4096).replaceAll('\0', '');
+  assert.match(visibleText(enabledText), /i7 14700K 42%/);
+  assert.equal(enabledNameReads, 1);
+
+  const disabledFixture = makeMap(0x2000E, '', 0, 4608);
+  let disabledNameReads = 0;
+  const disabled = createRtssOsdPublisher({
+    open: () => 1,
+    map: () => disabledFixture.map,
+    getCpuName: async () => { disabledNameReads += 1; return name; },
+  });
+  disabled.updateSettings({ enabled: true, overlayChipNames: false, stats: ['cpu-util'] });
+  assert.equal(disabled.publish({ telemetry: { cpuUtilPct: 42 } }), true);
+  const disabledText = disabledFixture.map.toString('ascii', disabledFixture.offset + disabledFixture.entrySize + 512, disabledFixture.offset + disabledFixture.entrySize + 4096).replaceAll('\0', '');
+  assert.match(visibleText(disabledText), /CPU 42%/);
+  assert.equal(disabledNameReads, 0);
+});
+
+test('formatter uses compact units and the shared temperature unit with ANSI degree bytes', () => {
+  const args = {
+    telemetry: {
+      cpuTempC: 0, cpuFreqMhz: 4300, cpuPowerW: 1.5,
+      gpuClockMhz: 2000, gpuVoltageV: 0.625, tempC: 100, powerW: 40.5,
+      fanRpm: [1200], memClockMhz: 1750, vramTempC: 25, gpuMemUsedBytes: 4_000_000_000,
+    },
+    fps: { frameTimeMs: 16.7 },
+    settings: { stats: ['cpu-temp', 'cpu-clock', 'cpu-power', 'gpu-clock', 'gpu-voltage', 'gpu-temp', 'gpu-power', 'gpu-fan', 'gpu-mem-clock', 'gpu-vram', 'gpu-vram-temp', 'frametime'] },
+  };
+  const celsius = buildRtssTelemetryText(args);
+  assert.match(visibleText(celsius), /CPU 4\.3GHz 0°C 1\.5W/);
+  assert.match(visibleText(celsius), /GPU1 2000MHz 0\.625V 100°C 40\.5W 1200RPM/);
+  assert.match(visibleText(celsius), /VRAM1 1750MHz 4GB 25°C/);
+  assert.match(visibleText(celsius), /Frametime 16\.7ms/);
+  assert.equal(Buffer.from(celsius, 'ascii').includes(Buffer.from([0xB0, 0x43])), true);
+
+  const fahrenheit = buildRtssTelemetryText({ ...args, settings: { ...args.settings, temperatureUnit: 'F' } });
+  assert.match(visibleText(fahrenheit), /CPU 4\.3GHz 32°F 1\.5W/);
+  assert.match(visibleText(fahrenheit), /GPU1 2000MHz 0\.625V 212°F 40\.5W 1200RPM/);
+  assert.match(visibleText(fahrenheit), /VRAM1 1750MHz 4GB 77°F/);
+
+  const invalidSetting = buildRtssTelemetryText({ ...args, settings: { ...args.settings, temperatureUnit: 'K' } });
+  assert.match(visibleText(invalidSetting), /CPU 4\.3GHz 0°C/);
+});
+
+test('RTSS text allows only the degree sign outside ASCII and escapes hypertext values', () => {
+  const text = buildRtssTelemetryText({
+    telemetry: { cpuTempC: 42 },
+    settings: { stats: ['cpu-temp'] },
+  });
+  assert.match(text, /42°C/);
+  assert.equal(Buffer.from(text, 'ascii').includes(Buffer.from([0xB0])), true);
+  const unsafe = buildRtssTelemetryText({ telemetry: { deviceName: 'bad <C=ff00ff> Ω' }, settings: { stats: ['gpu-util'] } });
+  assert.doesNotMatch(unsafe, /Ω|<C=ff00ff>/);
+});
+
+test('RTSS publisher encodes degree symbols with the active ANSI code page', () => {
+  const fixture = makeMap(0x2000E, '', 0, 4608);
+  const publisher = createRtssOsdPublisher({
+    open: () => 1,
+    map: () => fixture.map,
+    // Simulate an alternate Windows code page where the degree sign is a
+    // two-byte sequence. The rest of RTSS's text remains ordinary ANSI.
+    encodeText: (text) => Buffer.from(text.replaceAll('°', '\x81\x8b'), 'latin1'),
+  });
+  assert.equal(publisher.publish({ text: 'GPU1 65°C' }), true);
+  const base = fixture.offset + fixture.entrySize + 512;
+  assert.ok(fixture.map.subarray(base, base + 4096).includes(Buffer.from([0x81, 0x8b, 0x43])));
+  assert.equal(fixture.map.subarray(base, base + 4096).includes(Buffer.from([0xb0, 0x43])), false);
+});
+
+test('RTSS formatter applies header and value colors around every row segment', () => {
+  const text = buildRtssTelemetryText({
+    telemetry: { cpuUtilPct: 42, gpuClockMhz: 2000 },
+    fps: { api: 'dx12' },
+    settings: { color: '#ffffff', labelColor: '#12abef', valueColor: '#ffe600', stats: ['cpu-util', 'gpu-clock', 'api'] },
+  });
+  assert.match(text, /<C0=12ABEF><C0>CPU<C1=FFE600><C1> 42%<C>/);
+  assert.match(text, /<C0=12ABEF><C0>GPU1<C1=FFE600><C1> 2000MHz<C>/);
+  assert.match(text, /<C0=12ABEF><C0>API<C1=FFE600><C1> DX12<C>/);
 });
 
 test('graph encoder bounds samples, reduces the graph height, and writes RTSS header', () => {
@@ -220,14 +321,14 @@ test('merges separately sampled GPUs and applies live selection/stat changes', (
   assert.equal(publisher.publish({ telemetry: { t: 2, deviceKey: 'gpu-b', deviceName: 'A770', utilPct: 44, gpuMemUsedBytes: 6_000_000_000 } }), true);
   const base = fixture.offset + fixture.entrySize + 512;
   const merged = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
-  assert.match(merged, /B580 88%/);
-  assert.match(merged, /A770 44%/);
-  assert.match(merged, /VRAM1 4GB/);
+  assert.match(visibleText(merged), /B580 88%/);
+  assert.match(visibleText(merged), /A770 44%/);
+  assert.match(visibleText(merged), /VRAM1 4GB/);
   publisher.updateSettings({ monitoredDeviceKeys: ['gpu-a'], stats: ['gpu-temp'] });
   assert.equal(publisher.publish({ telemetry: { t: 3, deviceKey: 'gpu-a', tempC: 65 } }), true);
-  const updated = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
-  assert.match(updated, /GPU1 -%? ?65C|GPU1 65C/);
-  assert.doesNotMatch(updated, /VRAM/);
+  const updated = fixture.map.toString('latin1', base, base + 4096).replaceAll('\0', '');
+  assert.match(visibleText(updated), /GPU1 -%? ?65°C|GPU1 65°C/);
+  assert.doesNotMatch(visibleText(updated), /VRAM/);
 });
 
 test('keeps alias-only multi-GPU samples attached to their physical rows', () => {
@@ -258,10 +359,10 @@ test('keeps alias-only multi-GPU samples attached to their physical rows', () =>
   } }), true);
   const base = fixture.offset + fixture.entrySize + 512;
   const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
-  assert.match(text, /CPU 22% 31\.5 W/);
-  assert.match(text, /B580 91% 158\.4 W/);
-  assert.match(text, /A770 44% 42\.2 W/);
-  assert.doesNotMatch(text, /B580 88%|B580 77\.7 W|A770 91%|A770 158\.4 W/);
+  assert.match(visibleText(text), /CPU 22% 31\.5W/);
+  assert.match(visibleText(text), /B580 91% 158\.4W/);
+  assert.match(visibleText(text), /A770 44% 42\.2W/);
+  assert.doesNotMatch(visibleText(text), /B580 88%|B580 77\.7W|A770 91%|A770 158\.4W/);
 });
 
 test('collapses canonical and alias telemetry keys into one physical row', () => {
@@ -287,8 +388,8 @@ test('collapses canonical and alias telemetry keys into one physical row', () =>
   } }), true);
   const base = fixture.offset + fixture.entrySize + 512;
   const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
-  assert.equal((text.match(/B580 91%/g) ?? []).length, 1);
-  assert.doesNotMatch(text, /B580 11%/);
+  assert.equal((visibleText(text).match(/B580 91%/g) ?? []).length, 1);
+  assert.doesNotMatch(visibleText(text), /B580 11%/);
 });
 
 test('rekeys cached alias telemetry when physical GPU groups arrive late', () => {
@@ -320,8 +421,8 @@ test('rekeys cached alias telemetry when physical GPU groups arrive late', () =>
   } }), true);
   const base = fixture.offset + fixture.entrySize + 512;
   const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
-  assert.equal((text.match(/B580 91%/g) ?? []).length, 1);
-  assert.doesNotMatch(text, /B580 11%/);
+  assert.equal((visibleText(text).match(/B580 91%/g) ?? []).length, 1);
+  assert.doesNotMatch(visibleText(text), /B580 11%/);
 });
 
 test('prunes removed physical GPU samples before the all-GPU view is rendered', () => {
@@ -334,8 +435,8 @@ test('prunes removed physical GPU samples before the all-GPU view is rendered', 
   assert.equal(publisher.publish({ telemetry: { t: 3, cpuUtilPct: 20 } }), true);
   const base = fixture.offset + fixture.entrySize + 512;
   const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
-  assert.match(text, /GPU1 88%/);
-  assert.doesNotMatch(text, /44%|GPU2/);
+  assert.match(visibleText(text), /GPU1 88%/);
+  assert.doesNotMatch(visibleText(text), /44%|GPU2/);
 });
 
 test('falls back to current GPU rows when the saved selection is stale', () => {
@@ -346,7 +447,7 @@ test('falls back to current GPU rows when the saved selection is stale', () => {
   assert.equal(publisher.publish({ telemetry: { t: 1, deviceKey: 'replacement-gpu', utilPct: 72 } }), true);
   const base = fixture.offset + fixture.entrySize + 512;
   const text = fixture.map.toString('ascii', base, base + 4096).replaceAll('\0', '');
-  assert.match(text, /GPU1 72%/);
+  assert.match(visibleText(text), /GPU1 72%/);
 });
 
 test('forces classic value-only RTSS output despite stale theme/background settings', () => {
@@ -357,12 +458,12 @@ test('forces classic value-only RTSS output despite stale theme/background setti
   const base = fixture.offset + fixture.entrySize + 512;
   const bytes = fixture.map.subarray(base, base + 4096);
   const classic = bytes.toString('ascii').replaceAll('\0', '');
-  assert.match(classic, /<FNT=Tahoma,8,700,/);
+  assert.match(classic, /<FNT=Tahoma,14,700,/);
   assert.doesNotMatch(classic, /<B=0,0>|\x08/);
   publisher.updateSettings({ theme: 'arc', overlayBgEnabled: false });
   assert.equal(publisher.publish({ telemetry: { t: 2, deviceKey: 'gpu-a', utilPct: 77 } }), true);
   const arc = bytes.toString('ascii').replaceAll('\0', '');
-  assert.match(arc, /<FNT=Tahoma,8,700,/);
+  assert.match(arc, /<FNT=Tahoma,14,700,/);
   assert.doesNotMatch(arc, /<B=0,0>/);
 });
 

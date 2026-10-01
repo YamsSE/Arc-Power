@@ -55,7 +55,33 @@ const numberText = (value, digits = 0, fallback = '-') => {
   const out = rounded(value, digits);
   return out === null ? fallback : String(out);
 };
+function temperatureText(value, settings) {
+  const unit = settings?.temperatureUnit === 'F' ? 'F' : 'C';
+  const celsius = finite(value) ? value : null;
+  const displayed = unit === 'F' && celsius !== null ? (celsius * 9) / 5 + 32 : celsius;
+  return `${numberText(displayed)}°${unit}`;
+}
 const has = (value, key) => Object.prototype.hasOwnProperty.call(value ?? {}, key);
+
+// Keep RTSS CPU labels aligned with the overlay's chipLabelCpu cut-down.
+function chipLabelCpu(name) {
+  const source = typeof name === 'string' ? name.trim() : '';
+  if (!source) return null;
+  const ryzen = source.match(/\bRyzen\s+([3579])\s+(\S+)/i);
+  if (ryzen) return `R${ryzen[1]} ${ryzen[2]}`;
+  const threadripper = source.match(/\bRyzen\s+Threadripper\b/i);
+  if (threadripper) {
+    const model = source.slice(threadripper.index + threadripper[0].length).split(/[^A-Za-z0-9]+/).filter(Boolean).join(' ');
+    return model ? `TR ${model}` : 'TR';
+  }
+  const xeon = /\bXeon\b/i.test(source) ? source.replace(/\bE5-([A-Za-z0-9]+)\b/i, '$1') : source;
+  const kept = xeon.split(/\s+/)
+    .filter((token) => !/^\d+(?:\.\d+)?(?:ghz|mhz|khz)$/i.test(token))
+    .join(' ').split(/[^A-Za-z0-9]+/).filter(Boolean)
+    .filter((token) => !new Set(['intel', 'amd', 'core', 'r', 'tm', 'cpu']).has(token.toLowerCase()));
+  while (kept.length && new Set(['eight', 'quad', 'dual', 'six', 'twelve', 'core', 'processor']).has(kept.at(-1).toLowerCase())) kept.pop();
+  return kept.length ? kept.join(' ') : null;
+}
 
 // RTSS consumes ANSI hypertext. Keep line breaks/tabs, drop all other control
 // and non-ASCII characters, and never allow a user-provided value to become a
@@ -65,7 +91,7 @@ function safeRtssText(value, { lineBreaks = true, backspace = false } = {}) {
   let out = '';
   for (const char of source) {
     const code = char.charCodeAt(0);
-    if (code >= 0x20 && code <= 0x7E) out += char;
+    if ((code >= 0x20 && code <= 0x7E) || char === '°') out += char;
     else if (backspace && char === '\b') out += char;
     else if (lineBreaks && (char === '\n' || char === '\r' || char === '\t')) out += char;
   }
@@ -163,6 +189,14 @@ function colorHex(value, fallback = '#ffffff') {
   return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value.slice(1).toUpperCase() : fallback.slice(1).toUpperCase();
 }
 
+function coloredRow(label, fields, settings) {
+  if (!fields.length) return '';
+  if (settings?.formatTagsSupported === false) return `${escapeRtssValue(label)} ${fields.map(escapeRtssValue).join(' ')}`;
+  const left = colorHex(settings?.labelColor ?? settings?.color);
+  const right = colorHex(settings?.valueColor ?? settings?.color);
+  return `<C0=${left}><C0>${escapeRtssValue(label)}<C1=${right}><C1> ${fields.map(escapeRtssValue).join(' ')}<C>`;
+}
+
 function positionTag(position) {
   switch (position) {
     case 'top-right': return '<P2>';
@@ -178,7 +212,7 @@ function scaleTag(scale, theme = 'arc') {
   // slider is 0.5..2.0 in quarter-size steps. RTSS accepts an explicit font
   // size, so use 4/6/8/10/12/14/16px equivalents instead of rounding adjacent
   // quarter steps onto the same native zoom level.
-  const fontSize = Math.max(4, Math.min(16, Math.round(clamp(scale, 0.5, 2, 1) * 8)));
+  const fontSize = Math.max(8, Math.min(28, Math.round(clamp(scale, 0.5, 2, 1) * 14)));
   // Raster3D supports the FNT face/weight/zoom tag. Use a distinct face for
   // the two persisted themes so switching themes remains visible on RTSS,
   // whose native surface cannot consume Arc Power's HTML/CSS theme tokens.
@@ -254,10 +288,6 @@ function normalizeGpu(gpu, index) {
   };
 }
 
-function row(label, fields) {
-  return fields.length > 0 ? `${label} ${fields.join(' ')}` : '';
-}
-
 function gpuOrdinalOf(gpu, fallbackIndex, deviceOrdinals) {
   if (deviceOrdinals instanceof Map) {
     for (const alias of gpu.aliases) {
@@ -307,19 +337,19 @@ function formatGpuRows(telemetry, settings, stats, deviceOrdinals = null) {
       : `GPU${ordinal}`;
     const gpuFields = [];
     if (statEnabled(stats, 'gpu-util')) gpuFields.push(`${numberText(gpu.util)}%`);
-    if (statEnabled(stats, 'gpu-clock')) gpuFields.push(`${numberText(gpu.clock)} MHz`);
-    if (statEnabled(stats, 'gpu-voltage')) gpuFields.push(`${numberText(gpu.voltage, 3)} V`);
-    if (statEnabled(stats, 'gpu-temp')) gpuFields.push(`${numberText(gpu.temp)}°C`);
-    if (statEnabled(stats, 'gpu-power')) gpuFields.push(`${numberText(gpu.power, 1)} W`);
-    if (statEnabled(stats, 'gpu-fan')) gpuFields.push(`${numberText(gpu.fan)} RPM`);
-    const gpuRow = row(label, gpuFields);
+    if (statEnabled(stats, 'gpu-clock')) gpuFields.push(`${numberText(gpu.clock)}MHz`);
+    if (statEnabled(stats, 'gpu-voltage')) gpuFields.push(`${numberText(gpu.voltage, 3)}V`);
+    if (statEnabled(stats, 'gpu-temp')) gpuFields.push(temperatureText(gpu.temp, settings));
+    if (statEnabled(stats, 'gpu-power')) gpuFields.push(`${numberText(gpu.power, 1)}W`);
+    if (statEnabled(stats, 'gpu-fan')) gpuFields.push(`${numberText(gpu.fan)}RPM`);
+    const gpuRow = coloredRow(label, gpuFields, settings);
     if (gpuRow) rows.push(gpuRow);
 
     const vramFields = [];
-    if (statEnabled(stats, 'gpu-mem-clock')) vramFields.push(`${numberText(gpu.memClock)} MHz`);
+    if (statEnabled(stats, 'gpu-mem-clock')) vramFields.push(`${numberText(gpu.memClock)}MHz`);
     if (statEnabled(stats, 'gpu-vram')) vramFields.push(byteSizeToGb(gpu.vram));
-    if (statEnabled(stats, 'gpu-vram-temp')) vramFields.push(`${numberText(gpu.vramTemp)}°C`);
-    const vramRow = row(`VRAM${ordinal}`, vramFields);
+    if (statEnabled(stats, 'gpu-vram-temp')) vramFields.push(temperatureText(gpu.vramTemp, settings));
+    const vramRow = coloredRow(`VRAM${ordinal}`, vramFields, settings);
     if (vramRow) rows.push(vramRow);
   });
   return rows;
@@ -352,6 +382,7 @@ export function encodeRtssGraphObject({ values = [], width = -32, height = -5, m
  */
 export function buildRtssTelemetryText({
   telemetry = {},
+  cpuName = null,
   fps = {},
   settings = {},
   graphObjectTagsSupported = false,
@@ -360,6 +391,7 @@ export function buildRtssTelemetryText({
   deviceOrdinals = null,
 } = {}) {
   const stats = statsOf(settings);
+  const rowSettings = { ...settings, formatTagsSupported };
   const lines = [];
   const addRow = (line) => { if (line) lines.push(line); };
 
@@ -369,33 +401,34 @@ export function buildRtssTelemetryText({
   if (statEnabled(stats, 'fps-1pct-low')) fpsFields.push(`1% ${numberText(fps?.low1Pct)}`);
   if (statEnabled(stats, 'fps-01pct-low')) fpsFields.push(`0.1% ${numberText(fps?.low01Pct)}`);
   if (statEnabled(stats, 'fps-99pct')) fpsFields.push(`99% ${numberText(fps?.p99)}`);
-  addRow(row('FPS', fpsFields));
+  addRow(coloredRow('FPS', fpsFields, rowSettings));
 
   const cpuFields = [];
   if (statEnabled(stats, 'cpu-util')) cpuFields.push(`${numberText(telemetry.cpuUtilPct ?? telemetry.cpuUsage ?? telemetry.cpuPercent)}%`);
-  if (statEnabled(stats, 'cpu-clock')) cpuFields.push(`${numberText(finite(telemetry.cpuFreqMhz) ? telemetry.cpuFreqMhz / 1000 : null, 1)} GHz`);
-  if (statEnabled(stats, 'cpu-temp')) cpuFields.push(`${numberText(telemetry.cpuTempC ?? telemetry.cpuTemperatureC)}°C`);
-  if (statEnabled(stats, 'cpu-power')) cpuFields.push(`${numberText(telemetry.cpuPowerW, 1)} W`);
-  addRow(row('CPU', cpuFields));
+  if (statEnabled(stats, 'cpu-clock')) cpuFields.push(`${numberText(finite(telemetry.cpuFreqMhz) ? telemetry.cpuFreqMhz / 1000 : null, 1)}GHz`);
+  if (statEnabled(stats, 'cpu-temp')) cpuFields.push(temperatureText(telemetry.cpuTempC ?? telemetry.cpuTemperatureC, settings));
+  if (statEnabled(stats, 'cpu-power')) cpuFields.push(`${numberText(telemetry.cpuPowerW, 1)}W`);
+  const cpuLabel = settings?.overlayChipNames === true ? chipLabelCpu(cpuName) : null;
+  addRow(coloredRow(cpuLabel ?? 'CPU', cpuFields, rowSettings));
 
   if (statEnabled(stats, 'memory-util')) {
     const ramBytes = finite(telemetry.memoryUsedBytes)
       ? telemetry.memoryUsedBytes
       : finite(telemetry.memoryUsedMb) ? telemetry.memoryUsedMb * 1_000_000 : finite(telemetry.ramUsedMb) ? telemetry.ramUsedMb * 1_000_000 : null;
-    addRow(row('RAM', [ramSizeToGb(ramBytes)]));
+    addRow(coloredRow('RAM', [ramSizeToGb(ramBytes)], rowSettings));
   }
 
-  formatGpuRows(telemetry, settings, stats, deviceOrdinals).forEach(addRow);
+  formatGpuRows(telemetry, rowSettings, stats, deviceOrdinals).forEach(addRow);
 
   if (statEnabled(stats, 'api')) {
     const api = canonicalizeRtssApi(fps?.api ?? telemetry.api ?? '');
-    if (api) addRow(api);
+    if (api) addRow(formatTagsSupported ? coloredRow('API', [api], rowSettings) : api);
   }
   if (statEnabled(stats, 'frametime')) {
-    addRow(row('Frametime', [`${numberText(fps?.frameTimeMs ?? telemetry.frameTimeMs, 2)} ms`]));
+    addRow(coloredRow('Frametime', [`${numberText(fps?.frameTimeMs ?? telemetry.frameTimeMs, 2)}ms`], rowSettings));
   }
 
-  const body = lines.map(escapeRtssValue).join('\n');
+  const body = lines.join('\n');
   const graph = formatTagsSupported && graphObjectTagsSupported && statEnabled(stats, 'frametime')
     ? `\n<OBJ=${Math.max(0, graphObjectOffset >>> 0).toString(16).padStart(8, '0').toUpperCase()}>`
     : '';
@@ -404,7 +437,7 @@ export function buildRtssTelemetryText({
   const prefix = [
     positionTag(settings.position),
     scaleTag(settings.scale, 'classic'),
-    `<C0=${colorHex(settings.color)}><C0>`,
+    `<C0=${colorHex(settings.labelColor ?? settings.color)}><C0><C1=${colorHex(settings.valueColor ?? settings.color)}><C1>`,
   ].join('');
   return `${prefix}${body}${graph}`.slice(0, RTSS_OSD_MAX_TEXT);
 }
@@ -465,6 +498,7 @@ function defaultBindings() {
     const kernel32 = koffi.load('kernel32.dll');
     const mapView = kernel32.func('MapViewOfFile', 'void*', ['void*', 'uint32', 'uint32', 'uint32', 'size_t']);
     const open = kernel32.func('OpenFileMappingW', 'void*', ['uint32', 'bool', 'str16']);
+    const wideCharToMultiByte = kernel32.func('WideCharToMultiByte', 'int32', ['uint32', 'uint32', 'str16', 'int32', 'void*', 'int32', 'void*', 'void*']);
     const virtualQuery = kernel32.func('VirtualQuery', 'size_t', ['void*', 'void*', 'size_t']);
     const pointerSize = process.arch === 'x64' || process.arch === 'arm64' ? 8 : 4;
     const querySize = pointerSize === 8 ? 48 : 28;
@@ -500,6 +534,18 @@ function defaultBindings() {
       // processes without asking Electron for an external ArrayBuffer view.
       compareExchange32: (view, offset, exchange, comparand) => {
         return atomic.compareExchange(view, offset, exchange, comparand);
+      },
+      // RTSS's shared-memory strings use the current Windows ANSI code page.
+      // CP_ACP (0) keeps degree symbols valid on non-Western Windows locales.
+      encodeText: (text) => {
+        const required = Number(wideCharToMultiByte(0, 0, text, -1, null, 0, null, null));
+        if (!Number.isSafeInteger(required) || required < 1) throw new Error('Could not size RTSS ANSI text');
+        const buffer = Buffer.alloc(required);
+        const written = Number(wideCharToMultiByte(0, 0, text, -1, buffer, buffer.length, null, null));
+        if (!Number.isSafeInteger(written) || written < 1 || written > buffer.length || buffer[written - 1] !== 0) {
+          throw new Error('Could not encode RTSS ANSI text');
+        }
+        return buffer.subarray(0, written - 1);
       },
       unmap: kernel32.func('UnmapViewOfFile', 'int32', ['void*']),
       close: kernel32.func('CloseHandle', 'int32', ['void*']),
@@ -545,6 +591,7 @@ function sampleTime(sample) {
 export function createRtssOsdPublisher(deps = {}) {
   const now = deps.now ?? (() => Date.now());
   const getFpsSample = typeof deps.getFpsSample === 'function' ? deps.getFpsSample : null;
+  const getCpuName = typeof deps.getCpuName === 'function' ? deps.getCpuName : null;
   const bindings = deps.open && deps.map ? deps : defaultBindings();
   let handle = null;
   let view = null;
@@ -607,9 +654,10 @@ export function createRtssOsdPublisher(deps = {}) {
   const writeBytes = (offset, value, size, { preserveBackspace = false } = {}) => {
     if (!bounds(offset, size)) throw new RangeError('RTSS OSD write is outside mapped view');
     const buffer = Buffer.alloc(size);
+    const encodeText = deps.encodeText ?? bindings?.encodeText ?? ((text) => Buffer.from(text.replaceAll('°', '\xB0'), 'latin1'));
     const source = Buffer.isBuffer(value)
       ? value
-      : Buffer.from(safeRtssText(value, { backspace: preserveBackspace }), 'ascii');
+      : encodeText(safeRtssText(value, { backspace: preserveBackspace }));
     const copySize = Buffer.isBuffer(value) ? Math.min(size, source.length) : Math.min(Math.max(0, size - 1), source.length);
     source.copy(buffer, 0, 0, copySize);
     if (deps.writeBytes) return deps.writeBytes(view, offset, buffer);
@@ -875,6 +923,7 @@ export function createRtssOsdPublisher(deps = {}) {
         ? payload
         : payload.text ?? buildRtssTelemetryText({
             telemetry,
+            cpuName: payload.cpuName,
             fps: fps ?? {},
             settings,
             formatTagsSupported: version >= RTSS_OSD_FORMAT_VERSION,
@@ -904,14 +953,20 @@ export function createRtssOsdPublisher(deps = {}) {
 
   const publish = (payload = {}) => {
     if (stopped) return false;
-    const needsSample = typeof payload !== 'string' && payload.fps === undefined && getFpsSample;
+    const needsFps = typeof payload !== 'string' && payload.fps === undefined && getFpsSample;
+    const needsCpuName = typeof payload !== 'string' && settings.overlayChipNames === true && getCpuName;
+    const needsSample = needsFps || needsCpuName;
     const task = async () => {
       let fps = payload?.fps;
-      if (needsSample) {
+      let cpuName = payload?.cpuName;
+      if (needsFps) {
         try { fps = await getFpsSample(); } catch { fps = null; }
       }
+      if (needsCpuName && !cpuName) {
+        try { cpuName = await getCpuName(); } catch { cpuName = null; }
+      }
       if (stopped) return false;
-      return publishNow(payload, fps);
+      return publishNow(cpuName ? { ...payload, cpuName } : payload, fps);
     };
     if (!needsSample && !writeTail) return publishNow(payload, payload?.fps);
     const prior = writeTail ?? Promise.resolve();

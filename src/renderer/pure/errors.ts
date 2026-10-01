@@ -42,7 +42,13 @@ const ERROR_MESSAGES: Record<OcErrorCode, string> = {
   'unavailable-symbol': 'The IGCL runtime on this driver is missing the API for this control - update the Intel graphics driver.',
   'invalid-argument': 'The driver rejected the value as invalid - update the Intel graphics driver and try again.',
   'permission-denied': 'The driver denied this global setting. Update the Intel graphics driver or apply it from Intel Graphics Software; no value was changed.',
+  'driver-adjustment-out-of-range': 'The driver changed the VF curve beyond the supported normalization range. The editor shows the live curve, but the apply was not accepted.',
+  'driver-noop': 'IGCL returned success, but the live VF curve stayed unchanged during verification, so the apply was not accepted.',
   'io-failed': 'The GPU driver did not accept the value (read-back mismatch).',
+  'driver-adjusted': 'The GPU driver returned a VF curve beyond one reported driver step. The apply was not accepted, and the requested draft remains available for editing.',
+  'readback-unverified': 'The current LIVE VF curve could not be verified before the write, so no curve write was sent.',
+  'driver-invalid-readback': 'The driver returned an invalid LIVE VF curve.',
+  'dependency-failed': 'This control was skipped because a required tuning change did not verify.',
 };
 
 /**

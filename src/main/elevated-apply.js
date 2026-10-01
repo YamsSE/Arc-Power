@@ -39,9 +39,9 @@
 //     app start sweeps expired request/result/token triples, and a worker
 //     that starts into a directory holding an EXPIRED token refuses to run
 //     (the parent already gave up);
-//   - a worker already mid-apply when the parent gives up completes its
-//     write and its result file records the truth - a bounded, documented
-//     orphan, cleaned by the next startup sweep.
+//   - a worker already mid-apply when the parent gives up may still finish a
+//     native write after timeout. The affected GPU's tuning controls are
+//     quarantined across Arc Power restarts until Windows itself restarts.
 //
 // Electron-free so the worker contract is unit-testable under node --test
 // with injected spawn/file deps.
@@ -49,18 +49,61 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { isElevated as detectElevated } from './elevation.js';
 import { withCapabilityFlags } from './apply-routing.js';
 import { validateWorkerResult } from './apply-worker.js';
 
 export const APPLY_CANCELED_ERROR = 'Apply requires administrator approval.';
+const TUNING_TIMEOUT_QUARANTINE_ERROR = 'This GPU\'s tuning controls are locked because an elevated operation may still be running. Restart Windows before applying or resetting this GPU.';
+const TUNING_QUARANTINE_PREFIX = 'arcpower-tuning-quarantine-';
+const BOOT_SESSION_UNAVAILABLE_ERROR = 'Arc Power could not verify the Windows boot session. No GPU tuning operation was sent.';
 export const WORKER_TIMEOUT_MS = 120000;
 // The parent-owned token's lifetime: the worker's whole wait window plus
 // margin for the slowest legit write/verification to land.
 export const TOKEN_TTL_MS = WORKER_TIMEOUT_MS * 2;
 export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+
+export function parseWindowsBootSessionIdOutput(output) {
+  const value = String(output ?? '').trim();
+  return /^\d{15,}$/.test(value) ? value : null;
+}
+
+/** Return the Windows OS boot timestamp as a stable session identity. */
+function readWindowsBootSessionId() {
+  if (process.platform !== 'win32') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let child;
+    let output = '';
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try { child?.kill(); } catch { /* best effort */ }
+      finish(null);
+    }, 5000);
+    try {
+      child = nodeSpawn(POWERSHELL_EXE, [
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+        "$ErrorActionPreference='Stop'; $boot=(Get-CimInstance -ClassName Win32_OperatingSystem).LastBootUpTime; [Console]::Out.Write($boot.ToUniversalTime().Ticks)",
+      ], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      child.stdout?.on('data', (chunk) => {
+        if (output.length < 128) output += String(chunk);
+      });
+      child.on('error', () => finish(null));
+      child.on('close', (code) => {
+        finish(code === 0 ? parseWindowsBootSessionIdOutput(output) : null);
+      });
+    } catch {
+      finish(null);
+    }
+  });
+}
 
 /**
  * Build the PowerShell launch line that starts OUR executable elevated and
@@ -283,6 +326,8 @@ export async function sweepStaleWorkerFiles(dir, { now = Date.now(), tokenTtlMs 
  *   killOnTimeout?: boolean,
  *   workerTimeoutMs?: number,
  *   tokenTtlMs?: number,         // parent-owned token lifetime (default TOKEN_TTL_MS)
+ *   quarantineDirectory?: string, // durable per-user location for timeout locks
+ *   systemBootSessionId?: () => Promise<string|null>, // injectable boot identity for tests
  *   inProcess?: {
  *     apply: (req: { deviceId: number, settings: object, profileApply?: boolean }) => Promise<{ result: object, state: object | null }>,
  *     waiverAccept: (deviceId: number) => Promise<void>,
@@ -302,14 +347,207 @@ export function createApplyRunner({
   spawnFn = null,
   workerTimeoutMs = WORKER_TIMEOUT_MS,
   tokenTtlMs = TOKEN_TTL_MS,
+  quarantineDirectory = null,
+  systemBootSessionId = readWindowsBootSessionId,
   inProcess = null,
   log = () => {},
 } = {}) {
   const elevated = isElevated();
   log(`[apply-runner] process is ${elevated ? 'ELEVATED' : 'not elevated'} - ${elevated ? 'in-process apply' : 'elevated self-worker'}`);
   const spawn = spawnFn ?? nodeSpawn;
+  const tuningTransactionQueues = new Map();
+  const quarantinedTuningTransactions = new Set();
+  let bootSessionIdPromise = null;
+  let currentBootSessionId = null;
 
-  async function runWorker(req, { elevate = true } = {}) {
+  async function getBootSessionId() {
+    if (!bootSessionIdPromise) {
+      const pending = Promise.resolve()
+        .then(() => systemBootSessionId())
+        .then((value) => typeof value === 'string' && value.length > 0 ? value : null)
+        .catch(() => null);
+      bootSessionIdPromise = pending;
+    }
+    const pending = bootSessionIdPromise;
+    currentBootSessionId = await pending;
+    if (!currentBootSessionId && bootSessionIdPromise === pending) {
+      // A transient CIM/PowerShell failure must not poison this runner for
+      // its entire lifetime. The next hardware operation gets a fresh check.
+      bootSessionIdPromise = null;
+    }
+    return currentBootSessionId;
+  }
+
+  function tuningTransactionKey({ deviceId, deviceKey, physicalTarget } = {}) {
+    const stableKey = typeof deviceKey === 'string' && deviceKey.length > 0
+      ? deviceKey
+      : (typeof physicalTarget?.deviceKey === 'string' && physicalTarget.deviceKey.length > 0
+        ? physicalTarget.deviceKey
+        : `device-id:${String(deviceId ?? 'unknown')}`);
+    return `tuning:${stableKey}`;
+  }
+
+  function tuningQuarantinePath(key) {
+    const fileKey = createHash('sha256').update(key).digest('hex');
+    return path.join(quarantineDirectory ?? tmpdir(), `${TUNING_QUARANTINE_PREFIX}${fileKey}.json`);
+  }
+
+  function tuningQuarantineMarker(key, requestId, status = 'in-flight') {
+    return {
+      schemaVersion: 1,
+      deviceKeyHash: createHash('sha256').update(key).digest('hex'),
+      requestId,
+      status,
+      quarantinedAt: Date.now(),
+      bootSessionId: currentBootSessionId,
+    };
+  }
+
+  async function reserveTuningTransaction(key, requestId) {
+    const bootSessionId = await getBootSessionId();
+    if (!bootSessionId) throw new Error(BOOT_SESSION_UNAVAILABLE_ERROR);
+    const markerPath = tuningQuarantinePath(key);
+    try {
+      await fs.promises.mkdir(path.dirname(markerPath), { recursive: true });
+      // Reserve the durable lock before the elevated process can enter a
+      // native driver call. If reservation fails, no worker is started.
+      await fs.promises.writeFile(markerPath, JSON.stringify(tuningQuarantineMarker(key, requestId)), {
+        encoding: 'utf8',
+        flag: 'wx',
+      });
+      return markerPath;
+    } catch (error) {
+      if (error?.code === 'EEXIST') {
+        quarantinedTuningTransactions.add(key);
+        throw new Error(TUNING_TIMEOUT_QUARANTINE_ERROR);
+      }
+      log(`[apply-runner] failed to reserve GPU tuning quarantine: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error('Arc Power could not reserve the durable GPU tuning safety lock. No GPU tuning operation was sent.');
+    }
+  }
+
+  function quarantineTuningTransaction(key, requestId) {
+    quarantinedTuningTransactions.add(key);
+    const markerPath = tuningQuarantinePath(key);
+    try {
+      const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+      const expectedDeviceKeyHash = createHash('sha256').update(key).digest('hex');
+      return marker?.schemaVersion === 1
+        && marker.deviceKeyHash === expectedDeviceKeyHash
+        && marker.requestId === requestId
+        && marker.bootSessionId === currentBootSessionId;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        log(`[apply-runner] timed-out GPU tuning reservation became unreadable: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      }
+      // The reservation should already exist. Recreate it only as a last
+      // resort if something removed it during the worker's lifetime.
+      try {
+        fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+        fs.writeFileSync(markerPath, JSON.stringify(tuningQuarantineMarker(key, requestId, 'timed-out')), { encoding: 'utf8', flag: 'wx' });
+        return true;
+      } catch (writeError) {
+        log(`[apply-runner] failed to persist GPU tuning quarantine: ${writeError instanceof Error ? writeError.message : String(writeError)}`);
+        return false;
+      }
+    }
+  }
+
+  async function releaseTuningTransaction(key, requestId) {
+    const markerPath = tuningQuarantinePath(key);
+    try {
+      const marker = JSON.parse(await fs.promises.readFile(markerPath, 'utf8'));
+      const expectedDeviceKeyHash = createHash('sha256').update(key).digest('hex');
+      const ownedMarker = marker?.schemaVersion === 1
+        && marker.deviceKeyHash === expectedDeviceKeyHash
+        && marker.requestId === requestId
+        && marker.bootSessionId === currentBootSessionId;
+      if (!ownedMarker) {
+        quarantinedTuningTransactions.add(key);
+        throw new Error(TUNING_TIMEOUT_QUARANTINE_ERROR);
+      }
+      await fs.promises.unlink(markerPath);
+      quarantinedTuningTransactions.delete(key);
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        // The worker has visibly exited, so a missing reservation is safe to
+        // release. Timeout paths never call this function.
+        quarantinedTuningTransactions.delete(key);
+        return;
+      }
+      quarantinedTuningTransactions.add(key);
+      log(`[apply-runner] unable to release GPU tuning safety lock: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error('The GPU operation finished, but Arc Power could not clear its tuning safety lock. Restart Windows before tuning this GPU again.');
+    }
+  }
+
+  async function runTuningWorker(key, request) {
+    const requestId = request.requestId ?? randomUUID();
+    await reserveTuningTransaction(key, requestId);
+    let result;
+    try {
+      result = await runWorker({ ...request, requestId }, {
+        onTimeout: () => quarantineTuningTransaction(key, requestId),
+      });
+    } catch (error) {
+      await releaseTuningTransaction(key, requestId).catch(() => {});
+      throw error;
+    }
+    if (!result?.timedOut) await releaseTuningTransaction(key, requestId);
+    return result;
+  }
+
+  async function assertTuningTransactionAllowed(key) {
+    if (quarantinedTuningTransactions.has(key)) throw new Error(TUNING_TIMEOUT_QUARANTINE_ERROR);
+    const markerPath = tuningQuarantinePath(key);
+    let marker;
+    try {
+      marker = JSON.parse(await fs.promises.readFile(markerPath, 'utf8'));
+    } catch (error) {
+      if (error?.code === 'ENOENT') return;
+      // A malformed marker cannot prove that the previous worker is gone.
+      quarantinedTuningTransactions.add(key);
+      throw new Error(TUNING_TIMEOUT_QUARANTINE_ERROR);
+    }
+    const currentSession = await getBootSessionId();
+    if (!currentSession) throw new Error(BOOT_SESSION_UNAVAILABLE_ERROR);
+    const expectedDeviceKeyHash = createHash('sha256').update(key).digest('hex');
+    const markerValid = marker?.schemaVersion === 1
+      && marker.deviceKeyHash === expectedDeviceKeyHash
+      && typeof marker.requestId === 'string'
+      && marker.requestId.length > 0
+      && typeof marker.bootSessionId === 'string'
+      && marker.bootSessionId.length > 0
+      && Number.isFinite(marker.quarantinedAt);
+    if (!markerValid) {
+      quarantinedTuningTransactions.add(key);
+      throw new Error(TUNING_TIMEOUT_QUARANTINE_ERROR);
+    }
+    if (marker.bootSessionId === currentSession) {
+      quarantinedTuningTransactions.add(key);
+      throw new Error(TUNING_TIMEOUT_QUARANTINE_ERROR);
+    }
+    await unlinkIfExists(markerPath);
+  }
+
+  async function withTuningTransactionLock(key, operation) {
+    const previous = tuningTransactionQueues.get(key) ?? Promise.resolve();
+    let release;
+    const turn = new Promise((resolve) => { release = resolve; });
+    const queued = previous.then(() => turn);
+    tuningTransactionQueues.set(key, queued);
+    await previous;
+    try {
+      await assertTuningTransactionAllowed(key);
+      return await operation();
+    } finally {
+      release();
+      if (tuningTransactionQueues.get(key) === queued) tuningTransactionQueues.delete(key);
+    }
+  }
+
+  async function runWorker(req, { elevate = true, onTimeout = null } = {}) {
     const dir = tmpdir();
     // M2: request/result/token files are keyed by the SAME requestId - a
     // paired cleanup story + the sweep's identity.
@@ -340,6 +578,7 @@ export function createApplyRunner({
     let killed = false;
     let spawnFailed = false;
     let workerExited = false;
+    let timeoutQuarantinePersisted = false;
     try {
       const child = await spawn(powershellExe, ['-NoProfile', '-Command', buildWorkerLaunch(execPath, appPath, reqPath, outPath, { elevate })], {
         windowsHide: true,
@@ -361,6 +600,9 @@ export function createApplyRunner({
           // elevated child can outlive that wrapper on Windows.
           const markerWritten = writeCancellationMarkerSync(cancelPath, { requestId: rid, cancelledAt: Date.now() });
           if (!markerWritten) log('[apply-runner] failed to publish the worker cancellation marker');
+          try { timeoutQuarantinePersisted = onTimeout?.(rid) === true; } catch (error) {
+            log(`[apply-runner] timeout quarantine callback failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
           try { child.kill(); } catch { /* best effort */ }
           done(null);
         }, workerTimeoutMs);
@@ -371,7 +613,13 @@ export function createApplyRunner({
       // in from a detached/elevated child is stale by definition. Never turn
       // a late success file into a successful UI apply after the caller was
       // told that the operation timed out.
-      if (killed) return { worker: true, canceled: true, result: null };
+      if (killed) return {
+        worker: true,
+        canceled: true,
+        timedOut: true,
+        quarantinePersisted: timeoutQuarantinePersisted,
+        result: null,
+      };
       try {
         const raw = await fs.promises.readFile(outPath, 'utf8');
         const parsed = JSON.parse(raw);
@@ -433,7 +681,10 @@ export function createApplyRunner({
      *   parent's limits-key makes the worker's gate thresholds MATCH the
      *   user-facing ones. Only present when the caller resolved one.
      */
-    async apply({ deviceId, deviceKey, physicalTarget, settings, profileName, waiverAccepted, ocMode, profileApply, limitsKey }) {
+    async apply(request = {}) {
+      const transactionKey = tuningTransactionKey(request);
+      return withTuningTransactionLock(transactionKey, async () => {
+      const { deviceId, deviceKey, physicalTarget, settings, profileName, waiverAccepted, ocMode, profileApply, limitsKey } = request;
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
         // M4O (NEW): the IN-PROCESS branch forwards profileApply too - the
@@ -471,8 +722,9 @@ export function createApplyRunner({
       // M17c (step-4 N6): the parent-resolved limitsKey rides too - the
       // worker's gate thresholds must match the parent's (the laptop
       // branch). Only present when the caller resolved one.
-      const { result } = await runWorker({
-        requestId: randomUUID(),
+      const requestId = randomUUID();
+      const workerResult = await runTuningWorker(transactionKey, {
+        requestId,
         op: 'apply',
         deviceId,
         ...(typeof deviceKey === 'string' ? { deviceKey } : {}),
@@ -484,6 +736,12 @@ export function createApplyRunner({
         ...(profileApply === true ? { profileApply: true } : {}),
         ...(limitsKey && typeof limitsKey === 'object' ? { limitsKey } : {}),
       });
+      const { result } = workerResult;
+      if (workerResult.timedOut) {
+        throw new Error(workerResult.quarantinePersisted
+          ? TUNING_TIMEOUT_QUARANTINE_ERROR
+          : `${TUNING_TIMEOUT_QUARANTINE_ERROR} The safety lock could not be saved; restart Windows now and do not relaunch Arc Power first.`);
+      }
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok === false && result.error) throw new Error(result.error);
       // M17c: the worker's result envelope gains the REFUSED VALUES (the
@@ -514,6 +772,7 @@ export function createApplyRunner({
         ...(normalized.capabilityCeilingRefused === true ? { capabilityCeilingRefused: true } : {}),
         ...(normalized.capabilityCeilingPartial === true ? { capabilityCeilingPartial: true } : {}),
       };
+      });
     },
     /**
      * Accept the warranty waiver (elevated - the driver-side waiver write
@@ -521,15 +780,25 @@ export function createApplyRunner({
      * @param {number} deviceId
      */
     async waiverAccept(deviceId, deviceKey = null, physicalTarget = null) {
+      const transactionKey = tuningTransactionKey({ deviceId, deviceKey, physicalTarget });
+      return withTuningTransactionLock(transactionKey, async () => {
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
         await inProcess.waiverAccept(deviceId, deviceKey, physicalTarget);
         return { ok: true };
       }
-      const { result } = await runWorker({ requestId: randomUUID(), op: 'waiver-accept', deviceId, ...(typeof deviceKey === 'string' ? { deviceKey } : {}), ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}) });
+      const requestId = randomUUID();
+      const workerResult = await runTuningWorker(transactionKey, { requestId, op: 'waiver-accept', deviceId, ...(typeof deviceKey === 'string' ? { deviceKey } : {}), ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}) });
+      const { result } = workerResult;
+      if (workerResult.timedOut) {
+        throw new Error(workerResult.quarantinePersisted
+          ? TUNING_TIMEOUT_QUARANTINE_ERROR
+          : `${TUNING_TIMEOUT_QUARANTINE_ERROR} The safety lock could not be saved; restart Windows now and do not relaunch Arc Power first.`);
+      }
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok !== true) throw new Error(result.error ?? 'waiver acceptance failed');
       return { ok: true };
+      });
     },
     /**
      * Reset to defaults (elevated - 0-value writes are refused even
@@ -537,15 +806,25 @@ export function createApplyRunner({
      * @param {number} deviceId
      */
     async reset(deviceId, deviceKey = null, physicalTarget = null) {
+      const transactionKey = tuningTransactionKey({ deviceId, deviceKey, physicalTarget });
+      return withTuningTransactionLock(transactionKey, async () => {
       if (!this.needsWorker()) {
         if (!inProcess) throw new Error('apply runner has no in-process executor (missing inProcess deps)');
         const out = await inProcess.reset(deviceId, deviceKey, physicalTarget);
         return { ok: true, state: out.state };
       }
-      const { result } = await runWorker({ requestId: randomUUID(), op: 'reset', deviceId, ...(typeof deviceKey === 'string' ? { deviceKey } : {}), ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}) });
+      const requestId = randomUUID();
+      const workerResult = await runTuningWorker(transactionKey, { requestId, op: 'reset', deviceId, ...(typeof deviceKey === 'string' ? { deviceKey } : {}), ...(physicalTarget && typeof physicalTarget === 'object' ? { physicalTarget } : {}) });
+      const { result } = workerResult;
+      if (workerResult.timedOut) {
+        throw new Error(workerResult.quarantinePersisted
+          ? TUNING_TIMEOUT_QUARANTINE_ERROR
+          : `${TUNING_TIMEOUT_QUARANTINE_ERROR} The safety lock could not be saved; restart Windows now and do not relaunch Arc Power first.`);
+      }
       if (!result) throw new Error(APPLY_CANCELED_ERROR);
       if (result.ok !== true) throw new Error(result.error ?? 'reset failed');
       return { ok: true, state: result.state ?? null };
+      });
     },
     /**
      * M8 (the Graphics tab): run one graphics apply - the DEDICATED path

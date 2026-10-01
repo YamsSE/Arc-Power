@@ -37,7 +37,7 @@ export function createStartupSplash({ onFatalLoad = null } = {}) {
     // can receive clicks and keyboard focus.
     focusable: true,
     skipTaskbar: true,
-    alwaysOnTop: true,
+    // Keep the startup splash in the normal window z-order so other apps can cover it.
     title: 'Arc Power',
     backgroundColor: '#090b12',
     icon: resolveWindowIconPath(),

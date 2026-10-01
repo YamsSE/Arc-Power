@@ -12,7 +12,11 @@ function modalRoot(): HTMLElement {
 }
 
 /** Capture one supported keyboard accelerator without persisting it. */
-export function showRecordingHotkeyDialog(label: string, current: string): Promise<string | null> {
+export function showRecordingHotkeyDialog(
+  label: string,
+  current: string,
+  options: { requireModifier?: boolean } = {},
+): Promise<string | null> {
   return new Promise((resolve) => {
     const root = modalRoot();
     clear(root);
@@ -25,7 +29,12 @@ export function showRecordingHotkeyDialog(label: string, current: string): Promi
       resolve(value);
     };
     const value = el('div', { class: 'recording-hotkey-dialog-value', role: 'status', 'aria-live': 'polite', text: current || 'Waiting…' });
-    const hint = el('p', { class: 'recording-hotkey-dialog-hint', text: 'Press a letter, number, or F1–F24. Ctrl, Alt, and Shift can be combined.' });
+    const hint = el('p', {
+      class: 'recording-hotkey-dialog-hint',
+      text: options.requireModifier
+        ? 'Overlay shortcuts need Ctrl, Alt, or Shift. Modifiers can be combined with a letter, number, or F1–F24.'
+        : 'Press a letter, number, or F1–F24. Ctrl, Alt, and Shift can be combined.',
+    });
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -47,7 +56,14 @@ export function showRecordingHotkeyDialog(label: string, current: string): Promi
       const accelerator = recordingAcceleratorFromKeyboardEvent(event);
       if (!accelerator) {
         event.preventDefault();
+        event.stopPropagation();
         hint.textContent = 'That key is not supported. Use a letter, number, or F1–F24, with optional Ctrl, Alt, or Shift.';
+        return;
+      }
+      if (options.requireModifier && !(event.ctrlKey || event.altKey || event.shiftKey)) {
+        event.preventDefault();
+        event.stopPropagation();
+        hint.textContent = 'Add Ctrl, Alt, or Shift to the key. You can combine modifiers.';
         return;
       }
       event.preventDefault();

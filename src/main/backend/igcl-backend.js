@@ -74,7 +74,8 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 // bSupported:false - the probe-3 evidence).
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
-import { isLegacyBakedB580VfCurve, isLegacyStockVfCurve, prepareVfCurveForDriver, rebaseB580VfCurveToNativeGrid } from '../../renderer/pure/vf-curve.ts';
+import { isValidNativeVfCurve, prepareVfCurveForDriver, vfCurveNeedsWrite } from '../../renderer/pure/vf-curve.ts';
+import { readStableVfCurve, readStableVfCurvePreflight, readVfCurveAfterWrite } from './vf-curve-readback.js';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
@@ -100,23 +101,6 @@ const POWER_TELEMETRY_V2_COMPATIBILITY_ERRORS = new Set([
   CTL_RESULT.ERROR_UNSUPPORTED_SIZE,
   CTL_RESULT.ERROR_NOT_IMPLEMENTED,
   CTL_RESULT.ERROR_NOT_AVAILABLE,
-]);
-
-// A freshly initialized B-series driver can reject the first custom VF write
-// while its overclock service is becoming ready. One bounded replay handles
-// only transient native results; persistent or capability errors still reach
-// the caller unchanged.
-const RETRYABLE_VF_WRITE_RESULTS = new Set([
-  CTL_RESULT.ERROR_DATA_WRITE,
-  CTL_RESULT.ERROR_OS_CALL,
-  CTL_RESULT.ERROR_KMD_CALL,
-  CTL_RESULT.ERROR_NOT_AVAILABLE,
-  // The first B580 apply can surface the device-unavailable form while the
-  // newly initialized overclock service is attaching. It is transient only
-  // when the single immediate replay succeeds; a persistent result remains
-  // the driver's refusal.
-  CTL_RESULT.ERROR_DEVICE_UNAVAILABLE,
-  CTL_RESULT.ERROR_RETRY_OPERATION,
 ]);
 
 // The VF read-modify-write transaction needs a current STOCK/LIVE table before
@@ -145,21 +129,48 @@ const VF_STOCK_LIVE_FALLBACK_RESULTS = new Set([
 ]);
 const VF_READ_RETRY_MAX_ATTEMPTS = 3;
 const VF_READ_RETRY_SETTLE_MS = 25;
+const TUNING_TRANSACTION_LOCK_HELD = Symbol('tuning-transaction-lock-held');
 
-// A successful B-series custom-curve write can become visible in LIVE only
-// after the KMD's asynchronous table update completes. Keep this poll small
-// and explicit: it is entered only when LIVE is still exactly the before
-// image, and a changed mismatch remains a refusal. Five reads give the first
-// apply a 200 ms settle window without turning a real read-back failure into
-// success.
-const VF_READBACK_MAX_ATTEMPTS = 5;
-const VF_READBACK_SETTLE_MS = 50;
-// The B-series grid can quantize a requested point by a few native steps
-// (the observed 20 MHz example is the reason this is separate from the exact
-// read-back tolerance). A normalized result must stay near the requested
-// payload on every point; an arbitrary changed curve is still a refusal.
-const VF_NORMALIZED_VOLTAGE_TOLERANCE_MV = 10;
-const VF_NORMALIZED_FREQUENCY_TOLERANCE_MHZ = 50;
+// B580 can report a temporary LIVE table after a custom-curve write, then
+// settle. Wait 3 seconds and require a latest-inclusive 15-of-21 LIVE quorum
+// before accepting a normalized result. This never replays the native setter.
+const VF_READBACK_MAX_ATTEMPTS = 21;
+const VF_READBACK_SETTLE_MS = 100;
+// The observed B580 read surface shifts every voltage coordinate together by
+// up to 4mV while preserving each point's exact relative position and MHz.
+// Accept only that bounded common-mode drift; per-point changes still fail.
+const VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV = 4;
+
+function uniformVfVoltageShiftMv(left, right, toleranceMv = VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length || left.length < 2) return null;
+  const shift = Math.round((left[0]?.voltageV - right[0]?.voltageV) * 1000);
+  if (!Number.isInteger(shift) || Math.abs(shift) > toleranceMv) return null;
+  return left.every((point, index) => Number.isFinite(point?.voltageV) && Number.isFinite(point?.freqMhz)
+    && Number.isFinite(right[index]?.voltageV) && Number.isFinite(right[index]?.freqMhz)
+    && point.freqMhz === right[index].freqMhz
+    && Math.round((point.voltageV - right[index].voltageV) * 1000) === shift)
+    ? shift
+    : null;
+}
+
+// The Battlemage VF editor is an API-capability surface, while a successful
+// live read is only a prerequisite for a specific write transaction. Keep the
+// controls visible when IGCL exposes both symbols but a runtime probe is
+// refused; applySettings still requires stable STOCK and LIVE preflight.
+export function battlemageVfCurveCapability({ battlemage, readAvailable, writeAvailable, probe } = {}) {
+  if (!battlemage) {
+    return { supported: false, status: { state: 'unsupported', reason: 'Custom VF curves are only exposed for Battlemage adapters.' } };
+  }
+  if (!readAvailable) {
+    return { supported: false, status: { state: 'unsupported', reason: 'ctlOverclockReadVFCurve is unavailable in the IGCL runtime' } };
+  }
+  if (!writeAvailable) {
+    return { supported: false, status: { state: 'unsupported', reason: 'ctlOverclockWriteCustomVFCurve is unavailable in the IGCL runtime' } };
+  }
+  return probe?.ok === true
+    ? { supported: true, status: { state: 'available', reason: null } }
+    : { supported: true, status: { state: 'runtime-refused', reason: probe?.reason ?? 'The IGCL runtime refused the VF curve read probe.' } };
+}
 
 function isPowerTelemetryV2CompatibilityError(result) {
   return POWER_TELEMETRY_V2_COMPATIBILITY_ERRORS.has(result);
@@ -1390,6 +1401,7 @@ export class IgclBackend {
       : (opts.lib ? null : superResolutionStateFile());
     this._superResolutionPersisted = readSuperResolutionState(this._superResolutionStateFile);
     this._displayApplyLocks = new Map();
+    this._tuningTransactionLocks = new Map();
     // Keep the complete color state only after a verified pixel-transform
     // write. A fresh process never assumes that the driver's transform is
     // neutral; the GET path establishes that before exposing a writable row.
@@ -2494,23 +2506,27 @@ export class IgclBackend {
         // Custom live VF curves are a Battlemage surface. Alchemist exposes
         // the legacy symbols on some runtimes but rejects this curve ABI.
         const battlemage = isBattlemageGpuName(dev.name, dev);
+        const vfReaderAvailable = !this._isUnavailable(lib.ctlOverclockReadVFCurve);
         const vfWriterAvailable = !this._isUnavailable(lib.ctlOverclockWriteCustomVFCurve);
-        const vfProbe = battlemage && vfWriterAvailable
+        const vfProbe = battlemage && vfReaderAvailable && vfWriterAvailable
           ? await this._vfCurveReadable(dev.handle)
           : {
             ok: false,
             state: 'unsupported',
-            reason: battlemage
-              ? 'ctlOverclockWriteCustomVFCurve is unavailable in the IGCL runtime'
-              : 'Custom VF curves are only exposed for Battlemage adapters.',
+            reason: !battlemage
+              ? 'Custom VF curves are only exposed for Battlemage adapters.'
+              : !vfReaderAvailable
+                ? 'ctlOverclockReadVFCurve is unavailable in the IGCL runtime'
+                : 'ctlOverclockWriteCustomVFCurve is unavailable in the IGCL runtime',
           };
-        caps.controls.vfCurve = battlemage && vfWriterAvailable && vfProbe.ok === true;
-        caps.controlStatus.vfCurve = caps.controls.vfCurve
-          ? { state: 'available', reason: null }
-          : {
-            state: vfProbe.state ?? 'unsupported',
-            reason: vfProbe.reason ?? 'The driver did not expose a readable custom VF curve surface.',
-          };
+        const vfCapability = battlemageVfCurveCapability({
+          battlemage,
+          readAvailable: vfReaderAvailable,
+          writeAvailable: vfWriterAvailable,
+          probe: vfProbe,
+        });
+        caps.controls.vfCurve = vfCapability.supported;
+        caps.controlStatus.vfCurve = vfCapability.status;
         // M17e (round-1 S3): the per-device gpuLock bounds - derived from the
         // props' gpuVFCurveVoltageLimit / gpuVFCurveFrequencyLimit (the
         // bounds the custom-VF-curve validation references) THROUGH the units
@@ -2539,8 +2555,15 @@ export class IgclBackend {
           const voltageMaxV = igclToCanonical(vfVolt.max, vfVolt.units);
           const freqMinMhz = Math.max(0, igclToCanonical(vfFreq.min, vfFreq.units));
           const freqMaxMhz = igclToCanonical(vfFreq.max, vfFreq.units);
+          const voltageStepV = Math.abs(igclToCanonical(vfVolt.step, vfVolt.units));
+          const frequencyStepMhz = Math.abs(igclToCanonical(vfFreq.step, vfFreq.units));
           if (voltageMaxV > voltageMinV && freqMaxMhz > freqMinMhz) {
-            caps.vfCurveRange = { voltageMinV, voltageMaxV, freqMinMhz, freqMaxMhz, maxPoints: 32 };
+            caps.vfCurveRange = {
+              voltageMinV, voltageMaxV, freqMinMhz, freqMaxMhz,
+              ...(Number.isFinite(voltageStepV) && voltageStepV > 0 ? { voltageStepV } : {}),
+              ...(Number.isFinite(frequencyStepMhz) && frequencyStepMhz > 0 ? { frequencyStepMhz } : {}),
+              maxPoints: 32,
+            };
           }
         }
       }
@@ -2839,15 +2862,26 @@ export class IgclBackend {
     // Use the same full count+payload read as the apply path. A count-only
     // probe can advertise a curve while the driver still refuses the payload
     // read, and a transient KMD response must not be cached as unsupported.
-    const stock = await this._readVfCurvePointsWithRetry(handle, 0, 0);
-    if (stock.ok) return { ok: true, state: 'available', reason: null };
+    const stockProbe = await this._readVfCurvePointsWithRetry(handle, 0, 0);
+    if (stockProbe.ok) {
+      const stock = await readStableVfCurve({
+        readCurve: () => this._readVfCurvePointsWithRetry(handle, 0, 0),
+        uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+      });
+      return stock.ok
+        ? { ok: true, state: 'available', reason: null }
+        : { ok: false, state: 'runtime-refused', reason: stock.message };
+    }
     // Only an explicit API-surface absence permits the documented LIVE-only
     // fallback. KMD/OS/device failures are retried above and remain an honest
     // runtime refusal instead of silently changing the write contract.
-    if (!stock.fallbackToLive) {
-      return { ok: false, state: 'runtime-refused', reason: stock.message };
+    if (!stockProbe.fallbackToLive) {
+      return { ok: false, state: 'runtime-refused', reason: stockProbe.message };
     }
-    const live = await this._readVfCurvePointsWithRetry(handle, 1, 0);
+    const live = await readStableVfCurve({
+      readCurve: () => this._readVfCurvePointsWithRetry(handle, 1, 0),
+      uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+    });
     return live.ok
       ? { ok: true, state: 'available', reason: null }
       : { ok: false, state: 'runtime-refused', reason: live.message };
@@ -3045,21 +3079,46 @@ export class IgclBackend {
       }
     }
 
-    // VF curves are the native Battlemage simplified tables. Keep LIVE and
-    // STOCK as separate per-device fields: Reset to default must never infer
-    // STOCK from LIVE, capability bounds, a renderer snapshot, or a synthetic
-    // point list. Native point count/order are retained exactly.
+    // VF curves are the native Battlemage simplified tables. STOCK and LIVE
+    // are separate driver surfaces and may be stable across different read
+    // windows. Read each independently for display; apply revalidates both
+    // native source tables immediately before its single setter call.
+    // Never infer STOCK from renderer state or a synthetic point list.
     if (caps.controls.vfCurve && !this._isUnavailable(lib.ctlOverclockReadVFCurve)) {
-      const decodeCurve = (type) => {
-        const native = this._readVfCurvePoints(dev.handle, type, 0);
-        if (!native.ok || native.points.length < 2) return null;
-        return native.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }));
-      };
-      // Type 0 is the driver's STOCK simplified table. Failure is honest
-      // unavailability; do not fall back to LIVE because that would make a
-      // custom curve appear to be the reset target.
-      state.vfCurveDefault = decodeCurve(0);
-      state.vfCurve = decodeCurve(1);
+      const toCanonical = (points) => points.length >= 2
+        ? points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
+        : null;
+      const stockProbe = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
+      if (stockProbe.fallbackToLive) {
+        // Only an explicit API-surface absence permits LIVE-only operation.
+        // A readable LIVE table remains useful for editing, but it is never
+        // represented as the STOCK reset target.
+        const live = await readStableVfCurvePreflight({
+          readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+          uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+        });
+        if (live.ok) {
+          const canonical = toCanonical(live.points);
+          state.vfCurve = canonical.map((point) => ({ ...point }));
+        }
+      } else {
+        // Do not treat one transient failed STOCK probe as proof that the
+        // curve is unavailable. The bounded stable read below gets its own
+        // retry and still fails closed if the native table cannot be verified.
+        const stock = await readStableVfCurvePreflight({
+          readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 0, 0),
+          uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+        });
+        const live = await readStableVfCurvePreflight({
+          readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+          uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+        });
+        if (stock.ok) state.vfCurveDefault = toCanonical(stock.points);
+        if (live.ok) state.vfCurve = toCanonical(live.points);
+        // Preserve whichever independently stable curve is available. The
+        // renderer labels STOCK-only data as a read-only reference, while
+        // writes still require fresh stable STOCK and LIVE before-images.
+      }
       if (state.vfCurve || state.vfCurveDefault) state.vfCurveUnits = 'V';
     }
 
@@ -5994,6 +6053,34 @@ export class IgclBackend {
    * 48.3 MHz offset) is written back EXACTLY as read - never changed.
    */
   async applySettings(deviceId, settings = {}, opts = {}) {
+    if (opts?.[TUNING_TRANSACTION_LOCK_HELD] === true) {
+      return this._applySettingsUnlocked(deviceId, settings, opts);
+    }
+    return this._withTuningTransactionLock(deviceId, () => this._applySettingsUnlocked(deviceId, settings, {
+      ...opts,
+      [TUNING_TRANSACTION_LOCK_HELD]: true,
+    }));
+  }
+
+  async _withTuningTransactionLock(deviceId, operation) {
+    if (!(this._tuningTransactionLocks instanceof Map)) this._tuningTransactionLocks = new Map();
+    const dev = await this._device(deviceId);
+    const lockKey = String(dev.deviceKey ?? deviceHardwareKey(dev) ?? `device-id:${deviceId}`);
+    const previous = this._tuningTransactionLocks.get(lockKey) ?? Promise.resolve();
+    let release;
+    const turn = new Promise((resolve) => { release = resolve; });
+    const queued = previous.then(() => turn);
+    this._tuningTransactionLocks.set(lockKey, queued);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this._tuningTransactionLocks.get(lockKey) === queued) this._tuningTransactionLocks.delete(lockKey);
+    }
+  }
+
+  async _applySettingsUnlocked(deviceId, settings = {}, opts = {}) {
     await this._device(deviceId);
     const caps = await this.getCapabilities(deviceId);
     const lib = this._libOrThrow();
@@ -6001,49 +6088,201 @@ export class IgclBackend {
     const units = await this._ocUnitsOf(deviceId);
     const result = { ok: true, perControl: {} };
 
-    // Profiles created by older builds can contain the B-series STOCK VF
-    // table on a voltage grid from another driver revision. The compatibility
-    // path recognizes that complete legacy fingerprint before any scalar
-    // writes so startup, tray, elevated, and renderer loads agree. Legitimate
-    // custom voltage coordinates remain intact and are still sent to the
-    // driver's native writer.
+    // Reset intent is a one-shot UI action, never persisted profile content.
+    // Profiles classify their saved curve against fresh STOCK below; ignore a
+    // stray/imported marker so it cannot turn a custom profile into a reset.
+    if (opts.profileApply === true && settings.vfCurveResetToDefault === true) {
+      settings = { ...settings };
+      delete settings.vfCurveResetToDefault;
+    }
+
+    // The custom curve and scalar core offsets share the same driver tuning
+    // surface. Refuse a mixed manual request before any related setter rather
+    // than report an exact curve and then let a later offset change alter
+    // LIVE. Profile applies have their own explicit STOCK/custom policy.
+    const coreOffsetKeys = ['gpuFreqOffsetMhz', 'gpuVoltOffsetV'];
+    const suppliedCoreOffsetKeys = coreOffsetKeys.filter((key) =>
+      settings[key] !== null && settings[key] !== undefined);
+    const vfCurveForDependencyCheck = settings.vfCurve;
+    if (opts.profileApply !== true
+      && vfCurveForDependencyCheck !== null && vfCurveForDependencyCheck !== undefined
+      && suppliedCoreOffsetKeys.length > 0) {
+      settings = { ...settings };
+      delete settings.vfCurve;
+      for (const key of suppliedCoreOffsetKeys) {
+        delete settings[key];
+        result.perControl[key] = {
+          ok: false,
+          errorCode: 'dependency-failed',
+          message: 'This core offset was not applied because core offsets cannot be combined with a custom VF curve.',
+        };
+      }
+      result.perControl.vfCurve = {
+        ok: false,
+        errorCode: 'dependency-failed',
+        message: 'The custom VF curve and core offsets cannot be applied in one request because both change the same tuning surface. No curve or core offset was written.',
+      };
+      result.ok = false;
+    }
+
+    // A profile's exact STOCK table is a reset operation and must run before
+    // its scalar core offsets. A custom table owns the core VF shape, so
+    // conflicting scalar offsets are omitted. Never infer or rewrite custom
+    // curve coordinates from a remembered value fingerprint.
+    let profileStockCurveReset = false;
+    let profileStockCurveUnknown = false;
+    let profileStockCurveUnknownReason = null;
+    let profileStockCurveUnknownErrorCode = 'readback-unverified';
+    let profileStockCurveUnknownOffsets = [];
+    const profileVfCurve = settings.vfCurve;
     if (opts.profileApply === true && isBattlemageGpuName(caps.deviceName, caps)
-      && Array.isArray(settings.vfCurve)) {
+      && Array.isArray(profileVfCurve)) {
       const out = { ...settings };
       if (caps.controls.vfCurve !== true
         && caps.controlStatus?.vfCurve?.state !== 'runtime-refused') {
-        delete out.vfCurve;
+        // Without a readable/writable VF surface, a saved curve may be STOCK
+        // or custom. Preserve it for the normal unsupported-control result
+        // and withhold dependent scalar offsets until STOCK is verifiable.
+        profileStockCurveUnknown = true;
+        profileStockCurveUnknownReason = caps.controlStatus?.vfCurve?.reason ?? 'The STOCK VF curve is unavailable.';
+        profileStockCurveUnknownErrorCode = caps.controlStatus?.vfCurve?.state === 'unsupported'
+          ? 'unsupported'
+          : 'readback-unverified';
+        profileStockCurveUnknownOffsets = ['gpuVoltOffsetV', 'gpuFreqOffsetMhz']
+          .filter((key) => settings[key] !== null && settings[key] !== undefined);
       } else {
-        const stock = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
-        const live = stock.ok || stock.fallbackToLive
-          ? await this._readVfCurvePointsWithRetry(dev.handle, 1, 0)
-          : { ok: false, points: [], result: stock.result, message: stock.message };
-        const native = stock.ok ? stock : (stock.fallbackToLive ? live : stock);
-        const nativeCanonical = native.ok
-          ? native.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
-          : null;
-        const liveCanonical = live.ok
-          ? live.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
-          : null;
-        const bakedB580 = nativeCanonical && isLegacyBakedB580VfCurve(settings.vfCurve, nativeCanonical);
-        if (nativeCanonical
-          && (isLegacyStockVfCurve(settings.vfCurve, nativeCanonical, settings.gpuFreqOffsetMhz) || bakedB580)) {
-          delete out.vfCurve;
-          if (bakedB580 && !Number.isFinite(out.gpuFreqOffsetMhz)) out.gpuFreqOffsetMhz = 100;
+        const stockProbe = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
+        const stock = stockProbe.ok
+          ? await readStableVfCurve({
+            readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 0, 0),
+            uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+          })
+          : stockProbe;
+        if (stock.ok) {
+          const stockCurve = stock.points.map((point) => ({
+            voltageV: point.Voltage / 1000,
+            freqMhz: point.Frequency,
+          }));
+          const requestedStockCurve = profileVfCurve.map((point) => ({
+            voltageV: Math.round(point.voltageV * 1000) / 1000,
+            freqMhz: Math.round(point.freqMhz),
+          }));
+          profileStockCurveReset = !vfCurveNeedsWrite(requestedStockCurve, stockCurve);
         } else {
-          // A custom VF table is authoritative for the core voltage/frequency
-          // shape. Older profiles could carry either scalar offset, which
-          // makes the driver apply the scalar first and then reject the curve
-          // transaction.
-          delete out.gpuVoltOffsetV;
-          delete out.gpuFreqOffsetMhz;
-          const rebased = nativeCanonical
-            ? rebaseB580VfCurveToNativeGrid(settings.vfCurve, nativeCanonical, liveCanonical)
-            : null;
-          if (rebased) out.vfCurve = rebased;
+          // A profile curve cannot safely be treated as STOCK or custom when
+          // the driver's STOCK table is not stable. Refuse the curve write
+          // rather than risk applying a stale STOCK profile as a custom curve.
+          profileStockCurveUnknown = true;
+          profileStockCurveUnknownReason = stock.message ?? 'The STOCK VF curve could not be read reliably.';
+          profileStockCurveUnknownErrorCode = stock.errorCode ?? 'readback-unverified';
+          profileStockCurveUnknownOffsets = ['gpuVoltOffsetV', 'gpuFreqOffsetMhz']
+            .filter((key) => settings[key] !== null && settings[key] !== undefined);
         }
       }
+      if (profileStockCurveUnknown) {
+        result.perControl.vfCurve = {
+          ok: false,
+          errorCode: profileStockCurveUnknownErrorCode,
+          message: `This profile VF curve was not written because STOCK identity could not be verified. ${profileStockCurveUnknownReason}`,
+        };
+        result.ok = false;
+        delete out.vfCurve;
+      }
+      if (!profileStockCurveReset) {
+        const canResetOffsetsBeforeCustomCurve = !profileStockCurveUnknown;
+        for (const key of ['gpuVoltOffsetV', 'gpuFreqOffsetMhz']) {
+          const value = settings[key];
+          const hasValue = value !== null && value !== undefined;
+          const isExplicitZero = typeof value === 'number'
+            && Number.isFinite(value)
+            && Math.abs(value) <= 0.001;
+          if (hasValue && !isExplicitZero) {
+            result.perControl[key] = {
+              ok: false,
+              errorCode: 'dependency-failed',
+              message: profileStockCurveUnknown
+                ? 'This profile core offset was not applied because its VF curve is unavailable and STOCK identity cannot be verified.'
+                : 'This profile core offset was not applied because its custom VF curve owns the same tuning surface.',
+            };
+            result.ok = false;
+          }
+          // Explicit zero offsets are a valid prerequisite for a custom VF
+          // curve. Preserve them for the normal scalar apply path so they are
+          // written and read back before the curve setter. If STOCK identity
+          // is unknown, withhold every dependent offset instead.
+          if (!canResetOffsetsBeforeCustomCurve || (hasValue && !isExplicitZero)) delete out[key];
+        }
+        if (profileStockCurveUnknownOffsets.length > 0) result.ok = false;
+      }
       settings = out;
+    }
+
+    if (profileStockCurveUnknown) {
+      for (const key of profileStockCurveUnknownOffsets) {
+        result.perControl[key] = {
+          ok: false,
+          errorCode: 'dependency-failed',
+          message: 'Core offset was not applied because the profile STOCK VF curve could not be read and verified before applying the profile.',
+        };
+      }
+    }
+
+    // Restore STOCK before profile scalar offsets. Intel's VF write and the
+    // Battlemage scalar core offsets address the same tuning surface; doing
+    // STOCK last would erase the profile offsets, while applying offsets
+    // before a custom curve can make the custom write fail.
+    if (profileStockCurveReset) {
+      const requestedCurve = profileVfCurve;
+      const profileOffsets = ['gpuVoltOffsetV', 'gpuFreqOffsetMhz']
+        .filter((key) => settings[key] !== null && settings[key] !== undefined);
+      let resetResult;
+      try {
+        resetResult = await this.applySettings(deviceId, {
+          vfCurve: requestedCurve,
+          vfCurveResetToDefault: true,
+        }, {
+          ...opts,
+          profileApply: false,
+        });
+      } catch (error) {
+        resetResult = {
+          ok: false,
+          perControl: {
+            vfCurve: {
+              ok: false,
+              errorCode: 'io-failed',
+              message: `STOCK VF curve restore failed: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          },
+        };
+      }
+      const vfResult = resetResult?.perControl?.vfCurve ?? {
+        ok: false,
+        errorCode: 'io-failed',
+        message: 'STOCK VF curve restore returned no result',
+      };
+      const reportedVfResult = vfResult.errorCode === 'dependency-failed'
+        && /offsets to zero/i.test(String(vfResult.message ?? ''))
+        ? {
+            ...vfResult,
+            message: 'This profile\'s STOCK VF curve cannot be applied while current GPU core offsets are active. Reset both core offsets to zero, then apply the profile again.',
+          }
+        : vfResult;
+      result.perControl.vfCurve = reportedVfResult;
+      const acceptedUniformVoltageShift = Number.isInteger(vfResult.uniformVoltageShiftMv)
+        && Math.abs(vfResult.uniformVoltageShiftMv) <= VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV;
+      if (vfResult.ok !== true || (vfResult.readBackEqual !== true && !acceptedUniformVoltageShift)) {
+        result.ok = false;
+        for (const key of profileOffsets) {
+          result.perControl[key] = {
+            ok: false,
+            errorCode: 'dependency-failed',
+            message: 'Core offset was not applied because the profile STOCK VF curve did not match the driver read-back.',
+          };
+          delete settings[key];
+        }
+      }
+      delete settings.vfCurve;
     }
 
     // M17e (round-1 S1b): the UNIVERSAL lock-vs-offset normalization - a
@@ -6518,177 +6757,240 @@ export class IgclBackend {
           vfStatus?.reason ?? 'custom VF curve not supported on this device',
         );
       } else {
-        // Intel's VF flow sets the waiver immediately before the custom
-        // curve write. The isolated worker already performs that replay at
-        // its boundary; the elevated in-process path has no worker boundary,
-        // so replay previously accepted consent here as well. This is never
-        // an acceptance: the in-memory flag must already be true.
-        let vfWriteReady = true;
-        if (this._waiverAccepted.get(deviceId) === true && !this._allowAutoWaiver) {
+        // Replay the accepted waiver before the final source and LIVE reads.
+        // That final snapshot guards the one setter against preflight state
+        // changing while the rest of this transaction is prepared.
+        const replayVfWaiver = () => {
+          if (this._waiverAccepted.get(deviceId) !== true || this._allowAutoWaiver) return true;
           if (this._isUnavailable(lib.ctlOverclockWaiverSet)) {
             fail('vfCurve', 'unavailable-symbol', 'ctlOverclockWaiverSet is unavailable in the IGCL runtime');
-            vfWriteReady = false;
-          } else {
-            let waiverResult;
-            try {
-              waiverResult = lib.ctlOverclockWaiverSet(dev.handle);
-            } catch (error) {
-              fail('vfCurve', 'io-failed', `IGCL VF waiver replay failed (${error instanceof Error ? error.message : String(error)})`);
-              vfWriteReady = false;
-            }
-            if (vfWriteReady && waiverResult !== CTL_RESULT.SUCCESS) {
-              fail('vfCurve', igclErrorCode(waiverResult) ?? 'io-failed', `IGCL VF waiver replay failed (${describeResult(waiverResult)})`);
-              vfWriteReady = false;
-            }
+            return false;
           }
-        }
-        if (vfWriteReady) {
+          let waiverResult;
+          try {
+            waiverResult = lib.ctlOverclockWaiverSet(dev.handle);
+          } catch (error) {
+            fail('vfCurve', 'io-failed', `IGCL VF waiver replay failed (${error instanceof Error ? error.message : String(error)})`);
+            return false;
+          }
+          if (waiverResult !== CTL_RESULT.SUCCESS) {
+            fail('vfCurve', igclErrorCode(waiverResult) ?? 'io-failed', `IGCL VF waiver replay failed (${describeResult(waiverResult)})`);
+            return false;
+          }
+          return true;
+        };
+        {
           const curve = settings.vfCurve;
+          const resetToDefault = settings.vfCurveResetToDefault === true;
           const curveRange = caps.vfCurveRange ?? {
             voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 0, freqMaxMhz: 4300, maxPoints: 32,
           };
           const validShape = Array.isArray(curve) && curve.length >= 2 && curve.length <= (curveRange?.maxPoints ?? 32)
             && curve.every((p) => Number.isFinite(p?.voltageV) && Number.isFinite(p?.freqMhz));
-          const validOrder = validShape && curve.every((p, i) => i === 0
-            || (p.voltageV > curve[i - 1].voltageV && p.freqMhz >= curve[i - 1].freqMhz));
-          const validRange = validShape && (!curveRange || curve.every((p) =>
+          const validOrder = validShape && (resetToDefault || curve.every((p, i) => i === 0
+            || (p.voltageV > curve[i - 1].voltageV && p.freqMhz >= curve[i - 1].freqMhz)));
+          const validRange = validShape && (resetToDefault || !curveRange || curve.every((p) =>
             p.voltageV >= curveRange.voltageMinV && p.voltageV <= curveRange.voltageMaxV
             && p.freqMhz >= curveRange.freqMinMhz && p.freqMhz <= curveRange.freqMaxMhz));
-          if (!validShape || !validOrder || !validRange) {
+          if (resetToDefault && !isBattlemageGpuName(caps.deviceName, caps)) {
+            fail('vfCurve', 'unsupported', 'Reset to default VF intent is only supported for Battlemage curves.');
+          } else if (!validShape || !validOrder || !validRange) {
             fail('vfCurve', 'out-of-range', 'VF curve points must be ordered and stay within the driver voltage/frequency range');
           } else {
-            const preparedCurve = prepareVfCurveForDriver(curve, curveRange);
-            if (!preparedCurve) {
-              fail('vfCurve', 'out-of-range', 'VF curve cannot be represented as an ascending driver curve within the supported frequency range');
+            // Battlemage accepts the simplified table as a native
+            // read-modify-write shape. The point count must stay native, but
+            // the IGCL/IGS curve setter accepts new voltage coordinates as
+            // long as the complete curve remains within the driver's limits.
+            // Validate the native shape before writing so stale profiles and
+            // old renderer bundles cannot send an invalid payload. A few
+            // driver builds expose only LIVE, so fall back to that read without
+            // changing the write payload shape.
+            const stockProbe = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
+            const sourceType = stockProbe.fallbackToLive ? 1 : 0;
+            let native;
+            let liveBefore;
+            if (stockProbe.fallbackToLive) {
+              // Preserve the explicit API-unavailable fallback: a stable
+              // LIVE table supplies both native shape and the before-image.
+              native = await readStableVfCurvePreflight({
+                readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+                uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+              });
+              liveBefore = native;
             } else {
-              const points = preparedCurve.map((p) => ({ Voltage: Math.round(p.voltageV * 1000), Frequency: Math.round(p.freqMhz) }));
-              // Battlemage accepts the simplified table as a native
-              // read-modify-write shape. The point count must stay native, but
-              // the IGCL/IGS curve setter accepts new voltage coordinates as
-              // long as the complete curve remains within the driver's limits.
-              // Validate the native shape before writing so stale profiles and
-              // old renderer bundles cannot send an invalid payload. A few
-              // driver builds expose only LIVE, so fall back to that read without
-              // changing the write payload shape.
-              const stock = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
-              const native = stock.ok
-                ? stock
-                : (stock.fallbackToLive ? await this._readVfCurvePointsWithRetry(dev.handle, 1, 0) : stock);
-              if (!native.ok) {
-                fail('vfCurve', igclErrorCode(native.result) ?? 'io-failed', native.message);
-              } else if (native.points.length !== points.length) {
-                fail('vfCurve', 'out-of-range', `Battlemage requires the driver's current ${native.points.length}-point simplified VF table; point count cannot be changed`);
-              } else if (native.points.some((point, index) => index > 0
-                && (point.Voltage <= native.points[index - 1].Voltage || point.Frequency < native.points[index - 1].Frequency))) {
-                fail('vfCurve', 'io-failed', 'The driver returned an invalid simplified VF curve shape; no change was written');
+              // Do not skip the quorum/retry path after a transient initial
+              // probe failure. Only the explicit fallback means STOCK is not
+              // supported on this API surface.
+              // STOCK defines the native write shape; LIVE is the current
+              // before-image and may legitimately contain a different curve.
+              // Stabilize each surface independently, then require the final
+              // source reads to preserve both curve shapes after the waiver
+              // replay before the setter is allowed to run.
+              native = await readStableVfCurvePreflight({
+                readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 0, 0),
+                uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+              });
+              liveBefore = await readStableVfCurvePreflight({
+                readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+                uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+              });
+            }
+            if (!native.ok) {
+              fail('vfCurve', native.errorCode ?? igclErrorCode(native.result) ?? 'io-failed', native.message);
+            } else if (resetToDefault && sourceType !== 0) {
+              fail('vfCurve', 'readback-unverified', 'Reset to default requires a readable STOCK VF curve. No curve write was sent.');
+            } else if (!resetToDefault && native.points.length !== curve.length) {
+              fail('vfCurve', 'out-of-range', `Battlemage requires the driver's current ${native.points.length}-point simplified VF table; point count cannot be changed`);
+            } else if (native.points.some((point, index) => index > 0
+              && (point.Voltage <= native.points[index - 1].Voltage || point.Frequency < native.points[index - 1].Frequency))
+              || !isValidNativeVfCurve(native.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency })), curveRange)) {
+              fail('vfCurve', 'io-failed', 'The driver returned an invalid simplified VF curve shape; no change was written');
+            } else {
+              // LIVE is the before-image for no-op detection. STOCK is only
+              // the native write shape; on Battlemage the two tables can
+              // legitimately differ after an active tuning change.
+              const liveCanonical = liveBefore?.ok === true
+                ? liveBefore.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
+                : null;
+              const nativeCanonical = native.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }));
+              const targetCurve = resetToDefault ? nativeCanonical : curve;
+              const liveIsValid = liveBefore?.ok === true && liveBefore.points.length === targetCurve.length
+                && isValidNativeVfCurve(liveCanonical, curveRange);
+              if (liveIsValid && !vfCurveNeedsWrite(targetCurve, liveCanonical)) {
+                result.perControl.vfCurve = {
+                  ok: true,
+                  readBackEqual: true,
+                  normalized: false,
+                  readBackCurve: liveCanonical,
+                };
+              } else if (!liveIsValid) {
+                fail('vfCurve', liveBefore?.errorCode ?? 'readback-unverified', liveBefore?.message
+                  ? `The current LIVE VF curve could not be verified as a valid ordered curve with the requested point count. No curve write was sent. ${liveBefore.message}`
+                  : 'The current LIVE VF curve could not be verified as a valid ordered curve with the requested point count. No curve write was sent.');
               } else {
-                // LIVE is the before-image for no-op detection. STOCK is only
-                // the native write shape; on Battlemage the two tables can
-                // legitimately differ after an active tuning change.
-                const liveBefore = await this._readVfCurvePointsWithRetry(dev.handle, 1, 0);
-                const pointsEqual = (left, right) => Array.isArray(left) && Array.isArray(right)
-                  && left.length === right.length
-                  && left.every((point, index) => point.Voltage === right[index]?.Voltage && point.Frequency === right[index]?.Frequency);
-                const pointsChanged = (left, right) => !pointsEqual(left, right);
-                const pointsBuf = koffi.alloc('ctl_voltage_frequency_point_t', points.length);
-                const pointSize = koffi.sizeof('ctl_voltage_frequency_point_t');
-                points.forEach((point, index) => {
-                  koffi.encode(pointsBuf, index * pointSize, 'ctl_voltage_frequency_point_t', point);
-                });
-                let setResult = CTL_RESULT.ERROR_UNKNOWN;
-                for (let attempt = 0; attempt < 2; attempt += 1) {
-                  setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, pointsBuf);
-                  if (setResult === CTL_RESULT.SUCCESS || !RETRYABLE_VF_WRITE_RESULTS.has(setResult) || attempt === 1) break;
-                  // Let the driver's overclock service finish the transient
-                  // initialization before the single bounded replay.
-                  await new Promise((resolve) => setTimeout(resolve, 25));
-                }
-                if (setResult !== CTL_RESULT.SUCCESS) {
-                  fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+                const preparedCurve = prepareVfCurveForDriver(targetCurve, curveRange);
+                if (!preparedCurve) {
+                  fail('vfCurve', 'out-of-range', 'VF curve voltages must match the driver voltage step, and frequencies must be whole MHz values within the supported range');
                 } else {
-                  // IGS follows the driver's LIVE table after a successful
-                  // write. Drivers quantize voltage/frequency to their own
-                  // native grid (the B580, for example, rounded 796/1731 to
-                  // 795/1720), so an exact request comparison would report a
-                  // false failure. Accept an ordered, in-range LIVE table when
-                  // it demonstrably changed from the LIVE before-image; keep
-                  // the silent-no-op refusal for an unchanged table.
-                  const validateVfReadBack = (readBack) => {
-                    if (!readBack.ok) {
-                      return { ok: false, message: `VF curve write succeeded but read-back failed: ${readBack.message}` };
-                    }
-                    if (readBack.points.length !== points.length) {
-                      return { ok: false, message: `VF curve read-back ${readBack.points.length} points != requested ${points.length}` };
-                    }
-                    let previousVoltage = 0;
-                    let previousFrequency = 0;
-                    let validLive = true;
-                    for (let i = 0; i < readBack.points.length; i++) {
-                      const pt = readBack.points[i];
-                      const inRange = pt.Voltage / 1000 >= curveRange.voltageMinV
-                        && pt.Voltage / 1000 <= curveRange.voltageMaxV
-                        && pt.Frequency >= curveRange.freqMinMhz
-                        && pt.Frequency <= curveRange.freqMaxMhz;
-                      if (!Number.isFinite(pt.Voltage) || !Number.isFinite(pt.Frequency)
-                        || !inRange
-                        || (i > 0 && (pt.Voltage <= previousVoltage || pt.Frequency < previousFrequency))) {
-                        validLive = false;
-                        break;
+                  let points = preparedCurve.map((p) => ({ Voltage: Math.round(p.voltageV * 1000), Frequency: Math.round(p.freqMhz) }));
+                    const readCurrentOffset = (control, unitField) => {
+                      if (caps.controls[control] !== true) return { ok: false, value: null };
+                      const getter = lib[this._v2GetterName(control)];
+                      if (this._isUnavailable(getter)) return { ok: false, value: null };
+                      try {
+                        const buffer = koffi.alloc('double', 1);
+                        const getResult = getter(dev.handle, buffer);
+                        if (getResult !== CTL_RESULT.SUCCESS) return { ok: false, value: null };
+                        const unit = units ? units[unitField] : 0;
+                        const value = igclToCanonical(koffi.decode(buffer, 'double'), unit);
+                        return Number.isFinite(value) ? { ok: true, value } : { ok: false, value: null };
+                      } catch {
+                        return { ok: false, value: null };
                       }
-                      previousVoltage = pt.Voltage;
-                      previousFrequency = pt.Frequency;
-                    }
-                    if (!validLive) {
-                      return { ok: false, message: 'VF curve read-back is not a valid ordered LIVE curve within the driver range' };
-                    }
-                    if (readBack.points.every((pt, index) =>
-                      Math.abs(pt.Voltage - points[index].Voltage) <= 1
-                      && Math.abs(pt.Frequency - points[index].Frequency) <= 1)) {
-                      return { ok: true, normalized: false };
-                    }
-                    const closeEnoughToRequestedGrid = readBack.points.every((pt, index) =>
-                      Math.abs(pt.Voltage - points[index].Voltage) <= VF_NORMALIZED_VOLTAGE_TOLERANCE_MV
-                      && Math.abs(pt.Frequency - points[index].Frequency) <= VF_NORMALIZED_FREQUENCY_TOLERANCE_MHZ);
-                    if (liveBefore.ok && closeEnoughToRequestedGrid
-                      && pointsChanged(points, liveBefore.points) && pointsChanged(readBack.points, liveBefore.points)) {
-                      return {
-                        ok: true,
-                        normalized: true,
-                        message: 'The driver normalized the requested VF values; the changed LIVE curve is active.',
-                      };
-                    }
-                    const mismatch = readBack.points.findIndex((pt, index) =>
-                      Math.abs(pt.Voltage - points[index].Voltage) > 1
-                      || Math.abs(pt.Frequency - points[index].Frequency) > 1);
-                    const index = mismatch < 0 ? 0 : mismatch;
-                    return {
-                      ok: false,
-                      message: `VF curve point ${index} read-back ${readBack.points[index].Voltage} mV / ${readBack.points[index].Frequency} MHz != requested ${points[index].Voltage} mV / ${points[index].Frequency} MHz`,
                     };
-                  };
-                  let v;
-                  for (let readAttempt = 0; readAttempt < VF_READBACK_MAX_ATTEMPTS; readAttempt += 1) {
-                    const readBack = await this._readVfCurvePointsWithRetry(dev.handle, 1, 0);
-                    v = validateVfReadBack(readBack);
-                    if (v.ok || readAttempt === VF_READBACK_MAX_ATTEMPTS - 1
-                      || !readBack.ok || !liveBefore.ok
-                      || !pointsEqual(readBack.points, liveBefore.points)) break;
-                    // Some B-series driver builds return SUCCESS before their
-                    // asynchronous LIVE table update is visible. Retry only
-                    // that unchanged-before-image case; a changed mismatch or
-                    // an invalid read remains a real verification failure.
-                    await new Promise((resolve) => setTimeout(resolve, VF_READBACK_SETTLE_MS));
-                  }
-                  result.perControl.vfCurve = {
-                    ok: v.ok,
-                    readBackEqual: v.ok,
-                    normalized: v.normalized === true,
-                    errorCode: v.ok ? undefined : 'io-failed',
-                    message: v.message,
-                    // F3 silent no-op: SUCCESS from the write with a mismatch on re-read.
-                    silentNoop: setResult === CTL_RESULT.SUCCESS && !v.ok,
-                  };
-                  if (!v.ok) result.ok = false;
+                    const currentFrequencyOffset = readCurrentOffset('gpuFreqOffset', 'gpuFreqOffset');
+                    const currentVoltageOffset = readCurrentOffset('gpuVoltOffset', 'gpuVoltOffset');
+                    const hasUnknownOffset = !currentFrequencyOffset.ok || !currentVoltageOffset.ok;
+                    const hasActiveOffset = [currentFrequencyOffset.value, currentVoltageOffset.value]
+                      .some((value) => Number.isFinite(value) && Math.abs(value) > 0.001);
+                    if (hasUnknownOffset) {
+                      fail('vfCurve', 'dependency-failed', 'The active GPU core offsets could not be read, so the VF curve was not written. Verify both core offsets before applying a curve.');
+                    } else if (hasActiveOffset) {
+                      fail('vfCurve', 'dependency-failed', 'Reset the GPU core frequency and voltage offsets to zero before applying a custom VF curve. The driver uses both controls on the same tuning surface.');
+                    } else {
+                      // A native write that reports a transient error can
+                      // still have changed driver state. Never replay a VF
+                      // setter automatically; surface the original result.
+                      if (replayVfWaiver()) {
+                        const sourceNow = await this._readVfCurvePointsWithRetry(dev.handle, sourceType, 0);
+                        const liveNow = await this._readVfCurvePointsWithRetry(dev.handle, 1, 0);
+                        const matchesPreflight = (current, prior) => {
+                          if (current.ok !== true || prior?.ok !== true) return false;
+                          const currentCanonical = current.points.map((point) => ({
+                            voltageV: point.Voltage / 1000,
+                            freqMhz: point.Frequency,
+                          }));
+                          const priorCanonical = prior.points.map((point) => ({
+                            voltageV: point.Voltage / 1000,
+                            freqMhz: point.Frequency,
+                          }));
+                          return isValidNativeVfCurve(currentCanonical, curveRange)
+                            && uniformVfVoltageShiftMv(currentCanonical, priorCanonical) !== null;
+                        };
+                        if (!sourceNow.ok || !liveNow.ok) {
+                          fail('vfCurve', 'readback-unverified', 'The final STOCK/LIVE VF source snapshot could not be read after waiver replay. No curve write was sent.');
+                        } else if (!matchesPreflight(sourceNow, native) || !matchesPreflight(liveNow, liveBefore)) {
+                          fail('vfCurve', 'readback-unstable', 'The STOCK/LIVE VF source changed after preflight. No curve write was sent. Read the current curve and try again.');
+                        } else {
+                          // A reset intent is resolved from this final fresh
+                          // STOCK read, never from the renderer's cached table.
+                          // The stable preflight above still proves the native
+                          // shape, and the bounded common-shift check proves
+                          // this latest table has not been reshaped.
+                          if (resetToDefault) {
+                            points = sourceNow.points.map((point) => ({
+                              Voltage: point.Voltage,
+                              Frequency: point.Frequency,
+                            }));
+                          }
+                          // IGS or another tuning client can change either
+                          // scalar offset while the waiver and source reads
+                          // above are awaiting the driver. Recheck both
+                          // synchronously at the native setter boundary so
+                          // the zero-offset requirement cannot go stale.
+                          const finalFrequencyOffset = readCurrentOffset('gpuFreqOffset', 'gpuFreqOffset');
+                          const finalVoltageOffset = readCurrentOffset('gpuVoltOffset', 'gpuVoltOffset');
+                          const finalOffsetUnknown = !finalFrequencyOffset.ok || !finalVoltageOffset.ok;
+                          const finalOffsetActive = [finalFrequencyOffset.value, finalVoltageOffset.value]
+                            .some((value) => Number.isFinite(value) && Math.abs(value) > 0.001);
+                          if (finalOffsetUnknown) {
+                            fail('vfCurve', 'dependency-failed', 'The GPU core offsets could not be rechecked immediately before the VF write. No curve write was sent. Verify both core offsets are zero and try again.');
+                          } else if (finalOffsetActive) {
+                            fail('vfCurve', 'dependency-failed', 'A GPU core offset changed while preparing the VF curve. No curve write was sent. Reset both core offsets to zero and try again.');
+                          } else {
+                            const pointsBuf = koffi.alloc('ctl_voltage_frequency_point_t', points.length);
+                            const pointSize = koffi.sizeof('ctl_voltage_frequency_point_t');
+                            points.forEach((point, index) => {
+                              koffi.encode(pointsBuf, index * pointSize, 'ctl_voltage_frequency_point_t', point);
+                            });
+                            const setResult = lib.ctlOverclockWriteCustomVFCurve(dev.handle, points.length, pointsBuf);
+                            if (setResult !== CTL_RESULT.SUCCESS) {
+                              fail('vfCurve', igclErrorCode(setResult) ?? 'io-failed', `IGCL ${describeResult(setResult)}`);
+                            } else {
+                              // Submit once, allow the driver to settle, then
+                              // require a stable LIVE quorum. IGCL documents
+                              // that LIVE may be adjusted after a successful
+                              // write, so the validated LIVE result is returned
+                              // to the editor instead of resending the stale draft.
+                              const v = await readVfCurveAfterWrite({
+                                readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+                                requestedPoints: points,
+                                liveBefore,
+                                curveRange,
+                                maxAttempts: VF_READBACK_MAX_ATTEMPTS,
+                                quorum: Math.ceil(VF_READBACK_MAX_ATTEMPTS * 0.7),
+                                pollIntervalMs: VF_READBACK_SETTLE_MS,
+                                uniformVoltageShiftToleranceMv: VF_UNIFORM_VOLTAGE_DRIFT_TOLERANCE_MV,
+                              });
+                              result.perControl.vfCurve = {
+                                ok: v.ok,
+                                readBackEqual: v.exact === true,
+                                normalized: v.normalized === true,
+                                ...(Number.isInteger(v.uniformVoltageShiftMv)
+                                  ? { uniformVoltageShiftMv: v.uniformVoltageShiftMv }
+                                  : {}),
+                                errorCode: v.ok ? undefined : (v.errorCode ?? 'io-failed'),
+                                driverAdjusted: v.driverAdjusted === true,
+                                silentNoop: v.silentNoop === true,
+                                message: v.message,
+                                ...(Array.isArray(v.appliedCurve) ? { readBackCurve: v.appliedCurve } : {}),
+                              };
+                              if (!v.ok) result.ok = false;
+                            }
+                          }
+                        }
+                      }
+                    }
                 }
               }
             }
@@ -6711,6 +7013,10 @@ export class IgclBackend {
   }
 
   async resetToDefaults(deviceId) {
+    return this._withTuningTransactionLock(deviceId, () => this._resetToDefaultsUnlocked(deviceId));
+  }
+
+  async _resetToDefaultsUnlocked(deviceId) {
     await this._device(deviceId);
     const lib = this._libOrThrow();
     const dev = await this._device(deviceId);

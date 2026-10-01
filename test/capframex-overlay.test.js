@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ProfileStore } from '../src/main/store/profile-store.js';
+import { overlayHotkeysCollide, validateOverlayHotkeyLetter } from '../src/main/ipc-core.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
@@ -59,11 +60,71 @@ test('CapFrameX-style renderer is live-switchable and owns its telemetry lanes',
 });
 
 test('CapFrameX-style renderer honors the shared chip-name label toggle', () => {
-  const gpuTitle = overlaySrc.match(/function capGpuTitle\([\s\S]*?\n}\n/);
+  const gpuTitle = overlaySrc.match(/function capGpuTitle\([\s\S]*?\r?\n}\r?\n/);
   assert.ok(gpuTitle, 'CapFrameX GPU title helper should remain isolated');
   assert.match(gpuTitle[0], /if \(chipNamesEnabled\)/);
   assert.match(gpuTitle[0], /chipLabelGpu\(raw\)/);
   assert.match(overlaySrc, /cpuName\.textContent = chipNamesEnabled[\s\S]*cpuChipLabel/);
+});
+
+test('Arc Power overlay text is bold and outlined while values stay inside their columns', () => {
+  assert.match(overlayCss, /#capframex-root,\s*#capframex-root \*:not\(canvas\)\s*\{[^}]*font-weight:\s*700/);
+  assert.match(overlayCss, /-webkit-text-stroke:\s*1px rgba\(0, 0, 0, 0\.95\)/);
+  assert.match(overlayCss, /\.capframex-row > span:not\(\.capframex-label\)[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis/);
+  assert.match(overlayCss, /\.capframex-label \{[^}]*text-overflow:\s*ellipsis/);
+});
+
+test('CapFrameX groups GPU clocks, power readings, and VRAM readings with their matching rows', () => {
+  assert.match(overlaySrc, /gpuLoad\.push\(capValue\(sample\?\.gpuClockMhz/);
+  assert.match(overlaySrc, /gpuClockMhz, 'MHz'/);
+  assert.match(overlaySrc, /powerValues\.push\(capValue\(sample\?\.gpuVoltageV/);
+  assert.match(overlaySrc, /gpuVoltageV, 'V'/);
+  assert.match(overlaySrc, /powerValues\.push\(capValue\(sample\?\.powerW/);
+  assert.match(overlaySrc, /powerW, 'W'/);
+  assert.match(overlaySrc, /vramValues\.push\(capValue\(sample\?\.memClockMhz/);
+  assert.match(overlaySrc, /memClockMhz, 'MHz'/);
+  assert.match(overlaySrc, /vramValues\.push\(capTemperature\(sample\?\.vramTempC \?\? sample\?\.memTempC\)/);
+  assert.match(overlaySrc, /capRow\(section, 'VRAM', vramValues\)/);
+});
+
+test('Arc Power overlay uses the shared temperature unit and compact value suffixes', () => {
+  assert.match(settingsSrc, /overlay-temperature-unit-toggle/);
+  assert.match(overlaySrc, /temperatureUnit = isValidOverlayTemperatureUnit\(s\.temperatureUnit\)/);
+  assert.match(overlayMainSrc, /raw\.temperatureUnit \?\? raw\.overlayTemperatureUnit/);
+  assert.match(overlaySrc, /capTemperature\(sample\?\.tempC\)/);
+  assert.match(overlaySrc, /capValue\(latestFrameTime, 'ms'/);
+  assert.match(overlaySrc, /\$\{total\.toFixed\(1\)\}GB/);
+});
+
+test('Overlay shortcuts use the Recording modal picker and show complete accelerators', () => {
+  assert.match(settingsSrc, /import \{ showRecordingHotkeyDialog \} from '\.\.\/components\/recording-hotkey-dialog\.ts'/);
+  assert.match(settingsSrc, /showRecordingHotkeyDialog\('HUD overlay',[\s\S]*onHotkeyLetterChange\(next\)/);
+  assert.match(settingsSrc, /showRecordingHotkeyDialog\('Advanced overlay',[\s\S]*onAdvancedHotkeyLetterChange\(next\)/);
+  assert.equal((settingsSrc.match(/requireModifier: true/g) ?? []).length, 2);
+  assert.match(settingsSrc, /class: 'recording-hotkey settings-hotkey-input'/);
+  assert.match(settingsSrc, /class: 'recording-hotkey settings-hotkey-input settings-advanced-hotkey-input'/);
+  assert.match(settingsSrc, /text: displayOverlayHotkey\(persisted\.hotkeyLetter\)/);
+  assert.match(settingsSrc, /text: displayOverlayHotkey\(persisted\.advHotkeyLetter\)/);
+  assert.doesNotMatch(settingsSrc, /recordingAcceleratorFromKeyboardEvent/);
+  assert.doesNotMatch(settingsSrc, /overlay-hotkey-fixed|text: 'CTRL \+'/);
+  assert.match(settingsSrc, /profilesSettingsSave\(\{ overlayHotkeyLetter: v \}\)/);
+  assert.match(settingsSrc, /profilesSettingsSave\(\{ advancedOverlayHotkeyLetter: v \}\)/);
+  const dialogSrc = read('src/renderer/components/recording-hotkey-dialog.ts');
+  assert.match(dialogSrc, /recordingAcceleratorFromKeyboardEvent\(event\)/);
+  assert.match(dialogSrc, /Ctrl, Alt, and Shift can be combined/);
+  assert.match(dialogSrc, /options\.requireModifier && !\(event\.ctrlKey \|\| event\.altKey \|\| event\.shiftKey\)/);
+  assert.match(dialogSrc, /Add Ctrl, Alt, or Shift to the key/);
+});
+
+test('overlay shortcut chords canonicalize and legacy hotkeys collide by registered accelerator', () => {
+  assert.equal(validateOverlayHotkeyLetter('x'), 'Control+X');
+  assert.equal(validateOverlayHotkeyLetter('Shift+Control+x'), 'Control+Shift+X');
+  assert.equal(validateOverlayHotkeyLetter('Shift+Alt+Control+x'), 'Control+Alt+Shift+X');
+  assert.equal(overlayHotkeysCollide('P', 'Control+P'), true);
+  assert.equal(overlayHotkeysCollide('Control+Shift+P', 'P'), false);
+  assert.equal(overlayHotkeysCollide('Alt+Shift+P', 'Shift+Alt+p'), true);
+  assert.match(mainSrc, /overlayHotkeysCollide\(overlayAcceleratorOf\(bootLetter, 'P'\), hudBootAccelerator\)/);
+  assert.match(ipcSrc, /overlayHotkeysCollide\(effectiveAdvancedHotkey, effectiveOverlayHotkey\)/);
 });
 
 test('Arc Power Overlay labels averaged CPU frequency as CPU Clock', () => {
@@ -125,6 +186,22 @@ test('overlay provider selection round-trips without changing legacy defaults', 
     assert.equal((await store.loadSettings()).overlayRenderer, 'capframex');
     await store.saveSettings({ ...(await store.loadSettings()), overlayRenderer: 'rtss' });
     assert.equal((await store.loadSettings()).overlayRenderer, 'rtss');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ProfileStore retains two and three modifier overlay shortcuts after reload', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-power-overlay-hotkeys-'));
+  try {
+    const store = new ProfileStore({ dir });
+    await store.saveSettings({
+      overlayHotkeyLetter: 'Control+Shift+X',
+      advancedOverlayHotkeyLetter: 'Control+Alt+Shift+F9',
+    });
+    const loaded = await store.loadSettings();
+    assert.equal(loaded.overlayHotkeyLetter, 'Control+Shift+X');
+    assert.equal(loaded.advancedOverlayHotkeyLetter, 'Control+Alt+Shift+F9');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -21,12 +21,12 @@ export function createRecordingHotkeys({ shortcut, getSettings, onAction, reserv
     const next = { registered: {}, conflicts: {}, error: null };
     // Highlight/marker no longer has a global shortcut. Keep the persisted
     // legacy value readable, but never register or invoke it.
-    const actions = [['start', 'start'], ['stop', 'stop'], ['saveClip', 'saveClip'], ['screenshot', 'screenshot']];
+    const actions = [['toggle', 'toggle'], ['saveClip', 'saveClip'], ['screenshot', 'screenshot']];
     for (const [key, action] of actions) {
       // An explicit empty shortcut is a durable opt-out, not a malformed
       // value that should fall back to the default accelerator.
       if (typeof settings.hotkeys?.[key] === 'string' && settings.hotkeys[key].trim() === '') continue;
-      const accelerator = normalizeRecordingAccelerator(settings.hotkeys?.[key], key === 'start' ? 'F9' : key === 'stop' ? 'F10' : key === 'saveClip' ? 'F8' : 'F7');
+      const accelerator = normalizeRecordingAccelerator(settings.hotkeys?.[key], key === 'toggle' ? 'F9' : key === 'saveClip' ? 'F8' : 'F7');
       if (reservedAccelerators.has(accelerator) || Object.values(next.registered).includes(accelerator)) {
         next.conflicts[key] = accelerator;
         continue;
@@ -46,12 +46,39 @@ export function createRecordingHotkeys({ shortcut, getSettings, onAction, reserv
 }
 
 export function createRecordingActionHandler({ getSettings, recordingEngine, shutdownRecordingRuntimeIfIdle = null, captureScreenshot = null, addMarker = null, saveReplayClip = null, onCaptureStopped = null, fsModule = fs, pathModule = path, now = () => new Date(), log = (message) => console.log(message), onActionResult = async () => {} } = {}) {
+  let togglePending = false;
   return async (action) => {
     let error = null;
     let preActionMode = null;
     let didStop = false;
     let outputPath = null;
+    let ownsToggle = false;
+    let suppressedToggle = false;
     try {
+      if (action === 'toggle') {
+        if (togglePending) {
+          suppressedToggle = true;
+          return;
+        }
+        togglePending = true;
+        ownsToggle = true;
+        const before = recordingEngine.getState?.() ?? null;
+        const activeModes = before?.activeModes;
+        const videoRunning = typeof activeModes?.video === 'boolean'
+          ? activeModes.video
+          : before?.mode === 'video';
+        if (videoRunning) {
+          action = 'stop';
+          preActionMode = before?.mode ?? 'video';
+          didStop = before?.running === true || activeModes?.video === true;
+          await recordingEngine.stop('video');
+          await onCaptureStopped?.('video');
+          return;
+        }
+        // Replay-only capture is independent; the toggle starts video without
+        // stopping the replay buffer.
+        action = 'start';
+      }
       // Stop must remain available even when a persisted capture location is
       // malformed, unavailable, or unwritable. It has no output-directory
       // dependency, so dispatch it before reading settings or touching fs.
@@ -93,6 +120,7 @@ export function createRecordingActionHandler({ getSettings, recordingEngine, shu
       error = err instanceof Error ? err.message : String(err);
       log(`[recording] shortcut ${action} failed: ${error}`);
     } finally {
+      if (suppressedToggle) return;
       // A successful Instant Replay save can still leave Ascent resident after
       // its clip file and metadata are complete. The injected main-process
       // save path also performs this cleanup, while this guard covers tests,
@@ -102,6 +130,7 @@ export function createRecordingActionHandler({ getSettings, recordingEngine, shu
           await (shutdownRecordingRuntimeIfIdle ?? (() => recordingEngine.shutdownIfIdle?.()))();
         } catch { /* idle cleanup is best effort after a failed action */ }
       }
+      if (ownsToggle) togglePending = false;
       try {
         const state = recordingEngine.getState?.() ?? null;
         await onActionResult({ action, ok: error === null, error, preActionMode, ...(action === 'stop' ? { didStop } : {}), ...(outputPath ? { outputPath: pathModule.basename(outputPath) } : {}), state, ...(state?.instantReplaySave ? { instantReplaySave: state.instantReplaySave } : {}) });

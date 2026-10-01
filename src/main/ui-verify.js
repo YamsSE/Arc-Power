@@ -795,9 +795,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // 'Arc Power Ver. 1.0.0'. M17e (round-2 N1): the 1.0.1 bump - the pinned
   // text is EXACTLY 'Arc Power Ver. 1.0.1 Beta' - the 1.0.1-beta.1 bump;
   // the suffix logic keeps the Beta line only for -beta.x versions).
-  // M177: the 1.1.7 release pins the titlebar version surface.
-  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.1.7'`))) {
-    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.1.7')`);
+  // The 1.2.0 release pins the titlebar version surface.
+  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.2.0'`))) {
+    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.2.0')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -1597,8 +1597,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     // b580's percent ranges (the swap response carries device-0's pair).
     const swapFsTo = (id) => js(`(() => {
       const s = document.querySelector('.featureset-select');
-      s.value = '${id}';
-      s.dispatchEvent(new Event('change', { bubbles: true }));
+      s?.click();
+      document.querySelector('.shared-dropdown-menu [role="option"][data-value="${id}"]')?.click();
     })()`);
     await swapFsTo('b580');
     if (!(await waitFor(win, `window.arcPower.listDevices().then((devices) => devices.some((d) => d.synthetic !== true && d.backendKind !== 'os' && (d.name ?? '').includes('B580')))` , 8000))) {
@@ -2614,8 +2614,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     // with the reverted 'Core clock' title.
     const lockSwapTo = (id) => js(`(() => {
       const s = document.querySelector('.featureset-select');
-      s.value = '${id}';
-      s.dispatchEvent(new Event('change', { bubbles: true }));
+      s?.click();
+      document.querySelector('.shared-dropdown-menu [role="option"][data-value="${id}"]')?.click();
     })()`);
     await lockSwapTo('a750');
     if (!(await waitFor(win, `(document.querySelector('.oc-card[data-control="powerLimitW"] .oc-value')?.textContent ?? '').trim() === '190 W'`, 8000))) {
@@ -3274,7 +3274,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (!(await waitFor(win, `!!document.querySelector('.featureset-select')`))) {
     fail('M2D: featureset dropdown missing in mock mode');
   }
-  const fsOptions = await js(`Array.from(document.querySelectorAll('.featureset-select option')).map((o) => o.value)`);
+  const fsOptions = await js(`Array.from(document.querySelector('.featureset-select')?.options ?? []).map((o) => o.dataset.value)`);
   // M17c/M17d: the a750 + the Acer AIB variant joined the distribution
   // (6 options).
   if (fsOptions.length !== 6) fail(`M2D: dropdown lists ${fsOptions.length} featuresets (expected 6)`);
@@ -3288,8 +3288,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const swapTo = (id) => js(`(() => {
     try {
       const s = document.querySelector('.featureset-select');
-      s.value = '${id}';
-      s.dispatchEvent(new Event('change', { bubbles: true }));
+      s?.click();
+      document.querySelector('.shared-dropdown-menu [role="option"][data-value="${id}"]')?.click();
       return 'ok';
     } catch (e) { return 'ERR: ' + (e && e.stack ? e.stack : String(e)); }
   })()`);
@@ -3339,6 +3339,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (vfGridShape.lines !== 11 || vfGridShape.axis !== 3 || vfGridShape.points < 2) {
     fail(`M170: Voltage-Frequency Curve grid shape is wrong: ${vfGrid}`);
   }
+
   await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((b) => (b.textContent ?? '').trim() === 'Offset')?.click()`);
   step('vf-grid', `Battlemage curve editor renders a compact coordinate grid (${vfGridShape.lines} grid lines, ${vfGridShape.axis} frequency ticks, ${vfGridShape.points} draggable points)`);
   step('fs-swap-b580', `swap -> b580: PL readout '217 W', user-facing watt units, gpuLock unsupported, vfCurve supported, VRAM clock editor present`);
@@ -5243,9 +5244,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 // M11: the 1.0 Release - no suffix (the "Alpha" scheme is gone). M17e
 // (round-2 N1): the 1.0.1 bump joins the flips; M21: the 1.0.1-beta.1 bump
 // - the Settings row is the exact 'Arc Power Ver. 1.0.1 Beta' text (the
-// M177: the 1.1.7 stable bump - Settings displays 'Arc Power Ver. 1.1.7'.
-if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.1.7'`))) {
-fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.1.7')`);
+// The 1.2.0 stable bump - Settings displays 'Arc Power Ver. 1.2.0'.
+if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.2.0'`))) {
+fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.2.0')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -5293,7 +5294,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
       fail('M4-D: Start minimized did not persist startMinimized=false');
     }
   }
-step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save; Log to file is intentionally absent here; version row 1.1.7');
+step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save; Log to file is intentionally absent here; version row 1.2.0');
   // Start with Windows round trip + the honest shared-registration state. The
   // Settings checkbox shows ON whenever the registration exists - the profile's
   // start-at-boot (ocOnBoot) can own it (F6: never a false mismatch).
@@ -6171,6 +6172,242 @@ export async function runGraphicsVerify(win, backend) {
 // a live swap round trip through the dropdown, and (b580 only) a
 // percent-unit apply round trip. Runs against MockBackend like the default.
 
+async function runB580VfStockReferenceUiCheck(win) {
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const fail = (message) => { throw new UiVerifyFailure(message); };
+
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid .kv')).some((row) => (row.getAttribute('data-label') ?? '') === 'Compute')`, 10000))) {
+    fail('B580 VF STOCK-reference check could not wait for mock GPU capabilities');
+  }
+  const waiver = await js(`window.arcPower.waiverGet(0)`);
+  if (waiver?.accepted !== true) {
+    const accepted = await js(`window.arcPower.waiverAccept(0)`);
+    if (accepted?.accepted !== true) fail('B580 VF STOCK-reference check could not accept the mock waiver');
+  }
+
+  await js(`location.hash = '#/tuning'`);
+  await sleep(250);
+  await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((button) => button.textContent.trim() === 'Voltage-Frequency Curve')?.click()`);
+  if (!(await waitFor(win, `(() => {
+    const state = window.arcPower.getCurrentSettings(0);
+    return state.then((value) => value.vfCurve === null && Array.isArray(value.vfCurveDefault)
+      && document.querySelectorAll('.vf-curve-dot').length === value.vfCurveDefault.length);
+  })()`, 8000))) {
+    fail('B580 VF STOCK-reference check did not draw STOCK while LIVE was unavailable');
+  }
+  const state = await js(`window.arcPower.getCurrentSettings(0)`);
+  const chart = await js(`(() => {
+    const dots = Array.from(document.querySelectorAll('.vf-curve-dot'));
+    const card = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"]');
+    return {
+      note: card?.querySelector('.vf-curve-editor .card-note')?.textContent ?? '',
+      dotCount: dots.length,
+      referenceDots: dots.every((dot) => dot.getAttribute('role') === 'img'
+        && dot.getAttribute('tabindex') === '-1'
+        && dot.getAttribute('aria-label')?.startsWith('STOCK reference point')),
+      applyHidden: card?.querySelector('.oc-chip-apply')?.hidden ?? null,
+      resetDisabled: card?.querySelector('.oc-card-actions .btn-ghost')?.disabled ?? null,
+    };
+  })()`);
+  if (!Array.isArray(state.vfCurveDefault) || chart.dotCount !== state.vfCurveDefault.length
+    || !chart.referenceDots || chart.applyHidden !== true || chart.resetDisabled !== false
+    || !chart.note.includes("driver's STOCK curve for reference")) {
+    fail(`B580 VF STOCK-reference state was not shown safely: ${JSON.stringify(chart)}`);
+  }
+
+  await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-card-actions .btn-ghost')?.click()`);
+  if (!(await waitFor(win, `(() => {
+    const card = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"]');
+    return !!card && !card.querySelector('.oc-chip-apply')?.hidden
+      && !document.querySelector('.floating-apply')?.hidden;
+  })()`, 5000))) {
+    fail('B580 VF STOCK-reference check could not stage Reset to default');
+  }
+  return 'B580 mock: valid STOCK is shown as a read-only reference when LIVE is unavailable; reset remains stageable';
+}
+
+async function runB580VfDraftNoteUiCheck(win) {
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const fail = (message) => { throw new UiVerifyFailure(message); };
+
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid .kv')).some((row) => (row.getAttribute('data-label') ?? '') === 'Compute')`, 10000))) {
+    fail('B580 VF draft-note check could not wait for mock GPU capabilities');
+  }
+  const waiver = await js(`window.arcPower.waiverGet(0)`);
+  if (waiver?.accepted !== true) {
+    const accepted = await js(`window.arcPower.waiverAccept(0)`);
+    if (accepted?.accepted !== true) fail('B580 VF draft-note check could not accept the mock waiver');
+  }
+
+  await js(`location.hash = '#/tuning'`);
+  await sleep(250);
+  await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((button) => button.textContent.trim() === 'Voltage-Frequency Curve')?.click()`);
+  if (!(await waitFor(win, `document.querySelectorAll('.vf-curve-dot').length >= 2`, 8000))) {
+    fail('B580 VF draft-note check could not open a valid LIVE curve');
+  }
+  const edit = await js(`(() => {
+    const dot = document.querySelector('.vf-curve-dot[data-idx="0"]');
+    if (!dot) return false;
+    dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: 1, clientY: 1 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 1, clientY: 1 }));
+    const input = document.querySelector('.vf-curve-readout-input[data-readout-field="frequency"]');
+    if (!input || input.readOnly) return false;
+    input.value = String(Number(input.value) + 1);
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    const card = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"]');
+    const note = card?.querySelector('.vf-curve-editor .card-note')?.textContent ?? '';
+    return {
+      note,
+      applyVisible: card?.querySelector('.oc-chip-apply')?.hidden === false,
+      editedFrequency: Number(document.querySelector('.vf-curve-readout-input[data-readout-field="frequency"]')?.value),
+    };
+  })()`);
+  if (!edit || !edit.note.includes('unapplied VF curve draft')
+    || edit.note.includes('LIVE VF read-back is unavailable') || !edit.applyVisible) {
+    fail(`B580 VF draft-note state was not explained accurately: ${JSON.stringify(edit)}`);
+  }
+  await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply')?.click()`);
+  if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((state) => state.vfCurve?.[0]?.freqMhz === ${edit.editedFrequency})`, 8000))) {
+    fail('B580 VF draft-note check could not apply the edited curve through the mock UI');
+  }
+  const appliedNote = await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .vf-curve-editor .card-note')?.textContent ?? ''`);
+  if (!appliedNote.includes('Hover a point for values') || appliedNote.includes('unapplied VF curve draft')) {
+    fail(`B580 VF applied curve retained a stale draft note: ${appliedNote}`);
+  }
+  return 'B580 mock: editing a readable LIVE curve shows an unapplied-draft note without claiming LIVE is unavailable';
+}
+
+async function runB580VfResetUiCheck(win, backend = null) {
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const fail = (message) => { throw new UiVerifyFailure(message); };
+  const gotoView = async (label) => {
+    await js(`(() => {
+      const button = Array.from(document.querySelectorAll('.tuning-view-btn')).find((item) => item.textContent.trim() === '${label}');
+      if (button && !button.classList.contains('active')) button.click();
+    })()`);
+    await sleep(250);
+  };
+
+  await js(`location.hash = '#/dashboard'`);
+  if (!(await waitFor(win, `Array.from(document.querySelectorAll('.card-grid .kv')).some((row) => (row.getAttribute('data-label') ?? '') === 'Compute')`, 10000))) {
+    fail('B580 VF reset check could not wait for mock GPU capabilities');
+  }
+
+  if (await js(`!!document.querySelector('.modal')`)) {
+    await js(`document.querySelector('.modal button.btn-danger')?.click()`);
+    if (!(await waitFor(win, `!document.querySelector('.modal')`, 5000))) fail('B580 VF reset check could not accept the mock waiver');
+  }
+  const waiver = await js(`window.arcPower.waiverGet(0)`);
+  if (waiver?.accepted !== true) {
+    const accepted = await js(`window.arcPower.waiverAccept(0)`);
+    if (accepted?.accepted !== true) fail('B580 VF reset check could not accept the mock waiver');
+  }
+
+  await js(`location.hash = '#/tuning'`);
+  await sleep(250);
+  await gotoView('Tuning');
+  const stock = await js(`window.arcPower.getCurrentSettings(0).then((state) => state.vfCurveDefault)`);
+  if (!Array.isArray(stock) || stock.length < 2) fail('B580 VF reset check has no STOCK curve');
+
+  const changedCurve = stock.map((point) => ({ ...point }));
+  changedCurve[changedCurve.length - 1].freqMhz += 10;
+  const changed = await js(`window.arcPower.applySettings(0, ${JSON.stringify({ vfCurve: changedCurve })})`);
+  if (changed?.result?.perControl?.vfCurve?.ok !== true) {
+    fail(`B580 VF reset check could not stage a changed LIVE curve: ${JSON.stringify(changed?.result ?? changed)}`);
+  }
+
+  // Establish active offsets through the UI before staging the reset. This
+  // reproduces the state where the real backend correctly refuses a VF
+  // write until both offsets are cleared, while keeping the mock curve
+  // unchanged for the UI flow assertions below.
+  const setOffsetAndApply = async (control, value, field) => {
+    await js(`(() => {
+      const input = document.querySelector('.oc-card[data-control="${control}"] input[type="range"]');
+      if (!input) return false;
+      input.value = '${value}';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    const applySelector = `.oc-card[data-control="${control}"] .oc-chip-apply`;
+    if (!(await waitFor(win, `(() => { const button = document.querySelector('${applySelector}'); return !!button && !button.hidden; })()`, 5000))) {
+      fail(`B580 VF reset check could not draft ${control}=${value}`);
+    }
+    await js(`document.querySelector('${applySelector}')?.click()`);
+    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((state) => state.${field} === ${value})`, 8000))) {
+      fail(`B580 VF reset check could not apply ${control}=${value}`);
+    }
+  };
+  await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((button) => button.textContent.trim() === 'Offset')?.click()`);
+  await setOffsetAndApply('gpuFreqOffsetMhz', 50, 'gpuFreqOffsetMhz');
+  await setOffsetAndApply('gpuVoltOffsetV', 10, 'gpuVoltOffsetV');
+  const customWithOffsets = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (JSON.stringify(customWithOffsets.vfCurve) !== JSON.stringify(changedCurve)) {
+    fail(`B580 VF reset check changed the custom curve while setting offsets: ${JSON.stringify(customWithOffsets.vfCurve)}`);
+  }
+
+  await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((button) => button.textContent.trim() === 'Voltage-Frequency Curve')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.vf-curve-stage')`))) fail('B580 VF reset check could not open the curve editor');
+  const hasReset = await js(`!!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-card-actions .btn-ghost')`);
+  if (!hasReset) fail('B580 VF reset check found no curve reset action');
+  await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-card-actions .btn-ghost')?.click()`);
+  if (!(await waitFor(win, `!!document.querySelector('.floating-apply') && !document.querySelector('.floating-apply').hidden`))) {
+    fail('B580 VF reset action did not stage an apply');
+  }
+  const stagedState = await js(`JSON.stringify({ card: document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply')?.hidden ?? null, floating: document.querySelector('.floating-apply')?.hidden ?? null, pending: document.querySelector('.tuning-pending-summary')?.textContent ?? null })`);
+
+  await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find((button) => button.textContent.trim() === 'Offset')?.click()`);
+  const canApply = await js(`(() => {
+    const card = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply');
+    const floating = document.querySelector('.floating-apply');
+    return JSON.stringify({ cardExists: !!card, cardHidden: card?.hidden ?? null, floatingExists: !!floating, floatingHidden: floating?.hidden ?? null, mode: Array.from(document.querySelectorAll('.oc-vf-mode-btn')).map((button) => [button.textContent.trim(), button.classList.contains('active')]), pending: document.querySelector('.tuning-pending-summary')?.textContent ?? null });
+  })()`);
+  const applyState = JSON.parse(canApply);
+  if (!applyState.cardExists || applyState.cardHidden || !applyState.floatingExists || applyState.floatingHidden) {
+    fail(`switching to Offset mode discarded the staged B580 STOCK reset: staged=${stagedState}, after=${canApply}`);
+  }
+
+  if (!backend || typeof backend.injectFail !== 'function') {
+    fail('B580 VF reset check needs the mock backend failure-injection hook');
+  }
+  backend.injectFail('vfCurve', 'io-failed', true);
+  await js(`document.querySelectorAll('.toast').forEach((toast) => toast.remove())`);
+  await js(`document.querySelector('.floating-apply')?.click()`);
+  if (!(await waitFor(win, `(() => { const result = document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .tuning-card-result'); return !!result && !result.hidden && result.textContent.trim() === 'Not applied'; })()`, 8000))) {
+    fail('B580 VF reset check did not retain the staged STOCK reset after an injected VF apply failure');
+  }
+  const failedApplyState = await js(`window.arcPower.getCurrentSettings(0)`);
+  if (JSON.stringify(failedApplyState.vfCurve) !== JSON.stringify(changedCurve)) {
+    fail('B580 VF reset check changed LIVE after the injected apply failure');
+  }
+
+  const resetAndApplyOffset = async (control, field) => {
+    await js(`document.querySelector('.oc-card[data-control="${control}"] .oc-card-actions .btn-ghost')?.click()`);
+    const applySelector = `.oc-card[data-control="${control}"] .oc-chip-apply`;
+    if (!(await waitFor(win, `(() => { const button = document.querySelector('${applySelector}'); return !!button && !button.hidden; })()`, 5000))) {
+      fail(`B580 VF reset check could not expose the ${control} offset Apply action`);
+    }
+    await js(`document.querySelector('${applySelector}')?.click()`);
+    if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((state) => state.${field} === 0)`, 8000))) {
+      fail(`B580 VF reset check could not clear ${control}`);
+    }
+    const afterOffsetReset = await js(`window.arcPower.getCurrentSettings(0)`);
+    if (JSON.stringify(afterOffsetReset.vfCurve) !== JSON.stringify(changedCurve)) {
+      fail(`clearing ${control} discarded the staged VF reset or changed LIVE`);
+    }
+  };
+  await resetAndApplyOffset('gpuFreqOffsetMhz', 'gpuFreqOffsetMhz');
+  await resetAndApplyOffset('gpuVoltOffsetV', 'gpuVoltOffsetV');
+
+  await js(`document.querySelectorAll('.toast').forEach((toast) => toast.remove())`);
+  await js(`document.querySelector('.floating-apply')?.click()`);
+  if (!(await waitFor(win, `window.arcPower.getCurrentSettings(0).then((state) => JSON.stringify(state.vfCurve) === JSON.stringify(state.vfCurveDefault))`, 8000))) {
+    fail('applying the staged B580 VF reset did not restore the exact STOCK table');
+  }
+  return 'B580 mock: failed curve apply retained the STOCK reset; Offset-mode card actions cleared both offsets, and Floating Apply restored the exact STOCK table';
+}
+
 /**
  * @param {import('electron').BrowserWindow} win
  * @param {string} fsId the RID_MOCK_FEATURESET value driving this run
@@ -6223,14 +6460,44 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   if (await js(`document.body.textContent.includes('Service Status')`)) fail('M3-A: "Service Status" still rendered');
   if (await js(`document.body.textContent.includes('IGS')`)) fail('M3-A: IGS still surfaced as a status item');
   if (!(await waitFor(win, `!!document.querySelector('.badge-mock')`))) fail('mock badge missing');
-  if (!(await waitFor(win, `!!document.querySelector('.featureset-select')`))) fail('featureset dropdown missing in mock mode');
-  const options = await js(`Array.from(document.querySelectorAll('.featureset-select option')).map((o) => o.value)`);
+  if (!(await waitFor(win, `!!document.querySelector('.featureset-select') && document.querySelector('.featureset-select').options.length === 6`, 10000))) {
+    const count = await js(`document.querySelector('.featureset-select')?.options.length ?? 0`);
+    fail(`featureset dropdown missing or still loading in mock mode; rendered ${count} custom options`);
+  }
+  const options = await js(`Array.from(document.querySelector('.featureset-select').options).map((o) => o.dataset.value)`);
   // M17c/M17d: the a750 + the Acer AIB variant joined the distribution
   // (6 files).
   if (options.length !== 6) fail(`dropdown lists ${options.length} featuresets (expected 6)`);
   const selected = await js(`document.querySelector('.featureset-select').value`);
   if (selected !== fsId) fail(`current selection is '${selected}' (expected '${fsId}')`);
   step('boot', `shell + dropdown rendered: ${options.join(', ')} (current '${selected}')`);
+
+  if (process.env.RID_MOCK_VF_STOCK_REFERENCE_VERIFY === '1') {
+    if (fsId !== 'b580') fail('RID_MOCK_VF_STOCK_REFERENCE_VERIFY requires RID_MOCK_FEATURESET=b580');
+    step('vf-stock-reference-ui', await runB580VfStockReferenceUiCheck(win));
+    await runCloseToTrayProbe(win);
+    console.log(`\nUI VERIFY OK (featureset: ${fsId})\n` + steps.map((s) => '  ' + s).join('\n'));
+    app.exit(0);
+    return;
+  }
+
+  if (process.env.RID_MOCK_VF_DRAFT_NOTE_VERIFY === '1') {
+    if (fsId !== 'b580') fail('RID_MOCK_VF_DRAFT_NOTE_VERIFY requires RID_MOCK_FEATURESET=b580');
+    step('vf-draft-note-ui', await runB580VfDraftNoteUiCheck(win));
+    await runCloseToTrayProbe(win);
+    console.log(`\nUI VERIFY OK (featureset: ${fsId})\n` + steps.map((s) => '  ' + s).join('\n'));
+    app.exit(0);
+    return;
+  }
+
+  if (process.env.RID_MOCK_VF_RESET_VERIFY === '1') {
+    if (fsId !== 'b580') fail('RID_MOCK_VF_RESET_VERIFY requires RID_MOCK_FEATURESET=b580');
+    step('vf-reset-ui', await runB580VfResetUiCheck(win, backend));
+    await runCloseToTrayProbe(win);
+    console.log(`\nUI VERIFY OK (featureset: ${fsId})\n` + steps.map((s) => '  ' + s).join('\n'));
+    app.exit(0);
+    return;
+  }
 
   // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
   // EVERY session; Cancel it BEFORE the per-featureset assertions (F4: the
@@ -6432,6 +6699,8 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
       if (!vramMeta.includes('MHz')) fail(`M4J (D): the VRAM card meta line does not show MHz units: '${vramMeta}'`);
       if (await js(`!!document.querySelector('.oc-mode-col-mode')`)) fail('M4J (D): the Battlemage Stock/Advanced toggle is visible');
       step('oc-b580', `b580: 5 cards, PL '${plRange}', readout '${plValue}', freq ${b580FreqMin}..${b580FreqMax} MHz, volt '${b580VoltRange}', no Stock/Advanced toggle, no preset chips (M3-C-G), VRAM card 2375..3000 MHz step 1`);
+
+      step('vf-reset-ui', await runB580VfResetUiCheck(win, backend));
     } else if (fsId === 'a750' || fsId === 'acer-a750') {
       // M17c/M17d (round-1 N2 + round-1 S1): the a750 slider maxes are
       // AUTOMATED here (the user-hardware-only pin becomes a mock variant;
@@ -6713,8 +6982,8 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   // --- live swap round trip through the dropdown ----------------------------
   const swapTo = (id) => js(`(() => {
     const s = document.querySelector('.featureset-select');
-    s.value = '${id}';
-    s.dispatchEvent(new Event('change', { bubbles: true }));
+    s?.click();
+    document.querySelector('.shared-dropdown-menu [role="option"][data-value="${id}"]')?.click();
   })()`);
   await gotoOverclocking();
   await swapTo('a770');
@@ -8596,14 +8865,10 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     ];
     const maxLen = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--overlay-label-w'));
     const offset = maxLen + 2; // the ONE rule: every value starts at maxLabelLen + 2 ch
-    const withText = els.filter((el) => el !== null && el.firstChild !== null && el.firstChild.nodeType === 3);
-    const starts = withText.map((el) => {
-      const node = el.firstChild;
-      const range = document.createRange();
-      range.setStart(node, Math.min(offset, node.textContent.length));
-      range.setEnd(node, node.textContent.length);
-      return range.getBoundingClientRect().left;
-    });
+    const withText = els
+      .map((el) => el?.querySelector('.overlay-row-values'))
+      .filter((el) => el && (el.textContent ?? '').trim());
+    const starts = withText.map((el) => el.getBoundingClientRect().left);
     const d = divider.getBoundingClientRect();
     return {
       ok: withText.length >= 5
@@ -9387,16 +9652,14 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   await js(`(() => {
     const i = document.querySelector('.settings-hotkey-input');
     if (!i) return;
-    // M23: 'X' - NOT 'P' (the advanced overlay's STOCK letter; the M23
-    // collision envelope correctly rejects a HUD save of 'P').
-    i.value = 'X';
-    i.dispatchEvent(new Event('change'));
+    // Use two modifiers and a key, matching the Recording shortcut grammar.
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', code: 'KeyX', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
   })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayHotkeyLetter === 'X')`, 5000))) {
-    fail('M5: the Overlay Settings page letter save did not persist overlayHotkeyLetter=X');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayHotkeyLetter === 'Control+Shift+X')`, 5000))) {
+    fail('M5: the Overlay Settings page chord save did not persist overlayHotkeyLetter=Control+Shift+X');
   }
-  if (!hotkeyProbe.registrations.includes('Control+X')) {
-    fail(`M5: the letter save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
+  if (!hotkeyProbe.registrations.includes('Control+Shift+X')) {
+    fail(`M5: the chord save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
   }
   const s4 = await js(`window.arcPower.overlayGetState()`);
   if (s4.hotkeyRegistered !== false) fail('M5: hotkeyRegistered must read false after the faked register failure');
@@ -9404,17 +9667,17 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
     fail('M5: the Overlay Settings page does not show the honest hotkey-register-failure note after the faked failure + letter save');
   }
   const inputValue = await js(`document.querySelector('.settings-hotkey-input')?.value ?? ''`);
-  if (inputValue !== 'X') fail(`M5: the Overlay Settings hotkey input reads '${inputValue}' (expected 'X' after the save)`);
-  step('m5-hotkey-failure-note', `mid-run faked register failure + letter save 'X' -> probe re-registered 'Control+X', hotkeyRegistered false, the honest note appears (input '${inputValue}')`);
+  if (inputValue !== 'Control+Shift+X') fail(`M5: the Overlay Settings hotkey input reads '${inputValue}' (expected 'Control+Shift+X' after the save)`);
+  step('m5-hotkey-failure-note', `mid-run faked register failure + chord save 'Control+Shift+X' -> probe re-registered the same chord, hotkeyRegistered false, the honest note appears (input '${inputValue}')`);
 
   // Restore the deterministic session end (like the theme-dark-final step):
-  // letter O + a successful registration -> the note disappears, and the
+  // Control+O + a successful registration -> the note disappears, and the
   // geometry back to the defaults (a crashed run must never bleed into the
   // next overlay variant; the M6 color/stats pins already restored the
   // stock white + the full stat set above, and the RTSS-only appearance
   // remains Classic here).
   hotkeyProbe.failRegister = false;
-  await js(`window.arcPower.profilesSettingsSave({ overlayHotkeyLetter: 'O', overlayPosition: 'top-left', overlayScale: 1 })`);
+  await js(`window.arcPower.profilesSettingsSave({ overlayHotkeyLetter: 'Control+O', overlayPosition: 'top-left', overlayScale: 1 })`);
   await sleep(500);
   const s5 = await js(`window.arcPower.overlayGetState()`);
   if (s5.hotkeyRegistered !== true) fail('M5: hotkeyRegistered did not recover after the failure fake was cleared');
@@ -9434,7 +9697,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`)) {
     fail('M5: the hotkey-failure note is still visible after the successful re-registration (the page must re-query get-state on every render)');
   }
-  step('m5-hotkey-restore', `restore: letter O + failRegister cleared -> 'Control+O' re-registered, hotkeyRegistered true, note gone; geometry back to top-left / scale 1`);
+  step('m5-hotkey-restore', `restore: Control+O + failRegister cleared -> shortcut re-registered, hotkeyRegistered true, note gone; geometry back to top-left / scale 1`);
 
   // M24: verify the current hook-free Arc Power Overlay provider and its
   // single frametime surface, then restore RTSS.
@@ -10274,8 +10537,8 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   }
   step('m23-readout', `M23: the live readout strip renders honest telemetry values - temp '${await ojs(`document.getElementById('adv-readout-temp')?.textContent ?? ''`)}', fan '${await ojs(`document.getElementById('adv-readout-fan')?.textContent ?? ''`)}', power '${await ojs(`document.getElementById('adv-readout-power')?.textContent ?? ''`)}', VRAM '${await ojs(`document.getElementById('adv-readout-memory')?.textContent ?? ''`)}' (the third consumer of the sample stream)`);
 
-  // (7) the hotkey collision: saving the advanced letter equal to the HUD
-  // letter is refused with a toast (the renderer refuses - the ENVELOPE
+  // (7) the hotkey collision: saving an advanced chord equal to the HUD
+  // chord is refused with a toast (the renderer refuses - the ENVELOPE
   // rejection is unit-tested elsewhere; pin the toast UX here). Both cards
   // enforce symmetrically. The HUD letter is seeded 'O' (main.js resets it
   // under the knob) and the advanced letter 'P'.
@@ -10287,14 +10550,13 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (!(await waitFor(win, `!!document.querySelector('.settings-advanced-hotkey-input')`, 8000))) {
     fail('M23: the Overlay view did not render the advanced hotkey input');
   }
-  // (7a) the ADVANCED card side: save the advanced letter = the HUD letter
-  // ('O') -> the envelope rejects (collision) -> the honest toast + the
+  // (7a) the ADVANCED card side: save Control+O = the legacy HUD O chord
+  // -> the envelope rejects (collision) -> the honest toast + the
   // input reverts + the store is untouched.
   await clearToasts();
   await js(`(() => {
     const i = document.querySelector('.settings-advanced-hotkey-input');
-    i.value = 'O';
-    i.dispatchEvent(new Event('change'));
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', code: 'KeyO', ctrlKey: true, bubbles: true, cancelable: true }));
   })()`);
   if (!(await waitFor(win, `!!document.querySelector('.toast-error') && (document.body.textContent ?? '').includes('Advanced overlay hotkey could not be changed')`, 8000))) {
     fail(`M23: the colliding advanced-letter save did not surface the honest toast (toasts='${await js(`Array.from(document.querySelectorAll('.toast')).map((t) => (t.textContent ?? '').slice(0, 60)).join(' | ')`)}')`);
@@ -10303,13 +10565,13 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
     fail('M23: the colliding advanced-letter save must NOT persist (advancedOverlayHotkeyLetter must stay P - the envelope rejected it)');
   }
   const advInputValue = await js(`document.querySelector('.settings-advanced-hotkey-input')?.value ?? ''`);
-  if (advInputValue !== 'P') fail(`M23: the advanced hotkey input reads '${advInputValue}' (expected 'P' - the renderer reverts the rejected save)`);
-  // (7b) the HUD card side, symmetrically: save the HUD letter = the
-  // advanced letter ('P') -> the same envelope rejection -> the HUD toast.
+  if (advInputValue !== 'Control+P') fail(`M23: the advanced hotkey input reads '${advInputValue}' (expected 'Control+P' - the renderer reverts the rejected save)`);
+  // (7b) the HUD card side, symmetrically: save Control+P = the advanced
+  // legacy P chord -> the same envelope rejection -> the HUD toast.
   await clearToasts();
   await js(`(() => {
     const i = document.querySelector('.settings-hotkey-input:not(.settings-advanced-hotkey-input)');
-    if (i) { i.value = 'P'; i.dispatchEvent(new Event('change')); }
+    if (i) i.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', code: 'KeyP', ctrlKey: true, bubbles: true, cancelable: true }));
   })()`);
   if (!(await waitFor(win, `!!document.querySelector('.toast-error') && (document.body.textContent ?? '').includes('Overlay hotkey could not be changed')`, 8000))) {
     fail(`M23: the colliding HUD-letter save did not surface the honest toast (toasts='${await js(`Array.from(document.querySelectorAll('.toast')).map((t) => (t.textContent ?? '').slice(0, 60)).join(' | ')`)}')`);
@@ -10317,7 +10579,7 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayHotkeyLetter === 'O')`, 5000))) {
     fail('M23: the colliding HUD-letter save must NOT persist (overlayHotkeyLetter must stay O - the symmetric envelope rejection)');
   }
-  step('m23-collision', `M23: the hotkey COLLISION - saving the advanced letter 'O' (= the HUD letter) is refused with the honest toast + the input reverts ('${advInputValue}') + the store stays 'P'; the HUD card enforces symmetrically (HUD 'P' -> the HUD toast + the store stays 'O')`);
+  step('m23-collision', `M23: Control+O and Control+P legacy chord collisions are refused symmetrically; the toast appears, the input reverts ('${advInputValue}'), and neither persisted shortcut changes`);
 
   // (8) the Settings card (Overlay view): the advanced hotkey card renders +
   // a letter save re-registers through the probe + the honest
@@ -10325,38 +10587,36 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (!(await js(`!!document.querySelector('.overlay-hotkey-card .overlay-advanced-hotkey-row .settings-advanced-hotkey-input')`))) {
     fail('M23: the Overlay view has no merged Advanced controls in the Hotkey card');
   }
-  // (8a) a letter save re-registers through the counting probe.
+  // (8a) a two-modifier chord save re-registers through the counting probe.
   await clearToasts();
   await js(`(() => {
     const i = document.querySelector('.settings-advanced-hotkey-input');
-    i.value = 'K';
-    i.dispatchEvent(new Event('change'));
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
   })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'K')`, 5000))) {
-    fail('M23: the advanced letter save did not persist advancedOverlayHotkeyLetter=K');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'Control+Shift+K')`, 5000))) {
+    fail('M23: the advanced chord save did not persist advancedOverlayHotkeyLetter=Control+Shift+K');
   }
-  if (!hotkeyProbe.registrations.includes('Control+K')) {
-    fail(`M23: the advanced letter save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
+  if (!hotkeyProbe.registrations.includes('Control+Shift+K')) {
+    fail(`M23: the advanced chord save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
   }
   if (!(await waitFor(win, `window.arcPower.advancedOverlayGetState().then((s) => s.hotkeyRegistered === true)`, 5000))) {
     fail('M23: hotkeyRegistered must stay true after the successful letter save');
   }
   // (8b) the honest register-failure note: the probe fakes a failure (the
-  // mid-run settable fake) -> a letter save re-registers through the probe
+  // mid-run settable fake) -> an Alt+Shift chord save re-registers through the probe
   // (registrations still accumulate) but the LIVE flag reads false -> the
   // Advanced card's every-render re-query shows the honest note.
   hotkeyProbe.failRegister = true;
   await clearToasts();
   await js(`(() => {
     const i = document.querySelector('.settings-advanced-hotkey-input');
-    i.value = 'L';
-    i.dispatchEvent(new Event('change'));
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', code: 'KeyL', altKey: true, shiftKey: true, bubbles: true, cancelable: true }));
   })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'L')`, 5000))) {
-    fail('M23: the advanced letter save did not persist advancedOverlayHotkeyLetter=L');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'Alt+Shift+L')`, 5000))) {
+    fail('M23: the advanced chord save did not persist advancedOverlayHotkeyLetter=Alt+Shift+L');
   }
-  if (!hotkeyProbe.registrations.includes('Control+L')) {
-    fail(`M23: the letter save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
+  if (!hotkeyProbe.registrations.includes('Alt+Shift+L')) {
+    fail(`M23: the chord save did not re-register through the probe (got ${JSON.stringify(hotkeyProbe.registrations)})`);
   }
   if (!(await waitFor(win, `window.arcPower.advancedOverlayGetState().then((s) => s.hotkeyRegistered === false)`, 5000))) {
     fail('M23: hotkeyRegistered must read false after the faked register failure');
@@ -10364,17 +10624,16 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (!(await waitFor(win, `(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`, 5000))) {
     fail('M23: the Advanced card does not show the honest hotkey-register-failure note after the faked failure + letter save');
   }
-  // (8c) restore the deterministic session end: clear the fake + save 'P' ->
-  // re-registered 'Control+P' + hotkeyRegistered true + the note disappears
+  // (8c) restore the deterministic session end: clear the fake + save Control+P ->
+  // the shortcut re-registers + hotkeyRegistered true + the note disappears
   // (the every-render get-state re-query).
   hotkeyProbe.failRegister = false;
   await js(`(() => {
     const i = document.querySelector('.settings-advanced-hotkey-input');
-    i.value = 'P';
-    i.dispatchEvent(new Event('change'));
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', code: 'KeyP', ctrlKey: true, bubbles: true, cancelable: true }));
   })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'P')`, 5000))) {
-    fail('M23: the restore letter save did not persist advancedOverlayHotkeyLetter=P');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.advancedOverlayHotkeyLetter === 'Control+P')`, 5000))) {
+    fail('M23: the restore chord save did not persist advancedOverlayHotkeyLetter=Control+P');
   }
   if (!hotkeyProbe.registrations.includes('Control+P')) {
     fail(`M23: the restore letter save did not re-register 'Control+P' (got ${JSON.stringify(hotkeyProbe.registrations)})`);
@@ -10395,7 +10654,7 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   if (await js(`(document.getElementById('page')?.textContent ?? '').includes('could not be registered')`)) {
     fail('M23: the hotkey-failure note is still visible after the successful re-registration (the page must re-query get-state on every render)');
   }
-  step('m23-settings-card', `M23: the Overlay-view Advanced card - letter save 'K' persisted + re-registered 'Control+K' (probe ${JSON.stringify(hotkeyProbe.registrations)}) + hotkeyRegistered true; the faked failure + save 'L' -> re-registered 'Control+L' + hotkeyRegistered false + the honest note appears; cleared + save 'P' -> re-registered 'Control+P' + hotkeyRegistered true + the note gone`);
+  step('m23-settings-card', `M23: the Overlay-view Advanced card saves Control+Shift+K and Alt+Shift+L, re-registers those exact chords, reports registration failures honestly, and restores Control+P`);
 
   // M23 (the shared close-to-tray ending): the main window's closed handler
   // destroys the panel + unregisters its hotkey (the lifecycle rule) - the

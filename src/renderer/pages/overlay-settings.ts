@@ -15,8 +15,7 @@
 //     + the SIZE slider (the existing overlayScale) + M9 the POSITION
 //     select (the standalone Position card is REMOVED - the corner lives
 //     in the Appearance card);
-//   - Hotkey - the letter input (CTRL + fixed - the letter is the only
-//     changeable part) + the register-failure note + the get-state re-query
+//   - Hotkey - the accelerator picker + the register-failure note + the get-state re-query
 //     on every render (the Settings-card pattern - the honest note never
 //     goes stale);
 //   - the honest notes at the bottom (topmost/MPO + the FPS/frametime data
@@ -34,6 +33,7 @@ import type { PageContext } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
+import { showRecordingHotkeyDialog } from '../components/recording-hotkey-dialog.ts';
 import {
   OVERLAY_POSITIONS,
   OVERLAY_POSITION_LABELS,
@@ -51,6 +51,8 @@ import {
   clampOverlayPollMs,
   clampOverlayBgOpacity,
   OVERLAY_BG_COLOR_DEFAULT,
+  isValidOverlayTemperatureUnit,
+  createOverlayTemperatureUnitChangeHandler,
   // M23: the ADVANCED overlay's anchored-edge mirror (pure/overlay.ts - the
   // HUD's lockstep family; the persisted-truth owner is profile-store.js).
   ADVANCED_OVERLAY_POSITIONS,
@@ -113,6 +115,9 @@ interface PersistedOverlay {
   position: OverlayPosition;
   scale: number;
   color: string;
+  labelColor: string;
+  valueColor: string;
+  temperatureUnit: 'C' | 'F';
   backgroundEnabled: boolean;
   backgroundColor: string;
   backgroundOpacity: number;
@@ -143,6 +148,10 @@ interface OverlayStatGroup {
   label: string;
   note: string;
   stats: readonly string[];
+}
+
+function displayOverlayHotkey(value: string): string {
+  return /^[A-Za-z]$/.test(value) ? `Control+${value.toUpperCase()}` : value;
 }
 
 // Keep the persisted stat ids and their order untouched. The groups are a
@@ -200,12 +209,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       enabled: s.overlayEnabled === true,
       renderer: isValidOverlayRenderer(s.overlayRenderer) ? s.overlayRenderer : 'rtss',
       hotkeyLetter: typeof s.overlayHotkeyLetter === 'string'
-        && /^[A-Za-z]$/.test(s.overlayHotkeyLetter)
+        && s.overlayHotkeyLetter.length <= 40
         ? s.overlayHotkeyLetter
         : 'O',
       position: isValidOverlayPosition(s.overlayPosition) ? s.overlayPosition : 'top-left',
       scale: clampOverlayScale(s.overlayScale),
       color: isValidOverlayColor(s.overlayColor) ? s.overlayColor : '#ffffff',
+      labelColor: isValidOverlayColor(s.overlayLabelColor) ? s.overlayLabelColor : (isValidOverlayColor(s.overlayColor) ? s.overlayColor : '#ffffff'),
+      valueColor: isValidOverlayColor(s.overlayValueColor) ? s.overlayValueColor : (isValidOverlayColor(s.overlayColor) ? s.overlayColor : '#ffffff'),
+      temperatureUnit: isValidOverlayTemperatureUnit(s.overlayTemperatureUnit) ? s.overlayTemperatureUnit : 'C',
       backgroundEnabled: s.overlayBgEnabled === true,
       backgroundColor: isValidOverlayColor(s.overlayBgColor) ? s.overlayBgColor : OVERLAY_BG_COLOR_DEFAULT,
       backgroundOpacity: clampOverlayBgOpacity(s.overlayBgOpacity),
@@ -228,7 +240,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // panel is a fixed compact size).
       advEnabled: s.advancedOverlayEnabled === true,
       advHotkeyLetter: typeof s.advancedOverlayHotkeyLetter === 'string'
-        && /^[A-Za-z]$/.test(s.advancedOverlayHotkeyLetter)
+        && s.advancedOverlayHotkeyLetter.length <= 40
         ? s.advancedOverlayHotkeyLetter
         : 'P',
       advPosition: isValidAdvancedOverlayPosition(s.advancedOverlayPosition) ? s.advancedOverlayPosition : 'right',
@@ -546,6 +558,16 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       title: 'Custom overlay color',
       onchange: (ev: Event) => void onColorSelect((ev.target as HTMLInputElement).value),
     });
+    const labelColorInput = el('input', {
+      type: 'color', class: 'settings-color-input overlay-label-color-input', value: persisted.labelColor,
+      title: 'Color for overlay headers and labels',
+      onchange: (ev: Event) => void onOverlaySideColorChange('label', (ev.target as HTMLInputElement).value),
+    });
+    const valueColorInput = el('input', {
+      type: 'color', class: 'settings-color-input overlay-value-color-input', value: persisted.valueColor,
+      title: 'Color for overlay values',
+      onchange: (ev: Event) => void onOverlaySideColorChange('value', (ev.target as HTMLInputElement).value),
+    });
     const formatScale = (value: number) => `${Number(value.toFixed(2))}x`;
     const scaleValue = el('span', { class: 'settings-scale-value', text: formatScale(persisted.scale) });
     const bgOpacityValue = el('span', { class: 'settings-scale-value', text: `${Math.round(persisted.backgroundOpacity * 100)}%` });
@@ -596,6 +618,26 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           customColor,
         ]),
       ]),
+      el('div', { class: 'settings-row overlay-label-color-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Left row color' }), labelColorInput,
+      ]),
+      el('div', { class: 'settings-row overlay-value-color-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Right row color' }), valueColorInput,
+      ]),
+      el('div', { class: 'settings-row overlay-temperature-unit-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Temperature unit' }),
+        el('label', { class: 'boot-toggle overlay-temperature-unit-toggle-label', title: 'Use Celsius when off, Fahrenheit when on, in both RTSS and Arc Power overlays.' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'settings-checkbox overlay-temperature-unit-toggle',
+            dataset: { setting: 'overlayTemperatureUnit' },
+            checked: persisted.temperatureUnit === 'F',
+            disabled: temperatureUnitSaving,
+            onchange: (ev: Event) => void onTemperatureUnitChange((ev.target as HTMLInputElement).checked ? 'F' : 'C'),
+          }),
+          el('span', { text: 'Use Fahrenheit (°F)' }),
+        ]),
+      ]),
       el('div', { class: 'settings-row overlay-scale-row' }, [
         el('span', { class: 'settings-row-label', text: 'Size' }),
         el('input', {
@@ -617,34 +659,41 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ...backgroundControls,
     ]);
 
-    // M25: the Hotkey + Advanced cards are MERGED into a single "Hotkey"
-    // card. The overlay hotkey (CTRL + letter) and the advanced overlay
-    // hotkey (CTRL + letter) + edge select live in one compact card.
-    const hotkeyInput = el('input', {
-      type: 'text',
-      class: 'settings-hotkey-input',
-      maxlength: 1,
-      value: persisted.hotkeyLetter.toUpperCase(),
-      title: 'The overlay hotkey letter (CTRL + <letter>)',
-      oninput: (ev: Event) => {
-        const t = ev.target as HTMLInputElement;
-        const m = t.value.match(/[A-Za-z]/);
-        t.value = m ? m[m.length - 1].toUpperCase() : '';
+    // M25: use the Recording modal while requiring a modifier for global
+    // overlay shortcuts, then display the complete accelerator.
+    const hotkeyInput = el('button', {
+      type: 'button',
+      class: 'recording-hotkey settings-hotkey-input',
+      'aria-label': `HUD overlay hotkey: ${displayOverlayHotkey(persisted.hotkeyLetter)}`,
+      text: displayOverlayHotkey(persisted.hotkeyLetter),
+      title: 'Choose the key combination for the overlay shortcut',
+      onClick: () => {
+        void showRecordingHotkeyDialog('HUD overlay', displayOverlayHotkey(persisted.hotkeyLetter), { requireModifier: true }).then(async (next) => {
+          if (next === null) {
+            hotkeyInput.focus();
+            return;
+          }
+          await onHotkeyLetterChange(next);
+          root.querySelector<HTMLButtonElement>('.settings-hotkey-input:not(.settings-advanced-hotkey-input)')?.focus();
+        });
       },
-      onchange: (ev: Event) => void onHotkeyLetterChange((ev.target as HTMLInputElement).value),
     });
-    const advancedHotkeyInput = el('input', {
-      type: 'text',
-      class: 'settings-hotkey-input settings-advanced-hotkey-input',
-      maxlength: 1,
-      value: persisted.advHotkeyLetter.toUpperCase(),
-      title: 'The advanced overlay hotkey letter (CONTROL + <letter>)',
-      oninput: (ev: Event) => {
-        const t = ev.target as HTMLInputElement;
-        const m = t.value.match(/[A-Za-z]/);
-        t.value = m ? m[m.length - 1].toUpperCase() : '';
+    const advancedHotkeyInput = el('button', {
+      type: 'button',
+      class: 'recording-hotkey settings-hotkey-input settings-advanced-hotkey-input',
+      'aria-label': `Advanced overlay hotkey: ${displayOverlayHotkey(persisted.advHotkeyLetter)}`,
+      text: displayOverlayHotkey(persisted.advHotkeyLetter),
+      title: 'Choose the key combination for the advanced overlay shortcut',
+      onClick: () => {
+        void showRecordingHotkeyDialog('Advanced overlay', displayOverlayHotkey(persisted.advHotkeyLetter), { requireModifier: true }).then(async (next) => {
+          if (next === null) {
+            advancedHotkeyInput.focus();
+            return;
+          }
+          await onAdvancedHotkeyLetterChange(next);
+          root.querySelector<HTMLButtonElement>('.settings-advanced-hotkey-input')?.focus();
+        });
       },
-      onchange: (ev: Event) => void onAdvancedHotkeyLetterChange((ev.target as HTMLInputElement).value),
     });
     const advancedPositionSelect = buildDropdown(persisted.advPosition, ADVANCED_OVERLAY_POSITIONS.map((p) => ({
       value: p,
@@ -663,7 +712,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       el('div', { class: 'overlay-subsection-label', text: 'HUD shortcut' }),
       el('div', { class: 'settings-row overlay-hotkey-row' }, [
         el('span', { class: 'settings-row-label', text: 'Monitor' }),
-        el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
         hotkeyInput,
       ]),
       // M9: keep the stock Monitor position directly below its hotkey,
@@ -673,13 +721,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         positionSelect,
       ]),
       overlayState && overlayState.exists && overlayState.hotkeyRegistered === false
-        ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The CTRL + ${persisted.hotkeyLetter.toUpperCase()} hotkey could not be registered - another application may be using it.` })
+        ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The ${persisted.hotkeyLetter} shortcut could not be registered - another application may be using it.` })
         : null,
       el('hr', { class: 'overlay-hotkey-divider' }),
       el('div', { class: 'overlay-subsection-label', text: 'Advanced panel' }),
       el('div', { class: 'settings-row overlay-advanced-hotkey-row' }, [
         el('span', { class: 'settings-row-label', text: 'Advanced' }),
-        el('span', { class: 'overlay-hotkey-fixed', text: 'CTRL +' }),
         advancedHotkeyInput,
       ]),
       el('div', { class: 'settings-row overlay-advanced-position-row' }, [
@@ -902,15 +949,49 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // re-renders on the push (the save + the push are one main-side flow).
     syncColorSwatches(normalized);
     persisted.color = normalized;
+    persisted.labelColor = normalized;
+    persisted.valueColor = normalized;
     try {
       await api.profilesSettingsSave({ overlayColor: normalized });
       toast('success', 'Overlay color changed', `${OVERLAY_COLOR_LABELS[normalized] ?? 'Custom'} - the overlay text updates immediately.`);
     } catch (err) {
       toast('error', 'Overlay color could not be changed', err instanceof Error ? err.message : String(err));
       persisted.color = previous;
+      persisted.labelColor = previous;
+      persisted.valueColor = previous;
       syncColorSwatches(previous);
     }
   };
+
+  const onOverlaySideColorChange = async (side: 'label' | 'value', hex: string): Promise<void> => {
+    if (!isValidOverlayColor(hex)) return;
+    const normalized = hex.toLowerCase();
+    const key = side === 'label' ? 'labelColor' : 'valueColor';
+    const previous = persisted[key];
+    persisted[key] = normalized;
+    try {
+      await api.profilesSettingsSave(side === 'label'
+        ? { overlayLabelColor: normalized }
+        : { overlayValueColor: normalized });
+      toast('success', `${side === 'label' ? 'Left row' : 'Right row'} color changed`, 'The overlay updates immediately.');
+    } catch (err) {
+      persisted[key] = previous;
+      const input = root.querySelector<HTMLInputElement>(side === 'label' ? '.overlay-label-color-input' : '.overlay-value-color-input');
+      if (input) input.value = previous;
+      toast('error', 'Overlay color could not be changed', err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  let temperatureUnitSaving = false;
+  const onTemperatureUnitChange = createOverlayTemperatureUnitChangeHandler({
+    getCurrentUnit: () => persisted.temperatureUnit,
+    setCurrentUnit: (unit) => { persisted.temperatureUnit = unit; },
+    save: (unit) => api.profilesSettingsSave({ overlayTemperatureUnit: unit }),
+    getToggle: () => root.querySelector<HTMLInputElement>('.overlay-temperature-unit-toggle'),
+    setSaving: (saving) => { temperatureUnitSaving = saving; },
+    onSaved: (unit) => toast('success', 'Temperature unit changed', `Both overlays now use °${unit}.`),
+    onError: (err) => toast('error', 'Temperature unit could not be changed', err instanceof Error ? err.message : String(err)),
+  });
 
   const onScaleChange = async (scale: number): Promise<void> => {
     const clamped = clampOverlayScale(scale);
@@ -979,20 +1060,24 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const onHotkeyLetterChange = async (letter: string): Promise<void> => {
-    const input = root.querySelector<HTMLInputElement>('.settings-hotkey-input');
-    const v = letter.trim().toUpperCase();
-    if (!/^[A-Za-z]$/.test(v)) {
-      toast('error', 'Overlay hotkey', 'The hotkey must be a single letter (CTRL + <letter>).');
-      if (input) input.value = persisted.hotkeyLetter.toUpperCase();
+    const input = root.querySelector<HTMLButtonElement>('.settings-hotkey-input:not(.settings-advanced-hotkey-input)');
+    const v = letter.trim();
+    if (!/^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(v)) {
+      toast('error', 'Overlay hotkey', 'Use a modifier and a letter, number, or function key.');
+      if (input) input.textContent = displayOverlayHotkey(persisted.hotkeyLetter);
       return;
     }
     try {
       await api.profilesSettingsSave({ overlayHotkeyLetter: v });
       persisted.hotkeyLetter = v;
-      toast('success', 'Overlay hotkey changed', `The overlay toggles with CTRL + ${v}.`);
+      if (input) {
+        input.textContent = v;
+        input.setAttribute('aria-label', `HUD overlay hotkey: ${v}`);
+      }
+      toast('success', 'Overlay hotkey changed', `The overlay toggles with ${v}.`);
     } catch (err) {
       toast('error', 'Overlay hotkey could not be changed', err instanceof Error ? err.message : String(err));
-      if (input) input.value = persisted.hotkeyLetter.toUpperCase();
+      if (input) input.textContent = displayOverlayHotkey(persisted.hotkeyLetter);
       return;
     }
     // The register-failure note must follow the live registration state
@@ -1036,20 +1121,24 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const onAdvancedHotkeyLetterChange = async (letter: string): Promise<void> => {
-    const input = root.querySelector<HTMLInputElement>('.settings-advanced-hotkey-input');
-    const v = letter.trim().toUpperCase();
-    if (!/^[A-Za-z]$/.test(v)) {
-      toast('error', 'Advanced overlay hotkey', 'The hotkey must be a single letter (CONTROL + <letter>).');
-      if (input) input.value = persisted.advHotkeyLetter.toUpperCase();
+    const input = root.querySelector<HTMLButtonElement>('.settings-advanced-hotkey-input');
+    const v = letter.trim();
+    if (!/^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(v)) {
+      toast('error', 'Advanced overlay hotkey', 'Use a modifier and a letter, number, or function key.');
+      if (input) input.textContent = displayOverlayHotkey(persisted.advHotkeyLetter);
       return;
     }
     try {
       await api.profilesSettingsSave({ advancedOverlayHotkeyLetter: v });
       persisted.advHotkeyLetter = v;
-      toast('success', 'Advanced overlay hotkey changed', `The panel toggles with CONTROL + ${v}.`);
+      if (input) {
+        input.textContent = v;
+        input.setAttribute('aria-label', `Advanced overlay hotkey: ${v}`);
+      }
+      toast('success', 'Advanced overlay hotkey changed', `The panel toggles with ${v}.`);
     } catch (err) {
       toast('error', 'Advanced overlay hotkey could not be changed', err instanceof Error ? err.message : String(err));
-      if (input) input.value = persisted.advHotkeyLetter.toUpperCase();
+      if (input) input.textContent = displayOverlayHotkey(persisted.advHotkeyLetter);
       return;
     }
     // The register-failure note must follow the live registration state

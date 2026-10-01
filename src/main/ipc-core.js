@@ -33,6 +33,8 @@ import { collectHealth } from './health.js';
 import { createIntelDriverUpdateService, INTEL_DRIVER_PAGES } from './intel-driver-update.js';
 import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPHICS_LOW_LATENCY_OPTIONS, DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS, DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_SCALING_METHOD_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS } from './backend/backend.interface.js';
 import { clampAndSnap, clampGpuLock, nearlyEqual, deviceHardwareKey, isIntegratedStyleDevice } from './backend/units.js';
+import { isBattlemageGpuName } from '../renderer/pure/hardware-icons.ts';
+import { isValidNativeVfCurve } from '../renderer/pure/vf-curve.ts';
 import { pnpParts } from './gpu-inventory.js';
 import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createMockRegistryApply } from './registry-apply.js';
@@ -66,7 +68,7 @@ const require = createRequire(import.meta.url);
 // when no electron app exists (tests).
 const PKG_VERSION = require('../../package.json').version ?? '0.0.0';
 
-const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'bitrateKbps', 'captureTarget', 'captureColorMode', 'showCursor', 'memorySavingMode', 'replayLengthSec', 'instantReplayAutoStart', 'replayMarkersEnabled', 'hotkeys', 'audio']);
+const RECORDING_PATCH_KEYS = new Set(['location', 'runtimePath', 'mode', 'fps', 'resolution', 'encoderId', 'rateControl', 'bitrateKbps', 'maxBitrateKbps', 'rateControlQuality', 'captureTarget', 'captureColorMode', 'showCursor', 'memorySavingMode', 'replayLengthSec', 'instantReplayAutoStart', 'replayMarkersEnabled', 'hotkeys', 'audio']);
 export { recordingAbsolutePath };
 
 const execFileAsync = promisify(execFile);
@@ -211,6 +213,10 @@ function recordingPatch(patch) {
   if (patch.resolution !== undefined && !RECORDING_RESOLUTIONS.some((item) => item.id === patch.resolution)) throw new Error('recording-settings-save: invalid resolution');
   if (patch.encoderId !== undefined && (typeof patch.encoderId !== 'string' || patch.encoderId.length > 128)) throw new Error('recording-settings-save: invalid encoder id');
   if (patch.bitrateKbps !== undefined && (typeof patch.bitrateKbps !== 'number' || !Number.isFinite(patch.bitrateKbps) || patch.bitrateKbps <= 0)) throw new Error('recording-settings-save: bitrate must be a positive number');
+  if (patch.maxBitrateKbps !== undefined && (typeof patch.maxBitrateKbps !== 'number' || !Number.isFinite(patch.maxBitrateKbps) || patch.maxBitrateKbps <= 0)) throw new Error('recording-settings-save: maximum bitrate must be a positive number');
+  if (patch.rateControl !== undefined && !['CBR', 'VBR', 'CQP', 'ICQ'].includes(patch.rateControl)) throw new Error('recording-settings-save: invalid rate control');
+  if (patch.rateControlQuality !== undefined && (!Number.isSafeInteger(patch.rateControlQuality) || patch.rateControlQuality < 1 || patch.rateControlQuality > 63)) throw new Error('recording-settings-save: quality must be an integer from 1 to 63');
+  if (patch.rateControl === 'ICQ' && patch.rateControlQuality !== undefined && patch.rateControlQuality > 51) throw new Error('recording-settings-save: ICQ quality must be an integer from 1 to 51');
   if (patch.captureColorMode !== undefined && !RECORDING_CAPTURE_COLOR_MODES.includes(patch.captureColorMode)) throw new Error('recording-settings-save: invalid capture color mode');
   if (patch.showCursor !== undefined && typeof patch.showCursor !== 'boolean') throw new Error('recording-settings-save: show cursor must be a boolean');
   if (patch.memorySavingMode !== undefined && typeof patch.memorySavingMode !== 'boolean') throw new Error('recording-settings-save: memory saving mode must be a boolean');
@@ -289,6 +295,8 @@ const MAX_CURVE_POINTS = 32;
 // Reset read-back tolerance (canonical units; a reset must land on the
 // capability default within this).
 const RESET_VERIFY_EPS = 1e-6;
+const RESET_VERIFY_ATTEMPTS = 5;
+const RESET_VERIFY_INTERVAL_MS = 1500;
 // M5: the RTSS overlay scale range (mirrored in pure/overlay.ts). The
 // native provider has four integer font zoom levels, represented here as
 // Quarter-size increments keep the existing persisted range compatible while
@@ -474,13 +482,29 @@ export function sanitizeDisplaySettings(payload) {
  * @returns {string}
  */
 export function validateOverlayHotkeyLetter(v) {
-  if (typeof v !== 'string' || !/^[A-Za-z]$/.test(v)) {
-    throw new Error('overlayHotkeyLetter must be a single letter (A-Z or a-z)');
+  if (typeof v !== 'string') {
+    throw new Error('overlayHotkeyLetter must be a modifier and a letter, number, or function key');
   }
-  // Normalize to UPPERCASE at persist time - every consumer (the
-  // globalShortcut accelerator, the Settings card text) uses the uppercase
-  // form; a stored lowercase letter must never slip through.
-  return v.toUpperCase();
+  // Accept existing persisted letters as the historical Control+letter
+  // chord, then validate the same grammar used by recording hotkeys.
+  const source = /^[A-Za-z]$/.test(v) ? `Control+${v}` : v;
+  const pieces = source.split('+');
+  const key = pieces.pop();
+  const modifiers = pieces.map((part) => part.toLowerCase());
+  if (!key || !/^(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(key)
+    || modifiers.length === 0
+    || modifiers.some((part) => !['control', 'ctrl', 'alt', 'shift'].includes(part))
+    || new Set(modifiers).size !== modifiers.length) {
+    throw new Error('overlayHotkeyLetter must be a modifier chord such as Control+O or Alt+F9');
+  }
+  const canonicalModifiers = ['control', 'alt', 'shift'].filter((modifier) => modifiers.includes(modifier)
+    || modifier === 'control' && modifiers.includes('ctrl'));
+  return [...canonicalModifiers.map((part) => part === 'control' ? 'Control' : part[0].toUpperCase() + part.slice(1)), key.toUpperCase()].join('+');
+}
+
+/** Compare legacy single-letter settings and modern overlay accelerators. */
+export function overlayHotkeysCollide(left, right) {
+  return validateOverlayHotkeyLetter(left) === validateOverlayHotkeyLetter(right);
 }
 
 /**
@@ -576,6 +600,14 @@ export function validateOverlayBgColor(v) {
 export function validateOverlayTheme(v) {
   if (typeof v !== 'string' || (v !== 'classic' && v !== 'arc')) {
     throw new Error('overlayTheme must be one of: classic, arc');
+  }
+  return v;
+}
+
+/** The shared display unit for every overlay temperature field. */
+export function validateOverlayTemperatureUnit(v) {
+  if (v !== 'C' && v !== 'F') {
+    throw new Error('overlayTemperatureUnit must be one of: C, F');
   }
   return v;
 }
@@ -696,6 +728,9 @@ export function sanitizeSettings(payload) {
         throw new Error('gpuLock must be { voltageV: number, freqMhz: number }');
       }
       out[key] = { voltageV: value.voltageV, freqMhz: value.freqMhz };
+    } else if (key === 'vfCurveResetToDefault') {
+      if (value !== true) throw new Error('vfCurveResetToDefault must be true');
+      out[key] = true;
     } else if (key === 'vfCurve' || key === 'fanCurve') {
       if (!Array.isArray(value) || value.length < 1 || value.length > MAX_CURVE_POINTS) {
         throw new Error(`${key} must be a non-empty array of at most ${MAX_CURVE_POINTS} points`);
@@ -711,6 +746,9 @@ export function sanitizeSettings(payload) {
         return clean;
       });
     }
+  }
+  if (out.vfCurveResetToDefault === true && !Array.isArray(out.vfCurve)) {
+    throw new Error('vfCurveResetToDefault requires vfCurve');
   }
   return out;
 }
@@ -1184,6 +1222,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   bootApplyOutcome?: () => ({ ok: boolean, detail: string, at: number } | null),  // M4N: the window-path boot apply's outcome record (main.js injects it; null when no boot apply ran this session)
  *   oldIgcl?: object,            // bundled-2023-runtime adapter (apply-routing)
  *   applyRunner?: object|null,   // elevation-aware apply runner (elevated-apply)
+ *   resetVerifyWait?: (ms: number) => Promise<void>, // injectable reset read-back delay for tests
  *   isElevated?: () => boolean,  // elevation probe for the app-elevated channel
  *   mock?: {                     // M2D: mock-only featureset control. When null
  *                                // (real mode) the mock:* channels are NOT
@@ -1338,6 +1377,7 @@ export function createIpcHandlers({
   // (applies run in-process) - safe for tests and mock mode.
   oldIgcl = createNullOldIgcl(),
   applyRunner = null,
+  resetVerifyWait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   isElevated = detectElevated,
   mock = null,
   // M5: the injected overlay-window ops. The DEFAULT is the honest
@@ -1370,7 +1410,7 @@ export function createIpcHandlers({
   // DIRECTLY to the panel window.
   onAdvancedOverlaySettings = async () => {},
   onRecordingMemorySavingSettings = async () => {},
-  getRecordingMemorySavingMode = () => true,
+  getRecordingMemorySavingMode = () => false,
   // M23: the panel's custom close op - the dedicated 'advanced-overlay:close'
   // channel's handler (the DEFAULT is a no-op; main.js wires it to the panel
   // handle's session hide - the main window is never closed by the panel).
@@ -3429,19 +3469,13 @@ export function createIpcHandlers({
           }
         }
         let state = null;
+        let hasWorkerState = false;
         if (applyRunner?.needsWorker?.()) {
           const out = await applyRunner.reset(deviceId, target?.deviceKey ?? null, resetPhysicalTarget);
-          state = out.state;
+          state = out?.state ?? null;
+          hasWorkerState = true;
         } else {
           await backend.resetToDefaults(deviceId);
-          try {
-            state = await backend.getCurrentSettings(deviceId);
-          } catch (err) {
-            throw new Error(`reset-to-defaults backend state read-back unavailable: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        }
-        if (!state || typeof state !== 'object') {
-          throw new Error('reset-to-defaults backend state read-back unavailable');
         }
         // No success claims without verification (plan §5): confirm the
         // supported OC controls moved to their capability defaults
@@ -3449,21 +3483,58 @@ export function createIpcHandlers({
         // config, so only OC controls are checked. gpuLock is expected
         // unlocked (0,0) after a reset.
         const caps = await backend.getCapabilities(deviceId);
-        const mismatched = [];
-        for (const [key, range] of Object.entries(caps.ranges)) {
-          const value = state?.[key];
-          if (value !== null && value !== undefined && range && !nearlyEqual(value, range.default, RESET_VERIFY_EPS)) {
-            mismatched.push(`${key}: read-back ${value} != default ${range.default}`);
+        let diagnostic = 'reset-to-defaults backend state read-back unavailable';
+        for (let attempt = 0; attempt < RESET_VERIFY_ATTEMPTS; attempt += 1) {
+          if (attempt > 0) await resetVerifyWait(RESET_VERIFY_INTERVAL_MS);
+          let readError = null;
+          if (!hasWorkerState || attempt > 0) {
+            try {
+              state = await backend.getCurrentSettings(deviceId);
+            } catch (err) {
+              state = null;
+              readError = err;
+            }
           }
+          if (!state || typeof state !== 'object') {
+            diagnostic = `reset-to-defaults backend state read-back unavailable${readError === null ? '' : `: ${readError instanceof Error ? readError.message : String(readError)}`}`;
+            continue;
+          }
+          const mismatched = [];
+          for (const [key, range] of Object.entries(caps.ranges)) {
+            const value = state?.[key];
+            if (value !== null && value !== undefined && range && !nearlyEqual(value, range.default, RESET_VERIFY_EPS)) {
+              mismatched.push(`${key}: read-back ${value} != default ${range.default}`);
+            }
+          }
+          if (caps.controls.gpuLock && state?.gpuLock
+            && (!nearlyEqual(state.gpuLock.voltageV, 0, RESET_VERIFY_EPS) || !nearlyEqual(state.gpuLock.freqMhz, 0, RESET_VERIFY_EPS))) {
+            mismatched.push(`gpuLock: read-back ${state.gpuLock.voltageV}V/${state.gpuLock.freqMhz}MHz != unlocked (0,0)`);
+          }
+          if (isBattlemageGpuName(caps.deviceName, caps)) {
+            const range = caps.controls.vfCurve === true ? caps.vfCurveRange : null;
+            const stock = state.vfCurveDefault;
+            const live = state.vfCurve;
+            const valid = range
+              && isValidNativeVfCurve(stock, range)
+              && isValidNativeVfCurve(live, range)
+              && stock.every((point) => Number.isSafeInteger(Math.round(point.voltageV * 1000))
+                && Math.abs(point.voltageV * 1000 - Math.round(point.voltageV * 1000)) <= RESET_VERIFY_EPS
+                && Number.isSafeInteger(point.freqMhz))
+              && live.every((point) => Number.isSafeInteger(Math.round(point.voltageV * 1000))
+                && Math.abs(point.voltageV * 1000 - Math.round(point.voltageV * 1000)) <= RESET_VERIFY_EPS
+                && Number.isSafeInteger(point.freqMhz));
+            if (!valid) {
+              mismatched.push('VF curve: valid STOCK and LIVE read-back unavailable');
+            } else if (stock.length !== live.length || !stock.every((point, index) =>
+              Math.round(point.voltageV * 1000) === Math.round(live[index].voltageV * 1000)
+              && point.freqMhz === live[index].freqMhz)) {
+              mismatched.push('VF curve: LIVE points do not exactly match STOCK mV/MHz points');
+            }
+          }
+          if (mismatched.length === 0) return { state };
+          diagnostic = `reset-to-defaults verification failed: ${mismatched.join('; ')}`;
         }
-        if (caps.controls.gpuLock && state?.gpuLock
-          && (!nearlyEqual(state.gpuLock.voltageV, 0, RESET_VERIFY_EPS) || !nearlyEqual(state.gpuLock.freqMhz, 0, RESET_VERIFY_EPS))) {
-          mismatched.push(`gpuLock: read-back ${state.gpuLock.voltageV}V/${state.gpuLock.freqMhz}MHz != unlocked (0,0)`);
-        }
-        if (mismatched.length > 0) {
-          throw new Error(`reset-to-defaults verification failed: ${mismatched.join('; ')}`);
-        }
-        return { state };
+        throw new Error(diagnostic);
       },
 
       'waiver-get': async (deviceId) => {
@@ -4010,8 +4081,8 @@ export function createIpcHandlers({
       },
       'recording-runtime-probe': async (...args) => {
         assertNoPayload(args, 'recording-runtime-probe');
-        if (!recordingEngine?.probe) return { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [], memorySavingMode: getRecordingMemorySavingMode() !== false, hotkeys: getRecordingHotkeyState() };
-        return { ...(await recordingEngine.probe()), memorySavingMode: getRecordingMemorySavingMode() !== false, hotkeys: getRecordingHotkeyState() };
+        if (!recordingEngine?.probe) return { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [], memorySavingMode: getRecordingMemorySavingMode() === true, hotkeys: getRecordingHotkeyState() };
+        return { ...(await recordingEngine.probe()), memorySavingMode: getRecordingMemorySavingMode() === true, hotkeys: getRecordingHotkeyState() };
       },
       'recording-runtime-acquire': async (...args) => {
         assertNoPayload(args, 'recording-runtime-acquire');
@@ -4023,7 +4094,7 @@ export function createIpcHandlers({
       },
       'recording-status': async (...args) => {
         assertNoPayload(args, 'recording-status');
-        return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [] }), memorySavingMode: getRecordingMemorySavingMode() !== false, hotkeys: getRecordingHotkeyState() };
+        return { ...(recordingEngine?.getState?.() ?? { available: false, running: false, mode: null, startedAt: null, error: 'Bundled ascent-obs runtime is unavailable', encoders: [], audioInputs: [], audioOutputs: [] }), memorySavingMode: getRecordingMemorySavingMode() === true, hotkeys: getRecordingHotkeyState() };
       },
       'recording-start': async (...args) => {
         assertNoPayload(args, 'recording-start');
@@ -5011,6 +5082,15 @@ export function createIpcHandlers({
           overlayColor: patch.overlayColor === undefined
             ? cur.overlayColor
             : validateOverlayColor(patch.overlayColor),
+          overlayLabelColor: patch.overlayLabelColor === undefined
+            ? (patch.overlayColor === undefined ? (cur.overlayLabelColor ?? cur.overlayColor) : validateOverlayColor(patch.overlayColor))
+            : validateOverlayColor(patch.overlayLabelColor),
+          overlayValueColor: patch.overlayValueColor === undefined
+            ? (patch.overlayColor === undefined ? (cur.overlayValueColor ?? cur.overlayColor) : validateOverlayColor(patch.overlayColor))
+            : validateOverlayColor(patch.overlayValueColor),
+          overlayTemperatureUnit: patch.overlayTemperatureUnit === undefined
+            ? (cur.overlayTemperatureUnit === 'F' ? 'F' : 'C')
+            : validateOverlayTemperatureUnit(patch.overlayTemperatureUnit),
           overlayStats: patch.overlayStats === undefined
             ? cur.overlayStats
             : normalizeOverlayStats(patch.overlayStats),
@@ -5065,9 +5145,9 @@ export function createIpcHandlers({
             : patch.recordingToastsEnabled === true,
           // The capture-runtime retention preference is global, but it rides
           // this read-modify-write envelope so unrelated settings saves
-          // cannot reset it. Missing legacy values default to memory saving.
+          // cannot reset it. Missing legacy values default to a warm runtime.
           memorySavingMode: patch.memorySavingMode === undefined
-            ? cur.memorySavingMode !== false
+            ? cur.memorySavingMode === true
             : patch.memorySavingMode === true,
           // M23: the ADVANCED-overlay fields (the Overlay view's Advanced
           // card persists them through this channel - the M5 overlaySettings
@@ -5087,9 +5167,8 @@ export function createIpcHandlers({
             ? cur.advancedOverlayPosition
             : validateAdvancedOverlayPosition(patch.advancedOverlayPosition),
         };
-        // M23 THE CROSS-FIELD LETTER-COLLISION REJECTION AT THE ENVELOPE
-        // (the STRUCTURAL guard - the renderer toasts are UX only): the two
-        // hotkeys share ONE modifier pair (Control + <letter>), and
+        // M23 THE CROSS-FIELD HOTKEY-COLLISION REJECTION AT THE ENVELOPE
+        // (the STRUCTURAL guard - the renderer toasts are UX only):
         // globalShortcut collisions within the SAME app are SILENT (a
         // register REPLACES the same-app registration and returns true - a
         // colliding pair in the store would kill one hotkey with
@@ -5098,27 +5177,24 @@ export function createIpcHandlers({
         // persisted letters would collide - on BOTH sides, symmetrically:
         // an advancedOverlayHotkeyLetter equal to the effective
         // overlayHotkeyLetter, and an overlayHotkeyLetter equal to the
-        // effective advancedOverlayHotkeyLetter. The comparison uses the
-        // NORMALIZED UPPERCASE form (the letters persist uppercase - a
-        // lowercase patch colliding with an uppercase persisted letter must
-        // reject). The rejection throws BEFORE the store write - the store
+        // effective advancedOverlayHotkeyLetter. Legacy letters normalize
+        // to Control+<letter>; chord accelerators compare in canonical form.
+        // The rejection throws BEFORE the store write - the store
         // stays unchanged, the save answers the honest error.
+        const effectiveOverlayHotkey = patch.overlayHotkeyLetter === undefined
+          ? cur.overlayHotkeyLetter
+          : patch.overlayHotkeyLetter;
+        const effectiveAdvancedHotkey = patch.advancedOverlayHotkeyLetter === undefined
+          ? cur.advancedOverlayHotkeyLetter
+          : patch.advancedOverlayHotkeyLetter;
         if (patch.advancedOverlayHotkeyLetter !== undefined) {
-          const advLetter = validateOverlayHotkeyLetter(patch.advancedOverlayHotkeyLetter);
-          const hudLetter = patch.overlayHotkeyLetter !== undefined
-            ? validateOverlayHotkeyLetter(patch.overlayHotkeyLetter)
-            : cur.overlayHotkeyLetter;
-          if (advLetter === hudLetter) {
-            throw new Error('advancedOverlayHotkeyLetter must differ from the overlay hotkey letter (the Control+<letter> hotkeys would collide)');
+          if (overlayHotkeysCollide(effectiveAdvancedHotkey, effectiveOverlayHotkey)) {
+            throw new Error('advancedOverlayHotkeyLetter must differ from the overlay hotkey (the accelerators would collide)');
           }
         }
         if (patch.overlayHotkeyLetter !== undefined) {
-          const hudLetter = validateOverlayHotkeyLetter(patch.overlayHotkeyLetter);
-          const advLetter = patch.advancedOverlayHotkeyLetter !== undefined
-            ? validateOverlayHotkeyLetter(patch.advancedOverlayHotkeyLetter)
-            : cur.advancedOverlayHotkeyLetter;
-          if (hudLetter === advLetter) {
-            throw new Error('overlayHotkeyLetter must differ from the advanced overlay hotkey letter (the Control+<letter> hotkeys would collide)');
+          if (overlayHotkeysCollide(effectiveOverlayHotkey, effectiveAdvancedHotkey)) {
+            throw new Error('overlayHotkeyLetter must differ from the advanced overlay hotkey (the accelerators would collide)');
           }
         }
         // M4-D2 (plan F4): derive the startup registration from the merged
@@ -5176,7 +5252,7 @@ export function createIpcHandlers({
         // persists but onOverlaySettings never fires and the HUD never
         // re-renders (the switch would only apply on the next boot).
         const overlayChanged = {};
-        for (const key of ['overlayEnabled', 'overlayRenderer', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme', 'overlayRecordingPill']) {
+        for (const key of ['overlayEnabled', 'overlayRenderer', 'overlayHotkeyLetter', 'overlayPosition', 'overlayScale', 'overlayColor', 'overlayLabelColor', 'overlayValueColor', 'overlayTemperatureUnit', 'overlayStats', 'overlayDeviceKeys', 'overlayBgEnabled', 'overlayBgColor', 'overlayBgOpacity', 'overlayChipNames', 'overlayPollMs', 'overlayTheme', 'overlayRecordingPill']) {
           if (patch[key] !== undefined && next[key] !== cur[key]) overlayChanged[key] = next[key];
         }
         if (Object.keys(overlayChanged).length > 0) {

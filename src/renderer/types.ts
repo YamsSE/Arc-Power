@@ -14,7 +14,13 @@ export type OcErrorCode =
   | 'unavailable-symbol'
   | 'invalid-argument'
   | 'permission-denied'
-  | 'io-failed';
+  | 'driver-adjustment-out-of-range'
+  | 'driver-noop'
+  | 'io-failed'
+  | 'driver-adjusted'
+  | 'readback-unverified'
+  | 'driver-invalid-readback'
+  | 'dependency-failed';
 
 export type FanMode = 'auto' | 'curve' | 'fixed';
 
@@ -31,6 +37,8 @@ export interface Settings {
   vramVoltOffsetV?: number;
   gpuLock?: { voltageV: number; freqMhz: number };
   vfCurve?: Array<{ voltageV: number; freqMhz: number }>;
+  /** Explicit intent for Reset to default; valid only alongside vfCurve. */
+  vfCurveResetToDefault?: boolean;
   fanMode?: FanMode;
   fanCurve?: Array<{ t: number; speedPct: number }>;
   fixedFanPct?: number;
@@ -98,6 +106,9 @@ export interface VfCurveRange {
   voltageMaxV: number;
   freqMinMhz: number;
   freqMaxMhz: number;
+  /** Native spacing exposed by ctl_oc_control_info_t, when available. */
+  voltageStepV?: number;
+  frequencyStepMhz?: number;
   maxPoints: number;
 }
 
@@ -164,6 +175,12 @@ export interface PerControlResult {
    *  message here; hard errors are mapped via pure/errors.ts errorMessage). */
   message?: string;
   readBackEqual?: boolean;
+  /** The driver changed a valid custom VF curve; readBackCurve holds the live curve. */
+  driverAdjusted?: boolean;
+  /** Exact=false but successful when the driver reports its verified grid-normalized values. */
+  normalized?: boolean;
+  /** The authoritative live VF points reported after a verified apply. */
+  readBackCurve?: Array<{ voltageV: number; freqMhz: number }>;
   /** F3: the driver returned SUCCESS but the read-back did not change (silent no-op - must NOT be reported as applied). */
   silentNoop?: boolean;
   /** The driver saved the requested GPU scaler preference while the active
@@ -695,6 +712,8 @@ export interface OverlaySettings {
    *  stock white). Applied via CSSOM to the lines + the frametime canvas
    *  stroke by the overlay renderer. */
   color: string;
+  labelColor?: string;
+  valueColor?: string;
   /** M24: the overlay THEME ('arc' the product default - the Intel-Arc
    *  harness redesign; 'classic' the original HUD, one click away via the
    *  Overlay Settings Theme row). NOTE: the PUSHED-PAYLOAD name shortens to
@@ -706,6 +725,8 @@ export interface OverlaySettings {
   /** M6: the ENABLED overlay stat ids (the canonical OVERLAY_STAT_IDS; the
    *  full set the stock default - a stat off -> its field/line vanishes). */
   stats: string[];
+  /** Display unit used for all CPU/GPU/VRAM temperatures. */
+  temperatureUnit: 'C' | 'F';
   /** M35: selected overlay GPU durable keys; null means monitor all. */
   deviceKeys: string[] | null;
   /** M7b (fix 4): the background box behind the HUD - the box is shown
@@ -786,7 +807,7 @@ export interface ProfileSettingsState {
   startMinimized: boolean;
   /** M4-D: closing the window hides it to the tray instead of quitting. */
   closeToTray: boolean;
-  /** Capture runtime retention; absent on old files means enabled. */
+  /** Capture runtime retention; absent on old files means disabled. */
   memorySavingMode: boolean;
   /** M4-D2: the Monitoring "Log to file" toggle (absent on old files -> false). */
   monitorLogToFile: boolean;
@@ -808,6 +829,10 @@ export interface ProfileSettingsState {
   /** M6: the overlay text color (absent on old files -> '#ffffff' - the
    *  stock white; same absent-field mechanism, NO schema bump). */
   overlayColor: string;
+  overlayLabelColor: string;
+  overlayValueColor: string;
+  /** Display unit shared by RTSS and Arc Power overlay temperature values. */
+  overlayTemperatureUnit: 'C' | 'F';
   /** M6: the enabled overlay stat ids (M17g: absent on old files -> the
    *  DEFAULT set - the user's 11 ON / the others OFF, the M6 full-set
    *  default FLIPS; same absent-field mechanism, NO schema bump). */
@@ -1214,7 +1239,7 @@ export interface DisplayApplyResponse {
 export type RecordingMode = 'manual' | 'clips';
 export type RecordingTab = 'manual' | 'clips' | 'audio';
 export type RecordingResolution = 'default' | '480p' | '720p' | '900p' | '1080p' | '1440p' | '4k';
-export interface RecordingHotkeys { start: string; stop: string; saveClip: string; screenshot: string; marker: string; }
+export interface RecordingHotkeys { toggle: string; saveClip: string; screenshot: string; marker: string; }
 export type RecordingAudioSourceMode = 'system' | 'custom';
 export type RecordingCaptureTargetType = 'display' | 'window';
 export type RecordingCaptureColorMode = 'auto' | 'sdr' | 'hdr';
@@ -1271,10 +1296,14 @@ export interface RecordingSettings {
   fps: number;
   resolution: RecordingResolution;
   encoderId: string;
+  rateControl: 'CBR' | 'VBR' | 'CQP' | 'ICQ';
   bitrateKbps: number;
+  maxBitrateKbps: number;
+  rateControlQuality: number;
   captureTarget: RecordingCaptureTarget;
   captureColorMode: RecordingCaptureColorMode;
   showCursor: boolean;
+  /** Global preference shown in Settings; retained here for legacy IPC readers. */
   memorySavingMode: boolean;
   replayLengthSec: number;
   instantReplayAutoStart: boolean;

@@ -15,7 +15,6 @@ import { existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs';
 import { mkdir, cp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { prepareArcPowerCacheSync } from './cache-lifecycle.js';
 import { getElevationStatus, isElevated } from './elevation.js';
 import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.js';
 import { detectRtssInstallation, installRtss } from './rtss-install.js';
@@ -185,6 +184,7 @@ function windowsPaths() {
   return {
     appData,
     localAppData,
+    documents: app.getPath('documents'),
     desktop: app.getPath('desktop'),
   };
 }
@@ -359,10 +359,6 @@ async function installArcPower(win, options = {}) {
   sendProgress(win, 92, 'Registering Arc Power with Windows');
   await writeUninstallRegistration(plan, app.getVersion(), { displayIcon: `${plan.iconPath},0` });
   await refreshWindowsShellIcons();
-  // The same version gate used by the launched application also runs here.
-  // This makes installer completion sufficient to clear an older release's
-  // caches, while a same-version reinstall leaves those caches alone.
-  prepareArcPowerCacheSync(paths.appData, app.getVersion());
   sendProgress(win, 100, 'Arc Power is ready');
   // RTSS remains optional and its HKCU Run registration is a separate user
   // preference. Start it immediately only for the install handoff the user
@@ -567,7 +563,7 @@ async function scheduleUninstall(plan) {
     summaryPath,
   }), { encoding: 'utf8', mode: 0o600 });
   try {
-    await new Promise((resolve, reject) => {
+    const handoff = await new Promise((resolve, reject) => {
       let child;
       try {
         child = spawn(powershell, [
@@ -606,6 +602,7 @@ async function scheduleUninstall(plan) {
         })
         .catch(reject);
     });
+    return handoff;
   } catch (cause) {
     const statusAfterFailure = await readLastUninstallStatus(tempDir);
     if (!isUninstallAttemptActive(statusAfterFailure, isProcessAlive)) {

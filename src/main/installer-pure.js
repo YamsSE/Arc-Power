@@ -83,20 +83,21 @@ export function resolveDesktopShortcutPath(desktop) {
 }
 
 /**
- * Build the complete install/uninstall contract. The profile path is exposed
- * only as documentation/state; cleanup targets disposable cache roots and
- * cache files, never the profile directory itself.
+ * Build the complete install/uninstall contract. Uninstall removes only the
+ * exact ArcPower data directory owned by this application, never its parent
+ * AppData directory or sibling application folders.
  */
 export function createInstallationPlan({
   localAppData,
   appData,
+  documents = null,
   desktop,
   installDir = resolveDefaultInstallDir(localAppData),
   createDesktopShortcut = true,
   launchAfterInstall = true,
   version = null,
 } = {}) {
-  const normalizedAppData = requireAbsolute(appData, 'appData');
+  const normalizedAppData = requireNonRoot(appData, 'appData');
   const normalizedProfilePath = path.join(normalizedAppData, PROFILE_DIR_NAME);
   const normalizedCachePaths = ARC_POWER_CACHE_DIR_NAMES.map((name) => path.join(normalizedAppData, name));
   const normalizedProfileCachePaths = ARC_POWER_PROFILE_CACHE_FILE_NAMES.map((name) => path.join(normalizedProfilePath, name));
@@ -104,18 +105,26 @@ export function createInstallationPlan({
   if (pathsOverlap(normalizedInstallDir, normalizedProfilePath)) {
     throw new TypeError('installDir must not equal, contain, or be contained by the durable ArcPower profile path');
   }
+  const normalizedDocuments = documents === null ? null : requireNonRoot(documents, 'documents');
+  const normalizedMonitorLogPath = normalizedDocuments ? path.join(normalizedDocuments, 'Arc Power') : null;
+  if (normalizedMonitorLogPath && pathsOverlap(normalizedInstallDir, normalizedMonitorLogPath)) {
+    throw new TypeError('installDir must not overlap the Arc Power telemetry log path');
+  }
   const normalizedDesktop = requireAbsolute(desktop, 'desktop');
   if (typeof createDesktopShortcut !== 'boolean') throw new TypeError('createDesktopShortcut must be boolean');
   if (typeof launchAfterInstall !== 'boolean') throw new TypeError('launchAfterInstall must be boolean');
   if (version !== null && (typeof version !== 'string' || version.length === 0)) throw new TypeError('version must be a non-empty string or null');
 
   return Object.freeze({
+    appDataPath: normalizedAppData,
     installDir: normalizedInstallDir,
     executablePath: path.join(normalizedInstallDir, INSTALLED_EXECUTABLE_NAME),
     iconPath: path.join(normalizedInstallDir, INSTALLED_ICON_RELATIVE_PATH),
     startMenuShortcutPath: resolveStartMenuShortcutPath(normalizedAppData),
     desktopShortcutPath: resolveDesktopShortcutPath(normalizedDesktop),
     profilePath: normalizedProfilePath,
+    documentsPath: normalizedDocuments,
+    monitorLogPath: normalizedMonitorLogPath,
     cachePath: normalizedCachePaths[0],
     cachePaths: Object.freeze(normalizedCachePaths),
     profileCachePaths: Object.freeze(normalizedProfileCachePaths),
@@ -128,7 +137,7 @@ export function createInstallationPlan({
       resolveStartMenuShortcutPath(normalizedAppData),
       resolveDesktopShortcutPath(normalizedDesktop),
       ...normalizedCachePaths,
-      ...normalizedProfileCachePaths,
+      normalizedProfilePath,
       path.join(normalizedInstallDir, INSTALLED_EXECUTABLE_NAME),
       normalizedInstallDir,
     ]),
@@ -469,6 +478,28 @@ export function createUninstallCleanupScript({
     plan.executablePath,
     plan.installDir,
   ];
+  const allowedCleanupPaths = [
+    plan.startMenuShortcutPath,
+    plan.desktopShortcutPath,
+    ...(Array.isArray(plan.cachePaths) ? plan.cachePaths : [plan.cachePath]),
+    ...(Array.isArray(plan.profileCachePaths) ? plan.profileCachePaths : []),
+    path.join(requireNonRoot(plan.appDataPath, 'appDataPath'), PROFILE_DIR_NAME),
+    plan.executablePath,
+    plan.installDir,
+  ].filter((value) => typeof value === 'string').map((value) => path.resolve(value).toLowerCase());
+  if (path.resolve(plan.profilePath).toLowerCase() !== path.resolve(plan.appDataPath, PROFILE_DIR_NAME).toLowerCase()) {
+    throw new TypeError('profilePath must be the exact ArcPower directory under appDataPath');
+  }
+  if (plan.monitorLogPath !== null && plan.monitorLogPath !== undefined
+    && (typeof plan.documentsPath !== 'string' || !path.isAbsolute(plan.documentsPath)
+      || path.resolve(plan.monitorLogPath).toLowerCase() !== path.resolve(plan.documentsPath, 'Arc Power').toLowerCase()
+      || pathsOverlap(plan.installDir, plan.monitorLogPath))) {
+    throw new TypeError('monitorLogPath must be the exact Arc Power folder under Documents and outside installDir');
+  }
+  if (cleanupPaths.some((value) => typeof value !== 'string' || !path.isAbsolute(value)
+    || !allowedCleanupPaths.includes(path.resolve(value).toLowerCase()))) {
+    throw new TypeError('cleanupPaths must contain only exact Arc Power owned targets');
+  }
   const taskLiterals = plan.cleanupTaskNames.map((value) => powershellLiteral(value)).join(', ');
   const runValueLiterals = plan.cleanupRunValueNames.map((value) => powershellLiteral(value)).join(', ');
   const cleanupPathLiterals = cleanupPaths.map((value) => powershellLiteral(value)).join(', ');
@@ -477,6 +508,13 @@ export function createUninstallCleanupScript({
   if (summaryPath !== null && (typeof summaryPath !== 'string' || summaryPath.length === 0)) throw new TypeError('summary path must be a non-empty string or null');
   if (attemptNonce !== null && (typeof attemptNonce !== 'string' || attemptNonce.length < 16)) throw new TypeError('uninstall attempt nonce must be at least 16 characters or null');
   if ((statusPath === null) !== (summaryPath === null) || (statusPath === null) !== (attemptNonce === null)) throw new TypeError('statusPath, summaryPath, and attemptNonce must be supplied together');
+  if (markerPath !== null && path.resolve(markerPath).toLowerCase() !== path.resolve(`${scriptPath}.started.json`).toLowerCase()) {
+    throw new TypeError('launch marker path must be the exact marker for scriptPath');
+  }
+  if (statusPath !== null && (path.resolve(statusPath).toLowerCase() !== path.resolve(`${scriptPath}.status.json`).toLowerCase()
+    || path.resolve(summaryPath).toLowerCase() !== path.resolve(path.dirname(scriptPath), 'arc-power-uninstall-last.json').toLowerCase())) {
+    throw new TypeError('status and summary paths must be the exact uninstall status files for scriptPath');
+  }
   if (typeof recoveryCommand !== 'string' || recoveryCommand.length === 0) throw new TypeError('recovery command is required');
   if (typeof recoveryDisplayIcon !== 'string' || recoveryDisplayIcon.length === 0) throw new TypeError('recovery display icon is required');
   return powershellScriptText([
@@ -484,9 +522,11 @@ export function createUninstallCleanupScript({
     "$ErrorActionPreference = 'Continue'",
     `$processId = ${pid}`,
     `$installDir = ${powershellLiteral(plan.installDir)}`,
+    `$tuningQuarantinePath = ${powershellLiteral(path.join(plan.profilePath, 'TuningQuarantine'))}`,
     `$scriptPath = ${powershellLiteral(scriptPath)}`,
     ...(markerPath ? [`$markerPath = ${powershellLiteral(markerPath)}`] : []),
     `$diagnosticPath = ${powershellLiteral(`${scriptPath}.log`)}`,
+    ...(plan.monitorLogPath ? [`$monitorLogPath = ${powershellLiteral(plan.monitorLogPath)}`] : []),
     ...(statusPath ? [`$statusPath = ${powershellLiteral(statusPath)}`, `$summaryPath = ${powershellLiteral(summaryPath)}`, `$attemptNonce = ${powershellLiteral(attemptNonce)}`] : []),
     `$runKey = ${powershellLiteral(plan.runKeyPowerShell)}`,
     `$uninstallKey = ${powershellLiteral(`HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${PRODUCT_NAME}`)}`,
@@ -525,6 +565,21 @@ export function createUninstallCleanupScript({
     'function Test-PathAbsent([string]$target) {',
     '  try { return -not (Test-Path -LiteralPath $target -ErrorAction Stop) } catch { Write-Diagnostic ("could not verify path {0}: {1}" -f $target, $_.Exception.Message); return $false }',
     '}',
+    ...(plan.monitorLogPath ? [
+      'function Remove-MonitorLogs {',
+      '  try {',
+      '    if (-not (Test-Path -LiteralPath $monitorLogPath -ErrorAction Stop)) { return $true }',
+      '    $directory = Get-Item -LiteralPath $monitorLogPath -Force -ErrorAction Stop',
+      '    if ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) { Write-Diagnostic "refusing to follow a reparse point at the telemetry log folder"; return $false }',
+      '    foreach ($log in @(Get-ChildItem -LiteralPath $monitorLogPath -Filter "monitor-*.txt" -File -Force -ErrorAction Stop)) { Remove-Item -LiteralPath $log.FullName -Force -ErrorAction Stop }',
+      '    $remainingLogs = @(Get-ChildItem -LiteralPath $monitorLogPath -Filter "monitor-*.txt" -File -Force -ErrorAction Stop).Count',
+      '    if ($remainingLogs -eq 0 -and @(Get-ChildItem -LiteralPath $monitorLogPath -Force -ErrorAction Stop).Count -eq 0) { Remove-Item -LiteralPath $monitorLogPath -Force -ErrorAction Stop }',
+      '    return $remainingLogs -eq 0',
+      '  } catch { Write-Diagnostic ("could not remove telemetry logs: {0}" -f $_.Exception.Message); return $false }',
+      '}',
+    ] : [
+      'function Remove-MonitorLogs { return $true }',
+    ]),
     'function Test-RunValueAbsent([string]$name) {',
     '  try { $key = Get-Item -LiteralPath $runKey -ErrorAction Stop; return $key.GetValueNames() -notcontains $name } catch {',
     '    if (-not (Test-Path -LiteralPath $runKey -ErrorAction SilentlyContinue)) { return $true }',
@@ -551,6 +606,26 @@ export function createUninstallCleanupScript({
     '    return $true',
     '  } catch { Write-Diagnostic ("could not preserve recovery registration: {0}" -f $_.Exception.Message); return $false }',
     '}',
+    'function Get-TuningQuarantineBlockReason {',
+    '  try {',
+    '    if (-not (Test-Path -LiteralPath $tuningQuarantinePath -ErrorAction Stop)) { return $null }',
+    '    $directory = Get-Item -LiteralPath $tuningQuarantinePath -Force -ErrorAction Stop',
+    '    if (-not $directory.PSIsContainer -or ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return "GPU tuning safety data is unavailable. Restart Windows before uninstalling Arc Power." }',
+    '    $markers = @(Get-ChildItem -LiteralPath $tuningQuarantinePath -Filter "arcpower-tuning-quarantine-*.json" -Force -ErrorAction Stop)',
+    '    if ($markers.Count -eq 0) { return $null }',
+    '    $operatingSystem = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop',
+    '    $bootSessionId = [string]$operatingSystem.LastBootUpTime.ToUniversalTime().Ticks',
+    '    if ($bootSessionId -notmatch "^\\d{15,}$") { return "Windows could not confirm the boot session for GPU tuning safety. Restart Windows before uninstalling Arc Power." }',
+    '    foreach ($markerFile in $markers) {',
+    '      if ($markerFile.PSIsContainer -or ($markerFile.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return "GPU tuning safety data is invalid. Restart Windows before uninstalling Arc Power." }',
+    '      $marker = Get-Content -LiteralPath $markerFile.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop',
+    '      $fileMatch = [regex]::Match($markerFile.Name, "^arcpower-tuning-quarantine-([0-9a-fA-F]{64})\\.json$")',
+    '      if (-not $fileMatch.Success -or $marker.schemaVersion -ne 1 -or [string]$marker.deviceKeyHash -notmatch "^[0-9a-fA-F]{64}$" -or $fileMatch.Groups[1].Value -ne [string]$marker.deviceKeyHash -or [string]::IsNullOrWhiteSpace([string]$marker.requestId) -or [string]$marker.bootSessionId -notmatch "^\\d{15,}$" -or $null -eq $marker.quarantinedAt -or [double]::IsNaN([double]$marker.quarantinedAt) -or [double]::IsInfinity([double]$marker.quarantinedAt)) { return "GPU tuning safety data is invalid. Restart Windows before uninstalling Arc Power." }',
+    '      if ([string]$marker.bootSessionId -eq $bootSessionId) { return "A GPU tuning operation may still be active. Restart Windows before uninstalling Arc Power; then retry removal." }',
+    '    }',
+    '    return $null',
+    '  } catch { Write-Diagnostic ("could not verify GPU tuning safety data: {0}" -f $_.Exception.Message); return "Arc Power could not verify GPU tuning safety. Restart Windows before uninstalling Arc Power; your files were kept." }',
+    '}',
     'function Test-UninstallRegistryAbsent {',
     '  try { return -not (Test-Path -LiteralPath $uninstallKey -ErrorAction Stop) } catch { Write-Diagnostic ("could not verify uninstall registry key: {0}" -f $_.Exception.Message); return $false }',
     '}',
@@ -562,22 +637,34 @@ export function createUninstallCleanupScript({
     '$cleanupDeadline = [DateTime]::UtcNow.AddSeconds(45)',
     'do {',
     '  if (-not (Set-RecoveryRegistration)) { Start-Sleep -Milliseconds 300; continue }',
+    ...(statusPath ? [
+      '  $tuningQuarantineBlockReason = Get-TuningQuarantineBlockReason',
+      '  if ($tuningQuarantineBlockReason) { Write-Diagnostic $tuningQuarantineBlockReason; Write-Status \'failed\' $tuningQuarantineBlockReason; exit 1 }',
+    ] : [
+      '  $tuningQuarantineBlockReason = Get-TuningQuarantineBlockReason',
+      '  if ($tuningQuarantineBlockReason) { Write-Diagnostic $tuningQuarantineBlockReason; exit 1 }',
+    ]),
     '  Stop-OwnedProcesses',
     '  foreach ($taskName in $taskNames) { try { & schtasks.exe /delete /tn $taskName /f *> $null; if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1) { Write-Diagnostic ("could not remove scheduled task {0}: exit {1}" -f $taskName, $LASTEXITCODE) } } catch { Write-Diagnostic ("could not remove scheduled task {0}: {1}" -f $taskName, $_.Exception.Message) } }',
     '  foreach ($runValueName in $runValueNames) { try { Remove-ItemProperty -LiteralPath $runKey -Name $runValueName -Force -ErrorAction Stop } catch { if (-not (Test-RunValueAbsent $runValueName)) { Write-Diagnostic ("could not remove Run value {0}: {1}" -f $runValueName, $_.Exception.Message) } } }',
     '  foreach ($cleanupPath in $cleanupPaths) { Remove-OwnedPath $cleanupPath }',
+    '  $monitorLogsAbsent = Remove-MonitorLogs',
     '  $pathsAbsent = @($cleanupPaths | ForEach-Object { Test-PathAbsent $_ })',
     '  $runValuesAbsent = @($runValueNames | ForEach-Object { Test-RunValueAbsent $_ })',
     '  $tasksAbsent = @($taskNames | ForEach-Object { Test-TaskAbsent $_ })',
     '  $remainingOwnedProcesses = @(Get-OwnedProcesses).Count',
-    '  if (($pathsAbsent -notcontains $false) -and ($runValuesAbsent -notcontains $false) -and ($tasksAbsent -notcontains $false) -and $remainingOwnedProcesses -eq 0 -and -not $script:processQueryFailed) {',
+    '  if (($pathsAbsent -notcontains $false) -and ($runValuesAbsent -notcontains $false) -and ($tasksAbsent -notcontains $false) -and $monitorLogsAbsent -and $remainingOwnedProcesses -eq 0 -and -not $script:processQueryFailed) {',
     '    try { Remove-Item -LiteralPath $uninstallKey -Recurse -Force -ErrorAction Stop } catch { Write-Diagnostic ("could not remove completed uninstall registration: {0}" -f $_.Exception.Message) }',
     '  }',
     '  $registryAbsent = Test-UninstallRegistryAbsent',
-    '  if (($pathsAbsent -notcontains $false) -and ($runValuesAbsent -notcontains $false) -and ($tasksAbsent -notcontains $false) -and $registryAbsent -and $remainingOwnedProcesses -eq 0 -and -not $script:processQueryFailed) {',
+    '  if (($pathsAbsent -notcontains $false) -and ($runValuesAbsent -notcontains $false) -and ($tasksAbsent -notcontains $false) -and $monitorLogsAbsent -and $registryAbsent -and $remainingOwnedProcesses -eq 0 -and -not $script:processQueryFailed) {',
     ...(statusPath ? ["    Write-Status 'complete' 'Arc Power cleanup completed'"] : []),
     '    try { Remove-Item -LiteralPath $diagnosticPath -Force -ErrorAction SilentlyContinue } catch {}',
     ...(markerPath ? ['    try { Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue } catch {}'] : []),
+    ...(statusPath ? [
+      '    try { Remove-Item -LiteralPath $statusPath -Force -ErrorAction SilentlyContinue } catch {}',
+      '    try { Remove-Item -LiteralPath $summaryPath -Force -ErrorAction SilentlyContinue } catch {}',
+    ] : []),
     '    try { Remove-Item -LiteralPath $scriptPath -Force -ErrorAction Stop } catch { Write-Diagnostic ("cleanup succeeded but helper self-delete failed: {0}" -f $_.Exception.Message) }',
     '    exit 0',
     '  }',

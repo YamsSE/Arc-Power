@@ -264,12 +264,15 @@ export function validateSettingsPayload(value: unknown): value is Settings {
       if (typeof v !== 'object' || v === null || !isFiniteNumber((v as { voltageV?: unknown }).voltageV) || !isFiniteNumber((v as { freqMhz?: unknown }).freqMhz)) return false;
     } else if (key === 'vfCurve') {
       if (!isPointArray(v, ['voltageV', 'freqMhz'])) return false;
+    } else if (key === 'vfCurveResetToDefault') {
+      if (v !== true) return false;
     } else if (key === 'fanCurve') {
       if (!isPointArray(v, ['t', 'speedPct'])) return false;
     } else {
       return false; // unknown key
     }
   }
+  if ('vfCurveResetToDefault' in value && !('vfCurve' in value)) return false;
   return true;
 }
 

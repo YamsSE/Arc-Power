@@ -83,6 +83,55 @@ function verifiedVoltageResult(result, wantedOffsetV) {
     && Math.abs(result.offsetV - wantedOffsetV) <= 0.0005;
 }
 
+async function ensureSysmanVoltageOffsetZero(sysmanPowerLimits, deviceId, physicalTarget, opts, { sleep, log }) {
+  const prior = await readSysmanVoltageOffset(sysmanPowerLimits, deviceId, physicalTarget);
+  if (prior.ok === true && Number.isFinite(prior.offsetV) && Math.abs(prior.offsetV) <= 0.0005) {
+    return { ok: true };
+  }
+  if (typeof sysmanPowerLimits?.setVoltageOffset !== 'function') {
+    return {
+      ok: false,
+      errorCode: prior.errorCode ?? 'unavailable',
+      message: prior.message ?? 'Sysman voltage state is not verified at 0 V and its clear writer is unavailable',
+    };
+  }
+  const result = await setSysmanVoltageOffsetWithRetry(
+    sysmanPowerLimits,
+    0,
+    deviceId,
+    physicalTarget,
+    opts.waiverAccepted === true,
+    { sleep, log },
+  );
+  return verifiedVoltageResult(result, 0)
+    ? { ok: true }
+    : {
+      ok: false,
+      errorCode: result?.errorCode ?? 'io-failed',
+      message: result?.message ?? 'the Sysman voltage offset could not be cleared to 0 V',
+    };
+}
+
+async function clearIgclVoltageOffset(backend, deviceId, opts, log) {
+  try {
+    const out = await applyOnce({ backend, deviceId, settings: { gpuVoltOffsetV: 0 }, opts, log });
+    const result = out.result.perControl.gpuVoltOffsetV;
+    return result?.ok === true && result.readBackEqual === true
+      ? { ok: true }
+      : {
+        ok: false,
+        errorCode: result?.errorCode ?? 'io-failed',
+        message: result?.message ?? 'the IGCL voltage offset could not be verified at 0 V',
+      };
+  } catch (err) {
+    return {
+      ok: false,
+      errorCode: 'io-failed',
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 /**
  * M17c: resolve the DEVICE-SCOPED gate thresholds from the pure limits
  * table. A LISTED card's thresholds come from its LISTED row; an UNLISTED
@@ -1084,14 +1133,11 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
   const negativeAlchemistVoltage = isNegativeAlchemistVoltage(settings, ranges);
   const nonNegativeAlchemistVoltage = isNonNegativeAlchemistVoltage(settings, ranges);
   const zeroAlchemistVoltage = isZeroAlchemistVoltage(settings, ranges);
-  const zeroSysmanClearAvailable = zeroAlchemistVoltage
-    && sysmanPowerLimits
-    && typeof sysmanPowerLimits.setVoltageOffset === 'function';
   // The legacy Sysman target API is the only working negative-voltage path on
   // Alchemist. Remove that one control before the IGCL apply so the V2 setter
   // can never emit the old io-failed/unsupported write. Percent-unit
   // Battlemage voltage is deliberately left in the normal DriverStore path.
-  const runtimeSettings = negativeAlchemistVoltage || zeroSysmanClearAvailable
+  const runtimeSettings = negativeAlchemistVoltage || zeroAlchemistVoltage
     ? Object.fromEntries(Object.entries(settings).filter(([key]) => key !== 'gpuVoltOffsetV'))
     : settings;
   const { driverstore: allDriverstore, extended } = splitByRuntime(runtimeSettings, ranges, mode, sysmanPowerLimits, limitsKey);
@@ -1180,58 +1226,32 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
   // in the mock's shared state mirror) a later Sysman zero-clear can otherwise
   // overwrite the positive IGCL value that just applied.
   let sysmanVoltageCleanupFailure = null;
-  if (nonNegativeAlchemistVoltage && !zeroSysmanClearAvailable && sysmanPowerLimits && typeof sysmanPowerLimits.setVoltageOffset === 'function') {
-    const prior = await readSysmanVoltageOffset(sysmanPowerLimits, deviceId, physicalTarget);
-    const needsClear = prior.ok !== true || !Number.isFinite(prior.offsetV) || prior.offsetV < -0.0005;
-    if (needsClear) {
-      const clear = await setSysmanVoltageOffsetWithRetry(
-        sysmanPowerLimits,
-        0,
-        deviceId,
-        physicalTarget,
-        opts.waiverAccepted === true,
-        { sleep, log },
-      );
-      const verifiedClear = verifiedVoltageResult(clear, 0);
-      if (!verifiedClear) {
-        sysmanVoltageCleanupFailure = {
-          ok: false,
-          errorCode: clear?.errorCode ?? 'io-failed',
-          message: clear?.message ?? 'the stale Sysman voltage offset could not be cleared to 0 V',
-        };
-      }
-      log(verifiedClear
-        ? '[apply] cleared the stale Sysman negative voltage offset before the non-negative IGCL voltage request'
-        : `[apply] stale Sysman voltage cleanup did not verify (${sysmanVoltageCleanupFailure.message}) - the IGCL voltage write is blocked`);
-    }
+  if (nonNegativeAlchemistVoltage && !zeroAlchemistVoltage) {
+    const clear = await ensureSysmanVoltageOffsetZero(sysmanPowerLimits, deviceId, physicalTarget, opts, { sleep, log });
+    if (!clear.ok) sysmanVoltageCleanupFailure = clear;
+    log(clear.ok
+      ? '[apply] Sysman voltage was verified at 0 V before the positive IGCL voltage request'
+      : `[apply] Sysman voltage zero-clear did not verify (${clear.message}) - the IGCL voltage write is blocked`);
   }
 
-  // Exactly zero is not an ordinary positive IGCL offset on Alchemist. It is
-  // the explicit Sysman clear operation for the legacy negative writer. Keep
-  // the zero out of the IGCL payload and require an exact zero read-back; a
-  // best-effort clear followed by an IGCL write is what allowed the old
-  // negative helper state to reappear in the UI.
-  if (zeroSysmanClearAvailable) {
-    const clear = await setSysmanVoltageOffsetWithRetry(
-      sysmanPowerLimits,
-      0,
-      deviceId,
-      physicalTarget,
-      opts.waiverAccepted === true,
-      { sleep, log },
-    );
-    if (verifiedVoltageResult(clear, 0)) {
+  // A zero request resets both writers. The IGCL clear is verified before
+  // the Sysman clear is attempted; either failure remains visible to callers.
+  if (zeroAlchemistVoltage) {
+    const igclClear = await clearIgclVoltageOffset(backend, deviceId, opts, log);
+    const sysmanClear = await ensureSysmanVoltageOffsetZero(sysmanPowerLimits, deviceId, physicalTarget, opts, { sleep, log });
+    if (igclClear.ok && sysmanClear.ok) {
       perControl.gpuVoltOffsetV = { ok: true, readBackEqual: true };
     } else {
+      const failures = [igclClear, sysmanClear].filter((result) => !result.ok);
       perControl.gpuVoltOffsetV = {
         ok: false,
-        errorCode: clear?.errorCode ?? 'io-failed',
-        message: clear?.message ?? 'the Sysman voltage offset could not be cleared to 0 V',
+        errorCode: failures[0].errorCode,
+        message: failures.map((result) => result.message).join('; '),
       };
     }
   }
 
-  const driverstoreForApply = sysmanVoltageCleanupFailure
+  const driverstoreForApply = sysmanVoltageCleanupFailure || zeroAlchemistVoltage
     ? Object.fromEntries(Object.entries(driverstore).filter(([key]) => key !== 'gpuVoltOffsetV'))
     : driverstore;
   if (sysmanVoltageCleanupFailure) perControl.gpuVoltOffsetV = sysmanVoltageCleanupFailure;
@@ -1299,25 +1319,33 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
         log(`[apply] negative Alchemist voltage skipped because GPU lock is active and the stale Sysman offset could not be cleared (${prior.message ?? prior.errorCode ?? 'unavailable'})`);
       }
     } else {
-      const result = await setSysmanVoltageOffsetWithRetry(
-        sysmanPowerLimits,
-        wantedOffsetV,
-        deviceId,
-        physicalTarget,
-        opts.waiverAccepted === true,
-        { sleep, log },
-      );
-      if (verifiedVoltageResult(result, wantedOffsetV)) {
-        perControl.gpuVoltOffsetV = { ok: true, readBackEqual: true };
-        if (wantedOffsetV !== settings.gpuVoltOffsetV) {
-          log(`[apply] negative Alchemist voltage was capped at ${wantedOffsetV.toFixed(3)} V (the requested value was ${settings.gpuVoltOffsetV.toFixed(3)} V)`);
-        }
+      const igclClear = typeof sysmanPowerLimits?.setVoltageOffset === 'function'
+        ? await clearIgclVoltageOffset(backend, deviceId, opts, log)
+        : { ok: true };
+      if (!igclClear.ok) {
+        perControl.gpuVoltOffsetV = igclClear;
+        log(`[apply] negative Sysman voltage write blocked because the IGCL clear did not verify (${igclClear.message})`);
       } else {
-        perControl.gpuVoltOffsetV = {
-          ok: false,
-          errorCode: result?.errorCode ?? 'io-failed',
-          message: result?.message ?? 'the Sysman voltage offset setter did not return an exact finite read-back',
-        };
+        const result = await setSysmanVoltageOffsetWithRetry(
+          sysmanPowerLimits,
+          wantedOffsetV,
+          deviceId,
+          physicalTarget,
+          opts.waiverAccepted === true,
+          { sleep, log },
+        );
+        if (verifiedVoltageResult(result, wantedOffsetV)) {
+          perControl.gpuVoltOffsetV = { ok: true, readBackEqual: true };
+          if (wantedOffsetV !== settings.gpuVoltOffsetV) {
+            log(`[apply] negative Alchemist voltage was capped at ${wantedOffsetV.toFixed(3)} V (the requested value was ${settings.gpuVoltOffsetV.toFixed(3)} V)`);
+          }
+        } else {
+          perControl.gpuVoltOffsetV = {
+            ok: false,
+            errorCode: result?.errorCode ?? 'io-failed',
+            message: result?.message ?? 'the Sysman voltage offset setter did not return an exact finite read-back',
+          };
+        }
       }
     }
   }

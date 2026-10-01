@@ -74,9 +74,10 @@ function normalizeSettings(raw = {}) {
   const position = typeof raw.position === 'string' && ADVANCED_OVERLAY_POSITIONS.includes(raw.position)
     ? raw.position
     : 'right';
-  const hotkeyLetter = typeof raw.hotkeyLetter === 'string' && /^[A-Za-z]$/.test(raw.hotkeyLetter)
-    ? raw.hotkeyLetter.toUpperCase()
-    : 'P';
+  const hotkeyLetter = typeof raw.hotkeyLetter === 'string'
+    && (/^[A-Za-z]$/.test(raw.hotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(raw.hotkeyLetter))
+    ? (/^[A-Za-z]$/.test(raw.hotkeyLetter) ? `Control+${raw.hotkeyLetter.toUpperCase()}` : raw.hotkeyLetter)
+    : 'Control+P';
   const stats = Array.isArray(raw.stats)
     ? [...new Set(raw.stats.filter((id) => OVERLAY_STAT_IDS.includes(id)))]
     : [...OVERLAY_STATS_DEFAULT];

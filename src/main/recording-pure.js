@@ -7,6 +7,9 @@ export const RECORDING_RUNTIME_DIRECTORY = 'recording-runtime';
 export const RECORDING_AUDIO_SOURCE_MODES = Object.freeze(['system', 'custom']);
 export const RECORDING_CAPTURE_TARGET_TYPES = Object.freeze(['display', 'window']);
 export const RECORDING_CAPTURE_COLOR_MODES = Object.freeze(['auto', 'sdr', 'hdr']);
+export const RECORDING_RATE_CONTROLS = Object.freeze(['CBR', 'VBR', 'CQP', 'ICQ']);
+export const RECORDING_RATE_CONTROL_QUALITY_MIN = 1;
+export const RECORDING_RATE_CONTROL_QUALITY_MAX = 63;
 // The texture-sharing QSV encoders can only consume frames created on the
 // display-output adapter. When a user explicitly selects another physical
 // Intel adapter, Arc Power uses the matching non-texture QSV variant so the
@@ -20,6 +23,33 @@ export const RECORDING_NON_DISPLAY_ENCODER_IDS = Object.freeze({
 export function recordingRuntimeEncoderIdForTarget(encoderId, displayActive) {
   if (displayActive !== false) return encoderId;
   return RECORDING_NON_DISPLAY_ENCODER_IDS[encoderId] ?? encoderId;
+}
+
+export function recordingEncoderCodecOf(encoderId) {
+  const value = typeof encoderId === 'string' ? encoderId : '';
+  const known = ['obs_qsv11_av1', 'obs_qsv11_hevc', 'obs_qsv11_v2'];
+  if (known.includes(value)) return value;
+  const prefix = 'arc-gpu-encoder:v1:';
+  if (!value.startsWith(prefix)) return null;
+  try {
+    const encoded = value.slice(prefix.length);
+    const binary = globalThis.atob(encoded.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - encoded.length % 4) % 4));
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const parsed = JSON.parse(new TextDecoder().decode(bytes));
+    const codec = parsed?.codec ?? parsed?.c;
+    return known.includes(codec) ? codec : null;
+  } catch {
+    try {
+      const parsed = JSON.parse(decodeURIComponent(value.slice(prefix.length)));
+      const codec = parsed?.codec ?? parsed?.c;
+      return known.includes(codec) ? codec : null;
+    } catch { return null; }
+  }
+}
+
+export function recordingRateControlQualityMax(rateControl, encoderId) {
+  if (rateControl === 'CQP' && recordingEncoderCodecOf(encoderId) === 'obs_qsv11_av1') return 63;
+  return 51;
 }
 export const RECORDING_CLIP_NAME_PHRASES = Object.freeze([
   'Great Play', 'Nice Shot', 'Outplay', 'Genius Play', 'Beautiful Moment', 'Arc Moment', 'Crazy Clip',
@@ -61,7 +91,10 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
   fps: 60,
   resolution: '1080p',
   encoderId: 'automatic',
+  rateControl: 'CBR',
   bitrateKbps: 8000,
+  maxBitrateKbps: 8000,
+  rateControlQuality: 23,
   captureTarget: {
     type: 'display',
     displayId: 'primary',
@@ -71,10 +104,8 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
   },
   captureColorMode: 'auto',
   showCursor: false,
-  // Keep the bundled capture runtime lazy and release it again whenever no
-  // recording work is active. Users can disable this from the Recorder page
-  // when they prefer the runtime to remain warm after it has been started.
-  memorySavingMode: true,
+  // Retained for legacy recording settings; the user preference lives in Settings.
+  memorySavingMode: false,
   replayLengthSec: 30,
   instantReplayAutoStart: false,
   replayMarkersEnabled: true,
@@ -84,7 +115,7 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
     sourceMode: 'system',
     customProcesses: [],
   },
-  hotkeys: { start: 'F9', stop: 'F10', saveClip: 'F8', screenshot: 'F7', marker: 'F6' },
+  hotkeys: { toggle: 'F9', saveClip: 'F8', screenshot: 'F7', marker: 'F6' },
 });
 export const RECORDING_MARKER_MAX_COUNT = 500;
 export const RECORDING_MARKER_LABEL_MAX_LENGTH = 80;
@@ -324,8 +355,25 @@ export function normalizeRecordingSettings(raw = {}) {
   const resolution = RECORDING_RESOLUTIONS.some((item) => item.id === source.resolution)
     ? source.resolution : DEFAULT_RECORDING_SETTINGS.resolution;
   const bitrate = normalizeRecordingBitrate(source.bitrateKbps);
+  const rateControl = RECORDING_RATE_CONTROLS.includes(source.rateControl) ? source.rateControl : DEFAULT_RECORDING_SETTINGS.rateControl;
+  const encoderId = boundedString(source.encoderId, DEFAULT_RECORDING_SETTINGS.encoderId, 128);
+  const maxBitrate = Math.max(bitrate, normalizeRecordingBitrate(source.maxBitrateKbps, DEFAULT_RECORDING_SETTINGS.maxBitrateKbps));
+  const qualityMax = recordingRateControlQualityMax(rateControl, encoderId);
+  const quality = Number.isSafeInteger(source.rateControlQuality)
+    ? Math.min(qualityMax, Math.max(RECORDING_RATE_CONTROL_QUALITY_MIN, source.rateControlQuality))
+    : DEFAULT_RECORDING_SETTINGS.rateControlQuality;
   const replayLength = Number.isFinite(source.replayLengthSec) ? Math.round(source.replayLengthSec) : DEFAULT_RECORDING_SETTINGS.replayLengthSec;
   const hotkeys = source.hotkeys && typeof source.hotkeys === 'object' ? source.hotkeys : {};
+  // Prefer an explicitly saved toggle, including an empty value. For older
+  // settings, retain a customized Start key; if Start is still the historic
+  // F9 default but Stop was customized, carry that Stop key into the toggle.
+  const legacyStart = normalizeHotkey(hotkeys.start, DEFAULT_RECORDING_SETTINGS.hotkeys.toggle);
+  const legacyStop = normalizeHotkey(hotkeys.stop, 'F10');
+  const toggleHotkey = Object.hasOwn(hotkeys, 'toggle')
+    ? normalizeHotkey(hotkeys.toggle, DEFAULT_RECORDING_SETTINGS.hotkeys.toggle)
+    : legacyStart !== DEFAULT_RECORDING_SETTINGS.hotkeys.toggle
+      ? legacyStart
+      : legacyStop !== 'F10' ? legacyStop : legacyStart;
   return {
     location: boundedString(source.location, DEFAULT_RECORDING_SETTINGS.location, 4096),
     runtimePath: boundedString(source.runtimePath, DEFAULT_RECORDING_SETTINGS.runtimePath, 4096),
@@ -334,19 +382,21 @@ export function normalizeRecordingSettings(raw = {}) {
       : (LEGACY_RECORDING_MODES[source.mode] ?? DEFAULT_RECORDING_SETTINGS.mode),
     fps: normalizeRecordingFps(source.fps),
     resolution,
-    encoderId: boundedString(source.encoderId, DEFAULT_RECORDING_SETTINGS.encoderId, 128),
+    encoderId,
+    rateControl,
     bitrateKbps: bitrate,
+    maxBitrateKbps: maxBitrate,
+    rateControlQuality: quality,
     captureTarget: normalizeRecordingCaptureTarget(source.captureTarget),
     captureColorMode: RECORDING_CAPTURE_COLOR_MODES.includes(source.captureColorMode)
       ? source.captureColorMode
       : DEFAULT_RECORDING_SETTINGS.captureColorMode,
     showCursor: source.showCursor === true,
-    memorySavingMode: source.memorySavingMode !== false,
+    memorySavingMode: source.memorySavingMode === true,
     replayLengthSec: Math.min(3600, Math.max(5, replayLength)),
     audio: normalizeRecordingAudioSettings({ ...DEFAULT_RECORDING_SETTINGS.audio, ...(source.audio ?? {}) }),
     hotkeys: {
-      start: normalizeHotkey(hotkeys.start, DEFAULT_RECORDING_SETTINGS.hotkeys.start),
-      stop: normalizeHotkey(hotkeys.stop, DEFAULT_RECORDING_SETTINGS.hotkeys.stop),
+      toggle: toggleHotkey,
       saveClip: normalizeHotkey(hotkeys.saveClip, DEFAULT_RECORDING_SETTINGS.hotkeys.saveClip),
       screenshot: normalizeHotkey(hotkeys.screenshot, DEFAULT_RECORDING_SETTINGS.hotkeys.screenshot),
       marker: normalizeHotkey(hotkeys.marker, DEFAULT_RECORDING_SETTINGS.hotkeys.marker),

@@ -15,22 +15,15 @@ export interface VfCurvePoint {
   freqMhz: number;
 }
 
+export type VfCurveEditorSource = 'live' | 'stock-reference' | 'unavailable';
+
+export interface VfCurveEditorSelection {
+  source: VfCurveEditorSource;
+  points: VfCurvePoint[];
+}
+
 export const VF_EDITOR_MAX_POINTS = 10;
 export const VF_MIN_POINTS = 2;
-// The native B-series frequency grid can round a persisted scalar core offset
-// differently at adjacent points. Keep this small enough to distinguish the
-// legacy translated stock table from an intentional custom frequency curve.
-const LEGACY_CORE_OFFSET_TOLERANCE_MHZ = 2;
-const LEGACY_CORE_OFFSET_QUANTIZATION_TOLERANCE_MHZ = 10;
-const LEGACY_B580_BAKED_OFFSET_MHZ = 99;
-const LEGACY_B580_BAKED_DELTA_PATTERN_MHZ = [
-  100, 100, 100, 100, 90, 100, 100, 100, 100, 100,
-] as const;
-const LEGACY_B580_UNIFORM_BAKED_OFFSET_MHZ = 100;
-const LEGACY_ZERO_SHIFT_TOLERANCE_V = 0.001;
-const B580_SIMPLIFIED_POINT_COUNT = 10;
-const B580_STALE_VOLTAGE_SHIFT_MIN_V = 0.01;
-const B580_STALE_FREQUENCY_TOLERANCE_MHZ = 10;
 
 /** Compare two curves by their native point coordinates and frequencies. */
 export function sameVfCurve(
@@ -50,152 +43,47 @@ export function sameVfCurve(
     });
 }
 
-/** Compare only frequencies while allowing each curve to use another grid. */
-export function sameVfCurveFrequencies(
-  left: VfCurvePoint[] | null | undefined,
-  right: VfCurvePoint[] | null | undefined,
-  frequencyToleranceMhz = 1,
+/** Sync external device/profile changes only when the editor has no local draft. */
+export function shouldSyncVfCurveFromState(
+  draft: VfCurvePoint[] | null | undefined,
+  applied: VfCurvePoint[] | null | undefined,
+  hasPendingNativeApply = false,
 ): boolean {
-  return Array.isArray(left) && Array.isArray(right)
-    && left.length === right.length
-    && left.every((point, index) => Number.isFinite(point?.freqMhz)
-      && Number.isFinite(right[index]?.freqMhz)
-      && Math.abs(point.freqMhz - right[index].freqMhz) <= frequencyToleranceMhz);
+  return !hasPendingNativeApply && sameVfCurve(draft, applied, 0, 0);
 }
 
-/**
- * Identify the stale profile shape emitted by older Battlemage builds: the
- * stock frequencies (or the same frequencies translated by the persisted
- * scalar offset), a uniformly translated voltage grid, and a non-zero scalar
- * core offset. A custom voltage-only curve is intentionally excluded unless
- * it has that complete legacy fingerprint.
- */
-export function isLegacyStockVfCurve(
+/** True only when an exact IGCL write is needed to make LIVE equal requested. */
+export function vfCurveNeedsWrite(
   requested: VfCurvePoint[] | null | undefined,
-  native: VfCurvePoint[] | null | undefined,
-  coreOffsetMhz: number | null | undefined,
+  live: VfCurvePoint[] | null | undefined,
 ): boolean {
-  if (!Array.isArray(requested) || !Array.isArray(native)
-    || requested.length < VF_MIN_POINTS || requested.length !== native.length) return false;
-  if (sameVfCurve(requested, native)) return true;
-  const offset = typeof coreOffsetMhz === 'number' && Number.isFinite(coreOffsetMhz) ? coreOffsetMhz : null;
-  if (offset === null || Math.abs(offset) < 0.5) return false;
-  const firstRequestedFrequency = requested[0]?.freqMhz;
-  const firstNativeFrequency = native[0]?.freqMhz;
-  if (typeof firstRequestedFrequency !== 'number' || !Number.isFinite(firstRequestedFrequency)
-    || typeof firstNativeFrequency !== 'number' || !Number.isFinite(firstNativeFrequency)) return false;
-  const firstFrequencyDelta = firstRequestedFrequency - firstNativeFrequency;
-  const sameFrequencyGrid = sameVfCurveFrequencies(requested, native);
-  const frequencyDeltas = requested.map((point, index) => {
-    const requestedFrequency = point?.freqMhz;
-    const nativeFrequency = native[index]?.freqMhz;
-    if (typeof requestedFrequency !== 'number' || !Number.isFinite(requestedFrequency)
-      || typeof nativeFrequency !== 'number' || !Number.isFinite(nativeFrequency)) return Number.NaN;
-    return requestedFrequency - nativeFrequency;
-  });
-  const offsetFrequencyGrid = Math.abs(firstFrequencyDelta - offset) <= LEGACY_CORE_OFFSET_TOLERANCE_MHZ
-    && frequencyDeltas.every((delta) => Number.isFinite(delta)
-      && Math.abs(delta - firstFrequencyDelta) <= LEGACY_CORE_OFFSET_TOLERANCE_MHZ);
-  const quantizedOffsetFrequencyGrid = frequencyDeltas.every((delta) => Number.isFinite(delta)
-    && Math.abs(delta - offset) <= LEGACY_CORE_OFFSET_QUANTIZATION_TOLERANCE_MHZ)
-    && Math.max(...frequencyDeltas) - Math.min(...frequencyDeltas)
-      <= LEGACY_CORE_OFFSET_QUANTIZATION_TOLERANCE_MHZ;
-  if (!sameFrequencyGrid && !offsetFrequencyGrid && !quantizedOffsetFrequencyGrid) return false;
-  const shift = requested[0].voltageV - native[0].voltageV;
-  const zeroShiftBakedFrequencyGrid = quantizedOffsetFrequencyGrid
-    && offset === LEGACY_B580_BAKED_OFFSET_MHZ
-    && frequencyDeltas.length === LEGACY_B580_BAKED_DELTA_PATTERN_MHZ.length
-    && frequencyDeltas.every((delta, index) => delta === LEGACY_B580_BAKED_DELTA_PATTERN_MHZ[index]);
-  if (!Number.isFinite(shift)
-    || (Math.abs(shift) < 0.01
-      && !(zeroShiftBakedFrequencyGrid && Math.abs(shift) <= LEGACY_ZERO_SHIFT_TOLERANCE_V))) return false;
-  return requested.every((point, index) => Number.isFinite(point?.voltageV)
-    && Number.isFinite(native[index]?.voltageV)
-    && Math.abs((point.voltageV - native[index].voltageV) - shift) <= 0.001);
-}
-
-/**
- * Identify the B580 profile shape emitted after the scalar VF metadata was
- * lost: the complete ten point native voltage grid and maximum-frequency
- * plateau are preserved, while the frequencies are translated by +100 MHz
- * (with the first point or one quantized interior point clamped by the
- * driver).
- * This exact shape is the old baked core-offset table without a remaining
- * gpuFreqOffsetMhz field. Keep it separate from isLegacyStockVfCurve so a
- * caller that explicitly supplies scalar metadata retains its stricter
- * legacy fingerprint rules.
- */
-export function isLegacyBakedB580VfCurve(
-  requested: VfCurvePoint[] | null | undefined,
-  native: VfCurvePoint[] | null | undefined,
-): boolean {
-  if (!Array.isArray(requested) || !Array.isArray(native)
-    || requested.length !== 10 || native.length !== requested.length) return false;
-  if (!requested.every((point, index) => Number.isFinite(point?.voltageV)
-    && Number.isFinite(point?.freqMhz)
-    && Number.isFinite(native[index]?.voltageV)
-    && Number.isFinite(native[index]?.freqMhz))) return false;
-  // The baked table retained the driver's voltage coordinates exactly. A
-  // custom voltage grid must remain eligible for a real VF write.
-  if (!requested.every((point, index) => Math.abs(point.voltageV - native[index].voltageV) <= 0.001)) return false;
-  const deltas = requested.map((point, index) => point.freqMhz - native[index].freqMhz);
-  // Depending on the driver revision, the first point is clamped at the
-  // native minimum instead of receiving the scalar shift. Older tables also
-  // rounded one interior point down by one 10-MHz grid step. Both are still
-  // the same baked scalar shape; arbitrary edits remain rejected.
-  const matchesBakedOffset = deltas.every((delta, index) => {
-    if (Math.abs(delta - LEGACY_B580_UNIFORM_BAKED_OFFSET_MHZ) <= 1) return true;
-    if (index === 0 && Math.abs(delta) <= 1) return true;
-    return index === 4 && Math.abs(delta - (LEGACY_B580_UNIFORM_BAKED_OFFSET_MHZ - 10)) <= 1;
-  });
-  if (!matchesBakedOffset || deltas.filter((delta) => Math.abs(delta - LEGACY_B580_UNIFORM_BAKED_OFFSET_MHZ) <= 1).length < 8) return false;
-  // B580's simplified native table ends in a shared maximum-frequency
-  // plateau. Requiring the same plateau on the translated table prevents a
-  // short arbitrary custom curve from being treated as migration data.
-  const nativeTail = native.slice(-2);
-  const requestedTail = requested.slice(-2);
-  return Math.abs(nativeTail[1].freqMhz - nativeTail[0].freqMhz) <= 1
-    && Math.abs(requestedTail[1].freqMhz - requestedTail[0].freqMhz) <= 1
-    && requestedTail[1].freqMhz > nativeTail[1].freqMhz;
-}
-
-/**
- * Rebase a valid ten-point B580 profile whose voltage grid came from an older
- * driver revision onto the current native grid. The profile remains a custom
- * VF curve: only stale voltage coordinates are replaced, and only when the
- * requested frequencies match the current LIVE table within the driver's
- * observed 10 MHz endpoint quantization.
- */
-export function rebaseB580VfCurveToNativeGrid(
-  requested: VfCurvePoint[] | null | undefined,
-  native: VfCurvePoint[] | null | undefined,
-  live: VfCurvePoint[] | null | undefined = null,
-): VfCurvePoint[] | null {
-  if (!Array.isArray(requested) || !Array.isArray(native)
-    || requested.length !== B580_SIMPLIFIED_POINT_COUNT
-    || native.length !== requested.length) return null;
-  const reference = Array.isArray(live) && live.length === requested.length ? live : native;
-  if (!requested.every((point, index) => Number.isFinite(point?.voltageV)
-    && Number.isFinite(point?.freqMhz)
-    && Number.isFinite(native[index]?.voltageV)
-    && Number.isFinite(native[index]?.freqMhz)
-    && Number.isFinite(reference[index]?.freqMhz))) return null;
-  if (!requested.every((point, index) => index === 0
-    || (point.voltageV > requested[index - 1].voltageV
-      && point.freqMhz >= requested[index - 1].freqMhz))
-    || !native.every((point, index) => index === 0 || point.voltageV > native[index - 1].voltageV)) return null;
-  const voltageShift = requested[0].voltageV - native[0].voltageV;
-  if (Math.abs(voltageShift) <= B580_STALE_VOLTAGE_SHIFT_MIN_V
-    || !requested.every((point, index) => Math.abs(
-      (point.voltageV - native[index].voltageV) - voltageShift,
-    ) <= 0.001)) return null;
-  if (!requested.every((point, index) => Math.abs(point.freqMhz - reference[index].freqMhz)
-    <= B580_STALE_FREQUENCY_TOLERANCE_MHZ)) return null;
-  return requested.map((point, index) => ({ ...point, voltageV: native[index].voltageV }));
+  return !sameVfCurve(requested, live, 0, 0);
 }
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function stepForRange(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && (value as number) > 0 ? value as number : fallback;
+}
+
+function snapToGridWithin(value: number, min: number, max: number, origin: number, step: number): number | null {
+  if (min > max || !Number.isFinite(step) || step <= 0) return null;
+  const epsilon = 1e-9;
+  const minIndex = Math.ceil((min - origin) / step - epsilon);
+  const maxIndex = Math.floor((max - origin) / step + epsilon);
+  if (minIndex > maxIndex) return null;
+  const requestedIndex = Math.round(((Number.isFinite(value) ? value : min) - origin) / step);
+  const index = Math.min(maxIndex, Math.max(minIndex, requestedIndex));
+  const snapped = origin + index * step;
+  return Number(snapped.toFixed(6));
+}
+
+function isOnGrid(value: number, origin: number, step: number): boolean {
+  if (!Number.isFinite(value) || !Number.isFinite(origin) || !Number.isFinite(step) || step <= 0) return false;
+  const gridPosition = (value - origin) / step;
+  return Math.abs(gridPosition - Math.round(gridPosition)) <= 1e-7;
 }
 
 function legalMaxPoints(range: VfCurveRange, requested: number): number {
@@ -205,28 +93,16 @@ function legalMaxPoints(range: VfCurveRange, requested: number): number {
   return Math.max(VF_MIN_POINTS, Math.min(VF_EDITOR_MAX_POINTS, driverMax, Math.floor(requested)));
 }
 
-function sanitizePoint(point: VfCurvePoint, range: VfCurveRange): VfCurvePoint | null {
-  if (!point || !Number.isFinite(point.voltageV) || !Number.isFinite(point.freqMhz)) return null;
-  return {
-    voltageV: Number(clamp(point.voltageV, range.voltageMinV, range.voltageMaxV).toFixed(3)),
-    freqMhz: Math.round(clamp(point.freqMhz, range.freqMinMhz, range.freqMaxMhz)),
-  };
-}
-
-function seedVfCurve(range: VfCurveRange): VfCurvePoint[] {
-  return [
-    { voltageV: Number(range.voltageMinV.toFixed(3)), freqMhz: Math.round(range.freqMinMhz) },
-    { voltageV: Number(range.voltageMaxV.toFixed(3)), freqMhz: Math.round(range.freqMaxMhz) },
-  ];
-}
-
 /**
  * Convert a valid curve into the integer-MHz shape accepted by the native
- * custom-curve writer. IGCL exposes equal adjacent frequencies in STOCK and
+ * custom-curve writer. The editor uses IGS's 1MHz point precision; the driver
+ * may normalize a requested frequency to its reported native step, which is
+ * verified from stable LIVE read-back after the single write. IGCL exposes equal adjacent frequencies in STOCK and
  * LIVE reads (the B580's final points are a native maximum-frequency
  * plateau), and the writer accepts that non-decreasing shape. Keep the
- * requested voltage positions and point count intact; only repair descending
- * frequency steps while staying inside the reported bounds.
+ * requested coordinates and point order intact. Inputs that need clamping,
+ * rounding, or monotonic repair are rejected so a point can never silently
+ * move to another coordinate before reaching IGCL.
  */
 export function prepareVfCurveForDriver(
   points: VfCurvePoint[],
@@ -240,66 +116,37 @@ export function prepareVfCurveForDriver(
     return null;
   }
 
-  const prepared = points.map((point) => ({
-    ...point,
-    freqMhz: Math.round(clamp(point.freqMhz, minFrequency, maxFrequency)),
-  }));
-
-  // Forward repair preserves the requested curve everywhere except descending
-  // steps. Equal frequencies are intentional native plateaus and must not be
-  // incremented to an off-grid value (for example 3211 MHz on a B580).
-  for (let index = 1; index < prepared.length; index += 1) {
-    prepared[index].freqMhz = Math.max(prepared[index].freqMhz, prepared[index - 1].freqMhz);
-  }
-  if (prepared[0].freqMhz < minFrequency) {
-    prepared[0].freqMhz = minFrequency;
-    for (let index = 1; index < prepared.length; index += 1) {
-      prepared[index].freqMhz = Math.max(prepared[index].freqMhz, prepared[index - 1].freqMhz);
-    }
-  }
-  if (prepared.at(-1)!.freqMhz > maxFrequency
-    || prepared[0].freqMhz < minFrequency
-    || prepared.some((point, index) => index > 0 && point.freqMhz < prepared[index - 1].freqMhz)) {
-    return null;
-  }
-  return prepared;
+  if (!points.every((point, index) => point
+    && Number.isFinite(point.voltageV)
+    && Number.isFinite(point.freqMhz)
+    && point.voltageV >= range.voltageMinV
+    && point.voltageV <= range.voltageMaxV
+    && isOnGrid(point.voltageV, range.voltageMinV, stepForRange(range.voltageStepV, 0.001))
+    && Number.isInteger(point.freqMhz)
+    && point.freqMhz >= minFrequency
+    && point.freqMhz <= maxFrequency
+    && (index === 0 || (point.voltageV > points[index - 1].voltageV
+      && point.freqMhz >= points[index - 1].freqMhz)))) return null;
+  return points.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz }));
 }
 
 /**
- * Normalize a driver/profile curve for the compact editor. Curves longer
- * than the editor limit are evenly downsampled, always retaining endpoints.
- * Invalid input degrades to the nearest legal curve rather than allowing an
- * apply payload the backend must reject. Equal adjacent frequencies from the
- * driver's read-only table remain intact because they are a valid native
- * maximum-frequency plateau.
+ * Return an editable copy only when the driver/profile table is already valid.
+ * Never reorder, round, repair, seed, or downsample input: the array index is
+ * the IGCL point identity, and the editor must submit that exact table.
  */
 export function normalizeVfCurvePoints(
   points: VfCurvePoint[] | null | undefined,
   range: VfCurveRange,
   requestedMax: number = VF_EDITOR_MAX_POINTS,
 ): VfCurvePoint[] {
-  const maxPoints = legalMaxPoints(range, requestedMax);
-  const sorted = (Array.isArray(points) ? points : [])
-    .map((point) => sanitizePoint(point, range))
-    .filter((point): point is VfCurvePoint => point !== null)
-    .sort((a, b) => a.voltageV - b.voltageV || a.freqMhz - b.freqMhz);
-  const legal: VfCurvePoint[] = [];
-  for (const point of sorted) {
-    const previous = legal[legal.length - 1];
-    if (!previous || point.voltageV > previous.voltageV) {
-      legal.push(point);
-    }
+  // requestedMax is retained for source compatibility with the compact UI;
+  // a real driver-owned point table takes precedence over the display limit.
+  void requestedMax;
+  if (isValidNativeVfCurve(points, range)) {
+    return points.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz }));
   }
-  if (legal.length < VF_MIN_POINTS) return seedVfCurve(range);
-
-  const compact = legal.length <= maxPoints
-    ? legal.map((point) => ({ ...point }))
-    : (() => {
-      const stride = (legal.length - 1) / (maxPoints - 1);
-      return Array.from({ length: maxPoints }, (_, index) => ({ ...legal[Math.round(index * stride)] }));
-    })();
-
-  return prepareVfCurveForDriver(compact, range) ?? seedVfCurve(range);
+  return [];
 }
 
 /**
@@ -311,7 +158,7 @@ export function normalizeVfCurvePoints(
 export function isValidNativeVfCurve(
   points: VfCurvePoint[] | null | undefined,
   range: VfCurveRange,
-): boolean {
+): points is VfCurvePoint[] {
   if (!Number.isFinite(range.voltageMinV) || !Number.isFinite(range.voltageMaxV)
     || !Number.isFinite(range.freqMinMhz) || !Number.isFinite(range.freqMaxMhz)
     || range.voltageMinV > range.voltageMaxV || range.freqMinMhz > range.freqMaxMhz) return false;
@@ -329,7 +176,129 @@ export function isValidNativeVfCurve(
   });
 }
 
-/** Move one point while keeping voltage ascending and frequency non-decreasing. */
+/**
+ * Select the curve to show when opening the editor. A verified LIVE table is
+ * authoritative; if LIVE is temporarily unreadable, a verified STOCK table
+ * remains useful as a clearly labelled reference. Never repair either table.
+ */
+export function selectVfCurveEditorCurve(
+  live: VfCurvePoint[] | null | undefined,
+  stock: VfCurvePoint[] | null | undefined,
+  range: VfCurveRange,
+): VfCurveEditorSelection {
+  const liveValid = isValidNativeVfCurve(live, range);
+  const stockValid = isValidNativeVfCurve(stock, range);
+  const points = liveValid ? live : stockValid ? stock : [];
+  return {
+    source: liveValid ? 'live' : stockValid ? 'stock-reference' : 'unavailable',
+    points: points.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz })),
+  };
+}
+
+/** Keep an async driver refresh from replacing a draft or another device's
+ * editor after the request has started. */
+export function shouldCommitVfCurveRefresh(
+  requestedDeviceId: number,
+  currentDeviceId: number | null,
+  requestedDeviceKey: string | null,
+  currentDeviceKey: string | null,
+  hasPendingDraft: boolean,
+  requestGeneration: number,
+  currentGeneration: number,
+): boolean {
+  return currentDeviceId === requestedDeviceId
+    && currentDeviceKey === requestedDeviceKey
+    && !hasPendingDraft
+    && requestGeneration === currentGeneration;
+}
+
+const VF_EDITOR_FREQUENCY_STEP_MHZ = 1;
+
+function copyPoints(points: VfCurvePoint[]): VfCurvePoint[] {
+  return points.map((point) => ({ ...point }));
+}
+
+/**
+ * IGS moves neighboring graph points when an edit would break curve ordering.
+ * X is kept strictly ascending with one UI step between points; Y is kept
+ * non-decreasing by extending a plateau forward or backward from the edit.
+ */
+function propagateVfPointEdit(
+  points: VfCurvePoint[],
+  index: number,
+  voltageV: number,
+  freqMhz: number,
+  range: VfCurveRange,
+): VfCurvePoint[] {
+  const unchanged = copyPoints(points);
+  if (!Array.isArray(points) || index < 0 || index >= points.length
+    || !Number.isFinite(voltageV) || !Number.isFinite(freqMhz)
+    || !Number.isFinite(range.voltageMinV) || !Number.isFinite(range.voltageMaxV)
+    || !Number.isFinite(range.freqMinMhz) || !Number.isFinite(range.freqMaxMhz)
+    || range.voltageMinV > range.voltageMaxV || range.freqMinMhz > range.freqMaxMhz
+    || points.length < VF_MIN_POINTS) return unchanged;
+
+  const voltageMin = range.voltageMinV;
+  const voltageMax = range.voltageMaxV;
+  const frequencyMin = range.freqMinMhz;
+  const frequencyMax = range.freqMaxMhz;
+  const voltageStep = stepForRange(range.voltageStepV, 0.001);
+  const frequencyStep = VF_EDITOR_FREQUENCY_STEP_MHZ;
+  if (!points.every((point, pointIndex) => point
+    && Number.isFinite(point.voltageV) && Number.isFinite(point.freqMhz)
+    && point.voltageV >= voltageMin && point.voltageV <= voltageMax
+    && point.freqMhz >= frequencyMin && point.freqMhz <= frequencyMax
+    && (pointIndex === 0 || (point.voltageV > points[pointIndex - 1].voltageV
+      && point.freqMhz >= points[pointIndex - 1].freqMhz)))) return unchanged;
+  const minEditedVoltage = voltageMin + index * voltageStep;
+  const maxEditedVoltage = voltageMax - (points.length - 1 - index) * voltageStep;
+  if (minEditedVoltage > maxEditedVoltage) return unchanged;
+
+  const next = copyPoints(points);
+  // Keep voltage on the adapter's reported grid and frequency on IGS's
+  // 1MHz UI increments. X spacing may move neighbors, just as the IGS graph does.
+  const snappedVoltage = snapToGridWithin(
+    voltageV, minEditedVoltage, maxEditedVoltage, voltageMin, voltageStep,
+  );
+  const snappedFrequency = snapToGridWithin(
+    freqMhz, frequencyMin, frequencyMax, frequencyMin, frequencyStep,
+  );
+  if (snappedVoltage === null || snappedFrequency === null) return unchanged;
+  next[index] = { voltageV: snappedVoltage, freqMhz: snappedFrequency };
+
+  for (let pointIndex = index + 1; pointIndex < next.length; pointIndex += 1) {
+    const minPointVoltage = next[pointIndex - 1].voltageV + voltageStep;
+    const maxPointVoltage = voltageMax - (next.length - 1 - pointIndex) * voltageStep;
+    const snapped = snapToGridWithin(
+      next[pointIndex].voltageV, minPointVoltage, maxPointVoltage, voltageMin, voltageStep,
+    );
+    if (snapped === null) return unchanged;
+    next[pointIndex].voltageV = snapped;
+    if (next[pointIndex].freqMhz < next[pointIndex - 1].freqMhz) {
+      next[pointIndex].freqMhz = next[pointIndex - 1].freqMhz;
+    }
+  }
+
+  for (let pointIndex = index - 1; pointIndex >= 0; pointIndex -= 1) {
+    const minPointVoltage = voltageMin + pointIndex * voltageStep;
+    const maxPointVoltage = next[pointIndex + 1].voltageV - voltageStep;
+    const snapped = snapToGridWithin(
+      next[pointIndex].voltageV, minPointVoltage, maxPointVoltage, voltageMin, voltageStep,
+    );
+    if (snapped === null) return unchanged;
+    next[pointIndex].voltageV = snapped;
+    if (next[pointIndex].freqMhz > next[pointIndex + 1].freqMhz) {
+      next[pointIndex].freqMhz = next[pointIndex + 1].freqMhz;
+    }
+  }
+
+  if (next.some((point, pointIndex) => point.freqMhz < frequencyMin || point.freqMhz > frequencyMax
+    || (pointIndex > 0 && (point.voltageV <= next[pointIndex - 1].voltageV
+      || point.freqMhz < next[pointIndex - 1].freqMhz)))) return unchanged;
+  return next;
+}
+
+/** Move one point using the IGS neighboring-point propagation behavior. */
 export function moveVfPoint(
   points: VfCurvePoint[],
   index: number,
@@ -337,21 +306,7 @@ export function moveVfPoint(
   freqMhz: number,
   range: VfCurveRange,
 ): VfCurvePoint[] {
-  if (index < 0 || index >= points.length) return points.map((point) => ({ ...point }));
-  const next = points.map((point) => ({ ...point }));
-  const current = next[index];
-  const previous = next[index - 1];
-  const following = next[index + 1];
-  const voltageMin = Math.max(range.voltageMinV, previous ? previous.voltageV + 0.001 : range.voltageMinV);
-  const voltageMax = Math.min(range.voltageMaxV, following ? following.voltageV - 0.001 : range.voltageMaxV);
-  const freqMin = Math.max(range.freqMinMhz, previous ? previous.freqMhz : range.freqMinMhz);
-  const freqMax = Math.min(range.freqMaxMhz, following ? following.freqMhz : range.freqMaxMhz);
-  if (voltageMin > voltageMax || freqMin > freqMax) return next;
-  next[index] = {
-    voltageV: Number(clamp(Number.isFinite(voltageV) ? voltageV : current.voltageV, voltageMin, voltageMax).toFixed(3)),
-    freqMhz: Math.round(clamp(Number.isFinite(freqMhz) ? freqMhz : current.freqMhz, freqMin, freqMax)),
-  };
-  return next;
+  return propagateVfPointEdit(points, index, voltageV, freqMhz, range);
 }
 
 /** Move only a point's frequency, preserving the driver's voltage grid and
@@ -362,19 +317,8 @@ export function moveVfFrequencyPoint(
   freqMhz: number,
   range: VfCurveRange,
 ): VfCurvePoint[] {
-  if (index < 0 || index >= points.length) return points.map((point) => ({ ...point }));
-  const next = points.map((point) => ({ ...point }));
-  const current = next[index];
-  const previous = next[index - 1];
-  const following = next[index + 1];
-  const freqMin = Math.max(range.freqMinMhz, previous ? previous.freqMhz : range.freqMinMhz);
-  const freqMax = Math.min(range.freqMaxMhz, following ? following.freqMhz : range.freqMaxMhz);
-  if (freqMin > freqMax) return next;
-  next[index] = {
-    ...current,
-    freqMhz: Math.round(clamp(Number.isFinite(freqMhz) ? freqMhz : current.freqMhz, freqMin, freqMax)),
-  };
-  return next;
+  if (index < 0 || index >= points.length) return copyPoints(points);
+  return propagateVfPointEdit(points, index, points[index].voltageV, freqMhz, range);
 }
 
 /** Insert a point halfway through the widest legal voltage gap. */
