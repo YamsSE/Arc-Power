@@ -174,6 +174,7 @@ export function validateVfCurveReadback({
   for (let index = 0; index < readBack.points.length; index += 1) {
     const point = readBack.points[index];
     const inRange = Number.isFinite(point?.Voltage) && Number.isFinite(point?.Frequency)
+      && (!driverAuthoritative || (Number.isInteger(point.Voltage) && Number.isInteger(point.Frequency)))
       && point.Voltage / 1000 >= curveRange.voltageMinV
       && point.Voltage / 1000 <= curveRange.voltageMaxV
       && point.Frequency >= curveRange.freqMinMhz
@@ -191,7 +192,10 @@ export function validateVfCurveReadback({
   }
 
   const appliedCurve = toCanonicalCurve(readBack.points);
-  const hasBeforeImage = liveBefore?.ok === true && Array.isArray(liveBefore.points);
+  const hasBeforeImage = liveBefore?.ok === true && Array.isArray(liveBefore.points)
+    && (!driverAuthoritative || validateVfCurveReadback({
+      readBack: liveBefore, requestedPoints: liveBefore.points, curveRange,
+    }).ok && liveBefore.points.every((point) => Number.isInteger(point.Voltage) && Number.isInteger(point.Frequency)));
   const voltageToleranceMv = Number.isInteger(uniformVoltageShiftToleranceMv) && uniformVoltageShiftToleranceMv > 0
     ? uniformVoltageShiftToleranceMv
     : 0;
@@ -207,13 +211,24 @@ export function validateVfCurveReadback({
     };
   }
 
+  if (driverAuthoritative && (!hasBeforeImage
+    || (requestedDiffersFromBefore && curveShapeKey(readBack.points) === curveShapeKey(liveBefore.points)))) {
+    return {
+      ok: false, exact: false, normalized: false, driverAdjusted: false,
+      silentNoop: hasBeforeImage, errorCode: hasBeforeImage ? 'driver-noop' : 'readback-unverified', appliedCurve,
+      message: hasBeforeImage
+        ? 'IGCL reported success, but no change to LIVE frequencies or relative voltage spacing was observed. A common voltage-origin shift cannot prove the requested edit applied. Your requested draft was kept unchanged.'
+        : 'The LIVE before-image could not be verified. Your requested draft was kept unchanged.',
+    };
+  }
+
   if (pointsEqual(readBack.points, requestedPoints)) {
     return { ok: true, exact: true, readBackEqual: true, normalized: false, driverAdjusted: false, appliedCurve };
   }
 
-  // IGS accepts the refreshed LIVE property after a successful setter. A
-  // moving voltage origin or driver normalization is an observed result,
-  // rather than grounds to replay or reject the successful native write.
+  // Accept driver normalization only after the before-image check proves an
+  // effective change. Native success or voltage-origin motion alone cannot
+  // establish that the requested edit reached LIVE.
   if (driverAuthoritative) {
     const shift = uniformVoltageShiftMv(readBack.points, requestedPoints, Infinity);
     return {
@@ -330,10 +345,30 @@ export async function readVfCurveAfterWrite({
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
   if (driverAuthoritative) {
-    return validateVfCurveReadback({
-      readBack: await readVfCurveOnce({ readCurve }),
-      requestedPoints, liveBefore, curveRange, driverAuthoritative,
-    });
+    // Observe the entire bounded window: an early changed sample can revert.
+    // Only consecutive latest valid effective shapes count; absolute native
+    // voltage-origin motion never constitutes proof that an edit applied.
+    const attempts = Math.max(2, Math.min(6, Number.isInteger(maxAttempts) ? maxAttempts : 5));
+    const interval = Math.min(200, Math.max(0, Number.isFinite(pollIntervalMs) ? pollIntervalMs : 100));
+    let latest;
+    let previousShape = null;
+    let consecutive = 0;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const readBack = await readVfCurveOnce({ readCurve });
+      latest = validateVfCurveReadback({ readBack, requestedPoints, liveBefore, curveRange, driverAuthoritative });
+      // The backend read callback already bounds native-error retries. Do not
+      // multiply that retry budget across the observation window.
+      if (!readBack.ok) return latest;
+      const shape = latest.ok ? curveShapeKey(readBack.points) : null;
+      consecutive = shape !== null ? (shape === previousShape ? consecutive + 1 : 1) : 0;
+      previousShape = shape;
+      if (attempt < attempts - 1 && interval > 0) await wait(interval);
+    }
+    if (!latest.ok || consecutive >= 2) return latest;
+    return {
+      ...latest, ok: false, errorCode: 'readback-unverified',
+      message: 'The LIVE VF curve did not retain the same effective result through the latest two reads. Your requested draft was kept unchanged.',
+    };
   }
   if (typeof readCurve !== 'function') {
     return validateVfCurveReadback({

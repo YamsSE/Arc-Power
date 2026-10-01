@@ -13,9 +13,12 @@ once, and a successful setter refreshes STOCK then LIVE. The UI adopts that
 returned LIVE value. It does not require repeated equal reads or exact equality
 between the request and the driver's returned curve.
 
-Arc Power follows that sequence for Battlemage. It validates native ranges,
-ordering and count, preserves the submitted coordinates, and displays valid
-LIVE readback after a successful setter. Native read errors have bounded
+Arc Power uses that setter sequence for Battlemage. It validates native ranges,
+ordering and count and preserves the submitted coordinates. Following the
+reported GUI failure, it also observes a bounded window of LIVE results and
+requires the latest two samples to retain the same effective result. A native
+SUCCESS with unchanged frequencies and relative voltage spacing is reported as
+an ignored edit, not as Applied; the requested draft remains editable. Native read errors have bounded
 retries; native writes are never automatically replayed. Adapter identity,
 transaction serialization and zero core-offset checks remain enforced.
 
@@ -69,3 +72,31 @@ curve as STOCK: intentional whole-curve voltage edits have that same shape.
 
 References: [Intel VF API](https://intel.github.io/drivers.gpu.control-library/Control/api.html#ctloverclockreadvfcurve)
 and [Intel overclocking sample](https://github.com/intel/drivers.gpu.control-library/blob/master/Samples/Overclocking_Sample/Sample_OverclockAPP.cpp).
+
+## GUI reproduction follow-up
+
+The submitted 41.77-second video showed edits to the ending frequency followed
+by a green Applied result even when that edit was ignored. Native B580 probes
+reproduced this: a last-point +10MHz request returned SUCCESS but all 20 later
+reads retained the old frequency table. Changing both ending points by +50MHz
+returned a persistent +30MHz plateau; a middle-point -10MHz edit persisted
+exactly. The driver can quantize or remap edits, so arbitrary requested integer
+coordinates are not guaranteed to stick.
+
+When the selected Battlemage STOCK table ends in an equal-frequency pair, the
+editor links those two frequencies. Editing either endpoint visibly stages both
+changes before Apply. This avoids submitting a lone terminal sample as an
+independent maximum-frequency anchor. Profiles keep their saved coordinates;
+they are not silently rewritten by this editor behavior.
+
+Refresh continues to show the actual native voltage coordinates. If only a
+common voltage translation occurred, the editor explains its signed mV change
+and does not announce another curve Apply or stack green refresh notifications.
+This is measured native read behavior; its physical cause is not established.
+
+The revised production IPC flow verified ignored-edit detection, middle and
+terminal-plateau Apply, curve-only Reset, custom profile Apply and full Reset.
+Twenty later reads retained each successful effective result. The user's
+captured starting custom curve was restored afterward. An isolated Electron
+renderer check verified visible linking, the submitted payload, draft retention
+after a simulated native no-op, discard/refresh recovery, and the origin notice.

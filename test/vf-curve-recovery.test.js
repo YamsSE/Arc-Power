@@ -1,11 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { discardVfCurveDraft, observeVfCurveSnapshot, verifiedVfCurveApplySnapshot, vfCurveEditorContextIsCurrent } from '../src/renderer/pure/vf-curve-recovery.ts';
+import { discardVfCurveDraft, observeVfCurveSnapshot, verifiedVfCurveApplySnapshot, vfCurveEditorContextIsCurrent, vfCurveVoltageOriginShiftMv } from '../src/renderer/pure/vf-curve-recovery.ts';
 import { shouldCommitVfCurveRefresh } from '../src/renderer/pure/vf-curve.ts';
 
 const range = { voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 400, freqMaxMhz: 4300, maxPoints: 10 };
 const live = [{ voltageV: 0.7, freqMhz: 1600 }, { voltageV: 0.8, freqMhz: 2400 }];
 const stock = [{ voltageV: 0.65, freqMhz: 1500 }, { voltageV: 0.75, freqMhz: 2300 }];
+
+test('origin notice reports signed exact native common translations only', () => {
+  for (const shift of [-30, 0, 23, 125]) {
+    const translated = live.map((point) => ({ ...point, voltageV: point.voltageV + shift / 1000 }));
+    assert.equal(vfCurveVoltageOriginShiftMv(live, translated, range, true), shift);
+    assert.deepEqual(translated.map((point) => point.voltageV), live.map((point) => point.voltageV + shift / 1000));
+    assert.equal(vfCurveVoltageOriginShiftMv(live, translated, range, false), null);
+  }
+  for (const changed of [null, [], stock,
+    live.map((point, index) => ({ ...point, freqMhz: point.freqMhz + index })),
+    live.map((point, index) => ({ ...point, voltageV: point.voltageV + index / 1000 })),
+    live.map((point) => ({ ...point, voltageV: point.voltageV + 0.0231 }))]) {
+    assert.equal(vfCurveVoltageOriginShiftMv(live, changed, range, true), null);
+  }
+});
 
 test('missing and invalid background reads preserve the last readable native curve without claiming a change', () => {
   for (const failedRead of [undefined, null, [], [{ voltageV: 0.9, freqMhz: 2000 }, { voltageV: 0.8, freqMhz: 2100 }]]) {

@@ -2,6 +2,23 @@ import { isValidNativeVfCurve, shouldCommitVfCurveRefresh } from './vf-curve.ts'
 import type { VfCurvePoint } from './vf-curve.ts';
 import type { VfCurveRange } from '../types.ts';
 
+/** Report an actual native common-origin translation without rebasing either table. */
+export function vfCurveVoltageOriginShiftMv(
+  previous: VfCurvePoint[] | null,
+  next: VfCurvePoint[] | null,
+  range: VfCurveRange,
+  battlemage: boolean,
+): number | null {
+  if (!battlemage || !isValidNativeVfCurve(previous, range)
+    || !isValidNativeVfCurve(next, range) || previous.length !== next.length) return null;
+  const before = previous.map((point) => point.voltageV * 1000);
+  const after = next.map((point) => point.voltageV * 1000);
+  if (![...before, ...after].every((value) => Math.abs(value - Math.round(value)) < 1e-6)) return null;
+  const shift = Math.round(after[0]) - Math.round(before[0]);
+  return previous.every((point, index) => point.freqMhz === next[index].freqMhz
+    && Math.round(after[index]) - Math.round(before[index]) === shift) ? shift : null;
+}
+
 /** Page lifetime is independent of the generation of individual driver reads. */
 export function vfCurveEditorContextIsCurrent(
   requestedDeviceId: number,

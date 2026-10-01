@@ -305,13 +305,14 @@ test('profile payloads cannot use the transient reset marker to replace a custom
   }
 });
 
-test('B580 submits once then refreshes STOCK and LIVE once', async () => {
+test('B580 submits once then confirms the latest effective STOCK and LIVE result', async () => {
   const { backend, writes, nativeEvents } = fixture();
   const result = await backend.applySettings(0, { vfCurve: stockCanonical });
   assert.equal(result.ok, true); assert.deepEqual(writes, ['vf']);
-  assert.deepEqual(nativeEvents.slice(nativeEvents.indexOf('write') + 1), ['read-0-count', 'read-0-table', 'read-1-count', 'read-1-table']);
-  assert.equal(nativeEvents.filter((event) => event === 'read-0-table').length, 3);
-  assert.equal(nativeEvents.filter((event) => event === 'read-1-table').length, 3);
+  assert.deepEqual(nativeEvents.slice(nativeEvents.indexOf('write') + 1),
+    Array.from({ length: 6 }, () => ['read-0-count', 'read-0-table', 'read-1-count', 'read-1-table']).flat());
+  assert.equal(nativeEvents.filter((event) => event === 'read-0-table').length, 8);
+  assert.equal(nativeEvents.filter((event) => event === 'read-1-table').length, 8);
 });
 
 test('B580 never retries a failed native setter', async () => {

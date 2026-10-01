@@ -1731,7 +1731,7 @@ export class MockBackend {
         const validShape = Array.isArray(curve) && curve.length >= 2 && curve.length <= (curveRange?.maxPoints ?? MAX_VF_POINTS)
           && curve.every((p) => Number.isFinite(p?.voltageV) && Number.isFinite(p?.freqMhz));
         const validOrder = validShape && curve.every((p, i) => i === 0
-          || (p.voltageV > curve[i - 1].voltageV && p.freqMhz > curve[i - 1].freqMhz));
+          || (p.voltageV > curve[i - 1].voltageV && p.freqMhz >= curve[i - 1].freqMhz));
         const validRange = validShape && (!curveRange || curve.every((p) =>
           p.voltageV >= curveRange.voltageMinV && p.voltageV <= curveRange.voltageMaxV
           && p.freqMhz >= curveRange.freqMinMhz && p.freqMhz <= curveRange.freqMaxMhz));

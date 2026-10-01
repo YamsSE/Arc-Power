@@ -305,8 +305,23 @@ export function moveVfPoint(
   voltageV: number,
   freqMhz: number,
   range: VfCurveRange,
+  linkTerminalPlateau = false,
 ): VfCurvePoint[] {
-  return propagateVfPointEdit(points, index, voltageV, freqMhz, range);
+  const next = propagateVfPointEdit(points, index, voltageV, freqMhz, range);
+  if (!linkTerminalPlateau || index < points.length - 2 || index >= points.length
+    || next[index]?.freqMhz === points[index]?.freqMhz) return next;
+  const partner = index === points.length - 1 ? index - 1 : index + 1;
+  return propagateVfPointEdit(next, partner, next[partner].voltageV, next[index].freqMhz, range);
+}
+
+/** Only the native Battlemage STOCK ending plateau defines linked frequency points. */
+export function hasLinkedVfTerminalPlateau(
+  stock: VfCurvePoint[] | null | undefined,
+  range: VfCurveRange,
+  battlemage: boolean,
+): boolean {
+  return battlemage && isValidNativeVfCurve(stock, range)
+    && stock[stock.length - 2].freqMhz === stock[stock.length - 1].freqMhz;
 }
 
 /** Move only a point's frequency, preserving the driver's voltage grid and

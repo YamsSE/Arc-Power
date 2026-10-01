@@ -78,11 +78,12 @@ import { selectDevice } from '../app.ts';
 import { activeDeviceLabel } from '../pure/device.ts';
 import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-editor.ts';
 import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
-import { discardVfCurveDraft, observeVfCurveSnapshot, verifiedVfCurveApplySnapshot, vfCurveEditorContextIsCurrent } from '../pure/vf-curve-recovery.ts';
+import { discardVfCurveDraft, observeVfCurveSnapshot, verifiedVfCurveApplySnapshot, vfCurveEditorContextIsCurrent, vfCurveVoltageOriginShiftMv } from '../pure/vf-curve-recovery.ts';
 import {
   VF_EDITOR_MAX_POINTS,
   isValidNativeVfCurve,
   moveVfPoint,
+  hasLinkedVfTerminalPlateau,
   normalizeVfCurvePoints,
   selectVfCurveEditorCurve,
   shouldCommitVfCurveRefresh,
@@ -922,7 +923,8 @@ export const tuningPage: Page = {
         const nextVoltage = field === 'voltage' ? raw / 1000 : point.voltageV;
         const nextFrequency = field === 'frequency' ? raw : point.freqMhz;
         vfCurveNativeApplyDraft = null;
-        vfCurveDraft = moveVfPoint(vfCurveDraft, index, nextVoltage, nextFrequency, curveBounds);
+        vfCurveDraft = moveVfPoint(vfCurveDraft, index, nextVoltage, nextFrequency, curveBounds,
+          vfCurveDefault?.length === vfCurveDraft.length && hasLinkedVfTerminalPlateau(vfCurveDefault, curveBounds, isBattlemageGpuName(caps.deviceName)));
         vfCurveDisplaySource = 'draft';
         // Redraw both the line and the point together. Updating only the dot
         // left the SVG curve behind, which made a valid edit look broken.
@@ -980,7 +982,8 @@ export const tuningPage: Page = {
               const voltage = curveBounds.voltageMinV + (xPct / 100) * (curveBounds.voltageMaxV - curveBounds.voltageMinV);
               const frequency = curveBounds.freqMaxMhz - (yPct / 100) * (curveBounds.freqMaxMhz - curveBounds.freqMinMhz);
               vfCurveNativeApplyDraft = null;
-              vfCurveDraft = moveVfPoint(vfCurveDraft, index, voltage, frequency, curveBounds);
+              vfCurveDraft = moveVfPoint(vfCurveDraft, index, voltage, frequency, curveBounds,
+                vfCurveDefault?.length === vfCurveDraft.length && hasLinkedVfTerminalPlateau(vfCurveDefault, curveBounds, isBattlemageGpuName(caps.deviceName)));
               vfCurveDisplaySource = 'draft';
               redraw();
               updateVfCurveEditorNote?.();
@@ -1085,6 +1088,7 @@ export const tuningPage: Page = {
         ? ` The initial IGCL curve-read probe was refused: ${vfRuntimeRefusal}. Applying performs fresh stable curve checks before any write.`
         : '';
       const curveNoteNode = el('p', { class: 'card-note' });
+      let refreshOriginNote = '';
       const refreshCurveButton = el('button', {
         class: 'btn btn-ghost btn-sm',
         text: 'Refresh from driver',
@@ -1151,6 +1155,13 @@ export const tuningPage: Page = {
             return;
           }
           const maxPoints = Math.min(VF_EDITOR_MAX_POINTS, caps.vfCurveRange.maxPoints);
+          const originShift = vfCurveVoltageOriginShiftMv(vfCurveApplied, fresh.vfCurve,
+            caps.vfCurveRange, isBattlemageGpuName(caps.deviceName));
+          const liveChanged = observeVfCurveSnapshot(vfCurveApplied, fresh.vfCurve,
+            caps.vfCurveRange, isBattlemageGpuName(caps.deviceName)).changed;
+          refreshOriginNote = originShift !== null && originShift !== 0
+            ? ` The driver changed its voltage reference by ${originShift > 0 ? '+' : ''}${originShift} mV. Frequencies and relative curve spacing are unchanged; this chart shows the new driver coordinates.`
+            : '';
           vfCurveDefault = nativeStock;
           vfCurveDefaultDisplay = nativeStock
             ? normalizeVfCurvePoints(nativeStock, caps.vfCurveRange, maxPoints)
@@ -1178,7 +1189,7 @@ export const tuningPage: Page = {
           redrawVfCurveEditor?.();
           refreshCard('gpuFreqOffsetMhz');
           updateFloating();
-          toast('success', 'VF curve refreshed', nativeStock
+          if (liveChanged) toast('success', 'VF curve refreshed', nativeStock
             ? 'The editor now shows the latest LIVE curve and STOCK reset reference.'
             : 'The editor now shows the latest LIVE curve. The driver did not provide a STOCK reset reference.');
         } catch (error) {
@@ -1198,7 +1209,7 @@ export const tuningPage: Page = {
       };
       refreshCurveButton.addEventListener('click', () => void refreshCurveFromDriver());
       discardCurveButton.addEventListener('click', () => {
-        if (!vfCurveStale || !vfCurveDirty() || vfCurveRefreshBusy) return;
+        if (!vfCurveDirty() || vfCurveRefreshBusy) return;
         const discarded = discardVfCurveDraft(vfCurveApplied);
         vfCurveDraft = discarded.draft;
         vfCurveNativeApplyDraft = discarded.nativeApplyDraft;
@@ -1208,8 +1219,9 @@ export const tuningPage: Page = {
         void refreshCurveFromDriver();
       });
       const updateNote = (): void => {
+        if (vfCurveDisplaySource !== 'live' || vfCurveStale) refreshOriginNote = '';
         refreshCurveButton.disabled = vfCurveDirty() || vfCurveRefreshBusy;
-        discardCurveButton.hidden = !vfCurveStale || !vfCurveDirty();
+        discardCurveButton.hidden = !vfCurveDirty();
         discardCurveButton.disabled = vfCurveRefreshBusy;
         if (vfCurveStale) {
           curveNoteNode.textContent = `The driver’s LIVE or STOCK curve changed while this page was open. This chart and any staged reset are preserved as a snapshot, but are stale and cannot be edited, applied, or reset.${vfCurveDirty() ? ' Discard draft and refresh to load the current curves.' : ' Refresh from driver to load current curves.'}${vfProbeNote}`;
@@ -1224,6 +1236,10 @@ export const tuningPage: Page = {
         } else {
           curveNoteNode.textContent = `Hover a point for values; click to edit voltage or frequency. The driver-defined point count stays fixed. Voltage ${vfVoltageMv(curveBounds.voltageMinV)}–${vfVoltageMv(curveBounds.voltageMaxV)} mV · frequency ${Math.round(curveBounds.freqMinMhz)}–${Math.round(curveBounds.freqMaxMhz)} MHz. Set both core offsets to zero before applying. Core offsets cannot be combined with a custom curve.${vfProbeNote}`;
         }
+        if (!vfCurveStale && hasLinkedVfTerminalPlateau(vfCurveDefault, curveBounds, isBattlemageGpuName(caps.deviceName))) {
+          curveNoteNode.textContent += ' The final two points share a linked frequency plateau: editing either frequency moves both points.';
+        }
+        if (vfCurveDisplaySource === 'live' && !vfCurveStale) curveNoteNode.textContent += refreshOriginNote;
       };
       updateVfCurveEditorNote = updateNote;
       host.append(

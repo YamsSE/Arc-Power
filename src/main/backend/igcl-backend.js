@@ -6872,7 +6872,11 @@ export class IgclBackend {
               const targetCurve = resetToDefault ? nativeCanonical : curve;
               const liveIsValid = liveBefore?.ok === true && liveBefore.points.length === targetCurve.length
                 && isValidNativeVfCurve(liveCanonical, curveRange);
-              if (liveIsValid && !vfCurveNeedsWrite(targetCurve, liveCanonical)) {
+              // A STOCK reset that already has the same native shape needs
+              // no setter, even if two reads report different voltage origins.
+              const resetAlreadyStock = resetToDefault && liveIsValid
+                && uniformVfVoltageShiftMv(targetCurve, liveCanonical, Infinity) !== null;
+              if (liveIsValid && (resetAlreadyStock || !vfCurveNeedsWrite(targetCurve, liveCanonical))) {
                 result.perControl.vfCurve = {
                   ok: true,
                   readBackEqual: true,

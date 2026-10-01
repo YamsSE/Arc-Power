@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   moveVfPoint,
+  hasLinkedVfTerminalPlateau,
   moveVfFrequencyPoint,
   normalizeVfCurvePoints,
   prepareVfCurveForDriver,
@@ -28,6 +29,29 @@ const live = [
   [0.57, 1550], [0.62, 2000], [0.67, 2340], [0.72, 2580], [0.77, 2780],
   [0.82, 2930], [0.87, 3060], [0.92, 3180], [0.97, 3210], [1.02, 3230],
 ].map(([voltageV, freqMhz]) => ({ voltageV, freqMhz }));
+
+test('Battlemage native ending plateau links either terminal frequency in the visible draft', () => {
+  const plateau = live.map((point) => ({ ...point }));
+  plateau.at(-1).freqMhz = plateau.at(-2).freqMhz;
+  const linked = hasLinkedVfTerminalPlateau(plateau, range, true);
+  assert.equal(linked, true);
+  for (const index of [8, 9]) {
+    for (const change of [-10, 10, 50]) {
+      const next = moveVfPoint(plateau, index, plateau[index].voltageV, plateau[index].freqMhz + change, range, linked);
+      assert.equal(next[8].freqMhz, plateau[index].freqMhz + change);
+      assert.equal(next[9].freqMhz, plateau[index].freqMhz + change);
+      assert.deepEqual(next.map((point) => point.voltageV), plateau.map((point) => point.voltageV));
+    }
+  }
+  assert.deepEqual(moveVfPoint(plateau, 5, plateau[5].voltageV, 2920, range, linked),
+    moveVfPoint(plateau, 5, plateau[5].voltageV, 2920, range));
+  assert.equal(hasLinkedVfTerminalPlateau(plateau, range, false), false);
+  assert.equal(hasLinkedVfTerminalPlateau(live, range, true), false);
+  assert.equal(hasLinkedVfTerminalPlateau(null, range, true), false);
+  const voltageOnly = moveVfPoint(plateau, 9, plateau[9].voltageV + 0.001, plateau[9].freqMhz, range, linked);
+  assert.equal(voltageOnly[8].voltageV, plateau[8].voltageV);
+  assert.equal(voltageOnly[9].voltageV, plateau[9].voltageV + 0.001);
+});
 
 test('normalization preserves exact valid live point order and coordinates', () => {
   const offsetGrid = live.map((point, index) => ({ ...point, voltageV: point.voltageV + (index ? 0.003 : 0) }));
@@ -352,4 +376,23 @@ test('driver preparation rejects curves requiring coordinate rounding or monoton
   const descending = live.map((point) => ({ ...point }));
   descending[4].freqMhz = descending[3].freqMhz - 1;
   assert.equal(prepareVfCurveForDriver(descending, range), null);
+});
+
+test('mock VF accepts the native nondecreasing terminal frequency plateau', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { MockBackend } = await import('../src/main/backend/mock-backend.js');
+  const featureset = JSON.parse(readFileSync(new URL('../mock/featuresets/b580.json', import.meta.url), 'utf8'));
+  const backend = new MockBackend({ featureset });
+  await backend.init();
+  try {
+    await backend.setWaiverAccepted(0);
+    const state = await backend.getCurrentSettings(0);
+    const curve = state.vfCurve.map((point) => ({ ...point }));
+    curve[curve.length - 1].freqMhz = curve[curve.length - 2].freqMhz;
+    const result = await backend.applySettings(0, { vfCurve: curve });
+    assert.equal(result.perControl.vfCurve.ok, true);
+    assert.deepEqual((await backend.getCurrentSettings(0)).vfCurve, curve);
+  } finally {
+    await backend.close();
+  }
 });
