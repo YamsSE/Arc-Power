@@ -19,7 +19,7 @@ Controls depend on the capabilities reported by the selected device and its driv
 | GPU | Architecture | Verified support |
 |---|---|---|
 | Arc A3 / A5 / A7 series | Alchemist | **Verified - Working** |
-| Arc B580 / B570 | Battlemage | VF writes use driver-reported steps and require exact LIVE read-back |
+| Arc B580 / B570 | Battlemage | **Verified - Working** |
 | Arc Pro A & B Series | Alchemist & Battlemage| **Verified - Tweaks & Telemetry only** |
 | Arc iGPU | Alchemist & Battlemage | **Verified - Tweaks & Telemetry only** |
 
