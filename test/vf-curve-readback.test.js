@@ -30,6 +30,50 @@ test('stable LIVE read ignores one transient voltage-shift sample', async () => 
   assert.equal(reads, 5);
 });
 
+test('stable VF read accepts only a bounded uniform voltage translation and returns the latest curve', async () => {
+  const shifted = before.map((point) => ({ ...point, Voltage: point.Voltage + 4 }));
+  const samples = [before, shifted, before, shifted, shifted];
+  let reads = 0;
+  const result = await readStableVfCurve({
+    readCurve: async () => ({ ok: true, points: samples[reads++] }),
+    pollIntervalMs: 0,
+    uniformVoltageShiftToleranceMv: 4,
+    wait: async () => {},
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.consensus, 5);
+  assert.equal(result.voltageShifted, true);
+  assert.deepEqual(result.points, shifted);
+});
+
+test('stable VF read rejects per-point jumps and common voltage shifts beyond the bound', async () => {
+  const samples = [0, 5, 10, 15, 20].map((shift) => before.map((point) => ({
+    ...point,
+    Voltage: point.Voltage + shift,
+  })));
+  let reads = 0;
+  const drifting = await readStableVfCurve({
+    readCurve: async () => ({ ok: true, points: samples[reads++] }),
+    pollIntervalMs: 0,
+    uniformVoltageShiftToleranceMv: 4,
+    wait: async () => {},
+  });
+  assert.equal(drifting.ok, false);
+  assert.equal(drifting.errorCode, 'readback-unstable');
+
+  const pointJump = before.map((point, index) => ({ ...point, Voltage: point.Voltage + (index === 3 ? 4 : 0) }));
+  reads = 0;
+  const reshaped = await readStableVfCurve({
+    readCurve: async () => ({ ok: true, points: reads++ === 4 ? pointJump : before }),
+    pollIntervalMs: 0,
+    uniformVoltageShiftToleranceMv: 4,
+    wait: async () => {},
+  });
+  assert.equal(reshaped.ok, false);
+  assert.equal(reshaped.errorCode, 'readback-unstable');
+});
+
 test('stable VF read rejects an earlier quorum when the latest sample has transitioned', async () => {
   const transitioned = before.map((point) => ({ ...point, Voltage: point.Voltage + 60 }));
   const samples = [before, before, before, transitioned, transitioned];
@@ -184,6 +228,41 @@ test('a changed LIVE curve within one reported step is accepted as driver-adjust
   assert.equal(out.driverAdjusted, true);
   assert.equal(out.normalized, true);
   assert.equal(out.readBackEqual, false);
+});
+
+test('a stable common-mode voltage shift up to four millivolts is reported as applied', () => {
+  const shiftedRequest = requested.map((point) => ({ ...point, Voltage: point.Voltage + 4 }));
+  const out = validateVfCurveReadback({
+    readBack: { ok: true, points: shiftedRequest },
+    requestedPoints: requested,
+    liveBefore: { ok: true, points: before },
+    curveRange,
+    uniformVoltageShiftToleranceMv: 4,
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.exact, false);
+  assert.equal(out.normalized, true);
+  assert.equal(out.driverAdjusted, true);
+  assert.equal(out.readBackEqual, false);
+  assert.deepEqual(out.appliedCurve, shiftedRequest.map((point) => ({
+    voltageV: point.Voltage / 1000,
+    freqMhz: point.Frequency,
+  })));
+});
+
+test('common-mode voltage shifts beyond four millivolts are not silently accepted', () => {
+  const shiftedRequest = requested.map((point) => ({ ...point, Voltage: point.Voltage + 5 }));
+  const out = validateVfCurveReadback({
+    readBack: { ok: true, points: shiftedRequest },
+    requestedPoints: requested,
+    liveBefore: { ok: true, points: before },
+    curveRange,
+    uniformVoltageShiftToleranceMv: 4,
+  });
+
+  assert.equal(out.ok, false);
+  assert.equal(out.errorCode, 'driver-adjusted');
 });
 
 test('a changed curve is rejected when step metadata is absent', () => {

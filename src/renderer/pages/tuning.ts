@@ -2146,7 +2146,10 @@ export const tuningPage: Page = {
         vfCurveNativeApplyDraft ?? vfCurveDraft
       ).map((point) => ({ ...point }));
       if (only === 'vfCurve') {
-        settings = { vfCurve: vfCurveApplyPayload() };
+        settings = {
+          vfCurve: vfCurveApplyPayload(),
+          ...(vfCurveNativeApplyDraft !== null ? { vfCurveResetToDefault: true } : {}),
+        };
       } else if (only !== undefined) {
         settings = buildScalarSettings({ [only]: values[only] }, { hiddenNegativeControls });
       } else {
@@ -2159,6 +2162,7 @@ export const tuningPage: Page = {
         settings = buildScalarSettings(scalarValues, { hiddenNegativeControls });
         if (vfCurveSupported && (vfCurveMode || includeStagedCurveReset) && canApplyVfCurve()) {
           settings.vfCurve = vfCurveApplyPayload();
+          if (vfCurveNativeApplyDraft !== null) settings.vfCurveResetToDefault = true;
         }
       }
       if (!validateSettingsPayload(settings)) {

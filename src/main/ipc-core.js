@@ -728,6 +728,9 @@ export function sanitizeSettings(payload) {
         throw new Error('gpuLock must be { voltageV: number, freqMhz: number }');
       }
       out[key] = { voltageV: value.voltageV, freqMhz: value.freqMhz };
+    } else if (key === 'vfCurveResetToDefault') {
+      if (value !== true) throw new Error('vfCurveResetToDefault must be true');
+      out[key] = true;
     } else if (key === 'vfCurve' || key === 'fanCurve') {
       if (!Array.isArray(value) || value.length < 1 || value.length > MAX_CURVE_POINTS) {
         throw new Error(`${key} must be a non-empty array of at most ${MAX_CURVE_POINTS} points`);
@@ -743,6 +746,9 @@ export function sanitizeSettings(payload) {
         return clean;
       });
     }
+  }
+  if (out.vfCurveResetToDefault === true && !Array.isArray(out.vfCurve)) {
+    throw new Error('vfCurveResetToDefault requires vfCurve');
   }
   return out;
 }

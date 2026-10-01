@@ -12,6 +12,23 @@ function pointsEqual(left, right) {
       && point.Frequency === right[index]?.Frequency);
 }
 
+function uniformVoltageShiftMv(left, right, toleranceMv) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length || left.length < 2) return null;
+  const shift = left[0]?.Voltage - right[0]?.Voltage;
+  if (!Number.isInteger(shift) || Math.abs(shift) > toleranceMv) return null;
+  return left.every((point, index) => point?.Frequency === right[index]?.Frequency
+    && point?.Voltage - right[index]?.Voltage === shift)
+    ? shift
+    : null;
+}
+
+function curveShapeKey(points) {
+  if (!Array.isArray(points) || points.length < 2 || !Number.isFinite(points[0]?.Voltage)) return null;
+  const firstVoltage = points[0].Voltage;
+  if (!points.every((point) => Number.isFinite(point?.Voltage) && Number.isFinite(point?.Frequency))) return null;
+  return JSON.stringify(points.map((point) => [point.Voltage - firstVoltage, point.Frequency]));
+}
+
 /** Read a stable VF snapshot without allowing a one-off driver response to
  * become application state or a write before-image. */
 export async function readStableVfCurve({
@@ -19,6 +36,7 @@ export async function readStableVfCurve({
   maxAttempts = DEFAULT_VF_CONSENSUS_ATTEMPTS,
   quorum = DEFAULT_VF_CONSENSUS_QUORUM,
   pollIntervalMs = DEFAULT_VF_READBACK_INTERVAL_MS,
+  uniformVoltageShiftToleranceMv = 0,
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
   if (typeof readCurve !== 'function') {
@@ -30,6 +48,9 @@ export async function readStableVfCurve({
     return { ok: false, points: [], errorCode: 'readback-unverified', message: 'LIVE VF stability quorum exceeds the read limit.' };
   }
   const intervalMs = Number.isFinite(pollIntervalMs) && pollIntervalMs >= 0 ? pollIntervalMs : 0;
+  const voltageToleranceMv = Number.isInteger(uniformVoltageShiftToleranceMv) && uniformVoltageShiftToleranceMv > 0
+    ? uniformVoltageShiftToleranceMv
+    : 0;
   const observations = [];
   let latestReadOk = false;
   let latestResult = null;
@@ -45,19 +66,23 @@ export async function readStableVfCurve({
     }
     if (attempt < attempts - 1 && intervalMs > 0) await wait(intervalMs);
   }
-  const counts = [];
-  for (const points of observations) {
-    const match = counts.find((entry) => pointsEqual(entry.points, points));
-    if (match) match.count += 1;
-    else counts.push({ points, count: 1 });
-  }
-  const stable = counts.find((entry) => entry.count >= required);
   const latestObservation = observations.at(-1);
   // The most recent native read must belong to the accepted quorum. This
   // rejects a stale majority if the driver transitions late in the poll
   // window, even when the earlier curve still accounts for enough samples.
-  if (stable && latestReadOk && pointsEqual(stable.points, latestObservation)) {
-    return { ok: true, points: stable.points.map((point) => ({ ...point })), consensus: stable.count };
+  const latestShape = curveShapeKey(latestObservation);
+  const latestBaseVoltage = latestObservation?.[0]?.Voltage;
+  const stableCount = latestReadOk && latestShape !== null
+    ? observations.filter((points) => curveShapeKey(points) === latestShape
+      && Math.abs(points[0].Voltage - latestBaseVoltage) <= voltageToleranceMv).length
+    : 0;
+  if (stableCount >= required) {
+    return {
+      ok: true,
+      points: latestObservation.map((point) => ({ ...point })),
+      consensus: stableCount,
+      voltageShifted: observations.some((points) => !pointsEqual(points, latestObservation)),
+    };
   }
   if (observations.length === 0) {
     return {
@@ -118,7 +143,13 @@ function toCanonicalCurve(points) {
 }
 
 /** Verify a driver's LIVE curve after a custom VF write. */
-export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore, curveRange } = {}) {
+export function validateVfCurveReadback({
+  readBack,
+  requestedPoints,
+  liveBefore,
+  curveRange,
+  uniformVoltageShiftToleranceMv = 0,
+} = {}) {
   if (!readBack?.ok) {
     return {
       ok: false,
@@ -160,6 +191,9 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
 
   const appliedCurve = toCanonicalCurve(readBack.points);
   const hasBeforeImage = liveBefore?.ok === true && Array.isArray(liveBefore.points);
+  const voltageToleranceMv = Number.isInteger(uniformVoltageShiftToleranceMv) && uniformVoltageShiftToleranceMv > 0
+    ? uniformVoltageShiftToleranceMv
+    : 0;
   const requestedDiffersFromBefore = hasBeforeImage && !pointsEqual(requestedPoints, liveBefore.points);
   const liveDiffersFromBefore = hasBeforeImage && !pointsEqual(readBack.points, liveBefore.points);
   if (readBack.points.length !== requestedPoints.length) {
@@ -174,6 +208,21 @@ export function validateVfCurveReadback({ readBack, requestedPoints, liveBefore,
 
   if (pointsEqual(readBack.points, requestedPoints)) {
     return { ok: true, exact: true, readBackEqual: true, normalized: false, driverAdjusted: false, appliedCurve };
+  }
+
+  const requestedVoltageShift = uniformVoltageShiftMv(readBack.points, requestedPoints, voltageToleranceMv);
+  if (hasBeforeImage && requestedDiffersFromBefore && liveDiffersFromBefore
+    && requestedVoltageShift !== null && requestedVoltageShift !== 0) {
+    return {
+      ok: true,
+      exact: false,
+      readBackEqual: false,
+      normalized: true,
+      uniformVoltageShiftMv: requestedVoltageShift,
+      driverAdjusted: true,
+      appliedCurve,
+      message: `The driver applied the requested VF curve with a consistent ${Math.abs(requestedVoltageShift)}mV voltage shift across all points. The editor now shows the live curve.`,
+    };
   }
 
   if (requestedDiffersFromBefore && liveDiffersFromBefore) {
@@ -262,6 +311,7 @@ export async function readVfCurveAfterWrite({
   quorum = DEFAULT_VF_CONSENSUS_QUORUM,
   pollIntervalMs = DEFAULT_VF_READBACK_INTERVAL_MS,
   settleDelayMs = DEFAULT_VF_POST_WRITE_SETTLE_MS,
+  uniformVoltageShiftToleranceMv = 0,
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
   if (typeof readCurve !== 'function') {
@@ -270,6 +320,7 @@ export async function readVfCurveAfterWrite({
       requestedPoints,
       liveBefore,
       curveRange,
+      uniformVoltageShiftToleranceMv,
     });
   }
   // The B580 driver can return a valid-looking transitional table shortly
@@ -285,6 +336,7 @@ export async function readVfCurveAfterWrite({
     maxAttempts,
     quorum,
     pollIntervalMs,
+    uniformVoltageShiftToleranceMv,
     wait,
   });
   const readBack = stable.ok
@@ -293,5 +345,11 @@ export async function readVfCurveAfterWrite({
       ...stable,
       errorCode: stable.errorCode ?? 'readback-unstable',
     };
-  return validateVfCurveReadback({ readBack, requestedPoints, liveBefore, curveRange });
+  return validateVfCurveReadback({
+    readBack,
+    requestedPoints,
+    liveBefore,
+    curveRange,
+    uniformVoltageShiftToleranceMv,
+  });
 }

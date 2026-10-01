@@ -35,6 +35,8 @@ function fixture({
   const nativeEvents = [];
   const frequencyOffsetSequence = frequencyOffsetReads ?? [frequencyOffset];
   const voltageOffsetSequence = voltageOffsetReads ?? [voltageOffset];
+  let currentFrequencyOffset = frequencyOffset;
+  let currentVoltageOffset = voltageOffset;
   let frequencyOffsetReadIndex = 0;
   let voltageOffsetReadIndex = 0;
   const libs = {
@@ -66,22 +68,28 @@ function fixture({
     },
     ctlOverclockGpuFrequencyOffsetGetV2(_handle, buffer) {
       nativeEvents.push('get-frequency-offset');
-      const value = frequencyOffsetSequence[Math.min(frequencyOffsetReadIndex++, frequencyOffsetSequence.length - 1)];
+      const value = frequencyOffsetReadIndex < frequencyOffsetSequence.length
+        ? frequencyOffsetSequence[frequencyOffsetReadIndex++]
+        : currentFrequencyOffset;
       koffi.encode(buffer, 'double', value);
       return CTL_RESULT.SUCCESS;
     },
     ctlOverclockGpuMaxVoltageOffsetGetV2(_handle, buffer) {
       nativeEvents.push('get-voltage-offset');
-      const value = voltageOffsetSequence[Math.min(voltageOffsetReadIndex++, voltageOffsetSequence.length - 1)];
+      const value = voltageOffsetReadIndex < voltageOffsetSequence.length
+        ? voltageOffsetSequence[voltageOffsetReadIndex++]
+        : currentVoltageOffset;
       koffi.encode(buffer, 'double', value);
       return CTL_RESULT.SUCCESS;
     },
-    ctlOverclockGpuFrequencyOffsetSetV2() {
+    ctlOverclockGpuFrequencyOffsetSetV2(_handle, value) {
       scalarWrites.push('frequency');
+      currentFrequencyOffset = value;
       return CTL_RESULT.SUCCESS;
     },
-    ctlOverclockGpuMaxVoltageOffsetSetV2() {
+    ctlOverclockGpuMaxVoltageOffsetSetV2(_handle, value) {
       scalarWrites.push('voltage');
+      currentVoltageOffset = value;
       return CTL_RESULT.SUCCESS;
     },
   };
@@ -162,7 +170,7 @@ test('an invalid LIVE before-image refuses the curve write without a quorum erro
 test('an unstable LIVE before-image refuses a B580 curve write after the bounded retry', async () => {
   const samples = Array.from({ length: 10 }, (_, read) => liveDefault.map((point, index) => ({
     ...point,
-    Voltage: point.Voltage + read + index,
+    Voltage: point.Voltage + read * 5 + index,
   })));
   const { backend, writes } = fixture();
   sequenceLiveReads(backend, samples);
@@ -177,7 +185,7 @@ test('an unstable LIVE before-image refuses a B580 curve write after the bounded
 test('an unstable STOCK table refuses a B580 curve write and is never used as a reset source', async () => {
   const unstableStockReads = Array.from({ length: 10 }, (_, read) => stock.map((point, index) => ({
     ...point,
-    Voltage: point.Voltage + read + index + 1,
+    Voltage: point.Voltage + read * 5 + index + 1,
   })));
   const samples = [stock, ...unstableStockReads];
   const { backend, writes } = fixture();
@@ -235,6 +243,64 @@ test('STOCK reset apply can write after a transient initial STOCK probe recovers
   }
 });
 
+test('explicit reset intent writes a fresh STOCK table instead of the cached renderer curve', async () => {
+  const staleRendererCurve = canonical(liveDefault);
+  const { backend, writes, live } = fixture();
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, _delay, ...args) => originalSetTimeout(callback, 0, ...args);
+  try {
+    const result = await backend.applySettings(0, {
+      vfCurve: staleRendererCurve,
+      vfCurveResetToDefault: true,
+    });
+
+    assert.equal(result.perControl.vfCurve.ok, true);
+    assert.equal(result.perControl.vfCurve.readBackEqual, true);
+    assert.deepEqual(result.perControl.vfCurve.readBackCurve, stockCanonical);
+    assert.deepEqual(canonical(live), stockCanonical);
+    assert.deepEqual(writes, ['vf']);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test('a profile curve with a uniform four millivolt edit is preserved as custom', async () => {
+  const customCurve = stockCanonical.map((point) => ({ ...point, voltageV: point.voltageV + 0.004 }));
+  const { backend, writes, live } = fixture();
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, _delay, ...args) => originalSetTimeout(callback, 0, ...args);
+  try {
+    const result = await backend.applySettings(0, { vfCurve: customCurve }, { profileApply: true });
+
+    assert.equal(result.perControl.vfCurve.ok, true);
+    assert.equal(result.perControl.vfCurve.readBackEqual, true);
+    assert.deepEqual(canonical(live), customCurve);
+    assert.deepEqual(writes, ['vf']);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test('profile payloads cannot use the transient reset marker to replace a custom curve', async () => {
+  const customCurve = canonical(liveDefault);
+  customCurve[2].freqMhz -= 10;
+  const { backend, writes, live } = fixture();
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, _delay, ...args) => originalSetTimeout(callback, 0, ...args);
+  try {
+    const result = await backend.applySettings(0, {
+      vfCurve: customCurve,
+      vfCurveResetToDefault: true,
+    }, { profileApply: true });
+
+    assert.equal(result.perControl.vfCurve.ok, true);
+    assert.deepEqual(canonical(live), customCurve);
+    assert.deepEqual(writes, ['vf']);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
 test('independently stable STOCK and LIVE reads are rechecked together before the B580 setter', async () => {
   const shiftedStock = stock.map((point) => ({ ...point, Voltage: point.Voltage + 50 }));
   const shiftedLive = liveDefault.map((point) => ({ ...point, Voltage: point.Voltage + 50 }));
@@ -272,7 +338,7 @@ test('getCurrentSettings keeps a stable STOCK reference visible when LIVE is uns
     if (type === 0) return { ok: true, points: stock.map((point) => ({ ...point })) };
     if (type === 1 && liveIndex < 10) {
       const index = liveIndex++;
-      const shiftedLive = liveDefault.map((point) => ({ ...point, Voltage: point.Voltage + index + 1 }));
+      const shiftedLive = liveDefault.map((point) => ({ ...point, Voltage: point.Voltage + index * 5 + 1 }));
       return { ok: true, points: shiftedLive };
     }
     return nativeRead(_handle, type, details);
@@ -321,7 +387,7 @@ test('LIVE-only driver fallback never advertises LIVE as the STOCK reset curve',
 test('a transient failed LIVE preflight quorum retries and then writes once', async () => {
   const unstable = Array.from({ length: 5 }, (_, read) => liveDefault.map((point) => ({
     ...point,
-    Voltage: point.Voltage + read + 1,
+    Voltage: point.Voltage + read * 5 + 1,
   })));
   const { backend, writes } = fixture();
   sequenceLiveReads(backend, [...unstable, ...Array(5).fill(liveDefault)]);
@@ -448,7 +514,7 @@ test('getCapabilities keeps B580 VF controls visible after a refused probe and u
 
   const unstableStockReads = Array.from({ length: 10 }, (_, read) => stock.map((point, index) => ({
     ...point,
-    Voltage: point.Voltage + read + index + 1,
+    Voltage: point.Voltage + read * 5 + index + 1,
   })));
   const { backend, writes } = fixture();
   backend.getCapabilities = async () => capability;
@@ -652,6 +718,62 @@ test('B580 STOCK profile submits and verifies the exact driver STOCK table', asy
   assert.equal(result.perControl.vfCurve.readBackEqual, true);
   assert.deepEqual(writes, ['vf']);
   assert.deepEqual(canonical(live), stockCanonical);
+});
+
+test('B580 STOCK profile permits core offsets after a verified uniform four millivolt readback shift', async () => {
+  const { backend, writes, scalarWrites, live } = fixture({
+    writeTransform: (points) => points.map((point) => ({ ...point, Voltage: point.Voltage + 4 })),
+  });
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, _delay, ...args) => originalSetTimeout(callback, 0, ...args);
+  try {
+    const result = await backend.applySettings(0, {
+      vfCurve: stockCanonical,
+      gpuFreqOffsetMhz: 10,
+      gpuVoltOffsetV: 5,
+    }, { profileApply: true });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.perControl.vfCurve.ok, true);
+    assert.equal(result.perControl.vfCurve.readBackEqual, false);
+    assert.equal(result.perControl.vfCurve.normalized, true);
+    assert.equal(result.perControl.vfCurve.uniformVoltageShiftMv, 4);
+    assert.equal(result.perControl.gpuFreqOffsetMhz.ok, true);
+    assert.equal(result.perControl.gpuVoltOffsetV.ok, true);
+    assert.deepEqual(writes, ['vf']);
+    assert.deepEqual(scalarWrites, ['frequency', 'voltage']);
+    assert.deepEqual(canonical(live), stockCanonical.map((point) => ({
+      ...point,
+      voltageV: point.voltageV + 0.004,
+    })));
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test('B580 STOCK profile withholds core offsets when voltage readback shift exceeds the verified tolerance', async () => {
+  const { backend, writes, scalarWrites } = fixture({
+    writeTransform: (points) => points.map((point) => ({ ...point, Voltage: point.Voltage + 5 })),
+  });
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, _delay, ...args) => originalSetTimeout(callback, 0, ...args);
+  try {
+    const result = await backend.applySettings(0, {
+      vfCurve: stockCanonical,
+      gpuFreqOffsetMhz: 10,
+      gpuVoltOffsetV: 5,
+    }, { profileApply: true });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.perControl.vfCurve.ok, false);
+    assert.equal(result.perControl.vfCurve.errorCode, 'driver-adjusted');
+    assert.equal(result.perControl.gpuFreqOffsetMhz.errorCode, 'dependency-failed');
+    assert.equal(result.perControl.gpuVoltOffsetV.errorCode, 'dependency-failed');
+    assert.deepEqual(writes, ['vf']);
+    assert.deepEqual(scalarWrites, []);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
 });
 
 test('B580 adopts a valid driver-remapped curve and does not submit it again', async () => {

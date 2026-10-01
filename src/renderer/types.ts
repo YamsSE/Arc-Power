@@ -37,6 +37,8 @@ export interface Settings {
   vramVoltOffsetV?: number;
   gpuLock?: { voltageV: number; freqMhz: number };
   vfCurve?: Array<{ voltageV: number; freqMhz: number }>;
+  /** Explicit intent for Reset to default; valid only alongside vfCurve. */
+  vfCurveResetToDefault?: boolean;
   fanMode?: FanMode;
   fanCurve?: Array<{ t: number; speedPct: number }>;
   fixedFanPct?: number;
