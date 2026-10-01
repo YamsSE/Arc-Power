@@ -95,7 +95,9 @@ function legalMaxPoints(range: VfCurveRange, requested: number): number {
 
 /**
  * Convert a valid curve into the integer-MHz shape accepted by the native
- * custom-curve writer. IGCL exposes equal adjacent frequencies in STOCK and
+ * custom-curve writer. The editor uses IGS's 1MHz point precision; the driver
+ * may normalize a requested frequency to its reported native step, which is
+ * verified from stable LIVE read-back after the single write. IGCL exposes equal adjacent frequencies in STOCK and
  * LIVE reads (the B580's final points are a native maximum-frequency
  * plateau), and the writer accepts that non-decreasing shape. Keep the
  * requested coordinates and point order intact. Inputs that need clamping,
@@ -121,7 +123,6 @@ export function prepareVfCurveForDriver(
     && point.voltageV <= range.voltageMaxV
     && isOnGrid(point.voltageV, range.voltageMinV, stepForRange(range.voltageStepV, 0.001))
     && Number.isInteger(point.freqMhz)
-    && isOnGrid(point.freqMhz, range.freqMinMhz, stepForRange(range.frequencyStepMhz, 1))
     && point.freqMhz >= minFrequency
     && point.freqMhz <= maxFrequency
     && (index === 0 || (point.voltageV > points[index - 1].voltageV
@@ -194,7 +195,110 @@ export function selectVfCurveEditorCurve(
   };
 }
 
-/** Move one point while keeping voltage ascending and frequency non-decreasing. */
+/** Keep an async driver refresh from replacing a draft or another device's
+ * editor after the request has started. */
+export function shouldCommitVfCurveRefresh(
+  requestedDeviceId: number,
+  currentDeviceId: number | null,
+  requestedDeviceKey: string | null,
+  currentDeviceKey: string | null,
+  hasPendingDraft: boolean,
+  requestGeneration: number,
+  currentGeneration: number,
+): boolean {
+  return currentDeviceId === requestedDeviceId
+    && currentDeviceKey === requestedDeviceKey
+    && !hasPendingDraft
+    && requestGeneration === currentGeneration;
+}
+
+const VF_EDITOR_FREQUENCY_STEP_MHZ = 1;
+
+function copyPoints(points: VfCurvePoint[]): VfCurvePoint[] {
+  return points.map((point) => ({ ...point }));
+}
+
+/**
+ * IGS moves neighboring graph points when an edit would break curve ordering.
+ * X is kept strictly ascending with one UI step between points; Y is kept
+ * non-decreasing by extending a plateau forward or backward from the edit.
+ */
+function propagateVfPointEdit(
+  points: VfCurvePoint[],
+  index: number,
+  voltageV: number,
+  freqMhz: number,
+  range: VfCurveRange,
+): VfCurvePoint[] {
+  const unchanged = copyPoints(points);
+  if (!Array.isArray(points) || index < 0 || index >= points.length
+    || !Number.isFinite(voltageV) || !Number.isFinite(freqMhz)
+    || !Number.isFinite(range.voltageMinV) || !Number.isFinite(range.voltageMaxV)
+    || !Number.isFinite(range.freqMinMhz) || !Number.isFinite(range.freqMaxMhz)
+    || range.voltageMinV > range.voltageMaxV || range.freqMinMhz > range.freqMaxMhz
+    || points.length < VF_MIN_POINTS) return unchanged;
+
+  const voltageMin = range.voltageMinV;
+  const voltageMax = range.voltageMaxV;
+  const frequencyMin = range.freqMinMhz;
+  const frequencyMax = range.freqMaxMhz;
+  const voltageStep = stepForRange(range.voltageStepV, 0.001);
+  const frequencyStep = VF_EDITOR_FREQUENCY_STEP_MHZ;
+  if (!points.every((point, pointIndex) => point
+    && Number.isFinite(point.voltageV) && Number.isFinite(point.freqMhz)
+    && point.voltageV >= voltageMin && point.voltageV <= voltageMax
+    && point.freqMhz >= frequencyMin && point.freqMhz <= frequencyMax
+    && (pointIndex === 0 || (point.voltageV > points[pointIndex - 1].voltageV
+      && point.freqMhz >= points[pointIndex - 1].freqMhz)))) return unchanged;
+  const minEditedVoltage = voltageMin + index * voltageStep;
+  const maxEditedVoltage = voltageMax - (points.length - 1 - index) * voltageStep;
+  if (minEditedVoltage > maxEditedVoltage) return unchanged;
+
+  const next = copyPoints(points);
+  // Keep voltage on the adapter's reported grid and frequency on IGS's
+  // 1MHz UI increments. X spacing may move neighbors, just as the IGS graph does.
+  const snappedVoltage = snapToGridWithin(
+    voltageV, minEditedVoltage, maxEditedVoltage, voltageMin, voltageStep,
+  );
+  const snappedFrequency = snapToGridWithin(
+    freqMhz, frequencyMin, frequencyMax, frequencyMin, frequencyStep,
+  );
+  if (snappedVoltage === null || snappedFrequency === null) return unchanged;
+  next[index] = { voltageV: snappedVoltage, freqMhz: snappedFrequency };
+
+  for (let pointIndex = index + 1; pointIndex < next.length; pointIndex += 1) {
+    const minPointVoltage = next[pointIndex - 1].voltageV + voltageStep;
+    const maxPointVoltage = voltageMax - (next.length - 1 - pointIndex) * voltageStep;
+    const snapped = snapToGridWithin(
+      next[pointIndex].voltageV, minPointVoltage, maxPointVoltage, voltageMin, voltageStep,
+    );
+    if (snapped === null) return unchanged;
+    next[pointIndex].voltageV = snapped;
+    if (next[pointIndex].freqMhz < next[pointIndex - 1].freqMhz) {
+      next[pointIndex].freqMhz = next[pointIndex - 1].freqMhz;
+    }
+  }
+
+  for (let pointIndex = index - 1; pointIndex >= 0; pointIndex -= 1) {
+    const minPointVoltage = voltageMin + pointIndex * voltageStep;
+    const maxPointVoltage = next[pointIndex + 1].voltageV - voltageStep;
+    const snapped = snapToGridWithin(
+      next[pointIndex].voltageV, minPointVoltage, maxPointVoltage, voltageMin, voltageStep,
+    );
+    if (snapped === null) return unchanged;
+    next[pointIndex].voltageV = snapped;
+    if (next[pointIndex].freqMhz > next[pointIndex + 1].freqMhz) {
+      next[pointIndex].freqMhz = next[pointIndex + 1].freqMhz;
+    }
+  }
+
+  if (next.some((point, pointIndex) => point.freqMhz < frequencyMin || point.freqMhz > frequencyMax
+    || (pointIndex > 0 && (point.voltageV <= next[pointIndex - 1].voltageV
+      || point.freqMhz < next[pointIndex - 1].freqMhz)))) return unchanged;
+  return next;
+}
+
+/** Move one point using the IGS neighboring-point propagation behavior. */
 export function moveVfPoint(
   points: VfCurvePoint[],
   index: number,
@@ -202,23 +306,7 @@ export function moveVfPoint(
   freqMhz: number,
   range: VfCurveRange,
 ): VfCurvePoint[] {
-  if (index < 0 || index >= points.length) return points.map((point) => ({ ...point }));
-  const next = points.map((point) => ({ ...point }));
-  const current = next[index];
-  const previous = next[index - 1];
-  const following = next[index + 1];
-  const voltageMin = Math.max(range.voltageMinV, previous ? previous.voltageV + 0.001 : range.voltageMinV);
-  const voltageMax = Math.min(range.voltageMaxV, following ? following.voltageV - 0.001 : range.voltageMaxV);
-  const freqMin = Math.max(range.freqMinMhz, previous ? previous.freqMhz : range.freqMinMhz);
-  const freqMax = Math.min(range.freqMaxMhz, following ? following.freqMhz : range.freqMaxMhz);
-  if (voltageMin > voltageMax || freqMin > freqMax) return next;
-  const voltageStep = stepForRange(range.voltageStepV, 0.001);
-  const frequencyStep = stepForRange(range.frequencyStepMhz, 1);
-  const snappedVoltage = snapToGridWithin(voltageV, voltageMin, voltageMax, range.voltageMinV, voltageStep);
-  const snappedFrequency = snapToGridWithin(freqMhz, freqMin, freqMax, range.freqMinMhz, frequencyStep);
-  if (snappedVoltage === null || snappedFrequency === null) return next;
-  next[index] = { voltageV: snappedVoltage, freqMhz: snappedFrequency };
-  return next;
+  return propagateVfPointEdit(points, index, voltageV, freqMhz, range);
 }
 
 /** Move only a point's frequency, preserving the driver's voltage grid and
@@ -229,19 +317,8 @@ export function moveVfFrequencyPoint(
   freqMhz: number,
   range: VfCurveRange,
 ): VfCurvePoint[] {
-  if (index < 0 || index >= points.length) return points.map((point) => ({ ...point }));
-  const next = points.map((point) => ({ ...point }));
-  const current = next[index];
-  const previous = next[index - 1];
-  const following = next[index + 1];
-  const freqMin = Math.max(range.freqMinMhz, previous ? previous.freqMhz : range.freqMinMhz);
-  const freqMax = Math.min(range.freqMaxMhz, following ? following.freqMhz : range.freqMaxMhz);
-  const snappedFrequency = snapToGridWithin(
-    freqMhz, freqMin, freqMax, range.freqMinMhz, stepForRange(range.frequencyStepMhz, 1),
-  );
-  if (snappedFrequency === null) return next;
-  next[index] = { ...current, freqMhz: snappedFrequency };
-  return next;
+  if (index < 0 || index >= points.length) return copyPoints(points);
+  return propagateVfPointEdit(points, index, points[index].voltageV, freqMhz, range);
 }
 
 /** Insert a point halfway through the widest legal voltage gap. */

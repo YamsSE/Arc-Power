@@ -6,6 +6,7 @@ import {
   normalizeVfCurvePoints,
   prepareVfCurveForDriver,
   selectVfCurveEditorCurve,
+  shouldCommitVfCurveRefresh,
   sameVfCurve,
   shouldSyncVfCurveFromState,
   vfCurveNeedsWrite,
@@ -71,7 +72,7 @@ test('invalid tables fail closed and driver tables above ten points are never tr
   assert.deepEqual(normalizeVfCurvePoints(longer, extendedRange, 10), longer);
 });
 
-test('editing one point preserves every other point and point index', () => {
+test('editing within neighboring values preserves unaffected points and point index', () => {
   const moved = moveVfPoint(live, 4, 0.775, 2800, range);
   assert.equal(moved.length, live.length);
   for (let index = 0; index < live.length; index += 1) {
@@ -81,13 +82,13 @@ test('editing one point preserves every other point and point index', () => {
   assert.deepEqual(moved[4], { voltageV: 0.775, freqMhz: 2800 });
 });
 
-test('B580 curve edits snap to the reported 10 MHz step without moving neighboring points', () => {
+test('frequency edits use IGS 1 MHz granularity instead of the B580 writer step', () => {
   const stockCurve = [
     [0.67, 1020], [0.72, 1730], [0.77, 2090], [0.82, 2420], [0.87, 2630],
     [0.92, 2830], [0.97, 2960], [1.02, 3090], [1.07, 3210], [1.12, 3210],
   ].map(([voltageV, freqMhz]) => ({ voltageV, freqMhz }));
   const moved = moveVfPoint(stockCurve, 8, 1.07, 3195, range);
-  assert.equal(moved[8].freqMhz, 3200);
+  assert.equal(moved[8].freqMhz, 3195);
   assert.equal(moved[9].freqMhz, 3210);
   for (let index = 0; index < stockCurve.length; index += 1) {
     if (index === 8) continue;
@@ -95,8 +96,127 @@ test('B580 curve edits snap to the reported 10 MHz step without moving neighbori
   }
 
   const movedFrequency = moveVfFrequencyPoint(stockCurve, 8, 3195, range);
-  assert.equal(movedFrequency[8].freqMhz, 3200);
+  assert.equal(movedFrequency[8].freqMhz, 3195);
   assert.equal(movedFrequency[9].freqMhz, 3210);
+  assert.deepEqual(prepareVfCurveForDriver(movedFrequency, range), movedFrequency,
+    'integer MHz values remain eligible for the native writer and its stable read-back check');
+});
+
+test('raising a point propagates a frequency plateau forward through lower points', () => {
+  const points = [100, 200, 250, 300].map((freqMhz, index) => ({
+    voltageV: 0.5 + index * 0.01,
+    freqMhz,
+  }));
+  const moved = moveVfFrequencyPoint(points, 1, 350, {
+    ...range, freqMinMhz: 0, freqMaxMhz: 4300,
+  });
+  assert.deepEqual(moved.map((point) => point.freqMhz), [100, 350, 350, 350]);
+});
+
+test('lowering a point propagates frequency decreases backward through higher points', () => {
+  const points = [100, 200, 300, 400].map((freqMhz, index) => ({
+    voltageV: 0.5 + index * 0.01,
+    freqMhz,
+  }));
+  const moved = moveVfFrequencyPoint(points, 2, 150, {
+    ...range, freqMinMhz: 0, freqMaxMhz: 4300,
+  });
+  assert.deepEqual(moved.map((point) => point.freqMhz), [100, 150, 150, 400]);
+});
+
+test('voltage edits cascade point spacing forward and backward within graph bounds', () => {
+  const tightRange = { ...range, voltageMinV: 0.4, voltageMaxV: 0.406, freqMinMhz: 0 };
+  const points = [0.4, 0.402, 0.403, 0.406].map((voltageV, index) => ({
+    voltageV,
+    freqMhz: 100 + index * 100,
+  }));
+  const forward = moveVfPoint(points, 1, 0.403, points[1].freqMhz, tightRange);
+  assert.deepEqual(forward.map((point) => point.voltageV), [0.4, 0.403, 0.404, 0.406]);
+
+  const backwardPoints = [0.399, 0.401, 0.403, 0.406].map((voltageV, index) => ({
+    voltageV,
+    freqMhz: 100 + index * 100,
+  }));
+  const backward = moveVfPoint(backwardPoints, 2, 0.4, backwardPoints[2].freqMhz, {
+    ...tightRange, voltageMinV: 0.398,
+  });
+  assert.deepEqual(backward.map((point) => point.voltageV), [0.398, 0.399, 0.4, 0.406]);
+
+  const atBounds = [0.4, 0.401, 0.402, 0.403].map((voltageV, index) => ({
+    voltageV,
+    freqMhz: 100 + index * 100,
+  }));
+  const bounded = moveVfPoint(atBounds, 1, 0.405, atBounds[1].freqMhz, {
+    ...tightRange, voltageMaxV: 0.403,
+  });
+  assert.deepEqual(bounded.map((point) => point.voltageV), [0.4, 0.401, 0.402, 0.403],
+    'edits clamp to the largest valid graph-bound layout');
+});
+
+test('combined voltage and frequency edit propagates both axes', () => {
+  const points = [100, 200, 250, 300].map((freqMhz, index) => ({
+    voltageV: 0.5 + index * 0.01,
+    freqMhz,
+  }));
+  const moved = moveVfPoint(points, 1, 0.52, 350, {
+    ...range, freqMinMhz: 0, freqMaxMhz: 4300,
+  });
+  assert.deepEqual(moved.map((point) => point.voltageV), [0.5, 0.52, 0.521, 0.53]);
+  assert.deepEqual(moved.map((point) => point.freqMhz), [100, 350, 350, 350]);
+});
+
+test('voltage cascade stays on adapters with coarser reported grids', () => {
+  const coarseRange = { ...range, voltageStepV: 0.005 };
+  const points = [0.4, 0.41, 0.42, 0.43].map((voltageV, index) => ({
+    voltageV,
+    freqMhz: 1000 + index * 100,
+  }));
+  const moved = moveVfPoint(points, 1, 0.425, points[1].freqMhz, coarseRange);
+
+  assert.deepEqual(moved.map((point) => point.voltageV), [0.4, 0.425, 0.43, 0.435]);
+  assert.deepEqual(prepareVfCurveForDriver(moved, coarseRange), moved);
+});
+
+test('a deferred VF refresh cannot commit over a new draft or a new page/device', async () => {
+  let resolveResponse;
+  const response = new Promise((resolve) => { resolveResponse = resolve; });
+  let draftPending = false;
+  let currentDeviceId = 3;
+  let currentDeviceKey = 'b580';
+  let currentGeneration = 8;
+  let committed = false;
+  const requestedDeviceId = 3;
+  const requestedDeviceKey = 'b580';
+  const requestGeneration = 8;
+  const pendingRefresh = (async () => {
+    await response;
+    committed = shouldCommitVfCurveRefresh(
+      requestedDeviceId,
+      currentDeviceId,
+      requestedDeviceKey,
+      currentDeviceKey,
+      draftPending,
+      requestGeneration,
+      currentGeneration,
+    );
+  })();
+
+  draftPending = true;
+  resolveResponse();
+  await pendingRefresh;
+  assert.equal(committed, false, 'a draft created during the read must be preserved');
+
+  assert.equal(shouldCommitVfCurveRefresh(3, 4, 'b580', 'a580', false, 8, 8), false,
+    'a different selected adapter must discard the result');
+  currentDeviceId = 3;
+  currentDeviceKey = 'other-adapter';
+  draftPending = false;
+  assert.equal(shouldCommitVfCurveRefresh(3, currentDeviceId, 'b580', currentDeviceKey, false, 8, 8), false,
+    'stable device ordinals cannot substitute for physical identity');
+  currentDeviceKey = 'b580';
+  currentGeneration = 9;
+  assert.equal(shouldCommitVfCurveRefresh(3, currentDeviceId, currentDeviceKey, 'b580', false, 8, currentGeneration), false,
+    'an older page request must not update a newly rendered page');
 });
 
 test('a clean editor follows external profile state while an edited draft stays put', () => {
@@ -220,11 +340,12 @@ test('profile persistence distinguishes every custom point change from exact sto
   assert.equal(sameVfCurve(custom, live, 0, 0), false);
 });
 
-test('driver preparation rejects curves requiring coordinate rounding, native-step rounding, or monotonic repair', () => {
+test('driver preparation rejects curves requiring coordinate rounding or monotonic repair but preserves IGS frequency precision', () => {
   assert.deepEqual(prepareVfCurveForDriver(live, range), live);
   const offNativeStep = live.map((point) => ({ ...point }));
   offNativeStep[8].freqMhz = 3195;
-  assert.equal(prepareVfCurveForDriver(offNativeStep, range), null);
+  assert.deepEqual(prepareVfCurveForDriver(offNativeStep, range), offNativeStep,
+    'integer MHz values are passed through so IGCL can apply the same 1 MHz edit IGS exposes');
   const fractionalFrequency = live.map((point) => ({ ...point }));
   fractionalFrequency[3].freqMhz += 0.4;
   assert.equal(prepareVfCurveForDriver(fractionalFrequency, range), null);

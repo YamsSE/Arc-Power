@@ -84,7 +84,7 @@ import {
   moveVfPoint,
   normalizeVfCurvePoints,
   selectVfCurveEditorCurve,
-  shouldSyncVfCurveFromState,
+  shouldCommitVfCurveRefresh,
   vfCurvePointLabel,
   vfVoltageMv,
 } from '../pure/vf-curve.ts';
@@ -194,6 +194,12 @@ let vfCurveDefaultDisplay: Array<{ voltageV: number; freqMhz: number }> | null =
 let vfCurveDefault: Array<{ voltageV: number; freqMhz: number }> | null = null;
 let vfCurveDisplaySource: 'live' | 'stock-reference' | 'draft' | 'draft-unverified' | 'unavailable' = 'unavailable';
 let vfCurveWasApplied = false;
+// A driver curve changed while this editor was mounted. Keep the visible
+// snapshot (including a staged STOCK reset payload) intact for inspection,
+// but require an explicit read before allowing any curve operation.
+let vfCurveStale = false;
+let vfCurveRefreshBusy = false;
+let vfCurveRefreshGeneration = 0;
 let updateVfCurveEditorNote: (() => void) | null = null;
 let activeVfEditingCleanup: (() => void) | null = null;
 let redrawVfCurveEditor: (() => void) | null = null;
@@ -274,6 +280,9 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   vfCurveDefault = null;
   vfCurveDisplaySource = 'unavailable';
   vfCurveWasApplied = false;
+  vfCurveStale = false;
+  vfCurveRefreshBusy = false;
+  vfCurveRefreshGeneration += 1;
   updateVfCurveEditorNote = null;
   activeVfEditingCleanup?.();
   activeVfEditingCleanup = null;
@@ -303,16 +312,27 @@ function vfCurveDirty(): boolean {
 }
 
 function canApplyVfCurve(): boolean {
-  return vfCurveNativeApplyDraft !== null
+  return !vfCurveStale && !vfCurveRefreshBusy && (vfCurveNativeApplyDraft !== null
     || vfCurveDisplaySource === 'live'
     || vfCurveDisplaySource === 'draft'
-    || vfCurveDisplaySource === 'draft-unverified';
+    || vfCurveDisplaySource === 'draft-unverified');
 }
 
 function canEditVfCurve(): boolean {
-  return vfCurveDisplaySource === 'live'
+  return !vfCurveStale && !vfCurveRefreshBusy && (vfCurveDisplaySource === 'live'
     || vfCurveDisplaySource === 'draft'
-    || vfCurveDisplaySource === 'draft-unverified';
+    || vfCurveDisplaySource === 'draft-unverified');
+}
+
+function sameRawVfCurve(a: DeviceState['vfCurve'] | DeviceState['vfCurveDefault'], b: DeviceState['vfCurve'] | DeviceState['vfCurveDefault']): boolean {
+  // Null and absent both mean that this state has no readable curve. For
+  // actual tables compare every coordinate and point in order; do not use a
+  // normalized/projection comparison because even a uniform voltage shift
+  // is meaningful to the editor and to IGCL writes.
+  if (a == null || b == null) return a == null && b == null;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((point, index) => point.voltageV === b[index]?.voltageV
+    && point.freqMhz === b[index]?.freqMhz);
 }
 
 function isPendingControl(key: string): boolean {
@@ -366,7 +386,13 @@ function refreshChip(key: string) {
     chip.textContent = !dirty && vfCurveWasApplied ? 'Applied' : '';
     chip.className = !dirty && vfCurveWasApplied ? 'chip oc-chip-status chip-ok' : 'chip oc-chip-status';
     const curveApply = chipApplyNodes.get(key);
-    if (curveApply) curveApply.hidden = !dirty;
+    if (curveApply) {
+      curveApply.hidden = !dirty;
+      curveApply.disabled = vfCurveStale || vfCurveRefreshBusy;
+      curveApply.title = vfCurveStale
+        ? 'Refresh the VF curve from the driver before applying.'
+        : vfCurveRefreshBusy ? 'Wait for the VF curve refresh to finish before applying.' : '';
+    }
     return;
   }
   const rawDriverValue = currentState?.[key as keyof DeviceState];
@@ -675,7 +701,7 @@ export const tuningPage: Page = {
     }
 
     const stageVfCurveReset = (): boolean => {
-      if (!vfCurveSupported || !vfCurveDefault) return false;
+      if (!vfCurveSupported || !vfCurveDefault || vfCurveStale || vfCurveRefreshBusy) return false;
       vfCurveNativeApplyDraft = vfCurveDefault.map((point) => ({ ...point }));
       vfCurveDraft = vfCurveDefaultDisplay
         ? vfCurveDefaultDisplay.map((point) => ({ ...point }))
@@ -702,6 +728,10 @@ export const tuningPage: Page = {
       class: 'btn btn-ghost btn-sm',
       text: 'Reset to default',
       onClick: () => {
+        if (vfCurveRefreshBusy && vfCurveSupported && vfCurveMode) {
+          toast('info', 'VF curve refresh in progress', 'Wait for the driver read to finish before resetting the VF curve.');
+          return;
+        }
         applied = {};
         for (const key of controls) {
           const range = cardSliderRange(caps, key);
@@ -713,7 +743,11 @@ export const tuningPage: Page = {
           if (slider) slider.value = String(values[key]);
         }
         if (vfCurveSupported && vfCurveMode) {
-          if (!stageVfCurveReset()) {
+          if (vfCurveStale) {
+            toast('info', 'VF curve snapshot is stale', 'Refresh from driver before resetting the VF curve.');
+          } else if (vfCurveRefreshBusy) {
+            toast('info', 'VF curve refresh in progress', 'Wait for the driver read to finish before resetting the VF curve.');
+          } else if (!stageVfCurveReset()) {
             // Do not leave an earlier custom/reset payload attached to a
             // global reset when the driver's current STOCK table is absent.
             vfCurveNativeApplyDraft = null;
@@ -907,10 +941,10 @@ export const tuningPage: Page = {
           const xPct = ((point.voltageV - curveBounds.voltageMinV) / (curveBounds.voltageMaxV - curveBounds.voltageMinV)) * 100;
           const yPct = 100 - ((point.freqMhz - curveBounds.freqMinMhz) / (curveBounds.freqMaxMhz - curveBounds.freqMinMhz)) * 100;
           const dot = el('div', {
-            class: `vf-curve-dot${index === selectedIdx ? ' vf-curve-dot-selected' : ''}${vfCurveDisplaySource === 'stock-reference' ? ' vf-curve-dot-reference' : ''}`,
-            role: vfCurveDisplaySource === 'stock-reference' ? 'img' : 'button',
-            tabindex: vfCurveDisplaySource === 'stock-reference' ? '-1' : '0',
-            'aria-label': `${vfCurveDisplaySource === 'stock-reference' ? 'STOCK reference point' : 'Point'} ${index + 1}: ${vfCurvePointLabel(point, index)}`,
+            class: `vf-curve-dot${index === selectedIdx ? ' vf-curve-dot-selected' : ''}${vfCurveDisplaySource === 'stock-reference' ? ' vf-curve-dot-reference' : ''}${vfCurveStale ? ' vf-curve-dot-reference' : ''}`,
+            role: vfCurveDisplaySource === 'stock-reference' || vfCurveStale ? 'img' : 'button',
+            tabindex: vfCurveDisplaySource === 'stock-reference' || vfCurveStale ? '-1' : '0',
+            'aria-label': `${vfCurveStale ? 'Stale snapshot point' : vfCurveDisplaySource === 'stock-reference' ? 'STOCK reference point' : 'Point'} ${index + 1}: ${vfCurvePointLabel(point, index)}`,
             dataset: { idx: String(index) },
           });
           dot.style.left = `${xPct}%`;
@@ -995,7 +1029,10 @@ export const tuningPage: Page = {
                 dataset: { readoutField: 'frequency' },
                 min: Math.round(curveBounds.freqMinMhz),
                 max: Math.round(curveBounds.freqMaxMhz),
-                step: curveBounds.frequencyStepMhz ?? 1,
+                // IGS exposes 1 MHz point-edit granularity even when IGCL's
+                // advertised writer step is coarser; the driver normalizes
+                // a submitted curve and the stable read-back gate verifies it.
+                step: 1,
                 onchange: (event: Event) => onEditPoint(Number(hoverReadout?.dataset['idx'] ?? 0), Number((event.target as HTMLInputElement).value), event.target as HTMLInputElement, 'frequency'),
               }),
             ]),
@@ -1050,8 +1087,106 @@ export const tuningPage: Page = {
         ? ` The initial IGCL curve-read probe was refused: ${vfRuntimeRefusal}. Applying performs fresh stable curve checks before any write.`
         : '';
       const curveNoteNode = el('p', { class: 'card-note' });
+      const refreshCurveButton = el('button', {
+        class: 'btn btn-ghost btn-sm',
+        text: 'Refresh from driver',
+        title: 'Read the current LIVE and STOCK curves. This is unavailable while the curve editor has an unapplied draft.',
+        disabled: vfCurveDirty(),
+      });
+    const refreshCurveFromDriver = async (): Promise<void> => {
+        if (vfCurveDirty()) {
+          toast('info', 'VF curve draft kept', 'Apply or discard the pending curve change before refreshing from the driver.');
+          return;
+        }
+        if (vfCurveRefreshBusy || !caps.vfCurveRange) return;
+        const initial = ctx.store.get();
+        const deviceId = initial.deviceId;
+        if (deviceId === null) return;
+        const requestedDeviceKey = initial.devices.find((device) => device.id === deviceId)?.deviceKey ?? null;
+        const refreshGeneration = ++vfCurveRefreshGeneration;
+        vfCurveRefreshBusy = true;
+        refreshCurveButton.disabled = true;
+        refreshCurveButton.textContent = 'Reading…';
+        refreshCard('gpuFreqOffsetMhz');
+        updateFloating();
+        updateVfCurveEditorNote?.();
+        try {
+          const fresh = await api.getCurrentSettings(deviceId);
+          const latest = ctx.store.get();
+          const currentDeviceKey = latest.devices.find((device) => device.id === latest.deviceId)?.deviceKey ?? null;
+          if (!shouldCommitVfCurveRefresh(
+            deviceId,
+            latest.deviceId,
+            requestedDeviceKey,
+            currentDeviceKey,
+            vfCurveDirty(),
+            refreshGeneration,
+            vfCurveRefreshGeneration,
+          )) {
+            if (latest.deviceId === deviceId && currentDeviceKey === requestedDeviceKey && vfCurveDirty()) {
+              toast('info', 'VF curve draft kept', 'The curve changed while the driver read was in progress, so the refresh result was discarded.');
+            }
+            return;
+          }
+          const nativeStock = Array.isArray(fresh?.vfCurveDefault)
+            && isValidNativeVfCurve(fresh.vfCurveDefault, caps.vfCurveRange)
+            ? fresh.vfCurveDefault.map((point) => ({ ...point }))
+            : null;
+          const liveValid = Array.isArray(fresh?.vfCurve)
+            && isValidNativeVfCurve(fresh.vfCurve, caps.vfCurveRange);
+          if (!liveValid) {
+            toast('error', 'VF curve refresh failed', 'The driver did not return a valid LIVE curve. The displayed snapshot was kept unchanged.');
+            return;
+          }
+          const maxPoints = Math.min(VF_EDITOR_MAX_POINTS, caps.vfCurveRange.maxPoints);
+          vfCurveDefault = nativeStock;
+          vfCurveDefaultDisplay = nativeStock
+            ? normalizeVfCurvePoints(nativeStock, caps.vfCurveRange, maxPoints)
+            : null;
+          const selection = selectVfCurveEditorCurve(fresh.vfCurve, nativeStock, caps.vfCurveRange);
+          vfCurveDraft = normalizeVfCurvePoints(selection.points, caps.vfCurveRange, maxPoints);
+          vfCurveApplied = vfCurveDraft.map((point) => ({ ...point }));
+          vfCurveNativeApplyDraft = null;
+          vfCurveDisplaySource = selection.source;
+          vfCurveWasApplied = selection.source === 'live';
+          vfCurveStale = false;
+          // Refresh the store's VF fields too, so the next scalar-only state
+          // update does not compare this fresh chart against an older stored
+          // curve and immediately mark it stale again. Scalar editor drafts
+          // live separately in `values`, so keep the current scalar state.
+          const refreshedState = {
+            ...(latest.state ?? currentState ?? fresh),
+            vfCurve: fresh.vfCurve,
+            vfCurveDefault: fresh.vfCurveDefault,
+          };
+          currentState = refreshedState;
+          ctx.store.set({ state: refreshedState });
+          redrawVfCurveEditor?.();
+          refreshCard('gpuFreqOffsetMhz');
+          updateFloating();
+          toast('success', 'VF curve refreshed', nativeStock
+            ? 'The editor now shows the latest LIVE curve and STOCK reset reference.'
+            : 'The editor now shows the latest LIVE curve. The driver did not provide a STOCK reset reference.');
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          toast('error', 'VF curve refresh failed', detail);
+        } finally {
+          if (refreshGeneration === vfCurveRefreshGeneration) {
+            vfCurveRefreshBusy = false;
+            refreshCurveButton.textContent = 'Refresh from driver';
+            refreshCurveButton.disabled = vfCurveDirty();
+            refreshCard('gpuFreqOffsetMhz');
+            updateFloating();
+            updateVfCurveEditorNote?.();
+          }
+        }
+      };
+      refreshCurveButton.addEventListener('click', () => void refreshCurveFromDriver());
       const updateNote = (): void => {
-        if (vfCurveDisplaySource === 'stock-reference') {
+        refreshCurveButton.disabled = vfCurveDirty() || vfCurveRefreshBusy;
+        if (vfCurveStale) {
+          curveNoteNode.textContent = `The driver’s LIVE or STOCK curve changed while this page was open. This chart and any staged reset are preserved as a snapshot, but are stale and cannot be edited, applied, or reset.${vfCurveDirty() ? ' Refresh is disabled because this editor has pending changes; leave and reopen the page to discard them before refreshing.' : ' Refresh from driver to load current curves.'}${vfProbeNote}`;
+        } else if (vfCurveDisplaySource === 'stock-reference') {
           curveNoteNode.textContent = `LIVE VF curve is unavailable. Showing the driver's STOCK curve for reference. Editing is paused until LIVE can be read; Reset to default can still be staged and Apply will repeat the safety checks.${vfProbeNote}`;
         } else if (vfCurveDisplaySource === 'draft-unverified') {
           curveNoteNode.textContent = `LIVE VF read-back is unavailable or unstable. This chart shows your unverified draft, not a confirmed current driver curve. Apply requires a fresh stable read before writing.${vfProbeNote}`;
@@ -1066,6 +1201,7 @@ export const tuningPage: Page = {
       updateVfCurveEditorNote = updateNote;
       host.append(
         curveNoteNode,
+        el('div', { class: 'vf-curve-actions' }, [refreshCurveButton]),
         el('div', { class: 'vf-curve-point-count' }, [pointCountNode]),
         stage,
         el('div', { class: 'vf-curve-axis' }, [
@@ -1539,12 +1675,20 @@ export const tuningPage: Page = {
           el('button', {
             class: 'btn btn-ghost btn-sm',
             text: 'Reset to default',
-            disabled: key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode && vfCurveDefault === null,
-            title: key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode && vfCurveDefault === null
-              ? 'The driver stock VF curve is unavailable.'
+            disabled: key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode && (vfCurveDefault === null || vfCurveStale || vfCurveRefreshBusy),
+            title: key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode && vfCurveStale
+              ? 'Refresh the VF curve from the driver before resetting.'
+              : key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode && vfCurveRefreshBusy
+                ? 'Wait for the VF curve refresh to finish before resetting.'
+              : key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode && vfCurveDefault === null
+                ? 'The driver stock VF curve is unavailable.'
               : undefined,
             onClick: () => {
-              if (key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode && !vfCurveDefault) return;
+              if (key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode && vfCurveRefreshBusy) {
+                toast('info', 'VF curve refresh in progress', 'Wait for the driver read to finish before resetting the VF curve.');
+                return;
+              }
+              if (key === 'gpuFreqOffsetMhz' && vfCurveSupported && vfCurveMode && (vfCurveStale || !vfCurveDefault)) return;
               // M17e: the M4-B Clock-mode reset branch is REMOVED (the
               // mode died) - the default is the range default, always.
               values[key] = snapToRange(range.default, range);
@@ -1969,6 +2113,14 @@ export const tuningPage: Page = {
       const live = ctx.store.get();
       const deviceId = live.deviceId;
       if (deviceId === null || !caps) return;
+      if (vfCurveRefreshBusy && (only === 'vfCurve' || (vfCurveSupported && (vfCurveMode || vfCurveNativeApplyDraft !== null)))) {
+        toast('info', 'VF curve refresh in progress', 'Wait for the driver read to finish before applying or resetting the VF curve.');
+        return;
+      }
+      if (vfCurveStale && (only === 'vfCurve' || (vfCurveSupported && (vfCurveMode || vfCurveNativeApplyDraft !== null)))) {
+        toast('info', 'VF curve snapshot is stale', 'Refresh from driver before applying or resetting the VF curve.');
+        return;
+      }
       // M17e (S1c)/M22: the ATOMIC payload compositions. The OFFSET applies
       // (the per-card chips for gpuFreqOffsetMhz / gpuVoltOffsetV AND the
       // floating apply in Offset mode) carry the OFFSETS ONLY - the M17e-era
@@ -1982,6 +2134,10 @@ export const tuningPage: Page = {
       // lock). The LOCK apply is composed by the lock editor itself (the
       // lock-mode branch - the floating apply is force-hidden in Lock mode).
       if (only === 'vfCurve' && !canApplyVfCurve()) {
+        if (vfCurveStale) {
+          toast('info', 'VF curve snapshot is stale', 'Refresh from driver before applying this curve.');
+          return;
+        }
         toast('info', 'LIVE VF curve unavailable', 'The STOCK curve is shown as a reference. A verified LIVE curve or an explicit STOCK reset is required before applying.');
         return;
       }
@@ -2331,68 +2487,22 @@ export const tuningPage: Page = {
     // (an apply / profile load / external state change while this page is
     // current) - no full rebuild, no navigation.
     if (ocStateChanged(currentState, s.state)) {
+      const previousCurveState = currentState;
+      const vfRawCurveChanged = !sameRawVfCurve(previousCurveState?.vfCurve, s.state?.vfCurve)
+        || !sameRawVfCurve(previousCurveState?.vfCurveDefault, s.state?.vfCurveDefault);
       currentState = s.state;
       if (vfCurveSupported && s.caps?.vfCurveRange) {
-        const resetPending = vfCurveNativeApplyDraft !== null;
-        const draftPending = vfCurveDirty();
-        const nativeStock = Array.isArray(s.state?.vfCurveDefault)
-          && isValidNativeVfCurve(s.state.vfCurveDefault, s.caps.vfCurveRange)
-          ? s.state.vfCurveDefault.map((point) => ({ ...point }))
-          : null;
-        vfCurveDefault = nativeStock;
-        vfCurveDefaultDisplay = nativeStock
-          ? normalizeVfCurvePoints(nativeStock, s.caps.vfCurveRange, Math.min(VF_EDITOR_MAX_POINTS, s.caps.vfCurveRange.maxPoints))
-          : null;
-        const selection = selectVfCurveEditorCurve(s.state?.vfCurve, nativeStock, s.caps.vfCurveRange);
-        if (resetPending && nativeStock) {
-          // A staged reset always follows the latest verified STOCK table;
-          // never keep a stale native payload if the driver refreshes it.
-          vfCurveNativeApplyDraft = nativeStock.map((point) => ({ ...point }));
-          vfCurveDisplaySource = selection.source === 'live' ? 'live' : 'stock-reference';
-          vfCurveDraft = vfCurveDefaultDisplay?.map((point) => ({ ...point })) ?? [];
-          redrawVfCurveEditor?.();
-        } else if (resetPending && !nativeStock) {
-          // STOCK is no longer readable, so cancel the staged reset rather
-          // than writing its old coordinates as if they were current.
-          vfCurveNativeApplyDraft = null;
-          vfCurveDisplaySource = selection.source;
-          vfCurveDraft = normalizeVfCurvePoints(selection.points, s.caps.vfCurveRange, Math.min(VF_EDITOR_MAX_POINTS, s.caps.vfCurveRange.maxPoints));
-          vfCurveApplied = vfCurveDraft.map((point) => ({ ...point }));
-          vfCurveWasApplied = false;
-          redrawVfCurveEditor?.();
-        } else if (selection.source === 'live' && shouldSyncVfCurveFromState(
-          vfCurveDraft, vfCurveApplied, vfCurveNativeApplyDraft !== null,
-        )) {
-          vfCurveDisplaySource = 'live';
-          vfCurveDraft = normalizeVfCurvePoints(selection.points, s.caps.vfCurveRange, Math.min(VF_EDITOR_MAX_POINTS, s.caps.vfCurveRange.maxPoints));
-          vfCurveApplied = vfCurveDraft.map((point) => ({ ...point }));
-          vfCurveWasApplied = true;
-          redrawVfCurveEditor?.();
-        } else if (selection.source === 'live') {
-          // LIVE is readable, but it differs from the user's local draft.
-          // Keep the draft and say so without implying that the device read
-          // itself is unavailable.
-          vfCurveDisplaySource = 'draft';
-          redrawVfCurveEditor?.();
-        } else if (selection.source === 'stock-reference' && !draftPending) {
-          // Open the verified STOCK table as a read-only reference whenever
-          // the independent LIVE surface is temporarily unavailable.
-          vfCurveDisplaySource = 'stock-reference';
-          vfCurveDraft = normalizeVfCurvePoints(selection.points, s.caps.vfCurveRange, Math.min(VF_EDITOR_MAX_POINTS, s.caps.vfCurveRange.maxPoints));
-          vfCurveApplied = vfCurveDraft.map((point) => ({ ...point }));
-          vfCurveWasApplied = false;
-          redrawVfCurveEditor?.();
-        } else if (selection.source === 'unavailable' && !draftPending) {
-          vfCurveDisplaySource = 'unavailable';
-          vfCurveDraft = [];
-          vfCurveApplied = [];
-          vfCurveWasApplied = false;
+        if (vfRawCurveChanged) {
+          // Never replace the displayed curve or the native STOCK reset
+          // payload from a background push. Those coordinates may be stale
+          // relative to the driver by the time a user applies them, so freeze
+          // the snapshot and require an explicit clean refresh first.
+          vfCurveStale = true;
           redrawVfCurveEditor?.();
         } else {
-          // Keep a user's pending draft after a failed/unstable LIVE read,
-          // but mark it honestly as unverified instead of calling it current.
-          vfCurveDisplaySource = 'draft-unverified';
-          redrawVfCurveEditor?.();
+          // Scalar-only DeviceState updates must not touch the curve editor.
+          // A raw VF change is intentionally refreshed only by the explicit
+          // read action in the curve card.
         }
       }
       // Re-sync slider values from the driver for controls that were never

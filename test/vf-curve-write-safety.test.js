@@ -117,7 +117,7 @@ function fixture({
   });
   backend.getCapabilities = async () => caps;
   backend._ocUnitsOf = async () => ({ gpuFreqOffset: 0, gpuVoltOffset: 11 });
-  return { backend, writes, scalarWrites, nativeEvents, live };
+  return { backend, writes, scalarWrites, nativeEvents, live, caps };
 }
 
 function sequenceCurveReads(backend, type, samples) {
@@ -188,6 +188,134 @@ test('an unstable STOCK table refuses a B580 curve write and is never used as a 
   assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
   assert.match(result.perControl.vfCurve.message, /stable 3-of-5 read quorum/);
   assert.deepEqual(writes, []);
+});
+
+test('apply retries stable STOCK reads after a transient initial probe failure', async () => {
+  const { backend, writes } = fixture();
+  const readWithRetry = backend._readVfCurvePointsWithRetry.bind(backend);
+  let firstStockProbe = true;
+  backend._readVfCurvePointsWithRetry = async (handle, type = 1, details = 0) => {
+    if (type === 0 && firstStockProbe) {
+      firstStockProbe = false;
+      return { ok: false, retryable: true, fallbackToLive: false, points: [], message: 'transient STOCK read failure' };
+    }
+    return readWithRetry(handle, type, details);
+  };
+
+  const result = await backend.applySettings(0, { vfCurve: canonical(liveDefault) });
+
+  assert.equal(result.perControl.vfCurve.ok, true);
+  assert.equal(result.perControl.vfCurve.readBackEqual, true);
+  assert.deepEqual(writes, []);
+});
+
+test('STOCK reset apply can write after a transient initial STOCK probe recovers', async () => {
+  const { backend, writes, live } = fixture();
+  const readWithRetry = backend._readVfCurvePointsWithRetry.bind(backend);
+  let firstStockProbe = true;
+  backend._readVfCurvePointsWithRetry = async (handle, type = 1, details = 0) => {
+    if (type === 0 && firstStockProbe) {
+      firstStockProbe = false;
+      return { ok: false, retryable: true, fallbackToLive: false, points: [], message: 'transient STOCK read failure' };
+    }
+    return readWithRetry(handle, type, details);
+  };
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, _delay, ...args) => originalSetTimeout(callback, 0, ...args);
+  try {
+    const result = await backend.applySettings(0, { vfCurve: stockCanonical });
+
+    assert.equal(result.perControl.vfCurve.ok, true);
+    assert.equal(result.perControl.vfCurve.readBackEqual, true);
+    assert.deepEqual(result.perControl.vfCurve.readBackCurve, stockCanonical);
+    assert.deepEqual(canonical(live), stockCanonical);
+    assert.deepEqual(writes, ['vf']);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test('independently stable STOCK and LIVE reads are rechecked together before the B580 setter', async () => {
+  const shiftedStock = stock.map((point) => ({ ...point, Voltage: point.Voltage + 50 }));
+  const shiftedLive = liveDefault.map((point) => ({ ...point, Voltage: point.Voltage + 50 }));
+  const { backend, writes } = fixture();
+  let stockIndex = 0;
+  let liveIndex = 0;
+  const nativeRead = backend._readVfCurvePoints.bind(backend);
+  backend._readVfCurvePoints = (_handle, type = 1, details = 0) => {
+    if (type === 0) {
+      const index = stockIndex++;
+      return { ok: true, points: (index <= 5 ? stock : shiftedStock).map((point) => ({ ...point })) };
+    }
+    if (type === 1) {
+      const index = liveIndex++;
+      return { ok: true, points: (index < 5 ? shiftedLive : liveDefault).map((point) => ({ ...point })) };
+    }
+    return nativeRead(_handle, type, details);
+  };
+
+  const result = await backend.applySettings(0, { vfCurve: stockCanonical });
+
+  assert.equal(result.perControl.vfCurve.ok, false);
+  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
+  assert.match(result.perControl.vfCurve.message, /STOCK\/LIVE VF source changed after preflight/);
+  assert.deepEqual(writes, []);
+});
+
+test('getCurrentSettings keeps a stable STOCK reference visible when LIVE is unstable', async () => {
+  const { backend, caps } = fixture();
+  backend.getCapabilities = async () => caps;
+  backend._fanHandlesOf = async () => [];
+  let liveIndex = 0;
+  const nativeRead = backend._readVfCurvePoints.bind(backend);
+  backend._readVfCurvePoints = (_handle, type = 1, details = 0) => {
+    if (type === 0) return { ok: true, points: stock.map((point) => ({ ...point })) };
+    if (type === 1 && liveIndex < 10) {
+      const index = liveIndex++;
+      const shiftedLive = liveDefault.map((point) => ({ ...point, Voltage: point.Voltage + index + 1 }));
+      return { ok: true, points: shiftedLive };
+    }
+    return nativeRead(_handle, type, details);
+  };
+
+  const state = await backend.getCurrentSettings(0);
+
+  assert.deepEqual(state.vfCurveDefault, canonical(stock));
+  assert.equal(state.vfCurve, null);
+});
+
+test('getCurrentSettings retries stable STOCK reads after a transient initial probe failure', async () => {
+  const { backend, caps } = fixture();
+  backend.getCapabilities = async () => caps;
+  backend._fanHandlesOf = async () => [];
+  const readWithRetry = backend._readVfCurvePointsWithRetry.bind(backend);
+  let firstStockProbe = true;
+  backend._readVfCurvePointsWithRetry = async (handle, type = 1, details = 0) => {
+    if (type === 0 && firstStockProbe) {
+      firstStockProbe = false;
+      return { ok: false, retryable: true, fallbackToLive: false, points: [], message: 'transient STOCK read failure' };
+    }
+    return readWithRetry(handle, type, details);
+  };
+
+  const state = await backend.getCurrentSettings(0);
+
+  assert.deepEqual(state.vfCurveDefault, stockCanonical);
+  assert.deepEqual(state.vfCurve, canonical(liveDefault));
+});
+
+test('LIVE-only driver fallback never advertises LIVE as the STOCK reset curve', async () => {
+  const { backend, caps } = fixture();
+  backend.getCapabilities = async () => caps;
+  backend._fanHandlesOf = async () => [];
+  backend._readVfCurvePointsWithRetry = async (_handle, type) => type === 0
+    ? { ok: false, fallbackToLive: true, message: 'STOCK read surface unavailable' }
+    : { ok: true, points: liveDefault.map((point) => ({ ...point })) };
+
+  const state = await backend.getCurrentSettings(0);
+
+  assert.equal(state.vfCurveDefault, null);
+  assert.deepEqual(state.vfCurve, canonical(liveDefault));
 });
 
 test('a transient failed LIVE preflight quorum retries and then writes once', async () => {
@@ -400,18 +528,53 @@ test('B580 rejects fractional coordinates before sending a native write', async 
   assert.deepEqual(scalarWrites, []);
 });
 
-test('B580 refuses a frequency outside the driver-reported 10 MHz grid before writing', async () => {
-  const { backend, writes, scalarWrites } = fixture({ driverVersion: knownUnsafeDriverVersion });
-  const offGrid = canonical(liveDefault);
-  offGrid[2].freqMhz = 2595;
-  const result = await backend.applySettings(0, { vfCurve: offGrid });
+test('B580 sends an IGS-precision integer MHz edit and verifies the resulting LIVE curve', async () => {
+  const { backend, writes, scalarWrites, live } = fixture({ driverVersion: knownUnsafeDriverVersion });
+  const oneMHzEdit = canonical(liveDefault);
+  oneMHzEdit[2].freqMhz = 2595;
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, _delay, ...args) => originalSetTimeout(callback, 0, ...args);
+  try {
+    const result = await backend.applySettings(0, { vfCurve: oneMHzEdit });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.perControl.vfCurve.ok, false);
-  assert.equal(result.perControl.vfCurve.errorCode, 'out-of-range');
-  assert.match(result.perControl.vfCurve.message, /driver voltage and frequency steps/);
-  assert.deepEqual(writes, []);
-  assert.deepEqual(scalarWrites, []);
+    assert.equal(result.perControl.vfCurve.ok, true);
+    assert.equal(result.perControl.vfCurve.readBackEqual, true);
+    assert.deepEqual(result.perControl.vfCurve.readBackCurve, oneMHzEdit);
+    assert.deepEqual(canonical(live), oneMHzEdit);
+    assert.deepEqual(writes, ['vf']);
+    assert.deepEqual(scalarWrites, []);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test('B580 accepts only a stable one-step driver remap of an IGS-precision edit', async () => {
+  const { backend, writes, live } = fixture({
+    driverVersion: knownUnsafeDriverVersion,
+    writeTransform: (points) => points.map((point, index) => ({
+      ...point,
+      Frequency: index === 2 ? 2590 : point.Frequency,
+    })),
+  });
+  const oneMHzEdit = canonical(liveDefault);
+  oneMHzEdit[2].freqMhz = 2595;
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, _delay, ...args) => originalSetTimeout(callback, 0, ...args);
+  try {
+    const result = await backend.applySettings(0, { vfCurve: oneMHzEdit });
+
+    assert.equal(result.perControl.vfCurve.ok, true);
+    assert.equal(result.perControl.vfCurve.normalized, true);
+    assert.equal(result.perControl.vfCurve.readBackEqual, false);
+    assert.deepEqual(result.perControl.vfCurve.readBackCurve[2], {
+      voltageV: oneMHzEdit[2].voltageV,
+      freqMhz: 2590,
+    });
+    assert.deepEqual(writes, ['vf']);
+    assert.deepEqual(canonical(live), result.perControl.vfCurve.readBackCurve);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
 });
 
 test('B580 exact custom-curve profile no-op still blocks conflicting offsets', async () => {

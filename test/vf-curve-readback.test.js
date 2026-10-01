@@ -295,8 +295,8 @@ test('VF verification adopts the stable LIVE quorum within one driver step', asy
     requestedPoints: requested,
     liveBefore: { ok: true, points: before },
     curveRange: { ...curveRange, voltageStepV: 0.01, frequencyStepMhz: 10 },
-    maxAttempts: 5,
-    quorum: 3,
+    maxAttempts: 21,
+    quorum: 15,
     pollIntervalMs: 100,
     settleDelayMs: 3000,
     wait: async (ms) => waits.push(ms),
@@ -306,8 +306,35 @@ test('VF verification adopts the stable LIVE quorum within one driver step', asy
   assert.equal(out.normalized, true);
   assert.equal(out.driverAdjusted, true);
   assert.equal(out.readBackEqual, false);
-  assert.equal(reads, 5, 'the read-back must reach a 3-of-5 LIVE quorum');
-  assert.deepEqual(waits, [3000, 100, 100, 100, 100]);
+  assert.equal(reads, 21, 'the read-back must span the full 15-of-21 LIVE stability window');
+  assert.deepEqual(waits, [3000, ...Array(20).fill(100)]);
+});
+
+test('VF verification does not accept a temporary early curve before a later transition', async () => {
+  const temporary = requested.map((point) => ({ ...point }));
+  temporary[0].Frequency += 10;
+  let reads = 0;
+  const waits = [];
+  const out = await readVfCurveAfterWrite({
+    readCurve: async () => {
+      const index = reads++;
+      return { ok: true, points: index < 15 ? temporary : requested };
+    },
+    requestedPoints: requested,
+    liveBefore: { ok: true, points: before },
+    curveRange: { ...curveRange, voltageStepV: 0.01, frequencyStepMhz: 10 },
+    maxAttempts: 21,
+    quorum: 15,
+    pollIntervalMs: 100,
+    settleDelayMs: 3000,
+    wait: async (ms) => waits.push(ms),
+  });
+
+  assert.equal(out.ok, false);
+  assert.equal(out.errorCode, 'readback-unstable');
+  assert.match(out.message, /stable 15-of-21 read quorum/);
+  assert.equal(reads, 21);
+  assert.deepEqual(waits, [3000, ...Array(20).fill(100)]);
 });
 
 test('VF verification reports an unchanged stable LIVE curve as a no-op', async () => {
@@ -352,8 +379,8 @@ test('VF verification rejects a curve that keeps changing after the write', asyn
     requestedPoints: requested,
     liveBefore: { ok: true, points: before },
     curveRange: { ...curveRange, voltageStepV: 0.01, frequencyStepMhz: 10 },
-    maxAttempts: 5,
-    quorum: 3,
+    maxAttempts: 21,
+    quorum: 15,
     pollIntervalMs: 100,
     settleDelayMs: 3000,
     wait: async (ms) => waits.push(ms),
@@ -361,9 +388,9 @@ test('VF verification rejects a curve that keeps changing after the write', asyn
 
   assert.equal(out.ok, false);
   assert.equal(out.errorCode, 'readback-unstable');
-  assert.match(out.message, /write succeeded.*stable 3-of-5 read quorum/);
-  assert.equal(reads, 5);
-  assert.deepEqual(waits, [3000, 100, 100, 100, 100]);
+  assert.match(out.message, /write succeeded.*stable 15-of-21 read quorum/);
+  assert.equal(reads, 21);
+  assert.deepEqual(waits, [3000, ...Array(20).fill(100)]);
 });
 
 test('apply before-image accepts a valid single LIVE sample without a read quorum', async () => {

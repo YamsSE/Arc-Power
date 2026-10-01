@@ -132,9 +132,8 @@ const VF_READ_RETRY_SETTLE_MS = 25;
 const TUNING_TRANSACTION_LOCK_HELD = Symbol('tuning-transaction-lock-held');
 
 // B580 can report a temporary LIVE table after a custom-curve write, then
-// settle to a different table. Wait 3 seconds and require a strong 15-of-21
-// stable LIVE quorum before accepting a normalized result. This never replays
-// the native setter.
+// settle. Wait 3 seconds and require a latest-inclusive 15-of-21 LIVE quorum
+// before accepting a normalized result. This never replays the native setter.
 const VF_READBACK_MAX_ATTEMPTS = 21;
 const VF_READBACK_SETTLE_MS = 100;
 
@@ -3062,26 +3061,43 @@ export class IgclBackend {
       }
     }
 
-    // VF curves are the native Battlemage simplified tables. Keep LIVE and
-    // STOCK as separate per-device fields: Reset to default must never infer
-    // STOCK from LIVE, capability bounds, a renderer snapshot, or a synthetic
-    // point list. Native point count/order are retained exactly.
+    // VF curves are the native Battlemage simplified tables. STOCK and LIVE
+    // are separate driver surfaces and may be stable across different read
+    // windows. Read each independently for display; apply revalidates both
+    // native source tables immediately before its single setter call.
+    // Never infer STOCK from renderer state or a synthetic point list.
     if (caps.controls.vfCurve && !this._isUnavailable(lib.ctlOverclockReadVFCurve)) {
-      const decodeCurve = async (type) => {
-        // Both native surfaces can return a transient point table while the
-        // B580 overclock service is updating. Never let a one-off STOCK read
-        // become the reset draft, and keep LIVE on the same quorum contract.
-        const native = await readStableVfCurve({
-          readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, type, 0),
+      const toCanonical = (points) => points.length >= 2
+        ? points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
+        : null;
+      const stockProbe = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
+      if (stockProbe.fallbackToLive) {
+        // Only an explicit API-surface absence permits LIVE-only operation.
+        // A readable LIVE table remains useful for editing, but it is never
+        // represented as the STOCK reset target.
+        const live = await readStableVfCurvePreflight({
+          readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
         });
-        if (!native.ok || native.points.length < 2) return null;
-        return native.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }));
-      };
-      // Type 0 is the driver's STOCK simplified table. Failure is honest
-      // unavailability; do not fall back to LIVE because that would make a
-      // custom curve appear to be the reset target.
-      state.vfCurveDefault = await decodeCurve(0);
-      state.vfCurve = await decodeCurve(1);
+        if (live.ok) {
+          const canonical = toCanonical(live.points);
+          state.vfCurve = canonical.map((point) => ({ ...point }));
+        }
+      } else {
+        // Do not treat one transient failed STOCK probe as proof that the
+        // curve is unavailable. The bounded stable read below gets its own
+        // retry and still fails closed if the native table cannot be verified.
+        const stock = await readStableVfCurvePreflight({
+          readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 0, 0),
+        });
+        const live = await readStableVfCurvePreflight({
+          readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+        });
+        if (stock.ok) state.vfCurveDefault = toCanonical(stock.points);
+        if (live.ok) state.vfCurve = toCanonical(live.points);
+        // Preserve whichever independently stable curve is available. The
+        // renderer labels STOCK-only data as a read-only reference, while
+        // writes still require fresh stable STOCK and LIVE before-images.
+      }
       if (state.vfCurve || state.vfCurveDefault) state.vfCurveUnits = 'V';
     }
 
@@ -6752,16 +6768,32 @@ export class IgclBackend {
             // driver builds expose only LIVE, so fall back to that read without
             // changing the write payload shape.
             const stockProbe = await this._readVfCurvePointsWithRetry(dev.handle, 0, 0);
-            const sourceType = stockProbe.ok ? 0 : (stockProbe.fallbackToLive ? 1 : null);
-            const native = stockProbe.ok
-              ? await readStableVfCurvePreflight({
+            const sourceType = stockProbe.fallbackToLive ? 1 : 0;
+            let native;
+            let liveBefore;
+            if (stockProbe.fallbackToLive) {
+              // Preserve the explicit API-unavailable fallback: a stable
+              // LIVE table supplies both native shape and the before-image.
+              native = await readStableVfCurvePreflight({
+                readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+              });
+              liveBefore = native;
+            } else {
+              // Do not skip the quorum/retry path after a transient initial
+              // probe failure. Only the explicit fallback means STOCK is not
+              // supported on this API surface.
+              // STOCK defines the native write shape; LIVE is the current
+              // before-image and may legitimately contain a different curve.
+              // Stabilize each surface independently, then the final exact
+              // source reads below must still match both captures after the
+              // waiver replay before the setter is allowed to run.
+              native = await readStableVfCurvePreflight({
                 readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 0, 0),
-              })
-              : (stockProbe.fallbackToLive
-                ? await readStableVfCurvePreflight({
-                  readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
-                })
-                : stockProbe);
+              });
+              liveBefore = await readStableVfCurvePreflight({
+                readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
+              });
+            }
             if (!native.ok) {
               fail('vfCurve', native.errorCode ?? igclErrorCode(native.result) ?? 'io-failed', native.message);
             } else if (native.points.length !== curve.length) {
@@ -6773,9 +6805,6 @@ export class IgclBackend {
               // LIVE is the before-image for no-op detection. STOCK is only
               // the native write shape; on Battlemage the two tables can
               // legitimately differ after an active tuning change.
-              const liveBefore = await readStableVfCurvePreflight({
-                readCurve: () => this._readVfCurvePointsWithRetry(dev.handle, 1, 0),
-              });
               const liveCanonical = liveBefore?.ok === true
                 ? liveBefore.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
                 : null;
@@ -6795,7 +6824,7 @@ export class IgclBackend {
               } else {
                 const preparedCurve = prepareVfCurveForDriver(curve, curveRange);
                 if (!preparedCurve) {
-                  fail('vfCurve', 'out-of-range', 'VF curve values must match the driver voltage and frequency steps and remain within the supported range');
+                  fail('vfCurve', 'out-of-range', 'VF curve voltages must match the driver voltage step, and frequencies must be whole MHz values within the supported range');
                 } else {
                   const points = preparedCurve.map((p) => ({ Voltage: Math.round(p.voltageV * 1000), Frequency: Math.round(p.freqMhz) }));
                     const readCurrentOffset = (control, unitField) => {
