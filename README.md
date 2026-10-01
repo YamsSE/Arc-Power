@@ -6,7 +6,8 @@ Arc Power is an open source Windows application for Intel Arc GPU tuning, monito
 
 - Tune supported GPU clocks, power limits, voltage offsets, and fan controls.
 - Monitor GPU, CPU, memory, frame rate, and frame time data.
-- Configure the Arc Power or RTSS in-game overlay.
+- Configure the Arc Power or RTSS in-game overlay, including optional CPU/GPU chip labels, compact value units, and a shared Celsius/Fahrenheit temperature setting.
+- Record video and Instant Replay with configurable encoders, CBR/VBR/CQP/ICQ rate control, and a global start/stop recording hotkey.
 - Save and apply named profiles, including at Windows logon.
 - Adjust supported graphics options and reversible Windows settings.
 - Browse Intel Arc and Arc Pro driver versions in the Driver Library, review release information, and download or remove driver installers.
@@ -55,7 +56,7 @@ npm run dist
 4. Visit Graphics for supported display and frame options, or Tweaks for reversible Windows settings.
 5. Open Monitoring, then Overlay to configure the in-game display and its shortcuts.
 
-Profiles can save, load, rename, and delete tuning configurations. Enable Start at boot to apply the active profile when Arc Power starts. Settings include Windows startup behavior, themes, telemetry logging, and cache maintenance.
+Profiles can save, load, rename, and delete tuning configurations. Enable Start at boot to apply the active profile when Arc Power starts. Settings include Windows startup behavior, themes, telemetry logging, cache maintenance, and Memory Saving Mode, which is off by default.
 
 The default overlay shortcuts are **CTRL+O** for the Arc Power overlay and **CTRL+P** for the advanced panel. Change them in Overlay settings if another application uses the same shortcut.
 
