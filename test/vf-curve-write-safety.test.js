@@ -141,6 +141,68 @@ function sequenceLiveReads(backend, samples) {
   sequenceCurveReads(backend, 1, samples);
 }
 
+test('B580 acknowledges only its proven normalized request without another setter', async () => {
+  let ignore = false;
+  const f = fixture({ writeTransform: (points) => ignore ? f.live.map((p) => ({ ...p }))
+    : points.map((p, i) => ({ ...p, Frequency: i === 2 ? 2620 : p.Frequency })) });
+  const request = canonical(liveDefault);
+  request[2].freqMhz = 2630;
+  const device = await f.backend._device(0);
+  device.handle = Object.create(null);
+  f.backend._device = async () => device;
+  const oldTimer = globalThis.setTimeout;
+  globalThis.setTimeout = (callback, _delay, ...args) => oldTimer(callback, 0, ...args);
+  try {
+    const first = await f.backend.applySettings(0, { vfCurve: request });
+    assert.equal(first.perControl.vfCurve.normalized, true);
+    const repeated = await f.backend.applySettings(0, { vfCurve: request });
+    assert.equal(repeated.perControl.vfCurve.alreadyActive, true);
+    assert.equal(repeated.perControl.vfCurve.readBackEqual, false);
+    assert.deepEqual(f.writes, ['vf']);
+    ignore = true;
+    const nearby = request.map((p) => ({ ...p }));
+    nearby[2].freqMhz += 1;
+    assert.equal((await f.backend.applySettings(0, { vfCurve: nearby })).perControl.vfCurve.errorCode, 'driver-noop');
+    assert.equal((await f.backend.applySettings(0, { vfCurve: request })).perControl.vfCurve.errorCode, 'driver-noop');
+  } finally { globalThis.setTimeout = oldTimer; }
+});
+
+for (const invalidation of ['live-change', 'voltage-edit', 'scalar', 'reset', 'native-failure', 'passive-change-return']) {
+  test(`B580 proven normalization is invalidated by ${invalidation}`, async () => {
+    let ignore = false;
+    const f = fixture({ writeTransform: (points) => ignore ? f.live.map((p) => ({ ...p }))
+      : points.map((p, i) => ({ ...p, Frequency: i === 2 ? 2620 : p.Frequency })) });
+    const request = canonical(liveDefault);
+    request[2].freqMhz = 2630;
+    const oldTimer = globalThis.setTimeout;
+    globalThis.setTimeout = (callback, _delay, ...args) => oldTimer(callback, 0, ...args);
+    try {
+      await f.backend.applySettings(0, { vfCurve: request });
+      ignore = true;
+      if (invalidation === 'live-change') f.live[2].Frequency = 2610;
+      if (invalidation === 'passive-change-return') {
+        f.live[2].Frequency = 2610;
+        f.backend._fanHandlesOf = async () => [];
+        await f.backend.getCurrentSettings(0);
+        f.live[2].Frequency = 2620;
+      }
+      if (invalidation === 'voltage-edit') request.forEach((p) => { p.voltageV += 0.01; });
+      if (invalidation === 'scalar') await f.backend.applySettings(0, { gpuFreqOffsetMhz: 0 });
+      if (invalidation === 'reset') await assert.rejects(f.backend.resetToDefaults(0));
+      if (invalidation === 'native-failure') {
+        const original = f.backend._readVfCurvePointsWithRetry;
+        f.backend._readVfCurvePointsWithRetry = async () => ({ ok: false, message: 'injected read failure' });
+        assert.equal((await f.backend.applySettings(0, { vfCurve: request })).ok, false);
+        f.backend._readVfCurvePointsWithRetry = original;
+      }
+      const result = await f.backend.applySettings(0, { vfCurve: request });
+      assert.equal(result.perControl.vfCurve.alreadyActive, undefined);
+      assert.equal(result.perControl.vfCurve.errorCode, 'driver-noop');
+      assert.ok(f.writes.length >= 2);
+    } finally { globalThis.setTimeout = oldTimer; }
+  });
+}
+
 test('B580 capability probe accepts one successful count and payload read', async () => {
   const { backend, nativeEvents } = fixture();
   const probe = await backend._vfCurveReadable('fake-adapter');

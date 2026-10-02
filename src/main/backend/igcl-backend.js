@@ -76,6 +76,7 @@ import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
 import { isValidNativeVfCurve, prepareVfCurveForDriver, vfCurveNeedsWrite, matchesVfCurveReference, rebaseVfCurveToReference } from '../../renderer/pure/vf-curve.ts';
 import { readStableVfCurve, readStableVfCurvePreflight, readVfCurveAfterWrite, readVfCurveOnce } from './vf-curve-readback.js';
+import { provenVfRequest, matchesProvenVfRequest } from './vf-proven-request.js';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
 // apply paths; the pure module ships the primitives).
@@ -1528,6 +1529,7 @@ export class IgclBackend {
   }
 
   async close() {
+    this._provenVfRequests?.clear();
     this._telemetryCbs.clear();
     if (this._apiHandle && this._lib && typeof this._lib.ctlClose === 'function') {
       try { this._lib.ctlClose(this._apiHandle); } catch { /* best effort */ }
@@ -1555,6 +1557,7 @@ export class IgclBackend {
 
   async _ensureDevices() {
     if (this._devices) return this._devices;
+    this._provenVfRequests?.clear();
     await this.init();
     const lib = this._libOrThrow();
     const api = this._apiHandle;
@@ -3129,6 +3132,14 @@ export class IgclBackend {
           });
         if (stock.ok) state.vfCurveDefault = toCanonical(stock.points);
         if (live.ok) state.vfCurve = toCanonical(live.points);
+        if (stock.ok && live.ok && this._provenVfRequests instanceof Map) {
+          const evidenceKey = `${deviceId}:${dev.deviceKey ?? deviceHardwareKey(dev) ?? ''}:${dev.driverVersion ?? ''}`;
+          const previous = this._provenVfRequests.get(evidenceKey);
+          const observed = provenVfRequest(stock.points, stock.points, live.points);
+          if (previous && (!observed || previous.source !== observed.source || previous.live !== observed.live)) {
+            this._provenVfRequests.delete(evidenceKey);
+          }
+        }
         // Preserve whichever independently valid curve is available. The
         // renderer labels STOCK-only data as a read-only reference, while
         // writes still require fresh valid STOCK and LIVE before-images.
@@ -6095,10 +6106,24 @@ export class IgclBackend {
   }
 
   async _applySettingsUnlocked(deviceId, settings = {}, opts = {}) {
+    try {
+      const result = await this._applySettingsWithVfEvidence(deviceId, settings, opts);
+      if (result.ok !== true) this._provenVfRequests?.clear();
+      return result;
+    } catch (error) {
+      this._provenVfRequests?.clear();
+      throw error;
+    }
+  }
+
+  async _applySettingsWithVfEvidence(deviceId, settings = {}, opts = {}) {
     await this._device(deviceId);
     const caps = await this.getCapabilities(deviceId);
     const lib = this._libOrThrow();
     const dev = await this._device(deviceId);
+    if (!(this._provenVfRequests instanceof Map)) this._provenVfRequests = new Map();
+    const provenDeviceKey = `${deviceId}:${dev.deviceKey ?? deviceHardwareKey(dev) ?? ''}:${dev.driverVersion ?? ''}`;
+    if (settings.vfCurveResetToDefault === true || Object.keys(settings).some((key) => !['vfCurve', 'vfCurveBaseline', 'vfCurveStockReference', 'vfCurveResetToDefault'].includes(key))) this._provenVfRequests.delete(provenDeviceKey);
     const units = await this._ocUnitsOf(deviceId);
     const result = { ok: true, perControl: {} };
 
@@ -6352,6 +6377,7 @@ export class IgclBackend {
     const fail = (control, errorCode, message) => {
       result.perControl[control] = { ok: false, errorCode, message };
       result.ok = false;
+      this._provenVfRequests.delete(provenDeviceKey);
     };
 
     // Waiver gate: auto-accept only under allowAutoWaiver (smoke/tests).
@@ -7007,7 +7033,15 @@ export class IgclBackend {
                             fail('vfCurve', 'dependency-failed', 'The GPU core offsets could not be rechecked immediately before the VF write. No curve write was sent. Verify both core offsets are zero and try again.');
                           } else if (finalOffsetActive) {
                             fail('vfCurve', 'dependency-failed', 'A GPU core offset changed while preparing the VF curve. No curve write was sent. Reset both core offsets to zero and try again.');
+                          } else if (!resetToDefault && sourceType === 0 && isBattlemageGpuName(caps.deviceName, caps)
+                            && matchesProvenVfRequest(this._provenVfRequests.get(provenDeviceKey), points, sourceNow.points, liveNow.points)) {
+                            result.perControl.vfCurve = {
+                              ok: true, readBackEqual: false, normalized: true, driverAdjusted: true, alreadyActive: true,
+                              readBackCurve: liveNow.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency })),
+                              message: 'This exact request previously produced the currently verified LIVE curve. That driver result is already active; no new curve write was sent.',
+                            };
                           } else {
+                            this._provenVfRequests.delete(provenDeviceKey);
                             const pointsBuf = koffi.alloc('ctl_voltage_frequency_point_t', points.length);
                             const pointSize = koffi.sizeof('ctl_voltage_frequency_point_t');
                             points.forEach((point, index) => {
@@ -7052,6 +7086,11 @@ export class IgclBackend {
                                 ...(Array.isArray(v.appliedCurve) ? { readBackCurve: v.appliedCurve } : {}),
                               };
                               if (!v.ok) result.ok = false;
+                              if (v.ok && driverAuthoritative && !resetToDefault && sourceType === 0 && v.driverAdjusted) {
+                                const evidence = provenVfRequest(points, sourceNow.points,
+                                  v.appliedCurve.map((point) => ({ Voltage: Math.round(point.voltageV * 1000), Frequency: point.freqMhz })));
+                                if (evidence) this._provenVfRequests.set(provenDeviceKey, evidence);
+                              }
                             }
                           }
                         }
@@ -7083,6 +7122,7 @@ export class IgclBackend {
   }
 
   async _resetToDefaultsUnlocked(deviceId) {
+    this._provenVfRequests?.clear();
     await this._device(deviceId);
     const lib = this._libOrThrow();
     const dev = await this._device(deviceId);

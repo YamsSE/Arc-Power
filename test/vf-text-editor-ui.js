@@ -22,6 +22,14 @@ export async function verifyVfTextEditor(win, backend) {
   await pause();
   await js(`Array.from(document.querySelectorAll('.oc-vf-mode-btn')).find(b => b.textContent.trim() === 'Voltage-Frequency Curve')?.click()`);
   await pause();
+  await js(`window.vfStableChart = document.querySelector('.vf-curve-stage').getBoundingClientRect().toJSON(); window.vfStableHelp = document.querySelector('.vf-curve-help').textContent`);
+  const assertStableChart = async (phase) => {
+    assert(await js(`(() => {
+      const box = document.querySelector('.vf-curve-stage').getBoundingClientRect();
+      return ['x', 'y', 'width', 'height'].every(key => box[key] === vfStableChart[key])
+        && document.querySelector('.vf-curve-help').textContent === vfStableHelp;
+    })()`), 'Chart bounds or normal help changed during ' + phase);
+  };
   await js(`(() => {
     const dot = document.querySelector('.vf-curve-dot[data-idx="7"]');
     dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
@@ -47,6 +55,7 @@ export async function verifyVfTextEditor(win, backend) {
         && document.querySelector('.vf-curve-dot-selected').dataset.idx === '7'
         && [7,8,9].every(i => document.querySelector('.vf-curve-dot[data-idx="'+i+'"]').getAttribute('aria-label').includes('3230'));
     })()`), 'Enter moved editor or failed forward propagation');
+    await assertStableChart('draft edit');
     await js(`vfInput.select()`);
     await win.webContents.debugger.sendCommand('Input.insertText', { text: '3231' });
     await key('Tab', 'Tab', 9);
@@ -63,6 +72,7 @@ export async function verifyVfTextEditor(win, backend) {
     assert(applied.vfCurve[7].freqMhz === 3230 && applied.vfCurve[8].freqMhz === 3231 && applied.vfCurve[9].freqMhz === 3231, 'Apply failed to consume pending3230: ' + JSON.stringify({ applied, ui: await js(`({ note: document.querySelector('.vf-curve-editor .card-note')?.textContent, toasts: Array.from(document.querySelectorAll('.toast')).map(t => t.textContent), active: document.activeElement?.outerHTML })`) }));
     assert(JSON.stringify(manualPayload?.vfCurveBaseline) === JSON.stringify(points), 'Manual Apply baseline differs from untouched LIVE before-image');
     assert(await js(`document.querySelector('.vf-curve-dot-selected').dataset.idx === '7'`), 'Apply switched selected point');
+    await assertStableChart('Apply');
     for (let attempt = 0; attempt < 40; attempt += 1) {
       if (await js(`!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply').disabled`)) break;
       await pause();
@@ -154,10 +164,10 @@ export async function verifyVfTextEditor(win, backend) {
     }
     await js(`vfInput.focus(); vfInput.select()`);
     await win.webContents.debugger.sendCommand('Input.insertText', { text: '3330' });
-    const target = await js(`(() => { const box = document.querySelector('.vf-curve-dot[data-idx="6"]').getBoundingClientRect(); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; })()`);
+    const target = await js(`(() => { const box = document.querySelector('.vf-curve-dot[data-idx="4"]').getBoundingClientRect(); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; })()`);
     await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...target });
     await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...target });
-    assert(await js(`document.querySelector('.vf-curve-dot[data-idx="7"]').getAttribute('aria-label').includes('3330') && document.querySelector('.vf-curve-dot-selected').dataset.idx === '6' && vfInput.value === '2880'`), 'Clicking a different point applied pending text to the new point');
+    assert(await js(`document.querySelector('.vf-curve-dot[data-idx="7"]').getAttribute('aria-label').includes('3330') && document.querySelector('.vf-curve-dot-selected').dataset.idx === '4' && vfInput.value === '2520'`), 'Clicking a different point applied pending text to the new point');
     await js(`(() => {
       const dot = document.querySelector('.vf-curve-dot[data-idx="9"]');
       dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
@@ -213,6 +223,23 @@ export async function verifyVfTextEditor(win, backend) {
     await pause();
     const observationEditor = await js(`({ value: document.querySelector('[data-readout-field="frequency"]').value, focused: document.querySelector('[data-readout-field="frequency"]') === document.activeElement, selected: document.querySelector('.vf-curve-dot-selected').dataset.idx })`);
     assert(observationEditor.value === '3250' && observationEditor.selected === '9', 'Latest LIVE observation overwrote unfinished typing: ' + JSON.stringify(observationEditor));
+    await assertStableChart('stale observation');
+    await js(`Array.from(document.querySelectorAll('.vf-curve-actions button')).find(b => b.textContent === 'Discard draft and refresh').click()`);
+    await assertStableChart('refresh start');
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (await js(`!Array.from(document.querySelectorAll('.vf-curve-actions button')).find(b => b.textContent === 'Reading…')`)) break;
+      await pause();
+    }
+    await assertStableChart('refresh completion');
+    const beforeOrigin = await js(`Array.from(document.querySelectorAll('.vf-curve-dot')).map(dot => dot.getBoundingClientRect().x)`);
+    backend._state.vfCurve = backend._state.vfCurve.map(point => ({ ...point, voltageV: Number((point.voltageV + 0.1).toFixed(3)) }));
+    backend._state.vfCurveDefault = backend._state.vfCurveDefault.map(point => ({ ...point, voltageV: Number((point.voltageV + 0.1).toFixed(3)) }));
+    await js(`Array.from(document.querySelectorAll('.vf-curve-actions button')).find(b => b.textContent === 'Refresh from driver').click()`);
+    await pause();
+    const afterOrigin = await js(`({ positions: Array.from(document.querySelectorAll('.vf-curve-dot')).map(dot => dot.getBoundingClientRect().x), axis: Array.from(document.querySelectorAll('.vf-curve-axis span')).map(node => node.textContent), firstLabel: document.querySelector('.vf-curve-dot').getAttribute('aria-label') })`);
+    assert(beforeOrigin.every((position, index) => Math.abs(position - afterOrigin.positions[index]) < 0.01), 'Common native origin shift moved plotted points');
+    assert(afterOrigin.axis.join(',') === '500 mV,1600 mV' && afterOrigin.firstLabel.includes('700 mV'), 'Translated viewport concealed actual native voltages');
+    await assertStableChart('common native origin shift');
     return 'Real Chromium typing3230, replacement, Enter, Tab, Apply and forward plateau propagation passed';
   } finally {
     backend.applySettings = originalApply;

@@ -181,6 +181,8 @@ export interface PerControlResult {
   driverAdjusted?: boolean;
   /** Exact=false but successful when the driver reports its verified grid-normalized values. */
   normalized?: boolean;
+  /** A previously verified identical request already has this effective LIVE result; no new write was needed. */
+  alreadyActive?: boolean;
   /** The authoritative live VF points reported after a verified apply. */
   readBackCurve?: Array<{ voltageV: number; freqMhz: number }>;
   /** F3: the driver returned SUCCESS but the read-back did not change (silent no-op - must NOT be reported as applied). */

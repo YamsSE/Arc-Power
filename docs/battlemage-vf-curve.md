@@ -132,3 +132,19 @@ voltage differences are refused after three attempts rather than persisted as
 inferred voltage intent. The Chromium editor checks passed real typing, focus,
 commit, Apply and profile capture cases. The focused suite passed 184 tests;
 pure reference tests cover all integer frequency and voltage values in range.
+
+## Repeated Apply and stable chart follow-up
+
+A repeated physical sequence showed 3230 first resolving to3220, then retaining
+3220 on repeated requests; 3247 resolved to3230. A session-only record now
+recognizes an identical previously verified normalized request when fresh
+STOCK/LIVE displacement, device identity and zero-offset checks still match.
+It reports Already active and sends no setter. Reset, scalar changes, failures,
+device enumeration/close and observed mismatches invalidate that record.
+Unproven ignored edits retain their draft with a warning, never an Applied claim.
+
+Normal help text is fixed. Changing status and controls are below the chart.
+The plotting viewport follows a proven common STOCK origin translation, with
+accurate voltage tick labels; actual point values, explicit voltage edits and
+validation bounds remain unchanged. Chromium checks prove fixed chart bounds
+and dot positions after a common100mV shift. The focused suite passed194tests.

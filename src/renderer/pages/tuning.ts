@@ -79,6 +79,8 @@ import { activeDeviceLabel } from '../pure/device.ts';
 import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-editor.ts';
 import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import { discardVfCurveDraft, observeVfCurveSnapshot, verifiedVfCurveApplySnapshot, vfCurveEditorContextIsCurrent, vfCurveVoltageOriginShiftMv } from '../pure/vf-curve-recovery.ts';
+import { vfCurveVoltageViewport } from '../pure/vf-curve-viewport.ts';
+import type { VfCurvePoint } from '../pure/vf-curve.ts';
 import {
   VF_EDITOR_MAX_POINTS,
   isValidNativeVfCurve,
@@ -359,11 +361,11 @@ function refreshPendingSummary(): void {
   pendingSummaryNode.className = `tuning-pending-summary${count > 0 ? ' has-pending' : ''}`;
 }
 
-function setCardResult(key: string, ok: boolean, text: string): void {
+function setCardResult(key: string, ok: boolean, text: string, warning = false): void {
   const node = resultNodes.get(key);
   if (!node) return;
   node.hidden = false;
-  node.className = `tuning-card-result ${ok ? 'result-ok' : 'result-error'}`;
+  node.className = `tuning-card-result ${warning ? 'text-warn' : ok ? 'result-ok' : 'result-error'}`;
   node.textContent = text;
 }
 
@@ -677,6 +679,11 @@ export const tuningPage: Page = {
     vfCurveNativeApplyDraft = null;
     vfCurveObservedLive = observeVfCurveSnapshot(null, state.vfCurve, curveBounds, isBattlemageGpuName(caps.deviceName)).points;
     vfCurveObservedStock = observeVfCurveSnapshot(null, state.vfCurveDefault, curveBounds, isBattlemageGpuName(caps.deviceName)).points;
+    const vfViewportAnchor = vfCurveDefault?.map(point => ({ ...point })) ?? null;
+    let vfViewport = vfCurveVoltageViewport(vfViewportAnchor, vfCurveDefault, curveBounds, isBattlemageGpuName(caps.deviceName));
+    const updateVfViewport = (stock: VfCurvePoint[] | null | undefined): void => {
+      vfViewport = vfCurveVoltageViewport(vfViewportAnchor, stock ?? null, curveBounds, isBattlemageGpuName(caps.deviceName));
+    };
 
     // M17e (Run B): the gpuLock-capable freq card's Lock-mode editor element
     // references - created inside buildCard (the freq-card branch), read by
@@ -784,7 +791,7 @@ export const tuningPage: Page = {
     };
 
     const drawVfCurve = (svg: SVGSVGElement): void => {
-      const xOf = (v: number) => ((v - curveBounds.voltageMinV) / (curveBounds.voltageMaxV - curveBounds.voltageMinV)) * 100;
+      const xOf = (v: number) => ((v - vfViewport.voltageMinV) / (vfViewport.voltageMaxV - vfViewport.voltageMinV)) * 100;
       const yOf = (f: number) => 100 - ((f - curveBounds.freqMinMhz) / (curveBounds.freqMaxMhz - curveBounds.freqMinMhz)) * 100;
       svg.replaceChildren();
       svg.setAttribute('viewBox', '0 0 100 100');
@@ -862,7 +869,7 @@ export const tuningPage: Page = {
         if (voltageInput) voltageInput.readOnly = !canEditVfCurve();
         if (frequencyInput) frequencyInput.readOnly = !canEditVfCurve();
         hoverReadout.dataset['idx'] = String(index);
-        const xPct = ((point.voltageV - curveBounds.voltageMinV) / (curveBounds.voltageMaxV - curveBounds.voltageMinV)) * 100;
+        const xPct = ((point.voltageV - vfViewport.voltageMinV) / (vfViewport.voltageMaxV - vfViewport.voltageMinV)) * 100;
         const yPct = 100 - ((point.freqMhz - curveBounds.freqMinMhz) / (curveBounds.freqMaxMhz - curveBounds.freqMinMhz)) * 100;
         hoverReadout.hidden = false;
         // Keep the text editor anchored while typing or committing a value.
@@ -964,7 +971,7 @@ export const tuningPage: Page = {
       const renderDots = (): void => {
         dotsLayer.querySelectorAll('.vf-curve-dot').forEach((dot) => dot.remove());
         vfCurveDraft.forEach((point, index) => {
-          const xPct = ((point.voltageV - curveBounds.voltageMinV) / (curveBounds.voltageMaxV - curveBounds.voltageMinV)) * 100;
+          const xPct = ((point.voltageV - vfViewport.voltageMinV) / (vfViewport.voltageMaxV - vfViewport.voltageMinV)) * 100;
           const yPct = 100 - ((point.freqMhz - curveBounds.freqMinMhz) / (curveBounds.freqMaxMhz - curveBounds.freqMinMhz)) * 100;
           const dot = el('div', {
             class: `vf-curve-dot${index === selectedIdx ? ' vf-curve-dot-selected' : ''}${vfCurveDisplaySource === 'stock-reference' ? ' vf-curve-dot-reference' : ''}${vfCurveStale ? ' vf-curve-dot-reference' : ''}`,
@@ -1011,7 +1018,7 @@ export const tuningPage: Page = {
               if (!dragMoved || !rect.width || !rect.height) return;
               const xPct = Math.min(100, Math.max(0, ((moveEvent.clientX - rect.left) / rect.width) * 100));
               const yPct = Math.min(100, Math.max(0, ((moveEvent.clientY - rect.top) / rect.height) * 100));
-              const voltage = curveBounds.voltageMinV + (xPct / 100) * (curveBounds.voltageMaxV - curveBounds.voltageMinV);
+              const voltage = vfViewport.voltageMinV + (xPct / 100) * (vfViewport.voltageMaxV - vfViewport.voltageMinV);
               const frequency = curveBounds.freqMaxMhz - (yPct / 100) * (curveBounds.freqMaxMhz - curveBounds.freqMinMhz);
               vfCurveNativeApplyDraft = null;
               vfCurveDraft = moveVfPoint(vfCurveDraft, index, voltage, frequency, curveBounds,
@@ -1115,6 +1122,9 @@ export const tuningPage: Page = {
         addPointButton.disabled = true;
         removePointButton.disabled = true;
         drawVfCurve(svg);
+        host.querySelectorAll<HTMLElement>('.vf-curve-axis span').forEach((label, index) => {
+          label.textContent = `${vfVoltageMv(index === 0 ? vfViewport.voltageMinV : vfViewport.voltageMaxV)} mV`;
+        });
         renderDots();
         updateVfCurveEditorNote?.();
       };
@@ -1126,7 +1136,13 @@ export const tuningPage: Page = {
       const vfProbeNote = vfRuntimeRefusal
         ? ` The initial IGCL curve-read probe was refused: ${vfRuntimeRefusal}. Applying performs fresh stable curve checks before any write.`
         : '';
-      const curveNoteNode = el('p', { class: 'card-note' });
+      // Keep the instructions and everything above the chart independent of
+      // draft/read-back status so editing cannot move the plotting surface.
+      const curveHelpNode = el('p', { class: 'card-note vf-curve-help', text: `Hover a point for values; click to edit voltage or frequency. The driver-defined point count stays fixed. Voltage ${vfVoltageMv(curveBounds.voltageMinV)}–${vfVoltageMv(curveBounds.voltageMaxV)} mV · frequency ${Math.round(curveBounds.freqMinMhz)}–${Math.round(curveBounds.freqMaxMhz)} MHz. Set both core offsets to zero before applying. Core offsets cannot be combined with a custom curve.` });
+      if (hasLinkedVfTerminalPlateau(vfCurveDefault, curveBounds, isBattlemageGpuName(caps.deviceName))) {
+        curveHelpNode.textContent += ' The final two points share a linked frequency plateau: editing either frequency moves both points.';
+      }
+      const curveNoteNode = el('p', { class: 'card-note vf-curve-status', role: 'status' });
       let refreshOriginNote = '';
       const refreshCurveButton = el('button', {
         class: 'btn btn-ghost btn-sm',
@@ -1202,6 +1218,7 @@ export const tuningPage: Page = {
             ? ` The driver changed its voltage reference by ${originShift > 0 ? '+' : ''}${originShift} mV. Frequencies and relative curve spacing are unchanged; this chart shows the new driver coordinates.`
             : '';
           vfCurveDefault = nativeStock;
+          updateVfViewport(nativeStock);
           vfCurveDefaultDisplay = nativeStock
             ? normalizeVfCurvePoints(nativeStock, caps.vfCurveRange, maxPoints)
             : null;
@@ -1273,17 +1290,13 @@ export const tuningPage: Page = {
         } else if (vfCurveDisplaySource === 'unavailable') {
           curveNoteNode.textContent = `No valid LIVE or STOCK curve could be read. The editor is not inventing curve points; refresh GPU state before editing or applying.${vfProbeNote}`;
         } else {
-          curveNoteNode.textContent = `Hover a point for values; click to edit voltage or frequency. The driver-defined point count stays fixed. Voltage ${vfVoltageMv(curveBounds.voltageMinV)}–${vfVoltageMv(curveBounds.voltageMaxV)} mV · frequency ${Math.round(curveBounds.freqMinMhz)}–${Math.round(curveBounds.freqMaxMhz)} MHz. Set both core offsets to zero before applying. Core offsets cannot be combined with a custom curve.${vfProbeNote}`;
-        }
-        if (!vfCurveStale && hasLinkedVfTerminalPlateau(vfCurveDefault, curveBounds, isBattlemageGpuName(caps.deviceName))) {
-          curveNoteNode.textContent += ' The final two points share a linked frequency plateau: editing either frequency moves both points.';
+          curveNoteNode.textContent = vfProbeNote.trim();
         }
         if (vfCurveDisplaySource === 'live' && !vfCurveStale) curveNoteNode.textContent += refreshOriginNote;
       };
       updateVfCurveEditorNote = updateNote;
       host.append(
-        curveNoteNode,
-        el('div', { class: 'vf-curve-actions' }, [refreshCurveButton, discardCurveButton]),
+        curveHelpNode,
         el('div', { class: 'vf-curve-point-count' }, [pointCountNode]),
         stage,
         el('div', { class: 'vf-curve-axis' }, [
@@ -1294,6 +1307,8 @@ export const tuningPage: Page = {
           addPointButton,
           removePointButton,
         ]),
+        el('div', { class: 'vf-curve-actions' }, [refreshCurveButton, discardCurveButton]),
+        curveNoteNode,
       );
       updateNote();
       return host;
@@ -2331,6 +2346,7 @@ export const tuningPage: Page = {
           // verified apply result. A following state push must compare against
           // this LIVE result rather than the old editor's before-image.
           if (result.perControl.vfCurve?.ok) {
+            updateVfViewport(fresh.vfCurveDefault);
             const verifiedLive = result.perControl.vfCurve.readBackCurve ?? fresh.vfCurve;
             const battlemage = isBattlemageGpuName(caps.deviceName);
             vfCurveObservedLive = observeVfCurveSnapshot(vfCurveObservedLive ?? null, verifiedLive, curveBounds, battlemage).points;
@@ -2380,15 +2396,17 @@ export const tuningPage: Page = {
             // fallback - never the 'clamps' lie for a gate refusal).
             const driverAdjustedCurve = key === 'vfCurve'
               && per.errorCode === 'driver-adjusted';
+            const driverKeptCurve = key === 'vfCurve' && per.errorCode === 'driver-noop';
             toast(
-              driverAdjustedCurve ? 'warn' : 'error',
-              driverAdjustedCurve ? 'Driver adjusted VF curve' : `${CONTROL_LABELS[key] ?? key} failed`,
-              applyFailureText(per, key),
+              driverAdjustedCurve || driverKeptCurve ? 'warn' : 'error',
+              driverKeptCurve ? 'Driver kept the current VF curve' : driverAdjustedCurve ? 'Driver adjusted VF curve' : `${CONTROL_LABELS[key] ?? key} failed`,
+              driverKeptCurve ? 'The driver left the LIVE curve unchanged. Your requested draft is kept; it has not been confirmed as applied.' : applyFailureText(per, key),
             );
             setCardResult(
               key === 'vfCurve' ? 'gpuFreqOffsetMhz' : key,
               false,
-              driverAdjustedCurve ? 'Draft kept; LIVE differs' : 'Not applied',
+              driverKeptCurve ? 'Draft kept; LIVE unchanged' : driverAdjustedCurve ? 'Draft kept; LIVE differs' : 'Not applied',
+              driverKeptCurve || driverAdjustedCurve,
             );
           } else {
             // B5(a): a control that applied becomes the APPLIED reference -
@@ -2415,7 +2433,7 @@ export const tuningPage: Page = {
                 // freeze the before-image. Our verified success supersedes it.
                 vfCurveStale = false;
                 vfCurveNativeApplyDraft = null;
-                vfCurveWasApplied = true;
+                vfCurveWasApplied = per.alreadyActive !== true;
                 redrawVfCurveEditor?.();
               }
             }
@@ -2429,23 +2447,24 @@ export const tuningPage: Page = {
                 ? formatControlValue(wanted, key, range, caps.deviceName)
                 : '';
               toast(
-                'success',
-                key === 'vfCurve' && per.normalized === true
+                key === 'vfCurve' && per.alreadyActive === true ? 'warn' : 'success',
+                key === 'vfCurve' && per.alreadyActive === true ? 'VF curve already active (driver adjusted)' : key === 'vfCurve' && per.normalized === true
                   ? 'VF curve applied (driver adjusted)'
                   : `${CONTROL_LABELS[key] ?? key} applied`,
-                key === 'vfCurve' && per.normalized === true
+                key === 'vfCurve' && per.alreadyActive === true ? 'This request matches a previously verified driver adjustment that is still active. The editor shows the LIVE curve.' : key === 'vfCurve' && per.normalized === true
                   ? 'The driver adjusted the requested curve. The editor now shows the LIVE curve.'
                   : detail,
               );
             }
             setCardResult(
               key === 'vfCurve' ? 'gpuFreqOffsetMhz' : key,
-              true,
-              isNoopApply(key, settings, before as DeviceState)
+              !(key === 'vfCurve' && per.alreadyActive === true),
+              key === 'vfCurve' && per.alreadyActive === true ? 'Already active (driver adjusted)' : isNoopApply(key, settings, before as DeviceState)
                 ? 'No change'
                 : key === 'vfCurve' && per.normalized === true
                   ? 'Applied (driver adjusted)'
                   : 'Applied',
+              key === 'vfCurve' && per.alreadyActive === true,
             );
             // per.ok && no-op -> silent (M2b-B): nothing changed, no toast.
           }
