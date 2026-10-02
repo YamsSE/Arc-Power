@@ -244,6 +244,49 @@ test('a lower adaptive target restores the configured base cap instead of the st
   assert.deepEqual(h.readState(), { limit: 120, denominator: 1, limiterEnabled: true });
 });
 
+test('adaptive cap responds to GPU load even when CPU load disagrees', async (t) => {
+  const h = harness({
+    settings: { adaptiveEnabled: true, adaptiveMinFps: 60, adaptiveMaxFps: 80 },
+    loadSignals: { cpuUtilPct: 100, gpuUtilPct: 10 },
+  });
+  t.after(() => h.controller.stop());
+
+  await h.controller.start();
+  for (let sample = 0; sample < 6; sample += 1) await h.controller.tick();
+  assert.equal(h.readState().limit, 80);
+
+  h.setLoadSignals({ cpuUtilPct: 0, gpuUtilPct: 100 });
+  for (let sample = 0; sample < 3; sample += 1) await h.controller.tick();
+  assert.equal(h.readState().limit, 75);
+});
+
+test('high CPU cannot sustain an adaptive cap when GPU telemetry disappears', async (t) => {
+  let clock = 10000;
+  const h = harness({
+    settings: { adaptiveEnabled: true, adaptiveMinFps: 60, adaptiveMaxFps: 80 },
+    baseFrameLimit: { enabled: true, value: 120 },
+    state: { limit: 120, denominator: 1, limiterEnabled: true },
+    loadSignals: { cpuUtilPct: 0, gpuUtilPct: 100 },
+    now: () => clock,
+  });
+  t.after(() => h.controller.stop());
+
+  await h.controller.start();
+  await h.controller.tick();
+  await h.controller.tick();
+  assert.equal(h.readState().limit, 75);
+
+  h.setLoadSignals({ cpuUtilPct: 100, gpuUtilPct: null });
+  await h.controller.tick();
+  clock += 4999;
+  await h.controller.tick();
+  assert.equal(h.readState().limit, 75);
+  clock += 1;
+  await h.controller.tick();
+  assert.deepEqual(h.readState(), { limit: 120, denominator: 1, limiterEnabled: true });
+  assert.equal(h.controller.getSnapshot().policy, null);
+});
+
 test('startup recovery recognizes an interrupted multi-field RTSS restore', async (t) => {
   const h = harness({
     baseFrameLimit: { enabled: false, value: 60 },

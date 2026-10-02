@@ -14,6 +14,7 @@ import { promptWaiverAtBoot } from './components/waiver-dialog.ts';
 import { dashboardPage } from './pages/dashboard.ts';
 import { tuningPage } from './pages/tuning.ts';
 import { graphicsPage } from './pages/graphics.ts';
+import { arcSleepPage } from './pages/arc-sleep.ts';
 import { monitoringPage, redrawMonitoringGraphs } from './pages/monitoring.ts';
 import { recordingPage } from './pages/recording.ts';
 import { profilesPage } from './pages/profiles.ts';
@@ -34,6 +35,7 @@ const PAGES: Record<PageId, Page> = {
   // M8: the #/graphics page (the Graphics tab - below Tuning in the
   // sidebar). An unregistered id falls back to the dashboard (S3).
   graphics: graphicsPage,
+  'arc-sleep': arcSleepPage,
   monitoring: monitoringPage,
   recording: recordingPage,
   profiles: profilesPage,
@@ -447,7 +449,7 @@ function renderSidebar() {
   const active = currentPage();
   clear(nav);
   // Settings remains in the sidebar footer. PAGE_IDS supplies the exact
-  // main-tab order: Dashboard, Tuning, Graphics, Recording, Monitoring,
+  // main-tab order: Dashboard, Tuning, Graphics, Arc Sleep, Recording, Monitoring,
   // Profiles and Tweaks. Driver Library is launched from the Intel GPU card.
   const navIds = PAGE_IDS.filter((id) => id !== 'settings' && id !== 'driver-library');
   nav.append(

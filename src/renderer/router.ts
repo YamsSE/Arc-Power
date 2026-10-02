@@ -22,12 +22,12 @@ import type {
 // Page registration order is stable; Driver Library remains a routed page but
 // is launched from the Intel GPU card instead of occupying a sidebar slot.
 // Settings stays in the footer and is not part of the main navigation list.
-export type PageId = 'dashboard' | 'tuning' | 'graphics' | 'recording' | 'monitoring' | 'profiles' | 'tweaks' | 'driver-library' | 'settings';
+export type PageId = 'dashboard' | 'tuning' | 'graphics' | 'arc-sleep' | 'recording' | 'monitoring' | 'profiles' | 'tweaks' | 'driver-library' | 'settings';
 
 // M6-amd1/M9: the former Overlay tab was removed from the sidebar; its
 // settings now live inside Monitoring's Overlay view.
 // Settings remains in the footer. The sidebar renderer omits Driver Library.
-export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'graphics', 'recording', 'monitoring', 'profiles', 'tweaks', 'driver-library', 'settings'];
+export const PAGE_IDS: PageId[] = ['dashboard', 'tuning', 'graphics', 'arc-sleep', 'recording', 'monitoring', 'profiles', 'tweaks', 'driver-library', 'settings'];
 
 export const NAV_LABELS: Record<PageId, string> = {
   dashboard: 'Dashboard',
@@ -36,6 +36,7 @@ export const NAV_LABELS: Record<PageId, string> = {
   tuning: 'Tuning',
   // M8: the Graphics tab (the IGS-mirror 3D-feature settings page).
   graphics: 'Graphics',
+  'arc-sleep': 'Arc Sleep',
   monitoring: 'Monitoring',
   recording: 'Recording',
   profiles: 'Profiles',

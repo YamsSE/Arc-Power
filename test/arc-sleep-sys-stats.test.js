@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createSysStats } from '../src/main/sys-stats.js';
 
-test('Arc Sleep receives only live CPU and fresh active-adapter GPU utilization', async (t) => {
+test('Arc Sleep receives fresh active-adapter GPU utilization without reading CPU load', async (t) => {
   let clock = 1000;
-  let cpuValue = 37;
+  let cpuReads = 0;
   let resolveGpuSample;
   const gpuSampled = new Promise((resolve) => { resolveGpuSample = resolve; });
   const stats = createSysStats({
@@ -13,7 +13,7 @@ test('Arc Sleep receives only live CPU and fresh active-adapter GPU utilization'
     enableDedicatedGpuSampler: true,
     usePersistentGpuSampler: false,
     now: () => clock,
-    cpuUtilReader: { async read() { return cpuValue; } },
+    cpuUtilReader: { async read() { cpuReads += 1; return 100; } },
     d3dkmtGpuUtil: {
       async sample() {
         resolveGpuSample();
@@ -31,9 +31,11 @@ test('Arc Sleep receives only live CPU and fresh active-adapter GPU utilization'
   await gpuSampled;
   // Let the dedicated sample finish committing into the selected record.
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(await stats.sampleArcSleepSignals(), { cpuUtilPct: 37, gpuUtilPct: 73 });
+  const readsBeforeArcSleep = cpuReads;
+  assert.deepEqual(await stats.sampleArcSleepSignals(), { gpuUtilPct: 73 });
+  assert.equal(cpuReads, readsBeforeArcSleep);
 
   clock += 5001;
-  cpuValue = null;
-  assert.deepEqual(await stats.sampleArcSleepSignals(), { cpuUtilPct: null, gpuUtilPct: null });
+  assert.deepEqual(await stats.sampleArcSleepSignals(), { gpuUtilPct: null });
+  assert.equal(cpuReads, readsBeforeArcSleep);
 });

@@ -451,8 +451,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // joined the sidebar. M8: 8 nav links - the Graphics tab (#/graphics)
   // joined below Tuning. M9 moved the Overlay Settings content into Monitoring;
   // M31 exposes Driver Library from the Intel GPU card, not the sidebar.
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - Overclocking + Fan merged into Tuning, the Graphics tab added in M8, the Overlay tab removed in M9)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - Overclocking + Fan merged into Tuning, the Graphics tab added in M8, the Overlay tab removed in M9)');
   }
   if (await js(`Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link-label')).some((label) => (label.textContent ?? '').trim() === 'Driver Library')`)) {
     fail('Driver Library must not appear as a sidebar tab');
@@ -626,7 +626,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // "Power" illuminated like the title bar, the brand BOLD.
   const sidebarIcons = await js(`Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link')).map((l) => ({ label: l.querySelector('.sidebar-link-label')?.textContent, hasIcon: !!l.querySelector('.sidebar-icon') }))`);
   if (!sidebarIcons.every((i) => i.hasIcon === true && i.label)) fail(`M4-D: every sidebar link must carry an icon + label: ${JSON.stringify(sidebarIcons)}`);
-  if (sidebarIcons.length !== 7) fail(`M31: expected 7 sidebar links with icons (Driver Library is launched from the Intel GPU card), got ${sidebarIcons.length}`);
+  if (sidebarIcons.length !== 8) fail(`M31: expected 8 sidebar links with icons (Driver Library is launched from the Intel GPU card), got ${sidebarIcons.length}`);
   // M8: the Graphics tab sits DIRECTLY BELOW Tuning in the sidebar DOM (the
   // planned order: dashboard / tuning / graphics / monitoring / ...).
   const navOrder = await js(`JSON.stringify(Array.from(document.querySelectorAll('.sidebar-nav .sidebar-link-label')).map((l) => (l.textContent ?? '').trim()))`);
@@ -636,6 +636,7 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   if (graphicsIdx < 0 || graphicsIdx !== tuningIdx + 1) {
     fail(`M8: the Graphics tab must sit DIRECTLY BELOW Tuning in the sidebar (nav order '${navOrder}')`);
   }
+  if (navLabels.indexOf('Arc Sleep') !== graphicsIdx + 1 || navLabels.indexOf('Recording') !== graphicsIdx + 2) fail('Arc Sleep must appear between Graphics and Recording');
   if (navLabels.includes('Driver Library')) fail(`M31: Driver Library must not appear in the sidebar (nav order '${navOrder}')`);
   step('m8-nav-position', `M8: the sidebar nav order is ${navOrder} - the Graphics tab sits directly below Tuning`);
   const sidebarPower = await js(`(() => {
@@ -5052,8 +5053,8 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   step('m4h-save-override', `M4-H: override flow - button 'Override Profile', modal prefilled, active id '${m4hCreatedId}' overwritten (name -> 'M4H saved profile v2')`);
   // Reload check: a FRESH reload keeps the active profile + the button.
   await js(`location.reload()`);
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`, 15000))) {
-    fail('M4-H: the reload did not boot the shell (7 sidebar links expected - the Overlay tab moved into Monitoring in M9)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`, 15000))) {
+    fail('M4-H: the reload did not boot the shell (8 sidebar links expected - the Overlay tab moved into Monitoring in M9)');
   }
   await js(`location.hash = '#/tuning'`);
   await sleep(300);
@@ -6451,8 +6452,8 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   // nav links (the Overlay Settings page joined the sidebar). M8: 8 (the
   // Graphics tab joined below Tuning). M9 moved Overlay into Monitoring;
   // M31 exposes Driver Library from the Intel GPU card, not the sidebar.
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - the Graphics tab joined in M8, the Overlay tab moved into Monitoring in M9)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - the Graphics tab joined in M8, the Overlay tab moved into Monitoring in M9)');
   }
   // M3-A (shared shell): the brand is text + blue bar (no logo image), and
   // the IGS indicator is gone everywhere.
@@ -7194,8 +7195,8 @@ export async function runLaptopSysinfoVerify(win) {
   const js = (code) => win.webContents.executeJavaScript(code);
 
   // --- 1. shell + the shared waiver boot step -------------------------------
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected)');
   }
   await bootWaiverStep(win, js, waitFor);
   step('waiver-boot', 'boot waiver prompt handled (cancelled - the unaccepted session)');
@@ -7249,7 +7250,7 @@ export async function runSyntheticOsVerify(win) {
   const expectedDriver = nvidia ? '31.0.15.6262' : '31.0.12027.9001';
   const expectedVram = nvidia ? '4GB' : '8GB';
 
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
     fail('M30 synthetic OS: sidebar did not render');
   }
   const devices = await js(`window.arcPower.listDevices()`);
@@ -7258,23 +7259,26 @@ export async function runSyntheticOsVerify(win) {
   }
   step('inventory', `M30 synthetic OS: one read-only ${nvidia ? 'NVIDIA' : 'AMD'} OS controller is exposed as device ${devices[0].id}`);
 
-  // Arc Sleep belongs to the top-level Graphics page and must render before
-  // the no-Intel device guard, even when Windows exposes a non-Intel GPU.
+  // Arc Sleep is independent from Graphics and available without Intel hardware.
+
   await js(`location.hash = '#/graphics'`);
+  if (await js(`!!document.querySelector('[data-control="arcSleep"]')`)) fail('Arc Sleep must be absent from Graphics');
+  await js(`location.hash = '#/arc-sleep'`);
   if (!(await waitFor(win, `!!document.querySelector('[data-control="arcSleep"]')`, 5000))) {
-    fail('Arc Sleep is missing from the top-level Graphics tab on the no-Intel path');
+    fail('Arc Sleep is missing from the dedicated Arc Sleep tab on the no-Intel path');
   }
+  await verifyArcSleepPage(win);
   const arcSleepText = await js(`document.querySelector('[data-control="arcSleep"]')?.textContent ?? ''`);
   if (!arcSleepText.includes('Idle Cap') || !arcSleepText.includes('Load Adaptive')) {
-    fail(`Arc Sleep controls are incomplete on the no-Intel Graphics tab: '${arcSleepText}'`);
+    fail(`Arc Sleep controls are incomplete on the no-Intel Arc Sleep tab: '${arcSleepText}'`);
   }
-  const graphicsSubtitle = await js(`document.querySelector('.page-subtitle')?.textContent?.trim() ?? ''`);
-  if (graphicsSubtitle !== 'No GPU available.') {
-    fail(`Graphics page reads '${graphicsSubtitle}' on the no-Intel path (expected 'No GPU available.')`);
-  }
+  if (!arcSleepText.includes('The Graphics base cap is unavailable for this GPU.') || await js(`!!document.querySelector('.arc-sleep-base-link')`)) fail('Synthetic OS GPU Arc Sleep must not offer a Graphics base-cap control');
+  await js(`location.hash = '#/graphics'`);
+  if (!(await waitFor(win, `document.querySelector('.page-title')?.textContent === 'Graphics'`, 5000))) fail('Synthetic GPU Graphics page did not render');
+  if (await js(`!!document.querySelector('[data-control="arcSleep"]')`)) fail('Arc Sleep must be absent from Graphics');
   const gNull = await js(`(async () => { try { await window.arcPower.graphicsGet(null); return 'accepted'; } catch (e) { return 'rejected'; } })()`);
   if (gNull !== 'rejected') fail(`graphics:get(null) must be rejected in main (assertValidDeviceId), got '${gNull}'`);
-  step('m8-no-intel', `Arc Sleep Idle Cap and Load Adaptive render on the top-level Graphics tab; no Intel device remains on the honest no-GPU state`);
+  step('m8-no-intel', `Arc Sleep Idle Cap and Load Adaptive render on the dedicated Arc Sleep tab; no Intel device remains on the honest no-GPU state`);
 
   await js(`location.hash = '#/dashboard'`);
   if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${expectedName}'`, 10000))) {
@@ -7355,8 +7359,8 @@ async function runZeroGpuVerify(win) {
   };
   const js = (code) => win.webContents.executeJavaScript(code);
 
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`, 10000))) {
-    fail('M30 zero-GPU: shell did not render (7 sidebar links expected)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`, 10000))) {
+    fail('M30 zero-GPU: shell did not render (8 sidebar links expected)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`M30 zero-GPU: sidebar brand is '${brand}'`);
@@ -7430,6 +7434,13 @@ async function runZeroGpuVerify(win) {
   }
   step('tuning', "M30 zero-GPU: Tuning reads 'No GPU available.' and exposes no write controls");
 
+  await js(`location.hash = '#/graphics'`);
+  if (!(await waitFor(win, `document.querySelector('.page-subtitle')?.textContent === 'No GPU available.'`, 5000))) fail('Zero GPU Graphics guard did not render');
+  if (await js(`!!document.querySelector('[data-control="arcSleep"]')`)) fail('Arc Sleep must be absent from Graphics');
+  await verifyArcSleepPage(win);
+  const arcSleepFooter = await js(`document.querySelector('.arc-sleep-footer')?.textContent ?? ''`);
+  if (!arcSleepFooter.includes('the Graphics base cap requires one.') || await js(`!!document.querySelector('.arc-sleep-base-link')`)) fail('Zero-GPU Arc Sleep must not offer a Graphics base-cap control');
+  step('arc-sleep', 'Arc Sleep loads and persists settings with no GPU selected');
   await runCloseToTrayProbe(win);
   console.log('\nUI VERIFY OK (zero-gpu)\n' + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);
@@ -7457,8 +7468,8 @@ export async function runNoIntelVerify(win) {
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
 
   // --- 1. shell renders ----------------------------------------------------
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   const brand = await js(`document.querySelector('.sidebar-brand')?.textContent ?? ''`);
   if (!brand.trim().includes('Arc Power')) fail(`sidebar brand is '${brand}'`);
@@ -7683,18 +7694,22 @@ export async function runNoIntelVerify(win) {
   if ((await js(`document.body.textContent`)).includes('Loading graphics capabilities')) {
     fail('M8: the Graphics page shows the loading text on no-Intel (no graphics:get fetch can ever land - the guard renders first)');
   }
+  if (await js(`!!document.querySelector('[data-control="arcSleep"]')`)) fail('Arc Sleep must be absent from Graphics');
+  await js(`location.hash = '#/arc-sleep'`);
   if (!(await waitFor(win, `!!document.querySelector('[data-control="arcSleep"]')`, 5000))) {
-    fail('Arc Sleep is missing from the top-level Graphics tab on the no-Intel path');
+    fail('Arc Sleep is missing from the dedicated Arc Sleep tab on the no-Intel path');
   }
+  await verifyArcSleepPage(win);
   const arcSleepText = await js(`document.querySelector('[data-control="arcSleep"]')?.textContent ?? ''`);
   if (!arcSleepText.includes('Idle Cap') || !arcSleepText.includes('Load Adaptive')) {
-    fail(`Arc Sleep controls are incomplete on the no-Intel Graphics tab: '${arcSleepText}'`);
+    fail(`Arc Sleep controls are incomplete on the no-Intel Arc Sleep tab: '${arcSleepText}'`);
   }
+  if (!arcSleepText.includes('the Graphics base cap requires one.') || await js(`!!document.querySelector('.arc-sleep-base-link')`)) fail('No-GPU Arc Sleep must not offer a Graphics base-cap control');
   // The renderer must never even TRY: graphics:get with a null deviceId is
   // rejected in main (assertValidDeviceId) - the honest channel contract.
   const gNull = await js(`(async () => { try { await window.arcPower.graphicsGet(null); return 'accepted'; } catch (e) { return 'rejected'; } })()`);
   if (gNull !== 'rejected') fail(`M8: graphics:get(null) must be rejected in main (assertValidDeviceId), got '${gNull}'`);
-  step('m8-no-intel', `M8: no-Intel shows 'No GPU available.' while the top-level Graphics tab still exposes Arc Sleep Idle Cap and Load Adaptive; graphics:get(null) rejects in main (assertValidDeviceId)`);
+  step('m8-no-intel', `M8: no-Intel shows 'No GPU available.' while the dedicated Arc Sleep tab still exposes Arc Sleep Idle Cap and Load Adaptive; graphics:get(null) rejects in main (assertValidDeviceId)`);
 
   // --- 8. NO waiver modal and NO toast anywhere -----------------------------
   await js(`location.hash = '#/dashboard'`);
@@ -7759,8 +7774,8 @@ export async function runTweaksApplyVerify(win) {
   // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
   // (the Graphics tab joined below Tuning). M9 moved Overlay into Monitoring;
   // M31 exposes Driver Library from the Intel GPU card, not the sidebar.
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   // M4-A/M4-B: the shared waiver boot-step - the boot prompt appears in
   // EVERY session; Cancel it BEFORE the tweaks flow (F4: no stray modal may
@@ -7942,8 +7957,8 @@ export async function runFanGateVerify(win, backend) {
   // M6: 7 nav links (the Overlay Settings page joined the sidebar). M8: 8
   // (the Graphics tab joined below Tuning). M9 moved Overlay into Monitoring;
   // M31 exposes Driver Library from the Intel GPU card, not the sidebar.
-  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 7`))) {
-    fail('sidebar did not render (7 nav links expected - the Overlay tab moved into Monitoring in M9)');
+  if (!(await waitFor(win, `document.querySelectorAll('.sidebar-nav .sidebar-link').length === 8`))) {
+    fail('sidebar did not render (8 nav links expected - the Overlay tab moved into Monitoring in M9)');
   }
   // M4-A/M4-B: the shared boot-step - the session boots unaccepted -> the
   // boot prompt appears exactly once -> Cancel it (the fan gate below then
@@ -10699,4 +10714,42 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
 
   console.log('\nUI VERIFY OK (advanced-overlay)\n' + steps.map((s) => '  ' + s).join('\n'));
   app.exit(0);
+}
+
+async function verifyArcSleepPage(win) {
+  const js = (code) => win.webContents.executeJavaScript(code, true);
+  await js(`location.hash = '#/arc-sleep'`);
+  if (!(await waitFor(win, `document.querySelector('.arc-sleep-toggle')?.disabled === false`, 5000))) throw new Error('Arc Sleep settings did not load');
+  const geometry = await js(`Array.from(document.querySelectorAll('.arc-sleep-toggle')).map(input => { const r = input.getBoundingClientRect(); return { width: r.width, height: r.height }; })`);
+  if (geometry.length !== 2 || geometry.some(r => r.width !== 42 || r.height !== 24)) throw new Error(`Arc Sleep toggle geometry: ${JSON.stringify(geometry)}`);
+  const original = await js(`(async () => (await window.arcPower.profilesList()).settings.arcSleep)()`);
+  try {
+    const changedIdle = !original.idleEnabled;
+    const changedAdaptive = !original.adaptiveEnabled;
+    await js(`(() => { const input = document.querySelector('[aria-label="Enable Idle Cap"]'); input.checked = ${changedIdle}; input.dispatchEvent(new Event('change', { bubbles: true })); location.hash = '#/dashboard'; })()`);
+    if (!(await waitFor(win, `!document.querySelector('[data-control="arcSleep"]')`, 5000))) throw new Error('Arc Sleep did not leave after Idle Cap edit');
+    await js(`location.hash = '#/arc-sleep'`);
+    if (!(await waitFor(win, `document.querySelector('[aria-label="Enable Idle Cap"]')?.checked === ${changedIdle} && !document.querySelector('[aria-label="Enable Idle Cap"]')?.disabled`, 5000))) throw new Error('Idle Cap switch did not survive immediate navigation');
+    if ((await js(`(async () => (await window.arcPower.profilesList()).settings.arcSleep.idleEnabled)()`)) !== changedIdle) throw new Error('Idle Cap switch did not persist');
+    await js(`(() => { const input = document.querySelector('[aria-label="Enable Load Adaptive"]'); input.checked = ${changedAdaptive}; input.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    if (!(await waitFor(win, `document.querySelector('[data-arc-sleep-save-state]')?.textContent === 'Saved'`, 5000))) throw new Error('Load Adaptive switch save did not complete');
+    if ((await js(`(async () => (await window.arcPower.profilesList()).settings.arcSleep.adaptiveEnabled)()`)) !== changedAdaptive) throw new Error('Load Adaptive switch did not persist');
+    await js(`(() => { const input = document.querySelector('[aria-label="Idle after seconds"]'); input.value = '${original.idleAfterSeconds === 301 ? 302 : 301}'; input.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    if (!(await waitFor(win, `document.querySelector('[data-arc-sleep-save-state]')?.textContent === 'Saved'`, 5000))) throw new Error('Arc Sleep numeric control save did not complete');
+    const persisted = await js(`(async () => (await window.arcPower.profilesList()).settings.arcSleep.idleAfterSeconds)()`);
+    if (persisted !== (original.idleAfterSeconds === 301 ? 302 : 301)) throw new Error('Arc Sleep numeric control did not persist');
+    await js(`location.hash = '#/dashboard'`);
+    await waitFor(win, `!document.querySelector('[data-control="arcSleep"]')`, 5000);
+    await js(`location.hash = '#/arc-sleep'`);
+    if (!(await waitFor(win, `document.querySelector('[aria-label="Idle after seconds"]')?.value === '${persisted}' && document.querySelector('[aria-label="Enable Idle Cap"]')?.checked === ${changedIdle} && document.querySelector('[aria-label="Enable Load Adaptive"]')?.checked === ${changedAdaptive} && !document.querySelector('.arc-sleep-toggle')?.disabled`, 5000))) throw new Error('Arc Sleep settings did not survive navigation');
+    const caps = await js(`(async () => ({ effective: document.querySelectorAll('[data-arc-sleep-caps] strong')[2]?.textContent, state: await window.arcPower.arcSleepStateGet() }))()`);
+    if (!caps.state.rtssAvailable && caps.effective !== 'Unavailable') throw new Error('Unavailable RTSS effective cap is not shown as unavailable');
+    if (!(await waitFor(win, `document.querySelector('.page-title')?.textContent === 'Arc Sleep' && document.querySelectorAll('.arc-sleep-toggle').length === 2`, 5000))) throw new Error('Arc Sleep capture page was not active');
+    await new Promise(resolve => setTimeout(resolve, 200));
+    if (process.env.RID_ARC_SLEEP_SCREENSHOT) {
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(process.env.RID_ARC_SLEEP_SCREENSHOT, (await win.webContents.capturePage()).toPNG());
+    }
+  } finally { await js(`window.arcPower.profilesSettingsSave({ arcSleep: ${JSON.stringify(original)} })`); }
+  console.log('[ui-verify] Arc Sleep: independent page, 42×24 switches, both switch saves and immediate navigation roundtrip OK');
 }

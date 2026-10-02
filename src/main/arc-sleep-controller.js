@@ -624,9 +624,7 @@ export function createArcSleepController({
     if (settings.adaptiveEnabled) {
       try {
         const signals = await getLoadSignals();
-        const gpu = asPercentage(signals?.gpuUtilPct);
-        const cpu = asPercentage(signals?.cpuUtilPct);
-        loadPercent = gpu !== null && cpu !== null ? Math.max(gpu, cpu) : (gpu ?? cpu);
+        loadPercent = asPercentage(signals?.gpuUtilPct);
       } catch { /* Missing telemetry is handled by the policy grace period. */ }
     }
     const result = stepArcSleepPolicy(policyState, settings, {

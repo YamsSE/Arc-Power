@@ -1352,20 +1352,14 @@ export function createSysStats(deps = {}) {
 
     /**
      * Arc Sleep must never steer its adaptive cap from stale cached values.
-     * CPU utilization comes directly from GetSystemTimes; GPU utilization is
-     * accepted only while the active adapter's dedicated sample is recent.
+     * GPU utilization is accepted only while the active adapter's dedicated
+     * sample is recent. CPU utilization is not an Arc Sleep input.
      */
     async sampleArcSleepSignals() {
-      let cpuUtilPct = null;
-      try {
-        const value = await cpuUtilReader.read();
-        if (Number.isFinite(value) && value >= 0 && value <= 100) cpuUtilPct = value;
-      } catch { /* A failed live read is unavailable, never a cached fallback. */ }
       const sampledAt = activeRecord.gpuUtilSampledAt;
       const gpuFresh = Number.isFinite(sampledAt) && now() - sampledAt <= ARC_SLEEP_GPU_UTIL_STALE_MS;
       const cachedGpu = activeRecord.cache?.gpuUtilPct;
       return {
-        cpuUtilPct,
         gpuUtilPct: gpuFresh && Number.isFinite(cachedGpu) && cachedGpu >= 0 && cachedGpu <= 100
           ? cachedGpu
           : null,
@@ -1589,7 +1583,7 @@ export function createMockSysStats(overrides = {}) {
     // determinism pins stay - no GetSystemTimes baseline tick here).
     async sampleFast() { return sampleOf(); },
     async sampleArcSleepSignals() {
-      return { cpuUtilPct: base.cpuUtilPct, gpuUtilPct: base.gpuUtilPct };
+      return { gpuUtilPct: base.gpuUtilPct };
     },
     async sampleForTarget() { return sampleOf(); },
     async sampleGpuUtilForTarget() { return { gpuUtilPct: base.gpuUtilPct }; },
