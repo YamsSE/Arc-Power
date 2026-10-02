@@ -25,6 +25,7 @@
  *   gpuLock?: { voltageV: number, freqMhz: number },
  *   vfCurve?: Array<{ voltageV: number, freqMhz: number }>,
  *   vfCurveResetToDefault?: boolean,
+ *   vfCurveProfileStock?: boolean, // profile-only intent; consumed before backend routing
  *   vfCurveBaseline?: Array<{ voltageV: number, freqMhz: number }>,
  *   vfCurveStockReference?: Array<{ voltageV: number, freqMhz: number }>,
  *   fanMode?: 'auto' | 'curve' | 'fixed',
@@ -344,6 +345,7 @@ export const CONTROLS = [
   'gpuLock',
   'vfCurve',
   'vfCurveResetToDefault',
+  'vfCurveProfileStock',
   'vfCurveBaseline',
   'vfCurveStockReference',
   'fanMode',

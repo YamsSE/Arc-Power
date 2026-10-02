@@ -14,9 +14,13 @@ await build({ entryPoints: ['src/renderer/pages/profiles.ts'], bundle: true, pla
 globalThis.window = { arcPower: {} };
 const { captureProfileSettings, settingsFromState } = await import(pathToFileURL(captureModule).href);
 const curve = [{ voltageV: 0.6, freqMhz: 1800 }, { voltageV: 0.7, freqMhz: 2000 }];
-const alchemist = { deviceId: 0, devices: [], caps: { deviceName: 'Intel Arc A580', deviceKey: 'a580' }, state: { powerLimitW: 180, vfCurve: curve, vfCurveDefault: curve } };
+const alchemist = { deviceId: 0, devices: [], caps: { deviceName: 'Intel Arc A580', deviceKey: 'a580' }, state: {
+  powerLimitW: 180, gpuVoltOffsetV: -0.02, gpuFreqOffsetMhz: 75, vfCurve: curve, vfCurveDefault: curve,
+} };
 const a580Capture = await captureProfileSettings({ store: { get: () => alchemist } });
 assert.deepEqual(a580Capture.settings.vfCurve, curve);
+assert.equal(a580Capture.settings.gpuVoltOffsetV, -0.02);
+assert.equal(a580Capture.settings.gpuFreqOffsetMhz, 75);
 assert.ok(!('vfCurveStockReference' in a580Capture.settings), 'A580 cached save must not add a Battlemage STOCK reference');
 assert.ok(!('vfCurveStockReference' in settingsFromState(alchemist.state)), 'Legacy state conversion must omit STOCK reference');
 const vfModule = path.join(isolatedDirectory, 'vf-reference.mjs');

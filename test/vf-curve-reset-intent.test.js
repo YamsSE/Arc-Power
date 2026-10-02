@@ -33,3 +33,18 @@ test('VF reference payloads survive IPC and reject orphan, malformed, conflictin
  const both={vfCurve,vfCurveBaseline:vfCurve,vfCurveStockReference:vfCurve};
  assert.equal(validateSettingsPayload(both),false); assert.throws(()=>sanitizeSettings(both));
 });
+
+test('STOCK profile intent survives profile payload validation without carrying curve points', () => {
+  const stockIntent = { gpuVoltOffsetV: 0, gpuFreqOffsetMhz: 0, vfCurveProfileStock: true };
+  assert.equal(validateSettingsPayload(stockIntent), true);
+  assert.deepEqual(sanitizeSettings(stockIntent), stockIntent);
+  for (const invalid of [
+    { vfCurveProfileStock: false },
+    { vfCurveProfileStock: true, vfCurve },
+    { vfCurveProfileStock: true, gpuFreqOffsetMhz: 150 },
+    { vfCurveProfileStock: true, gpuVoltOffsetV: -25 },
+  ]) {
+    assert.equal(validateSettingsPayload(invalid), false);
+    assert.throws(() => sanitizeSettings(invalid));
+  }
+});

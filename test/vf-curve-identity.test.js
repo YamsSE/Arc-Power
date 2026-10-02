@@ -313,7 +313,7 @@ test('profile normalization preserves offsets when STOCK identity is unavailable
   assert.equal(normalized.gpuVoltOffsetV, 0.025);
 });
 
-test('baked-pattern-looking profile curves round-trip unchanged, including exact STOCK saves', () => {
+test('custom VF tables round-trip while exact STOCK tables are omitted from profile saves', () => {
   const bakedPattern = live.map((point, index) => ({
     ...point,
     freqMhz: point.freqMhz + (index === 0 ? 0 : 100),
@@ -337,14 +337,14 @@ test('baked-pattern-looking profile curves round-trip unchanged, including exact
     gpuVoltOffsetV: 0.025,
     vfCurve: live,
     vfCurveDefault: live,
-  });
-  assert.deepEqual(stockSaved.vfCurve, live);
+  }, true);
+  assert.equal('vfCurve' in stockSaved, false);
   const stockReloaded = normalizeBattlemageProfileSettings(stockSaved, {
     deviceName: 'Intel Arc B580',
     controls: { vfCurve: true },
     vfCurveRange: range,
   }, { vfCurveDefault: live, vfCurve: live });
-  assert.deepEqual(stockReloaded.vfCurve, live);
+  assert.equal('vfCurve' in stockReloaded, false);
   assert.equal(stockReloaded.gpuFreqOffsetMhz, 75);
   assert.equal(stockReloaded.gpuVoltOffsetV, 0.025);
 });

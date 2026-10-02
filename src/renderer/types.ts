@@ -39,6 +39,10 @@ export interface Settings {
   vfCurve?: Array<{ voltageV: number; freqMhz: number }>;
   /** Explicit intent for Reset to default; valid only alongside vfCurve. */
   vfCurveResetToDefault?: boolean;
+  /** Profile-only intent to restore the driver's current Battlemage STOCK
+   *  curve. This stores no custom curve points and is consumed before any
+   *  runtime control routing. */
+  vfCurveProfileStock?: boolean;
   vfCurveBaseline?: Array<{ voltageV: number; freqMhz: number }>;
   vfCurveStockReference?: Array<{ voltageV: number; freqMhz: number }>;
   fanMode?: FanMode;

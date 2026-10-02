@@ -266,6 +266,8 @@ export function validateSettingsPayload(value: unknown): value is Settings {
       if (!isPointArray(v, ['voltageV', 'freqMhz'])) return false;
     } else if (key === 'vfCurveResetToDefault') {
       if (v !== true) return false;
+    } else if (key === 'vfCurveProfileStock') {
+      if (v !== true) return false;
     } else if (key === 'fanCurve') {
       if (!isPointArray(v, ['t', 'speedPct'])) return false;
     } else {
@@ -273,6 +275,12 @@ export function validateSettingsPayload(value: unknown): value is Settings {
     }
   }
   if ('vfCurveResetToDefault' in value && !('vfCurve' in value)) return false;
+  if ('vfCurveProfileStock' in value
+    && ('vfCurve' in value || 'vfCurveBaseline' in value || 'vfCurveStockReference' in value || 'vfCurveResetToDefault' in value)) return false;
+  const payload = value as Record<string, unknown>;
+  if (payload.vfCurveProfileStock === true
+    && ((typeof payload.gpuFreqOffsetMhz === 'number' && payload.gpuFreqOffsetMhz !== 0)
+      || (typeof payload.gpuVoltOffsetV === 'number' && payload.gpuVoltOffsetV !== 0))) return false;
   const refs = ['vfCurveBaseline', 'vfCurveStockReference'].filter((key) => key in value);
   if (refs.length > 1 || (refs.length && (!('vfCurve' in value) || 'vfCurveResetToDefault' in value))) return false;
   for (const key of refs) {

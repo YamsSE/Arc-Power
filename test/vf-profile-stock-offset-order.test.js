@@ -329,6 +329,157 @@ test('routed STOCK profile apply refuses VF and offsets when STOCK identity is u
   assert.deepEqual(calls, [], 'routed profile writes stay withheld when STOCK identity is unknown');
 });
 
+test('executeApply repairs an exact legacy scalar curve before splitting extended controls', async () => {
+  const stockReference = [
+    { voltageV: 0.7, freqMhz: 1000 },
+    { voltageV: 0.8, freqMhz: 2000 },
+  ];
+  const backendCalls = [];
+  const extendedCalls = [];
+  const caps = {
+    deviceName: 'Intel Arc B580 Graphics',
+    overclockingSupported: true,
+    extendedRanges: true,
+    controls: { vfCurve: true, gpuFreqOffset: true, gpuVoltOffset: true },
+    controlStatus: { vfCurve: { state: 'available' } },
+    vfCurveRange: {
+      voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 400, freqMaxMhz: 4300,
+      voltageStepV: 0.001, frequencyStepMhz: 1, maxPoints: 32,
+    },
+    ranges: {
+      powerLimitW: { min: 100, max: 130, step: 1, default: 100, units: '%' },
+      tempLimitC: { min: 0, max: 110, step: 1, default: 90, units: 'C' },
+      gpuFreqOffsetMhz: { min: -1000, max: 1000, step: 1, default: 0, units: 'MHz' },
+      gpuVoltOffsetV: { min: -100, max: 100, step: 1, default: 0, units: '%' },
+    },
+  };
+  const backend = {
+    async getCapabilities() { return caps; },
+    async getCurrentSettings() { return {}; },
+    async applySettings(_deviceId, settings) {
+      backendCalls.push(settings);
+      return {
+        ok: true,
+        perControl: Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: true, readBackEqual: true }])),
+      };
+    },
+  };
+  const oldIgcl = {
+    async isCapable() { return true; },
+    async isTempCapable() { return true; },
+    async setTempLimitC(value) { extendedCalls.push(['tempLimitC', value]); return { ok: true, readBackEqual: true }; },
+  };
+  const settings = {
+    powerLimitW: 114,
+    gpuVoltOffsetV: 35,
+    gpuFreqOffsetMhz: 150,
+    tempLimitC: 95,
+    vfCurveStockReference: stockReference,
+    vfCurve: stockReference.map((point) => ({ ...point, freqMhz: point.freqMhz + 150 })),
+  };
+  const out = await executeApply({
+    backend,
+    oldIgcl,
+    deviceId: 0,
+    settings,
+    opts: { profileApply: true },
+    ocMode: 'advanced',
+    sleep: async () => {},
+    delayedVerifyMs: 0,
+  });
+
+  assert.equal(out.result.ok, true);
+  assert.deepEqual(backendCalls, [{ powerLimitW: 114, gpuVoltOffsetV: 35, gpuFreqOffsetMhz: 150 }]);
+  assert.deepEqual(extendedCalls, [['tempLimitC', 95]]);
+  assert.equal(backendCalls.some((payload) => 'vfCurve' in payload), false, 'the legacy VF setter must not receive the baked curve');
+});
+
+test('a STOCK-only profile marker refreshes the driver curve and clears offsets before resetting it', async () => {
+  const stockCurve = [
+    { voltageV: 0.7, freqMhz: 1000 },
+    { voltageV: 0.8, freqMhz: 2000 },
+  ];
+  const backendCalls = [];
+  const caps = {
+    deviceName: 'Intel Arc B580 Graphics', overclockingSupported: true, extendedRanges: true,
+    controls: { vfCurve: true, gpuFreqOffset: true, gpuVoltOffset: true },
+    controlStatus: { vfCurve: { state: 'available' } },
+    vfCurveRange: { voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 400, freqMaxMhz: 4300,
+      voltageStepV: 0.001, frequencyStepMhz: 1, maxPoints: 32 },
+    ranges: {
+      powerLimitW: { min: 100, max: 130, step: 1, default: 100, units: '%' },
+      gpuFreqOffsetMhz: { min: -1000, max: 1000, step: 1, default: 0, units: 'MHz' },
+      gpuVoltOffsetV: { min: -100, max: 100, step: 1, default: 0, units: '%' },
+    },
+  };
+  const backend = {
+    async getCapabilities() { return caps; },
+    async getCurrentSettings() { return { vfCurve: stockCurve, vfCurveDefault: stockCurve }; },
+    async applySettings(_deviceId, settings) {
+      backendCalls.push(settings);
+      return {
+        ok: true,
+        perControl: Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: true, readBackEqual: true }])),
+      };
+    },
+  };
+  const out = await executeApply({
+    backend,
+    oldIgcl: null,
+    deviceId: 0,
+    settings: {
+      powerLimitW: 114,
+      gpuVoltOffsetV: 0,
+      gpuFreqOffsetMhz: 0,
+      vfCurveProfileStock: true,
+    },
+    opts: { profileApply: true },
+    ocMode: 'advanced',
+    sleep: async () => {},
+    delayedVerifyMs: 0,
+  });
+
+  assert.equal(out.result.ok, true);
+  assert.deepEqual(backendCalls[0], { gpuFreqOffsetMhz: 0, gpuVoltOffsetV: 0 },
+    'the active scalar surface is verified clear before VF reset');
+  assert.deepEqual(backendCalls[1], {
+    powerLimitW: 114,
+    gpuVoltOffsetV: 0,
+    gpuFreqOffsetMhz: 0,
+    vfCurve: stockCurve,
+    vfCurveResetToDefault: true,
+  });
+  assert.equal(backendCalls.some((payload) => 'vfCurveProfileStock' in payload), false,
+    'profile metadata never reaches the backend control payload');
+});
+
+test('a STOCK-only profile marker refuses before writes when fresh driver STOCK is unreadable', async () => {
+  const backendCalls = [];
+  const stockCurve = [
+    { voltageV: 0.7, freqMhz: 1000 },
+    { voltageV: 0.8, freqMhz: 2000 },
+  ];
+  const caps = {
+    deviceName: 'Intel Arc B580 Graphics', overclockingSupported: true,
+    controls: { vfCurve: true },
+    vfCurveRange: { voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 400, freqMaxMhz: 4300,
+      voltageStepV: 0.001, frequencyStepMhz: 1, maxPoints: 32 },
+  };
+  const backend = {
+    async getCapabilities() { return caps; },
+    async getCurrentSettings() { return { vfCurve: stockCurve, vfCurveDefault: null }; },
+    async applySettings(_deviceId, settings) { backendCalls.push(settings); return { ok: true, perControl: {} }; },
+  };
+  const out = await executeApply({
+    backend, oldIgcl: null, deviceId: 0,
+    settings: { gpuVoltOffsetV: 0, gpuFreqOffsetMhz: 0, vfCurveProfileStock: true },
+    opts: { profileApply: true },
+  });
+  assert.equal(out.result.ok, false);
+  assert.equal(out.result.perControl.vfCurve.errorCode, 'readback-unverified');
+  assert.deepEqual(backendCalls, [], 'the rest of the profile is withheld with no trusted STOCK curve');
+});
+
 test('B580 VF writes stop when the LIVE before-image cannot be verified', async () => {
   const { backend, calls } = fixture({ liveReadUnavailable: true });
   const result = await backend.applySettings(0, { vfCurve: stockCanonical });

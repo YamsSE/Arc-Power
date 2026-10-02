@@ -165,3 +165,25 @@ switched its UI to Off but repeated native reads retained that altered table.
 Arc Power's native reset restored STOCK frequencies across 20 subsequent reads.
 These results do not prove why IGS remaps values, nor establish exact acceptance
 of every requested integer, B570 behavior or stability under load.
+
+## October 2 scalar profile capture follow-up
+
+Battlemage profile saves now omit the VF table whenever either core scalar
+offset is active. At zero offsets, exact LIVE==STOCK is omitted; coherent
+nonuniform per-point edits still require two matching fresh LIVE/STOCK reads.
+An ambiguous uniform voltage-origin shift still refuses save rather than
+silently discarding possible VF intent.
+
+The prior capture bug baked a +150 MHz scalar offset into every saved VF
+frequency while preserving the separate +150 MHz frequency offset. Profile
+summary hides that exact legacy signature, and the shared apply router removes
+the duplicate VF payload before splitting its controls; other custom-curve and
+offset combinations retain the dependency refusal. Focused profile, routing,
+boot and worker checks cover this repair.
+
+The saved B580 profile was reproduced against the native backend: the legacy
+mixed apply rejected its two core offsets and applied its VF table; removing
+those unintended VF fields let the frequency/voltage offsets, 114% power and
+2400 MHz VRAM settings read back over three applies. The card was reset and
+verified at STOCK before patching. The post-patch physical route could not be
+re-run because Windows canceled its UAC approval prompt; it remains unverified.

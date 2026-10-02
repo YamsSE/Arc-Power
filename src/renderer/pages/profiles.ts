@@ -28,6 +28,7 @@ import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
+import { hasScalarCoreOffsets, isExactStockVfCurve, repairLegacyScalarProfile } from '../pure/profile-core-surface.ts';
 import { chipLabelGpu } from '../pure/chip-label.ts';
 import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import { controlDisplay, formatValue } from '../pure/slider.ts';
@@ -248,11 +249,12 @@ export function settingsFromState(state: DeviceState, includeVfReference = false
   // profile-load RE-write the table (flipping the mode back to curve) -
   // auto never carries a table.
   if (state.fanCurve && state.fanMode !== 'auto') out.fanCurve = state.fanCurve;
-  // Profiles preserve the entire current table, including STOCK. When
-  // reloaded later, the saved curve must be reapplied even if LIVE has since
-  // changed. The Battlemage compatibility path drops conflicting scalar
-  // offsets while retaining these exact points.
-  if (state.vfCurve && state.vfCurve.length >= 2) {
+  // Battlemage scalar offsets and VF curves share one tuning surface, so do
+  // not save its offset-generated LIVE table beside those offsets. The
+  // Alchemist path keeps its historical cached-table behavior.
+  const scalarVfConflict = includeVfReference && hasScalarCoreOffsets(state);
+  if (!scalarVfConflict && state.vfCurve && state.vfCurve.length >= 2
+    && !(includeVfReference && isExactStockVfCurve(state.vfCurve, state.vfCurveDefault))) {
     out.vfCurve = state.vfCurve.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz }));
     const readableCurve = (points: DeviceState['vfCurveDefault']): boolean => Array.isArray(points) && points.length >= 2
       && points.every((point, index) => Number.isFinite(point.voltageV) && point.voltageV > 0
@@ -262,6 +264,10 @@ export function settingsFromState(state: DeviceState, includeVfReference = false
       && state.vfCurveDefault?.length === state.vfCurve.length) {
       out.vfCurveStockReference = state.vfCurveDefault.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz }));
     }
+  }
+  if (includeVfReference && !hasScalarCoreOffsets(state)
+    && isExactStockVfCurve(state.vfCurve, state.vfCurveDefault)) {
+    out.vfCurveProfileStock = true;
   }
   return out;
 }
@@ -287,21 +293,28 @@ export async function captureProfileSettings(ctx: PageContext): Promise<{ settin
   };
   const range = initial.caps?.vfCurveRange;
   try {
-    if (initial.deviceId === null || !range) throw new Error('The GPU curve range is unavailable.');
+    if (initial.deviceId === null) throw new Error('The GPU is unavailable.');
     let previousCustomPair: string | null = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    // One stale/ambiguous pair may precede the two consecutive custom reads
+    // needed to prove a frequency-only or nonuniform-voltage edit is stable.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
       const state = await api.getCurrentSettings(initial.deviceId);
       if (!contextIsCurrent()) return null;
+      if (hasScalarCoreOffsets(state)) return { settings: settingsFromState(state, true), gpu };
+      if (!range) throw new Error('The GPU curve range is unavailable.');
       if (isValidNativeVfCurve(state.vfCurve, range) && isValidNativeVfCurve(state.vfCurveDefault, range)
         && state.vfCurve.length === state.vfCurveDefault.length) {
-        const voltageDeltas = state.vfCurve.map((point, index) => point.voltageV - state.vfCurveDefault![index].voltageV);
-        if (voltageDeltas.every((delta) => Math.abs(delta) < 1e-6)) {
+        if (isExactStockVfCurve(state.vfCurve, state.vfCurveDefault)) {
           return { settings: settingsFromState(state, true), gpu };
         }
-        // A uniform shift cannot distinguish a changed reporting origin from
-        // an intentional edit. Preserve nonuniform per-point edits only after
-        // two consecutive identical LIVE/STOCK pairs prove a stable capture.
-        if (!voltageDeltas.every((delta) => Math.abs(delta - voltageDeltas[0]) < 1e-6)) {
+        const voltageDeltas = state.vfCurve.map((point, index) => point.voltageV - state.vfCurveDefault![index].voltageV);
+        const frequenciesMatchStock = state.vfCurve.every((point, index) => point.freqMhz === state.vfCurveDefault![index].freqMhz);
+        // A uniform voltage translation that is not also a matching STOCK
+        // shape remains ambiguous. A frequency edit or nonuniform voltage
+        // edit is an actual curve change and still needs two identical fresh
+        // pairs before we save it.
+        const uniformVoltageShift = voltageDeltas.every((delta) => Math.abs(delta - voltageDeltas[0]) < 1e-6);
+        if (!frequenciesMatchStock || !uniformVoltageShift) {
           const pair = JSON.stringify([state.vfCurve, state.vfCurveDefault]);
           if (pair === previousCustomPair) return { settings: settingsFromState(state, true), gpu };
           previousCustomPair = pair;
@@ -347,7 +360,10 @@ function profileSummaryRange(key: string, caps: Capabilities | null, profileDevi
 
 export function settingsSummary(settings: Settings, caps: Capabilities | null, profileDeviceName = caps?.deviceName ?? ''): string[] {
   const out: string[] = [];
-  for (const [key, value] of Object.entries(settings)) {
+  const summarizedSettings = isBattlemageGpuName(profileDeviceName)
+    ? repairLegacyScalarProfile(settings)
+    : settings;
+  for (const [key, value] of Object.entries(summarizedSettings)) {
     if (typeof value !== 'number') continue;
     const compactSigned = (number: number, suffix: string): string => `${number >= 0 ? '+' : ''}${number}${suffix}`;
     const range = profileSummaryRange(key, caps, profileDeviceName);
@@ -372,9 +388,9 @@ export function settingsSummary(settings: Settings, caps: Capabilities | null, p
       out.push(`${CONTROL_LABELS[key] ?? key} ${formatValue(value, units)}`);
     }
   }
-  if (settings.fanCurve) out.push('Fan Curve');
-  else if (settings.fanMode && settings.fanMode !== 'auto') out.push(`Fan ${settings.fanMode}`);
-  if (Array.isArray(settings.vfCurve) && settings.vfCurve.length >= 2) out.push('VF Curve');
+  if (summarizedSettings.fanCurve) out.push('Fan Curve');
+  else if (summarizedSettings.fanMode && summarizedSettings.fanMode !== 'auto') out.push(`Fan ${summarizedSettings.fanMode}`);
+  if (Array.isArray(summarizedSettings.vfCurve) && summarizedSettings.vfCurve.length >= 2) out.push('VF Curve');
   return out;
 }
 

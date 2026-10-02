@@ -43,6 +43,7 @@ import { clampSettings } from './ipc-core.js';
 import { validateSettingsPayload } from '../renderer/pure/settings.ts';
 import { sameVfCurve, rebaseVfCurveToReference } from '../renderer/pure/vf-curve.ts';
 import { deviceHardwareKey } from './backend/units.js';
+import { isBattlemageGpuName } from '../renderer/pure/hardware-icons.ts';
 import { normalizeBattlemageProfileSettings } from '../renderer/pure/profile-compat.ts';
 
 function stableTargetMatchesKey(target, expectedKey) {
@@ -144,9 +145,9 @@ function sysmanPowerApplyRequired(control, sysmanPowerLimits) {
     && typeof sysmanPowerLimits?.setLimits === 'function';
 }
 
-const VF_INTENT_KEYS = new Set(['vfCurveBaseline', 'vfCurveStockReference', 'vfCurveResetToDefault']);
+const VF_INTENT_KEYS = new Set(['vfCurveBaseline', 'vfCurveStockReference', 'vfCurveResetToDefault', 'vfCurveProfileStock']);
 
-function comparableProfileSettings(settings, state) {
+function comparableProfileSettings(settings, state, deviceName = null) {
   if (!validateSettingsPayload(settings)) return null;
   const comparable = Object.fromEntries(Object.entries(settings).filter(([key]) => !VF_INTENT_KEYS.has(key)));
   const reference = settings.vfCurveStockReference ?? settings.vfCurveBaseline;
@@ -160,13 +161,17 @@ function comparableProfileSettings(settings, state) {
   } else if (settings.vfCurveResetToDefault === true) {
     if (!Array.isArray(state.vfCurveDefault)) return null;
     comparable.vfCurve = state.vfCurveDefault;
+  } else if (settings.vfCurveProfileStock === true) {
+    if (!isBattlemageGpuName(deviceName ?? '')) return null;
+    if (!Array.isArray(state.vfCurveDefault)) return null;
+    comparable.vfCurve = state.vfCurveDefault;
   }
   return comparable;
 }
 
-export function profileSettingsMatchCurrentState(settings, state, sysmanPowerLimits = null) {
+export function profileSettingsMatchCurrentState(settings, state, sysmanPowerLimits = null, deviceName = null) {
   if (!settings || typeof settings !== 'object' || !state || typeof state !== 'object') return false;
-  settings = comparableProfileSettings(settings, state);
+  settings = comparableProfileSettings(settings, state, deviceName);
   if (!settings) return false;
   const entries = Object.entries(settings);
   return entries.length > 0 && entries.every(([control, requested]) => (
@@ -185,10 +190,10 @@ export function profileSettingsMatchCurrentState(settings, state, sysmanPowerLim
  * turn an unsupported, out-of-range, waiver, or stale-target response into a
  * success.
  */
-export function reconcileAppliedProfileResult(result, settings, state, { sysmanPowerLimits = null } = {}) {
+export function reconcileAppliedProfileResult(result, settings, state, { sysmanPowerLimits = null, deviceName = null } = {}) {
   if (result?.ok === true || !result || typeof result !== 'object'
     || !settings || typeof settings !== 'object' || !state || typeof state !== 'object') return result;
-  settings = comparableProfileSettings(settings, state);
+  settings = comparableProfileSettings(settings, state, deviceName);
   if (!settings) return result;
   const requestedControls = Object.keys(settings);
   const perControlResults = result.perControl ?? {};
@@ -492,7 +497,9 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   // profile's live values. Do not repeat a native write merely to verify what
   // is already true; this avoids a false boot notification on drivers whose
   // setter reports a transient read-back mismatch for an idempotent write.
-  if (capabilityControls.length === 0 && profileSettingsMatchCurrentState(normalizedProfileSettings, profileState, sysmanPowerLimits)) {
+  if (capabilityControls.length === 0 && profileSettingsMatchCurrentState(
+    normalizedProfileSettings, profileState, sysmanPowerLimits, caps.deviceName,
+  )) {
     const perControl = Object.fromEntries(Object.keys(normalizedProfileSettings).map((control) => [
       control,
       { ok: true, readBackEqual: true, alreadyApplied: true },
@@ -664,7 +671,10 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     }
   }
 
-  const reconciledResult = reconcileAppliedProfileResult(result, profile.settings, state, { sysmanPowerLimits });
+  const reconciledResult = reconcileAppliedProfileResult(result, profile.settings, state, {
+    sysmanPowerLimits,
+    deviceName: caps.deviceName,
+  });
   if (reconciledResult?.reconciledFromLiveState === true) {
     log('[apply-on-boot] apply reported a read-back failure, but the live device state matches every requested control; treating the profile as applied');
     result = reconciledResult;

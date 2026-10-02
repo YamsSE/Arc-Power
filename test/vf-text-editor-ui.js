@@ -142,12 +142,19 @@ export async function verifyVfTextEditor(win, backend) {
       backend.getCurrentSettings = async function(...args) {
         const state = await originalGet.apply(this, args);
         captures += 1;
-        if (captures < 3) state.vfCurve = state.vfCurve.map(point => ({ ...point, voltageV: point.voltageV + 0.01 }));
+        if (captures < 3) state.vfCurve = state.vfCurve.map((point, index) => ({
+          ...point,
+          voltageV: point.voltageV + 0.01,
+          freqMhz: state.vfCurveDefault[index].freqMhz,
+        }));
         return state;
       };
       await saveThroughUi('VF paired retry');
       const retried = await js(`window.arcPower.profilesList().then(e => e.profiles.find(p => p.name === 'VF paired retry'))`);
-      assert(captures === 3 && JSON.stringify(retried?.settings.vfCurveStockReference) === JSON.stringify(points), 'Profile capture failed to retry ambiguous origin pair');
+      assert(captures === 4 && Array.isArray(retried?.settings.vfCurve)
+        && JSON.stringify(retried?.settings.vfCurveStockReference) === JSON.stringify(points),
+      'Profile capture failed to retry stale origin pairs before saving the stable frequency-only custom curve: '
+        + JSON.stringify({ captures, settings: retried?.settings ?? null }));
       captures = 0;
       const beforeCustom = await originalGet.call(backend, 0);
       const custom = structuredClone(beforeCustom);
@@ -176,17 +183,23 @@ export async function verifyVfTextEditor(win, backend) {
       };
       await saveThroughUi('VF unstable custom refuse');
       const unstable = await js(`window.arcPower.profilesList().then(e => e.profiles.find(p => p.name === 'VF unstable custom refuse'))`);
-      assert(captures === 3 && !unstable, 'Moving custom LIVE/STOCK pair escaped bounded capture refusal');
+      assert(captures === 4 && !unstable, 'Moving custom LIVE/STOCK pair escaped bounded capture refusal: '
+        + JSON.stringify({ captures, saved: !!unstable }));
       captures = 0;
       backend.getCurrentSettings = async function(...args) {
         const state = await originalGet.apply(this, args);
         captures += 1;
-        state.vfCurve = state.vfCurve.map(point => ({ ...point, voltageV: point.voltageV + 0.01 }));
+        state.vfCurve = state.vfCurve.map((point, index) => ({
+          ...point,
+          voltageV: point.voltageV + 0.01,
+          freqMhz: state.vfCurveDefault[index].freqMhz,
+        }));
         return state;
       };
       await saveThroughUi('VF ambiguous refuse');
       const refused = await js(`window.arcPower.profilesList().then(e => e.profiles.find(p => p.name === 'VF ambiguous refuse'))`);
-      assert(captures === 3 && !refused, 'Ambiguous profile capture saved an absolute fallback or exceeded bounded retries');
+      assert(captures === 4 && !refused, 'Ambiguous profile capture saved an absolute fallback or exceeded bounded retries: '
+        + JSON.stringify({ captures, saved: !!refused }));
       assert(await js(`Array.from(document.querySelectorAll('.toast')).some(t => t.textContent.includes('LIVE and STOCK voltage grids'))`), 'Ambiguous capture failure did not explain refusal');
     } finally {
       backend.getCurrentSettings = originalGet;

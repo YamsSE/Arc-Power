@@ -75,6 +75,7 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
 import { isValidNativeVfCurve, prepareVfCurveForDriver, vfCurveNeedsWrite, matchesVfCurveReference, rebaseVfCurveToReference } from '../../renderer/pure/vf-curve.ts';
+import { repairLegacyScalarProfile } from '../../renderer/pure/profile-core-surface.ts';
 import { readStableVfCurve, readStableVfCurvePreflight, readVfCurveAfterWrite, readVfCurveOnce } from './vf-curve-readback.js';
 import { provenVfRequest, matchesProvenVfRequest } from './vf-proven-request.js';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
@@ -6126,6 +6127,12 @@ export class IgclBackend {
     if (settings.vfCurveResetToDefault === true || Object.keys(settings).some((key) => !['vfCurve', 'vfCurveBaseline', 'vfCurveStockReference', 'vfCurveResetToDefault'].includes(key))) this._provenVfRequests.delete(provenDeviceKey);
     const units = await this._ocUnitsOf(deviceId);
     const result = { ok: true, perControl: {} };
+
+    if (opts.profileApply === true && isBattlemageGpuName(caps.deviceName, caps)
+      && caps.vfCurveRange
+      && isValidNativeVfCurve(settings.vfCurveStockReference, caps.vfCurveRange)) {
+      settings = repairLegacyScalarProfile(settings);
+    }
 
     const referenceKeys = ['vfCurveBaseline', 'vfCurveStockReference'].filter((key) => key in settings);
     const savedReference = referenceKeys.length === 1 ? settings[referenceKeys[0]] : null;
