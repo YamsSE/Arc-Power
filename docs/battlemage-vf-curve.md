@@ -148,3 +148,20 @@ The plotting viewport follows a proven common STOCK origin translation, with
 accurate voltage tick labels; actual point values, explicit voltage edits and
 validation bounds remain unchanged. Chromium checks prove fixed chart bounds
 and dot positions after a common100mV shift. The focused suite passed194tests.
+
+## Independent LIVE origin and actual IGS comparison
+
+The viewport now follows accepted LIVE coordinates independently of STOCK.
+STOCK-only movement leaves dots and ticks unchanged; uniform LIVE movement pans
+accurate voltage ticks while preserving dot positions. Draft voltage edits remain
+visible on the frozen accepted viewport. Accepted Apply refreshes the STOCK reset
+reference. Editing, dragging, resetting and refreshing are blocked during Apply.
+The focused suite passed 195 tests and the real Chromium editor checks passed.
+
+A live comparison with IGS 32.0.101.9033 on this B580 submitted 3230 MHz to the
+last point through the actual IGS UI. IGS moved the curve left and read back
+3200 MHz; native reads confirmed changes across the curve. IGS Reset Tuning
+switched its UI to Off but repeated native reads retained that altered table.
+Arc Power's native reset restored STOCK frequencies across 20 subsequent reads.
+These results do not prove why IGS remaps values, nor establish exact acceptance
+of every requested integer, B570 behavior or stability under load.

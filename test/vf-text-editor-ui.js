@@ -5,9 +5,21 @@ export async function verifyVfTextEditor(win, backend) {
   const pause = () => new Promise((resolve) => setTimeout(resolve, 150));
   const originalApply = backend.applySettings;
   let manualPayload;
+  let releaseApply;
+  let holdApply = false;
+  let shiftAcceptedApply = false;
   backend.applySettings = async function(deviceId, settings, ...rest) {
     if (settings.vfCurve) manualPayload = structuredClone(settings);
-    return originalApply.call(this, deviceId, settings, ...rest);
+    if (holdApply && settings.vfCurve) await new Promise(resolve => { releaseApply = resolve; });
+    const result = await originalApply.call(this, deviceId, settings, ...rest);
+    if (shiftAcceptedApply && result.perControl.vfCurve?.ok) {
+      this._state.vfCurve = this._state.vfCurve.map(point => ({ ...point, voltageV: Number((point.voltageV + 0.02).toFixed(3)) }));
+      this._state.vfCurveDefault = this._state.vfCurveDefault.map(point => ({ ...point, voltageV: Number((point.voltageV + 0.05).toFixed(3)) }));
+      result.perControl.vfCurve.readBackCurve = structuredClone(this._state.vfCurve);
+      result.perControl.vfCurve.normalized = true;
+      shiftAcceptedApply = false;
+    }
+    return result;
   };
   const points = Array.from({ length: 10 }, (_, index) => ({
     voltageV: Number((0.6 + index * 0.07).toFixed(3)),
@@ -62,7 +74,24 @@ export async function verifyVfTextEditor(win, backend) {
     assert(await js(`vfInput.value === '3231' && vfInput.isConnected && document.querySelector('.vf-curve-dot-selected').dataset.idx === '7'`), 'Tab lost committed edit or selection');
     await js(`vfInput.focus(); vfInput.select()`);
     await win.webContents.debugger.sendCommand('Input.insertText', { text: '3230' });
+    holdApply = true;
     await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply').click()`);
+    for (let attempt = 0; attempt < 40 && !releaseApply; attempt += 1) await pause();
+    assert(releaseApply, 'Apply did not enter the pending backend request');
+    assert(await js(`(() => {
+      const input = document.querySelector('[data-readout-field="frequency"]');
+      const labels = Array.from(document.querySelectorAll('.vf-curve-dot')).map(dot => dot.getAttribute('aria-label')).join('|');
+      const locked = input.readOnly && Array.from(document.querySelectorAll('.vf-curve-actions button')).every(button => button.disabled)
+        && document.querySelector('[data-vf-reset]').disabled;
+      input.value = '3330'; input.dispatchEvent(new Event('change', { bubbles: true }));
+      document.querySelector('[data-vf-reset]').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      const dot = document.querySelector('.vf-curve-dot[data-idx="7"]');
+      dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10 }));
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: 100, clientY: 100 }));
+      window.dispatchEvent(new PointerEvent('pointerup'));
+      return locked && labels === Array.from(document.querySelectorAll('.vf-curve-dot')).map(dot => dot.getAttribute('aria-label')).join('|');
+    })()`), 'Pending Apply allowed text, drag, reset or refresh mutation');
+    holdApply = false; releaseApply(); releaseApply = undefined;
     let applied;
     for (let attempt = 0; attempt < 40; attempt += 1) {
       await pause();
@@ -224,7 +253,7 @@ export async function verifyVfTextEditor(win, backend) {
     const observationEditor = await js(`({ value: document.querySelector('[data-readout-field="frequency"]').value, focused: document.querySelector('[data-readout-field="frequency"]') === document.activeElement, selected: document.querySelector('.vf-curve-dot-selected').dataset.idx })`);
     assert(observationEditor.value === '3250' && observationEditor.selected === '9', 'Latest LIVE observation overwrote unfinished typing: ' + JSON.stringify(observationEditor));
     await assertStableChart('stale observation');
-    await js(`Array.from(document.querySelectorAll('.vf-curve-actions button')).find(b => b.textContent === 'Discard draft and refresh').click()`);
+    await js(`document.activeElement?.blur(); Array.from(document.querySelectorAll('.vf-curve-actions button')).find(b => b.textContent === 'Discard draft and refresh').click()`);
     await assertStableChart('refresh start');
     for (let attempt = 0; attempt < 40; attempt += 1) {
       if (await js(`!Array.from(document.querySelectorAll('.vf-curve-actions button')).find(b => b.textContent === 'Reading…')`)) break;
@@ -232,15 +261,51 @@ export async function verifyVfTextEditor(win, backend) {
     }
     await assertStableChart('refresh completion');
     const beforeOrigin = await js(`Array.from(document.querySelectorAll('.vf-curve-dot')).map(dot => dot.getBoundingClientRect().x)`);
-    backend._state.vfCurve = backend._state.vfCurve.map(point => ({ ...point, voltageV: Number((point.voltageV + 0.1).toFixed(3)) }));
     backend._state.vfCurveDefault = backend._state.vfCurveDefault.map(point => ({ ...point, voltageV: Number((point.voltageV + 0.1).toFixed(3)) }));
+    await js(`Array.from(document.querySelectorAll('.vf-curve-actions button')).find(b => b.textContent === 'Refresh from driver').click()`);
+    await pause();
+    assert(await js(`Array.from(document.querySelectorAll('.vf-curve-dot')).every((dot, index) => Math.abs(dot.getBoundingClientRect().x - ${JSON.stringify(beforeOrigin)}[index]) < 0.01) && Array.from(document.querySelectorAll('.vf-curve-axis span')).map(node => node.textContent).join(',') === '400 mV,1500 mV'`), 'Independent STOCK shift moved LIVE or axis');
+    backend._state.vfCurve = backend._state.vfCurve.map(point => ({ ...point, voltageV: Number((point.voltageV + 0.1).toFixed(3)) }));
+
     await js(`Array.from(document.querySelectorAll('.vf-curve-actions button')).find(b => b.textContent === 'Refresh from driver').click()`);
     await pause();
     const afterOrigin = await js(`({ positions: Array.from(document.querySelectorAll('.vf-curve-dot')).map(dot => dot.getBoundingClientRect().x), axis: Array.from(document.querySelectorAll('.vf-curve-axis span')).map(node => node.textContent), firstLabel: document.querySelector('.vf-curve-dot').getAttribute('aria-label') })`);
     assert(beforeOrigin.every((position, index) => Math.abs(position - afterOrigin.positions[index]) < 0.01), 'Common native origin shift moved plotted points');
-    assert(afterOrigin.axis.join(',') === '500 mV,1600 mV' && afterOrigin.firstLabel.includes('700 mV'), 'Translated viewport concealed actual native voltages');
+    assert(afterOrigin.axis.join(',') === '500 mV,1600 mV' && afterOrigin.firstLabel.includes('700 mV'), 'Translated viewport concealed actual native voltages: ' + JSON.stringify(afterOrigin) + ' actions=' + JSON.stringify(await js(`Array.from(document.querySelectorAll('.vf-curve-actions button')).map(b=>({text:b.textContent,disabled:b.disabled}))`)));
     await assertStableChart('common native origin shift');
-    return 'Real Chromium typing3230, replacement, Enter, Tab, Apply and forward plateau propagation passed';
+    const beforeCombined = afterOrigin.positions;
+    await js(`(() => {
+      const dot = document.querySelector('.vf-curve-dot[data-idx="7"]');
+      dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+      window.dispatchEvent(new PointerEvent('pointerup'));
+      const input = document.querySelector('[data-readout-field="frequency"]');
+      input.value = String(Number(input.value) + 20); input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.blur();
+    })()`);
+    shiftAcceptedApply = true;
+    await js(`document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply').click()`);
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await pause();
+      if (!shiftAcceptedApply && await js(`!document.querySelector('.oc-card[data-control="gpuFreqOffsetMhz"] .oc-chip-apply').disabled`)) break;
+    }
+    const combined = await js(`({positions: Array.from(document.querySelectorAll('.vf-curve-dot')).map(dot => dot.getBoundingClientRect().x), axis: Array.from(document.querySelectorAll('.vf-curve-axis span')).map(node => node.textContent)})`);
+    assert(beforeCombined.every((position, index) => Math.abs(position - combined.positions[index]) < 0.01), 'Combined frequency write and LIVE origin change teleported curve');
+    assert(combined.axis.join(',') === '520 mV,1620 mV', 'Combined Apply did not expose actual native ticks');
+    assert(await js(`(() => {
+      const dot = document.querySelector('.vf-curve-dot[data-idx="4"]');
+      dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+      window.dispatchEvent(new PointerEvent('pointerup'));
+      const input = document.querySelector('[data-readout-field="voltage"]');
+      const before = dot.getBoundingClientRect().x;
+      const ticks = document.querySelector('.vf-curve-axis').textContent;
+      input.value = String(Number(input.value) + 10); input.dispatchEvent(new Event('change', { bubbles: true }));
+      const moved = document.querySelector('.vf-curve-dot[data-idx="4"]').getBoundingClientRect().x - before;
+      return moved > 0 && Math.abs(moved - document.querySelector('.vf-curve-plot-host').getBoundingClientRect().width * 10 / 1100) < 0.05
+        && document.querySelector('.vf-curve-axis').textContent === ticks;
+    })()`), 'Explicit 10 mV draft edit did not move on frozen viewport');
+    await js(`document.querySelector('[data-vf-reset]').click()`);
+    assert(await js(`document.querySelector('.vf-curve-dot').getAttribute('aria-label').includes('750 mV')`), 'Reset staged old STOCK reference after accepted Apply');
+    return 'Real Chromium text editing, Apply exclusion, independent LIVE/STOCK origins and fresh STOCK reset passed';
   } finally {
     backend.applySettings = originalApply;
     win.webContents.debugger.detach();
