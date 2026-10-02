@@ -1,3 +1,7 @@
+<p align="center">
+  <a href="https://discord.gg/nXAjasHy6e"><img src="https://api.iconify.design/simple-icons/discord.svg?color=%235865F2" alt="Join the Arc Power Discord" title="Join the Arc Power Discord" width="22" height="22"></a>
+</p>
+
 # Arc Power Ver. 1.2
 
 Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.2 includes the Driver Library, which lets you browse available Intel driver releases and manage downloaded installers.
