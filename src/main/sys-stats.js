@@ -111,6 +111,7 @@ export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\p
 // GPU Engine samples are refreshed by the dedicated PowerShell lane. Do not
 // let a stalled counter query masquerade as a current Task Manager value.
 export const GPU_UTIL_STALE_MS = 8000;
+const ARC_SLEEP_GPU_UTIL_STALE_MS = 5000;
 // The legacy broad system-stat query and the one-shot fallback use a
 // two-sample rate read. The production dedicated lane keeps one continuous
 // provider alive, so it can retain the counter baseline without paying cold
@@ -1349,6 +1350,28 @@ export function createSysStats(deps = {}) {
       return sampleFastForRecord(activeRecord);
     },
 
+    /**
+     * Arc Sleep must never steer its adaptive cap from stale cached values.
+     * CPU utilization comes directly from GetSystemTimes; GPU utilization is
+     * accepted only while the active adapter's dedicated sample is recent.
+     */
+    async sampleArcSleepSignals() {
+      let cpuUtilPct = null;
+      try {
+        const value = await cpuUtilReader.read();
+        if (Number.isFinite(value) && value >= 0 && value <= 100) cpuUtilPct = value;
+      } catch { /* A failed live read is unavailable, never a cached fallback. */ }
+      const sampledAt = activeRecord.gpuUtilSampledAt;
+      const gpuFresh = Number.isFinite(sampledAt) && now() - sampledAt <= ARC_SLEEP_GPU_UTIL_STALE_MS;
+      const cachedGpu = activeRecord.cache?.gpuUtilPct;
+      return {
+        cpuUtilPct,
+        gpuUtilPct: gpuFresh && Number.isFinite(cachedGpu) && cachedGpu >= 0 && cachedGpu <= 100
+          ? cachedGpu
+          : null,
+      };
+    },
+
     // M150: fast native fields are shared in meaning but merged with the
     // selected physical adapter's slow cache.  This is the per-lane entry
     // point used by overlay and multi-device consumers.
@@ -1565,6 +1588,9 @@ export function createMockSysStats(overrides = {}) {
     // query). The mock NEVER returns a null first sample (the
     // determinism pins stay - no GetSystemTimes baseline tick here).
     async sampleFast() { return sampleOf(); },
+    async sampleArcSleepSignals() {
+      return { cpuUtilPct: base.cpuUtilPct, gpuUtilPct: base.gpuUtilPct };
+    },
     async sampleForTarget() { return sampleOf(); },
     async sampleGpuUtilForTarget() { return { gpuUtilPct: base.gpuUtilPct }; },
     registerTarget() {},

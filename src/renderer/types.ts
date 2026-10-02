@@ -797,6 +797,29 @@ export interface AdvancedOverlayState {
   hotkeyRegistered: boolean;
 }
 
+/** Persisted Arc Sleep policy controls. */
+export interface ArcSleepSettings {
+  idleEnabled: boolean;
+  adaptiveEnabled: boolean;
+  idleAfterSeconds: number;
+  idleFps: number;
+  adaptiveMinFps: number;
+  adaptiveMaxFps: number;
+  adaptiveTargetLoadPct: number;
+}
+
+/** Read-only Arc Sleep runtime state returned by arcSleepStateGet(). */
+export interface ArcSleepSnapshot {
+  rtssAvailable: boolean;
+  baseCapFps: number | null;
+  /** Persisted base setting, even when temporarily overlaid by Arc Sleep. */
+  baseFrameLimit: { enabled: boolean; value: number } | null;
+  effectiveCapFps: number | null;
+  policy: 'idle' | 'adaptive' | null;
+  status: 'disabled' | 'ready' | 'idle' | 'adaptive' | 'rtss-unavailable' | 'external-change' | 'recovery-pending' | 'error';
+  message: string | null;
+}
+
 /** Persisted profile-settings envelope (ocOnBoot / activeProfileId / ocMode). */
 export interface ProfileSettingsState {
   waiverAccepted: boolean;
@@ -883,6 +906,9 @@ export interface ProfileSettingsState {
   advancedOverlayEnabled: boolean;
   advancedOverlayHotkeyLetter: string;
   advancedOverlayPosition: 'left' | 'right';
+  arcSleep: ArcSleepSettings;
+  /** Static Graphics-tab FPS cap retained underneath Arc Sleep's dynamic target. */
+  arcSleepFrameLimitBase: { enabled: boolean; value: number } | null;
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */

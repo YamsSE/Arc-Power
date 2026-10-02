@@ -2,7 +2,7 @@
 // all handler logic live in ipc-core.js (electron-free, unit-testable); this
 // module only binds the map to ipcMain.handle.
 
-import { app, ipcMain } from 'electron';
+import { app, ipcMain, powerMonitor } from 'electron';
 import { createIpcHandlers, assertNoPayload, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, RECORDING_SETTINGS_CHANNEL, RECORDING_PILL_SETTINGS_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL, OC_MODE_UPDATED_CHANNEL } from './ipc-core.js';
 import { createDriverInfo } from './driver-info.js';
 import { createRegistryCatalog, REGISTRY_CATALOG } from './registry-catalog.js';
@@ -15,6 +15,7 @@ import { createGameTuningController } from './game-tuning.js';
 import { createRtssStartup } from './rtss-startup.js';
 import { createIntelDriverDownloadService } from './intel-driver-download.js';
 import { createIntelDriverUpdateService } from './intel-driver-update.js';
+import { createArcSleepController } from './arc-sleep-controller.js';
 
 /**
  * Register every whitelisted handler on ipcMain. Returns a teardown that
@@ -91,6 +92,21 @@ import { createIntelDriverUpdateService } from './intel-driver-update.js';
  * @returns {() => Promise<void>}
  */
 export function registerIpc({ backend, store, getWindow, startup = createStartup(), rtssStartup = createRtssStartup(), driverInfo = createDriverInfo(), driverMonitor = null, sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), fpsLane = null, rtssOverlay = null, rtssFrameLimiter = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null, recordingStore = null, recordingCopyFile = async () => false, recordingEngine = null, recordingLifecycle = null, recordingEditor = null, stabilityLab = null, stabilityStore = null, stabilityWorkload = null, overlayLayoutStore = null, obsStream = null, applyOverlayLayout = async () => {}, chooseRecordingDirectory = async () => null, openRecordingFolder = async () => {}, refreshRecordingHotkeys = async () => null, getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }), recordingCaptureTargets = null, onRecordingActionResult = () => {}, onRecordingState = () => {}, getRecordingMemorySavingMode = () => false }) {
+  const arcSleepController = createArcSleepController({
+    store,
+    rtssFrameLimiter,
+    getIdleSeconds: () => {
+      try { return powerMonitor.getSystemIdleTime(); } catch { return null; }
+    },
+    getLoadSignals: async () => {
+      const stats = sysStats && typeof sysStats === 'object' && 'current' in sysStats
+        ? sysStats.current
+        : sysStats;
+      return typeof stats?.sampleArcSleepSignals === 'function'
+        ? stats.sampleArcSleepSignals()
+        : null;
+    },
+  });
   const wheaMonitor = arguments[0]?.wheaMonitor ?? null;
   const intelDriverUpdateService = arguments[0]?.intelDriverUpdateService ?? createIntelDriverUpdateService();
   const intelDriverDownloadService = arguments[0]?.intelDriverDownloadService
@@ -119,6 +135,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     fpsLane,
     rtssOverlay,
     rtssFrameLimiter,
+    arcSleepController,
     foregroundApi,
     memoryUtil,
     sysStats,
@@ -299,7 +316,10 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
           assertNoPayload(args, channel);
           out = await recordingRuntimeRelease(event);
         } else {
-          out = await fn(...args);
+          const invoke = () => fn(...args);
+          out = (channel === 'game-settings-save' || channel === 'game-settings-delete')
+            ? await arcSleepController.withTransaction(invoke)
+            : await invoke();
           if (channel === 'oc-mode-set') ocModeRevision = ++nextOcModeRevision;
         }
       } catch (error) {
@@ -434,6 +454,9 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       return out;
     });
   }
+  void arcSleepController.start().catch((error) => {
+    console.error(`[arc-sleep] startup failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
   // The teardown closes the native RTSS mapping and leaves no provider state
   // behind on app exit.
   const stopFps = () => Promise.all([
@@ -444,6 +467,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
   return async () => {
     unsubscribeRecordingState?.();
     await gameTuning?.stop();
+    await arcSleepController.stop();
     await stopAllTelemetry();
     await stopFps();
     await recordingEngine?.shutdown?.();

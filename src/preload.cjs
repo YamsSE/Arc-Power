@@ -127,6 +127,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   profilesDelete: (id) => ipcRenderer.invoke('profiles-delete', id),
   profilesRename: (id, name) => ipcRenderer.invoke('profiles-rename', id, name),
   profilesSettingsSave: (patch) => ipcRenderer.invoke('profiles-settings-save', patch),
+  arcSleepStateGet: () => ipcRenderer.invoke('arc-sleep-state-get'),
   profilesExport: () => ipcRenderer.invoke('profiles-export'),
   profilesImport: (payload) => ipcRenderer.invoke('profiles-import', payload),
   driverMonitorStatus: () => ipcRenderer.invoke('driver-monitor-status'),

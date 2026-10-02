@@ -43,6 +43,7 @@ import { createMockRtssStartup } from './rtss-startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
+import { normalizeArcSleepSettings } from './arc-sleep-policy.js';
 import { executeApply, withCapabilityFlags, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, tempCapabilityRefusal, tempCapabilityPerControl, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED, ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
 import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_RENDERERS, normalizeMonitorLogMetrics, activeProfileEntries } from './store/profile-store.js';
@@ -1364,6 +1365,9 @@ export function createIpcHandlers({
   // publisher and is deliberately optional: every failed RTSS read/write
   // falls through to the existing IGCL limiter path.
   rtssFrameLimiter = null,
+  // Main-process arbiter for the Graphics base FPS limit and Arc Sleep's
+  // temporary global RTSS cap.
+  arcSleepController = null,
   // M10a: the foreground-window Graphics-API detector (the overlay's FPS-row
   // badge). The DEFAULT is the null-returning detector (tests + mock/
   // ui-verify NEVER run the real koffi probe - the determinism seam:
@@ -2745,8 +2749,16 @@ export function createIpcHandlers({
     if (!useRtss || typeof rtssFrameLimiter?.getFrameLimit !== 'function') {
       return decorateGraphicsState(baseState, null);
     }
+    const arcSleepBase = arcSleepController?.getSnapshot?.()?.baseFrameLimit;
     let rtssState = null;
     try { rtssState = await rtssFrameLimiter.getFrameLimit(); } catch { /* IGCL fallback */ }
+    if (rtssState?.ok === true && arcSleepBase && typeof arcSleepBase.enabled === 'boolean') {
+      rtssState = {
+        ...rtssState,
+        limit: arcSleepBase.enabled === true ? arcSleepBase.value : 0,
+        limiterEnabled: arcSleepBase.enabled === true,
+      };
+    }
     return decorateGraphicsState(baseState, rtssState);
   };
 
@@ -3100,8 +3112,29 @@ export function createIpcHandlers({
       // 'No GPU available.' first, plan-review S3). The backend never
       // throws - the all-false/null state is the honest degrade.
       'graphics:get': async (deviceId) => {
-        assertValidDeviceId(deviceId);
-        return readGraphicsState(deviceId);
+        const read = async () => {
+          assertValidDeviceId(deviceId);
+          return readGraphicsState(deviceId);
+        };
+        return arcSleepController?.withTransaction
+          ? arcSleepController.withTransaction(read)
+          : read();
+      },
+
+      'arc-sleep-state-get': async (...args) => {
+        assertNoPayload(args, 'arc-sleep-state-get');
+        if (!arcSleepController?.withTransaction) {
+          return {
+            rtssAvailable: false,
+            baseCapFps: null,
+            baseFrameLimit: null,
+            effectiveCapFps: null,
+            policy: null,
+            status: 'rtss-unavailable',
+            message: 'Arc Sleep is unavailable in this runtime.',
+          };
+        }
+        return arcSleepController.withTransaction(async (transaction) => transaction.getSnapshot());
       },
 
       // M8: the DEDICATED graphics apply path (plan-review S1 - the OC
@@ -3115,6 +3148,7 @@ export function createIpcHandlers({
       // envelope is { ok, perControl, graphicsState } with the FRESH
       // getGraphicsSettings read-back for the page's per-control refresh.
       'graphics:apply': async (deviceId, payload) => {
+        const apply = async (arcSleepTransaction = null) => {
         assertValidDeviceId(deviceId);
         const target = await backend.getDeviceTarget?.(deviceId);
         const baseGraphicsState = await backend.getGraphicsSettings(deviceId);
@@ -3135,7 +3169,9 @@ export function createIpcHandlers({
         }
         let settingsForDriver = { ...settings };
         const rtssApply = Object.prototype.hasOwnProperty.call(settings, 'frameLimit')
-          ? await applyRtssFrameLimit(settings.frameLimit)
+          ? (typeof arcSleepTransaction?.setBaseFrameLimit === 'function'
+            ? await arcSleepTransaction.setBaseFrameLimit(settings.frameLimit)
+            : await applyRtssFrameLimit(settings.frameLimit))
           : null;
         if (rtssApply?.handled === false && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
           // RTSS may expose a wider 1-1000 range than the Intel driver. If a
@@ -3168,7 +3204,9 @@ export function createIpcHandlers({
         }
         const rtssRollback = driverOut?.ok === true
           ? { ok: true }
-          : await rollbackRtssFrameLimit(rtssApply);
+          : (typeof rtssApply?.rollback === 'function'
+            ? await rtssApply.rollback()
+            : await rollbackRtssFrameLimit(rtssApply));
         let graphicsState = null;
         try { graphicsState = await readGraphicsState(deviceId, { useRtss: rtssApply?.handled !== false }); } catch { /* degraded */ }
         const perControl = { ...(driverOut?.perControl ?? {}) };
@@ -3196,6 +3234,10 @@ export function createIpcHandlers({
           throw new Error(`${driverError instanceof Error ? driverError.message : String(driverError)}. ${rollbackMessage}`);
         }
         return { ok: driverOut?.ok === true && rtssRollback.ok === true, perControl, graphicsState };
+        };
+        return arcSleepController?.withTransaction
+          ? arcSleepController.withTransaction(apply)
+          : apply();
       },
 
       // M10b (the Graphics "Display" view): the display-output surface.
@@ -5042,6 +5084,9 @@ export function createIpcHandlers({
           closeToTray: patch.closeToTray === undefined
             ? cur.closeToTray
             : patch.closeToTray === true,
+          arcSleep: normalizeArcSleepSettings(patch.arcSleep === undefined
+            ? cur.arcSleep
+            : { ...(cur.arcSleep ?? {}), ...(patch.arcSleep && typeof patch.arcSleep === 'object' ? patch.arcSleep : {}) }),
           // M4-D2: the Monitoring "Log to file" toggle (same rule).
           monitorLogToFile: patch.monitorLogToFile === undefined
             ? cur.monitorLogToFile
@@ -5247,7 +5292,11 @@ export function createIpcHandlers({
           // after the intent is persisted so the renderer can show an honest
           // error and mismatch state.
         }
-        await store.saveSettings(next);
+        if (patch.arcSleep !== undefined && typeof store.saveSettingsWithArcSleep === 'function') {
+          await store.saveSettingsWithArcSleep(next, next.arcSleep);
+        } else {
+          await store.saveSettings(next);
+        }
         if (patch.memorySavingMode !== undefined && next.memorySavingMode !== cur.memorySavingMode) {
           try {
             await onRecordingMemorySavingSettings(next.memorySavingMode);
@@ -5340,7 +5389,15 @@ export function createIpcHandlers({
         }
         return next;
         };
-        return queueSettingsSave(save);
+        const queuedSave = () => queueSettingsSave(save);
+        if (patch?.arcSleep !== undefined && arcSleepController?.withTransaction) {
+          return arcSleepController.withTransaction(async (transaction) => {
+            const result = await queuedSave();
+            await transaction.setSettings(result.arcSleep);
+            return result;
+          });
+        }
+        return queuedSave();
       },
 
       // M3-C-E/M157: the OC mode is persisted per physical GPU. The scalar

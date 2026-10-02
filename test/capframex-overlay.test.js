@@ -207,6 +207,73 @@ test('ProfileStore retains two and three modifier overlay shortcuts after reload
   }
 });
 
+test('Arc Sleep settings and FPS base survive generic settings saves', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-power-arc-sleep-store-'));
+  try {
+    const store = new ProfileStore({ dir });
+    const defaults = await store.loadSettings();
+    const staleSettings = {
+      ...defaults,
+      arcSleep: {
+        idleEnabled: false,
+        adaptiveEnabled: false,
+        idleAfterSeconds: 60,
+        idleFps: 90,
+        adaptiveMinFps: 60,
+        adaptiveMaxFps: 144,
+        adaptiveTargetLoadPct: 85,
+      },
+      arcSleepFrameLimitBase: { enabled: false, value: 60 },
+      arcSleepJournal: null,
+    };
+    await Promise.all([store.saveArcSleepState({
+      arcSleep: {
+        idleEnabled: true,
+        adaptiveEnabled: true,
+        idleAfterSeconds: 900,
+        idleFps: 25,
+        adaptiveMinFps: 45,
+        adaptiveMaxFps: 180,
+        adaptiveTargetLoadPct: 92,
+      },
+      arcSleepFrameLimitBase: { enabled: true, value: 2400 },
+      arcSleepPendingBaseDisable: true,
+      arcSleepPendingBaseDisableExpected: { limit: 120, denominator: 1, limiterEnabled: true },
+      arcSleepJournal: {
+        version: 1,
+        baseline: { limit: 60, denominator: 1, limiterEnabled: true },
+        expected: { limit: 30, denominator: 1, limiterEnabled: true },
+      },
+    }), store.saveSettings({ ...staleSettings, theme: 'midnight' })]);
+    const loaded = await store.loadSettings();
+    assert.deepEqual(loaded.arcSleep, {
+      idleEnabled: true,
+      adaptiveEnabled: true,
+      idleAfterSeconds: 900,
+      idleFps: 25,
+      adaptiveMinFps: 45,
+      adaptiveMaxFps: 180,
+      adaptiveTargetLoadPct: 92,
+    });
+    assert.deepEqual(loaded.arcSleepFrameLimitBase, { enabled: true, value: 1000 });
+    assert.equal(loaded.arcSleepPendingBaseDisable, true);
+    assert.deepEqual(loaded.arcSleepPendingBaseDisableExpected, { limit: 120, denominator: 1, limiterEnabled: true });
+    assert.deepEqual(loaded.arcSleepJournal.expected, { limit: 30, denominator: 1, limiterEnabled: true });
+    await store.saveSettingsWithArcSleep(staleSettings, { adaptiveEnabled: false });
+    const updated = await store.loadSettings();
+    assert.equal(updated.arcSleep.idleEnabled, true);
+    assert.equal(updated.arcSleep.adaptiveEnabled, false);
+    assert.deepEqual(updated.arcSleepFrameLimitBase, { enabled: true, value: 1000 });
+    assert.deepEqual(updated.arcSleepJournal.expected, { limit: 30, denominator: 1, limiterEnabled: true });
+    await store.saveArcSleepState({ arcSleepFrameLimitBase: { enabled: true, value: 1 } });
+    assert.deepEqual((await store.loadSettings()).arcSleepFrameLimitBase, { enabled: true, value: 1 });
+    await store.saveArcSleepState({ arcSleepFrameLimitBase: null });
+    assert.equal((await store.loadSettings()).arcSleepFrameLimitBase, null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function loadAdvancedOverlayFactory() {
   const source = read('src/main/advanced-overlay.js')
     .replace(/^import .*\r?\n/gm, '')

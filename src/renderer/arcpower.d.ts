@@ -7,6 +7,7 @@ import type {
   ApplyResponse,
   AdvancedOverlaySettings,
   AdvancedOverlayState,
+  ArcSleepSnapshot,
   Capabilities,
   DeviceInfo,
   DeviceState,
@@ -274,6 +275,8 @@ export interface ArcPowerApi {
   profilesDelete(id: string): Promise<ProfilesEnvelope>;
   profilesRename(id: string, name: string): Promise<ProfilesEnvelope>;
   profilesSettingsSave(patch: Partial<ProfileSettingsState>): Promise<ProfileSettingsState>;
+  /** Read the current Arc Sleep limiter and policy status. */
+  arcSleepStateGet(): Promise<ArcSleepSnapshot | null>;
   profilesExport(): Promise<Record<string, unknown>>;
   profilesImport(payload: Record<string, unknown>): Promise<ProfilesEnvelope & { imported: number }>;
   driverMonitorStatus(): Promise<{ schemaVersion: number; observations: Record<string, unknown> }>;

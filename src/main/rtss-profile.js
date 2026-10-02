@@ -108,17 +108,65 @@ function readLimiterFlags(api) {
 }
 
 function setLimiterEnabled(api, enabled) {
-  const current = readLimiterFlags(api);
-  if (current === null) return false;
-  const disabled = (current & RTSS_LIMITER_DISABLED_FLAG) !== 0;
   const shouldDisable = enabled !== true;
-  if (disabled === shouldDisable) return true;
   try {
-    const next = Number(api.setFlags(0xFFFFFFFF, RTSS_LIMITER_DISABLED_FLAG)) >>> 0;
-    return ((next & RTSS_LIMITER_DISABLED_FLAG) !== 0) === shouldDisable;
+    // RTSS SetFlags is an AND/XOR transform. Clear the limiter bit from the
+    // AND mask, then XOR it only when the requested state is disabled. This
+    // sets the bit in one operation and preserves every unrelated RTSS flag.
+    const andMask = (~RTSS_LIMITER_DISABLED_FLAG) >>> 0;
+    const xorMask = shouldDisable ? RTSS_LIMITER_DISABLED_FLAG : 0;
+    api.setFlags(andMask, xorMask);
+    // The mutating call's return-value semantics are not consistent across
+    // RTSS builds; verify with the no-op flags read instead.
+    const observed = readLimiterFlags(api);
+    return observed !== null
+      && ((observed & RTSS_LIMITER_DISABLED_FLAG) !== 0) === shouldDisable;
   } catch {
     return false;
   }
+}
+
+function hasConfiguredGameFrameLimit(api) {
+  const profiles = enumerateProfiles(api);
+  // If RTSS cannot enumerate profiles, do not turn off its shared limiter bit:
+  // saved per-game caps may still depend on it.
+  if (profiles === null) return true;
+  try {
+    for (const profile of profiles) {
+      if (!profile || profile === RTSS_GLOBAL_PROFILE) continue;
+      api.loadProfile(profile);
+      const limit = readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY);
+      if (limit !== null && limit > 0) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  } finally {
+    try { api.loadProfile(RTSS_GLOBAL_PROFILE); } catch { /* Best-effort profile cursor reset. */ }
+  }
+}
+
+function isRawFrameLimitState(value) {
+  return value && typeof value === 'object'
+    && Number.isInteger(value.limit) && value.limit >= 0 && value.limit <= 0xFFFFFFFF
+    && Number.isInteger(value.denominator) && value.denominator >= 0 && value.denominator <= 0xFFFFFFFF
+    && typeof value.limiterEnabled === 'boolean';
+}
+
+function readGlobalFrameLimitState(api) {
+  api.loadProfile(RTSS_GLOBAL_PROFILE);
+  const limit = readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY);
+  const denominator = readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY);
+  const flags = readLimiterFlags(api);
+  if (limit === null || denominator === null || flags === null) return null;
+  return { limit, denominator, limiterEnabled: (flags & RTSS_LIMITER_DISABLED_FLAG) === 0 };
+}
+
+function sameRawFrameLimitState(left, right) {
+  return isRawFrameLimitState(left) && isRawFrameLimitState(right)
+    && left.limit === right.limit
+    && left.denominator === right.denominator
+    && left.limiterEnabled === right.limiterEnabled;
 }
 
 function cloneState(state) {
@@ -334,7 +382,7 @@ export function createRtssProfileController({
     }
   };
 
-  const applyFrameLimitNow = async ({ enabled = false, value = RTSS_FRAME_LIMIT_RANGE.default, executablePath: targetExecutablePath = null, removeProfile = false, rollbackToken = null } = {}) => {
+  const applyFrameLimitNow = async ({ enabled = false, value = RTSS_FRAME_LIMIT_RANGE.default, executablePath: targetExecutablePath = null, removeProfile = false, rollbackToken = null, expectedState = null } = {}) => {
     const unavailable = await frameLimiterAvailability();
     if (unavailable) return { ...unavailable, used: false, fallback: true };
     const api = bindings ?? await resolveBindings();
@@ -342,6 +390,17 @@ export function createRtssProfileController({
       return { ok: false, used: false, fallback: true, source: 'igcl', error: 'RTSS frame limiter is unavailable' };
     }
     const profile = profileNameOf(targetExecutablePath);
+    if (expectedState !== null) {
+      if (profile !== RTSS_GLOBAL_PROFILE || !isRawFrameLimitState(expectedState)) {
+        return { ok: false, used: false, conflict: false, errorCode: 'invalid-state', error: 'Conditional RTSS frame-limit updates require a valid global expectedState' };
+      }
+      let observedState = null;
+      try { observedState = readGlobalFrameLimitState(api); } catch { /* Report the unavailable read without writing. */ }
+      if (!observedState) return { ok: false, used: false, conflict: false, errorCode: 'unavailable', error: 'RTSS global frame-limit state could not be read' };
+      if (!sameRawFrameLimitState(observedState, expectedState)) {
+        return { ok: false, used: false, conflict: true, errorCode: 'external-change', observedState, expectedState: { ...expectedState }, error: 'RTSS global frame-limit state changed outside Arc Power' };
+      }
+    }
     const requestedLimit = enabled === true
       ? Math.min(RTSS_FRAME_LIMIT_RANGE.max, Math.max(RTSS_FRAME_LIMIT_RANGE.min, Math.round(Number(value) || RTSS_FRAME_LIMIT_RANGE.default)))
       : 0;
@@ -610,6 +669,7 @@ export function createRtssProfileController({
           enabled: false,
             value: 0,
             changed,
+            observedState: readGlobalFrameLimitState(api),
             restoreToken: buildRestoreToken(
               readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY),
               readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY),
@@ -697,6 +757,104 @@ export function createRtssProfileController({
         ...(frameLimitSnapshots.has(profile) ? { rollbackToken: { profile, ...frameLimitSnapshots.get(profile) } } : {}),
         error: cause instanceof Error ? cause.message : String(cause),
       };
+    }
+  };
+
+  const restoreFrameLimitStateNow = async ({ expectedState, state: targetState, retainOwnership = false } = {}) => {
+    if (!isRawFrameLimitState(expectedState) || !isRawFrameLimitState(targetState)) {
+      return { ok: false, used: false, conflict: false, errorCode: 'invalid-state', error: 'A valid expectedState and state are required' };
+    }
+    const unavailable = await frameLimiterAvailability();
+    if (unavailable) return { ...unavailable, used: false, errorCode: 'unavailable' };
+    const api = bindings ?? await resolveBindings();
+    if (!api || typeof api.setFlags !== 'function') {
+      return { ok: false, used: false, errorCode: 'unavailable', error: 'RTSS frame limiter is unavailable' };
+    }
+    try {
+      const observedState = readGlobalFrameLimitState(api);
+      if (!observedState) return { ok: false, used: false, errorCode: 'unavailable', error: 'RTSS global frame-limit state could not be read' };
+      if (!sameRawFrameLimitState(observedState, expectedState)) {
+        return { ok: false, used: false, conflict: true, errorCode: 'external-change', observedState, expectedState: { ...expectedState }, error: 'RTSS global frame-limit state changed outside Arc Power' };
+      }
+
+      // Enumerating saved game caps switches RTSS profile context. Do this
+      // before editing the global profile, because LoadProfile may discard
+      // unsaved changes in the current profile. Re-read afterward so changes
+      // made by another RTSS client during the scan still stop recovery.
+      const hasActiveGameProfile = [...activeFrameLimitProfiles].some((profile) => profile !== RTSS_GLOBAL_PROFILE);
+      const hasPersistedGameProfile = targetState.limiterEnabled === false
+        && !hasActiveGameProfile
+        && hasConfiguredGameFrameLimit(api);
+      const observedAfterProfileScan = readGlobalFrameLimitState(api);
+      if (!observedAfterProfileScan) return { ok: false, used: false, errorCode: 'unavailable', error: 'RTSS global frame-limit state could not be read after profile scan' };
+      if (!sameRawFrameLimitState(observedAfterProfileScan, expectedState)) {
+        return { ok: false, used: false, conflict: true, errorCode: 'external-change', observedState: observedAfterProfileScan, expectedState: { ...expectedState }, error: 'RTSS global frame-limit state changed outside Arc Power' };
+      }
+
+      let changed = false;
+      if (observedState.limit !== targetState.limit) {
+        if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, targetState.limit)
+          || readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY) !== targetState.limit) {
+          throw new Error('RTSS FramerateLimit recovery could not be verified');
+        }
+        changed = true;
+      }
+      if (observedState.denominator !== targetState.denominator) {
+        if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY, targetState.denominator)
+          || readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY) !== targetState.denominator) {
+          throw new Error('RTSS FramerateLimitDenominator recovery could not be verified');
+        }
+        changed = true;
+      }
+      // Persist global field edits before any readback helper reloads the
+      // profile. Some RTSS implementations discard unsaved profile state on
+      // LoadProfile, including a reload of the same profile.
+      if (changed) api.saveProfile(RTSS_GLOBAL_PROFILE);
+
+      const preserveSharedFlag = targetState.limiterEnabled === false
+        && (hasActiveGameProfile || hasPersistedGameProfile);
+      const desiredEnabled = preserveSharedFlag ? true : targetState.limiterEnabled;
+      const flagChanged = observedState.limiterEnabled !== desiredEnabled;
+      if (!setLimiterEnabled(api, desiredEnabled)) throw new Error('RTSS limiter flag recovery could not be verified');
+      const finalState = readGlobalFrameLimitState(api);
+      const expectedFinal = { ...targetState, limiterEnabled: desiredEnabled };
+      if (!sameRawFrameLimitState(finalState, expectedFinal)) throw new Error('RTSS global frame-limit recovery read-back did not match');
+      if (changed || flagChanged) api.updateProfiles();
+
+      // A transient overlay can release back to an enabled Graphics base cap.
+      // In that case keep the original pre-Arc Power snapshot, but move its
+      // desired values to the now-restored base so a later disable is safe.
+      const retainedGlobalOwner = retainOwnership === true
+        && targetState.limiterEnabled === true
+        && targetState.limit > 0
+        && frameLimitSnapshots.has(RTSS_GLOBAL_PROFILE);
+      if (retainedGlobalOwner) {
+        const snapshot = frameLimitSnapshots.get(RTSS_GLOBAL_PROFILE);
+        snapshot.desiredLimit = targetState.limit;
+        snapshot.desiredDenominator = targetState.denominator;
+        activeFrameLimitProfiles.add(RTSS_GLOBAL_PROFILE);
+      } else {
+        // Drop only the global profile's Arc Power ownership. Game profiles
+        // may still own the shared limiter flag and keep its snapshot.
+        frameLimitSnapshots.delete(RTSS_GLOBAL_PROFILE);
+        activeFrameLimitProfiles.delete(RTSS_GLOBAL_PROFILE);
+      }
+      if (!preserveSharedFlag && !retainedGlobalOwner && activeFrameLimitProfiles.size === 0) limiterFlagSnapshot = null;
+      return {
+        ok: true,
+        used: true,
+        source: 'rtss',
+        restored: true,
+        changed,
+        flagRestored: !preserveSharedFlag,
+        ...(retainedGlobalOwner ? { ownershipRetained: true } : {}),
+        ...(preserveSharedFlag ? { flagRestorationDeferred: true } : {}),
+        observedState: finalState,
+      };
+    } catch (cause) {
+      let observedState = null;
+      try { observedState = readGlobalFrameLimitState(api); } catch { /* Keep the primary recovery failure diagnostic. */ }
+      return { ok: false, used: false, conflict: false, errorCode: 'restore-failed', observedState, error: cause instanceof Error ? cause.message : String(cause) };
     }
   };
 
@@ -912,11 +1070,65 @@ export function createRtssProfileController({
     return next;
   };
 
+  const restoreFrameLimitState = (options = {}) => {
+    const next = queue.catch(() => {}).then(() => restoreFrameLimitStateNow(options));
+    queue = next.catch(() => {});
+    return next;
+  };
+
+  const getFrameLimitOwnershipNow = async () => {
+    const unavailable = await frameLimiterAvailability();
+    if (unavailable) return { ...unavailable, errorCode: 'unavailable' };
+    const api = bindings ?? await resolveBindings();
+    if (!api || typeof api.setFlags !== 'function') {
+      return { ok: false, errorCode: 'unavailable', error: 'RTSS frame limiter is unavailable' };
+    }
+    try {
+      const current = readGlobalFrameLimitState(api);
+      if (!current) return { ok: false, errorCode: 'unavailable', error: 'RTSS global frame-limit state could not be read' };
+      const snapshot = frameLimitSnapshots.get(RTSS_GLOBAL_PROFILE);
+      const underlay = {
+        limit: snapshot?.previousLimit ?? current.limit,
+        denominator: snapshot?.previousDenominator ?? current.denominator,
+        limiterEnabled: typeof limiterFlagSnapshot?.previousEnabled === 'boolean'
+          ? limiterFlagSnapshot.previousEnabled
+          : current.limiterEnabled,
+      };
+      const snapshotOwnsCurrent = Boolean(snapshot)
+        && current.limit === snapshot.desiredLimit
+        && (snapshot.desiredDenominator === null || current.denominator === snapshot.desiredDenominator);
+      const disableState = snapshot
+        ? {
+            limit: snapshotOwnsCurrent && snapshot.previousLimit !== null ? snapshot.previousLimit : current.limit,
+            denominator: snapshotOwnsCurrent && snapshot.previousDenominator !== null
+              ? snapshot.previousDenominator
+              : current.denominator,
+            limiterEnabled: underlay.limiterEnabled,
+          }
+        : {
+            limit: 0,
+            denominator: current.denominator === 0 ? 0 : 1,
+            limiterEnabled: current.limiterEnabled,
+          };
+      return { ok: true, state: current, underlay, disableState };
+    } catch (cause) {
+      return { ok: false, errorCode: 'unavailable', error: cause instanceof Error ? cause.message : String(cause) };
+    }
+  };
+
+  const getFrameLimitOwnership = () => {
+    const next = queue.catch(() => {}).then(() => getFrameLimitOwnershipNow());
+    queue = next.catch(() => {});
+    return next;
+  };
+
   return {
     apply,
     getFrameLimit,
+    getFrameLimitOwnership,
     applyFrameLimit,
     restoreFrameLimit,
+    restoreFrameLimitState,
     getState: () => cloneState({ ...state, dllPath: loadedPath }),
   };
 }

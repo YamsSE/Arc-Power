@@ -7258,6 +7258,24 @@ export async function runSyntheticOsVerify(win) {
   }
   step('inventory', `M30 synthetic OS: one read-only ${nvidia ? 'NVIDIA' : 'AMD'} OS controller is exposed as device ${devices[0].id}`);
 
+  // Arc Sleep belongs to the top-level Graphics page and must render before
+  // the no-Intel device guard, even when Windows exposes a non-Intel GPU.
+  await js(`location.hash = '#/graphics'`);
+  if (!(await waitFor(win, `!!document.querySelector('[data-control="arcSleep"]')`, 5000))) {
+    fail('Arc Sleep is missing from the top-level Graphics tab on the no-Intel path');
+  }
+  const arcSleepText = await js(`document.querySelector('[data-control="arcSleep"]')?.textContent ?? ''`);
+  if (!arcSleepText.includes('Idle Cap') || !arcSleepText.includes('Load Adaptive')) {
+    fail(`Arc Sleep controls are incomplete on the no-Intel Graphics tab: '${arcSleepText}'`);
+  }
+  const graphicsSubtitle = await js(`document.querySelector('.page-subtitle')?.textContent?.trim() ?? ''`);
+  if (graphicsSubtitle !== 'No GPU available.') {
+    fail(`Graphics page reads '${graphicsSubtitle}' on the no-Intel path (expected 'No GPU available.')`);
+  }
+  const gNull = await js(`(async () => { try { await window.arcPower.graphicsGet(null); return 'accepted'; } catch (e) { return 'rejected'; } })()`);
+  if (gNull !== 'rejected') fail(`graphics:get(null) must be rejected in main (assertValidDeviceId), got '${gNull}'`);
+  step('m8-no-intel', `Arc Sleep Idle Cap and Load Adaptive render on the top-level Graphics tab; no Intel device remains on the honest no-GPU state`);
+
   await js(`location.hash = '#/dashboard'`);
   if (!(await waitFor(win, `(document.querySelector('.gpu-name')?.textContent ?? '').trim() === '${expectedName}'`, 10000))) {
     fail(`M30 synthetic OS: header GPU name is '${await js(`document.querySelector('.gpu-name')?.textContent ?? ''`)}' (expected '${expectedName}')`);
@@ -7665,11 +7683,18 @@ export async function runNoIntelVerify(win) {
   if ((await js(`document.body.textContent`)).includes('Loading graphics capabilities')) {
     fail('M8: the Graphics page shows the loading text on no-Intel (no graphics:get fetch can ever land - the guard renders first)');
   }
+  if (!(await waitFor(win, `!!document.querySelector('[data-control="arcSleep"]')`, 5000))) {
+    fail('Arc Sleep is missing from the top-level Graphics tab on the no-Intel path');
+  }
+  const arcSleepText = await js(`document.querySelector('[data-control="arcSleep"]')?.textContent ?? ''`);
+  if (!arcSleepText.includes('Idle Cap') || !arcSleepText.includes('Load Adaptive')) {
+    fail(`Arc Sleep controls are incomplete on the no-Intel Graphics tab: '${arcSleepText}'`);
+  }
   // The renderer must never even TRY: graphics:get with a null deviceId is
   // rejected in main (assertValidDeviceId) - the honest channel contract.
   const gNull = await js(`(async () => { try { await window.arcPower.graphicsGet(null); return 'accepted'; } catch (e) { return 'rejected'; } })()`);
   if (gNull !== 'rejected') fail(`M8: graphics:get(null) must be rejected in main (assertValidDeviceId), got '${gNull}'`);
-  step('m8-no-intel', `M8: the Graphics tab on no-Intel shows 'No GPU available.' (never 'Loading graphics capabilities…'); graphics:get(null) rejects in main (assertValidDeviceId)`);
+  step('m8-no-intel', `M8: no-Intel shows 'No GPU available.' while the top-level Graphics tab still exposes Arc Sleep Idle Cap and Load Adaptive; graphics:get(null) rejects in main (assertValidDeviceId)`);
 
   // --- 8. NO waiver modal and NO toast anywhere -----------------------------
   await js(`location.hash = '#/dashboard'`);

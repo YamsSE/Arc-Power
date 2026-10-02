@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
+import { createArcSleepController } from '../src/main/arc-sleep-controller.js';
 
-function createGraphicsHandlers({ rtssFrameLimiter, applyRunner }) {
+function createGraphicsHandlers({ rtssFrameLimiter, applyRunner, arcSleepController }) {
   const target = { id: 0, deviceKey: 'pci:arc-b580-test', synthetic: false, backendKind: 'igcl' };
   const backend = {
     async getDeviceTarget() { return target; },
@@ -19,6 +20,7 @@ function createGraphicsHandlers({ rtssFrameLimiter, applyRunner }) {
     store: { loadSettings: async () => ({}), saveSettings: async (settings) => settings },
     emit: () => {},
     rtssFrameLimiter,
+    arcSleepController,
     applyRunner,
   }).handlers;
 }
@@ -117,4 +119,79 @@ test('graphics apply rolls RTSS back when the isolated driver apply throws', asy
     /driver worker failed.*rolled back/,
   );
   assert.equal(restored, 1);
+});
+
+test('graphics apply holds the Arc Sleep transaction through driver failure and rollback', async () => {
+  const events = [];
+  let lowLevelRestores = 0;
+  const handlers = createGraphicsHandlers({
+    rtssFrameLimiter: {
+      async getFrameLimit() { return { ok: true, limit: 60, denominator: 1, limiterEnabled: false }; },
+      async restoreFrameLimit() { lowLevelRestores += 1; return { ok: true }; },
+    },
+    arcSleepController: {
+      async withTransaction(work) {
+        events.push('lock');
+        const result = await work({
+          getSnapshot: () => ({ baseFrameLimit: { enabled: false, value: 60 } }),
+          async setBaseFrameLimit(value) {
+            events.push(`base:${value.value}`);
+            return {
+              handled: true,
+              ok: true,
+              perControl: { frameLimit: { ok: true, source: 'rtss' } },
+              async rollback() { events.push('rollback'); return { ok: true }; },
+            };
+          },
+        });
+        events.push('unlock');
+        return result;
+      },
+    },
+    applyRunner: {
+      async graphicsApplyIsolated() {
+        events.push('driver');
+        return { ok: false, perControl: { lowLatency: { ok: false, errorCode: 'driver-failed' } } };
+      },
+    },
+  });
+
+  const result = await handlers['graphics:apply'](0, {
+    frameLimit: { enabled: true, value: 144 },
+    lowLatency: 'on',
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(events, ['lock', 'base:144', 'driver', 'rollback', 'unlock']);
+  assert.equal(lowLevelRestores, 0, 'the controller owns exact-state rollback');
+});
+
+test('failed IGCL apply rolls back the saved Arc Sleep base when RTSS is unavailable', async () => {
+  let saved = {
+    arcSleep: {},
+    arcSleepFrameLimitBase: { enabled: true, value: 120 },
+    arcSleepJournal: null,
+  };
+  const store = {
+    async loadSettings() { return structuredClone(saved); },
+    async saveArcSleepState(patch) { saved = { ...saved, ...structuredClone(patch) }; },
+  };
+  const rtssFrameLimiter = {
+    async getFrameLimit() { return { ok: false, available: false, error: 'RTSS is unavailable' }; },
+  };
+  const arcSleepController = createArcSleepController({ store, rtssFrameLimiter });
+  const handlers = createGraphicsHandlers({
+    rtssFrameLimiter,
+    arcSleepController,
+    applyRunner: {
+      async graphicsApplyIsolated() {
+        return { ok: false, perControl: { frameLimit: { ok: false, errorCode: 'driver-failed' } } };
+      },
+    },
+  });
+
+  const result = await handlers['graphics:apply'](0, { frameLimit: { enabled: false, value: 120 } });
+  assert.equal(result.ok, false);
+  assert.deepEqual(saved.arcSleepFrameLimitBase, { enabled: true, value: 120 });
+  await arcSleepController.stop();
 });
