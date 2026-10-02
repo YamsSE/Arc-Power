@@ -2076,7 +2076,7 @@ function renderGraphicsCards(view: HTMLElement): void {
         const defaultValue = documentedDefault && options.includes(documentedDefault) ? documentedDefault : options[0];
         if (defaultValue) {
           (graphicsDraft as Record<string, unknown>)[key] = defaultValue;
-          const select = view.querySelector<DropdownElement>('[data-graphics-select="' + key + '"]');
+          const select = view.querySelector<DropdownElement>('[data-graphics-select="' + CSS.escape(key) + '"]');
           if (select) select.setValue(defaultValue);
         }
       }
@@ -2186,7 +2186,7 @@ function renderGraphicsCards(view: HTMLElement): void {
     }
     for (const key of ['frameGenOverride', 'flipMode', 'lowLatency']) {
       const value = (graphicsDraft as Record<string, unknown>)[key];
-      const select = view.querySelector<DropdownElement>(`[data-graphics-select="${key}"]`);
+      const select = view.querySelector<DropdownElement>('[data-graphics-select="' + CSS.escape(key) + '"]');
       if (select && typeof value === 'string') select.setValue(value);
     }
     const frame = graphicsDraft.frameLimit ?? { enabled: false, value: frameLimitRange(state).default };
