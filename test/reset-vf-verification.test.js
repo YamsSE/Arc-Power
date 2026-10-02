@@ -61,6 +61,17 @@ test('Battlemage reset rereads a transitional LIVE curve without repeating the n
   assert.equal(waits, 1);
 });
 
+for (const deviceName of ['Intel Arc B580', 'Intel Arc B570']) {
+  test(`${deviceName} reset accepts a moving common voltage origin with unchanged native shape`, async () => {
+    let resets = 0;
+    const live = stock.map((point) => ({ ...point, voltageV: point.voltageV + 0.125 }));
+    const state = { gpuFreqOffsetMhz: 0, vfCurveDefault: stock, vfCurve: live };
+    const reset = resetHandler({ state, deviceName, reset: async () => { resets += 1; } });
+    assert.deepEqual(await reset(0), { state });
+    assert.equal(resets, 1);
+  });
+}
+
 test('Battlemage reset rejects a different LIVE point and retains scalar verification', async () => {
   const changedFrequency = stock.map((point) => ({ ...point }));
   changedFrequency[1].freqMhz += 1;

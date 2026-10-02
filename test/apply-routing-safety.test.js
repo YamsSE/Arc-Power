@@ -218,3 +218,21 @@ test('positive and zero Alchemist requests allow a missing Sysman writer only wh
   assert.equal(positive.result.perControl.gpuVoltOffsetV.ok, true);
   assert.equal(zero.result.perControl.gpuVoltOffsetV.ok, true);
 });
+
+test('Advanced profiles keep VF reference and reset metadata with the post-temperature curve call', async () => {
+ const curve=[{voltageV:.7,freqMhz:1000},{voltageV:.8,freqMhz:2000}];
+ for(const metadata of [{vfCurveBaseline:curve},{vfCurveStockReference:curve},{vfCurveResetToDefault:true}]) {
+  const calls=[];
+  const out=await applySettingsRouted({deviceId:0,settings:{tempLimitC:95,vfCurve:curve,...metadata},mode:'advanced',ranges:{tempLimitC:{units:'C',min:0,max:105}},
+   backend:{async applySettings(_id,settings){calls.push(settings);return {ok:true,perControl:{vfCurve:{ok:true,readBackEqual:true}}};}},
+   oldIgcl:{async setTempLimitC(){calls.push('temperature');return {ok:true,readBackEqual:true};}},sleep:async()=>{}});
+  assert.equal(out.result.ok,true);assert.deepEqual(calls,['temperature',{vfCurve:curve,...metadata}]);
+ }
+});
+
+test('invalid VF metadata rejects Advanced scalar phase before any setter',async()=>{
+ let writes=0;
+ const out=await applySettingsRouted({deviceId:0,settings:{tempLimitC:95,vfCurveStockReference:[]},mode:'advanced',ranges:{tempLimitC:{units:'C',min:0,max:105}},
+ backend:{async applySettings(){writes++;}},oldIgcl:{async setTempLimitC(){writes++;}},sleep:async()=>{}});
+ assert.equal(out.result.ok,false); assert.equal(writes,0);
+});

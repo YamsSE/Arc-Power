@@ -21,16 +21,19 @@
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
+import { currentPage } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
+import { hasScalarCoreOffsets, isExactStockVfCurve, repairLegacyScalarProfile } from '../pure/profile-core-surface.ts';
 import { chipLabelGpu } from '../pure/chip-label.ts';
 import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import { controlDisplay, formatValue } from '../pure/slider.ts';
 import { normalizeBattlemageProfileSettings } from '../pure/profile-compat.ts';
+import { isValidNativeVfCurve } from '../pure/vf-curve.ts';
 import type { AppState } from '../router.ts';
 import type { Capabilities, DeviceInfo, DeviceState, FlipMode, FrameGenOverride, GameCatalogEntry, GameGpuProfile, GameProfileCapabilities, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, RangeInfo, Settings, StartupGetState } from '../types.ts';
 
@@ -218,7 +221,7 @@ export function profileIsActiveOnOtherGpu(profile: Profile, settings: ProfilesEn
  * shipping them in an auto payload would make the profile-load RE-write the
  * table (flipping the mode back to curve) - auto never carries a table.
  */
-export function settingsFromState(state: DeviceState): Settings {
+export function settingsFromState(state: DeviceState, includeVfReference = false): Settings {
   const out: Settings = {};
   const curve = state.fanCurve;
   const flatTableFixed = state.fanMode === 'fixed'
@@ -246,14 +249,85 @@ export function settingsFromState(state: DeviceState): Settings {
   // profile-load RE-write the table (flipping the mode back to curve) -
   // auto never carries a table.
   if (state.fanCurve && state.fanMode !== 'auto') out.fanCurve = state.fanCurve;
-  // Profiles preserve the entire current table, including STOCK. When
-  // reloaded later, the saved curve must be reapplied even if LIVE has since
-  // changed. The Battlemage compatibility path drops conflicting scalar
-  // offsets while retaining these exact points.
-  if (state.vfCurve && state.vfCurve.length >= 2) {
+  // Battlemage scalar offsets and VF curves share one tuning surface, so do
+  // not save its offset-generated LIVE table beside those offsets. The
+  // Alchemist path keeps its historical cached-table behavior.
+  const scalarVfConflict = includeVfReference && hasScalarCoreOffsets(state);
+  if (!scalarVfConflict && state.vfCurve && state.vfCurve.length >= 2
+    && !(includeVfReference && isExactStockVfCurve(state.vfCurve, state.vfCurveDefault))) {
     out.vfCurve = state.vfCurve.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz }));
+    const readableCurve = (points: DeviceState['vfCurveDefault']): boolean => Array.isArray(points) && points.length >= 2
+      && points.every((point, index) => Number.isFinite(point.voltageV) && point.voltageV > 0
+        && Number.isFinite(point.freqMhz) && point.freqMhz >= 0
+        && (index === 0 || (point.voltageV > points[index - 1].voltageV && point.freqMhz >= points[index - 1].freqMhz)));
+    if (includeVfReference && readableCurve(state.vfCurve) && readableCurve(state.vfCurveDefault)
+      && state.vfCurveDefault?.length === state.vfCurve.length) {
+      out.vfCurveStockReference = state.vfCurveDefault.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz }));
+    }
+  }
+  if (includeVfReference && !hasScalarCoreOffsets(state)
+    && isExactStockVfCurve(state.vfCurve, state.vfCurveDefault)) {
+    out.vfCurveProfileStock = true;
   }
   return out;
+}
+
+/** New Battlemage saves require a coherent fresh LIVE/STOCK coordinate pair. */
+export async function captureProfileSettings(ctx: PageContext): Promise<{ settings: Settings; gpu: ReturnType<typeof profileGpuIdentity> } | null> {
+  const initial = ctx.store.get();
+  const gpu = profileGpuIdentity(initial);
+  if (!isBattlemageGpuName(initial.caps?.deviceName ?? '')) {
+    return { settings: settingsFromState(initial.state as DeviceState), gpu };
+  }
+  if (!initial.caps?.controls?.vfCurve && !initial.caps?.vfCurveRange
+    && !initial.state?.vfCurve && !initial.state?.vfCurveDefault
+    && initial.caps?.controlStatus?.vfCurve?.state !== 'runtime-refused') {
+    return { settings: settingsFromState(initial.state as DeviceState), gpu };
+  }
+  const page = currentPage();
+  const pageNode = document.getElementById('page')?.firstElementChild;
+  const contextIsCurrent = (): boolean => {
+    const current = ctx.store.get();
+    return current.deviceId === initial.deviceId && profileGpuIdentity(current).key === gpu.key
+      && currentPage() === page && document.getElementById('page')?.firstElementChild === pageNode;
+  };
+  const range = initial.caps?.vfCurveRange;
+  try {
+    if (initial.deviceId === null) throw new Error('The GPU is unavailable.');
+    let previousCustomPair: string | null = null;
+    // One stale/ambiguous pair may precede the two consecutive custom reads
+    // needed to prove a frequency-only or nonuniform-voltage edit is stable.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const state = await api.getCurrentSettings(initial.deviceId);
+      if (!contextIsCurrent()) return null;
+      if (hasScalarCoreOffsets(state)) return { settings: settingsFromState(state, true), gpu };
+      if (!range) throw new Error('The GPU curve range is unavailable.');
+      if (isValidNativeVfCurve(state.vfCurve, range) && isValidNativeVfCurve(state.vfCurveDefault, range)
+        && state.vfCurve.length === state.vfCurveDefault.length) {
+        if (isExactStockVfCurve(state.vfCurve, state.vfCurveDefault)) {
+          return { settings: settingsFromState(state, true), gpu };
+        }
+        const voltageDeltas = state.vfCurve.map((point, index) => point.voltageV - state.vfCurveDefault![index].voltageV);
+        const frequenciesMatchStock = state.vfCurve.every((point, index) => point.freqMhz === state.vfCurveDefault![index].freqMhz);
+        // A uniform voltage translation that is not also a matching STOCK
+        // shape remains ambiguous. A frequency edit or nonuniform voltage
+        // edit is an actual curve change and still needs two identical fresh
+        // pairs before we save it.
+        const uniformVoltageShift = voltageDeltas.every((delta) => Math.abs(delta - voltageDeltas[0]) < 1e-6);
+        if (!frequenciesMatchStock || !uniformVoltageShift) {
+          const pair = JSON.stringify([state.vfCurve, state.vfCurveDefault]);
+          if (pair === previousCustomPair) return { settings: settingsFromState(state, true), gpu };
+          previousCustomPair = pair;
+          continue;
+        }
+      }
+      previousCustomPair = null;
+    }
+    throw new Error('The LIVE and STOCK voltage grids could not be read together. A uniform voltage shift is ambiguous; per-point edits require two stable readings. Refresh the curve and try saving again.');
+  } catch (error) {
+    if (contextIsCurrent()) toast('error', 'Profile save failed', error instanceof Error ? error.message : String(error));
+    return null;
+  }
 }
 
 /**
@@ -286,7 +360,10 @@ function profileSummaryRange(key: string, caps: Capabilities | null, profileDevi
 
 export function settingsSummary(settings: Settings, caps: Capabilities | null, profileDeviceName = caps?.deviceName ?? ''): string[] {
   const out: string[] = [];
-  for (const [key, value] of Object.entries(settings)) {
+  const summarizedSettings = isBattlemageGpuName(profileDeviceName)
+    ? repairLegacyScalarProfile(settings)
+    : settings;
+  for (const [key, value] of Object.entries(summarizedSettings)) {
     if (typeof value !== 'number') continue;
     const compactSigned = (number: number, suffix: string): string => `${number >= 0 ? '+' : ''}${number}${suffix}`;
     const range = profileSummaryRange(key, caps, profileDeviceName);
@@ -311,9 +388,9 @@ export function settingsSummary(settings: Settings, caps: Capabilities | null, p
       out.push(`${CONTROL_LABELS[key] ?? key} ${formatValue(value, units)}`);
     }
   }
-  if (settings.fanCurve) out.push('Fan Curve');
-  else if (settings.fanMode && settings.fanMode !== 'auto') out.push(`Fan ${settings.fanMode}`);
-  if (Array.isArray(settings.vfCurve) && settings.vfCurve.length >= 2) out.push('VF Curve');
+  if (summarizedSettings.fanCurve) out.push('Fan Curve');
+  else if (summarizedSettings.fanMode && summarizedSettings.fanMode !== 'auto') out.push(`Fan ${summarizedSettings.fanMode}`);
+  if (Array.isArray(summarizedSettings.vfCurve) && summarizedSettings.vfCurve.length >= 2) out.push('VF Curve');
   return out;
 }
 
@@ -1066,13 +1143,14 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const onCreate = async (): Promise<void> => {
     const name = await promptModal('Save current settings as new profile', '');
     if (!name) return;
-    const settings = settingsFromState(ctx.store.get().state as DeviceState);
+    const capture = await captureProfileSettings(ctx);
+    if (!capture) return;
+    const { settings, gpu: currentGpu } = capture;
     if (!validateSettingsPayload(settings)) {
       toast('error', 'Could not save profile', 'The settings payload failed validation - this is a bug.');
       return;
     }
     try {
-      const currentGpu = profileGpuIdentity(ctx.store.get());
       await api.profilesSave({ id: newProfileId(), name, settings, ocOnBoot: false, deviceKey: currentGpu.key, deviceName: currentGpu.label });
       toast('success', 'Profile saved', name);
       void api.trayRebuild().catch(() => {});
@@ -1088,7 +1166,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       toast('warn', 'Profile belongs to another GPU', 'Switch to that GPU before overwriting its tuning profile.');
       return;
     }
-    const settings = settingsFromState(ctx.store.get().state as DeviceState);
+    const capture = await captureProfileSettings(ctx);
+    if (!capture) return;
+    const settings = capture.settings;
     if (!validateSettingsPayload(settings)) {
       toast('error', 'Could not save profile', 'The settings payload failed validation - this is a bug.');
       return;

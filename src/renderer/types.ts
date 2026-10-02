@@ -39,6 +39,12 @@ export interface Settings {
   vfCurve?: Array<{ voltageV: number; freqMhz: number }>;
   /** Explicit intent for Reset to default; valid only alongside vfCurve. */
   vfCurveResetToDefault?: boolean;
+  /** Profile-only intent to restore the driver's current Battlemage STOCK
+   *  curve. This stores no custom curve points and is consumed before any
+   *  runtime control routing. */
+  vfCurveProfileStock?: boolean;
+  vfCurveBaseline?: Array<{ voltageV: number; freqMhz: number }>;
+  vfCurveStockReference?: Array<{ voltageV: number; freqMhz: number }>;
   fanMode?: FanMode;
   fanCurve?: Array<{ t: number; speedPct: number }>;
   fixedFanPct?: number;
@@ -179,6 +185,8 @@ export interface PerControlResult {
   driverAdjusted?: boolean;
   /** Exact=false but successful when the driver reports its verified grid-normalized values. */
   normalized?: boolean;
+  /** A previously verified identical request already has this effective LIVE result; no new write was needed. */
+  alreadyActive?: boolean;
   /** The authoritative live VF points reported after a verified apply. */
   readBackCurve?: Array<{ voltageV: number; freqMhz: number }>;
   /** F3: the driver returned SUCCESS but the read-back did not change (silent no-op - must NOT be reported as applied). */

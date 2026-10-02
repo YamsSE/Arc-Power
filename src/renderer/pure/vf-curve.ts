@@ -25,6 +25,29 @@ export interface VfCurveEditorSelection {
 export const VF_EDITOR_MAX_POINTS = 10;
 export const VF_MIN_POINTS = 2;
 
+/** A saved reference may move only by a common voltage translation. */
+export function matchesVfCurveReference(saved: VfCurvePoint[], fresh: VfCurvePoint[]): boolean {
+  if (!Array.isArray(saved) || !Array.isArray(fresh) || saved.length < 2 || saved.length !== fresh.length) return false;
+  const shift = fresh[0]?.voltageV - saved[0]?.voltageV;
+  return Number.isFinite(shift) && saved.every((point, index) => {
+    const other = fresh[index];
+    return Number.isFinite(point?.voltageV) && Number.isFinite(point?.freqMhz)
+      && Number.isFinite(other?.voltageV) && point.freqMhz === other?.freqMhz
+      && (index === 0 || (point.voltageV > saved[index - 1].voltageV
+        && point.freqMhz >= saved[index - 1].freqMhz))
+      && Math.abs(other.voltageV - point.voltageV - shift) <= 1e-9;
+  });
+}
+
+/** Preserve each point's explicit edit while resolving the driver's current origin. */
+export function rebaseVfCurveToReference(requested: VfCurvePoint[], saved: VfCurvePoint[], fresh: VfCurvePoint[], range: VfCurveRange): VfCurvePoint[] | null {
+  if (!matchesVfCurveReference(saved, fresh) || !Array.isArray(requested) || requested.length !== saved.length) return null;
+  return prepareVfCurveForDriver(requested.map((point, index) => ({
+    voltageV: Number((fresh[index].voltageV + point.voltageV - saved[index].voltageV).toFixed(9)),
+    freqMhz: point.freqMhz,
+  })), range);
+}
+
 /** Compare two curves by their native point coordinates and frequencies. */
 export function sameVfCurve(
   left: VfCurvePoint[] | null | undefined,
@@ -305,8 +328,23 @@ export function moveVfPoint(
   voltageV: number,
   freqMhz: number,
   range: VfCurveRange,
+  linkTerminalPlateau = false,
 ): VfCurvePoint[] {
-  return propagateVfPointEdit(points, index, voltageV, freqMhz, range);
+  const next = propagateVfPointEdit(points, index, voltageV, freqMhz, range);
+  if (!linkTerminalPlateau || index < points.length - 2 || index >= points.length
+    || next[index]?.freqMhz === points[index]?.freqMhz) return next;
+  const partner = index === points.length - 1 ? index - 1 : index + 1;
+  return propagateVfPointEdit(next, partner, next[partner].voltageV, next[index].freqMhz, range);
+}
+
+/** Only the native Battlemage STOCK ending plateau defines linked frequency points. */
+export function hasLinkedVfTerminalPlateau(
+  stock: VfCurvePoint[] | null | undefined,
+  range: VfCurveRange,
+  battlemage: boolean,
+): boolean {
+  return battlemage && isValidNativeVfCurve(stock, range)
+    && stock[stock.length - 2].freqMhz === stock[stock.length - 1].freqMhz;
 }
 
 /** Move only a point's frequency, preserving the driver's voltage grid and

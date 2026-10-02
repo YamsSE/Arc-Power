@@ -124,7 +124,7 @@ test('B580 STOCK profile restores its curve before applying saved scalar core of
   assert.equal(offsets.gpuVoltOffset, 25);
 });
 
-test('B580 profile identifies STOCK only after transient first STOCK read settles', async () => {
+test('B580 profile treats the first valid differing STOCK as custom without rebasing', async () => {
   const transient = stock.map((point) => ({ ...point, Voltage: point.Voltage + 50 }));
   const { backend, calls, offsets } = fixture({
     stockReadSequence: [transient, stock, stock, stock, stock, stock],
@@ -135,13 +135,13 @@ test('B580 profile identifies STOCK only after transient first STOCK read settle
     gpuVoltOffsetV: 25,
   }, { profileApply: true });
 
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
   assert.equal(result.perControl.vfCurve.ok, true);
-  assert.deepEqual(calls, ['vf-write', 'frequency-offset', 'voltage-offset']);
-  assert.deepEqual(offsets, { gpuFreqOffset: 75, gpuVoltOffset: 25 });
+  assert.deepEqual(calls, ['vf-write']);
+  assert.deepEqual(offsets, { gpuFreqOffset: 0, gpuVoltOffset: 0 });
 });
 
-test('B580 profile with unstable STOCK preflight refuses the curve and dependent core offsets', async () => {
+test('B580 profile uses valid STOCK snapshots without requiring a quorum', async () => {
   const unstable = Array.from({ length: 5 }, (_, read) => stock.map((point, index) => ({
     ...point,
     Voltage: point.Voltage + read + index + 1,
@@ -153,13 +153,10 @@ test('B580 profile with unstable STOCK preflight refuses the curve and dependent
     gpuVoltOffsetV: 25,
   }, { profileApply: true });
 
-  assert.equal(result.ok, false);
-  assert.equal(result.perControl.vfCurve.ok, false);
-  assert.equal(result.perControl.vfCurve.errorCode, 'readback-unstable');
-  assert.equal(result.perControl.gpuFreqOffsetMhz.errorCode, 'dependency-failed');
-  assert.equal(result.perControl.gpuVoltOffsetV.errorCode, 'dependency-failed');
-  assert.deepEqual(calls, []);
-  assert.deepEqual(offsets, { gpuFreqOffset: 0, gpuVoltOffset: 0 });
+  assert.equal(result.ok, true);
+  assert.equal(result.perControl.vfCurve.ok, true);
+  assert.deepEqual(calls, ['vf-write', 'frequency-offset', 'voltage-offset']);
+  assert.deepEqual(offsets, { gpuFreqOffset: 75, gpuVoltOffset: 25 });
 });
 
 test('B580 STOCK profile leaves existing core offsets untouched when curve apply refuses them', async () => {
@@ -330,6 +327,157 @@ test('routed STOCK profile apply refuses VF and offsets when STOCK identity is u
   assert.equal(out.result.perControl.gpuFreqOffsetMhz.errorCode, 'dependency-failed');
   assert.equal(out.result.perControl.gpuVoltOffsetV.errorCode, 'dependency-failed');
   assert.deepEqual(calls, [], 'routed profile writes stay withheld when STOCK identity is unknown');
+});
+
+test('executeApply repairs an exact legacy scalar curve before splitting extended controls', async () => {
+  const stockReference = [
+    { voltageV: 0.7, freqMhz: 1000 },
+    { voltageV: 0.8, freqMhz: 2000 },
+  ];
+  const backendCalls = [];
+  const extendedCalls = [];
+  const caps = {
+    deviceName: 'Intel Arc B580 Graphics',
+    overclockingSupported: true,
+    extendedRanges: true,
+    controls: { vfCurve: true, gpuFreqOffset: true, gpuVoltOffset: true },
+    controlStatus: { vfCurve: { state: 'available' } },
+    vfCurveRange: {
+      voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 400, freqMaxMhz: 4300,
+      voltageStepV: 0.001, frequencyStepMhz: 1, maxPoints: 32,
+    },
+    ranges: {
+      powerLimitW: { min: 100, max: 130, step: 1, default: 100, units: '%' },
+      tempLimitC: { min: 0, max: 110, step: 1, default: 90, units: 'C' },
+      gpuFreqOffsetMhz: { min: -1000, max: 1000, step: 1, default: 0, units: 'MHz' },
+      gpuVoltOffsetV: { min: -100, max: 100, step: 1, default: 0, units: '%' },
+    },
+  };
+  const backend = {
+    async getCapabilities() { return caps; },
+    async getCurrentSettings() { return {}; },
+    async applySettings(_deviceId, settings) {
+      backendCalls.push(settings);
+      return {
+        ok: true,
+        perControl: Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: true, readBackEqual: true }])),
+      };
+    },
+  };
+  const oldIgcl = {
+    async isCapable() { return true; },
+    async isTempCapable() { return true; },
+    async setTempLimitC(value) { extendedCalls.push(['tempLimitC', value]); return { ok: true, readBackEqual: true }; },
+  };
+  const settings = {
+    powerLimitW: 114,
+    gpuVoltOffsetV: 35,
+    gpuFreqOffsetMhz: 150,
+    tempLimitC: 95,
+    vfCurveStockReference: stockReference,
+    vfCurve: stockReference.map((point) => ({ ...point, freqMhz: point.freqMhz + 150 })),
+  };
+  const out = await executeApply({
+    backend,
+    oldIgcl,
+    deviceId: 0,
+    settings,
+    opts: { profileApply: true },
+    ocMode: 'advanced',
+    sleep: async () => {},
+    delayedVerifyMs: 0,
+  });
+
+  assert.equal(out.result.ok, true);
+  assert.deepEqual(backendCalls, [{ powerLimitW: 114, gpuVoltOffsetV: 35, gpuFreqOffsetMhz: 150 }]);
+  assert.deepEqual(extendedCalls, [['tempLimitC', 95]]);
+  assert.equal(backendCalls.some((payload) => 'vfCurve' in payload), false, 'the legacy VF setter must not receive the baked curve');
+});
+
+test('a STOCK-only profile marker refreshes the driver curve and clears offsets before resetting it', async () => {
+  const stockCurve = [
+    { voltageV: 0.7, freqMhz: 1000 },
+    { voltageV: 0.8, freqMhz: 2000 },
+  ];
+  const backendCalls = [];
+  const caps = {
+    deviceName: 'Intel Arc B580 Graphics', overclockingSupported: true, extendedRanges: true,
+    controls: { vfCurve: true, gpuFreqOffset: true, gpuVoltOffset: true },
+    controlStatus: { vfCurve: { state: 'available' } },
+    vfCurveRange: { voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 400, freqMaxMhz: 4300,
+      voltageStepV: 0.001, frequencyStepMhz: 1, maxPoints: 32 },
+    ranges: {
+      powerLimitW: { min: 100, max: 130, step: 1, default: 100, units: '%' },
+      gpuFreqOffsetMhz: { min: -1000, max: 1000, step: 1, default: 0, units: 'MHz' },
+      gpuVoltOffsetV: { min: -100, max: 100, step: 1, default: 0, units: '%' },
+    },
+  };
+  const backend = {
+    async getCapabilities() { return caps; },
+    async getCurrentSettings() { return { vfCurve: stockCurve, vfCurveDefault: stockCurve }; },
+    async applySettings(_deviceId, settings) {
+      backendCalls.push(settings);
+      return {
+        ok: true,
+        perControl: Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: true, readBackEqual: true }])),
+      };
+    },
+  };
+  const out = await executeApply({
+    backend,
+    oldIgcl: null,
+    deviceId: 0,
+    settings: {
+      powerLimitW: 114,
+      gpuVoltOffsetV: 0,
+      gpuFreqOffsetMhz: 0,
+      vfCurveProfileStock: true,
+    },
+    opts: { profileApply: true },
+    ocMode: 'advanced',
+    sleep: async () => {},
+    delayedVerifyMs: 0,
+  });
+
+  assert.equal(out.result.ok, true);
+  assert.deepEqual(backendCalls[0], { gpuFreqOffsetMhz: 0, gpuVoltOffsetV: 0 },
+    'the active scalar surface is verified clear before VF reset');
+  assert.deepEqual(backendCalls[1], {
+    powerLimitW: 114,
+    gpuVoltOffsetV: 0,
+    gpuFreqOffsetMhz: 0,
+    vfCurve: stockCurve,
+    vfCurveResetToDefault: true,
+  });
+  assert.equal(backendCalls.some((payload) => 'vfCurveProfileStock' in payload), false,
+    'profile metadata never reaches the backend control payload');
+});
+
+test('a STOCK-only profile marker refuses before writes when fresh driver STOCK is unreadable', async () => {
+  const backendCalls = [];
+  const stockCurve = [
+    { voltageV: 0.7, freqMhz: 1000 },
+    { voltageV: 0.8, freqMhz: 2000 },
+  ];
+  const caps = {
+    deviceName: 'Intel Arc B580 Graphics', overclockingSupported: true,
+    controls: { vfCurve: true },
+    vfCurveRange: { voltageMinV: 0.4, voltageMaxV: 1.5, freqMinMhz: 400, freqMaxMhz: 4300,
+      voltageStepV: 0.001, frequencyStepMhz: 1, maxPoints: 32 },
+  };
+  const backend = {
+    async getCapabilities() { return caps; },
+    async getCurrentSettings() { return { vfCurve: stockCurve, vfCurveDefault: null }; },
+    async applySettings(_deviceId, settings) { backendCalls.push(settings); return { ok: true, perControl: {} }; },
+  };
+  const out = await executeApply({
+    backend, oldIgcl: null, deviceId: 0,
+    settings: { gpuVoltOffsetV: 0, gpuFreqOffsetMhz: 0, vfCurveProfileStock: true },
+    opts: { profileApply: true },
+  });
+  assert.equal(out.result.ok, false);
+  assert.equal(out.result.perControl.vfCurve.errorCode, 'readback-unverified');
+  assert.deepEqual(backendCalls, [], 'the rest of the profile is withheld with no trusted STOCK curve');
 });
 
 test('B580 VF writes stop when the LIVE before-image cannot be verified', async () => {

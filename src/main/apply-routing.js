@@ -15,6 +15,10 @@
 // Electron-free - shared by the UI apply path, the tray/boot applies and
 // the elevated apply-worker.
 
+import { validateSettingsPayload } from '../renderer/pure/settings.ts';
+import { isBattlemageGpuName } from '../renderer/pure/hardware-icons.ts';
+import { isValidNativeVfCurve } from '../renderer/pure/vf-curve.ts';
+import { hasScalarCoreOffsets, repairLegacyScalarProfile } from '../renderer/pure/profile-core-surface.ts';
 import { applyOnce } from './apply-once.js';
 import { clampAndSnap, nearlyEqual } from './backend/units.js';
 import { DRIVER_TEMP_LIMIT_MAX_C, EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from './old-igcl.js';
@@ -1130,6 +1134,17 @@ export function isMomentaryLieCandidate(per) {
  * }>}
  */
 export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey = null, physicalTarget = null, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null }) {
+  const intentKeys = ['vfCurveBaseline', 'vfCurveStockReference', 'vfCurveResetToDefault', 'vfCurveProfileStock'];
+  if (settings.vfCurveProfileStock === true) {
+    return { result: { ok: false, perControl: { vfCurve: {
+      ok: false, errorCode: 'invalid-argument', message: 'STOCK profile intent must be resolved before runtime routing.',
+    } }, pl2Note: null }, attempts: 1 };
+  }
+  if (intentKeys.some((key) => key in settings) && !validateSettingsPayload(settings)) {
+    return { result: { ok: false, perControl: Object.fromEntries(Object.keys(settings).filter((key) => !intentKeys.includes(key)).map((key) => [key, {
+      ok: false, errorCode: 'out-of-range', message: 'Invalid VF reference metadata. No settings were written.',
+    }])), pl2Note: null }, attempts: 1 };
+  }
   const negativeAlchemistVoltage = isNegativeAlchemistVoltage(settings, ranges);
   const nonNegativeAlchemistVoltage = isNonNegativeAlchemistVoltage(settings, ranges);
   const zeroAlchemistVoltage = isZeroAlchemistVoltage(settings, ranges);
@@ -1161,7 +1176,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
   // M41: keep fan/VF writes after the extended W/C phase. The driver has
   // different ownership/order rules for those controls in Advanced mode.
   const hasExtendedControls = mode === OC_MODE_ADVANCED && Object.keys(extended).length > 0;
-  const fanKeys = new Set(['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve']);
+  const fanKeys = new Set(['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve', 'vfCurveResetToDefault', 'vfCurveBaseline', 'vfCurveStockReference']);
   const driverstore = {};
   const postFanDriverstore = {};
   for (const [key, value] of Object.entries(allDriverstore)) {
@@ -1746,6 +1761,51 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
     await backend.assertDeviceTarget(deviceId, expectedDeviceKey, physicalTarget);
   }
   const caps = await backend.getCapabilities(deviceId);
+  let profileStockReset = false;
+  if (settings?.vfCurveProfileStock === true) {
+    if (opts.profileApply !== true) {
+      let state = null;
+      try { state = await backend.getCurrentSettings(deviceId); } catch { /* honest null */ }
+      return { result: { ok: false, perControl: { vfCurve: {
+        ok: false, errorCode: 'invalid-argument', message: 'The saved STOCK VF intent is only valid when loading a profile.',
+      } } }, state };
+    }
+    if (!isBattlemageGpuName(caps?.deviceName, caps)) {
+      let state = null;
+      try { state = await backend.getCurrentSettings(deviceId); } catch { /* honest null */ }
+      return { result: { ok: false, perControl: { vfCurve: {
+        ok: false, errorCode: 'unsupported', message: 'This profile requests a Battlemage STOCK VF reset, which this GPU does not support.',
+      } } }, state };
+    }
+    if (hasScalarCoreOffsets(settings)) {
+      let state = null;
+      try { state = await backend.getCurrentSettings(deviceId); } catch { /* honest null */ }
+      return { result: { ok: false, perControl: { vfCurve: {
+        ok: false, errorCode: 'invalid-argument', message: 'A STOCK VF profile cannot include nonzero core offsets.',
+      } } }, state };
+    }
+    let state = null;
+    try { state = await backend.getCurrentSettings(deviceId); } catch { /* honest null */ }
+    if (!isValidNativeVfCurve(state?.vfCurveDefault, caps?.vfCurveRange)) {
+      return { result: { ok: false, perControl: { vfCurve: {
+        ok: false, errorCode: 'readback-unverified', message: 'The driver STOCK VF curve could not be read and verified. No profile settings were written.',
+      } } }, state };
+    }
+    settings = {
+      ...settings,
+      vfCurve: state.vfCurveDefault.map((point) => ({ voltageV: point.voltageV, freqMhz: point.freqMhz })),
+      vfCurveResetToDefault: true,
+    };
+    delete settings.vfCurveProfileStock;
+    profileStockReset = true;
+  }
+  // Repair the old scalar-profile capture before splitting runtime phases.
+  // Genuine custom curves and malformed references retain their normal guards.
+  if (opts.profileApply === true && isBattlemageGpuName(caps?.deviceName, caps)
+    && validateSettingsPayload(settings)
+    && isValidNativeVfCurve(settings.vfCurveStockReference, caps?.vfCurveRange)) {
+    settings = repairLegacyScalarProfile(settings);
+  }
   // M30: an OS-only inventory entry is a valid read/telemetry target but is
   // never a write target. This guard sits before Sysman/IGCL routing so a
   // profile, tray apply, boot apply, or elevated worker cannot touch a
@@ -1859,6 +1919,33 @@ export async function executeApply({ backend, oldIgcl, deviceId, deviceKey: expe
     clamped[key] = range && typeof value === 'number'
       ? clampAndSnap(value, range)
       : value;
+  }
+  // A stock-intent profile can be loaded while a different scalar profile is
+  // active. Clear both Battlemage core offsets first when this profile
+  // explicitly records them at zero, so the native VF reset is not rejected
+  // by the driver's shared tuning-surface dependency check.
+  if (profileStockReset && clamped.gpuFreqOffsetMhz === 0 && clamped.gpuVoltOffsetV === 0) {
+    const clear = await applyOnce({ backend, deviceId, settings: { gpuFreqOffsetMhz: 0, gpuVoltOffsetV: 0 }, opts, log });
+    const clearPerControl = clear.result?.perControl ?? {};
+    if (['gpuFreqOffsetMhz', 'gpuVoltOffsetV'].some((key) => clearPerControl[key]?.ok !== true
+      || clearPerControl[key]?.readBackEqual !== true)) {
+      let state = null;
+      try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+      return withCapabilityFlags({
+        result: {
+          ok: false,
+          perControl: {
+            ...clearPerControl,
+            vfCurve: {
+              ok: false,
+              errorCode: 'dependency-failed',
+              message: 'The saved STOCK VF curve was not restored because both core offsets could not first be verified at zero.',
+            },
+          },
+        },
+        state,
+      });
+    }
   }
   // If the real bundled runtime is installed but cannot initialize, keep
   // Advanced active for the UI while routing <=252 W / <=90 C through

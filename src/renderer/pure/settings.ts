@@ -262,9 +262,11 @@ export function validateSettingsPayload(value: unknown): value is Settings {
       if (!FAN_MODES.has(v)) return false;
     } else if (key === 'gpuLock') {
       if (typeof v !== 'object' || v === null || !isFiniteNumber((v as { voltageV?: unknown }).voltageV) || !isFiniteNumber((v as { freqMhz?: unknown }).freqMhz)) return false;
-    } else if (key === 'vfCurve') {
+    } else if (key === 'vfCurve' || key === 'vfCurveBaseline' || key === 'vfCurveStockReference') {
       if (!isPointArray(v, ['voltageV', 'freqMhz'])) return false;
     } else if (key === 'vfCurveResetToDefault') {
+      if (v !== true) return false;
+    } else if (key === 'vfCurveProfileStock') {
       if (v !== true) return false;
     } else if (key === 'fanCurve') {
       if (!isPointArray(v, ['t', 'speedPct'])) return false;
@@ -273,6 +275,19 @@ export function validateSettingsPayload(value: unknown): value is Settings {
     }
   }
   if ('vfCurveResetToDefault' in value && !('vfCurve' in value)) return false;
+  if ('vfCurveProfileStock' in value
+    && ('vfCurve' in value || 'vfCurveBaseline' in value || 'vfCurveStockReference' in value || 'vfCurveResetToDefault' in value)) return false;
+  const payload = value as Record<string, unknown>;
+  if (payload.vfCurveProfileStock === true
+    && ((typeof payload.gpuFreqOffsetMhz === 'number' && payload.gpuFreqOffsetMhz !== 0)
+      || (typeof payload.gpuVoltOffsetV === 'number' && payload.gpuVoltOffsetV !== 0))) return false;
+  const refs = ['vfCurveBaseline', 'vfCurveStockReference'].filter((key) => key in value);
+  if (refs.length > 1 || (refs.length && (!('vfCurve' in value) || 'vfCurveResetToDefault' in value))) return false;
+  for (const key of refs) {
+    const points = (value as Record<string, Array<{ voltageV: number; freqMhz: number }>>)[key];
+    if (points.length < 2 || points.length !== (value as Settings).vfCurve?.length
+      || !points.every((p, i) => p.voltageV > 0 && p.freqMhz >= 0 && (i === 0 || (p.voltageV > points[i - 1].voltageV && p.freqMhz >= points[i - 1].freqMhz)))) return false;
+  }
   return true;
 }
 
