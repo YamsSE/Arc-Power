@@ -102,6 +102,8 @@ export function createArcSleepController({
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
   intervalMs = 1000,
+  rtssOperationTimeoutMs = 5000,
+  shutdownTimeoutMs = 5000,
 } = {}) {
   const enqueue = createQueue();
   let settings = { ...ARC_SLEEP_DEFAULTS };
@@ -117,6 +119,7 @@ export function createArcSleepController({
   let lastRawState = null;
   let lastKnownRawState = null;
   let timer = null;
+  let tickPending = null;
   let initialized = false;
   let stopping = false;
 
@@ -873,13 +876,30 @@ export function createArcSleepController({
     return work({ setBaseFrameLimit, setSettings: updateSettings, getSnapshot });
   });
 
-  const tick = () => enqueue(sampleAndApply);
+  const tick = () => {
+    if (tickPending) return tickPending;
+    tickPending = enqueue(sampleAndApply).finally(() => { tickPending = null; });
+    return tickPending;
+  };
   const start = async () => {
     if (stopping) return;
-    await enqueue(async () => {
+    const startup = enqueue(async () => {
       await initialize();
       await sampleAndApply();
     });
+    let timeoutHandle;
+    const startupTimedOut = await Promise.race([
+      startup.then(() => false),
+      new Promise((resolve) => {
+        timeoutHandle = setTimeout(() => resolve(true), rtssOperationTimeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timeoutHandle));
+    if (startupTimedOut) {
+      // The queued operation is deliberately left in place: its native RTSS
+      // call may still be running, so later queue work must not overlap it.
+      status = 'error';
+      message = 'Arc Sleep is waiting for RTSS to respond. It will continue when the current RTSS operation finishes.';
+    }
     if (stopping) return;
     if (timer === null) timer = setIntervalFn(() => {
       void tick().catch((error) => {
@@ -895,7 +915,7 @@ export function createArcSleepController({
       clearIntervalFn(timer);
       timer = null;
     }
-    await enqueue(async () => {
+    const shutdown = enqueue(async () => {
       if (!initialized || !journal) return;
       if (journal.externalChange) {
         status = 'external-change';
@@ -925,6 +945,20 @@ export function createArcSleepController({
         message = restored.error;
       }
     });
+    let timeoutHandle;
+    const shutdownTimedOut = await Promise.race([
+      shutdown.then(() => false),
+      new Promise((resolve) => {
+        timeoutHandle = setTimeout(() => resolve(true), shutdownTimeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timeoutHandle));
+    if (shutdownTimedOut) {
+      // Leave shutdown serialized behind the in-flight RTSS operation. It
+      // will finish recovery if that call returns; its durable journal stays
+      // available for the next startup if it never does.
+      status = 'recovery-pending';
+      message = 'Arc Sleep shutdown is waiting for RTSS to respond; recovery remains saved for the next startup.';
+    }
   };
 
   return { start, stop, tick, withTransaction, getSnapshot };

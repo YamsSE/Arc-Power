@@ -16,6 +16,8 @@ function harness({
   now = () => 10000,
   unavailable = false,
   failNextApply = false,
+  rtssOperationTimeoutMs = 5000,
+  shutdownTimeoutMs = 5000,
 } = {}) {
   let saved = {
     arcSleep: settings,
@@ -79,6 +81,8 @@ function harness({
       getIdleSeconds: () => idleSeconds,
       getLoadSignals: async () => loadSignals,
       now,
+      rtssOperationTimeoutMs,
+      shutdownTimeoutMs,
       setIntervalFn: () => ({ unref() {} }),
       clearIntervalFn: () => {},
     });
@@ -434,6 +438,90 @@ test('shutdown during startup prevents the delayed tick timer from being install
   releaseLoad();
   await Promise.all([starting, stopping]);
   assert.equal(intervalCount, 0);
+});
+
+test('a hanging startup RTSS read settles the UI and keeps queued work serialized', async () => {
+  let releaseRead;
+  const readGate = new Promise((resolve) => { releaseRead = resolve; });
+  let readCount = 0;
+  let intervalCount = 0;
+  let scheduledTick;
+  const store = {
+    async loadSettings() { return { arcSleep: {}, arcSleepFrameLimitBase: { enabled: false, value: 60 }, arcSleepJournal: null }; },
+    async saveArcSleepState() {},
+  };
+  const controller = createArcSleepController({
+    store,
+    rtssFrameLimiter: {
+      async getFrameLimit() {
+        readCount += 1;
+        if (readCount === 1) await readGate;
+        return { ok: true, limit: 0, denominator: 1, limiterEnabled: false };
+      },
+    },
+    rtssOperationTimeoutMs: 5,
+    setIntervalFn: (callback) => { intervalCount += 1; scheduledTick = callback; return intervalCount; },
+    clearIntervalFn: () => {},
+  });
+
+  await controller.start();
+  assert.equal(intervalCount, 1);
+  assert.equal(controller.getSnapshot().status, 'error');
+  assert.match(controller.getSnapshot().message, /waiting for RTSS to respond/i);
+
+  let tickFinished = false;
+  const tickOperation = controller.tick();
+  const tick = tickOperation.then(() => { tickFinished = true; });
+  const coalescedTick = controller.tick();
+  assert.strictEqual(coalescedTick, tickOperation, 'concurrent tick requests must share one queued operation');
+  scheduledTick();
+  scheduledTick();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(tickFinished, false);
+  assert.equal(readCount, 1, 'queued reads must not overlap the unresolved native read');
+
+  releaseRead();
+  await tick;
+  await controller.stop();
+});
+
+test('shutdown wait is bounded while a stalled RTSS read keeps its recovery journal', async (t) => {
+  let releaseRead;
+  const h = harness({
+    settings: { idleEnabled: true },
+    baseFrameLimit: { enabled: true, value: 120 },
+    state: { limit: 120, denominator: 1, limiterEnabled: true },
+    underlay: { limit: 0, denominator: 1, limiterEnabled: false },
+    idleSeconds: 400,
+    shutdownTimeoutMs: 10,
+  });
+  t.after(async () => {
+    releaseRead?.();
+    await h.controller.stop();
+  });
+
+  await h.controller.start();
+  assert.ok(h.savedSettings().arcSleepJournal);
+
+  const originalGetFrameLimit = h.rtssFrameLimiter.getFrameLimit.bind(h.rtssFrameLimiter);
+  let markReadStarted;
+  const readStarted = new Promise((resolve) => { markReadStarted = resolve; });
+  const readGate = new Promise((resolve) => { releaseRead = resolve; });
+  h.rtssFrameLimiter.getFrameLimit = async () => {
+    markReadStarted();
+    await readGate;
+    return originalGetFrameLimit();
+  };
+  const tick = h.controller.tick();
+  await readStarted;
+  await h.controller.stop();
+  assert.equal(h.controller.getSnapshot().status, 'recovery-pending');
+  assert.ok(h.savedSettings().arcSleepJournal, 'the saved recovery journal survives the shutdown timeout');
+
+  releaseRead();
+  await tick;
+  await h.controller.stop();
+  assert.equal(h.savedSettings().arcSleepJournal, null, 'serialized shutdown finishes recovery when RTSS returns');
 });
 
 test('late RTSS availability captures the existing base cap before adaptive policy can raise it', async (t) => {

@@ -3123,7 +3123,7 @@ export function createIpcHandlers({
 
       'arc-sleep-state-get': async (...args) => {
         assertNoPayload(args, 'arc-sleep-state-get');
-        if (!arcSleepController?.withTransaction) {
+        if (typeof arcSleepController?.getSnapshot !== 'function') {
           return {
             rtssAvailable: false,
             baseCapFps: null,
@@ -3134,7 +3134,9 @@ export function createIpcHandlers({
             message: 'Arc Sleep is unavailable in this runtime.',
           };
         }
-        return arcSleepController.withTransaction(async (transaction) => transaction.getSnapshot());
+        // This is a read of in-memory controller state. Keep it outside the
+        // RTSS transaction queue so the UI can report progress if RTSS stalls.
+        return arcSleepController.getSnapshot();
       },
 
       // M8: the DEDICATED graphics apply path (plan-review S1 - the OC

@@ -81,7 +81,7 @@ test('profiles settings save normalizes Arc Sleep and applies it inside its RTSS
   assert.deepEqual((await store.loadSettings()).arcSleep, result.arcSleep);
 });
 
-test('Arc Sleep runtime state IPC rejects payloads and returns its serialized snapshot', async () => {
+test('Arc Sleep runtime state IPC reads the direct snapshot while RTSS work is stalled', async () => {
   const snapshot = {
     rtssAvailable: false,
     baseCapFps: null,
@@ -91,15 +91,18 @@ test('Arc Sleep runtime state IPC rejects payloads and returns its serialized sn
     status: 'rtss-unavailable',
     message: 'RTSS is unavailable.',
   };
+  let transactionReads = 0;
   const handlers = createIpcHandlers({
     backend: {},
     store: { loadSettings: async () => ({}) },
     emit: () => {},
     arcSleepController: {
-      async withTransaction(work) { return work({ getSnapshot: () => snapshot }); },
+      getSnapshot: () => snapshot,
+      async withTransaction() { transactionReads += 1; return new Promise(() => {}); },
     },
   }).handlers;
 
   assert.strictEqual(await handlers['arc-sleep-state-get'](), snapshot);
+  assert.equal(transactionReads, 0);
   await assert.rejects(() => handlers['arc-sleep-state-get']('unexpected'), /takes no payload/);
 });
