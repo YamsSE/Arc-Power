@@ -70,3 +70,20 @@ test('startup apply never reconciles an incomplete per-control result', () => {
   assert.equal(result.ok, false);
   assert.equal(result.reconciledFromLiveState, undefined);
 });
+
+test('startup compares rebased VF intent and ignores internal reference fields as controls',()=>{
+ const saved=[{voltageV:.7,freqMhz:1000},{voltageV:.8,freqMhz:2000}];
+ const settings={vfCurve:[saved[0],{...saved[1],freqMhz:1990}],vfCurveStockReference:saved};
+ const state={vfCurveDefault:saved.map(p=>({...p,voltageV:p.voltageV+.1})),vfCurve:[{voltageV:.8,freqMhz:1000},{voltageV:.9,freqMhz:1990}]};
+ assert.equal(profileSettingsMatchCurrentState(settings,state),true);
+ const failed={ok:false,perControl:{vfCurve:{ok:false,errorCode:'io-failed'}}};
+ assert.equal(reconcileAppliedProfileResult(failed,settings,state).ok,true);
+ const mismatch={...state,vfCurve:[state.vfCurve[0],{...state.vfCurve[1],freqMhz:1980}]};
+ assert.equal(profileSettingsMatchCurrentState(settings,mismatch),false);
+ assert.equal(reconcileAppliedProfileResult(failed,settings,mismatch),failed);
+ const changedStock={...state,vfCurveDefault:[state.vfCurveDefault[0],{...state.vfCurveDefault[1],freqMhz:2100}]};
+ assert.equal(profileSettingsMatchCurrentState(settings,changedStock),false);
+ assert.equal(reconcileAppliedProfileResult(failed,settings,changedStock),failed);
+ assert.equal(profileSettingsMatchCurrentState({vfCurveStockReference:saved},state),false);
+ assert.equal(reconcileAppliedProfileResult({ok:false,perControl:{vfCurve:{ok:false,errorCode:'readback-unstable'}}},settings,state).ok,false);
+});

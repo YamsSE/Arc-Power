@@ -74,7 +74,7 @@ import { SYSMAN_PL_MAX_W } from '../../renderer/pure/settings.ts';
 // bSupported:false - the probe-3 evidence).
 import { lockRangeOf } from '../../renderer/pure/lock-ranges.ts';
 import { isBattlemageGpuName } from '../../renderer/pure/hardware-icons.ts';
-import { isValidNativeVfCurve, prepareVfCurveForDriver, vfCurveNeedsWrite } from '../../renderer/pure/vf-curve.ts';
+import { isValidNativeVfCurve, prepareVfCurveForDriver, vfCurveNeedsWrite, matchesVfCurveReference, rebaseVfCurveToReference } from '../../renderer/pure/vf-curve.ts';
 import { readStableVfCurve, readStableVfCurvePreflight, readVfCurveAfterWrite, readVfCurveOnce } from './vf-curve-readback.js';
 // M17c: the session refused-ceiling store (parent-side merge + the shared
 // recording helper - run B wires the store into getCapabilities + the
@@ -6102,6 +6102,19 @@ export class IgclBackend {
     const units = await this._ocUnitsOf(deviceId);
     const result = { ok: true, perControl: {} };
 
+    const referenceKeys = ['vfCurveBaseline', 'vfCurveStockReference'].filter((key) => key in settings);
+    const savedReference = referenceKeys.length === 1 ? settings[referenceKeys[0]] : null;
+    if (referenceKeys.length && (referenceKeys.length !== 1 || !Array.isArray(settings.vfCurve)
+      || settings.vfCurveResetToDefault === true || !matchesVfCurveReference(savedReference, savedReference)
+      || savedReference.length !== settings.vfCurve.length
+      || (caps.vfCurveRange && !isValidNativeVfCurve(savedReference, caps.vfCurveRange)))) {
+      result.ok = false;
+      for (const key of Object.keys(settings).filter((key) => !referenceKeys.includes(key))) result.perControl[key] = {
+        ok: false, errorCode: 'out-of-range', message: 'Invalid VF reference metadata. No settings were written.',
+      };
+      return result;
+    }
+
     // Reset intent is a one-shot UI action, never persisted profile content.
     // Profiles classify their saved curve against fresh STOCK below; ignore a
     // stray/imported marker so it cannot turn a custom profile into a reset.
@@ -6181,7 +6194,16 @@ export class IgclBackend {
             voltageV: Math.round(point.voltageV * 1000) / 1000,
             freqMhz: Math.round(point.freqMhz),
           }));
-          profileStockCurveReset = !vfCurveNeedsWrite(requestedStockCurve, stockCurve);
+          if (settings.vfCurveStockReference && !matchesVfCurveReference(settings.vfCurveStockReference, stockCurve)) {
+            profileStockCurveUnknown = true;
+            profileStockCurveUnknownReason = 'The saved STOCK reference no longer matches this device. No curve write was sent.';
+            profileStockCurveUnknownErrorCode = 'readback-unstable';
+            profileStockCurveUnknownOffsets = ['gpuVoltOffsetV', 'gpuFreqOffsetMhz'].filter((key) => settings[key] != null);
+          } else {
+            profileStockCurveReset = settings.vfCurveStockReference
+              ? !vfCurveNeedsWrite(profileVfCurve, settings.vfCurveStockReference)
+              : !vfCurveNeedsWrite(requestedStockCurve, stockCurve);
+          }
         } else {
           // A profile curve cannot safely be treated as STOCK or custom when
           // the driver's STOCK table is not stable. Refuse the curve write
@@ -6869,14 +6891,22 @@ export class IgclBackend {
                 ? liveBefore.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }))
                 : null;
               const nativeCanonical = native.points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }));
-              const targetCurve = resetToDefault ? nativeCanonical : curve;
-              const liveIsValid = liveBefore?.ok === true && liveBefore.points.length === targetCurve.length
+              const freshReference = settings.vfCurveBaseline ? liveCanonical : nativeCanonical;
+              const referenceMatches = !savedReference || (freshReference && matchesVfCurveReference(savedReference, freshReference)
+                && (!settings.vfCurveStockReference || sourceType === 0));
+              const targetCurve = resetToDefault ? nativeCanonical : savedReference
+                ? rebaseVfCurveToReference(curve, savedReference, freshReference ?? [], curveRange) : curve;
+              const liveIsValid = liveBefore?.ok === true && liveBefore.points.length === (targetCurve?.length ?? curve.length)
                 && isValidNativeVfCurve(liveCanonical, curveRange);
               // A STOCK reset that already has the same native shape needs
               // no setter, even if two reads report different voltage origins.
               const resetAlreadyStock = resetToDefault && liveIsValid
                 && uniformVfVoltageShiftMv(targetCurve, liveCanonical, Infinity) !== null;
-              if (liveIsValid && (resetAlreadyStock || !vfCurveNeedsWrite(targetCurve, liveCanonical))) {
+              if (!referenceMatches) {
+                fail('vfCurve', 'readback-unstable', 'The saved VF reference no longer matches the current native table. No curve write was sent.');
+              } else if (!targetCurve) {
+                fail('vfCurve', 'out-of-range', 'The rebased VF curve is outside the driver range or grid. No curve write was sent.');
+              } else if (liveIsValid && (resetAlreadyStock || !vfCurveNeedsWrite(targetCurve, liveCanonical))) {
                 result.perControl.vfCurve = {
                   ok: true,
                   readBackEqual: true,
@@ -6947,8 +6977,14 @@ export class IgclBackend {
                           // A reset intent is resolved from this final fresh
                           // STOCK read, never from the renderer's cached table.
                           // The final snapshot proves the native point count,
-                          // ordering, and supported ranges; moving voltage
-                          // origins do not rewrite a custom request.
+                          // ordering, and supported ranges. Referenced drafts resolve
+                          // their voltage origin here; legacy drafts stay absolute.
+                          let finalReferenceCurve = null;
+                          if (savedReference && !resetToDefault) {
+                            const finalReference = (settings.vfCurveBaseline ? liveNow : sourceNow).points.map((point) => ({ voltageV: point.Voltage / 1000, freqMhz: point.Frequency }));
+                            finalReferenceCurve = rebaseVfCurveToReference(curve, savedReference, finalReference, curveRange);
+                            if (finalReferenceCurve) points = finalReferenceCurve.map((point) => ({ Voltage: Math.round(point.voltageV * 1000), Frequency: point.freqMhz }));
+                          }
                           if (resetToDefault) {
                             points = sourceNow.points.map((point) => ({
                               Voltage: point.Voltage,
@@ -6965,7 +7001,9 @@ export class IgclBackend {
                           const finalOffsetUnknown = !finalFrequencyOffset.ok || !finalVoltageOffset.ok;
                           const finalOffsetActive = [finalFrequencyOffset.value, finalVoltageOffset.value]
                             .some((value) => Number.isFinite(value) && Math.abs(value) > 0.001);
-                          if (finalOffsetUnknown) {
+                          if (savedReference && !resetToDefault && !finalReferenceCurve) {
+                            fail('vfCurve', 'out-of-range', 'The final VF reference changed or rebased curve exceeded the supported range/grid. No curve write was sent.');
+                          } else if (finalOffsetUnknown) {
                             fail('vfCurve', 'dependency-failed', 'The GPU core offsets could not be rechecked immediately before the VF write. No curve write was sent. Verify both core offsets are zero and try again.');
                           } else if (finalOffsetActive) {
                             fail('vfCurve', 'dependency-failed', 'A GPU core offset changed while preparing the VF curve. No curve write was sent. Reset both core offsets to zero and try again.');

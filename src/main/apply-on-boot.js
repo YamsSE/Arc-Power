@@ -40,6 +40,8 @@ import { physicalTargetOf, pnpParts } from './gpu-inventory.js';
 // clamped values (the worker import pattern - no cycle: ipc-core never
 // imports apply-on-boot).
 import { clampSettings } from './ipc-core.js';
+import { validateSettingsPayload } from '../renderer/pure/settings.ts';
+import { sameVfCurve, rebaseVfCurveToReference } from '../renderer/pure/vf-curve.ts';
 import { deviceHardwareKey } from './backend/units.js';
 import { normalizeBattlemageProfileSettings } from '../renderer/pure/profile-compat.ts';
 
@@ -90,6 +92,7 @@ const hasWaiverNotSet = (result) => Object.values(result?.perControl ?? {})
 
 const NON_RECONCILABLE_APPLY_ERRORS = new Set([
   'out-of-range',
+  'readback-unstable',
   'unsupported',
   'waiver-not-set',
   'stale-target',
@@ -117,6 +120,7 @@ export function shouldRetryStartupApply(result) {
 }
 
 function profileValuesMatch(requested, actual, control) {
+  if (control === 'vfCurve') return sameVfCurve(requested, actual, 1e-9, 0);
   if (typeof requested === 'number' && Number.isFinite(requested)
     && typeof actual === 'number' && Number.isFinite(actual)) {
     const tolerance = control === 'gpuVoltOffsetV' || control === 'vramVoltOffsetV'
@@ -140,8 +144,30 @@ function sysmanPowerApplyRequired(control, sysmanPowerLimits) {
     && typeof sysmanPowerLimits?.setLimits === 'function';
 }
 
+const VF_INTENT_KEYS = new Set(['vfCurveBaseline', 'vfCurveStockReference', 'vfCurveResetToDefault']);
+
+function comparableProfileSettings(settings, state) {
+  if (!validateSettingsPayload(settings)) return null;
+  const comparable = Object.fromEntries(Object.entries(settings).filter(([key]) => !VF_INTENT_KEYS.has(key)));
+  const reference = settings.vfCurveStockReference ?? settings.vfCurveBaseline;
+  if (reference) {
+    const fresh = settings.vfCurveStockReference ? state.vfCurveDefault : state.vfCurve;
+    const curve = rebaseVfCurveToReference(settings.vfCurve, reference, fresh, {
+      voltageMinV: 0, voltageMaxV: 1.5, freqMinMhz: 0, freqMaxMhz: 5000, voltageStepV: .001, maxPoints: 32,
+    });
+    if (!curve) return null;
+    comparable.vfCurve = curve;
+  } else if (settings.vfCurveResetToDefault === true) {
+    if (!Array.isArray(state.vfCurveDefault)) return null;
+    comparable.vfCurve = state.vfCurveDefault;
+  }
+  return comparable;
+}
+
 export function profileSettingsMatchCurrentState(settings, state, sysmanPowerLimits = null) {
   if (!settings || typeof settings !== 'object' || !state || typeof state !== 'object') return false;
+  settings = comparableProfileSettings(settings, state);
+  if (!settings) return false;
   const entries = Object.entries(settings);
   return entries.length > 0 && entries.every(([control, requested]) => (
     !sysmanVoltageApplyRequired(settings, control, sysmanPowerLimits)
@@ -162,6 +188,8 @@ export function profileSettingsMatchCurrentState(settings, state, sysmanPowerLim
 export function reconcileAppliedProfileResult(result, settings, state, { sysmanPowerLimits = null } = {}) {
   if (result?.ok === true || !result || typeof result !== 'object'
     || !settings || typeof settings !== 'object' || !state || typeof state !== 'object') return result;
+  settings = comparableProfileSettings(settings, state);
+  if (!settings) return result;
   const requestedControls = Object.keys(settings);
   const perControlResults = result.perControl ?? {};
   // A partial result is never enough to prove that a whole profile landed.

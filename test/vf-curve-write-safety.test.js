@@ -849,3 +849,49 @@ test('non-finite successful offset read-back prevents a VF write', async () => {
   assert.match(result.perControl.vfCurve.message, /could not be read/);
   assert.deepEqual(writes, []);
 });
+
+for (const shift of [-100, 100]) test('LIVE reference rebases at final setter boundary ' + shift, async () => {
+  const { backend, live, writes } = fixture();
+  const fresh = liveDefault.map((p) => ({ ...p, Voltage: p.Voltage + shift }));
+  sequenceLiveReads(backend, [liveDefault, fresh]);
+  const requested = canonical(liveDefault); requested[1].freqMhz -= 10; requested[1].voltageV += 0.001;
+  const result = await backend.applySettings(0, { vfCurve: requested, vfCurveBaseline: canonical(liveDefault) });
+  assert.equal(result.ok, true); assert.deepEqual(writes, ['vf']);
+  assert.deepEqual(live, requested.map((p) => ({ Voltage: Math.round(p.voltageV * 1000) + shift, Frequency: p.freqMhz })));
+});
+test('changed LIVE reference frequencies reject before write', async () => {
+  const { backend, writes } = fixture(); const saved = canonical(liveDefault); saved[1].freqMhz -= 1;
+  const result = await backend.applySettings(0, { vfCurve: canonical(stock), vfCurveBaseline: saved });
+  assert.equal(result.ok, false); assert.deepEqual(writes, []);
+});
+test('orphan and conflicting references reject scalar writes', async () => {
+  for (const metadata of [{ vfCurveBaseline: stockCanonical }, { vfCurveBaseline: stockCanonical, vfCurveStockReference: stockCanonical, vfCurve: stockCanonical }]) {
+    const { backend, writes, scalarWrites } = fixture();
+    const result = await backend.applySettings(0, { gpuFreqOffsetMhz: 10, ...metadata });
+    assert.equal(result.ok, false); assert.deepEqual(writes, []); assert.deepEqual(scalarWrites, []);
+  }
+});
+
+test('STOCK reference classifies a saved STOCK profile before fresh origin translation', async () => {
+ const {backend,live,scalarWrites}=fixture();
+ const saved=stockCanonical.map(p=>({...p,voltageV:p.voltageV+.1}));
+ const result=await backend.applySettings(0,{vfCurve:saved,vfCurveStockReference:saved,gpuFreqOffsetMhz:10},{profileApply:true});
+ assert.equal(result.ok,true); assert.deepEqual(live,stock); assert.deepEqual(scalarWrites,['frequency']);
+});
+test('custom STOCK reference profile rebases voltage edits and preserves requested frequencies',async()=>{
+ const {backend,live}=fixture(); const saved=stockCanonical.map(p=>({...p,voltageV:p.voltageV+.1}));
+ const draft=saved.map(p=>({...p})); draft[1].freqMhz-=10; draft[1].voltageV+=.001;
+ const result=await backend.applySettings(0,{vfCurve:draft,vfCurveStockReference:saved},{profileApply:true});
+ assert.equal(result.ok,true); assert.deepEqual(live,[stock[0],{Voltage:801,Frequency:1990},stock[2]]);
+});
+test('mismatched STOCK reference rejects profile curve and dependent scalar offsets',async()=>{
+ const {backend,writes,scalarWrites}=fixture(); const saved=stockCanonical.map(p=>({...p}));saved[1].freqMhz-=1;
+ const result=await backend.applySettings(0,{vfCurve:saved,vfCurveStockReference:saved,gpuFreqOffsetMhz:10},{profileApply:true});
+ assert.equal(result.ok,false);assert.deepEqual(writes,[]);assert.deepEqual(scalarWrites,[]);
+});
+test('final reference translation beyond supported voltage bounds refuses setter',async()=>{
+ const {backend,writes}=fixture(); const draft=canonical(liveDefault); draft[2].voltageV=1.5;
+ sequenceLiveReads(backend,[liveDefault,liveDefault.map(p=>({...p,Voltage:p.Voltage+100}))]);
+ const result=await backend.applySettings(0,{vfCurve:draft,vfCurveBaseline:canonical(liveDefault)});
+ assert.equal(result.ok,false);assert.deepEqual(writes,[]);
+});

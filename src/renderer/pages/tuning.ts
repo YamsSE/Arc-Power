@@ -93,7 +93,7 @@ import {
 // M4-H (B): the profiles page's prompt modal + id generator + the
 // settingsFromState helper, reused by the "Save as Profile" card (the
 // profiles page's own create/save flows stay).
-import { activeProfileIdForGpu, newProfileId, profileGpuIdentity, promptModal, profileMatchesGpu, settingsFromState } from './profiles.ts';
+import { activeProfileIdForGpu, captureProfileSettings, newProfileId, profileGpuIdentity, promptModal, profileMatchesGpu } from './profiles.ts';
 import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile, Settings, PowerLimitsRead, VoltageOffsetRead } from '../types.ts';
 
 // The pure refresh-signature helpers live in pure/settings.ts (unit-tested
@@ -834,6 +834,7 @@ export const tuningPage: Page = {
       let selectedIdx = Math.max(0, vfCurveDraft.length - 1);
       let readoutIdx = selectedIdx;
       let pointerInsideReadout = false;
+      let committingText = false;
       const readoutContains = (node: EventTarget | null): boolean => {
         if (!hoverReadout || !node || !(node instanceof Node)) return false;
         return node === hoverReadout || hoverReadout.contains(node);
@@ -851,18 +852,24 @@ export const tuningPage: Page = {
         const label = hoverReadout.querySelector<HTMLElement>('.vf-curve-readout-label');
         const voltageInput = hoverReadout.querySelector<HTMLInputElement>('input[data-readout-field="voltage"]');
         const frequencyInput = hoverReadout.querySelector<HTMLInputElement>('input[data-readout-field="frequency"]');
-        if (label) {
+        const textFocused = committingText || hoverReadout.contains(document.activeElement);
+        if (label && !textFocused) {
           const sourcePrefix = vfCurveDisplaySource === 'stock-reference' ? 'STOCK reference · ' : '';
           label.textContent = `${sourcePrefix}${vfCurvePointLabel(point, index)}`;
         }
-        if (voltageInput) voltageInput.value = String(vfVoltageMv(point.voltageV));
-        if (frequencyInput) frequencyInput.value = String(Math.round(point.freqMhz));
+        if (voltageInput && document.activeElement !== voltageInput) voltageInput.value = String(vfVoltageMv(point.voltageV));
+        if (frequencyInput && document.activeElement !== frequencyInput) frequencyInput.value = String(Math.round(point.freqMhz));
         if (voltageInput) voltageInput.readOnly = !canEditVfCurve();
         if (frequencyInput) frequencyInput.readOnly = !canEditVfCurve();
         hoverReadout.dataset['idx'] = String(index);
         const xPct = ((point.voltageV - curveBounds.voltageMinV) / (curveBounds.voltageMaxV - curveBounds.voltageMinV)) * 100;
         const yPct = 100 - ((point.freqMhz - curveBounds.freqMinMhz) / (curveBounds.freqMaxMhz - curveBounds.freqMinMhz)) * 100;
         hoverReadout.hidden = false;
+        // Keep the text editor anchored while typing or committing a value.
+        if (textFocused) {
+          readoutVisible = true;
+          return;
+        }
         const layerRect = dotsLayer.getBoundingClientRect();
         if (layerRect.width > 0 && layerRect.height > 0) {
           const box = hoverReadout.getBoundingClientRect();
@@ -914,7 +921,10 @@ export const tuningPage: Page = {
       // point jump and made multi-digit values nearly impossible to enter.
       const onEditPoint = (index: number, raw: number, input: HTMLInputElement, field: 'voltage' | 'frequency'): void => {
         if (!canEditVfCurve()) return;
+        const editorPosition = hoverReadout?.getBoundingClientRect();
         if (input.value.trim() === '' || !Number.isFinite(raw)) {
+          const point = vfCurveDraft[index];
+          if (point) input.value = String(field === 'voltage' ? vfVoltageMv(point.voltageV) : Math.round(point.freqMhz));
           showReadout(index, true);
           return;
         }
@@ -930,13 +940,29 @@ export const tuningPage: Page = {
         // left the SVG curve behind, which made a valid edit look broken.
         selectedIdx = index;
         readoutIdx = index;
-        redraw();
+        committingText = true;
+        try {
+          redraw();
+        } finally {
+          committingText = false;
+        }
+        // A completed edit displays the exact accepted value while retaining
+        // the same input, focus and click target.
+        const accepted = vfCurveDraft[index];
+        if (accepted) input.value = String(field === 'voltage' ? vfVoltageMv(accepted.voltageV) : Math.round(accepted.freqMhz));
         updateVfCurveEditorNote?.();
         refreshChip('gpuFreqOffsetMhz');
         updateFloating();
+        // Pending-status text can also change the card's layout. Preserve the
+        // editor's screen position so the next field remains under the pointer.
+        if (hoverReadout && editorPosition) {
+          const currentPosition = hoverReadout.getBoundingClientRect();
+          hoverReadout.style.left = `${parseFloat(hoverReadout.style.left) + editorPosition.left - currentPosition.left}px`;
+          hoverReadout.style.top = `${parseFloat(hoverReadout.style.top) + editorPosition.top - currentPosition.top}px`;
+        }
       };
       const renderDots = (): void => {
-        clear(dotsLayer);
+        dotsLayer.querySelectorAll('.vf-curve-dot').forEach((dot) => dot.remove());
         vfCurveDraft.forEach((point, index) => {
           const xPct = ((point.voltageV - curveBounds.voltageMinV) / (curveBounds.voltageMaxV - curveBounds.voltageMinV)) * 100;
           const yPct = 100 - ((point.freqMhz - curveBounds.freqMinMhz) / (curveBounds.freqMaxMhz - curveBounds.freqMinMhz)) * 100;
@@ -958,6 +984,12 @@ export const tuningPage: Page = {
             hideReadout();
           });
           dot.addEventListener('pointerdown', (event: PointerEvent) => {
+            // Commit to the old point before the selected index changes.
+            const focusedInput = document.activeElement;
+            if (focusedInput instanceof HTMLInputElement && readoutContains(focusedInput)) {
+              focusedInput.dispatchEvent(new Event('change', { bubbles: true }));
+              focusedInput.blur();
+            }
             event.preventDefault();
             if (!canEditVfCurve()) {
               showReadout(index, false);
@@ -1006,7 +1038,8 @@ export const tuningPage: Page = {
           });
           dotsLayer.append(dot);
         });
-        hoverReadout = el('div', { class: 'vf-curve-readout', hidden: true }, [
+        if (!hoverReadout) {
+          hoverReadout = el('div', { class: 'vf-curve-readout', hidden: true }, [
           el('span', { class: 'vf-curve-readout-label' }),
           el('div', { class: 'vf-curve-readout-fields' }, [
             el('label', { class: 'vf-curve-readout-field' }, [
@@ -1048,7 +1081,13 @@ export const tuningPage: Page = {
           if (readoutContains(event.relatedTarget) || pointerInsideReadout || editingIdx !== null) return;
           hideReadout();
         });
+        hoverReadout.addEventListener('keydown', (event: KeyboardEvent) => {
+          if (event.key !== 'Enter' || !(event.target instanceof HTMLInputElement)) return;
+          event.preventDefault();
+          event.target.dispatchEvent(new Event('change', { bubbles: true }));
+        });
         dotsLayer.append(hoverReadout);
+        }
         if (readoutVisible) showReadout(editingIdx ?? readoutIdx, editingIdx !== null);
       };
       const pointCountNode = el('span', { class: 'chip', text: `${vfCurveDraft.length} driver points` });
@@ -1992,12 +2031,13 @@ export const tuningPage: Page = {
           const title = active ? 'Override Profile' : 'Save as Profile';
           const name = await promptModal(title, active?.name ?? '');
           if (!name) return;
-          const settings = settingsFromState(ctx.store.get().state as DeviceState);
+          const capture = await captureProfileSettings(ctx);
+          if (!capture) return;
+          const { settings, gpu: currentGpu } = capture;
           if (!validateSettingsPayload(settings)) {
             toast('error', 'Could not save profile', 'The settings payload failed validation - this is a bug.');
             return;
           }
-          const currentGpu = profileGpuIdentity(ctx.store.get());
           try {
             await api.profilesSave({
               id: active?.id ?? newProfileId(),
@@ -2153,6 +2193,12 @@ export const tuningPage: Page = {
     // gate, elevation toast, busy state, per-control toasts + the applied
     // reference) with a single-control payload `{ [key]: value }`.
     const apply = async (ctx: PageContext, only?: string) => {
+      // Keyboard activation can reach Apply without a native input blur.
+      const editingInput = document.activeElement;
+      if ((!only || only === 'vfCurve') && vfCurveMode
+        && editingInput instanceof HTMLInputElement && editingInput.matches('.vf-curve-readout-input')) {
+        editingInput.dispatchEvent(new Event('change', { bubbles: true }));
+      }
       const live = ctx.store.get();
       const deviceId = live.deviceId;
       if (deviceId === null || !caps) return;
@@ -2215,6 +2261,15 @@ export const tuningPage: Page = {
           settings.vfCurve = vfCurveApplyPayload();
           if (vfCurveNativeApplyDraft !== null) settings.vfCurveResetToDefault = true;
         }
+      }
+      if (settings.vfCurve && vfCurveNativeApplyDraft === null
+        && (vfCurveDisplaySource === 'live' || vfCurveDisplaySource === 'draft')
+        && isValidNativeVfCurve(vfCurveObservedLive, curveBounds)
+        && isValidNativeVfCurve(vfCurveApplied, curveBounds)
+        && vfCurveApplied.length === settings.vfCurve.length) {
+        // Carry the untouched LIVE before-image so the setter can preserve
+        // explicit voltage edits against its fresh native voltage origin.
+        settings.vfCurveBaseline = vfCurveApplied.map((point) => ({ ...point }));
       }
       if (!validateSettingsPayload(settings)) {
         toast('error', 'Apply aborted', 'The settings payload failed validation - this is a bug.');

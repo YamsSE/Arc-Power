@@ -15,6 +15,7 @@
 // Electron-free - shared by the UI apply path, the tray/boot applies and
 // the elevated apply-worker.
 
+import { validateSettingsPayload } from '../renderer/pure/settings.ts';
 import { applyOnce } from './apply-once.js';
 import { clampAndSnap, nearlyEqual } from './backend/units.js';
 import { DRIVER_TEMP_LIMIT_MAX_C, EXTENDED_PL_MAX_W, EXTENDED_TL_MAX_C } from './old-igcl.js';
@@ -1130,6 +1131,12 @@ export function isMomentaryLieCandidate(per) {
  * }>}
  */
 export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKey = null, physicalTarget = null, settings, opts = {}, log = () => {}, delayedVerifyMs = DELAYED_VERIFY_MS, sleep = defaultSleep, ranges = null, mode = null, sysmanPowerLimits = null, limitsKey = null }) {
+  const intentKeys = ['vfCurveBaseline', 'vfCurveStockReference', 'vfCurveResetToDefault'];
+  if (intentKeys.some((key) => key in settings) && !validateSettingsPayload(settings)) {
+    return { result: { ok: false, perControl: Object.fromEntries(Object.keys(settings).filter((key) => !intentKeys.includes(key)).map((key) => [key, {
+      ok: false, errorCode: 'out-of-range', message: 'Invalid VF reference metadata. No settings were written.',
+    }])), pl2Note: null }, attempts: 1 };
+  }
   const negativeAlchemistVoltage = isNegativeAlchemistVoltage(settings, ranges);
   const nonNegativeAlchemistVoltage = isNonNegativeAlchemistVoltage(settings, ranges);
   const zeroAlchemistVoltage = isZeroAlchemistVoltage(settings, ranges);
@@ -1161,7 +1168,7 @@ export async function applySettingsRouted({ backend, oldIgcl, deviceId, deviceKe
   // M41: keep fan/VF writes after the extended W/C phase. The driver has
   // different ownership/order rules for those controls in Advanced mode.
   const hasExtendedControls = mode === OC_MODE_ADVANCED && Object.keys(extended).length > 0;
-  const fanKeys = new Set(['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve']);
+  const fanKeys = new Set(['fanMode', 'fanCurve', 'fixedFanPct', 'vfCurve', 'vfCurveResetToDefault', 'vfCurveBaseline', 'vfCurveStockReference']);
   const driverstore = {};
   const postFanDriverstore = {};
   for (const [key, value] of Object.entries(allDriverstore)) {

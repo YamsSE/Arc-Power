@@ -731,11 +731,11 @@ export function sanitizeSettings(payload) {
     } else if (key === 'vfCurveResetToDefault') {
       if (value !== true) throw new Error('vfCurveResetToDefault must be true');
       out[key] = true;
-    } else if (key === 'vfCurve' || key === 'fanCurve') {
+    } else if (key === 'vfCurve' || key === 'vfCurveBaseline' || key === 'vfCurveStockReference' || key === 'fanCurve') {
       if (!Array.isArray(value) || value.length < 1 || value.length > MAX_CURVE_POINTS) {
         throw new Error(`${key} must be a non-empty array of at most ${MAX_CURVE_POINTS} points`);
       }
-      const fields = key === 'vfCurve' ? ['voltageV', 'freqMhz'] : ['t', 'speedPct'];
+      const fields = key !== 'fanCurve' ? ['voltageV', 'freqMhz'] : ['t', 'speedPct'];
       out[key] = value.map((pt) => {
         if (typeof pt !== 'object' || pt === null || fields.some((f) => !Number.isFinite(pt[f]))) {
           throw new Error(`${key} points must be objects with finite ${fields.join(', ')}`);
@@ -746,6 +746,13 @@ export function sanitizeSettings(payload) {
         return clean;
       });
     }
+  }
+  const refs = ['vfCurveBaseline', 'vfCurveStockReference'].filter((key) => key in out);
+  if (refs.length > 1 || (refs.length && (!Array.isArray(out.vfCurve) || out.vfCurveResetToDefault === true))) throw new Error('VF references require vfCurve and cannot be combined with each other or reset intent');
+  for (const key of refs) {
+    const points = out[key];
+    if (points.length < 2 || points.length !== out.vfCurve.length
+      || !points.every((p, i) => p.voltageV > 0 && p.freqMhz >= 0 && (i === 0 || (p.voltageV > points[i - 1].voltageV && p.freqMhz >= points[i - 1].freqMhz)))) throw new Error('Invalid VF reference shape');
   }
   if (out.vfCurveResetToDefault === true && !Array.isArray(out.vfCurve)) {
     throw new Error('vfCurveResetToDefault requires vfCurve');

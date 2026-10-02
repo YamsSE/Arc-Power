@@ -14,7 +14,9 @@ returned LIVE value. It does not require repeated equal reads or exact equality
 between the request and the driver's returned curve.
 
 Arc Power uses that setter sequence for Battlemage. It validates native ranges,
-ordering and count and preserves the submitted coordinates. Following the
+ordering and count and preserves requested frequencies. Reference-aware edits
+preserve each requested voltage change relative to the captured native table.
+Following the
 reported GUI failure, it also observes a bounded window of LIVE results and
 requires the latest two samples to retain the same effective result. A native
 SUCCESS with unchanged frequencies and relative voltage spacing is reported as
@@ -40,8 +42,12 @@ Failed reads retain the last readable snapshot. A stale draft can be discarded
 and refreshed directly, with adapter/page guards on asynchronous results.
 
 Before a write, source reads may differ by a common voltage translation, but
-their exact frequencies and relative voltage spacings must still agree. Custom
-requests are never silently shifted to a new voltage origin. Full-reset
+their exact frequencies and relative voltage spacings must still agree. Manual
+edits carry the captured LIVE baseline. At the setter boundary, Arc Power maps
+each draft voltage delta onto the fresh LIVE reference. This prevents an old
+display origin from becoming an unintended whole-curve voltage edit. An explicit
+voltage change is retained; frequency values are not changed by this mapping.
+Incompatible references are refused before writing. Full-reset
 verification similarly compares native shape and frequencies while allowing
 different common origins in its separate STOCK/LIVE reads.
 
@@ -65,7 +71,11 @@ change the frequency at the driver's native voltage coordinate. Reporting a
 different native grid as a failed apply was incorrect; preserving the old
 requested draft afterward also misrepresented the applied hardware state.
 
-Saved profiles retain their exact custom coordinates. A legacy profile that
+Newly saved profiles retain their custom curve and its captured STOCK reference.
+Apply maps the saved per-point voltage deltas onto fresh STOCK coordinates.
+Profiles without a reference retain their legacy absolute-coordinate semantics;
+their original voltage intent cannot be inferred from an old curve alone.
+A legacy profile that
 combines a curve with nonzero scalar offsets must still satisfy the existing
 STOCK/custom dependency checks. Relative shape alone cannot classify a saved
 curve as STOCK: intentional whole-curve voltage edits have that same shape.
@@ -100,3 +110,25 @@ Twenty later reads retained each successful effective result. The user's
 captured starting custom curve was restored afterward. An isolated Electron
 renderer check verified visible linking, the submitted payload, draft retention
 after a simulated native no-op, discard/refresh recovery, and the origin notice.
+
+## October 2 input and origin follow-up
+
+A physical B580 probe reproduced the reported 3230-to-3090 MHz shift by submitting
+voltage coordinates 100 mV above the fresh native grid. Apply now preserves
+manual edits relative to their original LIVE snapshot and rebases those deltas
+onto the final fresh native grid immediately before writing. Saved profiles use
+their captured STOCK reference; legacy profiles retain absolute semantics.
+
+The production IPC matrix passed lower, middle, endpoint and per-point voltage
+edits, repeated profile loads, curve-only reset and full reset, with 20 reads
+for each accepted result. A fresh-grid 3230 request returned 3220 through both
+Arc Power and the IGS native setup. An ignored 3180 endpoint request remains a
+reported driver no-op with its draft retained. The final hardware state was
+STOCK. This does not establish B570 hardware behavior or load stability.
+
+Profile capture accepts aligned native grids immediately and stable nonuniform
+voltage edits after two identical LIVE/STOCK captures. Ambiguous nonzero uniform
+voltage differences are refused after three attempts rather than persisted as
+inferred voltage intent. The Chromium editor checks passed real typing, focus,
+commit, Apply and profile capture cases. The focused suite passed 184 tests;
+pure reference tests cover all integer frequency and voltage values in range.

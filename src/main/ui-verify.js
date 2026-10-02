@@ -6472,6 +6472,14 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
   if (selected !== fsId) fail(`current selection is '${selected}' (expected '${fsId}')`);
   step('boot', `shell + dropdown rendered: ${options.join(', ')} (current '${selected}')`);
 
+  if (process.env.RID_MOCK_VF_TEXT_EDITOR_VERIFY === '1') {
+    const { verifyVfTextEditor } = await import('../../test/vf-text-editor-ui.js');
+    step('vf-text-editor', await verifyVfTextEditor(win, backend));
+    console.log('\nUI VERIFY OK (VF text editor)\n' + steps.join('\n'));
+    app.exit(0);
+    return;
+  }
+
   if (process.env.RID_MOCK_VF_STOCK_REFERENCE_VERIFY === '1') {
     if (fsId !== 'b580') fail('RID_MOCK_VF_STOCK_REFERENCE_VERIFY requires RID_MOCK_FEATURESET=b580');
     step('vf-stock-reference-ui', await runB580VfStockReferenceUiCheck(win));
