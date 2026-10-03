@@ -130,7 +130,11 @@ export const arcSleepPage: Page = {
         applyingBaseCap = true;
         updateBaseCapUi();
         baseCapStatus.textContent = 'Applying Base FPS Cap…';
+        const pendingMessageTimer = window.setTimeout(() => {
+          if (isCurrent() && applyingBaseCap) baseCapStatus.textContent = 'Still applying Base FPS Cap…';
+        }, IPC_TIMEOUT_MS);
         void api.graphicsApply(deviceId, { frameLimit: next }).then(async result => {
+          window.clearTimeout(pendingMessageTimer);
           if (!isCurrent()) return;
           const outcome = result.perControl.frameLimit;
           if (!outcome?.ok) {
@@ -145,6 +149,7 @@ export const arcSleepPage: Page = {
           updateBaseCapUi();
           await refresh();
         }).catch(error => {
+          window.clearTimeout(pendingMessageTimer);
           if (!isCurrent()) return;
           baseCapStatus.textContent = `Apply failed: ${error instanceof Error ? error.message : String(error)}`;
         }).finally(() => {
@@ -268,6 +273,8 @@ export const arcSleepPage: Page = {
       });
     };
     controls.forEach(input => { input.disabled = true; input.addEventListener('change', save); });
+    const poll = async (): Promise<void> => { if (!alive()) return; await refresh(); if (alive()) timer = window.setTimeout(() => void poll(), 2500); };
+    void poll();
     void (async () => {
       const savesAtVisit = saveQueue;
       let previousSavePending = false;
@@ -312,8 +319,6 @@ export const arcSleepPage: Page = {
           if (await loadSettings() && alive() && revision === 0) saveState.textContent = 'Settings refreshed after pending save.';
         });
       }
-      const poll = async (): Promise<void> => { if (!alive()) return; await refresh(); if (alive()) timer = window.setTimeout(() => void poll(), 2500); };
-      await poll();
     })();
   },
   onUpdate(container, ctx): void { updateSelectedDeviceControls?.(container, ctx); },
