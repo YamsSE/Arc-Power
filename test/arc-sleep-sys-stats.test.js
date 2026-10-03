@@ -47,6 +47,39 @@ test('Arc Sleep foreground GPU proof expires with worker rows', async (t) => {
   assert.equal(await stats.isArcSleepProcessOnActiveGpu(42), false);
 });
 
+test('Arc Sleep Fast eligibility uses fresh one-shot rows after GPU worker failure', async (t) => {
+  let clock = 1000;
+  const intervals = [];
+  let output = JSON.stringify({ gpuEng: [{ Name: engine(42, 0xbb85, 12).name, UtilizationPercentage: 12 }] });
+  const stats = createSysStats({
+    deviceIdHex: '0xE20B', osLuid: { high: 0, low: 0xbb85 },
+    enableDedicatedGpuSampler: true,
+    spawn: () => { throw new Error('worker unavailable'); },
+    execFile: async () => ({ stdout: output }),
+    now: () => clock,
+    setInterval: (callback) => { intervals.push(callback); return intervals.length; },
+    clearInterval: () => {},
+  });
+  t.after(() => stats.stopSlowLane());
+  stats.startSlowLane(1000, 1);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(await stats.isArcSleepProcessOnActiveGpu(42), true);
+  assert.equal(await stats.isArcSleepProcessOnActiveGpu(43), false);
+
+  output = '{}';
+  clock += 1000;
+  await intervals[1]();
+  assert.equal(await stats.isArcSleepProcessOnActiveGpu(42), true,
+    'malformed fallback output must not renew or replace the prior sample');
+  clock += 2001;
+  assert.equal(await stats.isArcSleepProcessOnActiveGpu(42), false);
+
+  output = JSON.stringify({ gpuEng: [{ Name: engine(42, 0xbb86, 20).name, UtilizationPercentage: 20 }] });
+  await intervals[1]();
+  assert.equal(await stats.isArcSleepProcessOnActiveGpu(42), false,
+    'a process on another GPU cannot qualify for the FPS cap seed');
+});
+
 test('Arc Sleep receives fresh active-adapter GPU utilization without reading CPU load', async (t) => {
   let clock = 1000;
   let cpuReads = 0;

@@ -51,7 +51,10 @@ export function createArcSleepPolicyState(settings = DEFAULTS) {
     belowTargetSamples: 0,
     loadUnavailableSinceMs: null,
     observedFpsSamples: [],
-    observedProcessId: null
+    observedProcessId: null,
+    observedFpsSeeded: false,
+    seededProcessId: null,
+    observedFpsSeenInWindow: false
   };
 }
 
@@ -102,10 +105,14 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
     ? current.observedFpsSamples.filter((value) => validObservedFps(value) !== null).slice(-2)
     : [];
   let observedProcessId = validProcessId(current.observedProcessId);
+  let observedFpsSeeded = current.observedFpsSeeded === true;
+  let seededProcessId = validProcessId(current.seededProcessId);
+  let observedFpsSeenInWindow = current.observedFpsSeenInWindow === true;
+  const highLoadStep = Math.min(30, Math.max(5, Math.round((config.adaptiveMaxFps - config.adaptiveMinFps) * 0.1)));
 
   if (loadPercent !== null) {
     loadUnavailableSinceMs = null;
-    if (loadPercent > config.adaptiveTargetLoadPct + 5) {
+    if (loadPercent > config.adaptiveTargetLoadPct) {
       aboveTargetSamples += 1;
       belowTargetSamples = 0;
       const processId = validProcessId(sample?.observedProcessId);
@@ -113,11 +120,31 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
       if (idleActive || processId === null || observedFps === null) {
         observedFpsSamples = [];
         observedProcessId = null;
+        observedFpsSeeded = false;
+        seededProcessId = null;
       } else {
-        observedFpsSamples = processId === observedProcessId ? [...observedFpsSamples, observedFps] : [observedFps];
+        observedFpsSeenInWindow = true;
+        const priorSamples = processId === observedProcessId ? observedFpsSamples : [];
+        const lowerScene = priorSamples.length > 0 && observedFps <= Math.min(...priorSamples) - 10;
+        observedFpsSamples = lowerScene ? [observedFps] : [...priorSamples, observedFps];
+        if (lowerScene) aboveTargetSamples = 1;
         observedProcessId = processId;
+        if (!observedFpsSeeded || processId !== seededProcessId) {
+          observedFpsSeeded = true;
+          seededProcessId = processId;
+          if (observedFps <= adaptiveCapFps - 10) {
+            const seededCapFps = Math.max(config.adaptiveMinFps, Math.min(config.adaptiveMaxFps, Math.round(observedFps)));
+            if (seededCapFps < adaptiveCapFps) {
+              adaptiveCapFps = seededCapFps;
+              observedFpsAdjustmentApplied = true;
+              aboveTargetSamples = 0;
+              observedFpsSamples = [];
+              observedProcessId = null;
+            }
+          }
+        }
       }
-      if (aboveTargetSamples >= 3) {
+      if (!observedFpsAdjustmentApplied && aboveTargetSamples >= 3) {
         if (observedFpsSamples.length >= 3 && observedProcessId !== null) {
           const sortedFps = [...observedFpsSamples].sort((a, b) => a - b);
           const medianFps = sortedFps[1];
@@ -128,16 +155,22 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
             observedFpsAdjustmentApplied = adaptiveCapFps < previousCapFps;
           }
         }
-        adaptiveCapFps = Math.max(config.adaptiveMinFps, adaptiveCapFps - 5);
+        if (!observedFpsAdjustmentApplied) {
+          adaptiveCapFps = Math.max(config.adaptiveMinFps, adaptiveCapFps - (observedFpsSeenInWindow ? 5 : highLoadStep));
+        }
         aboveTargetSamples = 0;
         observedFpsSamples = [];
         observedProcessId = null;
+        observedFpsSeenInWindow = false;
       }
     } else if (loadPercent < config.adaptiveTargetLoadPct - 5) {
       belowTargetSamples += 1;
       aboveTargetSamples = 0;
       observedFpsSamples = [];
       observedProcessId = null;
+      observedFpsSeeded = false;
+      seededProcessId = null;
+      observedFpsSeenInWindow = false;
       if (belowTargetSamples >= 5) {
         adaptiveCapFps = Math.min(config.adaptiveMaxFps, adaptiveCapFps + 3);
         belowTargetSamples = 0;
@@ -147,12 +180,18 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
       belowTargetSamples = 0;
       observedFpsSamples = [];
       observedProcessId = null;
+      observedFpsSeeded = false;
+      seededProcessId = null;
+      observedFpsSeenInWindow = false;
     }
   } else {
     aboveTargetSamples = 0;
     belowTargetSamples = 0;
     observedFpsSamples = [];
     observedProcessId = null;
+    observedFpsSeeded = false;
+    seededProcessId = null;
+    observedFpsSeenInWindow = false;
     if (loadUnavailableSinceMs === null && nowMs !== null) loadUnavailableSinceMs = nowMs;
     if (loadUnavailableSinceMs !== null && nowMs !== null && nowMs < loadUnavailableSinceMs) {
       loadUnavailableSinceMs = nowMs;
@@ -168,7 +207,7 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
   }
 
   const targetFps = idleActive ? config.idleFps : adaptiveTargetFps;
-  const nextState = { adaptiveCapFps, aboveTargetSamples, belowTargetSamples, loadUnavailableSinceMs, observedFpsSamples, observedProcessId };
+  const nextState = { adaptiveCapFps, aboveTargetSamples, belowTargetSamples, loadUnavailableSinceMs, observedFpsSamples, observedProcessId, observedFpsSeeded, seededProcessId, observedFpsSeenInWindow };
 
   return {
     state: nextState,

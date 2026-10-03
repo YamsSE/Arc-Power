@@ -231,9 +231,9 @@ export const arcSleepPage: Page = {
           disabled: 'Enable Load Adaptive to read live FPS.',
           'gpu-unavailable': 'Load Adaptive cannot currently read selected-GPU utilization.',
           'idle-priority': 'Idle Cap has priority; live-FPS adjustment is paused.',
-          'below-trigger': `Fast FPS adjustment waits for GPU load above ${settings.adaptiveTargetLoadPct + 5}%.`,
-          'rtss-unavailable': 'No fresh foreground game FPS from RTSS; using gradual 5 FPS steps.',
-          'gpu-unconfirmed': 'RTSS reports FPS, but the game could not be confirmed on the selected GPU; using gradual 5 FPS steps.',
+          'below-trigger': `Fast FPS adjustment waits for GPU load above ${settings.adaptiveTargetLoadPct}%.`,
+          'rtss-unavailable': 'No fresh foreground game FPS from RTSS; using sustained-load fallback steps.',
+          'gpu-unconfirmed': 'RTSS reports FPS, but the game could not be confirmed on the selected GPU; using sustained-load fallback steps.',
           ready: live.fastAdjustmentApplied ? 'Fast adjustment applied using the confirmed live game FPS.' : 'Foreground game FPS is confirmed on the selected GPU; fast adjustment is available.',
         };
         diagnostics.textContent = `${readings.join(' · ')} — ${guidance[live.fpsStatus]}`;

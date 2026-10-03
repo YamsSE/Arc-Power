@@ -644,7 +644,7 @@ export function createArcSleepController({
         && idleSeconds >= settings.idleAfterSeconds;
       if (idleActive) {
         fpsStatus = 'idle-priority';
-      } else if (loadPercent !== null && loadPercent <= settings.adaptiveTargetLoadPct + 5) {
+      } else if (loadPercent !== null && loadPercent <= settings.adaptiveTargetLoadPct) {
         fpsStatus = 'below-trigger';
       } else if (loadPercent !== null) {
         fpsStatus = 'rtss-unavailable';

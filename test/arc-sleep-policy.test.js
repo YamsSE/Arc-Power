@@ -53,9 +53,9 @@ test('idle override takes priority and resumes the adaptive target after activit
   state = result.state;
   result = stepArcSleepPolicy(state, settings, { idleMs: 60000, loadPercent: 99, nowMs: 200 });
   assert.equal(result.targetFps, 20);
-  assert.equal(result.adaptiveTargetFps, 95);
+  assert.equal(result.adaptiveTargetFps, 93);
   result = stepArcSleepPolicy(result.state, settings, { idleMs: 0, loadPercent: 99, nowMs: 300 });
-  assert.equal(result.targetFps, 95);
+  assert.equal(result.targetFps, 93);
   assert.equal(result.source, 'adaptive');
 });
 
@@ -93,32 +93,79 @@ test('live foreground FPS can reposition the cap again when the same game enters
   for (const fps of [119, 120, 121]) {
     state = stepArcSleepPolicy(state, settings, { loadPercent: 96, observedFps: fps, observedProcessId: 42 }).state;
   }
-  assert.equal(state.adaptiveCapFps, 115);
+  assert.equal(state.adaptiveCapFps, 119);
   for (const fps of [74, 75, 76]) {
     const result = stepArcSleepPolicy(state, settings, { loadPercent: 96, observedFps: fps, observedProcessId: 42 });
     state = result.state;
     if (fps === 76) assert.equal(result.observedFpsAdjustmentApplied, true);
   }
-  assert.equal(state.adaptiveCapFps, 70);
+  assert.equal(state.adaptiveCapFps, 75);
   for (let index = 0; index < 3; index += 1) {
     const result = stepArcSleepPolicy(state, settings, { loadPercent: 96, observedFps: 69, observedProcessId: 42 });
     state = result.state;
     assert.equal(result.observedFpsAdjustmentApplied, false);
   }
-  assert.equal(state.adaptiveCapFps, 65, 'near-cap FPS must use only the normal five-FPS step');
+  assert.equal(state.adaptiveCapFps, 70, 'confirmed near-cap FPS must use only the five-FPS step');
 });
 
-test('missing, mixed-process, or noisy FPS keeps the gradual high-load step', () => {
+test('missing FPS uses range-based steps and a later trustworthy FPS can seed immediately', () => {
   const settings = { adaptiveEnabled: true, adaptiveMinFps: 30, adaptiveMaxFps: 144 };
-  for (const observations of [
-    [{}, {}, {}],
-    [{ observedFps: 70, observedProcessId: 1 }, { observedFps: 70, observedProcessId: 2 }, { observedFps: 70, observedProcessId: 1 }],
-    [{ observedFps: 40, observedProcessId: 1 }, { observedFps: 70, observedProcessId: 1 }, { observedFps: 100, observedProcessId: 1 }],
-  ]) {
-    let state = createArcSleepPolicyState(settings);
-    for (const observation of observations) state = stepArcSleepPolicy(state, settings, { loadPercent: 99, ...observation }).state;
-    assert.equal(state.adaptiveCapFps, 139);
+  let state = createArcSleepPolicyState(settings);
+  for (let index = 0; index < 3; index += 1) state = stepArcSleepPolicy(state, settings, { loadPercent: 86 }).state;
+  assert.equal(state.adaptiveCapFps, 133);
+  const seeded = stepArcSleepPolicy(state, settings, { loadPercent: 86, observedFps: 70, observedProcessId: 1 });
+  assert.equal(seeded.state.adaptiveCapFps, 70);
+  assert.equal(seeded.observedFpsAdjustmentApplied, true);
+  state = seeded.state;
+  for (let index = 0; index < 3; index += 1) state = stepArcSleepPolicy(state, settings, { loadPercent: 86, observedFps: 68, observedProcessId: 1 }).state;
+  assert.equal(state.adaptiveCapFps, 65, 'near-cap readings must not trigger another immediate seed');
+});
+
+test('wide adaptive ranges converge under sustained high load without one-tick jumps', () => {
+  const settings = { adaptiveEnabled: true, adaptiveMinFps: 30, adaptiveMaxFps: 500, adaptiveTargetLoadPct: 85 };
+  let state = createArcSleepPolicyState(settings);
+  for (let index = 0; index < 47; index += 1) {
+    const next = stepArcSleepPolicy(state, settings, { loadPercent: 86 });
+    assert.ok(state.adaptiveCapFps - next.state.adaptiveCapFps <= 30);
+    state = next.state;
   }
+  assert.equal(state.adaptiveCapFps, 50);
+  state = stepArcSleepPolicy(state, settings, { loadPercent: 86 }).state;
+  assert.equal(state.adaptiveCapFps, 30);
+  const atTarget = stepArcSleepPolicy(state, settings, { loadPercent: 85 });
+  assert.equal(atTarget.state.aboveTargetSamples, 0);
+});
+
+test('first eligible FPS and a new foreground process seed immediately at any load above target', () => {
+  const settings = { adaptiveEnabled: true, adaptiveMinFps: 30, adaptiveMaxFps: 500, adaptiveTargetLoadPct: 95 };
+  let result = stepArcSleepPolicy(createArcSleepPolicyState(settings), settings,
+    { loadPercent: 100, observedFps: 120, observedProcessId: 7 });
+  assert.equal(result.state.adaptiveCapFps, 120);
+  assert.equal(result.observedFpsAdjustmentApplied, true);
+  result = stepArcSleepPolicy(result.state, settings,
+    { loadPercent: 100, observedFps: 116, observedProcessId: 7 });
+  assert.equal(result.state.adaptiveCapFps, 120);
+  assert.equal(result.observedFpsAdjustmentApplied, false);
+  result = stepArcSleepPolicy(result.state, settings,
+    { loadPercent: 100, observedFps: 80, observedProcessId: 8 });
+  assert.equal(result.state.adaptiveCapFps, 80);
+  assert.equal(result.observedFpsAdjustmentApplied, true);
+});
+
+test('an observation gap lets the same process seed again and mixed windows use the small step', () => {
+  const settings = { adaptiveEnabled: true, adaptiveMinFps: 30, adaptiveMaxFps: 500 };
+  let state = stepArcSleepPolicy(createArcSleepPolicyState(settings), settings,
+    { loadPercent: 99, observedFps: 120, observedProcessId: 7 }).state;
+  state = stepArcSleepPolicy(state, settings, { loadPercent: 99, observedFps: 118, observedProcessId: 7 }).state;
+  state = stepArcSleepPolicy(state, settings, { loadPercent: 99 }).state;
+  assert.equal(state.observedFpsSeeded, false);
+  assert.equal(state.adaptiveCapFps, 120);
+  state = stepArcSleepPolicy(state, settings, { loadPercent: 99, observedFps: 117, observedProcessId: 7 }).state;
+  assert.equal(state.adaptiveCapFps, 115, 'a mixed valid/missing window uses the small step');
+  state = stepArcSleepPolicy(state, settings, { loadPercent: 99 }).state;
+  const resumed = stepArcSleepPolicy(state, settings, { loadPercent: 99, observedFps: 90, observedProcessId: 7 });
+  assert.equal(resumed.state.adaptiveCapFps, 90);
+  assert.equal(resumed.observedFpsAdjustmentApplied, true);
 });
 
 test('idle FPS cannot seed adaptive cap or complete an earlier candidate set', () => {
@@ -127,11 +174,11 @@ test('idle FPS cannot seed adaptive cap or complete an earlier candidate set', (
   state = stepArcSleepPolicy(state, settings, { idleMs: 0, loadPercent: 99, observedFps: 70, observedProcessId: 12 }).state;
   state = stepArcSleepPolicy(state, settings, { idleMs: 60000, loadPercent: 99, observedFps: 30, observedProcessId: 12 }).state;
   state = stepArcSleepPolicy(state, settings, { idleMs: 0, loadPercent: 99, observedFps: 70, observedProcessId: 12 }).state;
-  assert.equal(state.adaptiveCapFps, 139);
+  assert.equal(state.adaptiveCapFps, 70);
   for (let index = 0; index < 2; index += 1) {
     state = stepArcSleepPolicy(state, settings, { idleMs: 0, loadPercent: 99, observedFps: 70, observedProcessId: 12 }).state;
   }
-  assert.equal(state.adaptiveCapFps, 139);
+  assert.equal(state.adaptiveCapFps, 65);
 });
 
 test('same inputs produce identical transitions without hidden time dependencies', () => {

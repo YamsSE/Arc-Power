@@ -1216,6 +1216,20 @@ export function createSysStats(deps = {}) {
       );
       const rows = parseGpuEngineOutput(stdout);
       const sampledAt = now();
+      // The one-shot reader also supplies Arc Sleep's per-process proof when
+      // the persistent worker is unavailable. Only a valid counter envelope
+      // can replace that snapshot; a failed or malformed query cannot renew it.
+      let envelope;
+      try { envelope = JSON.parse(String(stdout ?? '')); } catch { envelope = null; }
+      const validRows = rows.filter((row) => typeof row.name === 'string'
+        && Number.isFinite(row.utilPct) && row.utilPct >= 0);
+      const validEnvelope = (Array.isArray(envelope?.gpuEng) && envelope.gpuEng.length === 0)
+        || validRows.length > 0;
+      if (generation !== gpuGeneration) return;
+      if (validEnvelope) {
+        latestGpuRows = validRows;
+        latestGpuRowsAt = sampledAt;
+      }
       await applyGpuEngineRows(rows, sampledAt, nativeRecords, generation);
     } catch {
       // The existing freshness gate turns a failed query into null once the
@@ -1507,6 +1521,8 @@ export function createSysStats(deps = {}) {
         gpuHandle = null;
       }
       gpuGeneration += 1;
+      latestGpuRows = null;
+      latestGpuRowsAt = null;
       // A telemetry restart must establish a fresh native baseline. Do not
       // expose the previous session's value while the next D3DKMT pair is
       // warming, and do not let a slow fallback repopulate it after stop.

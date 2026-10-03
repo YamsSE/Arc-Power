@@ -281,10 +281,10 @@ test('controller reads foreground FPS only under high GPU load and follows later
   h.setLoadSignals({ gpuUtilPct: 96 });
   for (let index = 0; index < 3; index += 1) await h.controller.tick();
   assert.equal(h.observedFpsCalls(), 3);
-  assert.equal(h.readState().limit, 65);
+  assert.equal(h.readState().limit, 70);
   h.setObservedFps({ fps: 45, processId: 7 });
   for (let index = 0; index < 3; index += 1) await h.controller.tick();
-  assert.equal(h.readState().limit, 40);
+  assert.equal(h.readState().limit, 45);
   assert.deepEqual(h.controller.getSnapshot().diagnostics, {
     gpuUtilPct: 96,
     reportedFps: 45,
@@ -309,7 +309,7 @@ test('controller does not observe capped FPS while idle cap is active', async (t
   h.setObservedFps({ fps: 70, processId: 7 });
   for (let index = 0; index < 3; index += 1) await h.controller.tick();
   assert.equal(h.observedFpsCalls(), 3);
-  assert.equal(h.readState().limit, 65);
+  assert.equal(h.readState().limit, 70);
 });
 
 test('high CPU cannot sustain an adaptive cap when GPU telemetry disappears', async (t) => {
