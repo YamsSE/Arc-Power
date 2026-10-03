@@ -107,14 +107,19 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         : null;
     },
     getObservedFps: async () => {
-      if (typeof fpsLane?.pollForArcSleep !== 'function') return null;
+      if (typeof fpsLane?.pollForArcSleep !== 'function') return { eligible: false, reason: 'rtss-unavailable' };
       const observation = await fpsLane.pollForArcSleep();
-      if (!observation) return null;
+      if (!observation) return { eligible: false, reason: 'rtss-unavailable' };
       const stats = sysStats && typeof sysStats === 'object' && 'current' in sysStats
         ? sysStats.current
         : sysStats;
-      if (typeof stats?.isArcSleepProcessOnActiveGpu !== 'function') return null;
-      return await stats.isArcSleepProcessOnActiveGpu(observation.processId) ? observation : null;
+      if (typeof stats?.isArcSleepProcessOnActiveGpu !== 'function') {
+        return { ...observation, eligible: false, reason: 'selected-gpu-unconfirmed' };
+      }
+      const eligible = await stats.isArcSleepProcessOnActiveGpu(observation.processId);
+      return eligible
+        ? { ...observation, eligible: true }
+        : { ...observation, eligible: false, reason: 'selected-gpu-unconfirmed' };
     },
   });
   const wheaMonitor = arguments[0]?.wheaMonitor ?? null;

@@ -285,6 +285,20 @@ test('Recording rate-control IPC rejects invalid modes and out-of-range quality'
   assert.equal(highBitrateResult.settings.maxBitrateKbps, 900000);
 });
 
+test('recording capture target IPC accepts bounded stable window identity fields', async () => {
+  const handlers = createIpcHandlers({ backend: { async listDevices() { return []; } }, emit() {} }).handlers;
+  const saved = await handlers['recording-settings-save']({ captureTarget: {
+    type: 'window', windowHandle: 123, processName: 'game.exe',
+    executablePath: 'C:\\Games\\game.exe', windowTitle: 'Game', windowClass: 'GameWindow',
+  } });
+  assert.equal(saved.settings.captureTarget.executablePath, 'C:\\Games\\game.exe');
+  assert.equal(saved.settings.captureTarget.windowClass, 'GameWindow');
+  await assert.rejects(handlers['recording-settings-save']({ captureTarget: { executablePath: 42 } }), /invalid executable path/);
+  await assert.rejects(handlers['recording-settings-save']({ captureTarget: { executablePath: 'x'.repeat(4097) } }), /invalid executable path/);
+  await assert.rejects(handlers['recording-settings-save']({ captureTarget: { windowClass: 42 } }), /invalid window class/);
+  await assert.rejects(handlers['recording-settings-save']({ captureTarget: { windowClass: 'x'.repeat(257) } }), /invalid window class/);
+});
+
 test('successful replay shortcut requests idle runtime shutdown', async () => {
   let shutdowns = 0;
   let result = null;

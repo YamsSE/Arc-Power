@@ -87,21 +87,25 @@ test('missing load retains target for five seconds, then drops it until telemetr
   assert.equal(result.targetFps, 90);
 });
 
-test('stable foreground FPS seeds the downward cap once per process', () => {
+test('live foreground FPS can reposition the cap again when the same game enters a heavier scene', () => {
   const settings = { adaptiveEnabled: true, adaptiveMinFps: 30, adaptiveMaxFps: 144, adaptiveTargetLoadPct: 85 };
   let state = createArcSleepPolicyState(settings);
-  for (const fps of [69, 70, 71]) {
+  for (const fps of [119, 120, 121]) {
     state = stepArcSleepPolicy(state, settings, { loadPercent: 96, observedFps: fps, observedProcessId: 42 }).state;
   }
-  assert.equal(state.adaptiveCapFps, 65);
-  for (let index = 0; index < 3; index += 1) {
-    state = stepArcSleepPolicy(state, settings, { loadPercent: 96, observedFps: 50, observedProcessId: 42 }).state;
+  assert.equal(state.adaptiveCapFps, 115);
+  for (const fps of [74, 75, 76]) {
+    const result = stepArcSleepPolicy(state, settings, { loadPercent: 96, observedFps: fps, observedProcessId: 42 });
+    state = result.state;
+    if (fps === 76) assert.equal(result.observedFpsAdjustmentApplied, true);
   }
-  assert.equal(state.adaptiveCapFps, 60);
+  assert.equal(state.adaptiveCapFps, 70);
   for (let index = 0; index < 3; index += 1) {
-    state = stepArcSleepPolicy(state, settings, { loadPercent: 96, observedFps: 48, observedProcessId: 43 }).state;
+    const result = stepArcSleepPolicy(state, settings, { loadPercent: 96, observedFps: 69, observedProcessId: 42 });
+    state = result.state;
+    assert.equal(result.observedFpsAdjustmentApplied, false);
   }
-  assert.equal(state.adaptiveCapFps, 43);
+  assert.equal(state.adaptiveCapFps, 65, 'near-cap FPS must use only the normal five-FPS step');
 });
 
 test('missing, mixed-process, or noisy FPS keeps the gradual high-load step', () => {

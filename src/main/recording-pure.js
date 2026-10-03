@@ -100,7 +100,9 @@ export const DEFAULT_RECORDING_SETTINGS = Object.freeze({
     displayId: 'primary',
     windowHandle: 0,
     processName: '',
+    executablePath: '',
     windowTitle: '',
+    windowClass: '',
   },
   captureColorMode: 'auto',
   showCursor: false,
@@ -231,10 +233,16 @@ export function normalizeRecordingCaptureTarget(raw = {}) {
     ? source.windowHandle
     : 0;
   const processName = normalizeProcessName(source.processName) ?? '';
+  const executablePath = typeof source.executablePath === 'string' && source.executablePath.length <= 4096
+    ? source.executablePath.trim()
+    : '';
   const windowTitle = typeof source.windowTitle === 'string' && source.windowTitle.length <= 512
     ? source.windowTitle.trim()
     : '';
-  return { type, displayId, windowHandle, processName, windowTitle };
+  const windowClass = typeof source.windowClass === 'string' && source.windowClass.length <= 256
+    ? source.windowClass.trim()
+    : '';
+  return { type, displayId, windowHandle, processName, executablePath, windowTitle, windowClass };
 }
 
 export function normalizeRecordingAudioSettings(raw = {}) {

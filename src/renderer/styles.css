@@ -4344,6 +4344,7 @@ input[type="number"] {
 .arc-sleep-summary span { font-size: 12px; color: var(--text-muted); }
 .arc-sleep-summary strong { font-size: 21px; font-variant-numeric: tabular-nums; }
 .arc-sleep-status { font-size: 12px; margin: 18px 0 0; padding-top: 16px; border-top: 1px solid rgba(255,255,255,.07); color: var(--text-muted); }
+.arc-sleep-diagnostics { font-size: 12px; margin: 8px 0 0; color: var(--text-secondary); }
 .arc-sleep-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .arc-sleep-panel { padding: 24px; min-width: 0; }
 .arc-sleep-panel-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }

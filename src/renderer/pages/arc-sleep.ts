@@ -33,6 +33,7 @@ export const arcSleepPage: Page = {
     const rtss = el('strong', { text: 'Checking…' });
     const base = el('strong', { text: '—' });
     const effective = el('strong', { text: '—' });
+    const diagnostics = el('p', { class: 'arc-sleep-diagnostics', text: 'Waiting for live GPU and RTSS readings…', dataset: { arcSleepDiagnostics: '' }, role: 'status' });
     const toggle = (label: string): HTMLInputElement => el('input', { type: 'checkbox', class: 'arc-sleep-toggle', role: 'switch', 'aria-label': label });
     const number = (label: string, min: number, max: number, value: number): HTMLInputElement => el('input', { type: 'number', class: 'arc-sleep-number', min, max, step: 1, value, 'aria-label': label });
     const idle = toggle('Enable Idle Cap');
@@ -51,7 +52,7 @@ export const arcSleepPage: Page = {
     ]);
     container.append(el('div', { class: 'arc-sleep-page', dataset: { control: 'arcSleep' } }, [
       el('section', { class: 'arc-sleep-hero' }, [el('div', {}, [el('span', { class: 'arc-sleep-eyebrow', text: 'SMART FRAME CONTROL' }), el('h1', { class: 'page-title', text: 'Arc Sleep' }), el('p', { class: 'page-subtitle', text: 'Ease the frame cap when you step away. Balance GPU load while you play.' })]), saveState]),
-      el('section', { class: 'card arc-sleep-runtime' }, [el('div', { class: 'arc-sleep-summary', dataset: { arcSleepCaps: '' } }, [el('div', {}, [el('span', { text: 'RTSS connection' }), rtss]), el('div', {}, [el('span', { text: 'Base cap' }), base]), el('div', {}, [el('span', { text: 'Effective cap' }), effective])]), status]),
+      el('section', { class: 'card arc-sleep-runtime' }, [el('div', { class: 'arc-sleep-summary', dataset: { arcSleepCaps: '' } }, [el('div', {}, [el('span', { text: 'RTSS connection' }), rtss]), el('div', {}, [el('span', { text: 'Base cap' }), base]), el('div', {}, [el('span', { text: 'Effective cap' }), effective])]), status, diagnostics]),
       el('div', { class: 'arc-sleep-panels' }, [
         panel('Idle Cap', 'Save power during input inactivity.', idle, [field('Inactive for', delay, 'sec'), field('Cap at', idleFps, 'FPS')], 'Uses Windows keyboard and mouse input inactivity across your session. It does not detect character or camera movement. Input resumes your normal cap. Idle Cap takes priority over Load Adaptive.'),
         panel('Load Adaptive', 'Adjust the frame cap to your GPU workload.', adaptive, [field('Minimum', min, 'FPS'), field('Maximum', max, 'FPS'), field('Target GPU load', target, '%')], 'Uses fresh utilization from the selected GPU only. The cap stays within this range while seeking your target load. If GPU telemetry is unavailable for five seconds, the adaptive cap is released.'),
@@ -76,6 +77,23 @@ export const arcSleepPage: Page = {
       effective.textContent = !state || !state.rtssAvailable ? 'Unavailable' : cap(state.effectiveCapFps);
       const labels: Record<ArcSleepSnapshot['status'], string> = { disabled: 'Arc Sleep is disabled.', ready: 'Ready for input inactivity or GPU load changes.', idle: 'Idle Cap is active.', adaptive: 'Load Adaptive is active.', 'rtss-unavailable': 'Start RTSS to let Arc Sleep control the frame cap.', 'external-change': 'The RTSS cap changed externally. Arc Sleep released control.', 'recovery-pending': 'Restoring the previous RTSS cap…', error: 'Arc Sleep encountered an error.' };
       status.textContent = state?.status === 'adaptive' && state.effectiveCapFps == null ? 'Load Adaptive is waiting for fresh telemetry from the selected GPU.' : state?.message || (state ? labels[state.status] : failure ? `${failure}. Check RTSS and reopen Arc Sleep to retry.` : 'Runtime status is temporarily unavailable.');
+      const live = state?.diagnostics;
+      if (!live) {
+        diagnostics.textContent = state ? 'Live FPS adjustment diagnostics are unavailable in this runtime.' : 'Live GPU and RTSS readings are temporarily unavailable.';
+      } else {
+        const readings = [live.gpuUtilPct == null ? 'GPU utilization unavailable' : `GPU ${Math.round(live.gpuUtilPct)}%`];
+        if (live.reportedFps != null) readings.push(`RTSS ${Math.round(live.reportedFps)} FPS`);
+        const guidance: Record<NonNullable<ArcSleepSnapshot['diagnostics']>['fpsStatus'], string> = {
+          disabled: 'Enable Load Adaptive to read live FPS.',
+          'gpu-unavailable': 'Load Adaptive cannot currently read selected-GPU utilization.',
+          'idle-priority': 'Idle Cap has priority; live-FPS adjustment is paused.',
+          'below-trigger': `Fast FPS adjustment waits for GPU load above ${settings.adaptiveTargetLoadPct + 5}%.`,
+          'rtss-unavailable': 'No fresh foreground game FPS from RTSS; using gradual 5 FPS steps.',
+          'gpu-unconfirmed': 'RTSS reports FPS, but the game could not be confirmed on the selected GPU; using gradual 5 FPS steps.',
+          ready: live.fastAdjustmentApplied ? 'Fast adjustment applied using the confirmed live game FPS.' : 'Foreground game FPS is confirmed on the selected GPU; fast adjustment is available.',
+        };
+        diagnostics.textContent = `${readings.join(' · ')} — ${guidance[live.fpsStatus]}`;
+      }
     };
     const save = (): void => {
       if (!alive()) return;

@@ -119,6 +119,12 @@ export function createArcSleepController({
   let rtssAvailable = false;
   let lastRawState = null;
   let lastKnownRawState = null;
+  let runtimeDiagnostics = {
+    gpuUtilPct: null,
+    reportedFps: null,
+    fpsStatus: 'disabled',
+    lastFastAdjustmentAtMs: null,
+  };
   let timer = null;
   let tickPending = null;
   let initialized = false;
@@ -627,6 +633,8 @@ export function createArcSleepController({
     let loadPercent = null;
     let observedFps = null;
     let observedProcessId = null;
+    let reportedFps = null;
+    let fpsStatus = settings.adaptiveEnabled ? 'gpu-unavailable' : 'disabled';
     if (settings.adaptiveEnabled) {
       try {
         const signals = await getLoadSignals();
@@ -634,14 +642,33 @@ export function createArcSleepController({
       } catch { /* Missing telemetry is handled by the policy grace period. */ }
       const idleActive = settings.idleEnabled && idleSeconds !== null
         && idleSeconds >= settings.idleAfterSeconds;
-      if (!idleActive && loadPercent !== null && loadPercent > settings.adaptiveTargetLoadPct + 5) {
+      if (idleActive) {
+        fpsStatus = 'idle-priority';
+      } else if (loadPercent !== null && loadPercent <= settings.adaptiveTargetLoadPct + 5) {
+        fpsStatus = 'below-trigger';
+      } else if (loadPercent !== null) {
+        fpsStatus = 'rtss-unavailable';
         try {
           const observation = await getObservedFps();
-          observedFps = observation?.fps;
-          observedProcessId = observation?.processId;
+          const fps = typeof observation?.fps === 'number'
+            && Number.isFinite(observation.fps)
+            && observation.fps > 0
+            && observation.fps <= 1000
+            ? observation.fps
+            : null;
+          reportedFps = fps;
+          if (fps !== null && observation?.eligible !== false
+            && Number.isSafeInteger(observation?.processId) && observation.processId > 0) {
+            observedFps = fps;
+            observedProcessId = observation.processId;
+            fpsStatus = 'ready';
+          } else if (fps !== null && observation?.eligible === false) {
+            fpsStatus = 'gpu-unconfirmed';
+          }
         } catch { /* Missing FPS falls back to gradual cap reduction. */ }
       }
     }
+    const previousFastAdjustmentAtMs = runtimeDiagnostics.lastFastAdjustmentAtMs;
     const result = stepArcSleepPolicy(policyState, settings, {
       idleMs: idleSeconds === null ? null : idleSeconds * 1000,
       loadPercent,
@@ -650,6 +677,15 @@ export function createArcSleepController({
       nowMs: now(),
     });
     policyState = result.state;
+    const sampledAtMs = now();
+    runtimeDiagnostics = {
+      gpuUtilPct: loadPercent,
+      reportedFps,
+      fpsStatus,
+      lastFastAdjustmentAtMs: result.observedFpsAdjustmentApplied
+        ? sampledAtMs
+        : previousFastAdjustmentAtMs,
+    };
     return result;
   };
 
@@ -883,6 +919,13 @@ export function createArcSleepController({
     policy: policySource,
     status,
     message,
+    diagnostics: {
+      gpuUtilPct: runtimeDiagnostics.gpuUtilPct,
+      reportedFps: runtimeDiagnostics.reportedFps,
+      fpsStatus: runtimeDiagnostics.fpsStatus,
+      fastAdjustmentApplied: runtimeDiagnostics.lastFastAdjustmentAtMs !== null
+        && now() - runtimeDiagnostics.lastFastAdjustmentAtMs <= 5000,
+    },
   });
 
   const withTransaction = (work) => enqueue(async () => {

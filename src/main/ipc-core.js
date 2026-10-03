@@ -230,7 +230,9 @@ function recordingPatch(patch) {
     if (target.displayId !== undefined && (typeof target.displayId !== 'string' || target.displayId.length > 128)) throw new Error('recording-settings-save: invalid display id');
     if (target.windowHandle !== undefined && (!Number.isSafeInteger(target.windowHandle) || target.windowHandle < 0 || target.windowHandle > 0xffffffff)) throw new Error('recording-settings-save: invalid window handle');
     if (target.processName !== undefined && (typeof target.processName !== 'string' || target.processName.length > 256)) throw new Error('recording-settings-save: invalid process name');
+    if (target.executablePath !== undefined && (typeof target.executablePath !== 'string' || target.executablePath.length > 4096)) throw new Error('recording-settings-save: invalid executable path');
     if (target.windowTitle !== undefined && (typeof target.windowTitle !== 'string' || target.windowTitle.length > 512)) throw new Error('recording-settings-save: invalid window title');
+    if (target.windowClass !== undefined && (typeof target.windowClass !== 'string' || target.windowClass.length > 256)) throw new Error('recording-settings-save: invalid window class');
   }
   if (patch.hotkeys !== undefined && (!patch.hotkeys || typeof patch.hotkeys !== 'object' || Array.isArray(patch.hotkeys))) throw new Error('recording-settings-save: hotkeys must be an object');
   if (patch.audio !== undefined) {
@@ -3132,6 +3134,7 @@ export function createIpcHandlers({
             policy: null,
             status: 'rtss-unavailable',
             message: 'Arc Sleep is unavailable in this runtime.',
+            diagnostics: { gpuUtilPct: null, reportedFps: null, fpsStatus: 'gpu-unavailable', fastAdjustmentApplied: false },
           };
         }
         // This is a read of in-memory controller state. Keep it outside the
