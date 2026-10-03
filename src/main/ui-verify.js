@@ -10727,6 +10727,25 @@ async function verifyArcSleepPage(win) {
   await js(`location.hash = '#/arc-sleep'`);
   if (!(await waitFor(win, `document.querySelector('.arc-sleep-toggle')?.disabled === false`, 5000))) throw new Error('Arc Sleep settings did not load');
   if (!(await waitFor(win, `document.querySelector('[data-arc-sleep-base-cap]') && !document.querySelector('[data-arc-sleep-base-cap-status]')?.textContent?.includes('Checking FPS limiter support')`, 5000))) throw new Error('Arc Sleep Base FPS Cap support check did not complete');
+  const panelLayout = await js(`(() => {
+    const container = document.querySelector('.arc-sleep-panels');
+    const containerRect = container.getBoundingClientRect();
+    const panels = Array.from(container.querySelectorAll(':scope > .arc-sleep-panel'));
+    return {
+      titles: panels.map(panel => panel.querySelector('.card-title')?.textContent),
+      baseGridColumn: getComputedStyle(panels[2]).gridColumn,
+      containerWidth: containerRect.width,
+      cards: panels.map(panel => { const rect = panel.getBoundingClientRect(); return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width }; }),
+    };
+  })()`);
+  const [idleCard, adaptiveCard, baseCapCard] = panelLayout.cards;
+  if (panelLayout.titles.join('|') !== 'Idle Cap|Load Adaptive|Base FPS Cap'
+    || panelLayout.baseGridColumn !== '1 / -1'
+    || !idleCard || !adaptiveCard || !baseCapCard
+    || baseCapCard.width < panelLayout.containerWidth - 2
+    || baseCapCard.top < Math.max(idleCard.bottom, adaptiveCard.bottom) - 1) {
+    throw new Error(`Arc Sleep Base FPS Cap layout: ${JSON.stringify(panelLayout)}`);
+  }
   const geometry = await js(`Array.from(document.querySelectorAll('.arc-sleep-toggle')).map(input => { const r = input.getBoundingClientRect(); return { width: r.width, height: r.height }; })`);
   if (geometry.length !== 2 || geometry.some(r => r.width !== 42 || r.height !== 24)) throw new Error(`Arc Sleep toggle geometry: ${JSON.stringify(geometry)}`);
   const selectedBeforeCapTest = await js(`window.arcPower.deviceGet()`);

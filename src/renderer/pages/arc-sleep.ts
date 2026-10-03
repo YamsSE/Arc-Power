@@ -75,9 +75,9 @@ export const arcSleepPage: Page = {
     let currentDeviceSignature = deviceSignature(selectedState);
     baseCapPanel = buildBaseCapPanel(selectedDevice(selectedState), currentDeviceSignature);
     const panels = el('div', { class: 'arc-sleep-panels' }, [
-      baseCapPanel,
       panel('Idle Cap', 'Save power during input inactivity.', idle, [field('Inactive for', delay, 'sec'), field('Cap at', idleFps, 'FPS')], 'Uses Windows keyboard and mouse input inactivity across your session. It does not detect character or camera movement. Input resumes your normal cap. Idle Cap takes priority over Load Adaptive.'),
       panel('Load Adaptive', 'Adjust the frame cap to your GPU workload.', adaptive, [field('Minimum', min, 'FPS'), field('Maximum', max, 'FPS'), field('Target GPU load', target, '%')], 'Uses fresh utilization from the selected GPU only. The cap stays within this range while seeking your target load. If GPU telemetry is unavailable for five seconds, the adaptive cap is released.'),
+      baseCapPanel,
     ]);
     updateFooter(selectedState);
     container.append(el('div', { class: 'arc-sleep-page', dataset: { control: 'arcSleep' } }, [

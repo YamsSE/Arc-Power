@@ -4347,6 +4347,7 @@ input[type="number"] {
 .arc-sleep-diagnostics { font-size: 12px; margin: 8px 0 0; color: var(--text-secondary); }
 .arc-sleep-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .arc-sleep-panel { padding: 24px; min-width: 0; }
+.arc-sleep-base-cap { grid-column: 1 / -1; }
 .arc-sleep-panel-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .arc-sleep-panel-heading .card-note { margin: 8px 0 0; }
 .arc-sleep-toggle { appearance: none; flex: 0 0 42px; width: 42px; height: 24px; margin: 0; border-radius: 20px; border: 1px solid rgba(255,255,255,.22); background: #303744; position: relative; cursor: pointer; }
