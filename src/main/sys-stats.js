@@ -449,6 +449,26 @@ export function gpuUtilPctOf(rows, luid) {
   return Math.max(...byEngine.values());
 }
 
+/** Confirm that a process is rendering on the selected adapter from a fresh
+ * GPU Engine sample. Unknown or ambiguous counter data never authorizes an
+ * FPS-based cap seed. */
+export function processUsesGpuFor3d(rows, pid, luid) {
+  if (!Array.isArray(rows) || !Number.isSafeInteger(pid) || pid <= 0 || !luid) return false;
+  const usageByLuid = new Map();
+  for (const row of rows) {
+    const match = String(row?.name ?? '').match(/^pid_(\d+)_luid_(0x[0-9a-f]{8})_(0x[0-9a-f]{8})_phys_\d+_eng_\d+_engtype_3d$/i);
+    if (!match || Number(match[1]) !== pid) continue;
+    if (!Number.isFinite(row?.utilPct) || row.utilPct <= 0) continue;
+    const key = `${match[2].toLowerCase()}_${match[3].toLowerCase()}`;
+    usageByLuid.set(key, (usageByLuid.get(key) ?? 0) + Math.min(100, row.utilPct));
+  }
+  const selectedKey = `0x${(luid.high >>> 0).toString(16).padStart(8, '0')}_0x${(luid.low >>> 0).toString(16).padStart(8, '0')}`;
+  const selectedUsage = usageByLuid.get(selectedKey) ?? 0;
+  if (selectedUsage < 10) return false;
+  return [...usageByLuid].every(([key, usage]) => key === selectedKey
+    || (selectedUsage - usage >= 5 && selectedUsage >= usage * 2));
+}
+
 /** Normalize the LUID shapes used by DXGI, koffi, JSON, and persisted GPU
  * inventory rows into the numeric pair consumed by the perf-counter matcher.
  * A missing/invalid identity must never fall through to an ordinal adapter. */
@@ -1366,6 +1386,19 @@ export function createSysStats(deps = {}) {
       };
     },
 
+    /** Only a recent per-process 3D counter on the selected adapter may seed
+     * Arc Sleep from measured foreground FPS. Native aggregate utilization
+     * has no process identity, so it cannot satisfy this check. */
+    async isArcSleepProcessOnActiveGpu(pid) {
+      const sampledAt = latestGpuRowsAt;
+      if (!Number.isFinite(sampledAt) || now() - sampledAt < 0 || now() - sampledAt > 3000) return false;
+      try {
+        return processUsesGpuFor3d(latestGpuRows, pid, await luidForRecord(activeRecord));
+      } catch {
+        return false;
+      }
+    },
+
     // M150: fast native fields are shared in meaning but merged with the
     // selected physical adapter's slow cache.  This is the per-lane entry
     // point used by overlay and multi-device consumers.
@@ -1585,6 +1618,7 @@ export function createMockSysStats(overrides = {}) {
     async sampleArcSleepSignals() {
       return { gpuUtilPct: base.gpuUtilPct };
     },
+    async isArcSleepProcessOnActiveGpu() { return false; },
     async sampleForTarget() { return sampleOf(); },
     async sampleGpuUtilForTarget() { return { gpuUtilPct: base.gpuUtilPct }; },
     registerTarget() {},

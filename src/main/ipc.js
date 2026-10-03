@@ -106,6 +106,16 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         ? stats.sampleArcSleepSignals()
         : null;
     },
+    getObservedFps: async () => {
+      if (typeof fpsLane?.pollForArcSleep !== 'function') return null;
+      const observation = await fpsLane.pollForArcSleep();
+      if (!observation) return null;
+      const stats = sysStats && typeof sysStats === 'object' && 'current' in sysStats
+        ? sysStats.current
+        : sysStats;
+      if (typeof stats?.isArcSleepProcessOnActiveGpu !== 'function') return null;
+      return await stats.isArcSleepProcessOnActiveGpu(observation.processId) ? observation : null;
+    },
   });
   const wheaMonitor = arguments[0]?.wheaMonitor ?? null;
   const intelDriverUpdateService = arguments[0]?.intelDriverUpdateService ?? createIntelDriverUpdateService();

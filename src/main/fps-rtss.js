@@ -491,6 +491,20 @@ export function createRtssFpsLane({
   const retentionMs = Number.isFinite(targetRetentionMs) ? Math.max(250, targetRetentionMs) : 5_000;
   let lastTarget = null;
   return {
+    async pollForArcSleep() {
+      let pid = null;
+      try { pid = await resolveForegroundPid(); } catch { return null; }
+      if (!Number.isInteger(pid) || pid < 1) return null;
+      try {
+        if (await isOwnPid(pid)) return null;
+        const sample = await source.poll(pid);
+        if (!validNumber(sample?.fps) || sample.fps <= 0) return null;
+        return { processId: pid, fps: sample.fps };
+      } catch {
+        return null;
+      }
+    },
+
     async poll(_deviceId) {
       let pid = null;
       try { pid = await resolveForegroundPid(); } catch { return null; }

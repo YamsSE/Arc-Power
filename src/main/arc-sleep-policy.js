@@ -49,7 +49,10 @@ export function createArcSleepPolicyState(settings = DEFAULTS) {
     adaptiveCapFps: normalized.adaptiveMaxFps,
     aboveTargetSamples: 0,
     belowTargetSamples: 0,
-    loadUnavailableSinceMs: null
+    loadUnavailableSinceMs: null,
+    observedFpsSamples: [],
+    observedProcessId: null,
+    seededProcessIds: []
   };
 }
 
@@ -63,9 +66,17 @@ function validClock(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
+function validObservedFps(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 1000 ? value : null;
+}
+
+function validProcessId(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
 /**
  * Advances Arc Sleep's combined idle/adaptive policy by one supplied sample.
- * sample: { idleMs, loadPercent, nowMs }. Invalid idleMs is treated as active;
+ * sample: { idleMs, loadPercent, nowMs, observedFps, observedProcessId }. Invalid idleMs is treated as active;
  * invalid loadPercent is treated as unavailable. No clocks or timers are read.
  */
 export function stepArcSleepPolicy(state, settings, sample = {}) {
@@ -76,6 +87,7 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
     ? sample.idleMs
     : null;
   const loadPercent = validLoad(sample?.loadPercent);
+  const idleActive = config.idleEnabled && idleMs !== null && idleMs >= config.idleAfterSeconds * 1000;
 
   let adaptiveCapFps = boundedInteger(current.adaptiveCapFps, LIMITS.adaptiveMaxFps, config.adaptiveMaxFps);
   adaptiveCapFps = Math.min(config.adaptiveMaxFps, Math.max(config.adaptiveMinFps, adaptiveCapFps));
@@ -86,19 +98,48 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
     ? current.belowTargetSamples
     : 0;
   let loadUnavailableSinceMs = validClock(current.loadUnavailableSinceMs);
+  let observedFpsSamples = Array.isArray(current.observedFpsSamples)
+    ? current.observedFpsSamples.filter((value) => validObservedFps(value) !== null).slice(-2)
+    : [];
+  let observedProcessId = validProcessId(current.observedProcessId);
+  const seededProcessIds = Array.isArray(current.seededProcessIds)
+    ? current.seededProcessIds.filter((value) => validProcessId(value) !== null)
+    : [];
 
   if (loadPercent !== null) {
     loadUnavailableSinceMs = null;
     if (loadPercent > config.adaptiveTargetLoadPct + 5) {
       aboveTargetSamples += 1;
       belowTargetSamples = 0;
+      const processId = validProcessId(sample?.observedProcessId);
+      const observedFps = validObservedFps(sample?.observedFps);
+      if (idleActive || processId === null || observedFps === null || seededProcessIds.includes(processId)) {
+        observedFpsSamples = [];
+        observedProcessId = null;
+      } else {
+        observedFpsSamples = processId === observedProcessId ? [...observedFpsSamples, observedFps] : [observedFps];
+        observedProcessId = processId;
+      }
       if (aboveTargetSamples >= 3) {
+        if (observedFpsSamples.length >= 3 && observedProcessId !== null) {
+          const sortedFps = [...observedFpsSamples].sort((a, b) => a - b);
+          const medianFps = sortedFps[1];
+          if (sortedFps[2] - sortedFps[0] <= Math.max(5, medianFps * 0.15)
+            && medianFps <= adaptiveCapFps - 10) {
+            adaptiveCapFps = Math.max(config.adaptiveMinFps, Math.min(adaptiveCapFps, Math.round(medianFps)));
+            seededProcessIds.push(observedProcessId);
+          }
+        }
         adaptiveCapFps = Math.max(config.adaptiveMinFps, adaptiveCapFps - 5);
         aboveTargetSamples = 0;
+        observedFpsSamples = [];
+        observedProcessId = null;
       }
     } else if (loadPercent < config.adaptiveTargetLoadPct - 5) {
       belowTargetSamples += 1;
       aboveTargetSamples = 0;
+      observedFpsSamples = [];
+      observedProcessId = null;
       if (belowTargetSamples >= 5) {
         adaptiveCapFps = Math.min(config.adaptiveMaxFps, adaptiveCapFps + 3);
         belowTargetSamples = 0;
@@ -106,10 +147,14 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
     } else {
       aboveTargetSamples = 0;
       belowTargetSamples = 0;
+      observedFpsSamples = [];
+      observedProcessId = null;
     }
   } else {
     aboveTargetSamples = 0;
     belowTargetSamples = 0;
+    observedFpsSamples = [];
+    observedProcessId = null;
     if (loadUnavailableSinceMs === null && nowMs !== null) loadUnavailableSinceMs = nowMs;
     if (loadUnavailableSinceMs !== null && nowMs !== null && nowMs < loadUnavailableSinceMs) {
       loadUnavailableSinceMs = nowMs;
@@ -124,9 +169,8 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
     }
   }
 
-  const idleActive = config.idleEnabled && idleMs !== null && idleMs >= config.idleAfterSeconds * 1000;
   const targetFps = idleActive ? config.idleFps : adaptiveTargetFps;
-  const nextState = { adaptiveCapFps, aboveTargetSamples, belowTargetSamples, loadUnavailableSinceMs };
+  const nextState = { adaptiveCapFps, aboveTargetSamples, belowTargetSamples, loadUnavailableSinceMs, observedFpsSamples, observedProcessId, seededProcessIds };
 
   return {
     state: nextState,

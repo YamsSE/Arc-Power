@@ -13,6 +13,7 @@ function harness({
   underlay = state,
   idleSeconds = 0,
   loadSignals = { cpuUtilPct: null, gpuUtilPct: null },
+  observedFps = null,
   now = () => 10000,
   unavailable = false,
   failNextApply = false,
@@ -30,6 +31,7 @@ function harness({
   let failNextRestorePartially = false;
   let failNextFrameLimitApply = failNextApply;
   let externalizeBeforeApply = null;
+  let observedFpsCalls = 0;
   const saveHistory = [];
   const store = {
     async loadSettings() { return structuredClone(saved); },
@@ -80,6 +82,7 @@ function harness({
       rtssFrameLimiter,
       getIdleSeconds: () => idleSeconds,
       getLoadSignals: async () => loadSignals,
+      getObservedFps: async () => { observedFpsCalls += 1; return observedFps; },
       now,
       rtssOperationTimeoutMs,
       shutdownTimeoutMs,
@@ -97,6 +100,8 @@ function harness({
     setUnderlay: (next) => { initialUnderlay = { ...next }; },
     setIdleSeconds: (value) => { idleSeconds = value; },
     setLoadSignals: (value) => { loadSignals = value; },
+    setObservedFps: (value) => { observedFps = value; },
+    observedFpsCalls: () => observedFpsCalls,
     setNow: (value) => { now = () => value; },
     setUnavailable: (value) => { isUnavailable = value; },
     setExternalizeBeforeApply: (callback) => { externalizeBeforeApply = callback; },
@@ -262,6 +267,43 @@ test('adaptive cap responds to GPU load even when CPU load disagrees', async (t)
   h.setLoadSignals({ cpuUtilPct: 0, gpuUtilPct: 100 });
   for (let sample = 0; sample < 3; sample += 1) await h.controller.tick();
   assert.equal(h.readState().limit, 75);
+});
+
+test('controller reads foreground FPS only under high GPU load and seeds once', async (t) => {
+  const h = harness({
+    settings: { adaptiveEnabled: true },
+    loadSignals: { gpuUtilPct: 50 },
+    observedFps: { fps: 70, processId: 7 },
+  });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+  assert.equal(h.observedFpsCalls(), 0);
+  h.setLoadSignals({ gpuUtilPct: 96 });
+  for (let index = 0; index < 3; index += 1) await h.controller.tick();
+  assert.equal(h.observedFpsCalls(), 3);
+  assert.equal(h.readState().limit, 65);
+  h.setObservedFps({ fps: 50, processId: 7 });
+  for (let index = 0; index < 3; index += 1) await h.controller.tick();
+  assert.equal(h.readState().limit, 60);
+});
+
+test('controller does not observe capped FPS while idle cap is active', async (t) => {
+  const h = harness({
+    settings: { idleEnabled: true, adaptiveEnabled: true },
+    loadSignals: { gpuUtilPct: 99 },
+    observedFps: { fps: 30, processId: 7 },
+    idleSeconds: 400,
+  });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+  await h.controller.tick();
+  await h.controller.tick();
+  assert.equal(h.observedFpsCalls(), 0);
+  h.setIdleSeconds(0);
+  h.setObservedFps({ fps: 70, processId: 7 });
+  for (let index = 0; index < 3; index += 1) await h.controller.tick();
+  assert.equal(h.observedFpsCalls(), 3);
+  assert.equal(h.readState().limit, 65);
 });
 
 test('high CPU cannot sustain an adaptive cap when GPU telemetry disappears', async (t) => {

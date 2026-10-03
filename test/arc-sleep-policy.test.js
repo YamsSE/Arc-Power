@@ -87,6 +87,49 @@ test('missing load retains target for five seconds, then drops it until telemetr
   assert.equal(result.targetFps, 90);
 });
 
+test('stable foreground FPS seeds the downward cap once per process', () => {
+  const settings = { adaptiveEnabled: true, adaptiveMinFps: 30, adaptiveMaxFps: 144, adaptiveTargetLoadPct: 85 };
+  let state = createArcSleepPolicyState(settings);
+  for (const fps of [69, 70, 71]) {
+    state = stepArcSleepPolicy(state, settings, { loadPercent: 96, observedFps: fps, observedProcessId: 42 }).state;
+  }
+  assert.equal(state.adaptiveCapFps, 65);
+  for (let index = 0; index < 3; index += 1) {
+    state = stepArcSleepPolicy(state, settings, { loadPercent: 96, observedFps: 50, observedProcessId: 42 }).state;
+  }
+  assert.equal(state.adaptiveCapFps, 60);
+  for (let index = 0; index < 3; index += 1) {
+    state = stepArcSleepPolicy(state, settings, { loadPercent: 96, observedFps: 48, observedProcessId: 43 }).state;
+  }
+  assert.equal(state.adaptiveCapFps, 43);
+});
+
+test('missing, mixed-process, or noisy FPS keeps the gradual high-load step', () => {
+  const settings = { adaptiveEnabled: true, adaptiveMinFps: 30, adaptiveMaxFps: 144 };
+  for (const observations of [
+    [{}, {}, {}],
+    [{ observedFps: 70, observedProcessId: 1 }, { observedFps: 70, observedProcessId: 2 }, { observedFps: 70, observedProcessId: 1 }],
+    [{ observedFps: 40, observedProcessId: 1 }, { observedFps: 70, observedProcessId: 1 }, { observedFps: 100, observedProcessId: 1 }],
+  ]) {
+    let state = createArcSleepPolicyState(settings);
+    for (const observation of observations) state = stepArcSleepPolicy(state, settings, { loadPercent: 99, ...observation }).state;
+    assert.equal(state.adaptiveCapFps, 139);
+  }
+});
+
+test('idle FPS cannot seed adaptive cap or complete an earlier candidate set', () => {
+  const settings = { idleEnabled: true, idleAfterSeconds: 60, idleFps: 30, adaptiveEnabled: true };
+  let state = createArcSleepPolicyState(settings);
+  state = stepArcSleepPolicy(state, settings, { idleMs: 0, loadPercent: 99, observedFps: 70, observedProcessId: 12 }).state;
+  state = stepArcSleepPolicy(state, settings, { idleMs: 60000, loadPercent: 99, observedFps: 30, observedProcessId: 12 }).state;
+  state = stepArcSleepPolicy(state, settings, { idleMs: 0, loadPercent: 99, observedFps: 70, observedProcessId: 12 }).state;
+  assert.equal(state.adaptiveCapFps, 139);
+  for (let index = 0; index < 2; index += 1) {
+    state = stepArcSleepPolicy(state, settings, { idleMs: 0, loadPercent: 99, observedFps: 70, observedProcessId: 12 }).state;
+  }
+  assert.equal(state.adaptiveCapFps, 139);
+});
+
 test('same inputs produce identical transitions without hidden time dependencies', () => {
   const settings = { idleEnabled: true, adaptiveEnabled: true };
   const state = createArcSleepPolicyState(settings);

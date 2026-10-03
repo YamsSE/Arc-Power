@@ -98,6 +98,7 @@ export function createArcSleepController({
   rtssFrameLimiter,
   getIdleSeconds = () => null,
   getLoadSignals = async () => null,
+  getObservedFps = async () => null,
   now = () => Date.now(),
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
@@ -624,15 +625,28 @@ export function createArcSleepController({
       if (typeof value === 'number' && Number.isFinite(value) && value >= 0) idleSeconds = value;
     } catch { /* Invalid session input state means active. */ }
     let loadPercent = null;
+    let observedFps = null;
+    let observedProcessId = null;
     if (settings.adaptiveEnabled) {
       try {
         const signals = await getLoadSignals();
         loadPercent = asPercentage(signals?.gpuUtilPct);
       } catch { /* Missing telemetry is handled by the policy grace period. */ }
+      const idleActive = settings.idleEnabled && idleSeconds !== null
+        && idleSeconds >= settings.idleAfterSeconds;
+      if (!idleActive && loadPercent !== null && loadPercent > settings.adaptiveTargetLoadPct + 5) {
+        try {
+          const observation = await getObservedFps();
+          observedFps = observation?.fps;
+          observedProcessId = observation?.processId;
+        } catch { /* Missing FPS falls back to gradual cap reduction. */ }
+      }
     }
     const result = stepArcSleepPolicy(policyState, settings, {
       idleMs: idleSeconds === null ? null : idleSeconds * 1000,
       loadPercent,
+      observedFps,
+      observedProcessId,
       nowMs: now(),
     });
     policyState = result.state;
