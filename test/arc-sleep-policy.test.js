@@ -66,7 +66,9 @@ test('adaptive hysteresis requires three high or five low samples and clamps', (
   assert.equal(state.adaptiveCapFps, 40);
   state = stepArcSleepPolicy(state, settings, { loadPercent: 80, nowMs: 2 }).state;
   assert.equal(state.adaptiveCapFps, 35);
-  for (let i = 0; i < 15; i++) state = stepArcSleepPolicy(state, settings, { loadPercent: 50, nowMs: i + 3 }).state;
+  for (let i = 0; i < 5; i++) state = stepArcSleepPolicy(state, settings, { loadPercent: 50, nowMs: i + 3 }).state;
+  assert.equal(state.adaptiveCapFps, 38);
+  for (let i = 5; i < 15; i++) state = stepArcSleepPolicy(state, settings, { loadPercent: 50, nowMs: i + 3 }).state;
   assert.equal(state.adaptiveCapFps, 40);
   for (let i = 0; i < 15; i++) state = stepArcSleepPolicy(state, settings, { loadPercent: 90, nowMs: i + 20 }).state;
   assert.equal(state.adaptiveCapFps, 30);

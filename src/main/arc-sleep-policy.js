@@ -100,7 +100,7 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
       belowTargetSamples += 1;
       aboveTargetSamples = 0;
       if (belowTargetSamples >= 5) {
-        adaptiveCapFps = Math.min(config.adaptiveMaxFps, adaptiveCapFps + 5);
+        adaptiveCapFps = Math.min(config.adaptiveMaxFps, adaptiveCapFps + 3);
         belowTargetSamples = 0;
       }
     } else {
