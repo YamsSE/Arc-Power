@@ -2,6 +2,7 @@ import { el, clear } from '../dom.ts';
 import { api } from '../ipc.ts';
 import type { Page } from '../router.ts';
 import type { ArcSleepSettings, ArcSleepSnapshot } from '../types.ts';
+import { clampFrameLimitValue, frameLimitRange } from '../pure/graphics.ts';
 
 const defaults: ArcSleepSettings = { idleEnabled: false, idleAfterSeconds: 300, idleFps: 30, adaptiveEnabled: false, adaptiveMinFps: 60, adaptiveMaxFps: 144, adaptiveTargetLoadPct: 85 };
 // Serialize saves across visits. A visit may stop waiting, but never cancels an accepted save.
@@ -9,6 +10,7 @@ let saveQueue: Promise<void> = Promise.resolve();
 let latestAcceptedSettings: ArcSleepSettings | null = null;
 let generation = 0;
 let timer: number | undefined;
+let updateSelectedDeviceControls: ((container: HTMLElement, ctx: Parameters<NonNullable<Page['onUpdate']>>[1]) => void) | null = null;
 const IPC_TIMEOUT_MS = 5000;
 const withTimeout = <T>(request: Promise<T>, label: string): Promise<T> => {
   let timeout: number | undefined;
@@ -34,6 +36,7 @@ export const arcSleepPage: Page = {
     const base = el('strong', { text: '—' });
     const effective = el('strong', { text: '—' });
     const diagnostics = el('p', { class: 'arc-sleep-diagnostics', text: 'Waiting for live GPU and RTSS readings…', dataset: { arcSleepDiagnostics: '' }, role: 'status' });
+    const baseCapStatus = el('p', { class: 'arc-sleep-panel-note', text: 'Checking FPS limiter support…', dataset: { arcSleepBaseCapStatus: '' }, role: 'status' });
     const toggle = (label: string): HTMLInputElement => el('input', { type: 'checkbox', class: 'arc-sleep-toggle', role: 'switch', 'aria-label': label });
     const number = (label: string, min: number, max: number, value: number): HTMLInputElement => el('input', { type: 'number', class: 'arc-sleep-number', min, max, step: 1, value, 'aria-label': label });
     const idle = toggle('Enable Idle Cap');
@@ -43,26 +46,162 @@ export const arcSleepPage: Page = {
     const min = number('Adaptive minimum FPS', 30, 240, 60);
     const max = number('Adaptive maximum FPS', 31, 500, 144);
     const target = number('Target GPU load percent', 50, 99, 85);
-    const selected = ctx.store.get().devices.find(device => device.id === ctx.store.get().deviceId);
+    const selectedDevice = (state: ReturnType<typeof ctx.store.get>) => state.devices.find(device => device.id === state.deviceId);
+    const deviceSignature = (state: ReturnType<typeof ctx.store.get>): string => {
+      const device = selectedDevice(state);
+      return JSON.stringify([state.deviceId, device?.deviceKey ?? null, device?.synthetic === true, device?.backendKind ?? null]);
+    };
     const controls = [idle, adaptive, delay, idleFps, min, max, target];
     const field = (label: string, input: HTMLInputElement, unit: string): HTMLElement => el('label', { class: 'arc-sleep-field' }, [el('span', { text: label }), el('span', { class: 'arc-sleep-input-wrap' }, [input, el('span', { text: unit, 'aria-hidden': 'true' })])]);
     const panel = (title: string, subtitle: string, input: HTMLInputElement, fields: HTMLElement[], note: string): HTMLElement => el('section', { class: 'card arc-sleep-panel' }, [
       el('div', { class: 'arc-sleep-panel-heading' }, [el('div', {}, [el('h2', { class: 'card-title', text: title }), el('p', { class: 'card-note', text: subtitle })]), input]),
       el('div', { class: 'arc-sleep-fields' }, fields), el('p', { class: 'arc-sleep-panel-note', text: note }),
     ]);
+    const footer = el('div', { class: 'arc-sleep-footer' });
+    const updateFooter = (state: ReturnType<typeof ctx.store.get>): void => {
+      const selected = selectedDevice(state);
+      clear(footer);
+      if (!selected || selected.synthetic || selected.backendKind === 'os') {
+        footer.append(el('p', { class: 'card-note', text: !selected
+          ? 'RTSS frame control is app-wide and follows RTSS profile scope. Arc Sleep settings are available without a selected GPU; the Graphics base cap requires one.'
+          : 'RTSS frame control is app-wide and follows RTSS profile scope. The Graphics base cap is unavailable for this GPU.' }));
+      } else {
+        footer.append(el('p', { class: 'card-note', text: 'RTSS frame control is app-wide and follows RTSS profile scope. The Base FPS Cap here is the same shared limiter shown in Graphics.' }));
+      }
+    };
+    let baseCapGeneration = 0;
+    let baseCapPanel: HTMLElement;
+    const selectedState = ctx.store.get();
+    let currentDeviceSignature = deviceSignature(selectedState);
+    baseCapPanel = buildBaseCapPanel(selectedDevice(selectedState), currentDeviceSignature);
+    const panels = el('div', { class: 'arc-sleep-panels' }, [
+      baseCapPanel,
+      panel('Idle Cap', 'Save power during input inactivity.', idle, [field('Inactive for', delay, 'sec'), field('Cap at', idleFps, 'FPS')], 'Uses Windows keyboard and mouse input inactivity across your session. It does not detect character or camera movement. Input resumes your normal cap. Idle Cap takes priority over Load Adaptive.'),
+      panel('Load Adaptive', 'Adjust the frame cap to your GPU workload.', adaptive, [field('Minimum', min, 'FPS'), field('Maximum', max, 'FPS'), field('Target GPU load', target, '%')], 'Uses fresh utilization from the selected GPU only. The cap stays within this range while seeking your target load. If GPU telemetry is unavailable for five seconds, the adaptive cap is released.'),
+    ]);
+    updateFooter(selectedState);
     container.append(el('div', { class: 'arc-sleep-page', dataset: { control: 'arcSleep' } }, [
       el('section', { class: 'arc-sleep-hero' }, [el('div', {}, [el('span', { class: 'arc-sleep-eyebrow', text: 'SMART FRAME CONTROL' }), el('h1', { class: 'page-title', text: 'Arc Sleep' }), el('p', { class: 'page-subtitle', text: 'Ease the frame cap when you step away. Balance GPU load while you play.' })]), saveState]),
       el('section', { class: 'card arc-sleep-runtime' }, [el('div', { class: 'arc-sleep-summary', dataset: { arcSleepCaps: '' } }, [el('div', {}, [el('span', { text: 'RTSS connection' }), rtss]), el('div', {}, [el('span', { text: 'Base cap' }), base]), el('div', {}, [el('span', { text: 'Effective cap' }), effective])]), status, diagnostics]),
-      el('div', { class: 'arc-sleep-panels' }, [
-        panel('Idle Cap', 'Save power during input inactivity.', idle, [field('Inactive for', delay, 'sec'), field('Cap at', idleFps, 'FPS')], 'Uses Windows keyboard and mouse input inactivity across your session. It does not detect character or camera movement. Input resumes your normal cap. Idle Cap takes priority over Load Adaptive.'),
-        panel('Load Adaptive', 'Adjust the frame cap to your GPU workload.', adaptive, [field('Minimum', min, 'FPS'), field('Maximum', max, 'FPS'), field('Target GPU load', target, '%')], 'Uses fresh utilization from the selected GPU only. The cap stays within this range while seeking your target load. If GPU telemetry is unavailable for five seconds, the adaptive cap is released.'),
-      ]),
-      el('div', { class: 'arc-sleep-footer' }, !selected || selected.synthetic || selected.backendKind === 'os'
-        ? [el('p', { class: 'card-note', text: !selected
-          ? 'RTSS frame control is app-wide and follows RTSS profile scope. Arc Sleep settings are available without a selected GPU; the Graphics base cap requires one.'
-          : 'RTSS frame control is app-wide and follows RTSS profile scope. The Graphics base cap is unavailable for this GPU.' })]
-        : [el('p', { class: 'card-note', text: 'RTSS frame control is app-wide and follows RTSS profile scope. Set the normal base cap in Graphics.' }), el('a', { class: 'arc-sleep-base-link', href: '#/graphics', text: 'Open Graphics →' })]),
+      panels,
+      footer,
     ]));
+    updateSelectedDeviceControls = (updateContainer, updateCtx): void => {
+      if (!alive() || updateContainer !== container) return;
+      const state = updateCtx.store.get();
+      const signature = deviceSignature(state);
+      if (signature === currentDeviceSignature) return;
+      currentDeviceSignature = signature;
+      const nextPanel = buildBaseCapPanel(selectedDevice(state), signature);
+      baseCapPanel.replaceWith(nextPanel);
+      baseCapPanel = nextPanel;
+      updateFooter(state);
+    };
+    function buildBaseCapPanel(selected: ReturnType<typeof selectedDevice>, selectedSignature: string): HTMLElement {
+      const requestGeneration = ++baseCapGeneration;
+      const isCurrent = (): boolean => alive()
+        && requestGeneration === baseCapGeneration
+        && deviceSignature(ctx.store.get()) === selectedSignature;
+      const eligible = !!selected && !selected.synthetic && selected.backendKind !== 'os' && Number.isInteger(selected.id);
+      const enabled = toggle('Enable Base FPS Cap');
+      enabled.classList.remove('arc-sleep-toggle');
+      enabled.classList.add('arc-sleep-base-toggle');
+      const value = el('input', { type: 'range', class: 'graphics-slider', min: 30, max: 300, step: 1, value: 60, disabled: true, 'aria-label': 'Base FPS Cap value' });
+      const valueText = el('span', { class: 'graphics-fps-value', text: '— FPS', 'aria-live': 'polite' });
+      const apply = el('button', { class: 'btn btn-primary btn-sm', text: 'Apply Base Cap', disabled: true });
+      let range = { min: 30, max: 300, step: 1, default: 60 };
+      let original = { enabled: false, value: 60 };
+      let supported = false;
+      let applyingBaseCap = false;
+      const dirty = (): boolean => enabled.checked !== original.enabled || Number(value.value) !== original.value;
+      const updateBaseCapUi = (): void => {
+        enabled.disabled = !supported || applyingBaseCap;
+        value.disabled = !supported || applyingBaseCap || !enabled.checked;
+        valueText.textContent = `${Number(value.value)} FPS`;
+        apply.disabled = !supported || applyingBaseCap || !dirty();
+        apply.hidden = !dirty();
+      };
+      enabled.addEventListener('change', updateBaseCapUi);
+      value.addEventListener('input', updateBaseCapUi);
+      apply.addEventListener('click', () => {
+        if (!eligible || !supported || applyingBaseCap || !isCurrent()) return;
+        const deviceId = selected.id;
+        const next = { enabled: enabled.checked, value: clampFrameLimitValue(Number(value.value), range) };
+        applyingBaseCap = true;
+        updateBaseCapUi();
+        baseCapStatus.textContent = 'Applying Base FPS Cap…';
+        void api.graphicsApply(deviceId, { frameLimit: next }).then(async result => {
+          if (!isCurrent()) return;
+          const outcome = result.perControl.frameLimit;
+          if (!outcome?.ok) {
+            baseCapStatus.textContent = `Apply failed: ${outcome?.message || 'The FPS cap was not applied.'}`;
+            return;
+          }
+          const applied = result.graphicsState?.values.frameLimit ?? next;
+          original = { enabled: applied.enabled, value: clampFrameLimitValue(applied.value, range) };
+          enabled.checked = original.enabled;
+          value.value = String(original.value);
+          baseCapStatus.textContent = 'Base FPS Cap applied. Graphics uses this same cap.';
+          updateBaseCapUi();
+          await refresh();
+        }).catch(error => {
+          if (!isCurrent()) return;
+          baseCapStatus.textContent = `Apply failed: ${error instanceof Error ? error.message : String(error)}`;
+        }).finally(() => {
+          if (!isCurrent()) return;
+          applyingBaseCap = false;
+          updateBaseCapUi();
+        });
+      });
+      const fields = el('div', { class: 'arc-sleep-fields' }, [
+        field('Base FPS Cap', value, 'FPS'),
+        el('div', { class: 'arc-sleep-field' }, [el('span', { text: 'Current value' }), valueText]),
+      ]);
+      const panel = el('section', { class: 'card arc-sleep-panel arc-sleep-base-cap', dataset: { arcSleepBaseCap: '' } }, [
+        el('div', { class: 'arc-sleep-panel-heading' }, [el('div', {}, [el('h2', { class: 'card-title', text: 'Base FPS Cap' }), el('p', { class: 'card-note', text: 'Set the normal frame cap shared with Graphics. Arc Sleep temporarily adjusts the effective cap when its policies are active.' })]), enabled]),
+        fields,
+        el('div', { class: 'arc-sleep-base-cap-actions' }, [apply]),
+        baseCapStatus,
+      ]);
+      if (!eligible) {
+        enabled.disabled = true;
+        value.disabled = true;
+        apply.disabled = true;
+        apply.hidden = true;
+        baseCapStatus.textContent = !selected ? 'Select a supported GPU to configure the base FPS cap. Arc Sleep remains available without one.' : 'The selected synthetic or OS GPU does not support the Graphics base FPS cap.';
+        return panel;
+      }
+      baseCapStatus.textContent = 'Checking FPS limiter support…';
+      enabled.disabled = true;
+      apply.hidden = true;
+      void withTimeout(api.graphicsGet(selected.id), 'FPS limiter check').then(graphicsState => {
+        if (!isCurrent()) return;
+        if (!graphicsState.supported.frameLimit) {
+          baseCapStatus.textContent = 'The selected GPU does not support the Graphics FPS limiter.';
+          return;
+        }
+        supported = true;
+        range = frameLimitRange(graphicsState);
+        const current = graphicsState.values.frameLimit ?? { enabled: false, value: range.default };
+        original = { enabled: current.enabled, value: clampFrameLimitValue(current.value, range) };
+        enabled.checked = original.enabled;
+        value.min = String(range.min);
+        value.max = String(range.max);
+        value.step = String(range.step);
+        value.value = String(original.value);
+        baseCapStatus.textContent = graphicsState.frameLimitSource === 'rtss'
+          ? 'Uses the RTSS frame limiter when available; otherwise it falls back to the Intel driver limiter.'
+          : 'Uses the Intel driver frame limiter.';
+        updateBaseCapUi();
+      }).catch(error => {
+        if (!isCurrent()) return;
+        enabled.disabled = true;
+        value.disabled = true;
+        apply.disabled = true;
+        baseCapStatus.textContent = `FPS limiter status unavailable: ${error instanceof Error ? error.message : String(error)}`;
+      });
+      return panel;
+    }
     const paintSettings = (): void => { idle.checked = settings.idleEnabled; adaptive.checked = settings.adaptiveEnabled; delay.value = String(settings.idleAfterSeconds); idleFps.value = String(settings.idleFps); min.value = String(settings.adaptiveMinFps); max.value = String(settings.adaptiveMaxFps); target.value = String(settings.adaptiveTargetLoadPct); };
     const refresh = async (): Promise<void> => {
       const request = ++snapshotRevision;
@@ -177,5 +316,6 @@ export const arcSleepPage: Page = {
       await poll();
     })();
   },
-  leave(): void { ++generation; if (timer !== undefined) window.clearTimeout(timer); timer = undefined; },
+  onUpdate(container, ctx): void { updateSelectedDeviceControls?.(container, ctx); },
+  leave(): void { ++generation; updateSelectedDeviceControls = null; if (timer !== undefined) window.clearTimeout(timer); timer = undefined; },
 };

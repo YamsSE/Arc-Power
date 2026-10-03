@@ -365,6 +365,12 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
     throw new UiVerifyFailure(msg);
   };
   const js = (code) => win.webContents.executeJavaScript(code);
+  if (process.env.RID_ARC_SLEEP_BASE_CAP_VERIFY === '1') {
+    await verifyArcSleepPage(win);
+    console.log('\nUI VERIFY OK (arc-sleep-base-cap)');
+    app.exit(0);
+    return;
+  }
   const clearToasts = () => js(`document.querySelectorAll('.toast').forEach((t) => t.remove())`);
   // M4-D2 (§7/§8): the old Overclocking + Fan pages are the Tuning page now.
   // Navigating to '#/tuning' renders the TUNING sub-view by default, but the
@@ -10720,8 +10726,111 @@ async function verifyArcSleepPage(win) {
   const js = (code) => win.webContents.executeJavaScript(code, true);
   await js(`location.hash = '#/arc-sleep'`);
   if (!(await waitFor(win, `document.querySelector('.arc-sleep-toggle')?.disabled === false`, 5000))) throw new Error('Arc Sleep settings did not load');
+  if (!(await waitFor(win, `document.querySelector('[data-arc-sleep-base-cap]') && !document.querySelector('[data-arc-sleep-base-cap-status]')?.textContent?.includes('Checking FPS limiter support')`, 5000))) throw new Error('Arc Sleep Base FPS Cap support check did not complete');
   const geometry = await js(`Array.from(document.querySelectorAll('.arc-sleep-toggle')).map(input => { const r = input.getBoundingClientRect(); return { width: r.width, height: r.height }; })`);
   if (geometry.length !== 2 || geometry.some(r => r.width !== 42 || r.height !== 24)) throw new Error(`Arc Sleep toggle geometry: ${JSON.stringify(geometry)}`);
+  const selectedBeforeCapTest = await js(`window.arcPower.deviceGet()`);
+  const capDeviceId = selectedBeforeCapTest.deviceId;
+  let selectionRefreshResult = 'single-GPU fixture';
+  const baseCapEnabled = await js(`document.querySelector('[aria-label="Enable Base FPS Cap"]')?.disabled === false`);
+  if (baseCapEnabled) {
+    const originalGraphics = await js(`window.arcPower.graphicsGet(${capDeviceId})`);
+    if (!originalGraphics.supported.frameLimit || !originalGraphics.values.frameLimit) throw new Error('Mock GPU must expose a readable FPS limiter for the Arc Sleep Base FPS Cap test');
+    const originalFrameLimit = { ...originalGraphics.values.frameLimit };
+    const testCapValue = originalFrameLimit.value === 143 ? 142 : 143;
+    try {
+      await js(`(() => {
+        const enabled = document.querySelector('[aria-label="Enable Base FPS Cap"]');
+        const slider = document.querySelector('[aria-label="Base FPS Cap value"]');
+        enabled.checked = true;
+        enabled.dispatchEvent(new Event('change', { bubbles: true }));
+        slider.value = '${testCapValue}';
+        slider.dispatchEvent(new Event('input', { bubbles: true }));
+        document.querySelector('[data-arc-sleep-base-cap] button').click();
+      })()`);
+      if (!(await waitFor(win, `document.querySelector('[data-arc-sleep-base-cap-status]')?.textContent === 'Base FPS Cap applied. Graphics uses this same cap.'`, 8000))) throw new Error('Arc Sleep Base FPS Cap apply did not complete');
+      const appliedCap = await js(`window.arcPower.graphicsGet(${capDeviceId})`);
+      if (appliedCap.values.frameLimit?.enabled !== true || appliedCap.values.frameLimit?.value !== testCapValue) throw new Error(`Arc Sleep Base FPS Cap did not apply through Graphics (${JSON.stringify(appliedCap.values.frameLimit)})`);
+      if (!(await waitFor(win, `document.querySelectorAll('[data-arc-sleep-caps] strong')[1]?.textContent === '${testCapValue} FPS'`, 5000))) throw new Error('Arc Sleep Base FPS Cap runtime label did not refresh after apply');
+      const sharedCaps = await js(`(async () => ({ runtime: await window.arcPower.arcSleepStateGet(), baseLabel: document.querySelectorAll('[data-arc-sleep-caps] strong')[1]?.textContent }))()`);
+      if (sharedCaps.runtime.baseFrameLimit?.enabled !== true || sharedCaps.runtime.baseFrameLimit?.value !== testCapValue || sharedCaps.baseLabel !== `${testCapValue} FPS`) throw new Error(`Arc Sleep runtime did not refresh the shared base cap: ${JSON.stringify(sharedCaps)}`);
+    } finally {
+      const restored = await js(`window.arcPower.graphicsApply(${capDeviceId}, { frameLimit: ${JSON.stringify(originalFrameLimit)} })`);
+      if (!restored.perControl.frameLimit?.ok) throw new Error(`Arc Sleep verifier could not restore original Graphics FPS cap: ${JSON.stringify(restored.perControl.frameLimit)}`);
+      const restoredState = await js(`(async () => ({ graphics: await window.arcPower.graphicsGet(${capDeviceId}), runtime: await window.arcPower.arcSleepStateGet() }))()`);
+      if (restoredState.graphics.values.frameLimit?.enabled !== originalFrameLimit.enabled || restoredState.graphics.values.frameLimit?.value !== originalFrameLimit.value
+        || restoredState.runtime.baseFrameLimit?.enabled !== originalFrameLimit.enabled || restoredState.runtime.baseFrameLimit?.value !== originalFrameLimit.value) {
+        throw new Error(`Arc Sleep verifier did not restore the original shared FPS cap: ${JSON.stringify({ graphics: restoredState.graphics.values.frameLimit, runtime: restoredState.runtime.baseFrameLimit })}`);
+      }
+      await js(`location.hash = '#/dashboard'`);
+      await waitFor(win, `!document.querySelector('[data-control="arcSleep"]')`, 5000);
+      await js(`location.hash = '#/arc-sleep'`);
+      if (!(await waitFor(win, `document.querySelectorAll('[data-arc-sleep-caps] strong')[1]?.textContent === '${originalFrameLimit.enabled ? `${originalFrameLimit.value} FPS` : 'Off'}'`, 5000))) throw new Error('Arc Sleep runtime label did not refresh after restoring the original FPS cap');
+    }
+  } else {
+    const unsupported = await js(`({ enabledDisabled: document.querySelector('[aria-label="Enable Base FPS Cap"]')?.disabled, valueDisabled: document.querySelector('[aria-label="Base FPS Cap value"]')?.disabled, applyDisabled: document.querySelector('[data-arc-sleep-base-cap] button')?.disabled, status: document.querySelector('[data-arc-sleep-base-cap-status]')?.textContent ?? '' })`);
+    if (!unsupported.enabledDisabled || !unsupported.valueDisabled || !unsupported.applyDisabled) throw new Error(`Arc Sleep exposed Base FPS Cap edits without supported selected-GPU limiter: ${JSON.stringify(unsupported)}`);
+  }
+  if (process.env.RID_MOCK_MULTI_DEVICE === '1') {
+    const beforeSelection = await js(`window.arcPower.deviceGet()`);
+    const devices = await js(`window.arcPower.listDevices()`);
+    const other = devices.find(device => device.id !== beforeSelection.deviceId);
+    if (!other) throw new Error('Multi-Arc Base FPS Cap verification needs a second mock GPU');
+    const originalCaps = {};
+    for (const device of devices) {
+      const state = await js(`window.arcPower.graphicsGet(${device.id})`);
+      if (state.supported.frameLimit && state.values.frameLimit) originalCaps[device.id] = { ...state.values.frameLimit };
+    }
+    if (!originalCaps[beforeSelection.deviceId]) throw new Error('Initially selected mock GPU must expose a readable FPS limiter for selection-refresh verification');
+    const requestSelection = async (device) => {
+      if (typeof device.deviceKey !== 'string' || device.deviceKey.length === 0) throw new Error(`Mock GPU ${device.id} has no stable key for the selection request`);
+      await js(`window.arcPower.deviceSelectionRequest(${JSON.stringify(device.deviceKey)})`);
+    };
+    try {
+      if (originalCaps[other.id]) {
+        const seeded = await js(`window.arcPower.graphicsApply(${other.id}, { frameLimit: { enabled: true, value: 161 } })`);
+        if (!seeded.perControl.frameLimit?.ok) throw new Error(`Could not seed a distinct second-GPU FPS cap: ${JSON.stringify(seeded.perControl.frameLimit)}`);
+      }
+      await requestSelection(other);
+      if (!(await waitFor(win, `(async () => (await window.arcPower.deviceGet()).deviceId === ${other.id} && document.querySelector('.page-title')?.textContent === 'Arc Sleep')()`, 8000))) throw new Error('Arc Sleep did not stay mounted while the mock GPU selection changed');
+      if (originalCaps[other.id]) {
+        if (!(await waitFor(win, `document.querySelector('[aria-label="Enable Base FPS Cap"]')?.disabled === false && document.querySelector('[aria-label="Enable Base FPS Cap"]')?.checked === true && document.querySelector('[aria-label="Base FPS Cap value"]')?.value === '161'`, 8000))) throw new Error('Arc Sleep Base FPS Cap did not reload the new GPU’s distinct enabled value');
+        await js(`(() => {
+          const slider = document.querySelector('[aria-label="Base FPS Cap value"]');
+          slider.value = '162';
+          slider.dispatchEvent(new Event('input', { bubbles: true }));
+          document.querySelector('[data-arc-sleep-base-cap] button').click();
+        })()`);
+        if (!(await waitFor(win, `document.querySelector('[data-arc-sleep-base-cap-status]')?.textContent === 'Base FPS Cap applied. Graphics uses this same cap.'`, 8000))) throw new Error('Arc Sleep Base FPS Cap did not apply after switching GPUs');
+        selectionRefreshResult = `GPU ${other.id} reloaded its own limiter and accepted an apply`;
+      } else {
+        if (!(await waitFor(win, `document.querySelector('[aria-label="Enable Base FPS Cap"]')?.disabled === true && document.querySelector('[aria-label="Base FPS Cap value"]')?.disabled === true && document.querySelector('[data-arc-sleep-base-cap] button')?.disabled === true && document.querySelector('[data-arc-sleep-base-cap-status]')?.textContent.includes('does not support')`, 8000))) throw new Error('Arc Sleep did not disable Base FPS Cap edits for the unsupported second mock GPU');
+        await js(`document.querySelector('[data-arc-sleep-base-cap] button').click()`);
+        selectionRefreshResult = `GPU ${other.id} reloaded as unsupported and kept edits disabled`;
+      }
+      const appliedOther = await js(`window.arcPower.graphicsGet(${other.id})`);
+      if (originalCaps[other.id] && (appliedOther.values.frameLimit?.enabled !== true || appliedOther.values.frameLimit?.value !== 162)) throw new Error(`Arc Sleep Apply targeted the wrong GPU after selection changed: ${JSON.stringify(appliedOther.values.frameLimit)}`);
+      if (!originalCaps[other.id] && appliedOther.supported.frameLimit) throw new Error('Mock GPU support changed unexpectedly during the unsupported-device selection test');
+    } finally {
+      const restoreErrors = [];
+      for (const device of devices) {
+        if (!originalCaps[device.id]) continue;
+        try {
+          const restored = await js(`window.arcPower.graphicsApply(${device.id}, { frameLimit: ${JSON.stringify(originalCaps[device.id])} })`);
+          if (!restored.perControl.frameLimit?.ok) restoreErrors.push(`GPU ${device.id}: ${JSON.stringify(restored.perControl.frameLimit)}`);
+        } catch (error) { restoreErrors.push(`GPU ${device.id}: ${error instanceof Error ? error.message : String(error)}`); }
+      }
+      try {
+        const selectedDevice = devices.find(device => device.id === beforeSelection.deviceId);
+        if (!selectedDevice) throw new Error('original selected mock GPU disappeared');
+        const restored = await js(`window.arcPower.graphicsApply(${selectedDevice.id}, { frameLimit: ${JSON.stringify(originalCaps[selectedDevice.id])} })`);
+        if (!restored.perControl.frameLimit?.ok) restoreErrors.push(`original selected GPU baseline: ${JSON.stringify(restored.perControl.frameLimit)}`);
+        await requestSelection(selectedDevice);
+        if (!(await waitFor(win, `(async () => (await window.arcPower.deviceGet()).deviceId === ${beforeSelection.deviceId} && document.querySelector('.page-title')?.textContent === 'Arc Sleep')()`, 8000))) restoreErrors.push('original GPU selection was not restored while staying on Arc Sleep');
+      } catch (error) { restoreErrors.push(`selection restore: ${error instanceof Error ? error.message : String(error)}`); }
+      if (restoreErrors.length) throw new Error(`Arc Sleep multi-GPU verifier restore failed: ${restoreErrors.join('; ')}`);
+    }
+  }
   const original = await js(`(async () => (await window.arcPower.profilesList()).settings.arcSleep)()`);
   try {
     const changedIdle = !original.idleEnabled;
@@ -10751,5 +10860,5 @@ async function verifyArcSleepPage(win) {
       await writeFile(process.env.RID_ARC_SLEEP_SCREENSHOT, (await win.webContents.capturePage()).toPNG());
     }
   } finally { await js(`window.arcPower.profilesSettingsSave({ arcSleep: ${JSON.stringify(original)} })`); }
-  console.log('[ui-verify] Arc Sleep: independent page, 42×24 switches, both switch saves and immediate navigation roundtrip OK');
+  console.log(`[ui-verify] Arc Sleep: independent page, 42×24 switches, Base FPS Cap apply/shared runtime refresh/restore, ${selectionRefreshResult}, settings saves, and immediate navigation roundtrip OK`);
 }

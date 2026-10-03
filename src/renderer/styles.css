@@ -4355,6 +4355,16 @@ input[type="number"] {
 .arc-sleep-toggle:checked::before { transform: translateX(18px); background: white; }
 .arc-sleep-toggle:focus-visible, .arc-sleep-number:focus-visible { outline: 2px solid #8bc2ff; outline-offset: 3px; }
 .arc-sleep-toggle:disabled { opacity: .45; cursor: wait; }
+.arc-sleep-base-toggle { appearance: none; flex: 0 0 42px; width: 42px; height: 24px; margin: 0; border-radius: 20px; border: 1px solid rgba(255,255,255,.22); background: #303744; position: relative; cursor: pointer; }
+.arc-sleep-base-toggle::before { content: ''; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: #b7c3d5; transition: transform .15s; }
+.arc-sleep-base-toggle:checked { background: #286fd0; border-color: #66aaff; }
+.arc-sleep-base-toggle:checked::before { transform: translateX(18px); background: white; }
+.arc-sleep-base-toggle:focus-visible { outline: 2px solid #8bc2ff; outline-offset: 3px; }
+.arc-sleep-base-toggle:disabled { opacity: .45; cursor: wait; }
+.arc-sleep-base-cap .arc-sleep-fields { margin-top: 24px; }
+.arc-sleep-base-cap .graphics-slider { flex: 1; min-width: 80px; }
+.arc-sleep-base-cap .graphics-fps-value { min-width: 58px; text-align: right; }
+.arc-sleep-base-cap-actions { display: flex; justify-content: flex-end; min-height: 32px; margin-bottom: 12px; }
 .arc-sleep-fields { display: grid; gap: 12px; margin: 24px 0; }
 .arc-sleep-field { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 12px; }
 .arc-sleep-input-wrap { display: flex; align-items: center; gap: 8px; }
