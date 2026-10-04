@@ -1340,6 +1340,7 @@ export function createIpcHandlers({
   // real rolling-delta adapter in the product path. sample() is called on
   // every telemetry tick; its values ride the pushed telemetry sample.
   sysStats = createMockSysStats(),
+  onSysStatsReady = () => {},
   // Production injects one shared LibreHardwareMonitor bridge. Tests and
   // mock mode leave it absent so deterministic fixtures never touch
   // privileged hardware access.
@@ -1537,6 +1538,7 @@ export function createIpcHandlers({
     const previousReady = typeof holder.onReady === 'function' ? holder.onReady : null;
     holder.onReady = () => {
       try { previousReady?.(); } catch { /* readiness hooks are best effort */ }
+      try { onSysStatsReady(); } catch { /* Arc Sleep sampler readiness is best effort */ }
       void reconcileSysStatsReady().catch(() => {});
     };
     sysStats = {

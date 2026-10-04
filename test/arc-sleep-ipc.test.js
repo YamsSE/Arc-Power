@@ -106,3 +106,18 @@ test('Arc Sleep runtime state IPC reads the direct snapshot while RTSS work is s
   assert.equal(transactionReads, 0);
   await assert.rejects(() => handlers['arc-sleep-state-get']('unexpected'), /takes no payload/);
 });
+
+test('system stats holder readiness preserves prior hooks and notifies Arc Sleep', () => {
+  const calls = [];
+  const holder = { current: null, onReady: () => calls.push('previous') };
+  createIpcHandlers({
+    backend: {},
+    store: { loadSettings: async () => ({}) },
+    emit: () => {},
+    sysStats: holder,
+    onSysStatsReady: () => calls.push('arc-sleep'),
+  });
+  holder.current = {};
+  holder.onReady();
+  assert.deepEqual(calls, ['previous', 'arc-sleep']);
+});

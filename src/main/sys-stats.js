@@ -741,7 +741,8 @@ export function createSysStats(deps = {}) {
   // query can take several seconds; sharing its in-flight guard would keep
   // the visible GPU percentage stale while Task Manager is already current.
   let gpuHandle = null;
-  let gpuOwner = undefined;
+  const gpuLaneLeases = new Set();
+  let telemetryGpuLease = null;
   let gpuInflight = false;
   let gpuGeneration = 0;
   // The native D3DKMT sampler must not share the slow fallback's guard. A
@@ -1490,14 +1491,8 @@ export function createSysStats(deps = {}) {
         void slowTick();
       }, cadenceMs);
       if (enableDedicatedGpuSampler) {
-        gpuOwner = owner;
-        gpuHandle = setIntervalFn(() => {
-          void gpuTick();
-        }, GPU_UTIL_LANE_CADENCE_MS);
-        startGpuEngineWorker();
-        // Seed both lanes immediately; neither await blocks the telemetry
-        // caller, and the independent guards prevent duplicate queries.
-        void gpuTick();
+        telemetryGpuLease = { owner };
+        acquireGpuLane(telemetryGpuLease);
       }
       // An immediate first tick seeds the shared cache (never blocks the
       // caller - the tick runs async; the handle is assigned FIRST so the
@@ -1511,31 +1506,28 @@ export function createSysStats(deps = {}) {
      * @param {number} [owner] optional telemetry startup generation
      */
     stopSlowLane(owner = undefined) {
-      if (owner !== undefined && (slowOwner !== owner || (gpuHandle !== null && gpuOwner !== owner))) return;
+      if (owner !== undefined && (slowOwner !== owner || (telemetryGpuLease && telemetryGpuLease.owner !== owner))) return;
       if (slowHandle !== null) {
         clearIntervalFn(slowHandle);
         slowHandle = null;
       }
-      if (gpuHandle !== null) {
-        clearIntervalFn(gpuHandle);
-        gpuHandle = null;
+      if (telemetryGpuLease && (owner === undefined || telemetryGpuLease.owner === owner)) {
+        releaseGpuLane(telemetryGpuLease);
+        telemetryGpuLease = null;
       }
-      gpuGeneration += 1;
-      latestGpuRows = null;
-      latestGpuRowsAt = null;
-      // A telemetry restart must establish a fresh native baseline. Do not
-      // expose the previous session's value while the next D3DKMT pair is
-      // warming, and do not let a slow fallback repopulate it after stop.
-      for (const record of targetRecords.values()) {
-        record.cache = { ...record.cache, gpuUtilPct: null };
-        record.gpuUtilSampledAt = null;
-        record.gpuUtilSource = null;
-      }
-      laneCache = activeRecord.cache;
-      stopGpuEngineWorker();
-      try { d3dkmtGpuUtil?.reset?.(); } catch { /* best effort */ }
       slowOwner = undefined;
-      gpuOwner = undefined;
+    },
+
+    /** Arc Sleep owns an independent lease on the shared selected-GPU lane. */
+    acquireArcSleepGpuSampler() {
+      const lease = {};
+      acquireGpuLane(lease);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        releaseGpuLane(lease);
+      };
     },
   });
 
@@ -1556,6 +1548,33 @@ export function createSysStats(deps = {}) {
     } finally {
       slowInflight = false;
     }
+  }
+
+  function acquireGpuLane(lease) {
+    if (!enableDedicatedGpuSampler || gpuLaneLeases.has(lease)) return;
+    gpuLaneLeases.add(lease);
+    if (gpuHandle !== null) return;
+    gpuHandle = setIntervalFn(() => { void gpuTick(); }, GPU_UTIL_LANE_CADENCE_MS);
+    startGpuEngineWorker();
+    void gpuTick();
+  }
+
+  function releaseGpuLane(lease) {
+    gpuLaneLeases.delete(lease);
+    if (gpuLaneLeases.size > 0 || gpuHandle === null) return;
+    clearIntervalFn(gpuHandle);
+    gpuHandle = null;
+    gpuGeneration += 1;
+    latestGpuRows = null;
+    latestGpuRowsAt = null;
+    for (const record of targetRecords.values()) {
+      record.cache = { ...record.cache, gpuUtilPct: null };
+      record.gpuUtilSampledAt = null;
+      record.gpuUtilSource = null;
+    }
+    laneCache = activeRecord.cache;
+    stopGpuEngineWorker();
+    try { d3dkmtGpuUtil?.reset?.(); } catch { /* best effort */ }
   }
 
   // Dedicated GPU Engine timer counterpart to slowTick. It has an independent

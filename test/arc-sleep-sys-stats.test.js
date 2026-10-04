@@ -117,3 +117,29 @@ test('Arc Sleep receives fresh active-adapter GPU utilization without reading CP
   assert.deepEqual(await stats.sampleArcSleepSignals(), { gpuUtilPct: null });
   assert.equal(cpuReads, readsBeforeArcSleep);
 });
+
+test('Arc Sleep GPU sampler lease survives telemetry stop and stops after the last owner releases', (t) => {
+  const intervals = [];
+  const cleared = [];
+  const stats = createSysStats({
+    deviceIdHex: '0xE20B', osLuid: { high: 0, low: 0xbb85 },
+    enableDedicatedGpuSampler: true,
+    usePersistentGpuSampler: false,
+    d3dkmtGpuUtil: { async sample() { return 40; }, reset() {} },
+    execFile: async () => ({ stdout: JSON.stringify({ gpuEng: [] }) }),
+    setInterval: (callback) => { intervals.push(callback); return intervals.length; },
+    clearInterval: (id) => cleared.push(id),
+  });
+  t.after(() => stats.stopSlowLane());
+
+  const releaseArcSleep = stats.acquireArcSleepGpuSampler();
+  assert.equal(intervals.length, 1, 'Arc Sleep alone starts the dedicated GPU lane');
+  stats.startSlowLane(1000, 1);
+  assert.equal(intervals.length, 2, 'telemetry adds its slow stats lane without duplicating GPU sampling');
+  stats.stopSlowLane(1);
+  assert.equal(cleared.includes(1), false, 'stopping telemetry leaves the Arc Sleep GPU lane running');
+  releaseArcSleep();
+  assert.equal(cleared.includes(1), true, 'the last lease stops the GPU lane');
+  releaseArcSleep();
+  assert.equal(cleared.filter((id) => id === 1).length, 1, 'release is idempotent');
+});

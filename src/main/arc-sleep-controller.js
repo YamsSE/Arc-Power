@@ -121,6 +121,7 @@ export function createArcSleepController({
   getIdleSeconds = () => null,
   getLoadSignals = async () => null,
   getObservedFps = async () => null,
+  acquireAdaptiveSampler = () => null,
   now = () => Date.now(),
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
@@ -156,6 +157,28 @@ export function createArcSleepController({
   let tickPending = null;
   let initialized = false;
   let stopping = false;
+  let releaseAdaptiveSampler = null;
+
+  const releaseAdaptiveSamplerLease = () => {
+    if (!releaseAdaptiveSampler) return;
+    try { releaseAdaptiveSampler(); } catch { /* best effort */ }
+    releaseAdaptiveSampler = null;
+  };
+
+  const syncAdaptiveSampler = () => {
+    if (stopping) {
+      releaseAdaptiveSamplerLease();
+      return;
+    }
+    if (settings.adaptiveEnabled && !releaseAdaptiveSampler) {
+      try {
+        const release = acquireAdaptiveSampler();
+        if (typeof release === 'function') releaseAdaptiveSampler = release;
+      } catch { /* Missing system stats leaves adaptive telemetry honestly unavailable. */ }
+    } else if (!settings.adaptiveEnabled && releaseAdaptiveSampler) {
+      releaseAdaptiveSamplerLease();
+    }
+  };
 
   const hasPolicy = () => settings.idleEnabled || settings.adaptiveEnabled;
   const errorText = (fallback, error) => error instanceof Error ? error.message : (error ? String(error) : fallback);
@@ -558,6 +581,7 @@ export function createArcSleepController({
     if (initialized) return;
     const saved = await store.loadSettings();
     settings = normalizeArcSleepSettings(saved.arcSleep);
+    syncAdaptiveSampler();
     baseFrameLimit = normalizeBaseFrameLimit(saved.arcSleepFrameLimitBase);
     journal = validJournal(saved.arcSleepJournal);
     invalidJournal = saved.arcSleepJournal != null && !journal;
@@ -832,6 +856,11 @@ export function createArcSleepController({
       const value = await getIdleSeconds();
       if (typeof value === 'number' && Number.isFinite(value) && value >= 0) idleSeconds = value;
     } catch { /* Invalid session input state means active. */ }
+    const previousIdleActive = policyState.idleActive === true;
+    const idleActive = settings.idleEnabled && idleSeconds !== null
+      && idleSeconds >= settings.idleAfterSeconds;
+    const wakingFromIdle = previousIdleActive && !idleActive;
+    if (wakingFromIdle) policyState = createArcSleepPolicyState(settings);
     let loadPercent = null;
     let observedFps = null;
     let observedProcessId = null;
@@ -842,14 +871,17 @@ export function createArcSleepController({
         const signals = await getLoadSignals();
         loadPercent = asPercentage(signals?.gpuUtilPct);
       } catch { /* Missing telemetry is handled by the policy grace period. */ }
-      const idleActive = settings.idleEnabled && idleSeconds !== null
-        && idleSeconds >= settings.idleAfterSeconds;
       if (idleActive) {
         fpsStatus = 'idle-priority';
+        runtimeDiagnostics = { ...runtimeDiagnostics, gpuUtilPct: loadPercent, reportedFps: null, fpsStatus };
       } else if (loadPercent !== null && loadPercent <= settings.adaptiveTargetLoadPct) {
         fpsStatus = 'below-trigger';
+        runtimeDiagnostics = { ...runtimeDiagnostics, gpuUtilPct: loadPercent, reportedFps: null, fpsStatus };
       } else if (loadPercent !== null) {
         fpsStatus = 'rtss-unavailable';
+        // Publish the selected-GPU policy state before polling RTSS. A slow
+        // native observation must not leave idle/load diagnostics stale.
+        runtimeDiagnostics = { ...runtimeDiagnostics, gpuUtilPct: loadPercent, reportedFps: null, fpsStatus };
         try {
           const observation = await getObservedFps();
           const fps = typeof observation?.fps === 'number'
@@ -868,6 +900,11 @@ export function createArcSleepController({
             fpsStatus = 'gpu-unconfirmed';
           }
         } catch { /* Missing FPS falls back to gradual cap reduction. */ }
+        if (wakingFromIdle) {
+          policyState.adaptiveCapFps = observedFps === null
+            ? settings.adaptiveMaxFps
+            : Math.max(settings.adaptiveMinFps, Math.min(settings.adaptiveMaxFps, Math.round(observedFps)));
+        }
       }
     }
     const previousFastAdjustmentAtMs = runtimeDiagnostics.lastFastAdjustmentAtMs;
@@ -879,6 +916,7 @@ export function createArcSleepController({
       nowMs: now(),
     });
     policyState = result.state;
+    policyState.idleActive = result.idleActive;
     const sampledAtMs = now();
     runtimeDiagnostics = {
       gpuUtilPct: loadPercent,
@@ -909,6 +947,7 @@ export function createArcSleepController({
       const recovered = await recoverJournal();
       if (!recovered) return;
     }
+    const result = await readPolicySample();
     const current = await ensureCurrentRoute();
     if (!current) {
       status = journal ? 'recovery-pending' : 'limiter-unavailable';
@@ -917,7 +956,6 @@ export function createArcSleepController({
         : 'RTSS and the selected GPU driver FPS limiter are unavailable.';
       return;
     }
-    const result = await readPolicySample();
     await applyDesiredTarget(result.targetFps, result.source);
   };
 
@@ -1105,6 +1143,7 @@ export function createArcSleepController({
 
   const updateSettings = async (nextSettings) => {
     settings = normalizeArcSleepSettings(nextSettings);
+    syncAdaptiveSampler();
     policyState = createArcSleepPolicyState(settings);
     if (journal?.externalChange) {
       status = 'external-change';
@@ -1211,6 +1250,7 @@ export function createArcSleepController({
       clearIntervalFn(timer);
       timer = null;
     }
+    releaseAdaptiveSamplerLease();
     const shutdown = enqueue(async () => {
       if (!initialized || !journal) return;
       if (journal.externalChange) {
@@ -1248,6 +1288,9 @@ export function createArcSleepController({
         timeoutHandle = setTimeout(() => resolve(true), shutdownTimeoutMs);
       }),
     ]).finally(() => clearTimeout(timeoutHandle));
+    // A queued startup/update may have been inside initialization when stop
+    // began. Reconcile after it drains so no late lease survives shutdown.
+    releaseAdaptiveSamplerLease();
     if (shutdownTimedOut) {
       // Leave shutdown serialized behind the in-flight RTSS operation. It
       // will finish recovery if that call returns; its durable journal stays
@@ -1257,5 +1300,12 @@ export function createArcSleepController({
     }
   };
 
-  return { start, stop, tick, withTransaction, getSnapshot };
+  return {
+    start,
+    stop,
+    tick,
+    withTransaction,
+    getSnapshot,
+    onAdaptiveSamplerReady: syncAdaptiveSampler,
+  };
 }

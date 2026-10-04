@@ -19,6 +19,8 @@ function harness({
   failNextApply = false,
   rtssOperationTimeoutMs = 5000,
   shutdownTimeoutMs = 5000,
+  samplerLease = null,
+  routeReadPending = null,
 } = {}) {
   let saved = {
     arcSleep: settings,
@@ -42,6 +44,7 @@ function harness({
   };
   const rtssFrameLimiter = {
     async getFrameLimit() {
+      if (routeReadPending) await routeReadPending;
       return isUnavailable ? { ok: false, errorCode: 'unavailable' } : { ok: true, ...current };
     },
     async getFrameLimitOwnership() {
@@ -83,6 +86,7 @@ function harness({
       getIdleSeconds: () => idleSeconds,
       getLoadSignals: async () => loadSignals,
       getObservedFps: async () => { observedFpsCalls += 1; return observedFps; },
+      acquireAdaptiveSampler: samplerLease ?? (() => null),
       now,
       rtssOperationTimeoutMs,
       shutdownTimeoutMs,
@@ -160,6 +164,46 @@ test('adaptive cap releases to the saved underlay when load telemetry stays stal
   await h.controller.tick();
   assert.deepEqual(h.readState(), { limit: 0, denominator: 1, limiterEnabled: false });
   assert.equal(h.controller.getSnapshot().policy, null);
+});
+
+test('adaptive telemetry lease is acquired and released with Adaptive settings', async (t) => {
+  let acquired = 0;
+  let released = 0;
+  const h = harness({
+    settings: { adaptiveEnabled: true },
+    samplerLease: () => { acquired += 1; return () => { released += 1; }; },
+  });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+  assert.equal(acquired, 1, 'Arc Sleep acquires the sampler independently at startup');
+  await h.controller.withTransaction((transaction) => transaction.setSettings({ adaptiveEnabled: false }));
+  assert.equal(released, 1, 'disabling Adaptive releases its lease');
+  await h.controller.withTransaction((transaction) => transaction.setSettings({ adaptiveEnabled: true }));
+  assert.equal(acquired, 2, 're-enabling Adaptive acquires a fresh lease');
+  await h.controller.stop();
+  assert.equal(released, 2, 'shutdown releases the active lease');
+});
+
+test('adaptive sampler acquisition retries when the system stats holder becomes ready', async (t) => {
+  let ready = false;
+  let acquired = 0;
+  let released = 0;
+  const h = harness({
+    settings: { adaptiveEnabled: true },
+    samplerLease: () => {
+      if (!ready) return null;
+      acquired += 1;
+      return () => { released += 1; };
+    },
+  });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+  assert.equal(acquired, 0, 'startup before the holder is assigned leaves no lease');
+  ready = true;
+  h.controller.onAdaptiveSamplerReady();
+  assert.equal(acquired, 1, 'the holder readiness hook retries acquisition');
+  await h.controller.withTransaction((transaction) => transaction.setSettings({ adaptiveEnabled: false }));
+  assert.equal(released, 1, 'a late readiness event cannot keep a disabled policy leased');
 });
 
 test('an external RTSS change stops Arc Sleep writes and preserves the new value', async (t) => {
@@ -308,9 +352,66 @@ test('controller does not observe capped FPS while idle cap is active', async (t
   assert.equal(h.observedFpsCalls(), 0);
   h.setIdleSeconds(0);
   h.setObservedFps({ fps: 70, processId: 7 });
-  for (let index = 0; index < 3; index += 1) await h.controller.tick();
+  await h.controller.tick();
+  assert.equal(h.readState().limit, 70, 'wake immediately restores the adaptive cap at current eligible FPS');
+  await h.controller.tick();
+  await h.controller.tick();
   assert.equal(h.observedFpsCalls(), 3);
-  assert.equal(h.readState().limit, 70);
+  assert.equal(h.readState().limit, 65, 'normal post-wake adaptation resumes the existing conservative step');
+});
+
+test('wake at or below the adaptive load target restores adaptive maximum', async (t) => {
+  const h = harness({
+    settings: { idleEnabled: true, adaptiveEnabled: true },
+    loadSignals: { gpuUtilPct: 40 },
+    idleSeconds: 400,
+  });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+  assert.equal(h.readState().limit, 30);
+  h.setIdleSeconds(0);
+  await h.controller.tick();
+  assert.equal(h.readState().limit, 144,
+    'low load resumes at adaptive maximum for the base cap to clamp');
+});
+
+test('wake with unavailable GPU telemetry clears adaptive history and resumes at maximum', async (t) => {
+  const h = harness({
+    settings: { idleEnabled: true, adaptiveEnabled: true },
+    loadSignals: { gpuUtilPct: 99 },
+    idleSeconds: 400,
+  });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+  h.setLoadSignals({ gpuUtilPct: null });
+  h.setIdleSeconds(0);
+  await h.controller.tick();
+  assert.equal(h.readState().limit, 144,
+    'a null wake sample does not retain the old reduced adaptive cap');
+});
+
+test('wake uses an eligible near-cap FPS and ignores unavailable or unverified FPS', async (t) => {
+  const unavailable = harness({
+    settings: { idleEnabled: true, adaptiveEnabled: true },
+    loadSignals: { gpuUtilPct: 99 }, idleSeconds: 400,
+  });
+  const nearCap = harness({
+    settings: { idleEnabled: true, adaptiveEnabled: true },
+    loadSignals: { gpuUtilPct: 99 }, idleSeconds: 400,
+    observedFps: { fps: 140, processId: 7, eligible: true },
+  });
+  const unverified = harness({
+    settings: { idleEnabled: true, adaptiveEnabled: true },
+    loadSignals: { gpuUtilPct: 99 }, idleSeconds: 400,
+    observedFps: { fps: 70, processId: 7, eligible: false },
+  });
+  t.after(async () => Promise.all([unavailable.controller.stop(), nearCap.controller.stop(), unverified.controller.stop()]));
+  for (const item of [unavailable, nearCap, unverified]) await item.controller.start();
+  for (const item of [unavailable, nearCap, unverified]) item.setIdleSeconds(0);
+  await Promise.all([unavailable.controller.tick(), nearCap.controller.tick(), unverified.controller.tick()]);
+  assert.equal(unavailable.readState().limit, 144, 'missing FPS uses adaptive maximum');
+  assert.equal(nearCap.readState().limit, 140, 'eligible near-cap FPS is used without forcing a large reduction');
+  assert.equal(unverified.readState().limit, 144, 'unverified FPS cannot seed the wake cap');
 });
 
 test('high CPU cannot sustain an adaptive cap when GPU telemetry disappears', async (t) => {
@@ -466,7 +567,7 @@ test('shutdown during startup prevents the delayed tick timer from being install
     async loadSettings() {
       markLoadStarted();
       await loadGate;
-      return { arcSleep: {}, arcSleepFrameLimitBase: { enabled: false, value: 60 }, arcSleepJournal: null };
+      return { arcSleep: { adaptiveEnabled: true }, arcSleepFrameLimitBase: { enabled: false, value: 60 }, arcSleepJournal: null };
     },
     async saveArcSleepState() {},
   };
@@ -474,9 +575,12 @@ test('shutdown during startup prevents the delayed tick timer from being install
     async getFrameLimit() { return { ok: true, limit: 0, denominator: 1, limiterEnabled: false }; },
   };
   let intervalCount = 0;
+  let samplerAcquires = 0;
+  let samplerReleases = 0;
   const controller = createArcSleepController({
     store,
     rtssFrameLimiter,
+    acquireAdaptiveSampler: () => { samplerAcquires += 1; return () => { samplerReleases += 1; }; },
     setIntervalFn: () => { intervalCount += 1; return intervalCount; },
     clearIntervalFn: () => {},
   });
@@ -487,6 +591,39 @@ test('shutdown during startup prevents the delayed tick timer from being install
   releaseLoad();
   await Promise.all([starting, stopping]);
   assert.equal(intervalCount, 0);
+  assert.equal(samplerAcquires, 0, 'a queued initialization cannot acquire after shutdown starts');
+  assert.equal(samplerReleases, 0);
+});
+
+test('shutdown releases an acquired sampler after queued startup work drains', async () => {
+  let releaseRead;
+  let markSamplerAcquired;
+  const readGate = new Promise((resolve) => { releaseRead = resolve; });
+  const samplerAcquired = new Promise((resolve) => { markSamplerAcquired = resolve; });
+  let samplerReleases = 0;
+  const controller = createArcSleepController({
+    store: {
+      async loadSettings() { return { arcSleep: { adaptiveEnabled: true }, arcSleepFrameLimitBase: { enabled: false, value: 60 }, arcSleepJournal: null }; },
+      async saveArcSleepState() {},
+    },
+    rtssFrameLimiter: {
+      async getFrameLimit() {
+        await readGate;
+        return { ok: true, limit: 0, denominator: 1, limiterEnabled: false };
+      },
+    },
+    acquireAdaptiveSampler: () => { markSamplerAcquired(); return () => { samplerReleases += 1; }; },
+    rtssOperationTimeoutMs: 1000,
+    setIntervalFn: () => 1,
+    clearIntervalFn: () => {},
+  });
+  const starting = controller.start();
+  await samplerAcquired;
+  const stopping = controller.stop();
+  assert.equal(samplerReleases, 1, 'shutdown promptly releases the active lease');
+  releaseRead();
+  await Promise.all([starting, stopping]);
+  assert.equal(samplerReleases, 1, 'queued startup completion cannot leave or double-release the lease');
 });
 
 test('a hanging startup RTSS read settles the UI and keeps queued work serialized', async () => {
@@ -532,6 +669,22 @@ test('a hanging startup RTSS read settles the UI and keeps queued work serialize
   releaseRead();
   await tick;
   await controller.stop();
+});
+
+test('policy diagnostics update before a pending RTSS route read completes', async (t) => {
+  let unblockRouteRead;
+  const pendingRead = new Promise((resolve) => { unblockRouteRead = resolve; });
+  const h = harness({
+    settings: { adaptiveEnabled: true },
+    loadSignals: { gpuUtilPct: 93 },
+    routeReadPending: pendingRead,
+    rtssOperationTimeoutMs: 20,
+  });
+  t.after(() => { unblockRouteRead(); return h.controller.stop(); });
+  await h.controller.start();
+  assert.equal(h.controller.getSnapshot().diagnostics.gpuUtilPct, 93,
+    'GPU policy diagnostics are published before the stalled limiter read');
+  unblockRouteRead();
 });
 
 test('shutdown wait is bounded while a stalled RTSS read keeps its recovery journal', async (t) => {

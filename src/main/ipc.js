@@ -122,6 +122,12 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         ? stats.sampleArcSleepSignals()
         : null;
     },
+    acquireAdaptiveSampler: () => {
+      const stats = sysStats && typeof sysStats === 'object' && 'current' in sysStats
+        ? sysStats.current
+        : sysStats;
+      return stats?.acquireArcSleepGpuSampler?.() ?? null;
+    },
     getObservedFps: async () => {
       if (typeof fpsLane?.pollForArcSleep !== 'function') return { eligible: false, reason: 'rtss-unavailable' };
       const observation = await fpsLane.pollForArcSleep();
@@ -170,6 +176,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     foregroundApi,
     memoryUtil,
     sysStats,
+    onSysStatsReady: () => arcSleepController.onAdaptiveSamplerReady(),
     appLifecycle,
     monitorLog,
     rebuildTray,
