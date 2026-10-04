@@ -109,6 +109,7 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
   let seededProcessId = validProcessId(current.seededProcessId);
   let observedFpsSeenInWindow = current.observedFpsSeenInWindow === true;
   const highLoadStep = Math.min(30, Math.max(5, Math.round((config.adaptiveMaxFps - config.adaptiveMinFps) * 0.1)));
+  const fastRecoveryThresholdPct = config.adaptiveTargetLoadPct - 15;
 
   if (loadPercent !== null) {
     loadUnavailableSinceMs = null;
@@ -171,7 +172,12 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
       observedFpsSeeded = false;
       seededProcessId = null;
       observedFpsSeenInWindow = false;
-      if (belowTargetSamples >= 5) {
+      // When GPU load is far below target, a five-sample debounce makes a
+      // freshly seeded low cap take minutes to recover. Keep each correction
+      // small, but make one every sample while there is at least 15 points of
+      // headroom. Near the target, retain the five-sample noise filter.
+      const requiredLowSamples = loadPercent <= fastRecoveryThresholdPct ? 1 : 5;
+      if (belowTargetSamples >= requiredLowSamples) {
         adaptiveCapFps = Math.min(config.adaptiveMaxFps, adaptiveCapFps + 3);
         belowTargetSamples = 0;
       }

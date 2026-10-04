@@ -41,15 +41,18 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 type TelemetryApi = Pick<ArcPowerApi, 'telemetryStop' | 'telemetryStart'>;
+type TelemetryStopOptions = { expectReplacement?: boolean };
+type TelemetryStartOptions = { completesHandoff?: boolean };
 
 export async function stopTelemetry(
   api: TelemetryApi,
   deviceId: number | null,
   warn: (title: string, message: string) => void,
+  options: TelemetryStopOptions = {},
 ): Promise<void> {
-  if (deviceId === null) return;
+  if (deviceId === null && options.expectReplacement !== true) return;
   try {
-    await api.telemetryStop(deviceId);
+    await api.telemetryStop(deviceId, options);
   } catch (err) {
     warn('Telemetry', `Stopping telemetry on device ${deviceId} failed: ${errText(err)}`);
   }
@@ -59,9 +62,10 @@ export async function startTelemetry(
   api: TelemetryApi,
   deviceId: number | null,
   warn: (title: string, message: string) => void,
+  options: TelemetryStartOptions = {},
 ): Promise<boolean> {
   try {
-    await api.telemetryStart(deviceId);
+    await api.telemetryStart(deviceId, options);
     return true;
   } catch (err) {
     warn('Telemetry', `Starting telemetry on device ${deviceId ?? 'none'} failed: ${errText(err)}`);
@@ -97,9 +101,9 @@ export function createDeviceSwitcher(deps: DeviceSwitchDeps): (id: number) => Pr
     const oldId = live.deviceId;
     inFlight = true;
     try {
-      await stopTelemetry(deps.api, oldId, deps.warn);
+      await stopTelemetry(deps.api, oldId, deps.warn, { expectReplacement: true });
       // Best-effort start (M5): the switch always completes.
-      await startTelemetry(deps.api, id, deps.warn);
+      await startTelemetry(deps.api, id, deps.warn, { completesHandoff: true });
       // The caps/state pair is the session's rendering surface - a read
       // failure keeps the OLD device (never pair the new deviceId with a
       // stale or missing pair).
@@ -115,8 +119,8 @@ export function createDeviceSwitcher(deps: DeviceSwitchDeps): (id: number) => Pr
         // The old owner was stopped before the speculative new-device read.
         // Roll the telemetry handoff back with the selection so the old
         // session does not keep filtering out samples from a stopped owner.
-        await stopTelemetry(deps.api, id, deps.warn);
-        await startTelemetry(deps.api, oldId, deps.warn);
+        await stopTelemetry(deps.api, id, deps.warn, { expectReplacement: true });
+        await startTelemetry(deps.api, oldId, deps.warn, { completesHandoff: true });
         return;
       }
       let vendorInfo = null;

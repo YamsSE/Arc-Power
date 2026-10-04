@@ -156,7 +156,7 @@ export interface ArcPowerApi {
   /** 1.0.1 no-Intel round: telemetryStart(null) starts the no-device mode
    *  (a sentinel-keyed timer pushing sys-stats-ONLY samples). A non-negative
    *  integer starts the per-device telemetry. */
-  telemetryStart(deviceId: number | null): Promise<void>;
+  telemetryStart(deviceId: number | null, options?: { completesHandoff?: boolean }): Promise<void>;
   telemetryLatest(deviceId: number): Promise<TelemetrySample | null>;
   /** Identity-bound secondary-adapter lanes. The owner keeps dashboard and
    * Basic Overlay requests independent while the main process shares work. */
@@ -165,7 +165,7 @@ export interface ArcPowerApi {
   overlayResize(deviceCount: number): Promise<void>;
   /** 1.0.1 no-Intel round: telemetryStop(null) is the symmetric stop for
    *  the no-device mode. */
-  telemetryStop(deviceId: number | null): Promise<void>;
+  telemetryStop(deviceId: number | null, options?: { expectReplacement?: boolean }): Promise<void>;
   stabilityRunStart(payload: { deviceKey: string; cadenceMs?: number; durationSec?: number }): Promise<StabilityRunStatus>;
   stabilityRunStatus(runId?: string): Promise<StabilityRunStatus | null>;
   stabilityRunCancel(runId?: string): Promise<StabilityReport | StabilityRunStatus | null>;

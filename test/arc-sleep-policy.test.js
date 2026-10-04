@@ -66,12 +66,21 @@ test('adaptive hysteresis requires three high or five low samples and clamps', (
   assert.equal(state.adaptiveCapFps, 40);
   state = stepArcSleepPolicy(state, settings, { loadPercent: 80, nowMs: 2 }).state;
   assert.equal(state.adaptiveCapFps, 35);
-  for (let i = 0; i < 5; i++) state = stepArcSleepPolicy(state, settings, { loadPercent: 50, nowMs: i + 3 }).state;
+  for (let i = 0; i < 5; i++) state = stepArcSleepPolicy(state, settings, { loadPercent: 60, nowMs: i + 3 }).state;
   assert.equal(state.adaptiveCapFps, 38);
-  for (let i = 5; i < 15; i++) state = stepArcSleepPolicy(state, settings, { loadPercent: 50, nowMs: i + 3 }).state;
+  for (let i = 5; i < 15; i++) state = stepArcSleepPolicy(state, settings, { loadPercent: 60, nowMs: i + 3 }).state;
   assert.equal(state.adaptiveCapFps, 40);
   for (let i = 0; i < 15; i++) state = stepArcSleepPolicy(state, settings, { loadPercent: 90, nowMs: i + 20 }).state;
   assert.equal(state.adaptiveCapFps, 30);
+});
+
+test('adaptive cap recovers by three FPS each sample when GPU has at least fifteen points of headroom', () => {
+  const settings = { adaptiveEnabled: true, adaptiveMinFps: 30, adaptiveMaxFps: 144, adaptiveTargetLoadPct: 85 };
+  let state = { ...createArcSleepPolicyState(settings), adaptiveCapFps: 37 };
+  for (const [index, expected] of [40, 43, 46].entries()) {
+    state = stepArcSleepPolicy(state, settings, { loadPercent: 50, nowMs: index }).state;
+    assert.equal(state.adaptiveCapFps, expected);
+  }
 });
 
 test('missing load retains target for five seconds, then drops it until telemetry recovers', () => {

@@ -1533,13 +1533,50 @@ export function createIpcHandlers({
   // holder lands (never in practice - telemetry starts after the block),
   // a call degrades to undefined, which the sites' try/catch swallow.
   let reconcileSysStatsReady = async () => {};
+  let initialTelemetrySelectionReady = false;
+  let resolveInitialTelemetrySelection;
+  const initialTelemetrySelection = new Promise((resolve) => { resolveInitialTelemetrySelection = resolve; });
+  const markInitialTelemetrySelectionReady = () => {
+    if (initialTelemetrySelectionReady) return;
+    initialTelemetrySelectionReady = true;
+    resolveInitialTelemetrySelection();
+  };
   if (sysStats && typeof sysStats === 'object' && 'current' in sysStats) {
     const holder = sysStats;
+    let pendingTargetArgs = null;
+    let hasPendingTarget = false;
     const previousReady = typeof holder.onReady === 'function' ? holder.onReady : null;
     holder.onReady = () => {
-      try { previousReady?.(); } catch { /* readiness hooks are best effort */ }
-      try { onSysStatsReady(); } catch { /* Arc Sleep sampler readiness is best effort */ }
-      void reconcileSysStatsReady().catch(() => {});
+      const finishReady = () => {
+        // Reapply the latest selected GPU before Arc Sleep can sample the
+        // adapter. A lane may have resolved its target while readiness waited.
+        if (hasPendingTarget) {
+          try { holder.current?.setTarget?.(...pendingTargetArgs); } catch { /* target reconciliation is best effort */ }
+        }
+        try { previousReady?.(); } catch { /* readiness hooks are best effort */ }
+        try { onSysStatsReady(); } catch { /* Arc Sleep sampler readiness is best effort */ }
+        void reconcileSysStatsReady().catch(() => {});
+      };
+      const waitForStableTargetStarts = async () => {
+        // The adapter often lands before renderer boot has resolved the
+        // persisted selection. Wait for a selected target or the explicit
+        // null-device startup signal before exposing it to Arc Sleep.
+        if (!initialTelemetrySelectionReady) await initialTelemetrySelection;
+        while (true) {
+          const targetStarts = [...telemetryTargetStarting.values()].map((entry) => entry.promise);
+          if (targetStarts.length === 0) {
+            // Yield once so starts queued by the preceding resolution can
+            // publish their barriers before readiness declares the set stable.
+            await Promise.resolve();
+            if (telemetryTargetStarting.size === 0) break;
+            continue;
+          }
+          await Promise.allSettled(targetStarts);
+        }
+        finishReady();
+      };
+      if (initialTelemetrySelectionReady && telemetryTargetStarting.size === 0) finishReady();
+      else void waitForStableTargetStarts();
     };
     sysStats = {
       sample: (...args) => holder.current?.sample?.(...args),
@@ -1548,7 +1585,11 @@ export function createIpcHandlers({
       sampleGpuUtilForTarget: (...args) => holder.current?.sampleGpuUtilForTarget?.(...args),
       registerTarget: (...args) => holder.current?.registerTarget?.(...args),
       sampleSlow: (...args) => holder.current?.sampleSlow?.(...args),
-      setTarget: (...args) => holder.current?.setTarget?.(...args),
+      setTarget: (...args) => {
+        pendingTargetArgs = args;
+        hasPendingTarget = true;
+        return holder.current?.setTarget?.(...args);
+      },
       startSlowLane: (...args) => holder.current?.startSlowLane?.(...args),
       stopSlowLane: (...args) => holder.current?.stopSlowLane?.(...args),
     };
@@ -1585,6 +1626,7 @@ export function createIpcHandlers({
   };
   /** @type {Map<number, TelemetryService | { stop: () => Promise<void> }>} */
   const telemetry = new Map();
+  const telemetrySelectedTargets = new Map();
   /** The most recent fully composed sample for each active telemetry lane.
    * The advanced overlay can open between timer ticks, so it needs a
    * read-on-demand snapshot in addition to the push stream. */
@@ -1921,7 +1963,7 @@ export function createIpcHandlers({
     await sampleNow();
   };
 
-  const startTelemetryLane = async (deviceId) => {
+  const startTelemetryLane = async (deviceId, onTargetSelected = () => {}) => {
     if (telemetry.has(deviceId)) return;
     const generation = ++telemetryGeneration;
     // M17e (round-2 N4, the overlay polling-rate slider): the telemetry
@@ -1943,6 +1985,7 @@ export function createIpcHandlers({
     // with another adapter's numeric id.
     const target = await backend.getDeviceTarget?.(deviceId);
     if (generation !== telemetryGeneration) return;
+    telemetrySelectedTargets.set(deviceId, target ?? null);
     const telemetryAliases = Array.isArray(target?.deviceKeys) ? [...target.deviceKeys] : null;
     // Keep a numeric id as an internal lane key only. A synthetic `id:N`
     // deviceKey in the shared payload looks like a durable identity and makes
@@ -1951,6 +1994,8 @@ export function createIpcHandlers({
       ?? (Array.isArray(telemetryAliases) ? telemetryAliases[0] : null)
       ?? null;
     try { await sysStats.setTarget?.(target); } catch { /* stale OS target degrades to null fields */ }
+    markInitialTelemetrySelectionReady();
+    onTargetSelected();
     if (generation !== telemetryGeneration) return;
     if (lhmTelemetry) {
       const sampleNow = async () => {
@@ -2113,9 +2158,50 @@ export function createIpcHandlers({
   // renderer's start so two concurrent callers can never create competing
   // TelemetryService instances for one device.
   const telemetryStarting = new Map();
-  const startTelemetry = async (deviceId, refreshExisting = true) => {
+  // Readiness only needs to wait until a selected lane has chosen/applied its
+  // target. Waiting for the whole startup promise could couple Arc Sleep to a
+  // slow or stalled first telemetry sample.
+  const telemetryTargetStarting = new Map();
+  let telemetryTargetHandoff = null;
+  const settleTelemetryTargetStarts = ({ includeHandoff = true } = {}) => {
+    const entries = [...telemetryTargetStarting.entries()];
+    for (const [id, entry] of entries) {
+      if (!entry || telemetryTargetStarting.get(id) !== entry) continue;
+      if (!includeHandoff && entry === telemetryTargetHandoff) continue;
+      entry.settle();
+    }
+  };
+  const settleTelemetryTargetHandoff = () => telemetryTargetHandoff?.settle();
+  const holdTelemetryTargetReadinessForHandoff = (expectReplacement) => {
+    if (!expectReplacement) {
+      settleTelemetryTargetStarts();
+      return;
+    }
+    settleTelemetryTargetStarts({ includeHandoff: false });
+    if (telemetryTargetHandoff && [...telemetryTargetStarting.values()].includes(telemetryTargetHandoff)) return;
+    const key = Symbol('telemetry-target-handoff');
+    let resolveHandoff;
+    const promise = new Promise((resolve) => { resolveHandoff = resolve; });
+    const entry = { promise, settle: () => {} };
+    entry.settle = () => {
+      if (telemetryTargetStarting.get(key) === entry) telemetryTargetStarting.delete(key);
+      if (telemetryTargetHandoff === entry) telemetryTargetHandoff = null;
+      resolveHandoff();
+    };
+    telemetryTargetHandoff = entry;
+    telemetryTargetStarting.set(key, entry);
+    // The declared replacement start (including null-device mode) or global
+    // telemetry teardown releases this barrier; IPC latency cannot expire it.
+  };
+  const startTelemetry = async (deviceId, refreshExisting = true, completesHandoff = false) => {
+    if (telemetryTargetHandoff && !completesHandoff) return;
     const active = telemetry.get(deviceId);
     if (active) {
+      if (completesHandoff) {
+        const selectedTarget = telemetrySelectedTargets.get(deviceId);
+        try { await sysStats.setTarget?.(selectedTarget ?? null); } catch { /* selected target restore is best effort */ }
+        settleTelemetryTargetHandoff();
+      }
       // M151: a secondary renderer may have started this shared lane before
       // the main dashboard installed its listener. Re-sample an existing
       // native lane so the current consumer receives a fresh composed sample;
@@ -2126,8 +2212,36 @@ export function createIpcHandlers({
       return;
     }
     const pending = telemetryStarting.get(deviceId);
-    if (pending) return pending;
-    const start = startTelemetryLane(deviceId);
+    if (pending) {
+      if (completesHandoff) settleTelemetryTargetHandoff();
+      return pending;
+    }
+    // Starting a different selected-device lane advances the shared telemetry
+    // generation, making older pending lookups stale. Release their readiness
+    // barriers now so readiness can wait on the newly inserted current lane.
+    settleTelemetryTargetStarts({ includeHandoff: false });
+    if (completesHandoff) settleTelemetryTargetHandoff();
+    let resolveTargetSelection;
+    const targetSelection = new Promise((resolve) => { resolveTargetSelection = resolve; });
+    const targetEntry = { promise: targetSelection, settle: () => {} };
+    targetEntry.settle = () => {
+      if (telemetryTargetStarting.get(deviceId) === targetEntry) telemetryTargetStarting.delete(deviceId);
+      resolveTargetSelection();
+    };
+    telemetryTargetStarting.set(deviceId, targetEntry);
+    const start = (async () => {
+      try {
+        await startTelemetryLane(deviceId, targetEntry.settle);
+      } finally {
+        // A lane can exit before target lookup (stop, failure, or missing
+        // target adapter); readiness must still proceed for the adapter.
+        if (!initialTelemetrySelectionReady) {
+          try { await sysStats.setTarget?.(null); } catch { /* failed initial selection clears best effort */ }
+          markInitialTelemetrySelectionReady();
+        }
+        targetEntry.settle();
+      }
+    })();
     telemetryStarting.set(deviceId, start);
     try {
       await start;
@@ -2437,6 +2551,12 @@ export function createIpcHandlers({
     rtssOverlaySyncGeneration += 1;
     try { await stabilityService?.stop?.(); } catch { /* close the run honestly on teardown */ }
     telemetryGeneration += 1;
+    settleTelemetryTargetStarts();
+    telemetrySelectedTargets.clear();
+    if (!initialTelemetrySelectionReady) {
+      try { await sysStats.setTarget?.(null); } catch { /* teardown selection clear is best effort */ }
+      markInitialTelemetrySelectionReady();
+    }
     overlayTelemetryGeneration += 1;
     overlayTelemetryOwners.clear();
     // A startup can still be waiting on inventory/sysinfo when teardown
@@ -3747,19 +3867,27 @@ export function createIpcHandlers({
         return { accepted: true };
       },
 
-      'telemetry-start': async (deviceId) => {
+      'telemetry-start': async (deviceId, options = {}) => {
+        const completesHandoff = options?.completesHandoff === true;
         // 1.0.1 no-Intel round: telemetry-start(null) starts the no-device
         // mode (the sentinel-keyed sys-stats-only timer). A real device id
         // is still validated as a non-negative integer.
         if (deviceId === null || deviceId === undefined) {
+          if (telemetryTargetHandoff && !completesHandoff) return;
+          try { await sysStats.setTarget?.(null); } catch { /* null target is best effort */ }
+          markInitialTelemetrySelectionReady();
+          settleTelemetryTargetStarts({ includeHandoff: false });
+          if (completesHandoff) settleTelemetryTargetHandoff();
           await startNullTelemetry();
           return;
         }
         assertValidDeviceId(deviceId);
-        await startTelemetry(deviceId);
+        if (telemetryTargetHandoff && !completesHandoff) return;
+        await startTelemetry(deviceId, true, completesHandoff);
       },
       'telemetry-latest': async (deviceId) => {
         assertValidDeviceId(deviceId);
+        if (telemetryTargetHandoff) return latestTelemetry.get(deviceId) ?? null;
         // A panel opened before the main renderer's boot telemetry call must
         // still receive live data. This is idempotent and shares the same
         // in-flight startup promise as telemetry-start.
@@ -3772,7 +3900,8 @@ export function createIpcHandlers({
         await requestOverlayTelemetry(request);
       },
 
-      'telemetry-stop': async (deviceId) => {
+      'telemetry-stop': async (deviceId, options = {}) => {
+        const expectReplacement = options?.expectReplacement === true;
         // 1.0.1 no-Intel round (m3): telemetry-stop(null) is the SYMMETRIC
         // stop for the no-device mode (sentinel key in the shared Map).
         if (deviceId === null || deviceId === undefined) {
@@ -3781,7 +3910,13 @@ export function createIpcHandlers({
           // service in the map; otherwise a rollback can be followed by a
           // stale timer appearing after this stop returns.
           telemetryGeneration += 1;
-          telemetryStarting.delete(NULL_DEVICE_KEY);
+          telemetryStarting.clear();
+          holdTelemetryTargetReadinessForHandoff(expectReplacement);
+          if (expectReplacement || !initialTelemetrySelectionReady) {
+            try { await sysStats.setTarget?.(null); } catch { /* handoff target clear is best effort */ }
+          }
+          markInitialTelemetrySelectionReady();
+          telemetrySelectedTargets.delete(NULL_DEVICE_KEY);
           latestTelemetry.delete(NULL_DEVICE_KEY);
           if (svc) {
             await svc.stop();
@@ -3794,7 +3929,16 @@ export function createIpcHandlers({
         // The map can still be empty while target/provider/service startup
         // awaits. Stop must invalidate that pending start unconditionally.
         telemetryGeneration += 1;
-        telemetryStarting.delete(deviceId);
+        // The generation is shared by every selected-device startup, so this
+        // invalidates all pending startup promises, not only this key. Their
+        // finally blocks use identity checks and cannot remove a replacement.
+        telemetryStarting.clear();
+        holdTelemetryTargetReadinessForHandoff(expectReplacement);
+        if (expectReplacement || !initialTelemetrySelectionReady) {
+          try { await sysStats.setTarget?.(null); } catch { /* handoff target clear is best effort */ }
+        }
+        markInitialTelemetrySelectionReady();
+        telemetrySelectedTargets.delete(deviceId);
         latestTelemetry.delete(deviceId);
         if (svc) {
           await svc.stop();

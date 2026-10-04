@@ -265,16 +265,28 @@ export const arcSleepPage: Page = {
       const labels: Record<ArcSleepSnapshot['status'], string> = { disabled: 'Arc Sleep is disabled.', ready: 'Ready for input inactivity or GPU load changes.', idle: 'Idle Cap is active.', adaptive: 'Load Adaptive is active.', 'rtss-unavailable': 'The RTSS frame limiter is unavailable.', 'limiter-unavailable': 'RTSS and the selected GPU driver frame limiter are unavailable.', 'igcl-static-only': 'IGCL can store a Base FPS Cap, but this driver does not report live changes for running games.', 'elevation-required': 'Arc Power needs administrator access to change the IGCL frame limit automatically.', 'external-change': 'The frame limit changed externally. Arc Sleep released control.', 'recovery-pending': 'Restoring the previous frame limit…', error: 'Arc Sleep encountered an error.' };
       status.textContent = state?.status === 'adaptive' && state.effectiveCapFps == null ? 'Load Adaptive is waiting for fresh telemetry from the selected GPU.' : state?.message || (state ? labels[state.status] : failure ? `${failure}. Check the FPS limiter and reopen Arc Sleep to retry.` : 'Runtime status is temporarily unavailable.');
       const live = state?.diagnostics;
-      if (!live) {
+      if (!state || !live) {
         diagnostics.textContent = state ? 'Live FPS adjustment diagnostics are unavailable in this runtime.' : 'Live GPU and RTSS readings are temporarily unavailable.';
       } else {
         const readings = [live.gpuUtilPct == null ? 'GPU utilization unavailable' : `GPU ${Math.round(live.gpuUtilPct)}%`];
         if (live.reportedFps != null) readings.push(`RTSS ${Math.round(live.reportedFps)} FPS`);
+        const recoveryCapCeiling = Math.min(settings.adaptiveMaxFps, state.baseCapFps ?? settings.adaptiveMaxFps);
+        const recoveringFromLowLoad = live.gpuUtilPct !== null
+          && live.gpuUtilPct < settings.adaptiveTargetLoadPct - 5
+          && state.frameLimitEffectiveNow
+          && state.effectiveCapFps !== null
+          && state.effectiveCapFps < recoveryCapCeiling;
+        const recoveringQuicklyFromLargeHeadroom = recoveringFromLowLoad
+          && live.gpuUtilPct! <= settings.adaptiveTargetLoadPct - 15;
         const guidance: Record<NonNullable<ArcSleepSnapshot['diagnostics']>['fpsStatus'], string> = {
           disabled: 'Enable Load Adaptive to read live FPS.',
           'gpu-unavailable': 'Load Adaptive cannot currently read selected-GPU utilization.',
           'idle-priority': 'Idle Cap has priority; live-FPS adjustment is paused.',
-          'below-trigger': `Fast FPS adjustment waits for GPU load above ${settings.adaptiveTargetLoadPct}%.`,
+          'below-trigger': recoveringQuicklyFromLargeHeadroom
+            ? `GPU load is at least 15 points below target; the cap recovers by 3 FPS per sample.`
+            : recoveringFromLowLoad
+              ? `GPU load is below ${settings.adaptiveTargetLoadPct - 5}%; the cap recovers by 3 FPS every five low-load samples.`
+            : `Fast FPS adjustment waits for GPU load above ${settings.adaptiveTargetLoadPct}%.`,
           'rtss-unavailable': 'No fresh foreground game FPS from RTSS; using sustained-load fallback steps.',
           'gpu-unconfirmed': 'RTSS reports FPS, but the game could not be confirmed on the selected GPU; using sustained-load fallback steps.',
           ready: live.fastAdjustmentApplied ? 'Fast adjustment applied using the confirmed live game FPS.' : 'Foreground game FPS is confirmed on the selected GPU; fast adjustment is available.',

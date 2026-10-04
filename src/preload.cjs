@@ -47,13 +47,13 @@ contextBridge.exposeInMainWorld('arcPower', {
   resetToDefaults: (deviceId) => ipcRenderer.invoke('reset-to-defaults', deviceId),
   waiverGet: (deviceId) => ipcRenderer.invoke('waiver-get', deviceId),
   waiverAccept: (deviceId) => ipcRenderer.invoke('waiver-accept', deviceId),
-  telemetryStart: (deviceId) => ipcRenderer.invoke('telemetry-start', deviceId),
+  telemetryStart: (deviceId, options) => ipcRenderer.invoke('telemetry-start', deviceId, options),
   telemetryLatest: (deviceId) => ipcRenderer.invoke('telemetry-latest', deviceId),
   // Basic Overlay secondary adapters; the selected main-device lane remains
   // owned by telemetryStart.
   overlayTelemetryStart: (deviceIds) => ipcRenderer.invoke('overlay-telemetry-start', deviceIds),
   overlayResize: (deviceCount) => ipcRenderer.invoke('overlay-resize', deviceCount),
-  telemetryStop: (deviceId) => ipcRenderer.invoke('telemetry-stop', deviceId),
+  telemetryStop: (deviceId, options) => ipcRenderer.invoke('telemetry-stop', deviceId, options),
   stabilityRunStart: (payload) => ipcRenderer.invoke('stability-run-start', payload),
   stabilityRunStatus: (runId) => ipcRenderer.invoke('stability-run-status', runId),
   stabilityRunCancel: (runId) => ipcRenderer.invoke('stability-run-cancel', runId),

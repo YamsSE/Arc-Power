@@ -314,6 +314,26 @@ test('adaptive cap responds to GPU load even when CPU load disagrees', async (t)
   assert.equal(h.readState().limit, 75);
 });
 
+test('adaptive cap seeded from game FPS recovers by three FPS per sample with large GPU headroom', async (t) => {
+  const h = harness({
+    settings: { adaptiveEnabled: true, adaptiveMinFps: 30, adaptiveMaxFps: 144, adaptiveTargetLoadPct: 85 },
+    state: { limit: 144, denominator: 1, limiterEnabled: true },
+    underlay: { limit: 0, denominator: 1, limiterEnabled: false },
+    loadSignals: { gpuUtilPct: 96 },
+    observedFps: { fps: 37, processId: 7, eligible: true },
+  });
+  t.after(() => h.controller.stop());
+
+  await h.controller.start();
+  assert.equal(h.readState().limit, 37, 'confirmed current game FPS seeds the cap under high GPU load');
+
+  h.setLoadSignals({ gpuUtilPct: 50 });
+  await h.controller.tick();
+  assert.equal(h.readState().limit, 40, 'the cap rises by exactly 3 FPS on the first low-load sample');
+  await h.controller.tick();
+  assert.equal(h.readState().limit, 43, 'recovery continues by 3 FPS on each low-load sample');
+});
+
 test('controller reads foreground FPS only under high GPU load and follows later scene FPS', async (t) => {
   const h = harness({
     settings: { adaptiveEnabled: true, adaptiveMinFps: 30 },

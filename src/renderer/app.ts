@@ -217,14 +217,14 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
       // Stop the old numeric session before main rebuilds the list. The
       // returned devices get fresh ids, so leaving this service alive would
       // keep polling the old id after a stable-key reorder.
-      await stopTelemetry(api, before.deviceId, warn);
+      await stopTelemetry(api, before.deviceId, warn, { expectReplacement: true });
       let out;
       try {
         out = await api.mockSetFeatureset(id);
       } catch (err) {
         // A failed swap leaves the existing renderer selection in place;
         // restore its session rather than leaving telemetry stopped.
-        await startTelemetry(api, before.deviceId, warn);
+        await startTelemetry(api, before.deviceId, warn, { completesHandoff: true });
         throw err;
       }
       swapApplied = true;
@@ -250,7 +250,7 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
       const caps = await api.getCapabilities(target.id);
       const state = await api.getCurrentSettings(target.id);
       // Start exactly one service for the freshly resolved session id.
-      targetTelemetryStarted = await startTelemetry(api, target.id, warn);
+      targetTelemetryStarted = await startTelemetry(api, target.id, warn, { completesHandoff: true });
       await configureDashboardTelemetry(target.id, out.devices);
       // If the old stable key disappeared, persist the visible fallback so
       // the next boot does not resurrect the stale selection.
@@ -297,9 +297,9 @@ const header = new GpuHeader(document.getElementById('gpu-header') as HTMLElemen
         // session without telemetry. Stop a successfully started target
         // before restoring the previous session, best effort.
         if (targetTelemetryStarted && targetId !== null) {
-          await stopTelemetry(api, targetId, warn);
+          await stopTelemetry(api, targetId, warn, { expectReplacement: true });
         }
-        await startTelemetry(api, before.deviceId, warn);
+        await startTelemetry(api, before.deviceId, warn, { completesHandoff: true });
       }
       toast('error', 'Featureset swap failed', err instanceof Error ? err.message : String(err));
     } finally {
