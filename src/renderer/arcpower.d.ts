@@ -130,6 +130,8 @@ export interface ArcPowerApi {
    *  NEVER called with a null deviceId - the no-Intel page guard renders
    *  'No GPU available.' first. */
   graphicsGet(deviceId: number): Promise<GraphicsState>;
+  /** Fast Arc Sleep Base FPS Cap read; bypasses serialized writes and bounds RTSS waiting. */
+  arcSleepBaseCapGet(deviceId: number): Promise<GraphicsState>;
   /** M8: apply graphics settings - the DEDICATED apply path (NO OC waiver,
    *  NO OC-mode gate). Returns the { ok, perControl, graphicsState } envelope
    *  with the FRESH read-back for the per-control refresh. */

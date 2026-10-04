@@ -109,6 +109,7 @@ export const arcSleepPage: Page = {
       const value = el('input', { type: 'range', class: 'graphics-slider', min: 30, max: 300, step: 1, value: 60, disabled: true, 'aria-label': 'Base FPS Cap value' });
       const valueText = el('span', { class: 'graphics-fps-value', text: '— FPS', 'aria-live': 'polite' });
       const apply = el('button', { class: 'btn btn-primary btn-sm', text: 'Apply Base Cap', disabled: true });
+      const retry = el('button', { class: 'btn btn-secondary btn-sm', text: 'Retry check', hidden: true });
       let range = { min: 30, max: 300, step: 1, default: 60 };
       let original = { enabled: false, value: 60 };
       let supported = false;
@@ -158,6 +159,7 @@ export const arcSleepPage: Page = {
           updateBaseCapUi();
         });
       });
+      retry.addEventListener('click', () => { if (isCurrent()) void loadGraphicsState(); });
       const gpuContext = el('span', {
         class: 'arc-sleep-cap-device',
         text: selected ? selected.name : 'No GPU selected',
@@ -186,7 +188,7 @@ export const arcSleepPage: Page = {
         fields,
         el('div', { class: 'arc-sleep-cap-bottom' }, [
           baseCapStatus,
-          el('div', { class: 'arc-sleep-base-cap-actions' }, [apply]),
+          el('div', { class: 'arc-sleep-base-cap-actions' }, [retry, apply]),
         ]),
       ]);
       if (!eligible) {
@@ -200,36 +202,47 @@ export const arcSleepPage: Page = {
       baseCapStatus.textContent = 'Checking FPS limiter support…';
       enabled.disabled = true;
       apply.hidden = true;
-      void withTimeout(api.graphicsGet(selected.id), 'FPS limiter check').then(graphicsState => {
-        if (!isCurrent()) return;
-        if (!graphicsState.supported.frameLimit) {
-          baseCapStatus.textContent = 'The selected GPU does not support the Graphics FPS limiter.';
-          return;
-        }
-        supported = true;
-        range = frameLimitRange(graphicsState);
-        const current = graphicsState.values.frameLimit ?? { enabled: false, value: range.default };
-        original = { enabled: current.enabled, value: clampFrameLimitValue(current.value, range) };
-        enabled.checked = original.enabled;
-        rangeMin.textContent = `${range.min} FPS`;
-        rangeMax.textContent = `${range.max} FPS`;
-        value.min = String(range.min);
-        value.max = String(range.max);
-        value.step = String(range.step);
-        value.value = String(original.value);
-        baseCapStatus.textContent = graphicsState.frameLimitSource === 'rtss'
-          ? 'Uses RTSS when available, with the selected GPU’s IGCL limiter as fallback.'
-          : graphicsState.frameLimitLiveChange === true
-            ? 'Uses the selected GPU’s adapter-wide IGCL frame limit. This driver reports live changes, so Arc Sleep can adjust it while a game runs.'
-            : 'Uses the selected GPU’s adapter-wide IGCL frame limit. This driver does not report LIVE_CHANGE; the saved cap may apply to newly started games, while Arc Sleep dynamic changes stay inactive.';
-        updateBaseCapUi();
-      }).catch(error => {
-        if (!isCurrent()) return;
+      const loadGraphicsState = async (): Promise<void> => {
+        retry.hidden = true;
+        retry.disabled = true;
         enabled.disabled = true;
-        value.disabled = true;
-        apply.disabled = true;
-        baseCapStatus.textContent = `FPS limiter status unavailable: ${error instanceof Error ? error.message : String(error)}`;
-      });
+        baseCapStatus.textContent = 'Checking FPS limiter support…';
+        try {
+          const graphicsState = await withTimeout(api.arcSleepBaseCapGet(selected.id), 'FPS limiter check');
+          if (!isCurrent()) return;
+          if (!graphicsState.supported.frameLimit) {
+            baseCapStatus.textContent = 'The selected GPU does not support the Graphics FPS limiter.';
+            return;
+          }
+          supported = true;
+          range = frameLimitRange(graphicsState);
+          const current = graphicsState.values.frameLimit ?? { enabled: false, value: range.default };
+          original = { enabled: current.enabled, value: clampFrameLimitValue(current.value, range) };
+          enabled.checked = original.enabled;
+          rangeMin.textContent = `${range.min} FPS`;
+          rangeMax.textContent = `${range.max} FPS`;
+          value.min = String(range.min);
+          value.max = String(range.max);
+          value.step = String(range.step);
+          value.value = String(original.value);
+          baseCapStatus.textContent = graphicsState.frameLimitSource === 'rtss'
+            ? 'Uses RTSS when available, with the selected GPU’s IGCL limiter as fallback.'
+            : graphicsState.frameLimitLiveChange === true
+              ? 'Uses the selected GPU’s adapter-wide IGCL frame limit. This driver reports live changes, so Arc Sleep can adjust it while a game runs.'
+              : 'Uses the selected GPU’s adapter-wide IGCL frame limit. This driver does not report LIVE_CHANGE; the saved cap may apply to newly started games, while Arc Sleep dynamic changes stay inactive.';
+          updateBaseCapUi();
+        } catch (error) {
+          if (!isCurrent()) return;
+          enabled.disabled = true;
+          value.disabled = true;
+          apply.disabled = true;
+          baseCapStatus.textContent = `FPS limiter status unavailable: ${error instanceof Error ? error.message : String(error)}`;
+          retry.hidden = false;
+        } finally {
+          if (isCurrent()) retry.disabled = false;
+        }
+      };
+      void loadGraphicsState();
       return panel;
     }
     const paintSettings = (): void => { idle.checked = settings.idleEnabled; adaptive.checked = settings.adaptiveEnabled; delay.value = String(settings.idleAfterSeconds); idleFps.value = String(settings.idleFps); min.value = String(settings.adaptiveMinFps); max.value = String(settings.adaptiveMaxFps); target.value = String(settings.adaptiveTargetLoadPct); };

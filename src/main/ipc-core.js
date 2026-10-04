@@ -2747,7 +2747,7 @@ export function createIpcHandlers({
     };
   };
 
-  const readGraphicsState = async (deviceId, { useRtss = true } = {}) => {
+  const readGraphicsState = async (deviceId, { useRtss = true, rtssTimeoutMs = 0 } = {}) => {
     const baseState = await backend.getGraphicsSettings(deviceId);
     const arcSleepSnapshot = arcSleepController?.getSnapshot?.() ?? null;
     let selectedDeviceKey = null;
@@ -2778,13 +2778,51 @@ export function createIpcHandlers({
     }
     const arcSleepBase = arcSleepSnapshot?.baseFrameLimit;
     let rtssState = null;
-    try { rtssState = await rtssFrameLimiter.getFrameLimit(); } catch { /* IGCL fallback */ }
+    try {
+      const read = Promise.resolve().then(() => rtssFrameLimiter.getFrameLimit());
+      if (rtssTimeoutMs > 0) {
+        let timeout;
+        try {
+          rtssState = await Promise.race([
+            read,
+            new Promise((resolve) => { timeout = setTimeout(() => resolve(null), rtssTimeoutMs); }),
+          ]);
+        } finally {
+          if (timeout !== undefined) clearTimeout(timeout);
+        }
+      } else {
+        rtssState = await read;
+      }
+    } catch { /* IGCL fallback */ }
     if (rtssState?.ok === true && arcSleepBase && typeof arcSleepBase.enabled === 'boolean') {
       rtssState = {
         ...rtssState,
         limit: arcSleepBase.enabled === true ? arcSleepBase.value : 0,
         limiterEnabled: arcSleepBase.enabled === true,
       };
+    }
+    if (rtssState?.ok !== true && arcSleepSnapshot?.activeLimiter === 'rtss') {
+      const safeBase = arcSleepBase
+        && typeof arcSleepBase.enabled === 'boolean'
+        && Number.isFinite(arcSleepBase.value)
+        && arcSleepBase.value >= GRAPHICS_RTSS_FRAME_LIMIT_RANGE.min
+        && arcSleepBase.value <= GRAPHICS_RTSS_FRAME_LIMIT_RANGE.max;
+      if (safeBase) {
+        return {
+          ...baseState,
+          supported: { ...(baseState?.supported ?? {}), frameLimit: true },
+          frameLimitRange: { ...GRAPHICS_RTSS_FRAME_LIMIT_RANGE },
+          frameLimitSource: 'rtss',
+          frameLimitLiveChange: true,
+          values: {
+            ...(baseState?.values ?? {}),
+            frameLimit: { enabled: arcSleepBase.enabled, value: arcSleepBase.value },
+          },
+        };
+      }
+      if (baseState?.supported?.frameLimit !== true) {
+        throw new Error('FPS limiter status is temporarily unavailable; retry the check.');
+      }
     }
     if (rtssState?.ok !== true
       && igclSnapshotMatchesRequestedDevice
@@ -3155,6 +3193,13 @@ export function createIpcHandlers({
         return arcSleepController?.withTransaction
           ? arcSleepController.withTransaction(read)
           : read();
+      },
+
+      // Arc Sleep's Base FPS Cap panel needs a fast, independent read so it
+      // can recover even when the controller's serialized RTSS queue stalls.
+      'arc-sleep-base-cap-get': async (deviceId) => {
+        assertValidDeviceId(deviceId);
+        return readGraphicsState(deviceId, { rtssTimeoutMs: 1200 });
       },
 
       'arc-sleep-state-get': async (...args) => {

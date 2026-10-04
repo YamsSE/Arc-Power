@@ -277,6 +277,63 @@ test('Arc Sleep applies IGCL read-back only to the requested adapter', async () 
   assert.deepEqual(selected.values.frameLimit, { enabled: true, value: 120 });
 });
 
+test('Arc Sleep Base FPS Cap read bypasses a pending controller transaction', async () => {
+  const handlers = createGraphicsHandlers({
+    arcSleepController: { async withTransaction() { return new Promise(() => {}); } },
+  });
+  const state = await Promise.race([
+    handlers['arc-sleep-base-cap-get'](0),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('dedicated read stalled')), 500)),
+  ]);
+  assert.equal(state.supported.frameLimit, true);
+});
+
+test('Arc Sleep Base FPS Cap read falls back to selected-device Graphics state when RTSS is slow', async () => {
+  const deviceKey = 'pci:arc-b580-test';
+  const handlers = createGraphicsHandlers({
+    store: { async loadSettings() { return { deviceId: 0, deviceKey }; } },
+    rtssFrameLimiter: { async getFrameLimit() { return new Promise(() => {}); } },
+    arcSleepController: {
+      getSnapshot() { return { activeLimiter: 'igcl', limiterDeviceKey: deviceKey, baseFrameLimit: { enabled: true, value: 117 } }; },
+    },
+  });
+  const state = await handlers['arc-sleep-base-cap-get'](0);
+  assert.equal(state.frameLimitSource, 'igcl');
+  assert.deepEqual(state.values.frameLimit, { enabled: true, value: 117 });
+});
+
+test('Arc Sleep Base FPS Cap read preserves a saved RTSS cap when IGCL is unsupported and RTSS stalls', async () => {
+  const handlers = createGraphicsHandlers({
+    backend: {
+      async getDeviceTarget() { return { id: 0, deviceKey: 'pci:arc-b580-test', synthetic: false, backendKind: 'igcl' }; },
+      async listDevices() { return []; },
+      async getGraphicsSettings() { return { supported: { frameLimit: false }, values: { frameLimit: null } }; },
+    },
+    store: { async loadSettings() { return { deviceId: 0, deviceKey: 'pci:arc-b580-test' }; } },
+    rtssFrameLimiter: { async getFrameLimit() { return new Promise(() => {}); } },
+    arcSleepController: {
+      getSnapshot() { return { activeLimiter: 'rtss', baseFrameLimit: { enabled: true, value: 144 } }; },
+    },
+  });
+  const state = await handlers['arc-sleep-base-cap-get'](0);
+  assert.equal(state.supported.frameLimit, true);
+  assert.equal(state.frameLimitSource, 'rtss');
+  assert.deepEqual(state.values.frameLimit, { enabled: true, value: 144 });
+});
+
+test('Arc Sleep Base FPS Cap read reports transient failure when RTSS state is active but unrecoverable', async () => {
+  const handlers = createGraphicsHandlers({
+    backend: {
+      async getDeviceTarget() { return { id: 0, deviceKey: 'pci:arc-b580-test', synthetic: false, backendKind: 'igcl' }; },
+      async listDevices() { return []; },
+      async getGraphicsSettings() { return { supported: { frameLimit: false }, values: { frameLimit: null } }; },
+    },
+    rtssFrameLimiter: { async getFrameLimit() { return new Promise(() => {}); } },
+    arcSleepController: { getSnapshot() { return { activeLimiter: 'rtss', baseFrameLimit: null }; } },
+  });
+  await assert.rejects(handlers['arc-sleep-base-cap-get'](0), /temporarily unavailable/);
+});
+
 test('IGCL write failure rolls back the Graphics Base Cap and clears its temporary journal', async () => {
   const device = {
     id: 0,

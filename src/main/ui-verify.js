@@ -10727,6 +10727,7 @@ async function verifyArcSleepPage(win) {
   await js(`location.hash = '#/arc-sleep'`);
   if (!(await waitFor(win, `document.querySelector('.arc-sleep-toggle')?.disabled === false`, 5000))) throw new Error('Arc Sleep settings did not load');
   if (!(await waitFor(win, `document.querySelector('[data-arc-sleep-base-cap]') && !document.querySelector('[data-arc-sleep-base-cap-status]')?.textContent?.includes('Checking FPS limiter support')`, 5000))) throw new Error('Arc Sleep Base FPS Cap support check did not complete');
+  if (!(await js(`(() => { const retry = document.querySelector('[data-arc-sleep-base-cap] button.btn-secondary'); return retry?.textContent === 'Retry check' && retry.hidden; })()`))) throw new Error('Arc Sleep Base FPS Cap retry action is unavailable after its support check');
   const panelLayout = await js(`(() => {
     const container = document.querySelector('.arc-sleep-panels');
     const containerRect = container.getBoundingClientRect();
@@ -10765,7 +10766,7 @@ async function verifyArcSleepPage(win) {
         enabled.dispatchEvent(new Event('change', { bubbles: true }));
         slider.value = '${testCapValue}';
         slider.dispatchEvent(new Event('input', { bubbles: true }));
-        document.querySelector('[data-arc-sleep-base-cap] button').click();
+        document.querySelector('[data-arc-sleep-base-cap] button.btn-primary').click();
       })()`);
       if (!(await waitFor(win, `document.querySelector('[data-arc-sleep-base-cap-status]')?.textContent === 'Base FPS Cap applied. Graphics uses this same cap.'`, 8000))) throw new Error('Arc Sleep Base FPS Cap apply did not complete');
       const appliedCap = await js(`window.arcPower.graphicsGet(${capDeviceId})`);
@@ -10787,7 +10788,7 @@ async function verifyArcSleepPage(win) {
       if (!(await waitFor(win, `document.querySelectorAll('[data-arc-sleep-caps] strong')[1]?.textContent === '${originalFrameLimit.enabled ? `${originalFrameLimit.value} FPS` : 'Off'}'`, 5000))) throw new Error('Arc Sleep runtime label did not refresh after restoring the original FPS cap');
     }
   } else {
-    const unsupported = await js(`({ enabledDisabled: document.querySelector('[aria-label="Enable Base FPS Cap"]')?.disabled, valueDisabled: document.querySelector('[aria-label="Base FPS Cap value"]')?.disabled, applyDisabled: document.querySelector('[data-arc-sleep-base-cap] button')?.disabled, status: document.querySelector('[data-arc-sleep-base-cap-status]')?.textContent ?? '' })`);
+    const unsupported = await js(`({ enabledDisabled: document.querySelector('[aria-label="Enable Base FPS Cap"]')?.disabled, valueDisabled: document.querySelector('[aria-label="Base FPS Cap value"]')?.disabled, applyDisabled: document.querySelector('[data-arc-sleep-base-cap] button.btn-primary')?.disabled, status: document.querySelector('[data-arc-sleep-base-cap-status]')?.textContent ?? '' })`);
     if (!unsupported.enabledDisabled || !unsupported.valueDisabled || !unsupported.applyDisabled) throw new Error(`Arc Sleep exposed Base FPS Cap edits without supported selected-GPU limiter: ${JSON.stringify(unsupported)}`);
   }
   if (process.env.RID_MOCK_MULTI_DEVICE === '1') {

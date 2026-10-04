@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   // surface (the dedicated graphics apply path - NOT the OC apply-routing
   // machinery: 3D features have no OC waiver).
   graphicsGet: (deviceId) => ipcRenderer.invoke('graphics:get', deviceId),
+  arcSleepBaseCapGet: (deviceId) => ipcRenderer.invoke('arc-sleep-base-cap-get', deviceId),
   graphicsApply: (deviceId, settings) => ipcRenderer.invoke('graphics:apply', deviceId, settings),
   // M10b (the Graphics "Display" view): the display-output surface - the
   // Graphics page's Display-view IPC (the dedicated display apply path -
