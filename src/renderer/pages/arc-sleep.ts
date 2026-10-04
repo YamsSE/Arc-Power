@@ -35,7 +35,7 @@ export const arcSleepPage: Page = {
     const rtss = el('strong', { text: 'Checking…' });
     const base = el('strong', { text: '—' });
     const effective = el('strong', { text: '—' });
-    const diagnostics = el('p', { class: 'arc-sleep-diagnostics', text: 'Waiting for live GPU and RTSS readings…', dataset: { arcSleepDiagnostics: '' }, role: 'status' });
+    const diagnostics = el('p', { class: 'arc-sleep-diagnostics', text: 'Waiting for live GPU readings…', dataset: { arcSleepDiagnostics: '' }, role: 'status' });
     const baseCapStatus = el('p', { class: 'arc-sleep-panel-note', text: 'Checking FPS limiter support…', dataset: { arcSleepBaseCapStatus: '' }, role: 'status' });
     const toggle = (label: string): HTMLInputElement => el('input', { type: 'checkbox', class: 'arc-sleep-toggle', role: 'switch', 'aria-label': label });
     const number = (label: string, min: number, max: number, value: number): HTMLInputElement => el('input', { type: 'number', class: 'arc-sleep-number', min, max, step: 1, value, 'aria-label': label });
@@ -63,10 +63,10 @@ export const arcSleepPage: Page = {
       clear(footer);
       if (!selected || selected.synthetic || selected.backendKind === 'os') {
         footer.append(el('p', { class: 'card-note', text: !selected
-          ? 'RTSS frame control is app-wide and follows RTSS profile scope. Arc Sleep settings are available without a selected GPU; the Graphics base cap requires one.'
-          : 'RTSS frame control is app-wide and follows RTSS profile scope. The Graphics base cap is unavailable for this GPU.' }));
+          ? 'RTSS is preferred when available. The fallback uses the selected Intel GPU driver and needs a supported physical adapter.'
+          : 'RTSS is preferred when available. The selected synthetic or OS GPU cannot use the Intel driver fallback.' }));
       } else {
-        footer.append(el('p', { class: 'card-note', text: 'RTSS frame control is app-wide and follows RTSS profile scope. The Base FPS Cap here is the same shared limiter shown in Graphics.' }));
+        footer.append(el('p', { class: 'card-note', text: 'Arc Sleep prefers RTSS. If RTSS is unavailable, IGCL applies the cap to the selected GPU’s adapter-wide 3D profile, which can affect other games on that adapter. The Base FPS Cap is shared with Graphics.' }));
       }
     };
     let baseCapGeneration = 0;
@@ -82,7 +82,7 @@ export const arcSleepPage: Page = {
     updateFooter(selectedState);
     container.append(el('div', { class: 'arc-sleep-page', dataset: { control: 'arcSleep' } }, [
       el('section', { class: 'arc-sleep-hero' }, [el('div', {}, [el('span', { class: 'arc-sleep-eyebrow', text: 'SMART FRAME CONTROL' }), el('h1', { class: 'page-title', text: 'Arc Sleep' }), el('p', { class: 'page-subtitle', text: 'Ease the frame cap when you step away. Balance GPU load while you play.' })]), saveState]),
-      el('section', { class: 'card arc-sleep-runtime' }, [el('div', { class: 'arc-sleep-summary', dataset: { arcSleepCaps: '' } }, [el('div', {}, [el('span', { text: 'RTSS connection' }), rtss]), el('div', {}, [el('span', { text: 'Base cap' }), base]), el('div', {}, [el('span', { text: 'Effective cap' }), effective])]), status, diagnostics]),
+      el('section', { class: 'card arc-sleep-runtime' }, [el('div', { class: 'arc-sleep-summary', dataset: { arcSleepCaps: '' } }, [el('div', {}, [el('span', { text: 'FPS limiter' }), rtss]), el('div', {}, [el('span', { text: 'Base cap' }), base]), el('div', {}, [el('span', { text: 'Effective cap' }), effective])]), status, diagnostics]),
       panels,
       footer,
     ]));
@@ -158,15 +158,36 @@ export const arcSleepPage: Page = {
           updateBaseCapUi();
         });
       });
-      const fields = el('div', { class: 'arc-sleep-fields' }, [
-        field('Base FPS Cap', value, 'FPS'),
-        el('div', { class: 'arc-sleep-field' }, [el('span', { text: 'Current value' }), valueText]),
+      const gpuContext = el('span', {
+        class: 'arc-sleep-cap-device',
+        text: selected ? selected.name : 'No GPU selected',
+        title: selected?.name || 'No GPU selected',
+      });
+      const capToggle = el('label', { class: 'arc-sleep-cap-enable' }, [
+        enabled,
+        el('span', { text: 'Enabled' }),
       ]);
+      const sliderHead = el('div', { class: 'arc-sleep-cap-slider-head' }, [
+        el('span', { class: 'arc-sleep-cap-slider-label', text: 'Frame rate limit' }),
+        valueText,
+      ]);
+      const sliderTrack = el('div', { class: 'arc-sleep-cap-slider' }, [value]);
+      const rangeMin = el('span', { text: `${range.min} FPS` });
+      const rangeMax = el('span', { text: `${range.max} FPS` });
+      const fields = el('div', { class: 'arc-sleep-cap-control' }, [sliderHead, sliderTrack, el('div', { class: 'arc-sleep-cap-range' }, [rangeMin, rangeMax])]);
       const panel = el('section', { class: 'card arc-sleep-panel arc-sleep-base-cap', dataset: { arcSleepBaseCap: '' } }, [
-        el('div', { class: 'arc-sleep-panel-heading' }, [el('div', {}, [el('h2', { class: 'card-title', text: 'Base FPS Cap' }), el('p', { class: 'card-note', text: 'Set the normal frame cap shared with Graphics. Arc Sleep temporarily adjusts the effective cap when its policies are active.' })]), enabled]),
+        el('div', { class: 'arc-sleep-cap-heading' }, [
+          el('div', { class: 'arc-sleep-cap-title' }, [
+            el('div', { class: 'arc-sleep-cap-title-row' }, [el('h2', { class: 'card-title', text: 'Base FPS Cap' }), gpuContext]),
+            el('p', { class: 'card-note', text: 'Set the normal frame cap shared with Graphics. Arc Sleep temporarily adjusts the effective cap when its policies are active.' }),
+          ]),
+          capToggle,
+        ]),
         fields,
-        el('div', { class: 'arc-sleep-base-cap-actions' }, [apply]),
-        baseCapStatus,
+        el('div', { class: 'arc-sleep-cap-bottom' }, [
+          baseCapStatus,
+          el('div', { class: 'arc-sleep-base-cap-actions' }, [apply]),
+        ]),
       ]);
       if (!eligible) {
         enabled.disabled = true;
@@ -190,13 +211,17 @@ export const arcSleepPage: Page = {
         const current = graphicsState.values.frameLimit ?? { enabled: false, value: range.default };
         original = { enabled: current.enabled, value: clampFrameLimitValue(current.value, range) };
         enabled.checked = original.enabled;
+        rangeMin.textContent = `${range.min} FPS`;
+        rangeMax.textContent = `${range.max} FPS`;
         value.min = String(range.min);
         value.max = String(range.max);
         value.step = String(range.step);
         value.value = String(original.value);
         baseCapStatus.textContent = graphicsState.frameLimitSource === 'rtss'
-          ? 'Uses the RTSS frame limiter when available; otherwise it falls back to the Intel driver limiter.'
-          : 'Uses the Intel driver frame limiter.';
+          ? 'Uses RTSS when available, with the selected GPU’s IGCL limiter as fallback.'
+          : graphicsState.frameLimitLiveChange === true
+            ? 'Uses the selected GPU’s adapter-wide IGCL frame limit. This driver reports live changes, so Arc Sleep can adjust it while a game runs.'
+            : 'Uses the selected GPU’s adapter-wide IGCL frame limit. This driver does not report LIVE_CHANGE; the saved cap may apply to newly started games, while Arc Sleep dynamic changes stay inactive.';
         updateBaseCapUi();
       }).catch(error => {
         if (!isCurrent()) return;
@@ -215,12 +240,17 @@ export const arcSleepPage: Page = {
       try { state = await withTimeout(api.arcSleepStateGet(), 'Runtime status check'); }
       catch (error) { failure = error instanceof Error ? error.message : String(error); }
       if (!alive() || request !== snapshotRevision) return;
-      rtss.textContent = state ? state.rtssAvailable ? 'Connected' : 'Unavailable' : 'Unavailable';
+      rtss.textContent = !state ? 'Unavailable' : state.activeLimiter === 'rtss' ? 'RTSS' : state.activeLimiter === 'igcl' ? 'IGCL' : 'Unavailable';
+      rtss.title = state?.activeLimiter === 'igcl' ? state.limiterDeviceName || 'Selected Intel GPU driver' : state?.activeLimiter === 'rtss' ? 'RTSS global frame limiter' : 'No frame limiter available';
       const cap = (value: number | null): string => value == null ? 'Off' : `${value} FPS`;
-      base.textContent = !state || (!state.rtssAvailable && state.baseFrameLimit == null) ? 'Unavailable' : cap(state.baseCapFps);
-      effective.textContent = !state || !state.rtssAvailable ? 'Unavailable' : cap(state.effectiveCapFps);
-      const labels: Record<ArcSleepSnapshot['status'], string> = { disabled: 'Arc Sleep is disabled.', ready: 'Ready for input inactivity or GPU load changes.', idle: 'Idle Cap is active.', adaptive: 'Load Adaptive is active.', 'rtss-unavailable': 'Start RTSS to let Arc Sleep control the frame cap.', 'external-change': 'The RTSS cap changed externally. Arc Sleep released control.', 'recovery-pending': 'Restoring the previous RTSS cap…', error: 'Arc Sleep encountered an error.' };
-      status.textContent = state?.status === 'adaptive' && state.effectiveCapFps == null ? 'Load Adaptive is waiting for fresh telemetry from the selected GPU.' : state?.message || (state ? labels[state.status] : failure ? `${failure}. Check RTSS and reopen Arc Sleep to retry.` : 'Runtime status is temporarily unavailable.');
+      base.textContent = !state || (state.activeLimiter == null && state.baseFrameLimit == null) ? 'Unavailable' : cap(state.baseCapFps);
+      effective.textContent = !state || state.activeLimiter == null
+        ? 'Unavailable'
+        : state.effectiveCapFps == null && state.policy == null && state.baseCapFps == null && state.currentFrameLimitFps == null
+          ? 'Off'
+          : !state.frameLimitEffectiveNow ? 'Not live' : cap(state.effectiveCapFps);
+      const labels: Record<ArcSleepSnapshot['status'], string> = { disabled: 'Arc Sleep is disabled.', ready: 'Ready for input inactivity or GPU load changes.', idle: 'Idle Cap is active.', adaptive: 'Load Adaptive is active.', 'rtss-unavailable': 'The RTSS frame limiter is unavailable.', 'limiter-unavailable': 'RTSS and the selected GPU driver frame limiter are unavailable.', 'igcl-static-only': 'IGCL can store a Base FPS Cap, but this driver does not report live changes for running games.', 'elevation-required': 'Arc Power needs administrator access to change the IGCL frame limit automatically.', 'external-change': 'The frame limit changed externally. Arc Sleep released control.', 'recovery-pending': 'Restoring the previous frame limit…', error: 'Arc Sleep encountered an error.' };
+      status.textContent = state?.status === 'adaptive' && state.effectiveCapFps == null ? 'Load Adaptive is waiting for fresh telemetry from the selected GPU.' : state?.message || (state ? labels[state.status] : failure ? `${failure}. Check the FPS limiter and reopen Arc Sleep to retry.` : 'Runtime status is temporarily unavailable.');
       const live = state?.diagnostics;
       if (!live) {
         diagnostics.textContent = state ? 'Live FPS adjustment diagnostics are unavailable in this runtime.' : 'Live GPU and RTSS readings are temporarily unavailable.';

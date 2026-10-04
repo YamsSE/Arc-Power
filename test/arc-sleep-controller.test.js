@@ -211,6 +211,7 @@ test('a policy that already matches the RTSS cap establishes an ownership journa
     baseline: { limit: 0, denominator: 1, limiterEnabled: false },
     underlay: { limit: 0, denominator: 1, limiterEnabled: false },
     expected: { limit: 144, denominator: 1, limiterEnabled: true },
+    route: { source: 'rtss' },
     pending: null,
   });
 

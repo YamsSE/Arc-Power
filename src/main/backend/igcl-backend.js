@@ -3225,6 +3225,7 @@ export class IgclBackend {
       supported: { frameGen: false, flipModes: false, frameLimit: false, lowLatency: false },
       supportedOptions: { frameGen: [], flipModes: [], lowLatency: [] },
       frameLimitRange: null,
+      frameLimitLiveChange: false,
       values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null },
     };
   }
@@ -3576,6 +3577,10 @@ export class IgclBackend {
         supported,
         supportedOptions,
         frameLimitRange,
+        // Only an explicit LIVE_CHANGE bit on a supported FRAME_LIMIT
+        // capability is affirmative. Missing capability metadata is unknown
+        // and must not be treated as live-applicable.
+        frameLimitLiveChange: supported.frameLimit === true && flDetail?.liveChange === true,
         ...(sharedMemoryRange ? { sharedMemoryRange } : {}),
         values,
       };

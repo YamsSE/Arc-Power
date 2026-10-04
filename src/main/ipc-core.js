@@ -2729,13 +2729,14 @@ export function createIpcHandlers({
   const decorateGraphicsState = (baseState, rtssState) => {
     const state = baseState && typeof baseState === 'object' ? baseState : null;
     if (!state) return state;
-    if (!rtssState?.ok) return { ...state, frameLimitSource: 'igcl' };
+    if (!rtssState?.ok) return { ...state, frameLimitSource: 'igcl', frameLimitLiveChange: state.frameLimitLiveChange === true };
     const limit = Number.isFinite(rtssState.limit) ? Math.max(0, Math.round(rtssState.limit)) : 0;
     return {
       ...state,
       supported: { ...(state.supported ?? {}), frameLimit: true },
       frameLimitRange: { ...GRAPHICS_RTSS_FRAME_LIMIT_RANGE },
       frameLimitSource: 'rtss',
+      frameLimitLiveChange: true,
       values: {
         ...(state.values ?? {}),
         frameLimit: {
@@ -2748,10 +2749,34 @@ export function createIpcHandlers({
 
   const readGraphicsState = async (deviceId, { useRtss = true } = {}) => {
     const baseState = await backend.getGraphicsSettings(deviceId);
-    if (!useRtss || typeof rtssFrameLimiter?.getFrameLimit !== 'function') {
-      return decorateGraphicsState(baseState, null);
+    const arcSleepSnapshot = arcSleepController?.getSnapshot?.() ?? null;
+    let selectedDeviceKey = null;
+    try { selectedDeviceKey = (await store.loadSettings())?.deviceKey ?? null; } catch { /* base read remains available */ }
+    let requestedDeviceKey = null;
+    if (arcSleepSnapshot?.activeLimiter === 'igcl' && typeof backend.listDevices === 'function') {
+      try {
+        const matches = (await backend.listDevices()).filter((device) => device?.id === deviceId
+          && device?.synthetic !== true && device?.backendKind !== 'os' && device?.identityAmbiguous !== true
+          && typeof device?.deviceKey === 'string' && device.deviceKey.length > 0);
+        if (matches.length === 1) requestedDeviceKey = matches[0].deviceKey;
+      } catch { /* Only Arc Sleep decoration is skipped; the device read remains available. */ }
     }
-    const arcSleepBase = arcSleepController?.getSnapshot?.()?.baseFrameLimit;
+    const igclSnapshotMatchesRequestedDevice = arcSleepSnapshot?.activeLimiter === 'igcl'
+      && arcSleepSnapshot.limiterDeviceKey === selectedDeviceKey
+      && arcSleepSnapshot.limiterDeviceKey === requestedDeviceKey;
+    if (!useRtss || typeof rtssFrameLimiter?.getFrameLimit !== 'function') {
+      const state = decorateGraphicsState(baseState, null);
+      if (igclSnapshotMatchesRequestedDevice
+        && arcSleepSnapshot.baseFrameLimit) {
+        return {
+          ...state,
+          frameLimitSource: 'igcl',
+          values: { ...(state.values ?? {}), frameLimit: { ...arcSleepSnapshot.baseFrameLimit } },
+        };
+      }
+      return state;
+    }
+    const arcSleepBase = arcSleepSnapshot?.baseFrameLimit;
     let rtssState = null;
     try { rtssState = await rtssFrameLimiter.getFrameLimit(); } catch { /* IGCL fallback */ }
     if (rtssState?.ok === true && arcSleepBase && typeof arcSleepBase.enabled === 'boolean') {
@@ -2759,6 +2784,15 @@ export function createIpcHandlers({
         ...rtssState,
         limit: arcSleepBase.enabled === true ? arcSleepBase.value : 0,
         limiterEnabled: arcSleepBase.enabled === true,
+      };
+    }
+    if (rtssState?.ok !== true
+      && igclSnapshotMatchesRequestedDevice
+      && arcSleepSnapshot.baseFrameLimit) {
+      return {
+        ...decorateGraphicsState(baseState, null),
+        frameLimitSource: 'igcl',
+        values: { ...(baseState.values ?? {}), frameLimit: { ...arcSleepSnapshot.baseFrameLimit } },
       };
     }
     return decorateGraphicsState(baseState, rtssState);
@@ -3128,11 +3162,16 @@ export function createIpcHandlers({
         if (typeof arcSleepController?.getSnapshot !== 'function') {
           return {
             rtssAvailable: false,
+            activeLimiter: null,
+            limiterDeviceName: null,
+            limiterDeviceKey: null,
+            liveAdjustmentSupported: false,
+            frameLimitEffectiveNow: false,
             baseCapFps: null,
             baseFrameLimit: null,
             effectiveCapFps: null,
             policy: null,
-            status: 'rtss-unavailable',
+            status: 'limiter-unavailable',
             message: 'Arc Sleep is unavailable in this runtime.',
             diagnostics: { gpuUtilPct: null, reportedFps: null, fpsStatus: 'gpu-unavailable', fastAdjustmentApplied: false },
           };
@@ -3155,7 +3194,17 @@ export function createIpcHandlers({
       'graphics:apply': async (deviceId, payload) => {
         const apply = async (arcSleepTransaction = null) => {
         assertValidDeviceId(deviceId);
+        let expectedDeviceKey = null;
+        try {
+          const selectedSettings = await store.loadSettings();
+          if (selectedSettings?.deviceId === deviceId && typeof selectedSettings.deviceKey === 'string' && selectedSettings.deviceKey.length > 0) {
+            expectedDeviceKey = selectedSettings.deviceKey;
+          }
+        } catch { /* target resolution still has its backend identity checks */ }
         const target = await backend.getDeviceTarget?.(deviceId);
+        if (expectedDeviceKey && target?.deviceKey !== expectedDeviceKey) {
+          throw new Error(`stale GPU target: device id ${deviceId} no longer resolves to ${expectedDeviceKey}`);
+        }
         const baseGraphicsState = await backend.getGraphicsSettings(deviceId);
         let rtssFrameState = null;
         if (typeof rtssFrameLimiter?.getFrameLimit === 'function') {
@@ -3173,12 +3222,13 @@ export function createIpcHandlers({
           return { ok: Object.keys(perControl).length === 0, perControl, graphicsState: decorateGraphicsState(baseGraphicsState, null) };
         }
         let settingsForDriver = { ...settings };
+        const controllerOwnsFrameLimit = typeof arcSleepTransaction?.setBaseFrameLimit === 'function';
         const rtssApply = Object.prototype.hasOwnProperty.call(settings, 'frameLimit')
           ? (typeof arcSleepTransaction?.setBaseFrameLimit === 'function'
-            ? await arcSleepTransaction.setBaseFrameLimit(settings.frameLimit)
+            ? await arcSleepTransaction.setBaseFrameLimit(settings.frameLimit, { deviceKey: target?.deviceKey ?? expectedDeviceKey })
             : await applyRtssFrameLimit(settings.frameLimit))
           : null;
-        if (rtssApply?.handled === false && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
+        if (rtssApply?.handled === false && !controllerOwnsFrameLimit && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
           // RTSS may expose a wider 1-1000 range than the Intel driver. If a
           // verified RTSS write fails, re-clamp this same request against the
           // driver range before taking the IGCL fallback path.
@@ -3189,6 +3239,12 @@ export function createIpcHandlers({
         }
         if (rtssApply?.handled === true) {
           const { frameLimit: _rtssFrameLimit, ...withoutFrameLimit } = settingsForDriver;
+          settingsForDriver = withoutFrameLimit;
+        } else if (controllerOwnsFrameLimit && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
+          // The Arc Sleep controller owns provider selection, identity pinning,
+          // recovery journaling and read-back. Never bypass it with a direct
+          // driver write when both its RTSS and IGCL paths refuse a request.
+          const { frameLimit: _ownedFrameLimit, ...withoutFrameLimit } = settingsForDriver;
           settingsForDriver = withoutFrameLimit;
         }
         let driverOut = { ok: true, perControl: {} };
@@ -3207,7 +3263,10 @@ export function createIpcHandlers({
             driverOut = { ok: false, perControl: {} };
           }
         }
-        const rtssRollback = driverOut?.ok === true
+        const frameLimitOwnerFailed = controllerOwnsFrameLimit
+          && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')
+          && rtssApply?.handled !== true;
+        const rtssRollback = driverOut?.ok === true && !frameLimitOwnerFailed
           ? { ok: true }
           : (typeof rtssApply?.rollback === 'function'
             ? await rtssApply.rollback()
@@ -3222,23 +3281,30 @@ export function createIpcHandlers({
             perControl.frameLimit = {
               ok: false,
               errorCode: 'rolled-back',
-              message: 'RTSS frame limit was rolled back because another graphics setting failed',
+              message: 'The FPS limit was rolled back because another graphics setting failed',
             };
           } else {
             perControl.frameLimit = {
               ok: false,
               errorCode: 'cleanup-pending',
-              message: `RTSS frame-limit rollback failed: ${rtssRollback.error}`,
+              message: `FPS limit rollback failed: ${rtssRollback.error}`,
             };
           }
+        } else if (controllerOwnsFrameLimit && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
+          perControl.frameLimit = {
+            ok: false,
+            errorCode: 'limiter-unavailable',
+            message: rtssApply?.error ?? 'Arc Sleep could not safely apply the FPS limiter.',
+          };
         }
         if (driverError) {
           const rollbackMessage = rtssRollback.ok === true
-            ? 'The RTSS frame-limit change was rolled back.'
-            : `RTSS cleanup is still pending: ${rtssRollback.error}`;
+            ? 'The FPS limit change was rolled back.'
+            : `FPS limit cleanup is still pending: ${rtssRollback.error}`;
           throw new Error(`${driverError instanceof Error ? driverError.message : String(driverError)}. ${rollbackMessage}`);
         }
-        return { ok: driverOut?.ok === true && rtssRollback.ok === true, perControl, graphicsState };
+        const controlsOk = Object.values(perControl).every((result) => result?.ok !== false);
+        return { ok: driverOut?.ok === true && rtssRollback.ok === true && controlsOk, perControl, graphicsState };
         };
         return arcSleepController?.withTransaction
           ? arcSleepController.withTransaction(apply)

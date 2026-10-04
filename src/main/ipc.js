@@ -16,6 +16,7 @@ import { createRtssStartup } from './rtss-startup.js';
 import { createIntelDriverDownloadService } from './intel-driver-download.js';
 import { createIntelDriverUpdateService } from './intel-driver-update.js';
 import { createArcSleepController } from './arc-sleep-controller.js';
+import { createArcSleepIGCLLimiter } from './arc-sleep-igcl-limiter.js';
 
 /**
  * Register every whitelisted handler on ipcMain. Returns a teardown that
@@ -92,9 +93,24 @@ import { createArcSleepController } from './arc-sleep-controller.js';
  * @returns {() => Promise<void>}
  */
 export function registerIpc({ backend, store, getWindow, startup = createStartup(), rtssStartup = createRtssStartup(), driverInfo = createDriverInfo(), driverMonitor = null, sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), fpsLane = null, rtssOverlay = null, rtssFrameLimiter = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null, recordingStore = null, recordingCopyFile = async () => false, recordingEngine = null, recordingLifecycle = null, recordingEditor = null, stabilityLab = null, stabilityStore = null, stabilityWorkload = null, overlayLayoutStore = null, obsStream = null, applyOverlayLayout = async () => {}, chooseRecordingDirectory = async () => null, openRecordingFolder = async () => {}, refreshRecordingHotkeys = async () => null, getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }), recordingCaptureTargets = null, onRecordingActionResult = () => {}, onRecordingState = () => {}, getRecordingMemorySavingMode = () => false }) {
+  // Mock/UI verification still exercises the production Arc Sleep controller
+  // and adapter. Its executor writes only to the in-memory MockBackend; real
+  // sessions continue to require the isolated graphics worker.
+  const arcSleepApplyRunner = applyRunner ?? (mock ? {
+    async graphicsApplyIsolated({ deviceId, settings }) {
+      return backend.setGraphicsSettings(deviceId, settings);
+    },
+  } : null);
+  const arcSleepIGCLLimiter = createArcSleepIGCLLimiter({
+    backend,
+    store,
+    applyRunner: arcSleepApplyRunner,
+    isElevated: typeof isElevated === 'function' ? isElevated : isElevatedReal,
+  });
   const arcSleepController = createArcSleepController({
     store,
     rtssFrameLimiter,
+    igclFrameLimiter: arcSleepIGCLLimiter,
     getIdleSeconds: () => {
       try { return powerMonitor.getSystemIdleTime(); } catch { return null; }
     },

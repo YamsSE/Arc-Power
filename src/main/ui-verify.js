@@ -7278,7 +7278,7 @@ export async function runSyntheticOsVerify(win) {
   if (!arcSleepText.includes('Idle Cap') || !arcSleepText.includes('Load Adaptive')) {
     fail(`Arc Sleep controls are incomplete on the no-Intel Arc Sleep tab: '${arcSleepText}'`);
   }
-  if (!arcSleepText.includes('The Graphics base cap is unavailable for this GPU.') || await js(`!!document.querySelector('.arc-sleep-base-link')`)) fail('Synthetic OS GPU Arc Sleep must not offer a Graphics base-cap control');
+  if (!arcSleepText.includes('The selected synthetic or OS GPU cannot use the Intel driver fallback.') || await js(`!!document.querySelector('.arc-sleep-base-link')`)) fail('Synthetic OS GPU Arc Sleep must not offer a Graphics base-cap control');
   await js(`location.hash = '#/graphics'`);
   if (!(await waitFor(win, `document.querySelector('.page-title')?.textContent === 'Graphics'`, 5000))) fail('Synthetic GPU Graphics page did not render');
   if (await js(`!!document.querySelector('[data-control="arcSleep"]')`)) fail('Arc Sleep must be absent from Graphics');
@@ -7445,7 +7445,7 @@ async function runZeroGpuVerify(win) {
   if (await js(`!!document.querySelector('[data-control="arcSleep"]')`)) fail('Arc Sleep must be absent from Graphics');
   await verifyArcSleepPage(win);
   const arcSleepFooter = await js(`document.querySelector('.arc-sleep-footer')?.textContent ?? ''`);
-  if (!arcSleepFooter.includes('the Graphics base cap requires one.') || await js(`!!document.querySelector('.arc-sleep-base-link')`)) fail('Zero-GPU Arc Sleep must not offer a Graphics base-cap control');
+  if (!arcSleepFooter.includes('fallback uses the selected Intel GPU driver and needs a supported physical adapter.') || await js(`!!document.querySelector('.arc-sleep-base-link')`)) fail('Zero-GPU Arc Sleep must not offer a Graphics base-cap control');
   step('arc-sleep', 'Arc Sleep loads and persists settings with no GPU selected');
   await runCloseToTrayProbe(win);
   console.log('\nUI VERIFY OK (zero-gpu)\n' + steps.map((s) => '  ' + s).join('\n'));
@@ -7710,7 +7710,7 @@ export async function runNoIntelVerify(win) {
   if (!arcSleepText.includes('Idle Cap') || !arcSleepText.includes('Load Adaptive')) {
     fail(`Arc Sleep controls are incomplete on the no-Intel Arc Sleep tab: '${arcSleepText}'`);
   }
-  if (!arcSleepText.includes('the Graphics base cap requires one.') || await js(`!!document.querySelector('.arc-sleep-base-link')`)) fail('No-GPU Arc Sleep must not offer a Graphics base-cap control');
+  if (!arcSleepText.includes('fallback uses the selected Intel GPU driver and needs a supported physical adapter.') || await js(`!!document.querySelector('.arc-sleep-base-link')`)) fail('No-GPU Arc Sleep must not offer a Graphics base-cap control');
   // The renderer must never even TRY: graphics:get with a null deviceId is
   // rejected in main (assertValidDeviceId) - the honest channel contract.
   const gNull = await js(`(async () => { try { await window.arcPower.graphicsGet(null); return 'accepted'; } catch (e) { return 'rejected'; } })()`);
@@ -10871,7 +10871,10 @@ async function verifyArcSleepPage(win) {
     await js(`location.hash = '#/arc-sleep'`);
     if (!(await waitFor(win, `document.querySelector('[aria-label="Idle after seconds"]')?.value === '${persisted}' && document.querySelector('[aria-label="Enable Idle Cap"]')?.checked === ${changedIdle} && document.querySelector('[aria-label="Enable Load Adaptive"]')?.checked === ${changedAdaptive} && !document.querySelector('.arc-sleep-toggle')?.disabled`, 5000))) throw new Error('Arc Sleep settings did not survive navigation');
     const caps = await js(`(async () => ({ effective: document.querySelectorAll('[data-arc-sleep-caps] strong')[2]?.textContent, state: await window.arcPower.arcSleepStateGet() }))()`);
-    if (!caps.state.rtssAvailable && caps.effective !== 'Unavailable') throw new Error('Unavailable RTSS effective cap is not shown as unavailable');
+    if (caps.state.activeLimiter == null && caps.effective !== 'Unavailable') throw new Error('Unavailable FPS limiter effective cap is not shown as unavailable');
+    if (caps.state.frameLimitEffectiveNow === false
+      && (caps.state.baseCapFps != null || caps.state.policy != null || caps.state.currentFrameLimitFps != null)
+      && caps.effective !== 'Not live') throw new Error('IGCL without LIVE_CHANGE is not marked as static in the effective-cap tile');
     if (!(await waitFor(win, `document.querySelector('.page-title')?.textContent === 'Arc Sleep' && document.querySelectorAll('.arc-sleep-toggle').length === 2`, 5000))) throw new Error('Arc Sleep capture page was not active');
     await new Promise(resolve => setTimeout(resolve, 200));
     if (process.env.RID_ARC_SLEEP_SCREENSHOT) {

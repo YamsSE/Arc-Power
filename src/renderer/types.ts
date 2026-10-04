@@ -811,12 +811,19 @@ export interface ArcSleepSettings {
 /** Read-only Arc Sleep runtime state returned by arcSleepStateGet(). */
 export interface ArcSleepSnapshot {
   rtssAvailable: boolean;
+  activeLimiter?: 'rtss' | 'igcl' | null;
+  limiterDeviceName?: string | null;
+  limiterDeviceKey?: string | null;
+  liveAdjustmentSupported?: boolean;
+  frameLimitEffectiveNow?: boolean;
   baseCapFps: number | null;
   /** Persisted base setting, even when temporarily overlaid by Arc Sleep. */
   baseFrameLimit: { enabled: boolean; value: number } | null;
+  /** Current driver/RTSS cap value, even if IGCL cannot apply it live to running games. */
+  currentFrameLimitFps?: number | null;
   effectiveCapFps: number | null;
   policy: 'idle' | 'adaptive' | null;
-  status: 'disabled' | 'ready' | 'idle' | 'adaptive' | 'rtss-unavailable' | 'external-change' | 'recovery-pending' | 'error';
+  status: 'disabled' | 'ready' | 'idle' | 'adaptive' | 'rtss-unavailable' | 'limiter-unavailable' | 'igcl-static-only' | 'elevation-required' | 'external-change' | 'recovery-pending' | 'error';
   message: string | null;
   diagnostics?: {
     gpuUtilPct: number | null;
@@ -1038,6 +1045,8 @@ export interface GraphicsState {
   frameLimitRange: { min: number; max: number; step: number; default: number } | null;
   /** The active FPS limiter provider; IGCL is used when RTSS is unavailable. */
   frameLimitSource?: 'rtss' | 'igcl';
+  /** IGCL FRAME_LIMIT FeatureMiscSupport explicitly contains LIVE_CHANGE. */
+  frameLimitLiveChange?: boolean;
   sharedMemoryRange?: { min: number; max: number; step: number; default: number } | null;
   values: {
     frameGenOverride: FrameGenOverride | null;

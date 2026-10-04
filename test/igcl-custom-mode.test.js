@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import koffi from 'koffi';
 import {
+  CTL_3D_FEATURE_MISC_FLAG_LIVE_CHANGE,
   CTL_CUSTOM_MODE_OPERATION,
   CTL_CUSTOM_MODE_OPERATION_TYPE_ADD,
   CTL_CUSTOM_MODE_OPERATION_TYPE_GET,
@@ -10,10 +11,43 @@ import {
   CTL_GET_SET_CUSTOM_MODE_ARGS_SIZE,
   decodeCustomModeArgs,
   decodeCustomSrcModes,
+  decode3dFeatureDetails,
   encodeCustomModeArgs,
   encodeCustomSrcModes,
   loadIgcl,
 } from '../src/main/backend/igcl-bindings.js';
+
+function detailsWithMiscSupport(miscSupport) {
+  const buf = koffi.alloc('uint8', koffi.sizeof('ctl_3d_feature_details_t'));
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_details_t', 'FeatureType'), 'int32', 11);
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_details_t', 'ValueType'), 'int32', 99);
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_details_t', 'PerAppSupport'), 'bool', true);
+  koffi.encode(buf, koffi.offsetof('ctl_3d_feature_details_t', 'FeatureMiscSupport'), 'int16', miscSupport);
+  return buf;
+}
+
+test('3D feature details decodes combined misc flags and live-change support', () => {
+  assert.equal(CTL_3D_FEATURE_MISC_FLAG_LIVE_CHANGE, 0x10);
+
+  const decoded = decode3dFeatureDetails(detailsWithMiscSupport(0x1f), 0);
+  assert.equal(decoded.featureType, 11);
+  assert.equal(decoded.valueType, 99);
+  assert.equal(decoded.perAppSupport, true);
+  assert.equal(decoded.miscSupport, 0x1f);
+  assert.equal(decoded.liveChange, true);
+});
+
+test('3D feature details decodes the live-change bit by itself', () => {
+  const decoded = decode3dFeatureDetails(detailsWithMiscSupport(CTL_3D_FEATURE_MISC_FLAG_LIVE_CHANGE), 0);
+  assert.equal(decoded.miscSupport, 0x10);
+  assert.equal(decoded.liveChange, true);
+});
+
+test('3D feature details reports false when the live-change bit is absent', () => {
+  const decoded = decode3dFeatureDetails(detailsWithMiscSupport(0x0f), 0);
+  assert.equal(decoded.miscSupport, 0x0f);
+  assert.equal(decoded.liveChange, false);
+});
 
 test('custom mode constants and MSVC x64 layouts are pinned', () => {
   assert.deepEqual(CTL_CUSTOM_MODE_OPERATION, { GET: 0, ADD: 1, REMOVE: 2 });
