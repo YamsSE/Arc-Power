@@ -76,7 +76,7 @@ export const arcSleepPage: Page = {
     baseCapPanel = buildBaseCapPanel(selectedDevice(selectedState), currentDeviceSignature);
     const panels = el('div', { class: 'arc-sleep-panels' }, [
       panel('Idle Cap', 'Save power during input inactivity.', idle, [field('Inactive for', delay, 'sec'), field('Cap at', idleFps, 'FPS')], 'Uses Windows keyboard and mouse input inactivity across your session. It does not detect character or camera movement. Input resumes your normal cap. Idle Cap takes priority over Load Adaptive.'),
-      panel('Load Adaptive', 'Adjust the frame cap to your GPU workload.', adaptive, [field('Minimum', min, 'FPS'), field('Maximum', max, 'FPS'), field('Target GPU load', target, '%')], 'Uses fresh utilization from the selected GPU only. The cap holds steady from two points below through two points above target. More than 2 and fewer than 8 points below target recovers by 2 FPS after four samples; from 8 to fewer than 15 points below it recovers by 3 FPS after five samples; with at least 15 points of headroom it recovers by 3 FPS per sample. Moderate overload steps down 2 FPS after four samples. Fast FPS response is reserved for severe load (target plus 8 points, capped at 100%). If GPU telemetry is unavailable for five seconds, the adaptive cap is released.'),
+      panel('Load Adaptive', 'Adjust the frame cap to your GPU workload.', adaptive, [field('Minimum', min, 'FPS'), field('Maximum', max, 'FPS'), field('Target GPU load', target, '%')], 'Uses fresh utilization from the selected GPU. The cap holds near your target, adjusts gradually nearby and faster as load moves farther away, and releases if telemetry is unavailable for five seconds.'),
       baseCapPanel,
     ]);
     updateFooter(selectedState);
