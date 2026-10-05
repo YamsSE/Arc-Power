@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   // surface (the dedicated graphics apply path - NOT the OC apply-routing
   // machinery: 3D features have no OC waiver).
   graphicsGet: (deviceId) => ipcRenderer.invoke('graphics:get', deviceId),
+  arcSleepBaseCapGet: (deviceId) => ipcRenderer.invoke('arc-sleep-base-cap-get', deviceId),
   graphicsApply: (deviceId, settings) => ipcRenderer.invoke('graphics:apply', deviceId, settings),
   // M10b (the Graphics "Display" view): the display-output surface - the
   // Graphics page's Display-view IPC (the dedicated display apply path -
@@ -46,13 +47,13 @@ contextBridge.exposeInMainWorld('arcPower', {
   resetToDefaults: (deviceId) => ipcRenderer.invoke('reset-to-defaults', deviceId),
   waiverGet: (deviceId) => ipcRenderer.invoke('waiver-get', deviceId),
   waiverAccept: (deviceId) => ipcRenderer.invoke('waiver-accept', deviceId),
-  telemetryStart: (deviceId) => ipcRenderer.invoke('telemetry-start', deviceId),
+  telemetryStart: (deviceId, options) => ipcRenderer.invoke('telemetry-start', deviceId, options),
   telemetryLatest: (deviceId) => ipcRenderer.invoke('telemetry-latest', deviceId),
   // Basic Overlay secondary adapters; the selected main-device lane remains
   // owned by telemetryStart.
   overlayTelemetryStart: (deviceIds) => ipcRenderer.invoke('overlay-telemetry-start', deviceIds),
   overlayResize: (deviceCount) => ipcRenderer.invoke('overlay-resize', deviceCount),
-  telemetryStop: (deviceId) => ipcRenderer.invoke('telemetry-stop', deviceId),
+  telemetryStop: (deviceId, options) => ipcRenderer.invoke('telemetry-stop', deviceId, options),
   stabilityRunStart: (payload) => ipcRenderer.invoke('stability-run-start', payload),
   stabilityRunStatus: (runId) => ipcRenderer.invoke('stability-run-status', runId),
   stabilityRunCancel: (runId) => ipcRenderer.invoke('stability-run-cancel', runId),
@@ -127,6 +128,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   profilesDelete: (id) => ipcRenderer.invoke('profiles-delete', id),
   profilesRename: (id, name) => ipcRenderer.invoke('profiles-rename', id, name),
   profilesSettingsSave: (patch) => ipcRenderer.invoke('profiles-settings-save', patch),
+  arcSleepStateGet: () => ipcRenderer.invoke('arc-sleep-state-get'),
   profilesExport: () => ipcRenderer.invoke('profiles-export'),
   profilesImport: (payload) => ipcRenderer.invoke('profiles-import', payload),
   driverMonitorStatus: () => ipcRenderer.invoke('driver-monitor-status'),

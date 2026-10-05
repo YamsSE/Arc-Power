@@ -11,6 +11,7 @@ import { execFile, spawn as nodeSpawn } from 'node:child_process';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
+import koffi from 'koffi';
 import { knownRtssExecutablePaths, RTSS_EXE_NAME } from './rtss-install.js';
 
 export const RTSS_STARTUP_VALUE_NAME = 'ArcPowerRTSS';
@@ -47,12 +48,128 @@ function parseRegQuery(output) {
   return match ? match[1].trim() : null;
 }
 
-async function defaultRunningRtssImagePath({ execFileAsync = defaultExecFile } = {}) {
+const TH32CS_SNAPPROCESS = 0x00000002;
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const ERROR_NO_MORE_FILES = 18;
+const INVALID_HANDLE_VALUE = -1n;
+let nativeRtssProcessInspection;
+
+function validNativeHandle(handle, addressOf = (value) => koffi.address(value)) {
+  if (handle === null || handle === undefined || handle === 0 || handle === 0n) return false;
   try {
-    const script = '$ErrorActionPreference = "SilentlyContinue"; (Get-CimInstance Win32_Process -Filter "Name = \'RTSS.exe\'").ExecutablePath | Select-Object -First 1';
-    const result = await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { windowsHide: true, timeout: 5_000, maxBuffer: 64 * 1024 });
-    const path = String(result?.stdout ?? result ?? '').trim();
-    return path || null;
+    const address = BigInt(addressOf(handle));
+    return address !== INVALID_HANDLE_VALUE && address !== 0xFFFFFFFFFFFFFFFFn;
+  } catch {
+    return typeof handle === 'object';
+  }
+}
+
+function readWideString(buffer, start, maxChars) {
+  let value = '';
+  for (let i = 0; i < maxChars; i += 1) {
+    const code = koffi.decode(buffer, start + i * 2, 'uint16');
+    if (code === 0) break;
+    value += String.fromCharCode(code);
+  }
+  return value;
+}
+
+function createNativeProcessInspection() {
+  if (process.platform !== 'win32') return null;
+  try {
+    const kernel32 = koffi.load('kernel32.dll');
+    const pointerSize = process.arch === 'ia32' ? 4 : 8;
+    const imageOffset = pointerSize === 8 ? 44 : 36;
+    const entrySize = pointerSize === 8 ? 568 : 556;
+    const api = {
+      snapshot: kernel32.func('CreateToolhelp32Snapshot', 'void*', ['uint32', 'uint32']),
+      first: kernel32.func('Process32FirstW', 'int32', ['void*', 'void*']),
+      next: kernel32.func('Process32NextW', 'int32', ['void*', 'void*']),
+      open: kernel32.func('OpenProcess', 'void*', ['uint32', 'int32', 'uint32']),
+      query: kernel32.func('QueryFullProcessImageNameW', 'int32', ['void*', 'uint32', 'void*', 'uint32*']),
+      close: kernel32.func('CloseHandle', 'int32', ['void*']),
+      getLastError: kernel32.func('GetLastError', 'uint32', []),
+      setLastError: kernel32.func('SetLastError', 'void', ['uint32']),
+    };
+    const readEntry = (entry) => ({
+      pid: koffi.decode(entry, 8, 'uint32'),
+      imageName: readWideString(entry, imageOffset, 260),
+    });
+    const getEntry = (fn, snapshot) => {
+      const entry = koffi.alloc('uint8', entrySize);
+      koffi.encode(entry, 0, 'uint32', entrySize);
+      if (fn(snapshot, entry) === 0) return null;
+      return readEntry(entry);
+    };
+    return {
+      createSnapshot: () => api.snapshot(TH32CS_SNAPPROCESS, 0),
+      firstProcess: (snapshot) => getEntry(api.first, snapshot),
+      nextProcess: (snapshot) => {
+        api.setLastError(0);
+        const processInfo = getEntry(api.next, snapshot);
+        return processInfo ? { process: processInfo } : { done: true, errorCode: api.getLastError() };
+      },
+      openProcess: (pid) => api.open(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid),
+      queryImagePath: (handle) => {
+        const buffer = koffi.alloc('uint16', 32768);
+        const length = koffi.alloc('uint32', 1);
+        koffi.encode(length, 0, 'uint32', 32768);
+        if (api.query(handle, 0, buffer, length) === 0) return null;
+        return readWideString(buffer, 0, Math.min(koffi.decode(length, 0, 'uint32'), 32767));
+      },
+      closeHandle: api.close,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Inspect RTSS candidates without WMI; a PID's queried image is authoritative. */
+export function findRunningRtssImagePath({ createSnapshot, firstProcess, nextProcess, openProcess, queryImagePath, closeHandle, getHandleAddress }) {
+  const addressOf = getHandleAddress ?? ((handle) => koffi.address(handle));
+  let snapshot = null;
+  try {
+    snapshot = createSnapshot?.();
+    if (!validNativeHandle(snapshot, addressOf)) return null;
+    let candidate = firstProcess?.(snapshot);
+    if (!candidate) return null;
+    while (candidate) {
+      if (path.win32.basename(String(candidate.imageName ?? '')).toLowerCase() === RTSS_EXE_NAME.toLowerCase()) {
+        let processHandle = null;
+        try {
+          processHandle = openProcess?.(candidate.pid);
+          if (validNativeHandle(processHandle, addressOf)) {
+            const imagePath = queryImagePath?.(processHandle);
+            if (typeof imagePath === 'string' && path.win32.basename(imagePath).toLowerCase() === RTSS_EXE_NAME.toLowerCase()) return imagePath;
+          }
+        } catch {
+          // Access can be denied for one process; continue to other candidates.
+        } finally {
+          if (validNativeHandle(processHandle, addressOf)) {
+            try { closeHandle?.(processHandle); } catch { /* best-effort handle cleanup */ }
+          }
+        }
+      }
+      let next;
+      try { next = nextProcess?.(snapshot); } catch { return null; }
+      if (!next || next.done) return next?.errorCode === ERROR_NO_MORE_FILES ? null : null;
+      candidate = next.process;
+      if (!candidate) return null;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (validNativeHandle(snapshot, addressOf)) {
+      try { closeHandle?.(snapshot); } catch { /* best-effort handle cleanup */ }
+    }
+  }
+}
+
+function defaultRunningRtssImagePath() {
+  try {
+    if (nativeRtssProcessInspection === undefined) nativeRtssProcessInspection = createNativeProcessInspection();
+    return nativeRtssProcessInspection ? findRunningRtssImagePath(nativeRtssProcessInspection) : null;
   } catch {
     return null;
   }
@@ -312,7 +429,7 @@ export function createRtssStartup({
   execFileAsync = defaultExecFile,
   getRunningProcessImagePath,
 } = {}) {
-  const getRunningImage = getRunningProcessImagePath ?? (() => defaultRunningRtssImagePath({ execFileAsync }));
+  const getRunningImage = getRunningProcessImagePath ?? defaultRunningRtssImagePath;
   const resolve = () => resolveRtssExecutablePath({ platform, env, exists, getRunningProcessImagePath: getRunningImage });
   const query = async () => {
     if (platform !== 'win32') return null;

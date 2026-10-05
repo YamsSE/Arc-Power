@@ -797,6 +797,44 @@ export interface AdvancedOverlayState {
   hotkeyRegistered: boolean;
 }
 
+/** Persisted Arc Sleep policy controls. */
+export interface ArcSleepSettings {
+  idleEnabled: boolean;
+  adaptiveEnabled: boolean;
+  idleAfterSeconds: number;
+  idleFps: number;
+  adaptiveMinFps: number;
+  adaptiveMaxFps: number;
+  adaptiveTargetLoadPct: number;
+}
+
+/** Read-only Arc Sleep runtime state returned by arcSleepStateGet(). */
+export interface ArcSleepSnapshot {
+  rtssAvailable: boolean;
+  activeLimiter?: 'rtss' | 'igcl' | null;
+  limiterDeviceName?: string | null;
+  limiterDeviceKey?: string | null;
+  liveAdjustmentSupported?: boolean;
+  frameLimitEffectiveNow?: boolean;
+  baseCapFps: number | null;
+  /** Persisted base setting, even when temporarily overlaid by Arc Sleep. */
+  baseFrameLimit: { enabled: boolean; value: number } | null;
+  /** Current driver/RTSS cap value, even if IGCL cannot apply it live to running games. */
+  currentFrameLimitFps?: number | null;
+  effectiveCapFps: number | null;
+  policy: 'idle' | 'adaptive' | null;
+  status: 'disabled' | 'ready' | 'idle' | 'adaptive' | 'rtss-unavailable' | 'limiter-unavailable' | 'igcl-static-only' | 'elevation-required' | 'external-change' | 'recovery-pending' | 'error';
+  message: string | null;
+  diagnostics?: {
+    gpuUtilPct: number | null;
+    /** Foreground RTSS FPS observed during high selected-GPU load, even if GPU ownership could not be confirmed. */
+    reportedFps: number | null;
+    fpsStatus: 'disabled' | 'gpu-unavailable' | 'idle-priority' | 'below-trigger' | 'rtss-unavailable' | 'gpu-unconfirmed' | 'ready';
+    /** True for five seconds after the live-FPS shortcut changes the adaptive cap. */
+    fastAdjustmentApplied: boolean;
+  };
+}
+
 /** Persisted profile-settings envelope (ocOnBoot / activeProfileId / ocMode). */
 export interface ProfileSettingsState {
   waiverAccepted: boolean;
@@ -883,6 +921,9 @@ export interface ProfileSettingsState {
   advancedOverlayEnabled: boolean;
   advancedOverlayHotkeyLetter: string;
   advancedOverlayPosition: 'left' | 'right';
+  arcSleep: ArcSleepSettings;
+  /** Static Graphics-tab FPS cap retained underneath Arc Sleep's dynamic target. */
+  arcSleepFrameLimitBase: { enabled: boolean; value: number } | null;
 }
 
 /** Profiles IPC envelope: the list + the persisted settings in one response. */
@@ -1004,6 +1045,8 @@ export interface GraphicsState {
   frameLimitRange: { min: number; max: number; step: number; default: number } | null;
   /** The active FPS limiter provider; IGCL is used when RTSS is unavailable. */
   frameLimitSource?: 'rtss' | 'igcl';
+  /** IGCL FRAME_LIMIT FeatureMiscSupport explicitly contains LIVE_CHANGE. */
+  frameLimitLiveChange?: boolean;
   sharedMemoryRange?: { min: number; max: number; step: number; default: number } | null;
   values: {
     frameGenOverride: FrameGenOverride | null;
@@ -1256,7 +1299,9 @@ export interface RecordingCaptureTarget {
   displayId: string;
   windowHandle: number;
   processName: string;
+  executablePath?: string;
   windowTitle: string;
+  windowClass?: string;
 }
 export interface RecordingCaptureDisplay {
   id: string;
@@ -1273,6 +1318,8 @@ export interface RecordingCaptureWindow {
   handle: number;
   title: string;
   processName: string;
+  executablePath?: string;
+  windowClass?: string;
   x: number;
   y: number;
   width: number;

@@ -301,8 +301,13 @@ function selectedEncoderLabel(id: string): string {
 
 function captureProfileLabel(value: RecordingSettings): string {
   const resolution = RESOLUTIONS.find(([id]) => id === value.resolution)?.[1] ?? value.resolution;
-  const bitrate = Math.round(value.bitrateKbps).toLocaleString();
-  return `${resolution} · ${value.fps} FPS · ${selectedEncoderLabel(value.encoderId)} · ${bitrate} Kbps`;
+  const rateControl = value.rateControl ?? 'CBR';
+  const profile = rateControl === 'VBR'
+    ? `VBR · ${Math.round(value.bitrateKbps).toLocaleString()} avg / ${Math.round(value.maxBitrateKbps).toLocaleString()} max Kbps`
+    : rateControl === 'CQP' || rateControl === 'ICQ'
+      ? `${rateControl} · Quality ${Math.round(value.rateControlQuality)}`
+      : `CBR · ${Math.round(value.bitrateKbps).toLocaleString()} Kbps`;
+  return `${resolution} · ${value.fps} FPS · ${selectedEncoderLabel(value.encoderId)} · ${profile}`;
 }
 
 function estimatedVideoSizePerMinute(bitrateKbps: number): string {
@@ -600,12 +605,20 @@ function captureTargetFromKey(key: string): RecordingCaptureTarget | null {
     const windowHandle = Number(key.slice('window:'.length));
     const window = recordingTargets.windows.find((item) => item.handle === windowHandle);
     if (!windowHandle || !window) return null;
-    return { type: 'window', displayId: 'primary', windowHandle, processName: window.processName, windowTitle: window.title };
+    return {
+      type: 'window',
+      displayId: 'primary',
+      windowHandle,
+      processName: window.processName,
+      executablePath: window.executablePath ?? '',
+      windowTitle: window.title,
+      windowClass: window.windowClass ?? '',
+    };
   }
   if (key.startsWith('display:')) {
     const displayId = key.slice('display:'.length);
     if (!displayId) return null;
-    return { type: 'display', displayId, windowHandle: 0, processName: '', windowTitle: '' };
+    return { type: 'display', displayId, windowHandle: 0, processName: '', executablePath: '', windowTitle: '', windowClass: '' };
   }
   return null;
 }
@@ -689,7 +702,7 @@ async function refreshRecordingCaptureTargets(force = false): Promise<void> {
 
 function renderCaptureTargetSettings(): HTMLElement {
   const working = settingsForRender();
-  const target = working?.captureTarget ?? { type: 'display' as const, displayId: 'primary', windowHandle: 0, processName: '', windowTitle: '' };
+  const target = working?.captureTarget ?? { type: 'display' as const, displayId: 'primary', windowHandle: 0, processName: '', executablePath: '', windowTitle: '', windowClass: '' };
   const targetSelect = groupedSelect(captureTargetControlKey(target), captureTargetOptionGroups(target), 'Capture target', (value) => {
     const next = captureTargetFromKey(value);
     if (next) stagePatch({ captureTarget: next });
@@ -762,6 +775,7 @@ function renderQualitySettings(): HTMLElement {
   });
   const fps = el('div', { class: 'recording-fps-control' }, [fpsSelect, customFps]);
   const selectedResolution = working?.resolution ?? '1080p';
+  const selectedResolutionLabel = RESOLUTIONS.find(([id]) => id === selectedResolution)?.[1] ?? selectedResolution;
   const bitrateRange = recordingBitrateRange(selectedResolution);
   const rateControl = working?.rateControl ?? 'CBR';
   const bitrate = el('input', {
@@ -781,24 +795,25 @@ function renderQualitySettings(): HTMLElement {
   const encoder = select(selectedEncoder, encoderOptions(selectedEncoder), 'Encoder', (value) => stagePatch({ encoderId: value }));
   const rateControlSelect = select(rateControl, [['CBR', 'CBR'], ['VBR', 'VBR'], ['CQP', 'CQP'], ['ICQ', 'ICQ']], 'Rate control', (value) => stagePatch({ rateControl: value }));
   const maxBitrate = el('input', {
-    class: 'recording-number', type: 'number', min: working?.bitrateKbps ?? 1, step: 'any',
+    class: 'recording-number', type: 'number', min: 1, step: 'any',
     value: working?.maxBitrateKbps ?? working?.bitrateKbps ?? bitrateRange.default,
   }) as HTMLInputElement;
   maxBitrate.title = 'Maximum bitrate in Kbps';
-  maxBitrate.addEventListener('input', () => {
-    const value = Number(maxBitrate.value);
-    if (Number.isFinite(value) && value > 0) {
-      const normalized = Math.max(Number(bitrate.value) || 1, value);
-      maxBitrate.value = String(normalized);
-      maxBitrate.min = String(Number(bitrate.value) || 1);
-      stagePatch({ maxBitrateKbps: normalized }, false);
-    }
-  });
+  const normalizeMaxBitrate = (): void => {
+    const parsed = Number(maxBitrate.value);
+    const average = Number(bitrate.value) || Number(working?.bitrateKbps) || 1;
+    const value = Number.isFinite(parsed) && parsed > 0 ? parsed : average;
+    const normalized = Math.max(average, value);
+    maxBitrate.value = String(normalized);
+    stagePatch({ maxBitrateKbps: normalized }, false);
+  };
+  maxBitrate.addEventListener('change', normalizeMaxBitrate);
+  maxBitrate.addEventListener('blur', normalizeMaxBitrate);
   bitrate.addEventListener('input', () => {
     const value = Number(bitrate.value);
     if (Number.isFinite(value) && value > 0) {
       maxBitrate.min = String(value);
-      if (rateControl === 'VBR' && Number(maxBitrate.value) < value) {
+      if (rateControl === 'VBR' && maxBitrate.value.trim() !== '' && Number(maxBitrate.value) < value) {
         maxBitrate.value = String(value);
         stagePatch({ bitrateKbps: value, maxBitrateKbps: value }, false);
       }
@@ -810,7 +825,7 @@ function renderQualitySettings(): HTMLElement {
     class: 'recording-number', type: 'number', min: 1, max: qualityMax, step: 1,
     value: working?.rateControlQuality ?? 23,
   }) as HTMLInputElement;
-  rateQuality.title = rateControl === 'CQP' ? 'Quantizer quality (lower values preserve more detail)' : 'ICQ quality from 1 to 51';
+  rateQuality.title = `${rateControl} quality from 1 to ${qualityMax} (lower values produce higher quality and larger files)`;
   rateQuality.addEventListener('change', () => {
     const value = Math.min(qualityMax, Math.max(1, Math.round(Number(rateQuality.value) || 23)));
     rateQuality.value = String(value);
@@ -837,10 +852,18 @@ function renderQualitySettings(): HTMLElement {
         el('span', { class: 'recording-quality-meta-item' }, [el('span', { text: 'Bitrate Recommendation' }), el('strong', { text: bitrateRange.label })]),
         el('span', { class: 'recording-quality-meta-item' }, [el('span', { text: 'Estimated video size' }), el('strong', { text: `≈ ${estimatedVideoSizePerMinute(Number(working?.bitrateKbps ?? bitrateRange.default))} / min` })]),
       ] : []),
+      ...(rateControl === 'CQP' || rateControl === 'ICQ' ? [
+        el('span', { class: 'recording-quality-meta-item' }, [
+          el('span', { text: `${rateControl} quality at ${selectedResolutionLabel}` }),
+          el('strong', { text: `1–${qualityMax} · start around 16–23` }),
+        ]),
+      ] : []),
     ]),
-    el('p', { class: 'recording-panel-note recording-quality-note', text: status.running
+    el('p', { class: 'recording-panel-note recording-quality-note', text: rateControl === 'CQP' || rateControl === 'ICQ'
+      ? `For ${selectedResolutionLabel}, start around 16–23; lower values produce higher quality and larger files. This quality-based range stays the same across resolutions and may need personal tuning. The maximum shown is specific to the selected encoder (${selectedEncoderLabel(selectedEncoder)}).`
+      : `Bitrate guidance varies by resolution (${bitrateRange.label}); use it as a starting point for ${rateControl}. ${status.running
       ? 'Active capture uses the applied profile.'
-      : 'Apply changes before capture.' }),
+      : 'Apply changes before capture.'}` }),
   ]);
 }
 

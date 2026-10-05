@@ -46,6 +46,8 @@ public static class ArcPowerCaptureNative {
     public uint handle;
     public string titleBase64;
     public string processName;
+    public string executablePath;
+    public string windowClass;
     public int x;
     public int y;
     public int width;
@@ -67,6 +69,7 @@ public static class ArcPowerCaptureNative {
   [DllImport("user32.dll")] static extern bool IsWindow(IntPtr hwnd);
   [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr hwnd);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int maxCount);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, StringBuilder className, int maxCount);
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
   [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
   [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
@@ -126,7 +129,16 @@ public static class ArcPowerCaptureNative {
       uint processId;
       GetWindowThreadProcessId(hwnd, out processId);
       string processName = string.Empty;
-      try { processName = Process.GetProcessById((int)processId).ProcessName + ".exe"; } catch { }
+      string executablePath = string.Empty;
+      try {
+        using (Process process = Process.GetProcessById((int)processId)) {
+          processName = process.ProcessName + ".exe";
+          try { executablePath = process.MainModule.FileName; } catch { }
+        }
+      } catch { }
+      var classBuffer = new StringBuilder(256);
+      GetClassName(hwnd, classBuffer, classBuffer.Capacity);
+      string windowClass = classBuffer.ToString().Trim();
       // Some games do not expose a caption at all. The executable name is a
       // stable, user-readable target label in that case.
       if (string.IsNullOrWhiteSpace(title)) title = processName;
@@ -138,6 +150,8 @@ public static class ArcPowerCaptureNative {
         // valid for every window title; the Node side decodes it for display.
         titleBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(title)),
         processName = processName,
+        executablePath = executablePath,
+        windowClass = windowClass,
         x = rect.Left,
         y = rect.Top,
         width = width,
@@ -199,6 +213,8 @@ function normalizeWindowTarget(value) {
     handle,
     title,
     processName,
+    executablePath: boundedString(item.executablePath, '', 4096),
+    windowClass: boundedString(item.windowClass, '', 256),
     x: Number.isFinite(item.x) ? Math.round(item.x) : 0,
     y: Number.isFinite(item.y) ? Math.round(item.y) : 0,
     width,
@@ -272,10 +288,48 @@ export function recordingCaptureSelection(rawTarget, targets = { displays: [], w
   const displays = Array.isArray(targets.displays) ? targets.displays : [];
   const windows = Array.isArray(targets.windows) ? targets.windows : [];
   if (target.type === 'window') {
-    const selectedWindow = windows.find((item) => item.handle === target.windowHandle);
+    const sameText = (left, right) => String(left ?? '').trim().toLocaleLowerCase('en-US') === String(right ?? '').trim().toLocaleLowerCase('en-US');
+    const samePath = (left, right) => String(left ?? '').trim().replace(/\//g, '\\').replace(/\\+/g, '\\').toLocaleLowerCase('en-US')
+      === String(right ?? '').trim().replace(/\//g, '\\').replace(/\\+/g, '\\').toLocaleLowerCase('en-US');
+    const hasProcessIdentity = Boolean(target.executablePath || target.processName);
+    const processIdentityMatches = (item) => {
+      if (target.executablePath && item.executablePath) return samePath(item.executablePath, target.executablePath);
+      // Process.MainModule may be inaccessible for a protected or elevated
+      // game. Use the executable name only when one side lacks a path; if
+      // both paths are present, an installation-path mismatch stays a miss.
+      if (target.processName) return Boolean(item.processName) && sameText(item.processName, target.processName);
+      return false;
+    };
+    const classMatches = (item) => !target.windowClass || !item.windowClass || sameText(item.windowClass, target.windowClass);
+    const legacyTitleMatches = (item) => Boolean(target.windowTitle) && sameText(item.title, target.windowTitle);
+    const identifiesSavedTarget = (item) => {
+      if (hasProcessIdentity) return processIdentityMatches(item) && classMatches(item);
+      return legacyTitleMatches(item) && classMatches(item);
+    };
+    // Keep the HWND fast path, but guard against Windows reusing a saved handle
+    // for a different window after the original application has exited.
+    let selectedWindow = windows.find((item) => item.handle === target.windowHandle && identifiesSavedTarget(item));
+    if (!selectedWindow && hasProcessIdentity) {
+      let matches = windows.filter((item) => processIdentityMatches(item) && classMatches(item));
+      if (matches.length > 1 && target.windowTitle) {
+        const exactTitleMatches = matches.filter((item) => sameText(item.title, target.windowTitle));
+        if (exactTitleMatches.length === 1) matches = exactTitleMatches;
+      }
+      if (matches.length === 1) selectedWindow = matches[0];
+    } else if (!selectedWindow && !hasProcessIdentity) {
+      const matches = windows.filter(identifiesSavedTarget);
+      if (matches.length === 1) selectedWindow = matches[0];
+    }
     if (selectedWindow) {
       return {
-        captureTarget: { ...target, windowHandle: selectedWindow.handle, processName: selectedWindow.processName, windowTitle: selectedWindow.title },
+        captureTarget: {
+          ...target,
+          windowHandle: selectedWindow.handle,
+          processName: selectedWindow.processName || target.processName,
+          executablePath: selectedWindow.executablePath || target.executablePath,
+          windowTitle: selectedWindow.title,
+          windowClass: selectedWindow.windowClass || target.windowClass,
+        },
         captureWidth: selectedWindow.width,
         captureHeight: selectedWindow.height,
         captureSource: { type: 'window', windowHandle: selectedWindow.handle },
@@ -289,7 +343,7 @@ export function recordingCaptureSelection(rawTarget, targets = { displays: [], w
   const display = selectedDisplay ?? primaryDisplay({ displays });
   if (display) {
     return {
-      captureTarget: { type: 'display', displayId: display.id, windowHandle: 0, processName: '', windowTitle: '' },
+      captureTarget: { type: 'display', displayId: display.id, windowHandle: 0, processName: '', executablePath: '', windowTitle: '', windowClass: '' },
       captureWidth: display.width,
       captureHeight: display.height,
       captureSource: { type: 'display', monitorHandle: display.handle },
@@ -302,7 +356,7 @@ export function recordingCaptureSelection(rawTarget, targets = { displays: [], w
     // A saved window handle can disappear between launches. Never send that
     // stale handle to ascent-obs: fall back to a real display source so a
     // missing window cannot produce a centered/blank capture.
-    captureTarget: { type: 'display', displayId: 'primary', windowHandle: 0, processName: '', windowTitle: '' },
+    captureTarget: { type: 'display', displayId: 'primary', windowHandle: 0, processName: '', executablePath: '', windowTitle: '', windowClass: '' },
     captureWidth: width,
     captureHeight: height,
     captureSource: { type: 'display', monitorHandle: 0 },

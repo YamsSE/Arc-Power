@@ -43,6 +43,7 @@ import { createMockRtssStartup } from './rtss-startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
+import { normalizeArcSleepSettings } from './arc-sleep-policy.js';
 import { executeApply, withCapabilityFlags, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, tempCapabilityRefusal, tempCapabilityPerControl, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED, ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
 import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_POLL_MS_DEFAULT, OVERLAY_RENDERERS, normalizeMonitorLogMetrics, activeProfileEntries } from './store/profile-store.js';
@@ -229,7 +230,9 @@ function recordingPatch(patch) {
     if (target.displayId !== undefined && (typeof target.displayId !== 'string' || target.displayId.length > 128)) throw new Error('recording-settings-save: invalid display id');
     if (target.windowHandle !== undefined && (!Number.isSafeInteger(target.windowHandle) || target.windowHandle < 0 || target.windowHandle > 0xffffffff)) throw new Error('recording-settings-save: invalid window handle');
     if (target.processName !== undefined && (typeof target.processName !== 'string' || target.processName.length > 256)) throw new Error('recording-settings-save: invalid process name');
+    if (target.executablePath !== undefined && (typeof target.executablePath !== 'string' || target.executablePath.length > 4096)) throw new Error('recording-settings-save: invalid executable path');
     if (target.windowTitle !== undefined && (typeof target.windowTitle !== 'string' || target.windowTitle.length > 512)) throw new Error('recording-settings-save: invalid window title');
+    if (target.windowClass !== undefined && (typeof target.windowClass !== 'string' || target.windowClass.length > 256)) throw new Error('recording-settings-save: invalid window class');
   }
   if (patch.hotkeys !== undefined && (!patch.hotkeys || typeof patch.hotkeys !== 'object' || Array.isArray(patch.hotkeys))) throw new Error('recording-settings-save: hotkeys must be an object');
   if (patch.audio !== undefined) {
@@ -1337,6 +1340,7 @@ export function createIpcHandlers({
   // real rolling-delta adapter in the product path. sample() is called on
   // every telemetry tick; its values ride the pushed telemetry sample.
   sysStats = createMockSysStats(),
+  onSysStatsReady = () => {},
   // Production injects one shared LibreHardwareMonitor bridge. Tests and
   // mock mode leave it absent so deterministic fixtures never touch
   // privileged hardware access.
@@ -1364,6 +1368,9 @@ export function createIpcHandlers({
   // publisher and is deliberately optional: every failed RTSS read/write
   // falls through to the existing IGCL limiter path.
   rtssFrameLimiter = null,
+  // Main-process arbiter for the Graphics base FPS limit and Arc Sleep's
+  // temporary global RTSS cap.
+  arcSleepController = null,
   // M10a: the foreground-window Graphics-API detector (the overlay's FPS-row
   // badge). The DEFAULT is the null-returning detector (tests + mock/
   // ui-verify NEVER run the real koffi probe - the determinism seam:
@@ -1526,12 +1533,50 @@ export function createIpcHandlers({
   // holder lands (never in practice - telemetry starts after the block),
   // a call degrades to undefined, which the sites' try/catch swallow.
   let reconcileSysStatsReady = async () => {};
+  let initialTelemetrySelectionReady = false;
+  let resolveInitialTelemetrySelection;
+  const initialTelemetrySelection = new Promise((resolve) => { resolveInitialTelemetrySelection = resolve; });
+  const markInitialTelemetrySelectionReady = () => {
+    if (initialTelemetrySelectionReady) return;
+    initialTelemetrySelectionReady = true;
+    resolveInitialTelemetrySelection();
+  };
   if (sysStats && typeof sysStats === 'object' && 'current' in sysStats) {
     const holder = sysStats;
+    let pendingTargetArgs = null;
+    let hasPendingTarget = false;
     const previousReady = typeof holder.onReady === 'function' ? holder.onReady : null;
     holder.onReady = () => {
-      try { previousReady?.(); } catch { /* readiness hooks are best effort */ }
-      void reconcileSysStatsReady().catch(() => {});
+      const finishReady = () => {
+        // Reapply the latest selected GPU before Arc Sleep can sample the
+        // adapter. A lane may have resolved its target while readiness waited.
+        if (hasPendingTarget) {
+          try { holder.current?.setTarget?.(...pendingTargetArgs); } catch { /* target reconciliation is best effort */ }
+        }
+        try { previousReady?.(); } catch { /* readiness hooks are best effort */ }
+        try { onSysStatsReady(); } catch { /* Arc Sleep sampler readiness is best effort */ }
+        void reconcileSysStatsReady().catch(() => {});
+      };
+      const waitForStableTargetStarts = async () => {
+        // The adapter often lands before renderer boot has resolved the
+        // persisted selection. Wait for a selected target or the explicit
+        // null-device startup signal before exposing it to Arc Sleep.
+        if (!initialTelemetrySelectionReady) await initialTelemetrySelection;
+        while (true) {
+          const targetStarts = [...telemetryTargetStarting.values()].map((entry) => entry.promise);
+          if (targetStarts.length === 0) {
+            // Yield once so starts queued by the preceding resolution can
+            // publish their barriers before readiness declares the set stable.
+            await Promise.resolve();
+            if (telemetryTargetStarting.size === 0) break;
+            continue;
+          }
+          await Promise.allSettled(targetStarts);
+        }
+        finishReady();
+      };
+      if (initialTelemetrySelectionReady && telemetryTargetStarting.size === 0) finishReady();
+      else void waitForStableTargetStarts();
     };
     sysStats = {
       sample: (...args) => holder.current?.sample?.(...args),
@@ -1540,7 +1585,11 @@ export function createIpcHandlers({
       sampleGpuUtilForTarget: (...args) => holder.current?.sampleGpuUtilForTarget?.(...args),
       registerTarget: (...args) => holder.current?.registerTarget?.(...args),
       sampleSlow: (...args) => holder.current?.sampleSlow?.(...args),
-      setTarget: (...args) => holder.current?.setTarget?.(...args),
+      setTarget: (...args) => {
+        pendingTargetArgs = args;
+        hasPendingTarget = true;
+        return holder.current?.setTarget?.(...args);
+      },
       startSlowLane: (...args) => holder.current?.startSlowLane?.(...args),
       stopSlowLane: (...args) => holder.current?.stopSlowLane?.(...args),
     };
@@ -1577,6 +1626,7 @@ export function createIpcHandlers({
   };
   /** @type {Map<number, TelemetryService | { stop: () => Promise<void> }>} */
   const telemetry = new Map();
+  const telemetrySelectedTargets = new Map();
   /** The most recent fully composed sample for each active telemetry lane.
    * The advanced overlay can open between timer ticks, so it needs a
    * read-on-demand snapshot in addition to the push stream. */
@@ -1913,7 +1963,7 @@ export function createIpcHandlers({
     await sampleNow();
   };
 
-  const startTelemetryLane = async (deviceId) => {
+  const startTelemetryLane = async (deviceId, onTargetSelected = () => {}) => {
     if (telemetry.has(deviceId)) return;
     const generation = ++telemetryGeneration;
     // M17e (round-2 N4, the overlay polling-rate slider): the telemetry
@@ -1935,6 +1985,7 @@ export function createIpcHandlers({
     // with another adapter's numeric id.
     const target = await backend.getDeviceTarget?.(deviceId);
     if (generation !== telemetryGeneration) return;
+    telemetrySelectedTargets.set(deviceId, target ?? null);
     const telemetryAliases = Array.isArray(target?.deviceKeys) ? [...target.deviceKeys] : null;
     // Keep a numeric id as an internal lane key only. A synthetic `id:N`
     // deviceKey in the shared payload looks like a durable identity and makes
@@ -1943,6 +1994,8 @@ export function createIpcHandlers({
       ?? (Array.isArray(telemetryAliases) ? telemetryAliases[0] : null)
       ?? null;
     try { await sysStats.setTarget?.(target); } catch { /* stale OS target degrades to null fields */ }
+    markInitialTelemetrySelectionReady();
+    onTargetSelected();
     if (generation !== telemetryGeneration) return;
     if (lhmTelemetry) {
       const sampleNow = async () => {
@@ -2105,9 +2158,50 @@ export function createIpcHandlers({
   // renderer's start so two concurrent callers can never create competing
   // TelemetryService instances for one device.
   const telemetryStarting = new Map();
-  const startTelemetry = async (deviceId, refreshExisting = true) => {
+  // Readiness only needs to wait until a selected lane has chosen/applied its
+  // target. Waiting for the whole startup promise could couple Arc Sleep to a
+  // slow or stalled first telemetry sample.
+  const telemetryTargetStarting = new Map();
+  let telemetryTargetHandoff = null;
+  const settleTelemetryTargetStarts = ({ includeHandoff = true } = {}) => {
+    const entries = [...telemetryTargetStarting.entries()];
+    for (const [id, entry] of entries) {
+      if (!entry || telemetryTargetStarting.get(id) !== entry) continue;
+      if (!includeHandoff && entry === telemetryTargetHandoff) continue;
+      entry.settle();
+    }
+  };
+  const settleTelemetryTargetHandoff = () => telemetryTargetHandoff?.settle();
+  const holdTelemetryTargetReadinessForHandoff = (expectReplacement) => {
+    if (!expectReplacement) {
+      settleTelemetryTargetStarts();
+      return;
+    }
+    settleTelemetryTargetStarts({ includeHandoff: false });
+    if (telemetryTargetHandoff && [...telemetryTargetStarting.values()].includes(telemetryTargetHandoff)) return;
+    const key = Symbol('telemetry-target-handoff');
+    let resolveHandoff;
+    const promise = new Promise((resolve) => { resolveHandoff = resolve; });
+    const entry = { promise, settle: () => {} };
+    entry.settle = () => {
+      if (telemetryTargetStarting.get(key) === entry) telemetryTargetStarting.delete(key);
+      if (telemetryTargetHandoff === entry) telemetryTargetHandoff = null;
+      resolveHandoff();
+    };
+    telemetryTargetHandoff = entry;
+    telemetryTargetStarting.set(key, entry);
+    // The declared replacement start (including null-device mode) or global
+    // telemetry teardown releases this barrier; IPC latency cannot expire it.
+  };
+  const startTelemetry = async (deviceId, refreshExisting = true, completesHandoff = false) => {
+    if (telemetryTargetHandoff && !completesHandoff) return;
     const active = telemetry.get(deviceId);
     if (active) {
+      if (completesHandoff) {
+        const selectedTarget = telemetrySelectedTargets.get(deviceId);
+        try { await sysStats.setTarget?.(selectedTarget ?? null); } catch { /* selected target restore is best effort */ }
+        settleTelemetryTargetHandoff();
+      }
       // M151: a secondary renderer may have started this shared lane before
       // the main dashboard installed its listener. Re-sample an existing
       // native lane so the current consumer receives a fresh composed sample;
@@ -2118,8 +2212,36 @@ export function createIpcHandlers({
       return;
     }
     const pending = telemetryStarting.get(deviceId);
-    if (pending) return pending;
-    const start = startTelemetryLane(deviceId);
+    if (pending) {
+      if (completesHandoff) settleTelemetryTargetHandoff();
+      return pending;
+    }
+    // Starting a different selected-device lane advances the shared telemetry
+    // generation, making older pending lookups stale. Release their readiness
+    // barriers now so readiness can wait on the newly inserted current lane.
+    settleTelemetryTargetStarts({ includeHandoff: false });
+    if (completesHandoff) settleTelemetryTargetHandoff();
+    let resolveTargetSelection;
+    const targetSelection = new Promise((resolve) => { resolveTargetSelection = resolve; });
+    const targetEntry = { promise: targetSelection, settle: () => {} };
+    targetEntry.settle = () => {
+      if (telemetryTargetStarting.get(deviceId) === targetEntry) telemetryTargetStarting.delete(deviceId);
+      resolveTargetSelection();
+    };
+    telemetryTargetStarting.set(deviceId, targetEntry);
+    const start = (async () => {
+      try {
+        await startTelemetryLane(deviceId, targetEntry.settle);
+      } finally {
+        // A lane can exit before target lookup (stop, failure, or missing
+        // target adapter); readiness must still proceed for the adapter.
+        if (!initialTelemetrySelectionReady) {
+          try { await sysStats.setTarget?.(null); } catch { /* failed initial selection clears best effort */ }
+          markInitialTelemetrySelectionReady();
+        }
+        targetEntry.settle();
+      }
+    })();
     telemetryStarting.set(deviceId, start);
     try {
       await start;
@@ -2429,6 +2551,12 @@ export function createIpcHandlers({
     rtssOverlaySyncGeneration += 1;
     try { await stabilityService?.stop?.(); } catch { /* close the run honestly on teardown */ }
     telemetryGeneration += 1;
+    settleTelemetryTargetStarts();
+    telemetrySelectedTargets.clear();
+    if (!initialTelemetrySelectionReady) {
+      try { await sysStats.setTarget?.(null); } catch { /* teardown selection clear is best effort */ }
+      markInitialTelemetrySelectionReady();
+    }
     overlayTelemetryGeneration += 1;
     overlayTelemetryOwners.clear();
     // A startup can still be waiting on inventory/sysinfo when teardown
@@ -2723,13 +2851,14 @@ export function createIpcHandlers({
   const decorateGraphicsState = (baseState, rtssState) => {
     const state = baseState && typeof baseState === 'object' ? baseState : null;
     if (!state) return state;
-    if (!rtssState?.ok) return { ...state, frameLimitSource: 'igcl' };
+    if (!rtssState?.ok) return { ...state, frameLimitSource: 'igcl', frameLimitLiveChange: state.frameLimitLiveChange === true };
     const limit = Number.isFinite(rtssState.limit) ? Math.max(0, Math.round(rtssState.limit)) : 0;
     return {
       ...state,
       supported: { ...(state.supported ?? {}), frameLimit: true },
       frameLimitRange: { ...GRAPHICS_RTSS_FRAME_LIMIT_RANGE },
       frameLimitSource: 'rtss',
+      frameLimitLiveChange: true,
       values: {
         ...(state.values ?? {}),
         frameLimit: {
@@ -2740,13 +2869,92 @@ export function createIpcHandlers({
     };
   };
 
-  const readGraphicsState = async (deviceId, { useRtss = true } = {}) => {
+  const readGraphicsState = async (deviceId, { useRtss = true, rtssTimeoutMs = 0 } = {}) => {
     const baseState = await backend.getGraphicsSettings(deviceId);
-    if (!useRtss || typeof rtssFrameLimiter?.getFrameLimit !== 'function') {
-      return decorateGraphicsState(baseState, null);
+    const arcSleepSnapshot = arcSleepController?.getSnapshot?.() ?? null;
+    let selectedDeviceKey = null;
+    try { selectedDeviceKey = (await store.loadSettings())?.deviceKey ?? null; } catch { /* base read remains available */ }
+    let requestedDeviceKey = null;
+    if (arcSleepSnapshot?.activeLimiter === 'igcl' && typeof backend.listDevices === 'function') {
+      try {
+        const matches = (await backend.listDevices()).filter((device) => device?.id === deviceId
+          && device?.synthetic !== true && device?.backendKind !== 'os' && device?.identityAmbiguous !== true
+          && typeof device?.deviceKey === 'string' && device.deviceKey.length > 0);
+        if (matches.length === 1) requestedDeviceKey = matches[0].deviceKey;
+      } catch { /* Only Arc Sleep decoration is skipped; the device read remains available. */ }
     }
+    const igclSnapshotMatchesRequestedDevice = arcSleepSnapshot?.activeLimiter === 'igcl'
+      && arcSleepSnapshot.limiterDeviceKey === selectedDeviceKey
+      && arcSleepSnapshot.limiterDeviceKey === requestedDeviceKey;
+    if (!useRtss || typeof rtssFrameLimiter?.getFrameLimit !== 'function') {
+      const state = decorateGraphicsState(baseState, null);
+      if (igclSnapshotMatchesRequestedDevice
+        && arcSleepSnapshot.baseFrameLimit) {
+        return {
+          ...state,
+          frameLimitSource: 'igcl',
+          values: { ...(state.values ?? {}), frameLimit: { ...arcSleepSnapshot.baseFrameLimit } },
+        };
+      }
+      return state;
+    }
+    const arcSleepBase = arcSleepSnapshot?.baseFrameLimit;
     let rtssState = null;
-    try { rtssState = await rtssFrameLimiter.getFrameLimit(); } catch { /* IGCL fallback */ }
+    try {
+      const read = Promise.resolve().then(() => rtssFrameLimiter.getFrameLimit());
+      if (rtssTimeoutMs > 0) {
+        let timeout;
+        try {
+          rtssState = await Promise.race([
+            read,
+            new Promise((resolve) => { timeout = setTimeout(() => resolve(null), rtssTimeoutMs); }),
+          ]);
+        } finally {
+          if (timeout !== undefined) clearTimeout(timeout);
+        }
+      } else {
+        rtssState = await read;
+      }
+    } catch { /* IGCL fallback */ }
+    if (rtssState?.ok === true && arcSleepBase && typeof arcSleepBase.enabled === 'boolean') {
+      rtssState = {
+        ...rtssState,
+        limit: arcSleepBase.enabled === true ? arcSleepBase.value : 0,
+        limiterEnabled: arcSleepBase.enabled === true,
+      };
+    }
+    if (rtssState?.ok !== true && arcSleepSnapshot?.activeLimiter === 'rtss') {
+      const safeBase = arcSleepBase
+        && typeof arcSleepBase.enabled === 'boolean'
+        && Number.isFinite(arcSleepBase.value)
+        && arcSleepBase.value >= GRAPHICS_RTSS_FRAME_LIMIT_RANGE.min
+        && arcSleepBase.value <= GRAPHICS_RTSS_FRAME_LIMIT_RANGE.max;
+      if (safeBase) {
+        return {
+          ...baseState,
+          supported: { ...(baseState?.supported ?? {}), frameLimit: true },
+          frameLimitRange: { ...GRAPHICS_RTSS_FRAME_LIMIT_RANGE },
+          frameLimitSource: 'rtss',
+          frameLimitLiveChange: true,
+          values: {
+            ...(baseState?.values ?? {}),
+            frameLimit: { enabled: arcSleepBase.enabled, value: arcSleepBase.value },
+          },
+        };
+      }
+      if (baseState?.supported?.frameLimit !== true) {
+        throw new Error('FPS limiter status is temporarily unavailable; retry the check.');
+      }
+    }
+    if (rtssState?.ok !== true
+      && igclSnapshotMatchesRequestedDevice
+      && arcSleepSnapshot.baseFrameLimit) {
+      return {
+        ...decorateGraphicsState(baseState, null),
+        frameLimitSource: 'igcl',
+        values: { ...(baseState.values ?? {}), frameLimit: { ...arcSleepSnapshot.baseFrameLimit } },
+      };
+    }
     return decorateGraphicsState(baseState, rtssState);
   };
 
@@ -3100,8 +3308,44 @@ export function createIpcHandlers({
       // 'No GPU available.' first, plan-review S3). The backend never
       // throws - the all-false/null state is the honest degrade.
       'graphics:get': async (deviceId) => {
+        const read = async () => {
+          assertValidDeviceId(deviceId);
+          return readGraphicsState(deviceId);
+        };
+        return arcSleepController?.withTransaction
+          ? arcSleepController.withTransaction(read)
+          : read();
+      },
+
+      // Arc Sleep's Base FPS Cap panel needs a fast, independent read so it
+      // can recover even when the controller's serialized RTSS queue stalls.
+      'arc-sleep-base-cap-get': async (deviceId) => {
         assertValidDeviceId(deviceId);
-        return readGraphicsState(deviceId);
+        return readGraphicsState(deviceId, { rtssTimeoutMs: 1200 });
+      },
+
+      'arc-sleep-state-get': async (...args) => {
+        assertNoPayload(args, 'arc-sleep-state-get');
+        if (typeof arcSleepController?.getSnapshot !== 'function') {
+          return {
+            rtssAvailable: false,
+            activeLimiter: null,
+            limiterDeviceName: null,
+            limiterDeviceKey: null,
+            liveAdjustmentSupported: false,
+            frameLimitEffectiveNow: false,
+            baseCapFps: null,
+            baseFrameLimit: null,
+            effectiveCapFps: null,
+            policy: null,
+            status: 'limiter-unavailable',
+            message: 'Arc Sleep is unavailable in this runtime.',
+            diagnostics: { gpuUtilPct: null, reportedFps: null, fpsStatus: 'gpu-unavailable', fastAdjustmentApplied: false },
+          };
+        }
+        // This is a read of in-memory controller state. Keep it outside the
+        // RTSS transaction queue so the UI can report progress if RTSS stalls.
+        return arcSleepController.getSnapshot();
       },
 
       // M8: the DEDICATED graphics apply path (plan-review S1 - the OC
@@ -3115,8 +3359,19 @@ export function createIpcHandlers({
       // envelope is { ok, perControl, graphicsState } with the FRESH
       // getGraphicsSettings read-back for the page's per-control refresh.
       'graphics:apply': async (deviceId, payload) => {
+        const apply = async (arcSleepTransaction = null) => {
         assertValidDeviceId(deviceId);
+        let expectedDeviceKey = null;
+        try {
+          const selectedSettings = await store.loadSettings();
+          if (selectedSettings?.deviceId === deviceId && typeof selectedSettings.deviceKey === 'string' && selectedSettings.deviceKey.length > 0) {
+            expectedDeviceKey = selectedSettings.deviceKey;
+          }
+        } catch { /* target resolution still has its backend identity checks */ }
         const target = await backend.getDeviceTarget?.(deviceId);
+        if (expectedDeviceKey && target?.deviceKey !== expectedDeviceKey) {
+          throw new Error(`stale GPU target: device id ${deviceId} no longer resolves to ${expectedDeviceKey}`);
+        }
         const baseGraphicsState = await backend.getGraphicsSettings(deviceId);
         let rtssFrameState = null;
         if (typeof rtssFrameLimiter?.getFrameLimit === 'function') {
@@ -3134,10 +3389,13 @@ export function createIpcHandlers({
           return { ok: Object.keys(perControl).length === 0, perControl, graphicsState: decorateGraphicsState(baseGraphicsState, null) };
         }
         let settingsForDriver = { ...settings };
+        const controllerOwnsFrameLimit = typeof arcSleepTransaction?.setBaseFrameLimit === 'function';
         const rtssApply = Object.prototype.hasOwnProperty.call(settings, 'frameLimit')
-          ? await applyRtssFrameLimit(settings.frameLimit)
+          ? (typeof arcSleepTransaction?.setBaseFrameLimit === 'function'
+            ? await arcSleepTransaction.setBaseFrameLimit(settings.frameLimit, { deviceKey: target?.deviceKey ?? expectedDeviceKey })
+            : await applyRtssFrameLimit(settings.frameLimit))
           : null;
-        if (rtssApply?.handled === false && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
+        if (rtssApply?.handled === false && !controllerOwnsFrameLimit && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
           // RTSS may expose a wider 1-1000 range than the Intel driver. If a
           // verified RTSS write fails, re-clamp this same request against the
           // driver range before taking the IGCL fallback path.
@@ -3148,6 +3406,12 @@ export function createIpcHandlers({
         }
         if (rtssApply?.handled === true) {
           const { frameLimit: _rtssFrameLimit, ...withoutFrameLimit } = settingsForDriver;
+          settingsForDriver = withoutFrameLimit;
+        } else if (controllerOwnsFrameLimit && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
+          // The Arc Sleep controller owns provider selection, identity pinning,
+          // recovery journaling and read-back. Never bypass it with a direct
+          // driver write when both its RTSS and IGCL paths refuse a request.
+          const { frameLimit: _ownedFrameLimit, ...withoutFrameLimit } = settingsForDriver;
           settingsForDriver = withoutFrameLimit;
         }
         let driverOut = { ok: true, perControl: {} };
@@ -3166,9 +3430,14 @@ export function createIpcHandlers({
             driverOut = { ok: false, perControl: {} };
           }
         }
-        const rtssRollback = driverOut?.ok === true
+        const frameLimitOwnerFailed = controllerOwnsFrameLimit
+          && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')
+          && rtssApply?.handled !== true;
+        const rtssRollback = driverOut?.ok === true && !frameLimitOwnerFailed
           ? { ok: true }
-          : await rollbackRtssFrameLimit(rtssApply);
+          : (typeof rtssApply?.rollback === 'function'
+            ? await rtssApply.rollback()
+            : await rollbackRtssFrameLimit(rtssApply));
         let graphicsState = null;
         try { graphicsState = await readGraphicsState(deviceId, { useRtss: rtssApply?.handled !== false }); } catch { /* degraded */ }
         const perControl = { ...(driverOut?.perControl ?? {}) };
@@ -3179,23 +3448,34 @@ export function createIpcHandlers({
             perControl.frameLimit = {
               ok: false,
               errorCode: 'rolled-back',
-              message: 'RTSS frame limit was rolled back because another graphics setting failed',
+              message: 'The FPS limit was rolled back because another graphics setting failed',
             };
           } else {
             perControl.frameLimit = {
               ok: false,
               errorCode: 'cleanup-pending',
-              message: `RTSS frame-limit rollback failed: ${rtssRollback.error}`,
+              message: `FPS limit rollback failed: ${rtssRollback.error}`,
             };
           }
+        } else if (controllerOwnsFrameLimit && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
+          perControl.frameLimit = {
+            ok: false,
+            errorCode: 'limiter-unavailable',
+            message: rtssApply?.error ?? 'Arc Sleep could not safely apply the FPS limiter.',
+          };
         }
         if (driverError) {
           const rollbackMessage = rtssRollback.ok === true
-            ? 'The RTSS frame-limit change was rolled back.'
-            : `RTSS cleanup is still pending: ${rtssRollback.error}`;
+            ? 'The FPS limit change was rolled back.'
+            : `FPS limit cleanup is still pending: ${rtssRollback.error}`;
           throw new Error(`${driverError instanceof Error ? driverError.message : String(driverError)}. ${rollbackMessage}`);
         }
-        return { ok: driverOut?.ok === true && rtssRollback.ok === true, perControl, graphicsState };
+        const controlsOk = Object.values(perControl).every((result) => result?.ok !== false);
+        return { ok: driverOut?.ok === true && rtssRollback.ok === true && controlsOk, perControl, graphicsState };
+        };
+        return arcSleepController?.withTransaction
+          ? arcSleepController.withTransaction(apply)
+          : apply();
       },
 
       // M10b (the Graphics "Display" view): the display-output surface.
@@ -3587,19 +3867,27 @@ export function createIpcHandlers({
         return { accepted: true };
       },
 
-      'telemetry-start': async (deviceId) => {
+      'telemetry-start': async (deviceId, options = {}) => {
+        const completesHandoff = options?.completesHandoff === true;
         // 1.0.1 no-Intel round: telemetry-start(null) starts the no-device
         // mode (the sentinel-keyed sys-stats-only timer). A real device id
         // is still validated as a non-negative integer.
         if (deviceId === null || deviceId === undefined) {
+          if (telemetryTargetHandoff && !completesHandoff) return;
+          try { await sysStats.setTarget?.(null); } catch { /* null target is best effort */ }
+          markInitialTelemetrySelectionReady();
+          settleTelemetryTargetStarts({ includeHandoff: false });
+          if (completesHandoff) settleTelemetryTargetHandoff();
           await startNullTelemetry();
           return;
         }
         assertValidDeviceId(deviceId);
-        await startTelemetry(deviceId);
+        if (telemetryTargetHandoff && !completesHandoff) return;
+        await startTelemetry(deviceId, true, completesHandoff);
       },
       'telemetry-latest': async (deviceId) => {
         assertValidDeviceId(deviceId);
+        if (telemetryTargetHandoff) return latestTelemetry.get(deviceId) ?? null;
         // A panel opened before the main renderer's boot telemetry call must
         // still receive live data. This is idempotent and shares the same
         // in-flight startup promise as telemetry-start.
@@ -3612,7 +3900,8 @@ export function createIpcHandlers({
         await requestOverlayTelemetry(request);
       },
 
-      'telemetry-stop': async (deviceId) => {
+      'telemetry-stop': async (deviceId, options = {}) => {
+        const expectReplacement = options?.expectReplacement === true;
         // 1.0.1 no-Intel round (m3): telemetry-stop(null) is the SYMMETRIC
         // stop for the no-device mode (sentinel key in the shared Map).
         if (deviceId === null || deviceId === undefined) {
@@ -3621,7 +3910,13 @@ export function createIpcHandlers({
           // service in the map; otherwise a rollback can be followed by a
           // stale timer appearing after this stop returns.
           telemetryGeneration += 1;
-          telemetryStarting.delete(NULL_DEVICE_KEY);
+          telemetryStarting.clear();
+          holdTelemetryTargetReadinessForHandoff(expectReplacement);
+          if (expectReplacement || !initialTelemetrySelectionReady) {
+            try { await sysStats.setTarget?.(null); } catch { /* handoff target clear is best effort */ }
+          }
+          markInitialTelemetrySelectionReady();
+          telemetrySelectedTargets.delete(NULL_DEVICE_KEY);
           latestTelemetry.delete(NULL_DEVICE_KEY);
           if (svc) {
             await svc.stop();
@@ -3634,7 +3929,16 @@ export function createIpcHandlers({
         // The map can still be empty while target/provider/service startup
         // awaits. Stop must invalidate that pending start unconditionally.
         telemetryGeneration += 1;
-        telemetryStarting.delete(deviceId);
+        // The generation is shared by every selected-device startup, so this
+        // invalidates all pending startup promises, not only this key. Their
+        // finally blocks use identity checks and cannot remove a replacement.
+        telemetryStarting.clear();
+        holdTelemetryTargetReadinessForHandoff(expectReplacement);
+        if (expectReplacement || !initialTelemetrySelectionReady) {
+          try { await sysStats.setTarget?.(null); } catch { /* handoff target clear is best effort */ }
+        }
+        markInitialTelemetrySelectionReady();
+        telemetrySelectedTargets.delete(deviceId);
         latestTelemetry.delete(deviceId);
         if (svc) {
           await svc.stop();
@@ -5042,6 +5346,9 @@ export function createIpcHandlers({
           closeToTray: patch.closeToTray === undefined
             ? cur.closeToTray
             : patch.closeToTray === true,
+          arcSleep: normalizeArcSleepSettings(patch.arcSleep === undefined
+            ? cur.arcSleep
+            : { ...(cur.arcSleep ?? {}), ...(patch.arcSleep && typeof patch.arcSleep === 'object' ? patch.arcSleep : {}) }),
           // M4-D2: the Monitoring "Log to file" toggle (same rule).
           monitorLogToFile: patch.monitorLogToFile === undefined
             ? cur.monitorLogToFile
@@ -5247,7 +5554,11 @@ export function createIpcHandlers({
           // after the intent is persisted so the renderer can show an honest
           // error and mismatch state.
         }
-        await store.saveSettings(next);
+        if (patch.arcSleep !== undefined && typeof store.saveSettingsWithArcSleep === 'function') {
+          await store.saveSettingsWithArcSleep(next, next.arcSleep);
+        } else {
+          await store.saveSettings(next);
+        }
         if (patch.memorySavingMode !== undefined && next.memorySavingMode !== cur.memorySavingMode) {
           try {
             await onRecordingMemorySavingSettings(next.memorySavingMode);
@@ -5340,7 +5651,15 @@ export function createIpcHandlers({
         }
         return next;
         };
-        return queueSettingsSave(save);
+        const queuedSave = () => queueSettingsSave(save);
+        if (patch?.arcSleep !== undefined && arcSleepController?.withTransaction) {
+          return arcSleepController.withTransaction(async (transaction) => {
+            const result = await queuedSave();
+            await transaction.setSettings(result.arcSleep);
+            return result;
+          });
+        }
+        return queuedSave();
       },
 
       // M3-C-E/M157: the OC mode is persisted per physical GPU. The scalar

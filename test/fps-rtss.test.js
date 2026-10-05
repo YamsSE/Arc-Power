@@ -152,3 +152,45 @@ test('RTSS lane follows the foreground PID and never measures Arc Power itself',
   assert.deepEqual(calls, [PID, PID, PID + 1]);
   await lane.stop();
 });
+
+test('Arc Sleep reads only a valid foreground game FPS without retaining a previous target', async () => {
+  const calls = [];
+  let foreground = PID;
+  let sample = { fps: 70 };
+  const lane = createRtssFpsLane({
+    source: { poll: async (pid) => { calls.push(pid); return sample; } },
+    resolveForegroundPid: async () => foreground,
+    isOwnPid: async (pid) => pid === 99,
+  });
+  assert.deepEqual(await lane.pollForArcSleep(), { processId: PID, fps: 70 });
+  foreground = 99;
+  assert.equal(await lane.pollForArcSleep(), null);
+  foreground = 0;
+  assert.equal(await lane.pollForArcSleep(), null);
+  foreground = PID + 1;
+  sample = { fps: Number.POSITIVE_INFINITY };
+  assert.equal(await lane.pollForArcSleep(), null);
+  sample = { fps: 0 };
+  assert.equal(await lane.pollForArcSleep(), null);
+  sample = { fps: 85 };
+  assert.deepEqual(await lane.pollForArcSleep(), { processId: PID + 1, fps: 85 });
+  assert.deepEqual(calls, [PID, PID + 1, PID + 1, PID + 1]);
+});
+
+test('Arc Sleep gets no FPS after the RTSS source token expires', async () => {
+  let now = 1000;
+  const bytes = fixture();
+  const { readUint32, readByte } = readers(bytes);
+  const source = createRtssFpsSource({
+    openMapping: () => 1,
+    mapView: () => bytes,
+    readUint32: (_view, offset) => readUint32(offset),
+    readByte: (_view, offset) => readByte(offset),
+    now: () => now,
+  });
+  const lane = createRtssFpsLane({ source, resolveForegroundPid: async () => PID });
+  assert.deepEqual(await lane.pollForArcSleep(), { processId: PID, fps: 120 });
+  now = 2501;
+  assert.equal(await lane.pollForArcSleep(), null);
+  await lane.stop();
+});

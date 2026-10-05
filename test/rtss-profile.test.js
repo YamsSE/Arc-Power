@@ -2,31 +2,49 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRtssProfileController } from '../src/main/rtss-profile.js';
 
-function makeController({ deleteWorks = true, includeGameProfile = true, failDenominatorWrite = false } = {}) {
+function makeController({ deleteWorks = true, includeGameProfile = true, failDenominatorWrite = false, initialFlags = 0, discardUnsavedOnLoad = false } = {}) {
   const profiles = new Map(includeGameProfile ? [['game.exe', { limit: 60, denominator: 1 }]] : []);
   let currentProfile = '';
-  let flags = 0;
+  let workingProfile = null;
+  let flags = initialFlags;
+  let profileWriteCalls = 0;
   const functions = {
-    LoadProfile(name) { currentProfile = name.toLowerCase(); },
-    SaveProfile() {},
+    LoadProfile(name) {
+      currentProfile = name.toLowerCase();
+      if (discardUnsavedOnLoad) {
+        const saved = profiles.get(currentProfile) ?? { limit: 0, denominator: 1 };
+        workingProfile = { ...saved };
+      }
+    },
+    SaveProfile(name) {
+      if (discardUnsavedOnLoad && currentProfile === name.toLowerCase() && workingProfile) {
+        profiles.set(currentProfile, { ...workingProfile });
+      }
+    },
     GetProfileProperty(name, buffer) {
-      const profile = profiles.get(currentProfile) ?? { limit: 0, denominator: 1 };
+      const profile = discardUnsavedOnLoad
+        ? workingProfile ?? { limit: 0, denominator: 1 }
+        : profiles.get(currentProfile) ?? { limit: 0, denominator: 1 };
       const value = name === 'FramerateLimit' ? profile.limit : name === 'FramerateLimitDenominator' ? profile.denominator : null;
       if (value === null) return false;
       buffer.writeUInt32LE(value >>> 0, 0);
       return true;
     },
     SetProfileProperty(name, buffer) {
+      profileWriteCalls += 1;
       if (name === 'FramerateLimitDenominator' && failDenominatorWrite) return false;
-      const profile = profiles.get(currentProfile) ?? { limit: 0, denominator: 1 };
+      const profile = discardUnsavedOnLoad
+        ? workingProfile ?? { limit: 0, denominator: 1 }
+        : profiles.get(currentProfile) ?? { limit: 0, denominator: 1 };
       if (name === 'FramerateLimit') profile.limit = buffer.readUInt32LE(0);
       if (name === 'FramerateLimitDenominator') profile.denominator = buffer.readUInt32LE(0);
-      profiles.set(currentProfile, profile);
+      if (discardUnsavedOnLoad) workingProfile = profile;
+      else profiles.set(currentProfile, profile);
       return true;
     },
     UpdateProfiles() {},
-    SetFlags(_mask, value) {
-      if (value !== 0) flags = value;
+    SetFlags(andMask, xorMask) {
+      flags = ((flags & andMask) ^ xorMask) >>> 0;
       return flags;
     },
     EnumProfiles(buffer, size) {
@@ -44,7 +62,7 @@ function makeController({ deleteWorks = true, includeGameProfile = true, failDen
     exists: () => true,
     load: () => ({ func: (name) => functions[name] }),
   });
-  return { controller, profiles };
+  return { controller, profiles, get flags() { return flags; }, get profileWriteCalls() { return profileWriteCalls; } };
 }
 
 test('RTSS profile removal is verified before reporting success', async () => {
@@ -135,4 +153,159 @@ test('RTSS defers shared limiter-flag restore while another owned profile remain
   assert.equal(secondRemoved.flagRestored, true);
   assert.equal(secondRemoved.flagRestorationDeferred, undefined);
   assert.equal(profiles.has('second.exe'), false);
+});
+
+test('RTSS conditional global apply refuses an externally changed state without writing', async () => {
+  const fixture = makeController({ includeGameProfile: false });
+  fixture.profiles.set('', { limit: 60, denominator: 2 });
+  const result = await fixture.controller.applyFrameLimit({
+    enabled: true,
+    value: 120,
+    expectedState: { limit: 60, denominator: 1, limiterEnabled: true },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.used, false);
+  assert.equal(result.conflict, true);
+  assert.equal(result.errorCode, 'external-change');
+  assert.deepEqual(result.observedState, { limit: 60, denominator: 2, limiterEnabled: true });
+  assert.equal(fixture.profileWriteCalls, 0);
+  assert.deepEqual(fixture.profiles.get(''), { limit: 60, denominator: 2 });
+  assert.equal(fixture.flags & 4, 0);
+});
+
+test('RTSS durable global recovery restores exact raw denominator and limiter flag', async () => {
+  const fixture = makeController({ includeGameProfile: false });
+  fixture.profiles.set('', { limit: 144, denominator: 1 });
+  await fixture.controller.applyFrameLimit({ enabled: true, value: 144 });
+  const current = { limit: 144, denominator: 1, limiterEnabled: true };
+  const result = await fixture.controller.restoreFrameLimitState({
+    expectedState: current,
+    state: { limit: 60, denominator: 3, limiterEnabled: false },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(fixture.profiles.get(''), { limit: 60, denominator: 3 });
+  assert.equal(fixture.flags & 4, 4);
+  assert.deepEqual(result.observedState, { limit: 60, denominator: 3, limiterEnabled: false });
+});
+
+test('RTSS recovery after restart preserves the shared limiter for saved per-game caps', async () => {
+  const fixture = makeController({ includeGameProfile: false });
+  fixture.profiles.set('', { limit: 144, denominator: 1 });
+  fixture.profiles.set('game.exe', { limit: 60, denominator: 1 });
+  const result = await fixture.controller.restoreFrameLimitState({
+    expectedState: { limit: 144, denominator: 1, limiterEnabled: true },
+    state: { limit: 60, denominator: 3, limiterEnabled: false },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.flagRestorationDeferred, true);
+  assert.deepEqual(fixture.profiles.get(''), { limit: 60, denominator: 3 });
+  assert.equal(fixture.flags & 4, 0, 'the RTSS shared limiter remains enabled for saved game profiles');
+  assert.deepEqual(result.observedState, { limit: 60, denominator: 3, limiterEnabled: true });
+});
+
+test('RTSS recovery scans saved game caps before global writes that profile switches could discard', async () => {
+  const fixture = makeController({ includeGameProfile: false, discardUnsavedOnLoad: true });
+  fixture.profiles.set('', { limit: 144, denominator: 1 });
+  fixture.profiles.set('game.exe', { limit: 60, denominator: 1 });
+  const result = await fixture.controller.restoreFrameLimitState({
+    expectedState: { limit: 144, denominator: 1, limiterEnabled: true },
+    state: { limit: 60, denominator: 3, limiterEnabled: false },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.flagRestorationDeferred, true);
+  assert.deepEqual(fixture.profiles.get(''), { limit: 60, denominator: 3 });
+  assert.equal(fixture.flags & 4, 0, 'the RTSS shared limiter remains enabled for saved game profiles');
+  assert.deepEqual(result.observedState, { limit: 60, denominator: 3, limiterEnabled: true });
+});
+
+test('RTSS limiter flag transitions set only the requested bit and preserve other flags', async () => {
+  const fixture = makeController({ includeGameProfile: false, initialFlags: 0x24 });
+  fixture.profiles.set('', { limit: 60, denominator: 2 });
+
+  const applied = await fixture.controller.applyFrameLimit({ enabled: true, value: 120 });
+  assert.equal(applied.ok, true);
+  assert.equal(fixture.flags & 4, 0);
+  assert.equal(fixture.flags & 0x20, 0x20);
+
+  const released = await fixture.controller.applyFrameLimit({ enabled: false });
+  assert.equal(released.ok, true);
+  assert.equal(fixture.flags & 4, 4);
+  assert.equal(fixture.flags & 0x20, 0x20);
+});
+
+test('RTSS durable recovery refuses a mismatched external state without writes', async () => {
+  const fixture = makeController({ includeGameProfile: false });
+  fixture.profiles.set('', { limit: 144, denominator: 1 });
+  const result = await fixture.controller.restoreFrameLimitState({
+    expectedState: { limit: 60, denominator: 1, limiterEnabled: false },
+    state: { limit: 30, denominator: 1, limiterEnabled: false },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.conflict, true);
+  assert.equal(result.errorCode, 'external-change');
+  assert.deepEqual(result.observedState, { limit: 144, denominator: 1, limiterEnabled: true });
+  assert.equal(fixture.profileWriteCalls, 0);
+  assert.deepEqual(fixture.profiles.get(''), { limit: 144, denominator: 1 });
+});
+
+test('RTSS recovery preserves shared limiter enable while a game profile remains active', async () => {
+  const fixture = makeController({ includeGameProfile: false });
+  await fixture.controller.applyFrameLimit({ enabled: true, value: 120, executablePath: 'C:\\Games\\game.exe' });
+  const result = await fixture.controller.restoreFrameLimitState({
+    expectedState: { limit: 0, denominator: 1, limiterEnabled: true },
+    state: { limit: 60, denominator: 2, limiterEnabled: false },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.flagRestorationDeferred, true);
+  assert.deepEqual(fixture.profiles.get(''), { limit: 60, denominator: 2 });
+  assert.equal(fixture.flags & 4, 0);
+});
+
+test('RTSS recovery can retain the enabled Graphics cap for a later owned cleanup', async () => {
+  const fixture = makeController({ includeGameProfile: false });
+  fixture.profiles.set('', { limit: 40, denominator: 3 });
+  const base = await fixture.controller.applyFrameLimit({ enabled: true, value: 90 });
+  assert.equal(base.ok, true);
+  await fixture.controller.applyFrameLimit({ enabled: true, value: 144 });
+
+  const retained = await fixture.controller.restoreFrameLimitState({
+    expectedState: { limit: 144, denominator: 1, limiterEnabled: true },
+    state: { limit: 90, denominator: 1, limiterEnabled: true },
+    retainOwnership: true,
+  });
+  assert.equal(retained.ok, true);
+  assert.equal(retained.ownershipRetained, true);
+  assert.deepEqual(fixture.profiles.get(''), { limit: 90, denominator: 1 });
+
+  const released = await fixture.controller.applyFrameLimit({ enabled: false });
+  assert.equal(released.ok, true);
+  assert.deepEqual(fixture.profiles.get(''), { limit: 40, denominator: 3 });
+  assert.equal(fixture.flags & 4, 0);
+});
+
+test('RTSS global ownership reports exact current state and pre-cap underlay', async () => {
+  const fixture = makeController({ includeGameProfile: false, initialFlags: 4 });
+  fixture.profiles.set('', { limit: 60, denominator: 3 });
+  await fixture.controller.applyFrameLimit({ enabled: true, value: 120 });
+  const owned = await fixture.controller.getFrameLimitOwnership();
+  assert.equal(owned.ok, true);
+  assert.deepEqual(owned.state, { limit: 120, denominator: 1, limiterEnabled: true });
+  assert.deepEqual(owned.underlay, { limit: 60, denominator: 3, limiterEnabled: false });
+
+  const fresh = makeController({ includeGameProfile: false });
+  fresh.profiles.set('', { limit: 75, denominator: 2 });
+  const unowned = await fresh.controller.getFrameLimitOwnership();
+  assert.equal(unowned.ok, true);
+  assert.deepEqual(unowned.state, { limit: 75, denominator: 2, limiterEnabled: true });
+  assert.deepEqual(unowned.underlay, unowned.state);
+  assert.deepEqual(unowned.disableState, { limit: 0, denominator: 1, limiterEnabled: true });
+  const disabled = await fresh.controller.applyFrameLimit({
+    enabled: false,
+    value: 75,
+    expectedState: unowned.state,
+  });
+  assert.equal(disabled.ok, true);
+  assert.deepEqual(disabled.observedState, unowned.disableState);
 });

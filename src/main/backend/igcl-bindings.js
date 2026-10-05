@@ -169,6 +169,9 @@ export const CTL_3D_FRAME_GENERATION_OVERRIDE = {
   X4: 3,
 };
 
+// ctl_3d_feature_misc_flag_t from the pinned IGCL header. LIVE_CHANGE is bit 4.
+export const CTL_3D_FEATURE_MISC_FLAG_LIVE_CHANGE = 0x10;
+
 // M10b (the Graphics "Display" view) - the display-module enums (igcl_api.h
 // v290; the numeric values pinned by the M10b checkpoint-1 live probe,
 // pipeline/live-display-feature.md - the display-output / wire-format /
@@ -1494,6 +1497,8 @@ export function decode3dFeatureDetails(buf, index) {
   const featureType = koffi.decode(buf, off + koffi.offsetof('ctl_3d_feature_details_t', 'FeatureType'), 'int32') | 0;
   const valueType = koffi.decode(buf, off + koffi.offsetof('ctl_3d_feature_details_t', 'ValueType'), 'int32') | 0;
   const perAppSupport = koffi.decode(buf, off + koffi.offsetof('ctl_3d_feature_details_t', 'PerAppSupport'), 'bool');
+  const miscSupport = koffi.decode(buf, off + koffi.offsetof('ctl_3d_feature_details_t', 'FeatureMiscSupport'), 'int16') | 0;
+  const liveChange = (miscSupport & CTL_3D_FEATURE_MISC_FLAG_LIVE_CHANGE) !== 0;
   const u = off + valueOff;
   if (valueType === CTL_PROPERTY_VALUE_TYPE.ENUM) {
     return {
@@ -1510,6 +1515,8 @@ export function decode3dFeatureDetails(buf, index) {
       enumDefaultType: koffi.decode(buf, u + 8, 'uint32') | 0,
       intRange: null,
       perAppSupport,
+      miscSupport,
+      liveChange,
     };
   }
   if (valueType === CTL_PROPERTY_VALUE_TYPE.INT32 || valueType === CTL_PROPERTY_VALUE_TYPE.UINT32) {
@@ -1525,9 +1532,11 @@ export function decode3dFeatureDetails(buf, index) {
         default: koffi.decode(buf, u + 16, 'int32') | 0,
       },
       perAppSupport,
+      miscSupport,
+      liveChange,
     };
   }
-  return { featureType, valueType, enumSupportedTypes: null, enumDefaultType: null, intRange: null, perAppSupport };
+  return { featureType, valueType, enumSupportedTypes: null, enumDefaultType: null, intRange: null, perAppSupport, miscSupport, liveChange };
 }
 
 /**

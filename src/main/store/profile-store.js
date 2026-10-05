@@ -17,6 +17,60 @@ import { migrateStoreData, SCHEMA_VERSION } from './migrations.js';
 // never a silent reset).
 const THEMES = ['dark', 'midnight', 'light', 'red', 'yellow'];
 
+const ARC_SLEEP_DEFAULTS = Object.freeze({
+  idleEnabled: false,
+  adaptiveEnabled: false,
+  idleAfterSeconds: 300,
+  idleFps: 30,
+  adaptiveMinFps: 60,
+  adaptiveMaxFps: 144,
+  adaptiveTargetLoadPct: 85,
+});
+
+function boundedInteger(value, fallback, min, max) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(min, Math.min(max, Math.round(number))) : fallback;
+}
+
+function normalizeArcSleepSettings(value) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const min = boundedInteger(input.adaptiveMinFps, ARC_SLEEP_DEFAULTS.adaptiveMinFps, 30, 1000);
+  const max = boundedInteger(input.adaptiveMaxFps, ARC_SLEEP_DEFAULTS.adaptiveMaxFps, 30, 1000);
+  return {
+    idleEnabled: input.idleEnabled === true,
+    adaptiveEnabled: input.adaptiveEnabled === true,
+    idleAfterSeconds: boundedInteger(input.idleAfterSeconds, ARC_SLEEP_DEFAULTS.idleAfterSeconds, 60, 3600),
+    idleFps: boundedInteger(input.idleFps, ARC_SLEEP_DEFAULTS.idleFps, 15, 120),
+    adaptiveMinFps: min >= max ? ARC_SLEEP_DEFAULTS.adaptiveMinFps : min,
+    adaptiveMaxFps: min >= max ? ARC_SLEEP_DEFAULTS.adaptiveMaxFps : max,
+    adaptiveTargetLoadPct: boundedInteger(input.adaptiveTargetLoadPct, ARC_SLEEP_DEFAULTS.adaptiveTargetLoadPct, 50, 99),
+  };
+}
+
+function normalizeArcSleepFrameLimitBase(value) {
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return { enabled: value.enabled === true, value: boundedInteger(value.value, 60, 1, 1000) };
+}
+
+function normalizeArcSleepJournal(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized === undefined ? null : JSON.parse(serialized);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeArcSleepPendingExpected(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !Number.isInteger(value.limit) || value.limit < 0 || value.limit > 0xFFFFFFFF
+    || !Number.isInteger(value.denominator) || value.denominator < 0 || value.denominator > 0xFFFFFFFF
+    || typeof value.limiterEnabled !== 'boolean') return null;
+  return { limit: value.limit, denominator: value.denominator, limiterEnabled: value.limiterEnabled };
+}
+
 // M5: the canonical overlay corner ids - the persisted-truth owner of the
 // list (the THEMES pattern). The renderer mirror lives in
 // src/renderer/pure/overlay.ts and the envelope validation in
@@ -305,6 +359,7 @@ export class ProfileStore {
     // (and refreshed by every subsequent one); saveSettings updates it in
     // the same write, so the sync view never lags the persisted truth.
     this._settingsCache = null;
+    this._settingsWriteQueue = Promise.resolve();
   }
 
   _ensureDir() {
@@ -517,6 +572,11 @@ export class ProfileStore {
         // recording/replay indicator without changing any capture behavior.
         overlayRecordingPill: OVERLAY_RECORDING_PILL_DEFAULT,
         recordingToastsEnabled: RECORDING_TOASTS_DEFAULT,
+        arcSleep: { ...ARC_SLEEP_DEFAULTS },
+        arcSleepFrameLimitBase: null,
+        arcSleepJournal: null,
+        arcSleepPendingBaseDisable: false,
+        arcSleepPendingBaseDisableExpected: null,
         // M23: the ADVANCED overlay - absent -> off, the letter 'P' (the
         // stock Adrenaline shortcut), anchored right (the same absent-field
         // mechanism, NO schema bump; NO scale key - the panel is a fixed
@@ -606,6 +666,13 @@ export class ProfileStore {
       // Recording/Instant Replay desktop toasts are independently opt-in;
       // absent or garbage values keep the stock default off.
       recordingToastsEnabled: data.recordingToastsEnabled === true,
+      arcSleep: normalizeArcSleepSettings(data.arcSleep),
+      arcSleepFrameLimitBase: normalizeArcSleepFrameLimitBase(data.arcSleepFrameLimitBase),
+      arcSleepJournal: normalizeArcSleepJournal(data.arcSleepJournal),
+      arcSleepPendingBaseDisable: data.arcSleepPendingBaseDisable === true,
+      arcSleepPendingBaseDisableExpected: data.arcSleepPendingBaseDisable === true
+        ? normalizeArcSleepPendingExpected(data.arcSleepPendingBaseDisableExpected)
+        : null,
       // M23: the ADVANCED overlay (the M5 overlaySettings pattern, NO
       // schema bump): enabled off when absent, the letter 'P', anchored
       // 'right'; a garbage value degrades to the default - never a crash.
@@ -645,7 +712,41 @@ export class ProfileStore {
   /**
    * @param {{ waiverAccepted?: boolean, ocOnBoot?: boolean, activeProfileId?: string|null, activeProfileIds?: Record<string,string>, ocMode?: 'stock'|'advanced', ocModes?: Record<string,'stock'|'advanced'>, advancedModeAccepted?: boolean, startWithWindows?: boolean, rtssOnBoot?: boolean, startMinimized?: boolean, closeToTray?: boolean, monitorLogToFile?: boolean, monitorLogMetrics?: string[], deviceId?: number|null, theme?: 'dark'|'midnight'|'light', memorySavingMode?: boolean, overlayEnabled?: boolean, overlayRenderer?: 'rtss'|'capframex', overlayHotkeyLetter?: string, overlayPosition?: string, overlayScale?: number, overlayColor?: string, overlayTemperatureUnit?: 'C'|'F', overlayStats?: string[], overlayDeviceKeys?: string[]|null, overlayBgEnabled?: boolean, overlayBgColor?: string, overlayBgOpacity?: number, overlayChipNames?: boolean, overlayPollMs?: number, overlayTheme?: 'classic'|'arc', overlayRecordingPill?: boolean, recordingToastsEnabled?: boolean, advancedOverlayEnabled?: boolean, advancedOverlayHotkeyLetter?: string, advancedOverlayPosition?: 'left'|'right' }} settings
    */
-  async saveSettings(settings) {
+  _enqueueSettingsWrite(write) {
+    const result = this._settingsWriteQueue.then(write);
+    this._settingsWriteQueue = result.catch(() => {});
+    return result;
+  }
+
+  _ensureSettingsLoadedForWrite() {
+    if (!this._settingsCache) void this.loadSettings();
+  }
+
+  /** Generic settings writes never own the Arc Sleep-specific state fields. */
+  saveSettings(settings) {
+    return this._enqueueSettingsWrite(() => {
+      this._ensureSettingsLoadedForWrite();
+      return this._saveSettingsNow(settings, null);
+    });
+  }
+
+  /** Persist Arc Sleep-owned fields against the latest settings snapshot. */
+  saveArcSleepState(patch = {}) {
+    return this._enqueueSettingsWrite(() => {
+      this._ensureSettingsLoadedForWrite();
+      return this._saveSettingsNow({ ...this._settingsCache }, patch);
+    });
+  }
+
+  /** Persist a normal settings snapshot together with an explicit Arc Sleep policy update. */
+  saveSettingsWithArcSleep(settings, arcSleepPatch) {
+    return this._enqueueSettingsWrite(() => {
+      this._ensureSettingsLoadedForWrite();
+      return this._saveSettingsNow(settings, { arcSleep: arcSleepPatch });
+    });
+  }
+
+  _saveSettingsNow(settings, arcSleepPatch) {
     const persisted = {
       schemaVersion: SCHEMA_VERSION,
       waiverAccepted: settings.waiverAccepted === true,
@@ -734,6 +835,9 @@ export class ProfileStore {
       advancedOverlayPosition: ADVANCED_OVERLAY_POSITIONS.includes(settings.advancedOverlayPosition)
         ? settings.advancedOverlayPosition
         : 'right',
+      arcSleep: normalizeArcSleepSettings(arcSleepPatch?.arcSleep !== undefined
+        ? { ...this._settingsCache.arcSleep, ...arcSleepPatch.arcSleep }
+        : this._settingsCache.arcSleep),
     };
     // Monitoring log selection is additive. Do not add the field when a
     // legacy caller did not provide it, but preserve an explicit [] and the
@@ -770,6 +874,24 @@ export class ProfileStore {
       ? (OVERLAY_RENDERERS.includes(settings.overlayRenderer) ? settings.overlayRenderer : 'rtss')
       : this._settingsCache?.overlayRenderer;
     if (overlayRenderer !== undefined) persisted.overlayRenderer = overlayRenderer;
+    const arcSleepFrameLimitBase = Object.hasOwn(arcSleepPatch ?? {}, 'arcSleepFrameLimitBase')
+      ? normalizeArcSleepFrameLimitBase(arcSleepPatch.arcSleepFrameLimitBase)
+      : (this._settingsCache.arcSleepFrameLimitBase ?? null);
+    persisted.arcSleepFrameLimitBase = arcSleepFrameLimitBase;
+    const arcSleepJournal = Object.hasOwn(arcSleepPatch ?? {}, 'arcSleepJournal')
+      ? normalizeArcSleepJournal(arcSleepPatch.arcSleepJournal)
+      : (this._settingsCache.arcSleepJournal ?? null);
+    persisted.arcSleepJournal = arcSleepJournal;
+    const arcSleepPendingBaseDisable = Object.hasOwn(arcSleepPatch ?? {}, 'arcSleepPendingBaseDisable')
+      ? arcSleepPatch.arcSleepPendingBaseDisable === true
+      : this._settingsCache.arcSleepPendingBaseDisable === true;
+    persisted.arcSleepPendingBaseDisable = arcSleepPendingBaseDisable;
+    const arcSleepPendingBaseDisableExpected = arcSleepPendingBaseDisable
+      ? (Object.hasOwn(arcSleepPatch ?? {}, 'arcSleepPendingBaseDisableExpected')
+        ? normalizeArcSleepPendingExpected(arcSleepPatch.arcSleepPendingBaseDisableExpected)
+        : normalizeArcSleepPendingExpected(this._settingsCache.arcSleepPendingBaseDisableExpected))
+      : null;
+    persisted.arcSleepPendingBaseDisableExpected = arcSleepPendingBaseDisableExpected;
     this._writeAtomic(this.settingsPath, persisted);
     // M4-D2: keep the sync cache in lockstep with the persisted write - the
     // close handler must see the very toggle it just persisted.
@@ -781,6 +903,11 @@ export class ProfileStore {
       ...(rtssOnBoot !== undefined ? { rtssOnBoot } : {}),
       memorySavingMode,
       ...(overlayRenderer !== undefined ? { overlayRenderer } : {}),
+      arcSleep: persisted.arcSleep,
+      ...(arcSleepFrameLimitBase !== undefined ? { arcSleepFrameLimitBase } : {}),
+      arcSleepJournal,
+      arcSleepPendingBaseDisable,
+      arcSleepPendingBaseDisableExpected,
       schemaVersion: SCHEMA_VERSION,
     });
   }

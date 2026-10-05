@@ -111,6 +111,7 @@ export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\p
 // GPU Engine samples are refreshed by the dedicated PowerShell lane. Do not
 // let a stalled counter query masquerade as a current Task Manager value.
 export const GPU_UTIL_STALE_MS = 8000;
+const ARC_SLEEP_GPU_UTIL_STALE_MS = 5000;
 // The legacy broad system-stat query and the one-shot fallback use a
 // two-sample rate read. The production dedicated lane keeps one continuous
 // provider alive, so it can retain the counter baseline without paying cold
@@ -448,6 +449,26 @@ export function gpuUtilPctOf(rows, luid) {
   return Math.max(...byEngine.values());
 }
 
+/** Confirm that a process is rendering on the selected adapter from a fresh
+ * GPU Engine sample. Unknown or ambiguous counter data never authorizes an
+ * FPS-based cap seed. */
+export function processUsesGpuFor3d(rows, pid, luid) {
+  if (!Array.isArray(rows) || !Number.isSafeInteger(pid) || pid <= 0 || !luid) return false;
+  const usageByLuid = new Map();
+  for (const row of rows) {
+    const match = String(row?.name ?? '').match(/^pid_(\d+)_luid_(0x[0-9a-f]{8})_(0x[0-9a-f]{8})_phys_\d+_eng_\d+_engtype_3d$/i);
+    if (!match || Number(match[1]) !== pid) continue;
+    if (!Number.isFinite(row?.utilPct) || row.utilPct <= 0) continue;
+    const key = `${match[2].toLowerCase()}_${match[3].toLowerCase()}`;
+    usageByLuid.set(key, (usageByLuid.get(key) ?? 0) + Math.min(100, row.utilPct));
+  }
+  const selectedKey = `0x${(luid.high >>> 0).toString(16).padStart(8, '0')}_0x${(luid.low >>> 0).toString(16).padStart(8, '0')}`;
+  const selectedUsage = usageByLuid.get(selectedKey) ?? 0;
+  if (selectedUsage < 10) return false;
+  return [...usageByLuid].every(([key, usage]) => key === selectedKey
+    || (selectedUsage - usage >= 5 && selectedUsage >= usage * 2));
+}
+
 /** Normalize the LUID shapes used by DXGI, koffi, JSON, and persisted GPU
  * inventory rows into the numeric pair consumed by the perf-counter matcher.
  * A missing/invalid identity must never fall through to an ordinal adapter. */
@@ -720,7 +741,8 @@ export function createSysStats(deps = {}) {
   // query can take several seconds; sharing its in-flight guard would keep
   // the visible GPU percentage stale while Task Manager is already current.
   let gpuHandle = null;
-  let gpuOwner = undefined;
+  const gpuLaneLeases = new Set();
+  let telemetryGpuLease = null;
   let gpuInflight = false;
   let gpuGeneration = 0;
   // The native D3DKMT sampler must not share the slow fallback's guard. A
@@ -1195,6 +1217,20 @@ export function createSysStats(deps = {}) {
       );
       const rows = parseGpuEngineOutput(stdout);
       const sampledAt = now();
+      // The one-shot reader also supplies Arc Sleep's per-process proof when
+      // the persistent worker is unavailable. Only a valid counter envelope
+      // can replace that snapshot; a failed or malformed query cannot renew it.
+      let envelope;
+      try { envelope = JSON.parse(String(stdout ?? '')); } catch { envelope = null; }
+      const validRows = rows.filter((row) => typeof row.name === 'string'
+        && Number.isFinite(row.utilPct) && row.utilPct >= 0);
+      const validEnvelope = (Array.isArray(envelope?.gpuEng) && envelope.gpuEng.length === 0)
+        || validRows.length > 0;
+      if (generation !== gpuGeneration) return;
+      if (validEnvelope) {
+        latestGpuRows = validRows;
+        latestGpuRowsAt = sampledAt;
+      }
       await applyGpuEngineRows(rows, sampledAt, nativeRecords, generation);
     } catch {
       // The existing freshness gate turns a failed query into null once the
@@ -1349,6 +1385,35 @@ export function createSysStats(deps = {}) {
       return sampleFastForRecord(activeRecord);
     },
 
+    /**
+     * Arc Sleep must never steer its adaptive cap from stale cached values.
+     * GPU utilization is accepted only while the active adapter's dedicated
+     * sample is recent. CPU utilization is not an Arc Sleep input.
+     */
+    async sampleArcSleepSignals() {
+      const sampledAt = activeRecord.gpuUtilSampledAt;
+      const gpuFresh = Number.isFinite(sampledAt) && now() - sampledAt <= ARC_SLEEP_GPU_UTIL_STALE_MS;
+      const cachedGpu = activeRecord.cache?.gpuUtilPct;
+      return {
+        gpuUtilPct: gpuFresh && Number.isFinite(cachedGpu) && cachedGpu >= 0 && cachedGpu <= 100
+          ? cachedGpu
+          : null,
+      };
+    },
+
+    /** Only a recent per-process 3D counter on the selected adapter may seed
+     * Arc Sleep from measured foreground FPS. Native aggregate utilization
+     * has no process identity, so it cannot satisfy this check. */
+    async isArcSleepProcessOnActiveGpu(pid) {
+      const sampledAt = latestGpuRowsAt;
+      if (!Number.isFinite(sampledAt) || now() - sampledAt < 0 || now() - sampledAt > 3000) return false;
+      try {
+        return processUsesGpuFor3d(latestGpuRows, pid, await luidForRecord(activeRecord));
+      } catch {
+        return false;
+      }
+    },
+
     // M150: fast native fields are shared in meaning but merged with the
     // selected physical adapter's slow cache.  This is the per-lane entry
     // point used by overlay and multi-device consumers.
@@ -1426,14 +1491,8 @@ export function createSysStats(deps = {}) {
         void slowTick();
       }, cadenceMs);
       if (enableDedicatedGpuSampler) {
-        gpuOwner = owner;
-        gpuHandle = setIntervalFn(() => {
-          void gpuTick();
-        }, GPU_UTIL_LANE_CADENCE_MS);
-        startGpuEngineWorker();
-        // Seed both lanes immediately; neither await blocks the telemetry
-        // caller, and the independent guards prevent duplicate queries.
-        void gpuTick();
+        telemetryGpuLease = { owner };
+        acquireGpuLane(telemetryGpuLease);
       }
       // An immediate first tick seeds the shared cache (never blocks the
       // caller - the tick runs async; the handle is assigned FIRST so the
@@ -1447,29 +1506,28 @@ export function createSysStats(deps = {}) {
      * @param {number} [owner] optional telemetry startup generation
      */
     stopSlowLane(owner = undefined) {
-      if (owner !== undefined && (slowOwner !== owner || (gpuHandle !== null && gpuOwner !== owner))) return;
+      if (owner !== undefined && (slowOwner !== owner || (telemetryGpuLease && telemetryGpuLease.owner !== owner))) return;
       if (slowHandle !== null) {
         clearIntervalFn(slowHandle);
         slowHandle = null;
       }
-      if (gpuHandle !== null) {
-        clearIntervalFn(gpuHandle);
-        gpuHandle = null;
+      if (telemetryGpuLease && (owner === undefined || telemetryGpuLease.owner === owner)) {
+        releaseGpuLane(telemetryGpuLease);
+        telemetryGpuLease = null;
       }
-      gpuGeneration += 1;
-      // A telemetry restart must establish a fresh native baseline. Do not
-      // expose the previous session's value while the next D3DKMT pair is
-      // warming, and do not let a slow fallback repopulate it after stop.
-      for (const record of targetRecords.values()) {
-        record.cache = { ...record.cache, gpuUtilPct: null };
-        record.gpuUtilSampledAt = null;
-        record.gpuUtilSource = null;
-      }
-      laneCache = activeRecord.cache;
-      stopGpuEngineWorker();
-      try { d3dkmtGpuUtil?.reset?.(); } catch { /* best effort */ }
       slowOwner = undefined;
-      gpuOwner = undefined;
+    },
+
+    /** Arc Sleep owns an independent lease on the shared selected-GPU lane. */
+    acquireArcSleepGpuSampler() {
+      const lease = {};
+      acquireGpuLane(lease);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        releaseGpuLane(lease);
+      };
     },
   });
 
@@ -1490,6 +1548,33 @@ export function createSysStats(deps = {}) {
     } finally {
       slowInflight = false;
     }
+  }
+
+  function acquireGpuLane(lease) {
+    if (!enableDedicatedGpuSampler || gpuLaneLeases.has(lease)) return;
+    gpuLaneLeases.add(lease);
+    if (gpuHandle !== null) return;
+    gpuHandle = setIntervalFn(() => { void gpuTick(); }, GPU_UTIL_LANE_CADENCE_MS);
+    startGpuEngineWorker();
+    void gpuTick();
+  }
+
+  function releaseGpuLane(lease) {
+    gpuLaneLeases.delete(lease);
+    if (gpuLaneLeases.size > 0 || gpuHandle === null) return;
+    clearIntervalFn(gpuHandle);
+    gpuHandle = null;
+    gpuGeneration += 1;
+    latestGpuRows = null;
+    latestGpuRowsAt = null;
+    for (const record of targetRecords.values()) {
+      record.cache = { ...record.cache, gpuUtilPct: null };
+      record.gpuUtilSampledAt = null;
+      record.gpuUtilSource = null;
+    }
+    laneCache = activeRecord.cache;
+    stopGpuEngineWorker();
+    try { d3dkmtGpuUtil?.reset?.(); } catch { /* best effort */ }
   }
 
   // Dedicated GPU Engine timer counterpart to slowTick. It has an independent
@@ -1565,6 +1650,10 @@ export function createMockSysStats(overrides = {}) {
     // query). The mock NEVER returns a null first sample (the
     // determinism pins stay - no GetSystemTimes baseline tick here).
     async sampleFast() { return sampleOf(); },
+    async sampleArcSleepSignals() {
+      return { gpuUtilPct: base.gpuUtilPct };
+    },
+    async isArcSleepProcessOnActiveGpu() { return false; },
     async sampleForTarget() { return sampleOf(); },
     async sampleGpuUtilForTarget() { return { gpuUtilPct: base.gpuUtilPct }; },
     registerTarget() {},

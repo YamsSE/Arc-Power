@@ -112,7 +112,7 @@ test('failed disable restores the previously enabled RTSS limiter', async () => 
       return true;
     },
     UpdateProfiles() {},
-    SetFlags(_mask, value) { if (value !== 0) flags = value; return flags; },
+    SetFlags(andMask, xorMask) { flags = ((flags & andMask) ^ xorMask) >>> 0; return flags; },
     EnumProfiles(buffer, size) {
       const text = `${[...profiles.keys()].join(',')}\0`;
       const bytes = Buffer.byteLength(text);
@@ -344,7 +344,7 @@ test('partial native failure restores a pre-existing RTSS profile instead of del
       return true;
     },
     UpdateProfiles() {},
-    SetFlags(_mask, value) { if (value !== 0) flags = value; return flags; },
+    SetFlags(andMask, xorMask) { flags = ((flags & andMask) ^ xorMask) >>> 0; return flags; },
     EnumProfiles(buffer, size) {
       const text = `${[...profiles.keys()].join(',')}\0`;
       const bytes = Buffer.byteLength(text);

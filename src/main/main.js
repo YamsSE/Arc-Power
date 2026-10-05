@@ -65,6 +65,7 @@ import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js'
 import { formatDxgiLuid, recordingRuntimeEncoderIdForTarget, resolveRecordingRuntimeCandidates } from './recording-pure.js';
 import { normalizeDxgiLuid } from './recording-pure.js';
 import { listRecordingCaptureTargets, mergeRecordingDisplayMetadata, recordingCaptureSelection } from './recording-capture.js';
+import { createRecordingCaptureTargetsReader, recordingCaptureSelectionForStart } from './recording-target-inventory.js';
 import { trimRecordingClipToDuration } from './recording-clip.js';
 import { captureRecordingScreenshot } from './recording-screenshot.js';
 import { createRecordingHotkeys, createRecordingActionHandler } from './recording-hotkeys.js';
@@ -141,6 +142,7 @@ import { createIgclWaiverBridge } from './backend/igcl-bindings.js';
 // M17d (Run E): the --profile-boot stage-timing harness (env-gated; a no-op
 // in product runs - see profile-boot.js).
 import { markProfileBoot, bootProfilingEnabled, profileElapsedMs } from './profile-boot.js';
+import { restoreWindowState, serializeWindowState } from './window-state.js';
 
 function copyFileToWindowsClipboard(filePath) {
   if (process.platform !== 'win32' || typeof filePath !== 'string' || !filePath) return false;
@@ -466,10 +468,13 @@ function applyWindowIdentity(win) {
   } catch { /* best effort on platforms without taskbar details */ }
 }
 
-function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWindowTheme) {
+function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWindowTheme, savedWindowState = null, persistWindowState = null) {
+  const restoredWindowState = savedWindowState ?? {
+    normalBounds: { width: 1280, height: 820 }, maximized: false,
+  };
+  const normalBounds = restoredWindowState.normalBounds;
   const win = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    ...normalBounds,
     minWidth: 980,
     minHeight: 640,
     title: 'Arc Power',
@@ -534,6 +539,32 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
   };
   win.on('maximize', sendMaximized);
   win.on('unmaximize', sendMaximized);
+  let windowStateTimer = null;
+  const flushWindowState = () => {
+    if (windowStateTimer) clearTimeout(windowStateTimer);
+    windowStateTimer = null;
+    if (!persistWindowState || win.isDestroyed()) return;
+    try {
+      const state = serializeWindowState(win.getNormalBounds(), win.isMaximized());
+      if (state) persistWindowState(state);
+    } catch { /* window geometry is best-effort persisted */ }
+  };
+  const scheduleWindowStateSave = () => {
+    if (!persistWindowState || win.isDestroyed()) return;
+    if (windowStateTimer) clearTimeout(windowStateTimer);
+    windowStateTimer = setTimeout(flushWindowState, 300);
+  };
+  win.on('move', scheduleWindowStateSave);
+  win.on('resize', scheduleWindowStateSave);
+  win.on('maximize', scheduleWindowStateSave);
+  win.on('unmaximize', scheduleWindowStateSave);
+  // Closing to tray prevents destruction, so flush in the close event too.
+  // For an ordinary close this also protects against a fast exit before the
+  // debounced move/resize write has fired.
+  win.on('close', flushWindowState);
+  if (restoredWindowState.maximized) {
+    try { win.maximize(); } catch { /* retain normal bounds if maximize fails */ }
+  }
   // M4-D: push the INITIAL state once the renderer is up - the max
   // button must reflect a window that starts (or was restored to) the
   // maximized state even before any later maximize/unmaximize event.
@@ -1737,19 +1768,11 @@ async function main() {
   };
   const obsStream = createObsStreamService({ passwordProvider: async () => streamCredentials.get(), passwordSink: streamCredentials.set });
   const driverMonitor = createDriverMonitor({ dir: store.dir });
-  let recordingCaptureTargetsCache = null;
-  let recordingCaptureTargetsPromise = null;
-  const readRecordingCaptureTargets = (refresh = false) => {
-    if (!refresh && recordingCaptureTargetsCache) return Promise.resolve(recordingCaptureTargetsCache);
-    if (recordingCaptureTargetsPromise) return recordingCaptureTargetsPromise;
-    recordingCaptureTargetsPromise = listRecordingCaptureTargets()
-      .then((nativeTargets) => {
-        recordingCaptureTargetsCache = mergeRecordingDisplayMetadata(nativeTargets, screen.getAllDisplays());
-        return recordingCaptureTargetsCache;
-      })
-      .finally(() => { recordingCaptureTargetsPromise = null; });
-    return recordingCaptureTargetsPromise;
-  };
+  const recordingCaptureTargetsReader = createRecordingCaptureTargetsReader({
+    listTargets: listRecordingCaptureTargets,
+    mergeTargets: (nativeTargets) => mergeRecordingDisplayMetadata(nativeTargets, screen.getAllDisplays()),
+  });
+  const readRecordingCaptureTargets = recordingCaptureTargetsReader.read;
   // Screenshot capture can use Electron's source ids directly. Do not run the
   // PowerShell display/window enumeration first: that query is useful for the
   // recording engine's native HMONITOR geometry, but it adds several seconds
@@ -1911,18 +1934,19 @@ async function main() {
       // PowerShell inventory. The inventory is warmed at boot and refreshed
       // by the UI; only a selected secondary display/window needs to wait for
       // it when no cached native geometry exists yet.
-      let targets = recordingCaptureTargetsCache ?? { displays: [], windows: [] };
-      const needsNativeGeometry = target?.type === 'window'
-        || (target?.type === 'display' && target.displayId && target.displayId !== 'primary');
-      if (needsNativeGeometry && !recordingCaptureTargetsCache) {
+      let targets = recordingCaptureTargetsReader.getCache() ?? { displays: [], windows: [] };
+      if (target?.type === 'window') {
+        // A cached inventory can still contain a destroyed HWND, including a
+        // handle Windows has already reused. Always refresh the selected
+        // window immediately before giving its HWND to the encoder.
+        try {
+          return await recordingCaptureSelectionForStart(target, readRecordingCaptureTargets, screen.getPrimaryDisplay());
+        } catch {
+          targets = { ...targets, windows: [] };
+        }
+      } else if (target?.type === 'display' && target.displayId && target.displayId !== 'primary'
+        && recordingCaptureTargetsReader.getCache() === null) {
         try { targets = await readRecordingCaptureTargets(); } catch { /* use the primary-display fallback below */ }
-      }
-      // Game windows can appear after the initial inventory warm-up (and
-      // fullscreen titles often change when the renderer switches modes).
-      // Refresh once when a selected window is missing instead of silently
-      // falling back to the primary display.
-      if (target?.type === 'window' && !targets.windows.some((item) => item.handle === target.windowHandle)) {
-        try { targets = await readRecordingCaptureTargets(true); } catch { /* preserve the honest display fallback */ }
       }
       return recordingCaptureSelection(settings?.captureTarget, targets, screen.getPrimaryDisplay());
     },
@@ -2912,7 +2936,32 @@ async function main() {
   markProfileBoot('boot-apply-gate');
 
   const holdMainWindowForSplash = !!startupSplash;
-  const win = createWindow(windowBackground, holdMainWindowForSplash ? false : !startMinimizedAtBoot);
+  const windowStatePath = path.join(store.dir, 'window-state.json');
+  let restoredWindowState = null;
+  const shouldPersistWindowState = !mock && !uiVerify && !profileBoot;
+  if (shouldPersistWindowState) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(windowStatePath, 'utf8'));
+      restoredWindowState = restoreWindowState(saved, screen.getAllDisplays());
+    } catch { /* missing or malformed state uses the established default size */ }
+  }
+  const saveWindowState = shouldPersistWindowState ? (state) => {
+    const temporaryPath = `${windowStatePath}.${process.pid}.tmp`;
+    try {
+      fs.mkdirSync(store.dir, { recursive: true });
+      fs.writeFileSync(temporaryPath, JSON.stringify(state), 'utf8');
+      fs.renameSync(temporaryPath, windowStatePath);
+    } catch {
+      try { fs.rmSync(temporaryPath, { force: true }); } catch { /* best effort cleanup */ }
+    }
+  } : null;
+  const win = createWindow(
+    windowBackground,
+    holdMainWindowForSplash ? false : !startMinimizedAtBoot,
+    bootWindowTheme,
+    restoredWindowState,
+    saveWindowState,
+  );
   stealthVerifyWindow(win);
   windowForInstance = win;
   // A renderer reload, navigation, crash, or destruction can strand the

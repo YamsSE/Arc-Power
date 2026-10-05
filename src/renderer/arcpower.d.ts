@@ -7,6 +7,7 @@ import type {
   ApplyResponse,
   AdvancedOverlaySettings,
   AdvancedOverlayState,
+  ArcSleepSnapshot,
   Capabilities,
   DeviceInfo,
   DeviceState,
@@ -129,6 +130,8 @@ export interface ArcPowerApi {
    *  NEVER called with a null deviceId - the no-Intel page guard renders
    *  'No GPU available.' first. */
   graphicsGet(deviceId: number): Promise<GraphicsState>;
+  /** Fast Arc Sleep Base FPS Cap read; bypasses serialized writes and bounds RTSS waiting. */
+  arcSleepBaseCapGet(deviceId: number): Promise<GraphicsState>;
   /** M8: apply graphics settings - the DEDICATED apply path (NO OC waiver,
    *  NO OC-mode gate). Returns the { ok, perControl, graphicsState } envelope
    *  with the FRESH read-back for the per-control refresh. */
@@ -153,7 +156,7 @@ export interface ArcPowerApi {
   /** 1.0.1 no-Intel round: telemetryStart(null) starts the no-device mode
    *  (a sentinel-keyed timer pushing sys-stats-ONLY samples). A non-negative
    *  integer starts the per-device telemetry. */
-  telemetryStart(deviceId: number | null): Promise<void>;
+  telemetryStart(deviceId: number | null, options?: { completesHandoff?: boolean }): Promise<void>;
   telemetryLatest(deviceId: number): Promise<TelemetrySample | null>;
   /** Identity-bound secondary-adapter lanes. The owner keeps dashboard and
    * Basic Overlay requests independent while the main process shares work. */
@@ -162,7 +165,7 @@ export interface ArcPowerApi {
   overlayResize(deviceCount: number): Promise<void>;
   /** 1.0.1 no-Intel round: telemetryStop(null) is the symmetric stop for
    *  the no-device mode. */
-  telemetryStop(deviceId: number | null): Promise<void>;
+  telemetryStop(deviceId: number | null, options?: { expectReplacement?: boolean }): Promise<void>;
   stabilityRunStart(payload: { deviceKey: string; cadenceMs?: number; durationSec?: number }): Promise<StabilityRunStatus>;
   stabilityRunStatus(runId?: string): Promise<StabilityRunStatus | null>;
   stabilityRunCancel(runId?: string): Promise<StabilityReport | StabilityRunStatus | null>;
@@ -274,6 +277,8 @@ export interface ArcPowerApi {
   profilesDelete(id: string): Promise<ProfilesEnvelope>;
   profilesRename(id: string, name: string): Promise<ProfilesEnvelope>;
   profilesSettingsSave(patch: Partial<ProfileSettingsState>): Promise<ProfileSettingsState>;
+  /** Read the current Arc Sleep limiter and policy status. */
+  arcSleepStateGet(): Promise<ArcSleepSnapshot | null>;
   profilesExport(): Promise<Record<string, unknown>>;
   profilesImport(payload: Record<string, unknown>): Promise<ProfilesEnvelope & { imported: number }>;
   driverMonitorStatus(): Promise<{ schemaVersion: number; observations: Record<string, unknown> }>;
