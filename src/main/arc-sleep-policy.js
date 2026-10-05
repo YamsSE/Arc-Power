@@ -48,7 +48,9 @@ export function createArcSleepPolicyState(settings = DEFAULTS) {
   return {
     adaptiveCapFps: normalized.adaptiveMaxFps,
     aboveTargetSamples: 0,
+    moderateLoadSamples: 0,
     belowTargetSamples: 0,
+    fineRecoverySamples: 0,
     loadUnavailableSinceMs: null,
     observedFpsSamples: [],
     observedProcessId: null,
@@ -99,6 +101,12 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
   let belowTargetSamples = Number.isInteger(current.belowTargetSamples) && current.belowTargetSamples >= 0
     ? current.belowTargetSamples
     : 0;
+  let moderateLoadSamples = Number.isInteger(current.moderateLoadSamples) && current.moderateLoadSamples >= 0
+    ? current.moderateLoadSamples
+    : 0;
+  let fineRecoverySamples = Number.isInteger(current.fineRecoverySamples) && current.fineRecoverySamples >= 0
+    ? current.fineRecoverySamples
+    : 0;
   let loadUnavailableSinceMs = validClock(current.loadUnavailableSinceMs);
   let observedFpsAdjustmentApplied = false;
   let observedFpsSamples = Array.isArray(current.observedFpsSamples)
@@ -110,10 +118,30 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
   let observedFpsSeenInWindow = current.observedFpsSeenInWindow === true;
   const highLoadStep = Math.min(30, Math.max(5, Math.round((config.adaptiveMaxFps - config.adaptiveMinFps) * 0.1)));
   const fastRecoveryThresholdPct = config.adaptiveTargetLoadPct - 15;
+  const recoveryBandThresholdPct = config.adaptiveTargetLoadPct - 8;
+  const recoveryHoldThresholdPct = config.adaptiveTargetLoadPct - 2;
+  const holdThresholdPct = Math.min(config.adaptiveTargetLoadPct + 2, 99);
+  const severeThresholdPct = Math.min(config.adaptiveTargetLoadPct + 8, 100);
 
   if (loadPercent !== null) {
     loadUnavailableSinceMs = null;
-    if (loadPercent > config.adaptiveTargetLoadPct) {
+    if (!idleActive && loadPercent > holdThresholdPct && loadPercent < severeThresholdPct) {
+      moderateLoadSamples += 1;
+      aboveTargetSamples = 0;
+      belowTargetSamples = 0;
+      fineRecoverySamples = 0;
+      observedFpsSamples = [];
+      observedProcessId = null;
+      observedFpsSeeded = false;
+      seededProcessId = null;
+      observedFpsSeenInWindow = false;
+      if (moderateLoadSamples >= 4) {
+        adaptiveCapFps = Math.max(config.adaptiveMinFps, adaptiveCapFps - 2);
+        moderateLoadSamples = 0;
+      }
+    } else if ((idleActive && loadPercent > config.adaptiveTargetLoadPct) || loadPercent >= severeThresholdPct) {
+      moderateLoadSamples = 0;
+      fineRecoverySamples = 0;
       aboveTargetSamples += 1;
       belowTargetSamples = 0;
       const processId = validProcessId(sample?.observedProcessId);
@@ -164,9 +192,26 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
         observedProcessId = null;
         observedFpsSeenInWindow = false;
       }
-    } else if (loadPercent < config.adaptiveTargetLoadPct - 5) {
-      belowTargetSamples += 1;
+    } else if (!idleActive && loadPercent > recoveryBandThresholdPct && loadPercent < recoveryHoldThresholdPct) {
+      moderateLoadSamples = 0;
       aboveTargetSamples = 0;
+      belowTargetSamples = 0;
+      fineRecoverySamples += 1;
+      observedFpsSamples = [];
+      observedProcessId = null;
+      observedFpsSeeded = false;
+      seededProcessId = null;
+      observedFpsSeenInWindow = false;
+      if (fineRecoverySamples >= 4) {
+        adaptiveCapFps = Math.min(config.adaptiveMaxFps, adaptiveCapFps + 2);
+        fineRecoverySamples = 0;
+      }
+    } else if (loadPercent <= recoveryBandThresholdPct
+      || (idleActive && loadPercent < config.adaptiveTargetLoadPct - 5)) {
+      moderateLoadSamples = 0;
+      fineRecoverySamples = 0;
+      aboveTargetSamples = 0;
+      belowTargetSamples += 1;
       observedFpsSamples = [];
       observedProcessId = null;
       observedFpsSeeded = false;
@@ -175,13 +220,15 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
       // When GPU load is far below target, a five-sample debounce makes a
       // freshly seeded low cap take minutes to recover. Keep each correction
       // small, but make one every sample while there is at least 15 points of
-      // headroom. Near the target, retain the five-sample noise filter.
+      // headroom. The adjacent low-load band retains a five-sample filter.
       const requiredLowSamples = loadPercent <= fastRecoveryThresholdPct ? 1 : 5;
       if (belowTargetSamples >= requiredLowSamples) {
         adaptiveCapFps = Math.min(config.adaptiveMaxFps, adaptiveCapFps + 3);
         belowTargetSamples = 0;
       }
     } else {
+      moderateLoadSamples = 0;
+      fineRecoverySamples = 0;
       aboveTargetSamples = 0;
       belowTargetSamples = 0;
       observedFpsSamples = [];
@@ -191,6 +238,8 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
       observedFpsSeenInWindow = false;
     }
   } else {
+    moderateLoadSamples = 0;
+    fineRecoverySamples = 0;
     aboveTargetSamples = 0;
     belowTargetSamples = 0;
     observedFpsSamples = [];
@@ -213,7 +262,7 @@ export function stepArcSleepPolicy(state, settings, sample = {}) {
   }
 
   const targetFps = idleActive ? config.idleFps : adaptiveTargetFps;
-  const nextState = { adaptiveCapFps, aboveTargetSamples, belowTargetSamples, loadUnavailableSinceMs, observedFpsSamples, observedProcessId, observedFpsSeeded, seededProcessId, observedFpsSeenInWindow };
+  const nextState = { adaptiveCapFps, aboveTargetSamples, moderateLoadSamples, belowTargetSamples, fineRecoverySamples, loadUnavailableSinceMs, observedFpsSamples, observedProcessId, observedFpsSeeded, seededProcessId, observedFpsSeenInWindow };
 
   return {
     state: nextState,

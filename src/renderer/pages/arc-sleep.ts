@@ -76,7 +76,7 @@ export const arcSleepPage: Page = {
     baseCapPanel = buildBaseCapPanel(selectedDevice(selectedState), currentDeviceSignature);
     const panels = el('div', { class: 'arc-sleep-panels' }, [
       panel('Idle Cap', 'Save power during input inactivity.', idle, [field('Inactive for', delay, 'sec'), field('Cap at', idleFps, 'FPS')], 'Uses Windows keyboard and mouse input inactivity across your session. It does not detect character or camera movement. Input resumes your normal cap. Idle Cap takes priority over Load Adaptive.'),
-      panel('Load Adaptive', 'Adjust the frame cap to your GPU workload.', adaptive, [field('Minimum', min, 'FPS'), field('Maximum', max, 'FPS'), field('Target GPU load', target, '%')], 'Uses fresh utilization from the selected GPU only. The cap stays within this range while seeking your target load. If GPU telemetry is unavailable for five seconds, the adaptive cap is released.'),
+      panel('Load Adaptive', 'Adjust the frame cap to your GPU workload.', adaptive, [field('Minimum', min, 'FPS'), field('Maximum', max, 'FPS'), field('Target GPU load', target, '%')], 'Uses fresh utilization from the selected GPU only. The cap holds steady from two points below through two points above target. More than 2 and fewer than 8 points below target recovers by 2 FPS after four samples; from 8 to fewer than 15 points below it recovers by 3 FPS after five samples; with at least 15 points of headroom it recovers by 3 FPS per sample. Moderate overload steps down 2 FPS after four samples. Fast FPS response is reserved for severe load (target plus 8 points, capped at 100%). If GPU telemetry is unavailable for five seconds, the adaptive cap is released.'),
       baseCapPanel,
     ]);
     updateFooter(selectedState);
@@ -268,28 +268,30 @@ export const arcSleepPage: Page = {
       if (!state || !live) {
         diagnostics.textContent = state ? 'Live FPS adjustment diagnostics are unavailable in this runtime.' : 'Live GPU and RTSS readings are temporarily unavailable.';
       } else {
-        const readings = [live.gpuUtilPct == null ? 'GPU utilization unavailable' : `GPU ${Math.round(live.gpuUtilPct)}%`];
+        const readings = [live.gpuUtilPct == null ? 'GPU utilization unavailable' : `GPU ${live.gpuUtilPct.toFixed(1)}%`];
         if (live.reportedFps != null) readings.push(`RTSS ${Math.round(live.reportedFps)} FPS`);
-        const recoveryCapCeiling = Math.min(settings.adaptiveMaxFps, state.baseCapFps ?? settings.adaptiveMaxFps);
-        const recoveringFromLowLoad = live.gpuUtilPct !== null
-          && live.gpuUtilPct < settings.adaptiveTargetLoadPct - 5
-          && state.frameLimitEffectiveNow
-          && state.effectiveCapFps !== null
-          && state.effectiveCapFps < recoveryCapCeiling;
-        const recoveringQuicklyFromLargeHeadroom = recoveringFromLowLoad
-          && live.gpuUtilPct! <= settings.adaptiveTargetLoadPct - 15;
+        const belowFastRecoveryThreshold = live.gpuUtilPct !== null
+          && live.gpuUtilPct <= settings.adaptiveTargetLoadPct - 15;
+        const belowFineRecoveryThreshold = live.gpuUtilPct !== null
+          && live.gpuUtilPct <= settings.adaptiveTargetLoadPct - 8;
+        const inFineRecoveryBand = live.gpuUtilPct !== null
+          && live.gpuUtilPct < settings.adaptiveTargetLoadPct - 2;
         const guidance: Record<NonNullable<ArcSleepSnapshot['diagnostics']>['fpsStatus'], string> = {
           disabled: 'Enable Load Adaptive to read live FPS.',
           'gpu-unavailable': 'Load Adaptive cannot currently read selected-GPU utilization.',
           'idle-priority': 'Idle Cap has priority; live-FPS adjustment is paused.',
-          'below-trigger': recoveringQuicklyFromLargeHeadroom
+          'below-trigger': belowFastRecoveryThreshold
             ? `GPU load is at least 15 points below target; the cap recovers by 3 FPS per sample.`
-            : recoveringFromLowLoad
-              ? `GPU load is below ${settings.adaptiveTargetLoadPct - 5}%; the cap recovers by 3 FPS every five low-load samples.`
-            : `Fast FPS adjustment waits for GPU load above ${settings.adaptiveTargetLoadPct}%.`,
+            : live.gpuUtilPct !== null && live.gpuUtilPct > Math.min(settings.adaptiveTargetLoadPct + 2, 99)
+              ? `Moderate load; the cap steps down 2 FPS after four consecutive samples. Fast FPS response starts at ${Math.min(settings.adaptiveTargetLoadPct + 8, 100)}%.`
+              : belowFineRecoveryThreshold
+                ? `Low-load recovery raises the cap by 3 FPS after five consecutive samples.`
+                : inFineRecoveryBand
+                  ? `Near-target recovery raises the cap by 2 FPS after four consecutive samples.`
+                  : `Load is within the two-point buffer; the cap holds steady. Moderate steps start above ${Math.min(settings.adaptiveTargetLoadPct + 2, 99)}%.`,
           'rtss-unavailable': 'No fresh foreground game FPS from RTSS; using sustained-load fallback steps.',
           'gpu-unconfirmed': 'RTSS reports FPS, but the game could not be confirmed on the selected GPU; using sustained-load fallback steps.',
-          ready: live.fastAdjustmentApplied ? 'Fast adjustment applied using the confirmed live game FPS.' : 'Foreground game FPS is confirmed on the selected GPU; fast adjustment is available.',
+          ready: live.fastAdjustmentApplied ? 'Fast adjustment applied using confirmed live game FPS during severe load.' : 'Foreground game FPS is confirmed on the selected GPU; fast adjustment is available during severe load.',
         };
         diagnostics.textContent = `${readings.join(' · ')} — ${guidance[live.fpsStatus]}`;
       }

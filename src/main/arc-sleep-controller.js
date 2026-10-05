@@ -861,6 +861,8 @@ export function createArcSleepController({
       && idleSeconds >= settings.idleAfterSeconds;
     const wakingFromIdle = previousIdleActive && !idleActive;
     if (wakingFromIdle) policyState = createArcSleepPolicyState(settings);
+    const holdThresholdPct = Math.min(settings.adaptiveTargetLoadPct + 2, 99);
+    const severeThresholdPct = Math.min(settings.adaptiveTargetLoadPct + 8, 100);
     let loadPercent = null;
     let observedFps = null;
     let observedProcessId = null;
@@ -874,7 +876,10 @@ export function createArcSleepController({
       if (idleActive) {
         fpsStatus = 'idle-priority';
         runtimeDiagnostics = { ...runtimeDiagnostics, gpuUtilPct: loadPercent, reportedFps: null, fpsStatus };
-      } else if (loadPercent !== null && loadPercent <= settings.adaptiveTargetLoadPct) {
+      } else if (loadPercent !== null && loadPercent <= holdThresholdPct) {
+        fpsStatus = 'below-trigger';
+        runtimeDiagnostics = { ...runtimeDiagnostics, gpuUtilPct: loadPercent, reportedFps: null, fpsStatus };
+      } else if (loadPercent !== null && loadPercent < severeThresholdPct) {
         fpsStatus = 'below-trigger';
         runtimeDiagnostics = { ...runtimeDiagnostics, gpuUtilPct: loadPercent, reportedFps: null, fpsStatus };
       } else if (loadPercent !== null) {

@@ -334,7 +334,7 @@ test('adaptive cap seeded from game FPS recovers by three FPS per sample with la
   assert.equal(h.readState().limit, 43, 'recovery continues by 3 FPS on each low-load sample');
 });
 
-test('controller reads foreground FPS only under high GPU load and follows later scene FPS', async (t) => {
+test('controller reads foreground FPS only in severe load and follows later scene FPS', async (t) => {
   const h = harness({
     settings: { adaptiveEnabled: true, adaptiveMinFps: 30 },
     loadSignals: { gpuUtilPct: 50 },
@@ -356,6 +356,66 @@ test('controller reads foreground FPS only under high GPU load and follows later
     fpsStatus: 'ready',
     fastAdjustmentApplied: true,
   });
+});
+
+test('controller leaves deadband and moderate load steady without polling FPS', async (t) => {
+  const h = harness({
+    settings: { adaptiveEnabled: true, adaptiveMinFps: 30, adaptiveMaxFps: 144, adaptiveTargetLoadPct: 85 },
+    loadSignals: { gpuUtilPct: 86 },
+    observedFps: { fps: 40, processId: 7, eligible: true },
+  });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+  assert.equal(h.readState().limit, 144);
+  h.setLoadSignals({ gpuUtilPct: 87 });
+  await h.controller.tick();
+  assert.equal(h.readState().limit, 144);
+  h.setLoadSignals({ gpuUtilPct: 88 });
+  for (let index = 0; index < 3; index += 1) await h.controller.tick();
+  assert.equal(h.readState().limit, 144);
+  h.setLoadSignals({ gpuUtilPct: 92 });
+  await h.controller.tick();
+  assert.equal(h.readState().limit, 142);
+  assert.equal(h.observedFpsCalls(), 0);
+});
+
+test('controller waits for the severe boundary at a 99 percent target', async (t) => {
+  const h = harness({
+    settings: { adaptiveEnabled: true, adaptiveMinFps: 30, adaptiveMaxFps: 500, adaptiveTargetLoadPct: 99 },
+    loadSignals: { gpuUtilPct: 99.5 },
+    observedFps: { fps: 40, processId: 7, eligible: true },
+  });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+  assert.equal(h.readState().limit, 500);
+  assert.equal(h.observedFpsCalls(), 0);
+  h.setLoadSignals({ gpuUtilPct: 100 });
+  await h.controller.tick();
+  assert.equal(h.readState().limit, 40);
+  assert.equal(h.observedFpsCalls(), 1);
+});
+
+test('controller applies near-target recovery only after four consecutive samples', async (t) => {
+  const h = harness({
+    settings: { adaptiveEnabled: true, adaptiveMinFps: 30, adaptiveMaxFps: 144, adaptiveTargetLoadPct: 85 },
+    state: { limit: 60, denominator: 1, limiterEnabled: true },
+    underlay: { limit: 0, denominator: 1, limiterEnabled: false },
+    loadSignals: { gpuUtilPct: 96 },
+    observedFps: { fps: 60, processId: 7, eligible: true },
+  });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+  assert.equal(h.readState().limit, 60);
+  h.setLoadSignals({ gpuUtilPct: 80 });
+  for (let index = 0; index < 3; index += 1) await h.controller.tick();
+  assert.equal(h.readState().limit, 60);
+  h.setLoadSignals({ gpuUtilPct: 83 });
+  await h.controller.tick();
+  h.setLoadSignals({ gpuUtilPct: 80 });
+  for (let index = 0; index < 3; index += 1) await h.controller.tick();
+  assert.equal(h.readState().limit, 60, 'the hold band resets a partial recovery count');
+  await h.controller.tick();
+  assert.equal(h.readState().limit, 62);
 });
 
 test('controller does not observe capped FPS while idle cap is active', async (t) => {
