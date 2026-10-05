@@ -1,10 +1,74 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { acquireRtssLaunchLease, createRtssStartup, createMockRtssStartup, isTrustedRtssExecutablePath, launchRtss, resolveRtssExecutablePath, RTSS_STARTUP_KEY, RTSS_STARTUP_VALUE_NAME } from '../src/main/rtss-startup.js';
+import { acquireRtssLaunchLease, createRtssStartup, createMockRtssStartup, findRunningRtssImagePath, isTrustedRtssExecutablePath, launchRtss, resolveRtssExecutablePath, RTSS_STARTUP_KEY, RTSS_STARTUP_VALUE_NAME } from '../src/main/rtss-startup.js';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
 import { createMockStartup } from '../src/main/startup.js';
 
 const RTSS = 'C:\\Program Files (x86)\\RivaTuner Statistics Server\\RTSS.exe';
+
+function processInspector(processes, { open = () => ({ handle: true }), query = () => RTSS, firstError = false, nextError = false } = {}) {
+  const calls = [];
+  let index = 0;
+  const result = findRunningRtssImagePath({
+    createSnapshot: () => { calls.push('snapshot'); return { snapshot: true }; },
+    firstProcess: () => { calls.push('first'); if (firstError) throw new Error('first failed'); return processes[0] ?? null; },
+    nextProcess: () => {
+      calls.push('next');
+      if (nextError) throw new Error('iteration failed');
+      index += 1;
+      return index < processes.length ? { process: processes[index] } : { done: true, errorCode: 18 };
+    },
+    openProcess: (pid) => { calls.push(`open:${pid}`); return open(pid); },
+    queryImagePath: (handle) => { calls.push('query'); return query(handle); },
+    closeHandle: (handle) => { calls.push(handle?.snapshot ? 'close:snapshot' : 'close:process'); },
+  });
+  return { result, calls };
+}
+
+test('native RTSS process inspection validates the queried image and closes handles', () => {
+  const { result, calls } = processInspector([{ pid: 22, imageName: 'RTSS.exe' }]);
+  assert.equal(result, RTSS);
+  assert.deepEqual(calls, ['snapshot', 'first', 'open:22', 'query', 'close:process', 'close:snapshot']);
+});
+
+test('native RTSS process inspection rejects wrong images and no candidate', () => {
+  assert.equal(processInspector([{ pid: 1, imageName: 'RTSS.exe' }], { query: () => 'C:\\Games\\other.exe' }).result, null);
+  assert.equal(processInspector([{ pid: 2, imageName: 'game.exe' }]).result, null);
+  assert.equal(processInspector([]).result, null);
+});
+
+test('native RTSS process inspection continues after an inaccessible candidate', () => {
+  const { result, calls } = processInspector([
+    { pid: 11, imageName: 'RTSS.exe' },
+    { pid: 12, imageName: 'RTSS.exe' },
+  ], { open: (pid) => pid === 11 ? null : ({ handle: true }) });
+  assert.equal(result, RTSS);
+  assert.ok(calls.includes('open:12'));
+  assert.equal(calls.filter((call) => call === 'close:snapshot').length, 1);
+});
+
+test('native RTSS process inspection fails closed and cleans up on snapshot or iteration errors', () => {
+  const snapshotFailure = findRunningRtssImagePath({ createSnapshot: () => null, closeHandle: () => assert.fail('invalid snapshot must not be closed') });
+  assert.equal(snapshotFailure, null);
+  const firstFailure = processInspector([], { firstError: true });
+  assert.equal(firstFailure.result, null);
+  assert.ok(firstFailure.calls.includes('close:snapshot'));
+  const iterationFailure = processInspector([{ pid: 11, imageName: 'game.exe' }], { nextError: true });
+  assert.equal(iterationFailure.result, null);
+  assert.ok(iterationFailure.calls.includes('close:snapshot'));
+});
+
+test('native RTSS process inspection rejects the unsigned invalid snapshot sentinel without using or closing it', () => {
+  const calls = [];
+  const result = findRunningRtssImagePath({
+    createSnapshot: () => ({ invalidSnapshot: true }),
+    firstProcess: () => { calls.push('first'); return null; },
+    closeHandle: () => calls.push('close'),
+    getHandleAddress: () => 0xFFFFFFFFFFFFFFFFn,
+  });
+  assert.equal(result, null);
+  assert.deepEqual(calls, []);
+});
 
 function fakeRegistry({ value = null, exists = true } = {}) {
   const calls = [];
