@@ -103,3 +103,30 @@ test('worker startup failure falls back to the one-shot system-stats query', asy
   assert.ok(oneShotCalls >= 1);
   stats.stopSlowLane(12);
 });
+test('worker exit during a request falls back and a later sample restarts the worker', async () => {
+  let spawnCalls = 0;
+  let oneShotCalls = 0;
+  const stats = createSysStats({
+    spawn: () => {
+      spawnCalls += 1;
+      const child = fakeChild((id, process) => {
+        if (spawnCalls === 1) {
+          setImmediate(() => process.emit('close', 1));
+        } else {
+          process.stdout.write(`${id}\t${output(150)}\n`);
+        }
+      });
+      return child;
+    },
+    execFile: async () => { oneShotCalls += 1; return { stdout: output(125) }; },
+    setInterval: () => 1,
+    clearInterval: () => {},
+  });
+  stats.startSlowLane(999, 13);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const sample = await stats.sampleSlow();
+  assert.equal(sample.cpuFreqMhz, 1500);
+  assert.equal(spawnCalls, 2);
+  assert.equal(oneShotCalls, 1);
+  stats.stopSlowLane(13);
+});

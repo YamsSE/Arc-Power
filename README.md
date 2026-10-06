@@ -4,7 +4,7 @@
 
 # Arc Power Ver. 1.2.2
 
-Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.2.2 improves Arc Sleep reliability and reuses a long-lived worker for recurring system-stat queries. Arc Power also includes the Driver Library for browsing Intel driver releases and managing downloaded installers.
+Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.2.2 improves Arc Sleep's inactivity and GPU-load adaptive caps, and reuses a long-lived worker for recurring system-stat queries. Arc Power also includes the Driver Library for browsing Intel driver releases and managing downloaded installers.
 
 ## What Arc Power does
 
