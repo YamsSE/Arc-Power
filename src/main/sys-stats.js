@@ -200,6 +200,24 @@ export function buildGpuEngineWorkerScript() {
 }
 
 /**
+ * Build a request-driven worker for the broad system-stats query. Each stdin
+ * line is a request id and each stdout line is that id plus one JSON result.
+ * The query itself is the same script used by the one-shot path.
+ * @param {{ includeGpuEngine?: boolean }} [options]
+ * @returns {string}
+ */
+export function buildSysStatsWorkerScript(options = {}) {
+  const query = buildSysStatsScript(options);
+  return [
+    '$ErrorActionPreference = \'SilentlyContinue\'',
+    `$query = { ${query} }`,
+    'while ($null -ne ($request = [Console]::In.ReadLine())) {',
+    'try { $payload = (& $query | Out-String).Trim(); [Console]::Out.WriteLine($request + [char]9 + $payload); [Console]::Out.Flush() } catch { [Console]::Out.WriteLine($request + [char]9 + \'{}\'); [Console]::Out.Flush() }',
+    '}',
+  ].join('; ');
+}
+
+/**
  * Parse the small JSON envelope emitted by buildGpuEngineScript().
  * @param {string} stdout
  * @returns {Array<{ name: string | null, utilPct: number | null }>}
@@ -672,6 +690,8 @@ export function createSysStats(deps = {}) {
   const usePersistentGpuSampler = enableDedicatedGpuSampler
     && deps.usePersistentGpuSampler !== false
     && (deps.spawn !== undefined || deps.execFile === undefined);
+  const usePersistentSysStatsWorker = deps.usePersistentSysStatsWorker !== false
+    && (deps.spawn !== undefined || deps.execFile === undefined);
   const luidOf = deps.luidOf ?? (async () => null);
   let deviceIdHex = deps.deviceIdHex ?? deps.pciDeviceId ?? null;
   let deviceBdf = deps.bdf ?? null;
@@ -758,6 +778,14 @@ export function createSysStats(deps = {}) {
   let gpuWorkerFirstSampleTimer = null;
   let latestGpuRows = null;
   let latestGpuRowsAt = null;
+  // The broad CIM worker is request/response driven, so it never competes
+  // with the independent continuous GPU Engine provider above.
+  let sysStatsProcess = null;
+  let sysStatsReadline = null;
+  let sysStatsPending = null;
+  let sysStatsRequestId = 0;
+  let sysStatsGeneration = 0;
+  let sysStatsWorkerFailed = false;
 
   // M150: system counters are queried once, but the GPU fields are cached
   // per physical adapter.  The old adapter had one mutable target, so a
@@ -1101,6 +1129,85 @@ export function createSysStats(deps = {}) {
     try { child?.kill?.(); } catch { /* best effort */ }
   };
 
+  const stopSysStatsWorker = () => {
+    const child = sysStatsProcess;
+    const reader = sysStatsReadline;
+    sysStatsProcess = null;
+    sysStatsReadline = null;
+    try { reader?.close?.(); } catch { /* best effort */ }
+    try { child?.kill?.(); } catch { /* best effort */ }
+    if (sysStatsPending) {
+      clearTimeout(sysStatsPending.timer);
+      const pending = sysStatsPending;
+      sysStatsPending = null;
+      pending.reject(new Error('system-stats worker stopped'));
+    }
+  };
+
+  const startSysStatsWorker = () => {
+    if (!usePersistentSysStatsWorker || sysStatsProcess !== null || sysStatsWorkerFailed) return;
+    let child;
+    try {
+      child = spawn(
+        deps.powershellExe ?? POWERSHELL_EXE,
+        ['-NoProfile', '-NonInteractive', '-Command', buildSysStatsWorkerScript({
+          includeGpuEngine: !enableDedicatedGpuSampler,
+        })],
+        { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] },
+      );
+      if (!child?.stdin || !child?.stdout) throw new Error('system-stats worker has incomplete stdio');
+      const worker = child;
+      const reader = createInterface({ input: child.stdout });
+      sysStatsProcess = child;
+      sysStatsReadline = reader;
+      reader.on('line', (line) => {
+        if (sysStatsProcess !== worker || !sysStatsPending) return;
+        const text = String(line ?? '');
+        const separator = text.indexOf('\t');
+        if (separator < 0 || text.slice(0, separator) !== sysStatsPending.id) return;
+        const pending = sysStatsPending;
+        sysStatsPending = null;
+        clearTimeout(pending.timer);
+        pending.resolve(text.slice(separator + 1));
+      });
+      const failed = () => {
+        if (sysStatsProcess !== worker) return;
+        sysStatsWorkerFailed = true;
+        stopSysStatsWorker();
+      };
+      child.once?.('error', failed);
+      child.once?.('close', failed);
+    } catch {
+      sysStatsWorkerFailed = true;
+      stopSysStatsWorker();
+    }
+  };
+
+  const requestSysStatsWorker = (generation) => new Promise((resolve, reject) => {
+    const child = sysStatsProcess;
+    if (!child || sysStatsPending || generation !== sysStatsGeneration) {
+      reject(new Error('system-stats worker unavailable'));
+      return;
+    }
+    const id = String(++sysStatsRequestId);
+    const timer = setTimeout(() => {
+      if (sysStatsPending?.id !== id) return;
+      sysStatsWorkerFailed = true;
+      stopSysStatsWorker();
+    }, 10000);
+    sysStatsPending = { id, timer, resolve, reject };
+    try {
+      child.stdin.write(`${id}\n`, (error) => {
+        if (!error || sysStatsPending?.id !== id) return;
+        sysStatsWorkerFailed = true;
+        stopSysStatsWorker();
+      });
+    } catch {
+      sysStatsWorkerFailed = true;
+      stopSysStatsWorker();
+    }
+  });
+
   const restartGpuEngineWorker = () => {
     stopGpuEngineWorker();
     gpuWorkerFailed = false;
@@ -1282,14 +1389,42 @@ export function createSysStats(deps = {}) {
     async sampleSlow() {
       if (inflight) return laneCache;
       inflight = true;
+      // Recover a failed worker on a later lane tick; the request that
+      // observed the failure already falls back through the one-shot path.
+      if (slowHandle !== null && sysStatsProcess === null && sysStatsWorkerFailed) {
+        sysStatsWorkerFailed = false;
+        startSysStatsWorker();
+      }
+      const workerGeneration = sysStatsGeneration;
+      const laneWasActive = slowHandle !== null;
+      const workerWasActive = slowHandle !== null && sysStatsProcess !== null;
       try {
-        const { stdout } = await exec(
-          deps.powershellExe ?? POWERSHELL_EXE,
-          ['-NoProfile', '-NonInteractive', '-Command', buildSysStatsScript({
-            includeGpuEngine: !enableDedicatedGpuSampler,
-          })],
-          { windowsHide: true, timeout: 10000 },
-        );
+        let stdout;
+        if (workerWasActive) {
+          try {
+            stdout = await requestSysStatsWorker(workerGeneration);
+          } catch {
+            // Teardown/restart owns this response; do not launch an orphaned
+            // one-shot query or allow it to commit into a later generation.
+            if (workerGeneration !== sysStatsGeneration || slowHandle === null) return laneCache;
+            ({ stdout } = await exec(
+              deps.powershellExe ?? POWERSHELL_EXE,
+              ['-NoProfile', '-NonInteractive', '-Command', buildSysStatsScript({
+                includeGpuEngine: !enableDedicatedGpuSampler,
+              })],
+              { windowsHide: true, timeout: 10000 },
+            ));
+          }
+        } else {
+          ({ stdout } = await exec(
+            deps.powershellExe ?? POWERSHELL_EXE,
+            ['-NoProfile', '-NonInteractive', '-Command', buildSysStatsScript({
+              includeGpuEngine: !enableDedicatedGpuSampler,
+            })],
+            { windowsHide: true, timeout: 10000 },
+          ));
+        }
+        if (laneWasActive && (workerGeneration !== sysStatsGeneration || slowHandle === null)) return laneCache;
         const raw = parseSysStatsOutput(stdout);
         if (raw.maxClockMhz !== null) maxClockMhz = raw.maxClockMhz;
         // Fix round 2: single samples of the OS-formatted counters.
@@ -1315,6 +1450,7 @@ export function createSysStats(deps = {}) {
         // query.  Each adapter keeps its own LUID/memory/utilization cache;
         // a selected-device switch cannot overwrite another overlay lane.
         for (const record of targetRecords.values()) {
+          if (laneWasActive && (workerGeneration !== sysStatsGeneration || slowHandle === null)) return laneCache;
           let gpuBytes = null;
           let gpuMemorySource = null;
           // When the dedicated lane is active, its cache owns utilization.
@@ -1341,6 +1477,7 @@ export function createSysStats(deps = {}) {
               if (!enableDedicatedGpuSampler) gpuUtil = null;
             }
           }
+          if (laneWasActive && (workerGeneration !== sysStatsGeneration || slowHandle === null)) return laneCache;
           record.cache = {
             ...common,
             gpuMemUsedBytes: gpuBytes,
@@ -1487,6 +1624,9 @@ export function createSysStats(deps = {}) {
     startSlowLane(cadenceMs = SLOW_LANE_CADENCE_MS, owner = undefined) {
       if (slowHandle !== null) return; // idempotent - one timer per adapter
       slowOwner = owner;
+      sysStatsGeneration += 1;
+      sysStatsWorkerFailed = false;
+      startSysStatsWorker();
       slowHandle = setIntervalFn(() => {
         void slowTick();
       }, cadenceMs);
@@ -1515,6 +1655,10 @@ export function createSysStats(deps = {}) {
         releaseGpuLane(telemetryGpuLease);
         telemetryGpuLease = null;
       }
+      // Stop invalidates any in-flight broad query and the request-driven
+      // worker. GPU lane lifetime is managed separately by its leases.
+      sysStatsGeneration += 1;
+      stopSysStatsWorker();
       slowOwner = undefined;
     },
 
