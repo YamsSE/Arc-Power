@@ -2,6 +2,87 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
 
+function createTaskStartupSaveHarness() {
+  let settings = {
+    waiverAccepted: false,
+    ocOnBoot: false,
+    activeProfileId: null,
+    activeProfileIds: {},
+    ocMode: 'stock',
+    advancedModeAccepted: false,
+    startWithWindows: false,
+    startMinimized: false,
+    closeToTray: false,
+    monitorLogToFile: false,
+    deviceId: null,
+    deviceKey: null,
+    theme: 'dark',
+    arcSleep: {
+      idleEnabled: true,
+      adaptiveEnabled: true,
+      idleAfterSeconds: 300,
+      idleFps: 30,
+      adaptiveMinFps: 60,
+      adaptiveMaxFps: 144,
+      adaptiveTargetLoadPct: 85,
+    },
+  };
+  const applied = [];
+  const startupError = new Error('task registration failed');
+  const handlers = createIpcHandlers({
+    backend: {},
+    store: {
+      async loadSettings() { return structuredClone(settings); },
+      async loadProfiles() { return []; },
+      async saveSettings(next) { settings = structuredClone(next); },
+      async saveSettingsWithArcSleep(next, arcSleep) {
+        settings = { ...structuredClone(next), arcSleep: structuredClone(arcSleep) };
+        return structuredClone(settings);
+      },
+    },
+    emit: () => {},
+    startup: {
+      registrationMode: 'task',
+      async set() { throw startupError; },
+    },
+    arcSleepController: {
+      async withTransaction(work) {
+        return work({ async setSettings(next) { applied.push(structuredClone(next)); } });
+      },
+    },
+  }).handlers;
+  return {
+    handlers,
+    applied,
+    startupError,
+    loadSettings: async () => structuredClone(settings),
+  };
+}
+
+test('Arc Sleep policy toggles turn off despite packaged startup task registration failure', async () => {
+  const harness = createTaskStartupSaveHarness();
+
+  const result = await harness.handlers['profiles-settings-save']({
+    arcSleep: { idleEnabled: false, adaptiveEnabled: false },
+  });
+
+  assert.equal(result.arcSleep.idleEnabled, false);
+  assert.equal(result.arcSleep.adaptiveEnabled, false);
+  assert.equal((await harness.loadSettings()).arcSleep.idleEnabled, false);
+  assert.equal((await harness.loadSettings()).arcSleep.adaptiveEnabled, false);
+  assert.deepEqual(harness.applied, [result.arcSleep]);
+});
+
+test('startup task registration failure remains reported when startup intent changes', async () => {
+  const harness = createTaskStartupSaveHarness();
+
+  await assert.rejects(
+    harness.handlers['profiles-settings-save']({ startWithWindows: true }),
+    harness.startupError,
+  );
+  assert.equal((await harness.loadSettings()).startWithWindows, true);
+});
+
 test('profiles settings save normalizes Arc Sleep and applies it inside its RTSS transaction', async () => {
   let settings = {
     waiverAccepted: false,
