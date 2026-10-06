@@ -5550,9 +5550,9 @@ export function createIpcHandlers({
         } catch (err) {
           startupError = err;
           // Legacy Run registration keeps the historical best-effort save;
-          // packaged task registration propagates the explicit UAC failure
-          // after the intent is persisted so the renderer can show an honest
-          // error and mismatch state.
+          // packaged task registration reports an explicit UAC failure when
+          // startup intent changes; unrelated settings saves must still
+          // reach their runtime reactions even if task registration fails.
         }
         if (patch.arcSleep !== undefined && typeof store.saveSettingsWithArcSleep === 'function') {
           await store.saveSettingsWithArcSleep(next, next.arcSleep);
@@ -5568,7 +5568,18 @@ export function createIpcHandlers({
             console.log(`[recording] memory-saving setting reaction failed: ${err.message}`);
           }
         }
-        if (startupError && startup.registrationMode === 'task') throw startupError;
+        const startupIntentChanged = ['startWithWindows', 'ocOnBoot', 'activeProfileId', 'activeProfileIds']
+          .some((key) => {
+            if (patch[key] === undefined) return false;
+            if (key !== 'activeProfileIds') return next[key] !== cur[key];
+            const before = cur.activeProfileIds ?? {};
+            const after = next.activeProfileIds ?? {};
+            const beforeKeys = Object.keys(before);
+            const afterKeys = Object.keys(after);
+            return beforeKeys.length !== afterKeys.length
+              || beforeKeys.some((id) => before[id] !== after[id]);
+          });
+        if (startupError && startup.registrationMode === 'task' && startupIntentChanged) throw startupError;
         // M5: the overlay reaction (the rebuildTray pattern) - when any
         // overlay field the PATCH touched actually changed, the injected
         // callback gets the CHANGED fields so main.js applies the new
