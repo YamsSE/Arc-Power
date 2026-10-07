@@ -21,6 +21,7 @@ type UpdateState = 'idle' | 'checking' | 'update-available' | 'downloading' | 'd
 let updateState: UpdateState = 'idle';
 let updateInfo: { version: string; assetUrl: string; assetName: string } | null = null;
 let downloadedPath: string | null = null;
+let downloadPercent = 0;
 
 function setUpdateBtn(state: UpdateState): void {
   const btn = document.getElementById('titlebar-update-btn') as HTMLButtonElement | null;
@@ -63,8 +64,8 @@ function setUpdateBtn(state: UpdateState): void {
       btn.style.display = '';
       (iconDownload as HTMLElement).style.display = '';
       btn.classList.add('update-downloading', 'update-spinning');
-      btn.title = 'Downloading update...';
-      btn.setAttribute('aria-label', 'Downloading update...');
+      btn.title = `Downloading update... ${Math.round(downloadPercent)}%`;
+      btn.setAttribute('aria-label', `Downloading update... ${Math.round(downloadPercent)}%`);
       break;
     case 'downloaded':
       btn.style.display = '';
@@ -109,6 +110,7 @@ async function handleUpdateClick(): Promise<void> {
     case 'update-available':
       // Download update
       if (!updateInfo) return;
+      downloadPercent = 0;
       setUpdateBtn('downloading');
       try {
         const dl = await api.updateDownload(updateInfo.assetUrl);
@@ -145,6 +147,16 @@ export function initTitlebar(): void {
   // M25: wire the update button
   document.getElementById('titlebar-update-btn')
     ?.addEventListener('click', () => { void handleUpdateClick(); });
+
+  api.onUpdateDownloadProgress(({ percent }) => {
+    if (updateState !== 'downloading' || !Number.isFinite(percent)) return;
+    downloadPercent = Math.max(0, Math.min(100, percent));
+    const btn = document.getElementById('titlebar-update-btn');
+    if (!btn) return;
+    const label = `Downloading update... ${Math.round(downloadPercent)}%`;
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+  });
 
   // M4-D: the max button icon follows the live maximize state (main pushes
   // window:maximized-changed on maximize/unmaximize). M4J (F): ONE svg -

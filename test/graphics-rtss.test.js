@@ -71,6 +71,90 @@ test('graphics apply checks the saved GPU key after resolving a fresh physical t
   assert.equal(applied.physicalTarget.pnpDeviceId, target.pnpDeviceId);
 });
 
+test('graphics apply follows the saved durable GPU identity after numeric IDs reorder', async () => {
+  const selected = { id: 2, deviceKey: 'pci:selected-gpu', synthetic: false, backendKind: 'igcl' };
+  const applied = [];
+  const handlers = createGraphicsHandlers({
+    backend: {
+      async listDevices() { return [{ id: 0, deviceKey: 'pci:other-gpu' }, selected]; },
+      async getDeviceTarget(id) { return id === 2 ? selected : { id, deviceKey: 'pci:other-gpu' }; },
+      async getGraphicsSettings(id) {
+        assert.equal(id, 2);
+        return { supported: { lowLatency: true }, values: { lowLatency: 'off' } };
+      },
+    },
+    store: { async loadSettings() { return { deviceId: 0, deviceKey: selected.deviceKey }; } },
+    applyRunner: { async graphicsApplyIsolated(request) { applied.push(request); return { ok: true, perControl: { lowLatency: { ok: true } } }; } },
+  });
+
+  const result = await handlers['graphics:apply'](0, { lowLatency: 'on' });
+
+  assert.equal(result.ok, true);
+  assert.equal(applied.length, 1);
+  assert.equal(applied[0].deviceId, 2);
+  assert.equal(applied[0].deviceKey, selected.deviceKey);
+});
+
+test('Graphics page read follows the saved durable GPU identity after numeric IDs reorder', async () => {
+  const selected = { id: 2, deviceKey: 'pci:selected-gpu', synthetic: false, backendKind: 'igcl' };
+  const handlers = createGraphicsHandlers({
+    backend: {
+      async listDevices() { return [{ id: 0, deviceKey: 'pci:other-gpu' }, selected]; },
+      async getDeviceTarget(id) { return id === 2 ? selected : { id, deviceKey: 'pci:other-gpu' }; },
+      async getGraphicsSettings(id) {
+        assert.equal(id, 2);
+        return { supported: { lowLatency: true }, values: { lowLatency: 'on' } };
+      },
+    },
+    store: { async loadSettings() { return { deviceId: 0, deviceKey: selected.deviceKey }; } },
+  });
+
+  const state = await handlers['graphics:get'](0);
+
+  assert.equal(state.values.lowLatency, 'on');
+});
+
+test('Arc Sleep base cap read follows the saved durable GPU identity after numeric IDs reorder', async () => {
+  const selected = { id: 2, deviceKey: 'pci:selected-gpu', synthetic: false, backendKind: 'igcl' };
+  const handlers = createGraphicsHandlers({
+    backend: {
+      async listDevices() { return [{ id: 0, deviceKey: 'pci:other-gpu' }, selected]; },
+      async getDeviceTarget(id) { return id === 2 ? selected : { id, deviceKey: 'pci:other-gpu' }; },
+      async getGraphicsSettings(id) {
+        assert.equal(id, 2);
+        return { supported: { frameLimit: true }, values: { frameLimit: { enabled: false, value: 60 } } };
+      },
+    },
+    store: { async loadSettings() { return { deviceId: 0, deviceKey: selected.deviceKey }; } },
+  });
+
+  const state = await handlers['arc-sleep-base-cap-get'](0);
+
+  assert.equal(state.supported.frameLimit, true);
+});
+
+test('graphics apply refuses when the saved physical GPU identity is missing or ambiguous', async (t) => {
+  for (const [label, devices] of [
+    ['missing', [{ id: 1, deviceKey: 'pci:other-gpu' }]],
+    ['ambiguous', [
+      { id: 1, deviceKey: 'pci:selected-gpu' },
+      { id: 2, deviceKey: 'pci:selected-gpu' },
+    ]],
+  ]) {
+    await t.test(label, async () => {
+      let applyCount = 0;
+      const handlers = createGraphicsHandlers({
+        backend: { async listDevices() { return devices; } },
+        store: { async loadSettings() { return { deviceId: 0, deviceKey: 'pci:selected-gpu' }; } },
+        applyRunner: { async graphicsApplyIsolated() { applyCount += 1; return { ok: true, perControl: {} }; } },
+      });
+
+      await assert.rejects(handlers['graphics:apply'](0, { lowLatency: 'on' }), /selected device identity .* (missing|ambiguous)/);
+      assert.equal(applyCount, 0);
+    });
+  }
+});
+
 test('graphics apply rolls RTSS back when the driver apply returns a failure', async () => {
   const rtssCalls = [];
   const handlers = createGraphicsHandlers({

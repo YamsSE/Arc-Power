@@ -59,14 +59,28 @@ export function createUpdateOperations({
 
     const totalBytes = Number(response.headers.get('content-length') ?? 0);
     let downloadedBytes = 0;
-    const nodeStream = readableFromWeb(response.body);
-    const writeStream = createStream(destPath);
-    nodeStream.on('data', (chunk) => {
-      downloadedBytes += chunk.length;
-      if (totalBytes > 0 && onProgress) onProgress(Math.round((downloadedBytes / totalBytes) * 100));
-    });
-    await pipelineFn(nodeStream, writeStream);
-    return destPath;
+    try {
+      if (!response.body) throw new Error('Download failed: response body is unavailable');
+      const nodeStream = readableFromWeb(response.body);
+      const writeStream = createStream(destPath);
+      nodeStream.on('data', (chunk) => {
+        downloadedBytes += chunk.length;
+        if (totalBytes > 0 && onProgress) {
+          // Keep 100% for the completed and validated file only.
+          onProgress(Math.min(99, Math.round((downloadedBytes / totalBytes) * 100)));
+        }
+      });
+      await pipelineFn(nodeStream, writeStream);
+      if (downloadedBytes === 0) throw new Error('Download failed: update asset was empty');
+      if (totalBytes > 0 && downloadedBytes !== totalBytes) {
+        throw new Error(`Download failed: expected ${totalBytes} bytes but received ${downloadedBytes}`);
+      }
+      onProgress?.(100);
+      return destPath;
+    } catch (error) {
+      try { if (exists(destPath)) unlink(destPath); } catch { /* best-effort removal of an incomplete asset */ }
+      throw error;
+    }
   }
 
   async function installUpdate(filePath, {

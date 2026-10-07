@@ -8,6 +8,7 @@ function makeController({ deleteWorks = true, includeGameProfile = true, failDen
   let workingProfile = null;
   let flags = initialFlags;
   let profileWriteCalls = 0;
+  let denominatorWriteCalls = 0;
   const functions = {
     LoadProfile(name) {
       currentProfile = name.toLowerCase();
@@ -26,13 +27,16 @@ function makeController({ deleteWorks = true, includeGameProfile = true, failDen
         ? workingProfile ?? { limit: 0, denominator: 1 }
         : profiles.get(currentProfile) ?? { limit: 0, denominator: 1 };
       const value = name === 'FramerateLimit' ? profile.limit : name === 'FramerateLimitDenominator' ? profile.denominator : null;
-      if (value === null) return false;
+      if (!Number.isInteger(value)) return false;
       buffer.writeUInt32LE(value >>> 0, 0);
       return true;
     },
     SetProfileProperty(name, buffer) {
       profileWriteCalls += 1;
-      if (name === 'FramerateLimitDenominator' && failDenominatorWrite) return false;
+      if (name === 'FramerateLimitDenominator') {
+        denominatorWriteCalls += 1;
+        if (failDenominatorWrite) return false;
+      }
       const profile = discardUnsavedOnLoad
         ? workingProfile ?? { limit: 0, denominator: 1 }
         : profiles.get(currentProfile) ?? { limit: 0, denominator: 1 };
@@ -62,7 +66,13 @@ function makeController({ deleteWorks = true, includeGameProfile = true, failDen
     exists: () => true,
     load: () => ({ func: (name) => functions[name] }),
   });
-  return { controller, profiles, get flags() { return flags; }, get profileWriteCalls() { return profileWriteCalls; } };
+  return {
+    controller,
+    profiles,
+    get flags() { return flags; },
+    get profileWriteCalls() { return profileWriteCalls; },
+    get denominatorWriteCalls() { return denominatorWriteCalls; },
+  };
 }
 
 test('RTSS profile removal is verified before reporting success', async () => {
@@ -104,6 +114,55 @@ test('RTSS graphics transaction restore preserves the exact global denominator a
   const restored = await controller.restoreFrameLimit(applied.restoreToken);
   assert.equal(restored.ok, true);
   assert.deepEqual(profiles.get(''), { limit: 60, denominator: 2 });
+});
+
+test('RTSS global ownership preserves an absent denominator without blocking safe cap changes', async () => {
+  const fixture = makeController({ includeGameProfile: false });
+  const { controller, profiles } = fixture;
+  profiles.set('', { limit: 60 });
+
+  const before = await controller.getFrameLimitOwnership();
+  assert.equal(before.ok, true);
+  assert.deepEqual(before.state, { limit: 60, denominator: null, limiterEnabled: true });
+
+  const applied = await controller.applyFrameLimit({
+    enabled: true,
+    value: 144,
+    expectedState: before.state,
+  });
+  assert.equal(applied.ok, true);
+  assert.equal(applied.used, true);
+  assert.deepEqual(profiles.get(''), { limit: 144 });
+
+  const current = await controller.getFrameLimitOwnership();
+  assert.equal(current.ok, true);
+  assert.deepEqual(current.state, { limit: 144, denominator: null, limiterEnabled: true });
+  const restored = await controller.restoreFrameLimitState({
+    expectedState: current.state,
+    state: { limit: 60, denominator: null, limiterEnabled: true },
+  });
+  assert.equal(restored.ok, true);
+  assert.deepEqual(profiles.get(''), { limit: 60 });
+  assert.equal(fixture.denominatorWriteCalls, 0);
+});
+
+test('RTSS disable state preserves an absent denominator when no ownership snapshot exists', async () => {
+  const fixture = makeController({ includeGameProfile: false });
+  const { controller, profiles } = fixture;
+  profiles.set('', { limit: 60 });
+
+  const before = await controller.getFrameLimitOwnership();
+  assert.deepEqual(before.disableState, { limit: 0, denominator: null, limiterEnabled: true });
+
+  const disabled = await controller.applyFrameLimit({
+    enabled: false,
+    expectedState: before.state,
+  });
+
+  assert.equal(disabled.ok, true);
+  assert.deepEqual(disabled.observedState, { limit: 0, denominator: null, limiterEnabled: true });
+  assert.deepEqual(profiles.get(''), { limit: 0 });
+  assert.equal(fixture.denominatorWriteCalls, 0);
 });
 
 test('RTSS cleanup refuses to delete an unowned profile after restart', async () => {

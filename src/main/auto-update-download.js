@@ -1,7 +1,11 @@
 // Transport helpers for GitHub release asset downloads.
 
+import { Readable, Transform } from 'node:stream';
+
 const MAX_REDIRECTS = 5;
 const REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
+const DEFAULT_HEADER_TIMEOUT_MS = 30_000;
+const DEFAULT_IDLE_TIMEOUT_MS = 45_000;
 
 function isAllowedDownloadUrl(value) {
   let parsed;
@@ -45,9 +49,14 @@ function redirectedUrl(location, baseUrl) {
  * Read a GitHub asset response through an injected request factory. The
  * factory keeps this transport seam testable without importing Electron.
  * Only HTTPS GitHub-hosted URLs are accepted, redirects are bounded, and a
- * successful response must contain at least one byte.
+ * successful response is exposed as a streaming body so the caller can report
+ * progress while the asset is actually arriving. Header and idle timeouts
+ * bound stalled requests without buffering the executable in memory.
  */
-export function fetchUpdateResponse(url, requestFactory, redirectCount = 0) {
+export function fetchUpdateResponse(url, requestFactory, redirectCount = 0, {
+  headerTimeoutMs = DEFAULT_HEADER_TIMEOUT_MS,
+  idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
+} = {}) {
   const targetUrl = isAllowedDownloadUrl(url);
   if (!targetUrl || typeof requestFactory !== 'function' || redirectCount > MAX_REDIRECTS) {
     return Promise.resolve(null);
@@ -63,12 +72,25 @@ export function fetchUpdateResponse(url, requestFactory, redirectCount = 0) {
     }
 
     let settled = false;
-    const finish = (value) => {
+    let responseStarted = false;
+    let bodyStream = null;
+    let idleTimeout = null;
+    const headerTimeout = setTimeout(() => {
+      try { request.abort?.(); } catch { /* best effort */ }
+      finish(null);
+    }, headerTimeoutMs);
+    headerTimeout.unref?.();
+    const finish = (value, { keepBodyTimer = false } = {}) => {
       if (settled) return;
       settled = true;
+      clearTimeout(headerTimeout);
+      if (!keepBodyTimer) clearTimeout(idleTimeout);
       resolve(value);
     };
-    const fail = () => finish(null);
+    const fail = () => {
+      if (bodyStream) bodyStream.destroy(new Error('Update download failed while streaming'));
+      finish(null);
+    };
     let redirectsFollowed = redirectCount;
     request.on('redirect', (statusCode, method, redirectUrl) => {
       const code = Number(statusCode);
@@ -89,30 +111,60 @@ export function fetchUpdateResponse(url, requestFactory, redirectCount = 0) {
       request.followRedirect();
     });
     request.on('response', (response) => {
+      if (responseStarted) return;
+      responseStarted = true;
+      clearTimeout(headerTimeout);
+      response.on('error', (error) => {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        if (bodyStream) bodyStream.destroy(failure);
+        else finish(null);
+      });
+      response.on('aborted', () => {
+        const failure = new Error('Update download response was interrupted');
+        if (bodyStream) bodyStream.destroy(failure);
+        else finish(null);
+      });
       const statusCode = Number(response?.statusCode ?? 0);
-      const chunks = [];
-      response.on('error', fail);
-      response.on('data', (chunk) => {
-        if (isSuccessfulStatus(statusCode)) chunks.push(Buffer.from(chunk));
-      });
-      response.on('end', () => {
-        if (!isSuccessfulStatus(statusCode)) {
-          finish(null);
-          return;
-        }
+      if (!isSuccessfulStatus(statusCode)) {
+        response.destroy?.();
+        finish(null);
+        return;
+      }
 
-        const body = Buffer.concat(chunks);
-        if (body.length === 0) {
-          finish(null);
-          return;
-        }
-        finish(new Response(body, {
-          status: statusCode,
-          headers: responseHeaders(response.headers),
-        }));
+      let receivedBytes = false;
+      const resetIdleTimeout = () => {
+        clearTimeout(idleTimeout);
+        idleTimeout = setTimeout(() => {
+          const error = new Error(`Update download stalled with no data for ${idleTimeoutMs} ms`);
+          try { request.abort?.(); } catch { /* best effort */ }
+          bodyStream?.destroy(error);
+        }, idleTimeoutMs);
+        idleTimeout.unref?.();
+      };
+      bodyStream = new Transform({
+        transform(chunk, encoding, callback) {
+          receivedBytes = true;
+          resetIdleTimeout();
+          callback(null, chunk);
+        },
+        flush(callback) {
+          clearTimeout(idleTimeout);
+          if (!receivedBytes) callback(new Error('Update download returned an empty response'));
+          else callback();
+        },
       });
+      bodyStream.on('error', () => clearTimeout(idleTimeout));
+      resetIdleTimeout();
+      response.pipe(bodyStream);
+      finish(new Response(Readable.toWeb(bodyStream), {
+        status: statusCode,
+        headers: responseHeaders(response.headers),
+      }), { keepBodyTimer: true });
     });
-    request.on('error', fail);
+    request.on('error', (error) => {
+      if (bodyStream) bodyStream.destroy(error instanceof Error ? error : new Error(String(error)));
+      else fail();
+    });
     request.end();
   });
 }

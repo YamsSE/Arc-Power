@@ -3,7 +3,7 @@ import test from 'node:test';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import {
@@ -19,6 +19,7 @@ import {
 import { createUpdateOperations } from '../src/main/auto-update-runtime.js';
 import { createStartupUpdateCoordinator, shouldBlockStartupSplashClose } from '../src/main/startup-update.js';
 import { createStartupUpdateHandoff } from '../src/main/startup-update-handoff.js';
+import { fetchUpdateResponse } from '../src/main/auto-update-download.js';
 
 const release = {
   tag_name: 'v1.0.6',
@@ -83,11 +84,13 @@ test('portable handoff validates the target and supports cross-volume replacemen
   assert.match(script, /Copy-Item -LiteralPath \$DownloadedPath -Destination \$stagedPath -Force/);
   assert.match(script, /Get-FileHash -LiteralPath \$DownloadedPath -Algorithm SHA256/);
   assert.match(script, /\$targetHash -eq \$sourceHash/);
-  assert.match(script, /\[System\.IO\.File\]::Replace\(\$stagedPath, \$TargetPath/);
+  assert.match(script, /\[System\.IO\.File\]::Replace\(\$stagedPath, \$TargetPath, \$backupPath/);
   assert.match(script, /Move-Item -LiteralPath \$stagedPath -Destination \$TargetPath -Force/);
   assert.match(script, /Test-Path -LiteralPath \$TargetPath -PathType Leaf/);
   assert.match(script, /Remove-Item -LiteralPath \$DownloadedPath -Force/);
   assert.match(script, /Start-Process -FilePath \$TargetPath/);
+  assert.match(script, /portable update replacement failed; attempting to restore and relaunch the existing executable/);
+  assert.match(script, /Arc Power could not complete the update/);
   assert.ok(script.indexOf('Copy-Item') < script.indexOf('Start-Process'));
   assert.ok(script.indexOf('Remove-Item -LiteralPath \$stagedPath') < script.indexOf('Start-Process'));
 });
@@ -148,7 +151,7 @@ test('injected downloader writes the selected asset and reports deterministic pr
     );
     assert.equal(existsSync(path), true);
     assert.equal((await readFile(path, 'utf8')), 'abcd');
-    assert.deepEqual(progress, [50, 100]);
+    assert.deepEqual(progress, [50, 99, 100]);
 
     const failureOperations = createUpdateOperations({
       tempDirPath: root,
@@ -163,9 +166,62 @@ test('injected downloader writes the selected asset and reports deterministic pr
       null,
       'portable',
     ), /stream failed/);
+    assert.equal(existsSync(join(root, 'Arc-Power_Portable.exe')), false, 'failed downloads must remove partial files');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('download progress is emitted while the response is still streaming', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'arc-power-update-stream-'));
+  try {
+    let releaseSecondChunk;
+    const secondChunk = new Promise((resolve) => { releaseSecondChunk = resolve; });
+    let reportFirstProgress;
+    const firstProgress = new Promise((resolve) => { reportFirstProgress = resolve; });
+    let downloadSettled = false;
+    const operations = createUpdateOperations({
+      tempDirPath: root,
+      appApi: { getVersion: () => '1.0.5', quit: () => {} },
+      fetchResponse: async () => ({
+        headers: new Headers({ 'content-length': '4' }),
+        body: Readable.toWeb(Readable.from((async function* streamChunks() {
+          yield Buffer.from('ab');
+          await secondChunk;
+          yield Buffer.from('cd');
+        }()))),
+      }),
+    });
+    const download = operations.downloadUpdate(
+      'https://github.com/YamsSE/Arc-Power/releases/download/v1.0.6/Arc-Power_Portable.exe',
+      (percent) => { if (percent === 50) reportFirstProgress(); },
+      'portable',
+    ).finally(() => { downloadSettled = true; });
+
+    await firstProgress;
+    assert.equal(downloadSettled, false, 'download must still be pending when initial byte progress is reported');
+    releaseSecondChunk();
+    assert.equal(await download, join(root, 'Arc-Power_Portable.exe'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('GitHub update response times out when its body stops producing bytes', async () => {
+  const responseStream = new PassThrough();
+  responseStream.statusCode = 200;
+  responseStream.headers = { 'content-length': '4' };
+  const request = new EventEmitter();
+  request.end = () => queueMicrotask(() => request.emit('response', responseStream));
+  request.abort = () => responseStream.destroy();
+  const response = await fetchUpdateResponse(
+    'https://github.com/YamsSE/Arc-Power/releases/download/v1.0.6/Arc-Power_Portable.exe',
+    () => request,
+    0,
+    { headerTimeoutMs: 1000, idleTimeoutMs: 20 },
+  );
+
+  await assert.rejects(response.body.getReader().read(), /stalled with no data for 20 ms/);
 });
 
 test('injected installed handoff waits for spawn, quits, and records spawn failures', async () => {
@@ -273,6 +329,8 @@ test('startup update marks the handoff before a real runtime quit closes the spl
     const coordinator = createStartupUpdateCoordinator({
       check: async () => ({ available: true, version: '1.0.6', assetUrl: 'https://example.invalid/update.exe' }),
     });
+    const statuses = [];
+    const unsubscribeStatus = coordinator.subscribe((status) => statuses.push(status));
     const appApi = {
       getVersion: () => '1.0.5',
       quit: () => {
@@ -297,7 +355,11 @@ test('startup update marks the handoff before a real runtime quit closes the spl
     const handoff = createStartupUpdateHandoff({
       coordinator,
       buildKind: 'installed',
-      downloadUpdate: async () => downloaded,
+      downloadUpdate: async (_url, onProgress, buildKind) => {
+        assert.equal(buildKind, 'installed');
+        onProgress(42);
+        return downloaded;
+      },
       installUpdate: (...args) => operations.installUpdate(...args),
       completeUpdate: () => { completeCalls += 1; return { ok: true, action: 'restart' }; },
     });
@@ -321,6 +383,8 @@ test('startup update marks the handoff before a real runtime quit closes the spl
     assert.equal(closePrevented, false);
     assert.equal(completeCalls, 0);
     assert.equal(coordinator.handoffStarted(), true);
+    assert.ok(statuses.some((status) => status.state === 'downloading' && status.percent === 42));
+    unsubscribeStatus();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

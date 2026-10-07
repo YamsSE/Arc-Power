@@ -120,9 +120,14 @@ while (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {
 
 $moved = $false
 $stagedPath = "$TargetPath.arc-power-update-$ParentPid.tmp"
+$backupPath = "$TargetPath.arc-power-backup-$ParentPid.tmp"
 for ($attempt = 0; $attempt -lt 20 -and -not $moved; $attempt++) {
   try {
+    if ((Test-Path -LiteralPath $backupPath -PathType Leaf) -and -not (Test-Path -LiteralPath $TargetPath -PathType Leaf)) {
+      Move-Item -LiteralPath $backupPath -Destination $TargetPath -Force
+    }
     Remove-Item -LiteralPath $stagedPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
     Copy-Item -LiteralPath $DownloadedPath -Destination $stagedPath -Force
     $sourceLength = (Get-Item -LiteralPath $DownloadedPath).Length
     $stagedLength = (Get-Item -LiteralPath $stagedPath).Length
@@ -131,25 +136,76 @@ for ($attempt = 0; $attempt -lt 20 -and -not $moved; $attempt++) {
 
     if (Test-Path -LiteralPath $TargetPath -PathType Leaf) {
       try {
-        [System.IO.File]::Replace($stagedPath, $TargetPath, $null, $true)
+        [System.IO.File]::Replace($stagedPath, $TargetPath, $backupPath, $true)
       } catch {
-        Move-Item -LiteralPath $stagedPath -Destination $TargetPath -Force
+        $currentHash = if (Test-Path -LiteralPath $TargetPath -PathType Leaf) { (Get-FileHash -LiteralPath $TargetPath -Algorithm SHA256).Hash } else { '' }
+        if ((Test-Path -LiteralPath $backupPath -PathType Leaf) -and ($currentHash -eq $sourceHash)) {
+          # File.Replace completed but surfaced a late error; the verified
+          # replacement is already in place and the backup can be discarded.
+          $moved = $true
+        } else {
+          if (Test-Path -LiteralPath $TargetPath -PathType Leaf) {
+            Move-Item -LiteralPath $TargetPath -Destination $backupPath -Force
+          }
+          try {
+            Move-Item -LiteralPath $stagedPath -Destination $TargetPath -Force
+          } catch {
+            if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+              Move-Item -LiteralPath $backupPath -Destination $TargetPath -Force
+            }
+            throw
+          }
+        }
       }
     } else {
       Move-Item -LiteralPath $stagedPath -Destination $TargetPath -Force
     }
     $targetHash = if (Test-Path -LiteralPath $TargetPath -PathType Leaf) { (Get-FileHash -LiteralPath $TargetPath -Algorithm SHA256).Hash } else { '' }
     $moved = (Test-Path -LiteralPath $TargetPath -PathType Leaf) -and ((Get-Item -LiteralPath $TargetPath).Length -eq $sourceLength) -and ($targetHash -eq $sourceHash)
+    if (-not $moved) {
+      if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+        Remove-Item -LiteralPath $TargetPath -Force -ErrorAction SilentlyContinue
+        Move-Item -LiteralPath $backupPath -Destination $TargetPath -Force
+      }
+      throw 'replacement hash verification failed'
+    }
+    Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
   } catch {
     Write-Diagnostic ("replacement attempt {0} failed: {1}" -f $attempt, $_.Exception.Message)
     Remove-Item -LiteralPath $stagedPath -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+      Remove-Item -LiteralPath $TargetPath -Force -ErrorAction SilentlyContinue
+      try { Move-Item -LiteralPath $backupPath -Destination $TargetPath -Force -ErrorAction Stop } catch {
+        Write-Diagnostic ("could not restore the prior wrapper: {0}" -f $_.Exception.Message)
+      }
+    }
     Start-Sleep -Milliseconds 250
   }
 }
 
 if (-not $moved) {
-  Write-Diagnostic 'portable update replacement failed; the original executable was not relaunched'
+  Write-Diagnostic 'portable update replacement failed; attempting to restore and relaunch the existing executable'
+  if ((Test-Path -LiteralPath $backupPath -PathType Leaf) -and -not (Test-Path -LiteralPath $TargetPath -PathType Leaf)) {
+    Move-Item -LiteralPath $backupPath -Destination $TargetPath -Force -ErrorAction SilentlyContinue
+  }
   Remove-Item -LiteralPath $stagedPath -Force -ErrorAction SilentlyContinue
+  if (Test-Path -LiteralPath $TargetPath -PathType Leaf) {
+    Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+  } elseif (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+    Write-Diagnostic ("prior wrapper backup was preserved at {0}" -f $backupPath)
+  }
+  if (Test-Path -LiteralPath $TargetPath -PathType Leaf) {
+    try { Start-Process -FilePath $TargetPath -ErrorAction Stop | Out-Null } catch {
+      Write-Diagnostic ("could not relaunch the existing executable: {0}" -f $_.Exception.Message)
+    }
+  }
+  try {
+    Add-Type -AssemblyName PresentationFramework
+    [System.Windows.MessageBox]::Show(
+      "Arc Power could not complete the update. The existing version was relaunched when possible. Details: $DiagnosticPath",
+      'Arc Power update failed', 'OK', 'Warning'
+    ) | Out-Null
+  } catch { Write-Diagnostic 'could not display the update failure dialog' }
   exit 1
 }
 Remove-Item -LiteralPath $DownloadedPath -Force -ErrorAction SilentlyContinue
@@ -158,6 +214,13 @@ try {
   if (-not $relaunch -or $relaunch.HasExited) { throw 'portable update relaunch did not start' }
 } catch {
   Write-Diagnostic ("portable update relaunch failed: {0}" -f $_.Exception.Message)
+  try {
+    Add-Type -AssemblyName PresentationFramework
+    [System.Windows.MessageBox]::Show(
+      "Arc Power was updated but could not be started automatically. Start this file manually: $TargetPath. Details: $DiagnosticPath",
+      'Arc Power update could not relaunch', 'OK', 'Warning'
+    ) | Out-Null
+  } catch { Write-Diagnostic 'could not display the relaunch failure dialog' }
   exit 1
 }
 Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue

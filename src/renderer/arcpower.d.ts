@@ -399,6 +399,8 @@ export interface ArcPowerApi {
   updateCheck(intent?: 'startup' | 'manual'): Promise<{ available: boolean; version?: string; assetUrl?: string; assetName?: string }>;
   /** M25: download a release asset to temp. */
   updateDownload(assetUrl: string): Promise<{ ok: boolean; path: string }>;
+  /** M25: receive live byte-based progress while a release asset downloads. */
+  onUpdateDownloadProgress(callback: (progress: { percent: number }) => void): () => void;
   /** M25: install a downloaded update and quit the app. */
   updateInstall(filePath: string): Promise<void>;
 }

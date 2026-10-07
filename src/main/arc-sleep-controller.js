@@ -23,7 +23,7 @@ function normalizeBaseFrameLimit(value) {
 function rawState(value) {
   if (!value || typeof value !== 'object'
     || !Number.isInteger(value.limit) || value.limit < 0
-    || !Number.isInteger(value.denominator) || value.denominator < 0
+    || (value.denominator !== null && (!Number.isInteger(value.denominator) || value.denominator < 0))
     || typeof value.limiterEnabled !== 'boolean') return null;
   return { limit: value.limit, denominator: value.denominator, limiterEnabled: value.limiterEnabled };
 }
@@ -196,12 +196,20 @@ export function createArcSleepController({
   const readFromRoute = async (route) => {
     const normalizedRoute = normalizeRoute(route);
     try {
+      // RTSS's ordinary read is presentation-oriented and interprets an
+      // unreadable denominator as 1. Arc Sleep needs the exact raw value,
+      // including null, to compare and restore ownership without guessing.
       const result = normalizedRoute.source === 'igcl'
         ? await igclFrameLimiter?.getFrameLimit?.(normalizedRoute.deviceKey)
-        : await rtssFrameLimiter?.getFrameLimit?.();
+        : typeof rtssFrameLimiter?.getFrameLimitOwnership === 'function'
+          ? await rtssFrameLimiter.getFrameLimitOwnership()
+          : await rtssFrameLimiter?.getFrameLimit?.();
       if (normalizedRoute.source === 'igcl' && result?.deviceKey !== normalizedRoute.deviceKey) return null;
+      const exactState = normalizedRoute.source === 'rtss' && result?.state && typeof result.state === 'object'
+        ? result.state
+        : result;
       const state = result?.ok === true
-        ? rawState({ limit: result.limit, denominator: result.denominator ?? 1, limiterEnabled: result.limiterEnabled })
+        ? rawState({ limit: exactState.limit, denominator: exactState.denominator ?? null, limiterEnabled: exactState.limiterEnabled })
         : null;
       if (!state) return null;
       limiterRoute = normalizedRoute;
@@ -323,7 +331,11 @@ export function createArcSleepController({
       };
     }
     const observed = await readRawState(route);
-    const requested = rawState(result.observedState) ?? { limit: targetFps, denominator: 1, limiterEnabled: true };
+    const requested = rawState(result.observedState) ?? {
+      limit: targetFps,
+      denominator: normalizeRoute(route).source === 'rtss' && expectedState?.denominator === null ? null : 1,
+      limiterEnabled: true,
+    };
     if (!observed || !sameState(observed, requested) || observed.limiterEnabled !== true) {
       return { ok: false, error: `${route.source.toUpperCase()} cap read-back did not match Arc Sleep target`, observed };
     }

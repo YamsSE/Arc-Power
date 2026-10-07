@@ -83,6 +83,70 @@ test('startup task registration failure remains reported when startup intent cha
   assert.equal((await harness.loadSettings()).startWithWindows, true);
 });
 
+test('OC-locked GPU waiver is not required and acceptance touches neither driver nor settings', async () => {
+  let driverCalls = 0;
+  let storeWrites = 0;
+  const handlers = createIpcHandlers({
+    backend: {
+      async getCapabilities() { return { overclockingSupported: false, waiverAccepted: false }; },
+      async setWaiverAccepted() { driverCalls += 1; },
+    },
+    store: {
+      async loadSettings() { return { waiverAccepted: false }; },
+      async saveSettings() { storeWrites += 1; },
+    },
+    emit: () => {},
+  }).handlers;
+
+  assert.deepEqual(await handlers['waiver-get'](0), { accepted: false, required: false });
+  assert.deepEqual(await handlers['waiver-accept'](0), { accepted: false, required: false });
+  assert.equal(driverCalls, 0);
+  assert.equal(storeWrites, 0);
+});
+
+test('waiver remains an explicit requirement on OC-capable GPUs', async () => {
+  let driverCalls = 0;
+  let persisted = null;
+  const handlers = createIpcHandlers({
+    backend: {
+      async getCapabilities() { return { overclockingSupported: true, waiverAccepted: false }; },
+      async setWaiverAccepted() { driverCalls += 1; },
+    },
+    store: {
+      async loadSettings() { return {}; },
+      async saveSettings(settings) { persisted = settings; },
+    },
+    emit: () => {},
+  }).handlers;
+
+  assert.deepEqual(await handlers['waiver-get'](0), { accepted: false, required: true });
+  assert.deepEqual(await handlers['waiver-accept'](0), { accepted: true, required: true });
+  assert.equal(driverCalls, 1);
+  assert.equal(persisted.waiverAccepted, true);
+});
+
+test('update download progress is emitted to the renderer while the download runs', async () => {
+  const progressEvents = [];
+  let receivedArguments = null;
+  const handlers = createIpcHandlers({
+    backend: {},
+    store: { async loadSettings() { return {}; } },
+    emit(channel, payload) { progressEvents.push({ channel, payload }); },
+    buildKind: 'portable',
+    updateDownloadOperation: async (url, onProgress, buildKind) => {
+      receivedArguments = { url, buildKind };
+      onProgress(42.6);
+      return 'C:\\Users\\Tester\\AppData\\Local\\Temp\\arc-power-updates\\Arc-Power_Portable.exe';
+    },
+  }).handlers;
+
+  const result = await handlers['update:download']('https://github.com/YamsSE/Arc-Power/releases/download/v1.2.3/Arc-Power_Portable.exe');
+
+  assert.equal(result.ok, true);
+  assert.equal(receivedArguments.buildKind, 'portable');
+  assert.deepEqual(progressEvents, [{ channel: 'update:download-progress', payload: { percent: 43 } }]);
+});
+
 test('profiles settings save normalizes Arc Sleep and applies it inside its RTSS transaction', async () => {
   let settings = {
     waiverAccepted: false,

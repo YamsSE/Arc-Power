@@ -1394,6 +1394,7 @@ export function createIpcHandlers({
   buildKind = 'dev',
   portableWrapperPath = null,
   startupUpdateCheck = null,
+  updateDownloadOperation = null,
   // M4N (A.1): the window-path boot apply's outcome record (main.js
   // injects the session record; null when no boot apply ran this session -
   // the DEFAULT is null, tests never have a boot apply).
@@ -2869,6 +2870,53 @@ export function createIpcHandlers({
     };
   };
 
+  // A renderer can retain a numeric session ID across a GPU re-enumeration.
+  // Reconcile selected Graphics/Arc Sleep operations through the persisted
+  // durable key and verify the fresh backend target before using that ID.
+  // Missing or ambiguous identities never fall back to an ordinal.
+  const resolveSelectedGraphicsDevice = async (requestedId, expectedKey) => {
+    if (typeof expectedKey !== 'string' || expectedKey.length === 0) {
+      return { id: requestedId, target: await backend.getDeviceTarget?.(requestedId) };
+    }
+    // The fast path also avoids an inventory round trip when the current ID
+    // already proves the expected identity.
+    try {
+      const currentTarget = await backend.getDeviceTarget?.(requestedId);
+      const currentMatchesKey = currentTarget?.deviceKey === expectedKey
+        || (Array.isArray(currentTarget?.deviceKeys) && currentTarget.deviceKeys.includes(expectedKey));
+      if (currentMatchesKey && currentTarget.identityAmbiguous !== true) return { id: requestedId, target: currentTarget };
+    } catch { /* a stale numeric ID may no longer resolve; try durable inventory */ }
+    if (typeof backend.listDevices !== 'function') {
+      throw new Error(`stale GPU target: cannot resolve selected device identity ${expectedKey}`);
+    }
+    const devices = await backend.listDevices();
+    const matches = (Array.isArray(devices) ? devices : []).filter((device) =>
+      device?.identityAmbiguous !== true
+      && (device?.deviceKey === expectedKey
+        || (Array.isArray(device?.deviceKeys) && device.deviceKeys.includes(expectedKey)))
+      && Number.isInteger(device?.id));
+    if (matches.length !== 1) {
+      throw new Error(`stale GPU target: selected device identity ${expectedKey} is ${matches.length === 0 ? 'missing' : 'ambiguous'}`);
+    }
+    const match = matches[0];
+    const target = await backend.getDeviceTarget?.(match.id);
+    const targetMatchesKey = target?.deviceKey === expectedKey
+      || (Array.isArray(target?.deviceKeys) && target.deviceKeys.includes(expectedKey));
+    if (!target || target.identityAmbiguous === true || !targetMatchesKey) {
+      throw new Error(`stale GPU target: device id ${match.id} could not verify ${expectedKey}`);
+    }
+    return { id: match.id, target };
+  };
+
+  const selectedGraphicsDeviceId = async (requestedId) => {
+    let settings = null;
+    try { settings = await store.loadSettings(); } catch { /* retain existing backend identity checks */ }
+    const expectedKey = settings?.deviceId === requestedId
+      && typeof settings?.deviceKey === 'string' && settings.deviceKey.length > 0
+      ? settings.deviceKey : null;
+    return (await resolveSelectedGraphicsDevice(requestedId, expectedKey)).id;
+  };
+
   const readGraphicsState = async (deviceId, { useRtss = true, rtssTimeoutMs = 0 } = {}) => {
     const baseState = await backend.getGraphicsSettings(deviceId);
     const arcSleepSnapshot = arcSleepController?.getSnapshot?.() ?? null;
@@ -3308,10 +3356,9 @@ export function createIpcHandlers({
       // 'No GPU available.' first, plan-review S3). The backend never
       // throws - the all-false/null state is the honest degrade.
       'graphics:get': async (deviceId) => {
-        const read = async () => {
-          assertValidDeviceId(deviceId);
-          return readGraphicsState(deviceId);
-        };
+        assertValidDeviceId(deviceId);
+        const resolvedDeviceId = await selectedGraphicsDeviceId(deviceId);
+        const read = async () => readGraphicsState(resolvedDeviceId);
         return arcSleepController?.withTransaction
           ? arcSleepController.withTransaction(read)
           : read();
@@ -3321,7 +3368,8 @@ export function createIpcHandlers({
       // can recover even when the controller's serialized RTSS queue stalls.
       'arc-sleep-base-cap-get': async (deviceId) => {
         assertValidDeviceId(deviceId);
-        return readGraphicsState(deviceId, { rtssTimeoutMs: 1200 });
+        const resolvedDeviceId = await selectedGraphicsDeviceId(deviceId);
+        return readGraphicsState(resolvedDeviceId, { rtssTimeoutMs: 1200 });
       },
 
       'arc-sleep-state-get': async (...args) => {
@@ -3368,11 +3416,15 @@ export function createIpcHandlers({
             expectedDeviceKey = selectedSettings.deviceKey;
           }
         } catch { /* target resolution still has its backend identity checks */ }
-        const target = await backend.getDeviceTarget?.(deviceId);
-        if (expectedDeviceKey && target?.deviceKey !== expectedDeviceKey) {
-          throw new Error(`stale GPU target: device id ${deviceId} no longer resolves to ${expectedDeviceKey}`);
+        const resolved = await resolveSelectedGraphicsDevice(deviceId, expectedDeviceKey);
+        const resolvedDeviceId = resolved.id;
+        const target = resolved.target;
+        const targetMatchesKey = target?.deviceKey === expectedDeviceKey
+          || (Array.isArray(target?.deviceKeys) && target.deviceKeys.includes(expectedDeviceKey));
+        if (expectedDeviceKey && (!target || target.identityAmbiguous === true || !targetMatchesKey)) {
+          throw new Error(`stale GPU target: device id ${resolvedDeviceId} no longer resolves to ${expectedDeviceKey}`);
         }
-        const baseGraphicsState = await backend.getGraphicsSettings(deviceId);
+        const baseGraphicsState = await backend.getGraphicsSettings(resolvedDeviceId);
         let rtssFrameState = null;
         if (typeof rtssFrameLimiter?.getFrameLimit === 'function') {
           try { rtssFrameState = await rtssFrameLimiter.getFrameLimit(); } catch { /* IGCL fallback */ }
@@ -3419,11 +3471,11 @@ export function createIpcHandlers({
         if (Object.keys(settingsForDriver).length > 0) {
           try {
             if (typeof applyRunner?.graphicsApplyIsolated === 'function') {
-              driverOut = await applyRunner.graphicsApplyIsolated({ deviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings: settingsForDriver });
+              driverOut = await applyRunner.graphicsApplyIsolated({ deviceId: resolvedDeviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings: settingsForDriver });
             } else if (applyRunner?.needsWorker?.()) {
-              driverOut = await applyRunner.graphicsApply({ deviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings: settingsForDriver });
+              driverOut = await applyRunner.graphicsApply({ deviceId: resolvedDeviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings: settingsForDriver });
             } else {
-              driverOut = await backend.setGraphicsSettings(deviceId, settingsForDriver);
+              driverOut = await backend.setGraphicsSettings(resolvedDeviceId, settingsForDriver);
             }
           } catch (cause) {
             driverError = cause;
@@ -3439,7 +3491,7 @@ export function createIpcHandlers({
             ? await rtssApply.rollback()
             : await rollbackRtssFrameLimit(rtssApply));
         let graphicsState = null;
-        try { graphicsState = await readGraphicsState(deviceId, { useRtss: rtssApply?.handled !== false }); } catch { /* degraded */ }
+        try { graphicsState = await readGraphicsState(resolvedDeviceId, { useRtss: rtssApply?.handled !== false }); } catch { /* degraded */ }
         const perControl = { ...(driverOut?.perControl ?? {}) };
         if (rtssApply?.handled === true) {
           if (rtssRollback.ok === true && driverOut?.ok === true) {
@@ -3843,11 +3895,14 @@ export function createIpcHandlers({
       'waiver-get': async (deviceId) => {
         assertValidDeviceId(deviceId);
         const caps = await backend.getCapabilities(deviceId);
-        return { accepted: caps.waiverAccepted === true };
+        if (caps?.overclockingSupported === false) return { accepted: false, required: false };
+        return { accepted: caps.waiverAccepted === true, required: true };
       },
 
       'waiver-accept': async (deviceId) => {
         assertValidDeviceId(deviceId);
+        const caps = await backend.getCapabilities(deviceId);
+        if (caps?.overclockingSupported === false) return { accepted: false, required: false };
         // Product path: explicit user acceptance ONLY. Never auto-accept.
         // M2C-C: the driver-side waiver write needs elevation like any other
         // OC write - the non-elevated app delegates to the elevated worker.
@@ -3864,7 +3919,7 @@ export function createIpcHandlers({
         }
         const settings = await store.loadSettings();
         await store.saveSettings({ ...settings, waiverAccepted: true });
-        return { accepted: true };
+        return { accepted: true, required: true };
       },
 
       'telemetry-start': async (deviceId, options = {}) => {
@@ -4334,8 +4389,15 @@ export function createIpcHandlers({
         if (typeof assetUrl !== 'string' || !assetUrl.startsWith('https://')) {
           throw new Error('invalid asset URL');
         }
-        const { downloadUpdate } = await import('./auto-update.js');
-        const filePath = await downloadUpdate(assetUrl, undefined, buildKind);
+        const downloadUpdate = updateDownloadOperation
+          ?? (await import('./auto-update.js')).downloadUpdate;
+        const filePath = await downloadUpdate(assetUrl, (percent) => {
+          const numericPercent = Number(percent);
+          if (!Number.isFinite(numericPercent)) return;
+          emit('update:download-progress', {
+            percent: Math.max(0, Math.min(100, Math.round(numericPercent))),
+          });
+        }, buildKind);
         return { ok: true, path: filePath };
       },
 

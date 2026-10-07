@@ -802,9 +802,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // 'Arc Power Ver. 1.0.0'. M17e (round-2 N1): the 1.0.1 bump - the pinned
   // text is EXACTLY 'Arc Power Ver. 1.0.1 Beta' - the 1.0.1-beta.1 bump;
   // the suffix logic keeps the Beta line only for -beta.x versions).
-  // The 1.2.2 release pins the titlebar version surface.
-  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.2.2'`))) {
-    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.2.2')`);
+  // The 1.2.3 release pins the titlebar version surface.
+  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.2.3'`))) {
+    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.2.3')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -5251,9 +5251,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 // M11: the 1.0 Release - no suffix (the "Alpha" scheme is gone). M17e
 // (round-2 N1): the 1.0.1 bump joins the flips; M21: the 1.0.1-beta.1 bump
 // - the Settings row is the exact 'Arc Power Ver. 1.0.1 Beta' text (the
-// The 1.2.2 stable bump - Settings displays 'Arc Power Ver. 1.2.2'.
-if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.2.2'`))) {
-fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.2.2')`);
+// The 1.2.3 stable bump - Settings displays 'Arc Power Ver. 1.2.3'.
+if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.2.3'`))) {
+fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.2.3')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -5301,7 +5301,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
       fail('M4-D: Start minimized did not persist startMinimized=false');
     }
   }
-step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save; Log to file is intentionally absent here; version row 1.2.2');
+step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save; Log to file is intentionally absent here; version row 1.2.3');
   // Start with Windows round trip + the honest shared-registration state. The
   // Settings checkbox shows ON whenever the registration exists - the profile's
   // start-at-boot (ocOnBoot) can own it (F6: never a false mismatch).
@@ -6574,10 +6574,9 @@ export async function runFeaturesetVerify(win, fsId, backend = null) {
     if (!rowLabels.includes(want)) fail(`health card missing row '${want}' (got '${rowLabels}')`);
   }
   const waiverDetailExpr = `document.querySelector('.health-card .health-row[data-row="waiver"] .health-row-detail')?.textContent ?? ''`;
-  // M17 (B50-class): OC-locked devices read the neutral no-waiver text
-  // (ok dot, never clickable) - the old 'Not Accepted' error row was an
-  // un-answerable dead end there.
-  const waiverExpected = noOc ? 'Not supported on this GPU' : (bootAccepted ? 'Accepted' : 'Not Accepted');
+  // M17 (B50-class): OC-locked devices state plainly that no waiver applies
+  // (ok dot, never clickable) - they cannot accept a waiver without OC.
+  const waiverExpected = noOc ? 'No OC Capabilities = No OC Waiver' : (bootAccepted ? 'Accepted' : 'Not Accepted');
   if (!(await waitFor(win, `(${waiverDetailExpr}).trim() === '${waiverExpected}'`, 5000))) {
     fail(`M4-A: the health-card waiver row reads '${await js(waiverDetailExpr)}' (expected '${waiverExpected}')`);
   }

@@ -252,6 +252,11 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
         return;
       }
+      if (channel === 'update:download-progress') {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+        return;
+      }
       if (channel !== 'telemetry:sample') return;
       const win = getWindow();
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload);

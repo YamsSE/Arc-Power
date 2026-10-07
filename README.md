@@ -2,9 +2,9 @@
   <a href="https://discord.gg/nXAjasHy6e"><img src="https://api.iconify.design/simple-icons/discord.svg?color=%235865F2" alt="Join the Arc Power Discord" title="Join the Arc Power Discord" width="22" height="22"></a>
 </p>
 
-# Arc Power Ver. 1.2.2
+# Arc Power Ver. 1.2.3
 
-Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.2.2 improves Arc Sleep's inactivity and GPU-load adaptive caps, and reuses a long-lived worker for recurring system-stat queries. Arc Power also includes the Driver Library for browsing Intel driver releases and managing downloaded installers.
+Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.2.3 improves Arc Sleep frame limiting, update reliability, GPU target recovery, and Arc Pro waiver status. Arc Power also includes the Driver Library for browsing Intel driver releases and managing downloaded installers.
 
 ## What Arc Power does
 
@@ -32,7 +32,7 @@ AMD and NVIDIA adapters may appear for telemetry when their vendor libraries are
 
 ## Install
 
-Arc Power requires Windows 10 or 11, 64 bit, and an installed Intel graphics driver for Arc features. Download the latest [Version 1.2.2 release](https://github.com/YamsSE/Arc-Power/releases/latest):
+Arc Power requires Windows 10 or 11, 64 bit, and an installed Intel graphics driver for Arc features. Download the latest [Version 1.2.3 release](https://github.com/YamsSE/Arc-Power/releases/latest):
 
 - **Installer:** `Arc-Power_Installer.exe` installs Arc Power and supports elevated apply-at-startup behavior.
 - **Portable:** `Arc-Power_Portable.exe` runs without installation. Some hardware changes may request administrator approval.

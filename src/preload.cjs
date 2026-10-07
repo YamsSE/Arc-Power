@@ -212,6 +212,11 @@ contextBridge.exposeInMainWorld('arcPower', {
     ipcRenderer.on('intel-driver-download:progress', listener);
     return () => ipcRenderer.removeListener('intel-driver-download:progress', listener);
   },
+  onUpdateDownloadProgress: (cb) => {
+    const listener = (_event, progress) => cb(progress);
+    ipcRenderer.on('update:download-progress', listener);
+    return () => ipcRenderer.removeListener('update:download-progress', listener);
+  },
   // M4-D: pushed window-maximize state (the title-bar max button icon
   // follows the live state; main sends on maximize/unmaximize).
   onWindowMaximizedChanged: (cb) => {
