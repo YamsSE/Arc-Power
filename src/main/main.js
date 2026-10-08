@@ -84,7 +84,7 @@ import { createRecordingStatusPillWindow } from './recording-status-pill.js';
 // overlay.js stays untouched - this panel has its own lifecycle + its own
 // interactivity (NO setIgnoreMouseEvents).
 import { createAdvancedOverlayWindow } from './advanced-overlay.js';
-import { createStartup, createMockStartup } from './startup.js';
+import { createStartup, createMockStartup, reconcileStartupRegistration } from './startup.js';
 import { createRtssStartup, createMockRtssStartup } from './rtss-startup.js';
 import { createRtssProfileHelperProxy } from './rtss-profile-helper-proxy.js';
 import { createQuitTeardownGate } from './quit-teardown-gate.js';
@@ -2406,6 +2406,23 @@ async function main() {
         logonExecPath: portableStartupPath ?? process.execPath,
         useElevatedTask: app.isPackaged && process.platform === 'win32',
       });
+  // A prior packaged release could persist the user's startup intent while
+  // task creation failed. On the next manual launch, retry that registration
+  // from the saved intent so Windows can launch Arc Power on the next sign-in.
+  // Keep this off the critical startup path: a task query or UAC response must
+  // never hold the window or the current session's profile apply.
+  if (!mock && startup.registrationMode === 'task') {
+    const expectedIntentRevision = startup.getIntentRevision();
+    void Promise.all([store.loadSettings(), store.loadProfiles()])
+      .then(([settings, profiles]) => reconcileStartupRegistration({
+        startup,
+        settings,
+        profiles,
+        expectedIntentRevision,
+        log: (message) => console.log(`[startup] ${message}`),
+      }))
+      .catch((err) => console.log(`[startup] saved startup intent could not be restored: ${err.message}`));
+  }
   // RTSS startup is always an independent, unelevated HKCU Run value. It
   // must never reuse Arc Power's elevated startup task.
   const rtssStartup = mock

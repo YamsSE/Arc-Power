@@ -3,7 +3,129 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
 import { createQuitTeardownGate } from '../src/main/quit-teardown-gate.js';
-import { createStartup } from '../src/main/startup.js';
+import { createStartup, reconcileStartupRegistration } from '../src/main/startup.js';
+
+test('startup task reconciliation skips non-task registrations and absent intent', async () => {
+  let calls = 0;
+  const startup = {
+    registrationMode: 'run',
+    async get() { calls += 1; return { valueExists: false }; },
+    async set() { calls += 1; },
+  };
+  assert.deepEqual(await reconcileStartupRegistration({ startup, settings: { startWithWindows: true } }), { action: 'not-required' });
+  startup.registrationMode = 'task';
+  assert.deepEqual(await reconcileStartupRegistration({ startup, settings: { startWithWindows: false, ocOnBoot: true, activeProfileId: 'missing' }, profiles: [] }), { action: 'not-required' });
+  assert.equal(calls, 0);
+});
+
+test('startup task reconciliation accepts a valid active profile as saved intent', async () => {
+  const calls = [];
+  const result = await reconcileStartupRegistration({
+    startup: {
+      registrationMode: 'task',
+      async get() { calls.push('get'); return { valueExists: false }; },
+      async set(enabled) { calls.push(['set', enabled]); },
+    },
+    settings: { startWithWindows: false, ocOnBoot: true, activeProfileId: 'p1' },
+    profiles: [{ id: 'p1', name: 'Profile' }],
+  });
+  assert.deepEqual(result, { action: 'repaired' });
+  assert.deepEqual(calls, ['get', ['set', true]]);
+});
+
+test('startup task reconciliation restores the task for a valid per-GPU active profile', async () => {
+  const deviceKey = 'pnp:PCI\\VEN_8086&DEV_E20B&SUBSYS_60211849&REV_00\\6&1CC85095&0&00080018';
+  const calls = [];
+  const result = await reconcileStartupRegistration({
+    startup: {
+      registrationMode: 'task',
+      async get() { calls.push('get'); return { valueExists: false }; },
+      async set(enabled) { calls.push(['set', enabled]); },
+    },
+    settings: {
+      startWithWindows: false,
+      ocOnBoot: true,
+      activeProfileIds: { [deviceKey]: 'p1' },
+    },
+    profiles: [{ id: 'p1', name: 'B580', deviceKey }],
+  });
+  assert.deepEqual(result, { action: 'repaired' });
+  assert.deepEqual(calls, ['get', ['set', true]]);
+});
+
+test('startup task reconciliation leaves an already registered task alone', async () => {
+  let setCalls = 0;
+  const result = await reconcileStartupRegistration({
+    startup: {
+      registrationMode: 'task',
+      async get() { return { valueExists: true }; },
+      async set() { setCalls += 1; },
+    },
+    settings: { startWithWindows: true },
+  });
+  assert.deepEqual(result, { action: 'already-registered' });
+  assert.equal(setCalls, 0);
+});
+
+test('startup task reconciliation repairs a missing task and propagates setup errors', async () => {
+  const setupError = new Error('administrator approval is required');
+  let setCalls = 0;
+  const startup = {
+    registrationMode: 'task',
+    async get() { return { valueExists: false }; },
+    async set(enabled) { setCalls += 1; assert.equal(enabled, true); throw setupError; },
+  };
+  await assert.rejects(reconcileStartupRegistration({ startup, settings: { startWithWindows: true } }), setupError);
+  assert.equal(setCalls, 1);
+});
+
+test('a newer startup disable cancels a repair waiting on the task query', async () => {
+  let revision = 0;
+  let resolveTaskRead;
+  let markTaskReadStarted;
+  const taskReadStarted = new Promise((resolve) => { markTaskReadStarted = resolve; });
+  const calls = [];
+  const startup = {
+    registrationMode: 'task',
+    getIntentRevision: () => revision,
+    get() {
+      markTaskReadStarted();
+      return new Promise((resolve) => { resolveTaskRead = resolve; });
+    },
+    async set(enabled) {
+      revision += 1;
+      calls.push(enabled);
+    },
+  };
+
+  const reconciliation = reconcileStartupRegistration({
+    startup,
+    settings: { startWithWindows: false, ocOnBoot: true, activeProfileId: 'p1' },
+    profiles: [{ id: 'p1', name: 'Profile' }],
+    expectedIntentRevision: revision,
+  });
+  await taskReadStarted;
+  await startup.set(false);
+  resolveTaskRead({ valueExists: false });
+
+  assert.deepEqual(await reconciliation, { action: 'superseded' });
+  assert.deepEqual(calls, [false]);
+});
+
+test('packaged startup intent revision advances synchronously when a setting is written', async () => {
+  const execFile = async () => {
+    const error = new Error('task or registry value not found');
+    error.code = 1;
+    throw error;
+  };
+  const startup = createStartup({ execFile, useElevatedTask: true, cleanupLegacy: false });
+  assert.equal(startup.getIntentRevision(), 0);
+
+  const write = startup.set(false);
+  assert.equal(startup.getIntentRevision(), 1);
+  await write;
+  assert.equal(startup.getIntentRevision(), 1);
+});
 
 test('repeated quit requests wait for Arc Sleep teardown before closing its RTSS helper', async () => {
   let resolveTeardown;

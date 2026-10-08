@@ -22,6 +22,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { POWERSHELL_EXE } from './elevated-apply.js';
 import { decodeTaskXml, parseTaskXml } from './setup-boot.js';
+import { activeProfileEntries } from './store/profile-store.js';
 
 const execFile = promisify(nodeExecFile);
 
@@ -42,6 +43,38 @@ export const LEGACY_TASK_NAMES = ['ArcPowerAppOnBoot', 'ArcPowerApplyOnBoot'];
 export const LEGACY_RUN_VALUE_NAMES = ['Arc Power'];
 // reg.exe exit code when the queried/deleted value does not exist.
 export const REG_NOT_FOUND = 1;
+
+/**
+ * Restore a packaged logon task when persisted settings still request startup.
+ * The normal startup registration is shared by Start with Windows and the
+ * active profile's apply-on-boot setting.
+ * @param {{ startup: { registrationMode?: string, get: () => Promise<{ valueExists?: boolean }>, getIntentRevision?: () => number, set: (enabled: boolean) => Promise<unknown> }, settings?: object, profiles?: object[], expectedIntentRevision?: number, log?: (...args: unknown[]) => void }} deps
+ * @returns {Promise<{ action: 'not-required'|'already-registered'|'repaired'|'superseded' }>}
+ */
+export async function reconcileStartupRegistration({ startup, settings = {}, profiles = [], expectedIntentRevision, log = () => {} } = {}) {
+  if (startup?.registrationMode !== 'task') {
+    return { action: 'not-required' };
+  }
+  const intentIsCurrent = () => expectedIntentRevision === undefined
+    || typeof startup.getIntentRevision !== 'function'
+    || startup.getIntentRevision() === expectedIntentRevision;
+  if (!intentIsCurrent()) return { action: 'superseded' };
+  const hasActiveBootProfile = settings.ocOnBoot === true
+    && activeProfileEntries(settings, profiles).length > 0;
+  if (settings.startWithWindows !== true && !hasActiveBootProfile) {
+    return { action: 'not-required' };
+  }
+  const state = await startup.get();
+  // A settings save may have finished while the Task Scheduler query was
+  // pending. Never let this stale snapshot re-enable a task after the user
+  // changed or disabled the startup intent.
+  if (!intentIsCurrent()) return { action: 'superseded' };
+  if (state?.valueExists === true) return { action: 'already-registered' };
+  log('saved startup/profile intent has no matching logon task; restoring it');
+  await startup.set(true);
+  log('logon task restored from saved startup/profile intent');
+  return { action: 'repaired' };
+}
 
 /**
  * Build the task action for the packaged app's normal UI launch. The action
@@ -209,6 +242,7 @@ export function createStartup(deps = {}) {
   const taskName = deps.taskName ?? STARTUP_TASK_NAME;
   const powershellExe = deps.powershellExe ?? POWERSHELL_EXE;
   const cleanupLegacy = deps.cleanupLegacy !== false;
+  let startupIntentRevision = 0;
   // Keep an ordered queue of packaged set intents. A call only coalesces with
   // the latest queued direction; an A->B->A sequence therefore retains its
   // final A intent instead of joining the older in-flight A operation.
@@ -271,6 +305,10 @@ export function createStartup(deps = {}) {
     // Profiles page. Legacy Run registration failures retain their previous
     // best-effort save behavior for compatibility.
     registrationMode: useElevatedTask ? 'task' : 'run',
+    // The launch-time repair captures this before its asynchronous store and
+    // Task Scheduler reads. Explicit setting writes advance it synchronously
+    // so a stale repair cannot re-enable startup after a newer user choice.
+    getIntentRevision() { return startupIntentRevision; },
     /**
      * The raw registration truth: whether our Run value/task exists and its
      * value. A query failure (absent value -> exit 1, or any other error)
@@ -299,6 +337,7 @@ export function createStartup(deps = {}) {
      * @returns {Promise<{ valueExists: boolean, value: string | null }>}
      */
     async set(enabled) {
+      startupIntentRevision += 1;
       if (useElevatedTask) {
         const previousOperation = startupSetQueueTail;
         if (previousOperation?.enabled === enabled) return previousOperation.promise;
