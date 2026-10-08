@@ -307,5 +307,5 @@ contextBridge.exposeInMainWorld('arcPower', {
   // M25: auto-update IPC (GitHub Releases check/download/install).
   updateCheck: (intent = 'startup') => ipcRenderer.invoke('update:check', { intent }),
   updateDownload: (assetUrl) => ipcRenderer.invoke('update:download', assetUrl),
-  updateInstall: (filePath) => ipcRenderer.invoke('update:install', filePath),
+  updateInstall: (token) => ipcRenderer.invoke('update:install', token),
 });

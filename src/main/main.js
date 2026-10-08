@@ -86,7 +86,8 @@ import { createRecordingStatusPillWindow } from './recording-status-pill.js';
 import { createAdvancedOverlayWindow } from './advanced-overlay.js';
 import { createStartup, createMockStartup } from './startup.js';
 import { createRtssStartup, createMockRtssStartup } from './rtss-startup.js';
-import { createRtssProfileController } from './rtss-profile.js';
+import { createRtssProfileHelperProxy } from './rtss-profile-helper-proxy.js';
+import { createQuitTeardownGate } from './quit-teardown-gate.js';
 import { attachStartupUpdateStatus, createStartupSplash } from './splash.js';
 import { runInstallerMode } from './installer.js';
 import { INSTALLED_EXECUTABLE_NAME, INSTALLED_LAUNCH_ENV, installerModeFromEnvironment, resolveNewerInstalledExecutable } from './installer-pure.js';
@@ -2416,9 +2417,23 @@ async function main() {
   // Arc Power still owns the text, colors, scale tag, and telemetry content.
   const rtssProfile = mock
     ? null
-    : createRtssProfileController({
-        getExecutablePath: async () => (await rtssStartup.get())?.executablePath ?? null,
-        isRunning: async () => await rtssStartup.isRunning?.() === true,
+    : createRtssProfileHelperProxy({
+        entryPath: app.isPackaged
+          ? path.join(app.getAppPath(), 'src', 'main', 'rtss-profile-helper-entry.js')
+          : path.join(__dirname, 'rtss-profile-helper-entry.js'),
+        getRuntime: async () => {
+          try {
+            const startupState = await rtssStartup.get();
+            return {
+              executablePath: startupState?.executablePath ?? null,
+              isRunning: await rtssStartup.isRunning?.() === true,
+            };
+          } catch {
+            // An unavailable RTSS process probe is passed through as current
+            // state; the controller will return its normal fallback result.
+            return { executablePath: null, isRunning: false };
+          }
+        },
       });
   // The product telemetry HUD is rendered by RTSS itself. Keep the FPS lane
   // mutable because the foreground/process ownership seam is created after
@@ -2595,18 +2610,26 @@ async function main() {
   // swallowed by the window close interception (the close event fires
   // during a quit too; the flag lets it through).
   let isQuitting = false;
-  let quitTeardownStarted = false;
+  let rtssProfileClosed = false;
+  const closeRtssProfile = () => {
+    if (rtssProfileClosed) return;
+    rtssProfileClosed = true;
+    // RTSSHooks can hang inside synchronous native code. The proxy's close
+    // kills that isolated child without waiting and prevents any later call.
+    try { rtssProfile?.close?.(); } catch { /* best effort */ }
+  };
+  const handleQuitTeardown = createQuitTeardownGate({
+    getTeardown: () => teardown,
+    closeRtssHelper: closeRtssProfile,
+    quit: () => app.quit(),
+  });
   app.on('before-quit', (event) => {
     isQuitting = true;
     try { recordingEditor.shutdown(); } catch { /* editor child cleanup is best effort */ }
     // M99: Electron otherwise proceeds while the async Ascent SHUTDOWN is
     // still queued. Hold the first quit event, await the bounded teardown,
     // then re-enter app.quit once so the child has a chance to finalize.
-    if (!quitTeardownStarted && teardown) {
-      event.preventDefault();
-      quitTeardownStarted = true;
-      void teardown().catch(() => {}).finally(() => app.quit());
-    }
+    handleQuitTeardown(event);
     void backend.close().catch(() => {});
     void oldIgcl?.close?.().catch(() => {});
     void lhmTelemetry?.close?.().catch(() => {});

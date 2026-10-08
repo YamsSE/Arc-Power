@@ -1,6 +1,58 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
+import { createQuitTeardownGate } from '../src/main/quit-teardown-gate.js';
+
+test('repeated quit requests wait for Arc Sleep teardown before closing its RTSS helper', async () => {
+  let resolveTeardown;
+  let teardownCalls = 0;
+  let helperCloseCalls = 0;
+  let quitCalls = 0;
+  const teardown = () => {
+    teardownCalls += 1;
+    return new Promise((resolve) => { resolveTeardown = resolve; });
+  };
+  const handleQuit = createQuitTeardownGate({
+    getTeardown: () => teardown,
+    closeRtssHelper: () => { helperCloseCalls += 1; },
+    quit: () => { quitCalls += 1; },
+  });
+  const makeEvent = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
+
+  const firstQuit = makeEvent();
+  handleQuit(firstQuit);
+  await Promise.resolve();
+  const repeatedQuit = makeEvent();
+  handleQuit(repeatedQuit);
+  assert.equal(firstQuit.prevented, true);
+  assert.equal(repeatedQuit.prevented, true);
+  assert.equal(teardownCalls, 1);
+  assert.equal(helperCloseCalls, 0);
+  assert.equal(quitCalls, 0);
+
+  resolveTeardown();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(helperCloseCalls, 1);
+  assert.equal(quitCalls, 1);
+
+  const quitReentry = makeEvent();
+  handleQuit(quitReentry);
+  assert.equal(quitReentry.prevented, false);
+  assert.equal(helperCloseCalls, 1);
+});
+
+test('quit closes the RTSS helper directly when Arc Sleep teardown is not registered', () => {
+  let helperCloseCalls = 0;
+  const handleQuit = createQuitTeardownGate({
+    getTeardown: () => null,
+    closeRtssHelper: () => { helperCloseCalls += 1; },
+    quit: () => assert.fail('quit should not be re-entered'),
+  });
+  const event = { prevented: false, preventDefault() { this.prevented = true; } };
+  handleQuit(event);
+  assert.equal(event.prevented, false);
+  assert.equal(helperCloseCalls, 1);
+});
 
 function createTaskStartupSaveHarness() {
   let settings = {
@@ -135,16 +187,16 @@ test('update download progress is emitted to the renderer while the download run
     buildKind: 'portable',
     updateDownloadOperation: async (url, onProgress, buildKind) => {
       receivedArguments = { url, buildKind };
-      onProgress(42.6);
-      return 'C:\\Users\\Tester\\AppData\\Local\\Temp\\arc-power-updates\\Arc-Power_Portable.exe';
+      onProgress({ percent: 42.6, downloadedBytes: 426, totalBytes: 1000 });
+      return { token: 'opaque-test-receipt' };
     },
   }).handlers;
 
   const result = await handlers['update:download']('https://github.com/YamsSE/Arc-Power/releases/download/v1.2.3/Arc-Power_Portable.exe');
 
-  assert.equal(result.ok, true);
+  assert.deepEqual(result, { ok: true, token: 'opaque-test-receipt' });
   assert.equal(receivedArguments.buildKind, 'portable');
-  assert.deepEqual(progressEvents, [{ channel: 'update:download-progress', payload: { percent: 43 } }]);
+  assert.deepEqual(progressEvents, [{ channel: 'update:download-progress', payload: { percent: 43, downloadedBytes: 426, totalBytes: 1000 } }]);
 });
 
 test('profiles settings save normalizes Arc Sleep and applies it inside its RTSS transaction', async () => {

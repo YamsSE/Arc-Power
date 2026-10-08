@@ -4383,31 +4383,30 @@ export function createIpcHandlers({
         return checkForUpdates({ buildKind });
       },
 
-      // M25: download an update asset to temp. Returns { ok, path } or
-      // throws on failure. The renderer sends the assetUrl from the check.
+      // M25: download an update asset and return only its opaque main-process receipt.
       'update:download': async (assetUrl) => {
         if (typeof assetUrl !== 'string' || !assetUrl.startsWith('https://')) {
           throw new Error('invalid asset URL');
         }
         const downloadUpdate = updateDownloadOperation
           ?? (await import('./auto-update.js')).downloadUpdate;
-        const filePath = await downloadUpdate(assetUrl, (percent) => {
-          const numericPercent = Number(percent);
-          if (!Number.isFinite(numericPercent)) return;
+        const receipt = await downloadUpdate(assetUrl, (progress) => {
+          if (!progress || typeof progress !== 'object') return;
           emit('update:download-progress', {
-            percent: Math.max(0, Math.min(100, Math.round(numericPercent))),
+            downloadedBytes: progress.downloadedBytes,
+            totalBytes: progress.totalBytes,
+            percent: Number.isFinite(progress.percent) ? Math.max(0, Math.min(100, Math.round(progress.percent))) : null,
           });
         }, buildKind);
-        return { ok: true, path: filePath };
+        return { ok: true, token: receipt.token };
       },
 
       // M25: install a downloaded update and quit the app. The main process
-      // validates the temp path again before either launching the installer
-      // or starting the portable replacement handoff.
-      'update:install': async (filePath) => {
-        if (typeof filePath !== 'string') throw new Error('missing file path');
+      // validates the main-owned receipt and file digest before handoff.
+      'update:install': async (token) => {
+        if (typeof token !== 'string') throw new Error('missing update receipt');
         const { installUpdate } = await import('./auto-update.js');
-        await installUpdate(filePath, { buildKind, portableWrapperPath });
+        await installUpdate(token, { buildKind, portableWrapperPath });
       },
 
       // FPS/frametime via native RTSS shared memory. The default adapter is

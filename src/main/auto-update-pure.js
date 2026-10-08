@@ -58,6 +58,44 @@ export function selectReleaseAsset(release, buildKind) {
   return {
     assetName: expectedName,
     assetUrl: validateReleaseAssetUrl(asset.browser_download_url, expectedName),
+    assetSize: Number.isSafeInteger(asset.size) && asset.size > 0 ? asset.size : null,
+    assetDigest: typeof asset.digest === 'string' ? asset.digest : null,
+  };
+}
+
+export function parseSha256Digest(value) {
+  if (typeof value !== 'string') return null;
+  const match = /^sha256:([a-f0-9]{64})$/i.exec(value.trim());
+  return match ? match[1].toLowerCase() : null;
+}
+
+/** Keep update paths and digest receipts private to the main process. */
+export function createUpdateReceiptRegistry({ createToken } = {}) {
+  if (typeof createToken !== 'function') throw new TypeError('update receipt token generator is required');
+  const receipts = new Map();
+  const installing = new Set();
+  return {
+    issue(receipt) {
+      const token = createToken();
+      receipts.set(token, receipt);
+      return token;
+    },
+    async install(token, buildKind, performInstall) {
+      if (typeof token !== 'string' || !/^[a-f0-9-]{36}$/i.test(token)) throw new Error('Invalid update receipt');
+      const receipt = receipts.get(token);
+      if (!receipt || receipt.buildKind !== buildKind) throw new Error('Update receipt is unavailable; download the update again');
+      if (installing.has(token)) throw new Error('This update is already being installed');
+      if (typeof performInstall !== 'function') throw new TypeError('update install operation is required');
+      installing.add(token);
+      try {
+        const result = await performInstall(receipt);
+        receipts.delete(token);
+        return result;
+      } finally {
+        // A failed handoff can be retried with the same verified receipt.
+        installing.delete(token);
+      }
+    },
   };
 }
 
@@ -106,13 +144,22 @@ export function createPortableHandoffScript() {
   return `param(
   [Parameter(Mandatory = $true)][int]$ParentPid,
   [Parameter(Mandatory = $true)][string]$DownloadedPath,
+  [Parameter(Mandatory = $true)][string]$ExpectedSha256,
   [Parameter(Mandatory = $true)][string]$TargetPath,
-  [Parameter(Mandatory = $true)][string]$DiagnosticPath
+  [Parameter(Mandatory = $true)][string]$DiagnosticPath,
+  [Parameter(Mandatory = $true)][string]$ResultPath
 )
 
 $ErrorActionPreference = 'Stop'
 function Write-Diagnostic([string]$message) {
   try { Add-Content -LiteralPath $DiagnosticPath -Value ("{0:u} {1}" -f [DateTime]::UtcNow, $message) -Encoding UTF8 } catch {}
+}
+function Write-Result([string]$state, [string]$message) {
+  try {
+    $temporary = "$ResultPath.tmp"
+    @{ state = $state; message = $message; completedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath $temporary -Encoding UTF8
+    Move-Item -LiteralPath $temporary -Destination $ResultPath -Force
+  } catch { Write-Diagnostic ("could not write durable handoff result: {0}" -f $_.Exception.Message) }
 }
 while (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {
   Start-Sleep -Milliseconds 250
@@ -128,11 +175,14 @@ for ($attempt = 0; $attempt -lt 20 -and -not $moved; $attempt++) {
     }
     Remove-Item -LiteralPath $stagedPath -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
-    Copy-Item -LiteralPath $DownloadedPath -Destination $stagedPath -Force
-    $sourceLength = (Get-Item -LiteralPath $DownloadedPath).Length
-    $stagedLength = (Get-Item -LiteralPath $stagedPath).Length
-    if ($sourceLength -le 0 -or $stagedLength -ne $sourceLength) { throw 'staged update length mismatch' }
+    if ($ExpectedSha256 -notmatch '^[A-Fa-f0-9]{64}$') { throw 'trusted update SHA-256 digest is invalid' }
     $sourceHash = (Get-FileHash -LiteralPath $DownloadedPath -Algorithm SHA256).Hash
+    if ($sourceHash -ne $ExpectedSha256.ToUpperInvariant()) { throw 'downloaded update SHA-256 does not match the trusted release digest' }
+    $sourceLength = (Get-Item -LiteralPath $DownloadedPath).Length
+    Copy-Item -LiteralPath $DownloadedPath -Destination $stagedPath -Force
+    $stagedLength = (Get-Item -LiteralPath $stagedPath).Length
+    $stagedHash = (Get-FileHash -LiteralPath $stagedPath -Algorithm SHA256).Hash
+    if ($sourceLength -le 0 -or $stagedLength -ne $sourceLength -or $stagedHash -ne $ExpectedSha256.ToUpperInvariant()) { throw 'staged update does not match the trusted release digest' }
 
     if (Test-Path -LiteralPath $TargetPath -PathType Leaf) {
       try {
@@ -169,7 +219,6 @@ for ($attempt = 0; $attempt -lt 20 -and -not $moved; $attempt++) {
       }
       throw 'replacement hash verification failed'
     }
-    Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
   } catch {
     Write-Diagnostic ("replacement attempt {0} failed: {1}" -f $attempt, $_.Exception.Message)
     Remove-Item -LiteralPath $stagedPath -Force -ErrorAction SilentlyContinue
@@ -199,6 +248,7 @@ if (-not $moved) {
       Write-Diagnostic ("could not relaunch the existing executable: {0}" -f $_.Exception.Message)
     }
   }
+  Write-Result 'failed' 'Portable replacement failed; the previous executable was relaunched when possible.'
   try {
     Add-Type -AssemblyName PresentationFramework
     [System.Windows.MessageBox]::Show(
@@ -208,12 +258,26 @@ if (-not $moved) {
   } catch { Write-Diagnostic 'could not display the update failure dialog' }
   exit 1
 }
-Remove-Item -LiteralPath $DownloadedPath -Force -ErrorAction SilentlyContinue
 try {
   $relaunch = Start-Process -FilePath $TargetPath -PassThru -ErrorAction Stop
-  if (-not $relaunch -or $relaunch.HasExited) { throw 'portable update relaunch did not start' }
+  if (-not $relaunch) { throw 'portable update relaunch did not start' }
+  Start-Sleep -Seconds 8
+  $relaunch.Refresh()
+  if ($relaunch.HasExited) { throw 'updated Arc Power exited during startup' }
+  Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $DownloadedPath -Force -ErrorAction SilentlyContinue
+  Write-Result 'succeeded' 'Updated Arc Power remained running after restart.'
 } catch {
   Write-Diagnostic ("portable update relaunch failed: {0}" -f $_.Exception.Message)
+  if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+    try {
+      Remove-Item -LiteralPath $TargetPath -Force -ErrorAction SilentlyContinue
+      Move-Item -LiteralPath $backupPath -Destination $TargetPath -Force
+      Start-Process -FilePath $TargetPath -ErrorAction Stop | Out-Null
+      Write-Diagnostic 'restored and relaunched the previous executable'
+    } catch { Write-Diagnostic ("could not restore and relaunch previous executable: {0}" -f $_.Exception.Message) }
+  }
+  Write-Result 'failed' 'Updated Arc Power failed to start; the previous executable was restored when possible.'
   try {
     Add-Type -AssemblyName PresentationFramework
     [System.Windows.MessageBox]::Show(
