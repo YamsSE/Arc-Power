@@ -209,10 +209,10 @@ export function createStartup(deps = {}) {
   const taskName = deps.taskName ?? STARTUP_TASK_NAME;
   const powershellExe = deps.powershellExe ?? POWERSHELL_EXE;
   const cleanupLegacy = deps.cleanupLegacy !== false;
-  // A declined/failing UAC must not produce a prompt storm from concurrent
-  // settings saves. A new app launch is the retry boundary.
-  let elevatedSetupAttempted = false;
-  let elevatedDeleteAttempted = false;
+  // Keep an ordered queue of packaged set intents. A call only coalesces with
+  // the latest queued direction; an A->B->A sequence therefore retains its
+  // final A intent instead of joining the older in-flight A operation.
+  let startupSetQueueTail = null;
 
   const readTask = async () => {
     let exists = false;
@@ -300,13 +300,15 @@ export function createStartup(deps = {}) {
      */
     async set(enabled) {
       if (useElevatedTask) {
+        const previousOperation = startupSetQueueTail;
+        if (previousOperation?.enabled === enabled) return previousOperation.promise;
+        const operation = (async () => {
+        if (previousOperation) {
+          try { await previousOperation.promise; } catch { /* preserve the later explicit intent after a failed operation */ }
+        }
         const current = await readTask();
         if (enabled) {
           if (!current.valueExists) {
-            if (elevatedSetupAttempted) {
-              throw new Error('startup-set: administrator approval is required to create the Windows startup task (restart Arc Power to retry)');
-            }
-            elevatedSetupAttempted = true;
             const exitCode = await runElevated(buildStartupTaskCommand(execPath));
             if (exitCode !== 0) {
               throw new Error('startup-set: administrator approval is required to create the Windows startup task');
@@ -327,10 +329,6 @@ export function createStartup(deps = {}) {
         // place would let an old executable launch at the next logon while
         // the UI claims Start with Windows is off.
         if (current.taskExists) {
-          if (elevatedDeleteAttempted) {
-            throw new Error('startup-set: administrator approval is required to remove the Windows startup task (restart Arc Power to retry)');
-          }
-          elevatedDeleteAttempted = true;
           const exitCode = await runElevated(`schtasks /delete /tn ${taskName} /f`);
           if (exitCode !== 0) {
             throw new Error('startup-set: administrator approval is required to remove the Windows startup task');
@@ -343,6 +341,14 @@ export function createStartup(deps = {}) {
           throw new Error('startup-set: the Windows startup task could not be removed');
         }
         return publicTaskState(afterDelete);
+        })();
+        const queuedOperation = { enabled, promise: operation };
+        startupSetQueueTail = queuedOperation;
+        try {
+          return await operation;
+        } finally {
+          if (startupSetQueueTail === queuedOperation) startupSetQueueTail = null;
+        }
       }
       if (enabled) {
         try {

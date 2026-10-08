@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
 import { createQuitTeardownGate } from '../src/main/quit-teardown-gate.js';
+import { createStartup } from '../src/main/startup.js';
 
 test('repeated quit requests wait for Arc Sleep teardown before closing its RTSS helper', async () => {
   let resolveTeardown;
@@ -133,6 +135,250 @@ test('startup task registration failure remains reported when startup intent cha
     harness.startupError,
   );
   assert.equal((await harness.loadSettings()).startWithWindows, true);
+});
+
+test('startup task registration failure is reported for an explicit same-value intent retry', async () => {
+  const harness = createTaskStartupSaveHarness();
+
+  await assert.rejects(
+    harness.handlers['profiles-settings-save']({ startWithWindows: false }),
+    harness.startupError,
+  );
+  assert.equal((await harness.loadSettings()).startWithWindows, false);
+});
+
+test('unrelated settings saves remain best-effort when startup task registration fails', async () => {
+  const harness = createTaskStartupSaveHarness();
+
+  const result = await harness.handlers['profiles-settings-save']({ theme: 'light' });
+  assert.equal(result.theme, 'light');
+  assert.equal((await harness.loadSettings()).theme, 'light');
+});
+
+test('a failed startup task elevation can be retried without restarting Arc Power', async () => {
+  let prompts = 0;
+  const startup = createStartup({
+    useElevatedTask: true,
+    execPath: 'C:/ArcPower/ArcPower.exe',
+    cleanupLegacy: false,
+    async execFile() {
+      const error = new Error('task missing');
+      error.code = 1;
+      throw error;
+    },
+    spawnFn() {
+      prompts += 1;
+      const child = new EventEmitter();
+      queueMicrotask(() => child.emit('exit', 1223));
+      return child;
+    },
+  });
+
+  await assert.rejects(startup.set(true), /administrator approval is required/);
+  await assert.rejects(startup.set(true), /administrator approval is required/);
+  assert.equal(prompts, 2);
+});
+
+test('concurrent startup task requests share one elevation attempt', async () => {
+  let releasePrompt;
+  let prompts = 0;
+  const startup = createStartup({
+    useElevatedTask: true,
+    execPath: 'C:/ArcPower/ArcPower.exe',
+    cleanupLegacy: false,
+    async execFile() {
+      const error = new Error('task missing');
+      error.code = 1;
+      throw error;
+    },
+    spawnFn() {
+      prompts += 1;
+      const child = new EventEmitter();
+      releasePrompt = () => child.emit('exit', 1223);
+      return child;
+    },
+  });
+
+  const first = startup.set(true);
+  const second = startup.set(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(prompts, 1);
+  releasePrompt();
+  await Promise.all([
+    assert.rejects(first, /administrator approval is required/),
+    assert.rejects(second, /administrator approval is required/),
+  ]);
+});
+
+test('a delayed startup task precheck cannot prompt again after another request verifies setup', async () => {
+  let releaseInitialQuery;
+  let taskExists = false;
+  let queryCalls = 0;
+  let prompts = 0;
+  const startup = createStartup({
+    useElevatedTask: true,
+    execPath: 'C:/ArcPower/ArcPower.exe',
+    cleanupLegacy: false,
+    execFile(_file, args) {
+      if (_file === 'reg') return Promise.resolve({ stdout: '' });
+      if (args[0] === '/query') {
+        if (args[args.length - 1] === '/xml') {
+          if (!taskExists) {
+            const error = new Error('task missing');
+            error.code = 1;
+            return Promise.reject(error);
+          }
+          return Promise.resolve({ stdout: Buffer.from('<Task><Settings><Enabled>true</Enabled></Settings><Actions><Exec><Command>C:/ArcPower/ArcPower.exe</Command><Arguments></Arguments></Exec></Actions></Task>') });
+        }
+        queryCalls += 1;
+        if (queryCalls === 1) return new Promise((_resolve, reject) => { releaseInitialQuery = () => {
+          const error = new Error('task missing');
+          error.code = 1;
+          reject(error);
+        }; });
+        if (!taskExists) {
+          const error = new Error('task missing');
+          error.code = 1;
+          return Promise.reject(error);
+        }
+        return Promise.resolve({ stdout: '' });
+      }
+      const error = new Error('unexpected command');
+      return Promise.reject(error);
+    },
+    spawnFn() {
+      prompts += 1;
+      const child = new EventEmitter();
+      queueMicrotask(() => { taskExists = true; child.emit('exit', 0); });
+      return child;
+    },
+  });
+
+  const first = startup.set(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = startup.set(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(queryCalls, 1);
+  releaseInitialQuery();
+  await Promise.all([first, second]);
+  assert.equal(prompts, 1);
+  assert.equal(queryCalls, 3); // initial precheck, setup verification, and final returned state
+});
+
+test('opposite startup task changes wait for the active operation to verify', async () => {
+  let taskExists = true;
+  let releaseDelete;
+  const commands = [];
+  let promptCount = 0;
+  let activePrompts = 0;
+  let maxActivePrompts = 0;
+  const startup = createStartup({
+    useElevatedTask: true,
+    execPath: 'C:/ArcPower/ArcPower.exe',
+    cleanupLegacy: false,
+    async execFile(_file, args) {
+      if (_file === 'reg') return { stdout: '' };
+      if (args[0] !== '/query') throw new Error('unexpected command');
+      if (!taskExists) {
+        const error = new Error('task missing');
+        error.code = 1;
+        throw error;
+      }
+      if (args[args.length - 1] === '/xml') {
+        return { stdout: Buffer.from('<Task><Settings><Enabled>true</Enabled></Settings><Actions><Exec><Command>C:/ArcPower/ArcPower.exe</Command><Arguments></Arguments></Exec></Actions></Task>') };
+      }
+      return { stdout: '' };
+    },
+    spawnFn() {
+      const command = promptCount++ === 0 ? 'delete' : 'create';
+      commands.push(command);
+      activePrompts += 1;
+      maxActivePrompts = Math.max(maxActivePrompts, activePrompts);
+      const child = new EventEmitter();
+      const finish = () => {
+        activePrompts -= 1;
+        taskExists = command === 'create';
+        child.emit('exit', 0);
+      };
+      if (command === 'delete') releaseDelete = finish;
+      else queueMicrotask(finish);
+      return child;
+    },
+  });
+
+  const disable = startup.set(false);
+  await new Promise((resolve) => setImmediate(resolve));
+  const enable = startup.set(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(commands, ['delete']);
+  releaseDelete();
+  await Promise.all([disable, enable]);
+  assert.deepEqual(commands, ['delete', 'create']);
+  assert.equal(maxActivePrompts, 1);
+});
+
+test('A-B-A startup intent changes stay ordered and finish with the newest intent', async () => {
+  let taskExists = false;
+  const commands = [];
+  const releasePrompts = [];
+  let activePrompts = 0;
+  let maxActivePrompts = 0;
+  const startup = createStartup({
+    useElevatedTask: true,
+    execPath: 'C:/ArcPower/ArcPower.exe',
+    cleanupLegacy: false,
+    async execFile(_file, args) {
+      if (_file === 'reg') return { stdout: '' };
+      if (args[0] !== '/query') throw new Error('unexpected command');
+      if (!taskExists) {
+        const error = new Error('task missing');
+        error.code = 1;
+        throw error;
+      }
+      if (args[args.length - 1] === '/xml') {
+        return { stdout: Buffer.from('<Task><Settings><Enabled>true</Enabled></Settings><Actions><Exec><Command>C:/ArcPower/ArcPower.exe</Command><Arguments></Arguments></Exec></Actions></Task>') };
+      }
+      return { stdout: '' };
+    },
+    spawnFn() {
+      const command = commands.length === 1 ? 'delete' : 'create';
+      commands.push(command);
+      activePrompts += 1;
+      maxActivePrompts = Math.max(maxActivePrompts, activePrompts);
+      const child = new EventEmitter();
+      releasePrompts.push(() => {
+        activePrompts -= 1;
+        taskExists = command === 'create';
+        child.emit('exit', 0);
+      });
+      return child;
+    },
+  });
+  const waitForPrompts = async (count) => {
+    for (let attempt = 0; attempt < 20 && commands.length < count; attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(commands.length, count);
+  };
+
+  const firstEnable = startup.set(true);
+  await waitForPrompts(1);
+  const disable = startup.set(false);
+  const finalEnable = startup.set(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(commands, ['create']);
+
+  releasePrompts[0]();
+  await waitForPrompts(2);
+  assert.deepEqual(commands, ['create', 'delete']);
+  releasePrompts[1]();
+  await waitForPrompts(3);
+  assert.deepEqual(commands, ['create', 'delete', 'create']);
+  releasePrompts[2]();
+  await Promise.all([firstEnable, disable, finalEnable]);
+
+  assert.equal(maxActivePrompts, 1);
+  assert.equal((await startup.get()).valueExists, true);
 });
 
 test('OC-locked GPU waiver is not required and acceptance touches neither driver nor settings', async () => {
