@@ -220,6 +220,186 @@ test('graphics apply sends the limiter to IGCL when RTSS is unavailable', async 
   assert.equal(result.graphicsState.frameLimitSource, 'igcl');
 });
 
+test('production Graphics FPS apply falls back from unavailable RTSS to verified IGCL identity alias', async () => {
+  const aliasKey = 'pnp:unique-b580-alias';
+  const canonicalKey = 'gpu:8086:56a0:0000:03:00.0';
+  const device = {
+    id: 0,
+    deviceKey: canonicalKey,
+    deviceKeys: [canonicalKey, aliasKey],
+    name: 'Intel Arc B580',
+    pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0',
+    synthetic: false,
+    backendKind: 'igcl',
+  };
+  let rawFrameLimit = { enabled: false, value: 60 };
+  let saved = {
+    deviceId: 0,
+    deviceKey: aliasKey,
+    arcSleep: {},
+    arcSleepFrameLimitBase: null,
+    arcSleepJournal: null,
+  };
+  const writes = [];
+  const store = {
+    async loadSettings() { return structuredClone(saved); },
+    async saveSettings(next) { saved = structuredClone(next); return next; },
+    async saveArcSleepState(patch) { saved = { ...saved, ...structuredClone(patch) }; },
+  };
+  const backend = {
+    async listDevices() { return [device]; },
+    async getDeviceTarget(id, key, physicalTarget) {
+      assert.equal(id, 0);
+      if (key !== undefined) {
+        assert.equal(key, canonicalKey, 'IGCL must resolve the alias to the canonical key before device access');
+        assert.equal(physicalTarget.pnpDeviceId, device.pnpDeviceId);
+      }
+      return device;
+    },
+    async getGraphicsSettings() {
+      return {
+        supported: { frameLimit: true },
+        frameLimitRange: { min: 30, max: 300, step: 1, default: 60 },
+        frameLimitLiveChange: true,
+        values: { frameLimit: { ...rawFrameLimit } },
+      };
+    },
+  };
+  const rtssFrameLimiter = {
+    async getFrameLimit() { return { ok: false, available: false, error: 'RTSS is unavailable' }; },
+  };
+  const applyRunner = {
+    async graphicsApplyIsolated(request) {
+      writes.push(request);
+      rawFrameLimit = { ...request.settings.frameLimit };
+      return { ok: true, perControl: { frameLimit: { ok: true } } };
+    },
+  };
+  const igclFrameLimiter = createArcSleepIGCLLimiter({
+    backend,
+    store,
+    applyRunner,
+    isElevated: () => true,
+  });
+  const arcSleepController = createArcSleepController({ store, rtssFrameLimiter, igclFrameLimiter });
+  const handlers = createGraphicsHandlers({
+    backend,
+    store,
+    rtssFrameLimiter,
+    arcSleepController,
+    applyRunner,
+  });
+
+  try {
+    const result = await handlers['graphics:apply'](0, { frameLimit: { enabled: true, value: 144 } });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.perControl.frameLimit.ok, true);
+    assert.equal(result.perControl.frameLimit.source, 'igcl');
+    assert.equal(result.graphicsState.frameLimitSource, 'igcl');
+    assert.equal(writes.length, 1, 'the driver write must go through the isolated runner');
+    assert.equal(writes[0].deviceKey, canonicalKey);
+    assert.equal(writes[0].physicalTarget.pnpDeviceId, device.pnpDeviceId);
+    assert.deepEqual(writes[0].settings, { frameLimit: { enabled: true, value: 144 } });
+    assert.deepEqual(rawFrameLimit, { enabled: true, value: 144 }, 'the successful result must follow IGCL read-back');
+    assert.equal(saved.deviceKey, aliasKey, 'resolving an alias must not rewrite the user selection');
+  } finally {
+    await arcSleepController.stop();
+  }
+});
+
+test('Arc Sleep recovers an alias-pinned IGCL journal through the verified canonical route', async () => {
+  const aliasKey = 'pnp:unique-b580-alias';
+  const canonicalKey = 'gpu:8086:56a0:0000:03:00.0';
+  const device = {
+    id: 0,
+    deviceKey: canonicalKey,
+    deviceKeys: [canonicalKey, aliasKey],
+    name: 'Intel Arc B580',
+    pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0',
+    synthetic: false,
+    backendKind: 'igcl',
+  };
+  const baseline = { limit: 120, denominator: 1, limiterEnabled: true };
+  let rawFrameLimit = { enabled: true, value: 90 };
+  let saved = {
+    deviceId: 0,
+    deviceKey: aliasKey,
+    arcSleep: {},
+    arcSleepFrameLimitBase: { enabled: true, value: 120 },
+    arcSleepJournal: {
+      version: 1,
+      route: { source: 'igcl', deviceKey: aliasKey },
+      baseline,
+      underlay: baseline,
+      expected: { limit: 90, denominator: 1, limiterEnabled: true },
+      pending: {
+        from: baseline,
+        to: { limit: 90, denominator: 1, limiterEnabled: true },
+      },
+    },
+  };
+  const writes = [];
+  const store = {
+    async loadSettings() { return structuredClone(saved); },
+    async saveSettings(next) { saved = structuredClone(next); return next; },
+    async saveArcSleepState(patch) { saved = { ...saved, ...structuredClone(patch) }; },
+  };
+  const backend = {
+    async listDevices() { return [device]; },
+    async getDeviceTarget(id, key, physicalTarget) {
+      assert.equal(id, 0);
+      if (key !== undefined) {
+        assert.equal(key, canonicalKey, 'journal alias must be resolved before IGCL device access');
+        assert.equal(physicalTarget.pnpDeviceId, device.pnpDeviceId);
+      }
+      return device;
+    },
+    async getGraphicsSettings() {
+      return {
+        supported: { frameLimit: true },
+        frameLimitRange: { min: 30, max: 300, step: 1, default: 60 },
+        frameLimitLiveChange: true,
+        values: { frameLimit: { ...rawFrameLimit } },
+      };
+    },
+  };
+  const applyRunner = {
+    async graphicsApplyIsolated(request) {
+      writes.push(request);
+      rawFrameLimit = { ...request.settings.frameLimit };
+      return { ok: true, perControl: { frameLimit: { ok: true } } };
+    },
+  };
+  const igclFrameLimiter = createArcSleepIGCLLimiter({
+    backend,
+    store,
+    applyRunner,
+    isElevated: () => true,
+  });
+  const controller = createArcSleepController({
+    store,
+    rtssFrameLimiter: { async getFrameLimit() { return { ok: false, available: false }; } },
+    igclFrameLimiter,
+  });
+
+  try {
+    const snapshot = await controller.withTransaction(({ getSnapshot }) => getSnapshot());
+
+    assert.equal(snapshot.activeLimiter, 'igcl');
+    assert.equal(snapshot.limiterDeviceKey, canonicalKey);
+    assert.equal(snapshot.status, 'disabled');
+    assert.deepEqual(rawFrameLimit, { enabled: baseline.limiterEnabled, value: baseline.limit });
+    assert.equal(saved.arcSleepJournal, null, 'recovery clears the journal only after restoring the baseline');
+    assert.deepEqual(saved.arcSleepFrameLimitBase, { enabled: true, value: baseline.limit });
+    assert.ok(writes.length >= 1, 'recovery must issue an IGCL write');
+    assert.ok(writes.every((request) => request.deviceKey === canonicalKey));
+    assert.ok(writes.every((request) => request.physicalTarget.pnpDeviceId === device.pnpDeviceId));
+  } finally {
+    await controller.stop();
+  }
+});
+
 test('graphics apply rolls RTSS back when the isolated driver apply throws', async () => {
   let restored = 0;
   const handlers = createGraphicsHandlers({
