@@ -143,6 +143,7 @@ export function createArcSleepController({
   let rtssAvailable = false;
   let limiterRoute = null;
   let limiterDeviceName = null;
+  let igclReadError = null;
   let frameLimitRange = null;
   let frameLimitLiveChange = false;
   let lastRawState = null;
@@ -183,6 +184,9 @@ export function createArcSleepController({
   const hasPolicy = () => settings.idleEnabled || settings.adaptiveEnabled;
   const errorText = (fallback, error) => error instanceof Error ? error.message : (error ? String(error) : fallback);
   const limiterName = (route = journal?.route ?? limiterRoute) => normalizeRoute(route).source.toUpperCase();
+  const limiterUnavailableMessage = () => igclReadError
+    ? `RTSS and the selected GPU driver FPS limiter are unavailable. IGCL read failed: ${igclReadError}`
+    : 'RTSS and the selected GPU driver FPS limiter are unavailable.';
 
   const persistArcSleep = async (patch) => {
     if (typeof store?.saveArcSleepState === 'function') {
@@ -204,15 +208,36 @@ export function createArcSleepController({
         : typeof rtssFrameLimiter?.getFrameLimitOwnership === 'function'
           ? await rtssFrameLimiter.getFrameLimitOwnership()
           : await rtssFrameLimiter?.getFrameLimit?.();
-      if (normalizedRoute.source === 'igcl' && result?.deviceKey !== normalizedRoute.deviceKey) return null;
       const exactState = normalizedRoute.source === 'rtss' && result?.state && typeof result.state === 'object'
         ? result.state
         : result;
       const state = result?.ok === true
         ? rawState({ limit: exactState.limit, denominator: exactState.denominator ?? null, limiterEnabled: exactState.limiterEnabled })
         : null;
-      if (!state) return null;
-      limiterRoute = normalizedRoute;
+      if (!state) {
+        if (normalizedRoute.source === 'igcl') {
+          igclReadError = result?.error ?? 'The selected GPU driver did not return a readable frame limit.';
+        }
+        return null;
+      }
+      let verifiedRoute = normalizedRoute;
+      if (normalizedRoute.source === 'igcl') {
+        if (typeof result?.deviceKey !== 'string' || result.deviceKey.length === 0) {
+          igclReadError = 'The selected GPU driver did not return a canonical device identity.';
+          return null;
+        }
+        verifiedRoute = { source: 'igcl', deviceKey: result.deviceKey };
+        if (journal?.route?.source === 'igcl'
+          && journal.route.deviceKey === normalizedRoute.deviceKey
+          && result.deviceKey !== normalizedRoute.deviceKey) {
+          // The adapter has resolved the supplied alias to one physical GPU
+          // and returned its canonical key. Keep recovery state byte-for-byte
+          // intact while moving future reads and writes onto that key.
+          await saveJournal({ ...journal, route: verifiedRoute });
+        }
+      }
+      igclReadError = null;
+      limiterRoute = verifiedRoute;
       limiterDeviceName = typeof result.deviceName === 'string' ? result.deviceName : null;
       rtssAvailable = normalizedRoute.source === 'rtss';
       frameLimitRange = result.frameLimitRange ?? (normalizedRoute.source === 'rtss'
@@ -222,7 +247,8 @@ export function createArcSleepController({
       lastRawState = state;
       lastKnownRawState = state;
       return state;
-    } catch {
+    } catch (error) {
+      if (normalizedRoute.source === 'igcl') igclReadError = errorText('The selected GPU driver frame-limit read failed.', error);
       return null;
     }
   };
@@ -242,13 +268,15 @@ export function createArcSleepController({
       if (rtss) return rtss;
     }
     let igcl = null;
-    try { igcl = await igclFrameLimiter?.getFrameLimit?.(deviceKey); } catch { igcl = null; }
+    try { igcl = await igclFrameLimiter?.getFrameLimit?.(deviceKey); } catch (error) {
+      igclReadError = errorText('The selected GPU driver frame-limit read failed.', error);
+    }
     if (igcl?.ok === true) {
-      if (deviceKey && igcl.deviceKey !== deviceKey) return null;
       const selectedKey = typeof igcl.deviceKey === 'string' ? igcl.deviceKey : deviceKey;
       if (!selectedKey) return null;
       const state = rawState({ limit: igcl.limit, denominator: igcl.denominator ?? 1, limiterEnabled: igcl.limiterEnabled });
       if (!state) return null;
+      igclReadError = null;
       limiterRoute = { source: 'igcl', deviceKey: selectedKey };
       limiterDeviceName = typeof igcl.deviceName === 'string' ? igcl.deviceName : null;
       rtssAvailable = false;
@@ -257,6 +285,9 @@ export function createArcSleepController({
       lastRawState = state;
       lastKnownRawState = state;
       return state;
+    }
+    if (igcl?.ok !== true) {
+      igclReadError = igcl?.error ?? 'The selected GPU driver did not return a readable frame limit.';
     }
     rtssAvailable = false;
     lastRawState = null;
@@ -645,7 +676,7 @@ export function createArcSleepController({
       status = journal ? 'recovery-pending' : 'limiter-unavailable';
       message = journal
         ? 'The saved FPS limiter is unavailable; Arc Sleep is holding its recovery journal.'
-        : 'RTSS and the selected GPU driver FPS limiter are unavailable.';
+        : limiterUnavailableMessage();
       return false;
     }
     if (pendingBaseDisable) {
@@ -970,7 +1001,7 @@ export function createArcSleepController({
       status = journal ? 'recovery-pending' : 'limiter-unavailable';
       message = journal
         ? 'The saved FPS limiter is unavailable; Arc Sleep is holding its recovery journal.'
-        : 'RTSS and the selected GPU driver FPS limiter are unavailable.';
+        : limiterUnavailableMessage();
       return;
     }
     await applyDesiredTarget(result.targetFps, result.source);
@@ -1093,7 +1124,7 @@ export function createArcSleepController({
         message = null;
       } else {
         status = journal ? 'recovery-pending' : 'limiter-unavailable';
-        message = 'RTSS and the selected GPU driver FPS limiter are unavailable; the saved Graphics FPS Limit was not applied.';
+        message = `${limiterUnavailableMessage()} The saved Graphics FPS Limit was not applied.`;
         const deferredJournal = journal ? {
           ...journal,
           externalChange: journal.externalChange === true,
@@ -1125,7 +1156,7 @@ export function createArcSleepController({
     const result = await readPolicySample();
     if (!nextBase.enabled && result.targetFps == null && !nextJournal) {
       if (!current) {
-        const unavailableMessage = 'RTSS and the selected GPU driver FPS limiter are unavailable; the Graphics FPS Limit was not changed.';
+        const unavailableMessage = `${limiterUnavailableMessage()} The Graphics FPS Limit was not changed.`;
         await saveBaseAndJournal(nextBase, null, true, lastKnownRawState);
         status = 'limiter-unavailable';
         message = unavailableMessage;
