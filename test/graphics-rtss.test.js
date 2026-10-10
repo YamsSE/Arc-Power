@@ -308,6 +308,58 @@ test('production Graphics FPS apply falls back from unavailable RTSS to verified
   }
 });
 
+test('Arc Sleep IGCL limiter refuses a duplicated saved identity alias without touching either GPU', async () => {
+  const aliasKey = 'pnp:duplicate-alias';
+  const devices = [
+    {
+      id: 0,
+      deviceKey: 'gpu:8086:56a0:0000:03:00.0',
+      deviceKeys: ['gpu:8086:56a0:0000:03:00.0', aliasKey],
+      pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0',
+      synthetic: false,
+      backendKind: 'igcl',
+    },
+    {
+      id: 1,
+      deviceKey: 'gpu:8086:56a0:0000:04:00.0',
+      deviceKeys: ['gpu:8086:56a0:0000:04:00.0', aliasKey],
+      pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_DUPLICATE',
+      synthetic: false,
+      backendKind: 'igcl',
+    },
+  ];
+  let deviceTargetCalls = 0;
+  let driverWriteCalls = 0;
+  const limiter = createArcSleepIGCLLimiter({
+    store: { async loadSettings() { return { deviceKey: aliasKey }; } },
+    backend: {
+      async listDevices() { return devices; },
+      async getDeviceTarget() { deviceTargetCalls += 1; return devices[0]; },
+      async getGraphicsSettings() {
+        return {
+          supported: { frameLimit: true },
+          values: { frameLimit: { enabled: false, value: 60 } },
+        };
+      },
+    },
+    applyRunner: {
+      async graphicsApplyIsolated() { driverWriteCalls += 1; return { ok: true, perControl: { frameLimit: { ok: true } } }; },
+    },
+    isElevated: () => true,
+  });
+
+  const read = await limiter.getFrameLimit();
+  const apply = await limiter.applyFrameLimit({ enabled: true, value: 144 });
+
+  assert.equal(read.ok, false);
+  assert.equal(read.available, false);
+  assert.match(read.error, /durable identity/);
+  assert.equal(apply.ok, false);
+  assert.equal(apply.available, false);
+  assert.equal(deviceTargetCalls, 0, 'ambiguous aliases must be rejected before resolving a GPU target');
+  assert.equal(driverWriteCalls, 0, 'ambiguous aliases must never reach the graphics worker');
+});
+
 test('Arc Sleep recovers an alias-pinned IGCL journal through the verified canonical route', async () => {
   const aliasKey = 'pnp:unique-b580-alias';
   const canonicalKey = 'gpu:8086:56a0:0000:03:00.0';
