@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
 import { createArcSleepController } from '../src/main/arc-sleep-controller.js';
 import { createArcSleepIGCLLimiter } from '../src/main/arc-sleep-igcl-limiter.js';
+import { createUnifiedGpuBackend, physicalTargetOf } from '../src/main/gpu-inventory.js';
 
 function createGraphicsHandlers({ rtssFrameLimiter, applyRunner, arcSleepController, backend: backendOverride, store: storeOverride }) {
   const target = { id: 0, deviceKey: 'pci:arc-b580-test', synthetic: false, backendKind: 'igcl' };
@@ -26,6 +27,91 @@ function createGraphicsHandlers({ rtssFrameLimiter, applyRunner, arcSleepControl
     applyRunner,
   }).handlers;
 }
+
+test('elevated GPU target accepts a unique PCI alias with matching physical proof', async () => {
+  const pnp = 'PCI\\VEN_8086&DEV_56A0&SUBSYS_12345678';
+  const bdf = '0000:03:00.0';
+  const backend = createUnifiedGpuBackend({
+    backend: {
+      kind: 'igcl',
+      async listDevices() {
+        return [{ id: 0, name: 'Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf, pnpDeviceId: pnp }];
+      },
+    },
+    videoControllers: [{ name: 'Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf, pnpDeviceId: pnp }],
+  });
+  const [target] = await backend.listDevices();
+  const pciAlias = 'pci:0x8086:0x56a0@0000:03:00.0';
+
+  assert.match(target.deviceKey, /^pnp:/);
+  assert.ok(target.deviceKeys.includes(pciAlias));
+  assert.equal((await backend.assertDeviceTarget(target.id, pciAlias, physicalTargetOf(target))).deviceKey, target.deviceKey);
+});
+
+test('elevated GPU target preserves parent PNP proof for a PCI-only worker inventory', async () => {
+  const pnp = 'PCI\\VEN_8086&DEV_56A0&SUBSYS_12345678';
+  const bdf = '0000:03:00.0';
+  const backend = createUnifiedGpuBackend({
+    backend: {
+      kind: 'igcl',
+      async listDevices() {
+        return [{ id: 0, name: 'Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf }];
+      },
+    },
+    videoControllers: [],
+  });
+  const [target] = await backend.listDevices();
+  const parentProof = {
+    pnpDeviceId: pnp,
+    pciVendorId: '0x8086',
+    pciDeviceId: '0x56a0',
+    bdf,
+  };
+
+  assert.equal(target.pnpDeviceId, null);
+  assert.equal(target.deviceKey, 'pci:0x8086:0x56a0@0000:03:00.0');
+  assert.equal((await backend.assertDeviceTarget(target.id, `pnp:${pnp}`, parentProof)).deviceKey, target.deviceKey);
+});
+
+test('elevated GPU target rejects unknown aliases and mismatched physical proof', async () => {
+  const pnp = 'PCI\\VEN_8086&DEV_56A0&SUBSYS_12345678';
+  const bdf = '0000:03:00.0';
+  const backend = createUnifiedGpuBackend({
+    backend: {
+      kind: 'igcl',
+      async listDevices() {
+        return [{ id: 0, name: 'Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf, pnpDeviceId: pnp }];
+      },
+    },
+    videoControllers: [{ name: 'Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf, pnpDeviceId: pnp }],
+  });
+  const [target] = await backend.listDevices();
+  const proof = physicalTargetOf(target);
+  const pciAlias = 'pci:0x8086:0x56a0@0000:03:00.0';
+
+  await assert.rejects(backend.assertDeviceTarget(target.id, 'pci:unknown-alias', proof), /no longer resolves/);
+  await assert.rejects(
+    backend.assertDeviceTarget(target.id, pciAlias, { ...proof, pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_87654321' }),
+    /physical proof does not match/,
+  );
+});
+
+test('elevated GPU target rejects an alias shared by multiple inventory rows', async () => {
+  const sharedBdf = '0000:03:00.0';
+  const devices = [
+    { id: 0, name: 'Intel Arc GPU A', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf: sharedBdf, pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_12345678' },
+    { id: 1, name: 'Intel Arc GPU B', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf: sharedBdf, pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_87654321' },
+  ];
+  const backend = createUnifiedGpuBackend({
+    backend: { kind: 'igcl', async listDevices() { return devices; } },
+    videoControllers: devices.map((device) => ({ ...device })),
+  });
+  const [target] = await backend.listDevices();
+  const pciAlias = 'pci:0x8086:0x56a0@0000:03:00.0';
+
+  assert.equal(target.deviceKeys.includes(pciAlias), false, 'shared aliases must be removed from the unique alias set');
+  await assert.rejects(backend.assertDeviceTarget(target.id, pciAlias, physicalTargetOf(target)), /no longer resolves/);
+});
 
 test('graphics apply checks the saved GPU key after resolving a fresh physical target', async () => {
   const target = {
