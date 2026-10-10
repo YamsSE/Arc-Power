@@ -19,8 +19,10 @@ const MAX_BTN_SEL = '.window-btn[data-op="maximize-toggle"]';
 type UpdateState = 'idle' | 'checking' | 'update-available' | 'downloading' | 'downloaded' | 'error';
 
 let updateState: UpdateState = 'idle';
-let updateInfo: { version: string; assetUrl: string; assetName: string } | null = null;
-let downloadedPath: string | null = null;
+let updateInfo: { version: string; assetUrl: string; assetName: string; assetSize?: number | null } | null = null;
+let downloadReceipt: string | null = null;
+let downloadPercent = 0;
+let downloadedBytes = 0;
 
 function setUpdateBtn(state: UpdateState): void {
   const btn = document.getElementById('titlebar-update-btn') as HTMLButtonElement | null;
@@ -63,8 +65,13 @@ function setUpdateBtn(state: UpdateState): void {
       btn.style.display = '';
       (iconDownload as HTMLElement).style.display = '';
       btn.classList.add('update-downloading', 'update-spinning');
-      btn.title = 'Downloading update...';
-      btn.setAttribute('aria-label', 'Downloading update...');
+      {
+        const progressText = Number.isFinite(downloadPercent)
+          ? `${Math.round(downloadPercent)}%`
+          : `${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB downloaded`;
+        btn.title = `Downloading update... ${progressText}`;
+        btn.setAttribute('aria-label', `Downloading update... ${progressText}`);
+      }
       break;
     case 'downloaded':
       btn.style.display = '';
@@ -89,12 +96,12 @@ async function handleUpdateClick(): Promise<void> {
     case 'error':
       // Check for updates
       updateInfo = null;
-      downloadedPath = null;
+      downloadReceipt = null;
       setUpdateBtn('checking');
       try {
         const result = await api.updateCheck('manual');
         if (result.available && result.version && result.assetUrl) {
-          updateInfo = { version: result.version, assetUrl: result.assetUrl, assetName: result.assetName ?? '' };
+          updateInfo = { version: result.version, assetUrl: result.assetUrl, assetName: result.assetName ?? '', assetSize: result.assetSize };
           setUpdateBtn('update-available');
         } else {
           // Keep the manual check action visible after a successful no-update
@@ -109,10 +116,12 @@ async function handleUpdateClick(): Promise<void> {
     case 'update-available':
       // Download update
       if (!updateInfo) return;
+      downloadPercent = Number.isSafeInteger(updateInfo.assetSize) && updateInfo.assetSize! > 0 ? 0 : Number.NaN;
+      downloadedBytes = 0;
       setUpdateBtn('downloading');
       try {
         const dl = await api.updateDownload(updateInfo.assetUrl);
-        downloadedPath = dl.path;
+        downloadReceipt = dl.token;
         setUpdateBtn('downloaded');
       } catch {
         setUpdateBtn('error');
@@ -121,9 +130,9 @@ async function handleUpdateClick(): Promise<void> {
 
     case 'downloaded':
       // Install and restart
-      if (!downloadedPath) return;
+      if (!downloadReceipt) return;
       try {
-        await api.updateInstall(downloadedPath);
+        await api.updateInstall(downloadReceipt);
       } catch {
         setUpdateBtn('error');
       }
@@ -145,6 +154,22 @@ export function initTitlebar(): void {
   // M25: wire the update button
   document.getElementById('titlebar-update-btn')
     ?.addEventListener('click', () => { void handleUpdateClick(); });
+
+  api.onUpdateDownloadProgress(({ percent, downloadedBytes: bytes }) => {
+    if (updateState !== 'downloading') return;
+    downloadedBytes = Number.isFinite(bytes) ? Math.max(0, bytes) : downloadedBytes;
+    downloadPercent = typeof percent === 'number' && Number.isFinite(percent)
+      ? Math.max(0, Math.min(100, percent))
+      : Number.NaN;
+    const btn = document.getElementById('titlebar-update-btn');
+    if (!btn) return;
+    const progressText = Number.isFinite(downloadPercent)
+      ? `${Math.round(downloadPercent)}%`
+      : `${(downloadedBytes / (1024 * 1024)).toFixed(1)} MB downloaded`;
+    const label = `Downloading update... ${progressText}`;
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+  });
 
   // M4-D: the max button icon follows the live maximize state (main pushes
   // window:maximized-changed on maximize/unmaximize). M4J (F): ONE svg -
@@ -177,12 +202,12 @@ export function setTitlebarVersion(version: string): void {
  */
 export async function startupUpdateCheck(): Promise<void> {
   updateInfo = null;
-  downloadedPath = null;
+  downloadReceipt = null;
   setUpdateBtn('checking');
   try {
     const result = await api.updateCheck('startup');
     if (result.available && result.version && result.assetUrl) {
-      updateInfo = { version: result.version, assetUrl: result.assetUrl, assetName: result.assetName ?? '' };
+      updateInfo = { version: result.version, assetUrl: result.assetUrl, assetName: result.assetName ?? '', assetSize: result.assetSize };
       setUpdateBtn('update-available');
     } else {
       setUpdateBtn('idle');

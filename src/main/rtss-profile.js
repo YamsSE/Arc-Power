@@ -149,7 +149,8 @@ function hasConfiguredGameFrameLimit(api) {
 function isRawFrameLimitState(value) {
   return value && typeof value === 'object'
     && Number.isInteger(value.limit) && value.limit >= 0 && value.limit <= 0xFFFFFFFF
-    && Number.isInteger(value.denominator) && value.denominator >= 0 && value.denominator <= 0xFFFFFFFF
+    && (value.denominator === null
+      || (Number.isInteger(value.denominator) && value.denominator >= 0 && value.denominator <= 0xFFFFFFFF))
     && typeof value.limiterEnabled === 'boolean';
 }
 
@@ -158,7 +159,11 @@ function readGlobalFrameLimitState(api) {
   const limit = readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY);
   const denominator = readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY);
   const flags = readLimiterFlags(api);
-  if (limit === null || denominator === null || flags === null) return null;
+  // A missing denominator is part of the observable RTSS state. Keep it null
+  // for ownership comparisons and rollback rather than inferring 1; display
+  // reads may interpret it as the common integer-cap default, but mutations
+  // must preserve the exact unreadable/absent value.
+  if (limit === null || flags === null) return null;
   return { limit, denominator, limiterEnabled: (flags & RTSS_LIMITER_DISABLED_FLAG) === 0 };
 }
 
@@ -1107,7 +1112,9 @@ export function createRtssProfileController({
           }
         : {
             limit: 0,
-            denominator: current.denominator === 0 ? 0 : 1,
+            // A disabled cap only resets a readable denominator. If RTSS
+            // omitted it, preserve that exact state for controller read-back.
+            denominator: current.denominator === null ? null : current.denominator === 0 ? 0 : 1,
             limiterEnabled: current.limiterEnabled,
           };
       return { ok: true, state: current, underlay, disableState };

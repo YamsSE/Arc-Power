@@ -599,6 +599,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let selectedGameExePath: string | null = null;
   let selectedGameDeviceKey: string | null = profileGpuIdentity(s).key;
   let startupWarning: string | null = null;
+  let bootToggleInFlight = false;
   let driverWarning: string | null = null;
   let showFilter = 'all';
   let sortMode = 'alphabetical';
@@ -947,7 +948,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
             type: 'checkbox',
             class: 'boot-checkbox',
             checked: applyOnBoot,
-            disabled: !waiverAccepted,
+            disabled: !waiverAccepted || bootToggleInFlight,
             onchange: (ev: Event) => void onBootToggle((ev.target as HTMLInputElement).checked),
           }),
           el('span', { text: 'Apply the active profile when Arc Power starts' }),
@@ -1086,58 +1087,63 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const onBootToggle = async (checked: boolean): Promise<void> => {
+    if (bootToggleInFlight) return;
+    bootToggleInFlight = true;
     const box = root.querySelector('.boot-checkbox') as HTMLInputElement | null;
-    if (checked) {
-      const activeMap = Object.fromEntries(Object.entries(activeProfileIds(envelope.settings)).filter(([deviceKey, profileId]) => {
-        const profile = envelope.profiles.find((candidate) => candidate.id === profileId);
-        return profile ? profileMatchesGpu(profile, deviceKey) : false;
-      }));
-      const activeProfiles = envelope.profiles.filter((profile) => validActiveProfileIds(envelope.settings, envelope.profiles).has(profile.id));
-      const currentActiveId = activeProfileIdForGpu(envelope.settings, envelope.profiles, profileGpuIdentity(ctx.store.get()).key);
-      const activeProfile = envelope.profiles.find((profile) => profile.id === currentActiveId)
-        ?? activeProfiles[0]
-        ?? (envelope.settings.activeProfileId ? envelope.profiles.find((p) => p.id === envelope.settings.activeProfileId) : null);
-      if (!activeProfile && activeProfiles.length === 0) {
-        toast('warn', 'No active profile', 'Load a profile first - start-at-boot applies active profiles for each GPU.');
-        if (box) box.checked = false;
-        return;
+    if (box) box.disabled = true;
+    try {
+      if (checked) {
+        const activeMap = Object.fromEntries(Object.entries(activeProfileIds(envelope.settings)).filter(([deviceKey, profileId]) => {
+          const profile = envelope.profiles.find((candidate) => candidate.id === profileId);
+          return profile ? profileMatchesGpu(profile, deviceKey) : false;
+        }));
+        const activeProfiles = envelope.profiles.filter((profile) => validActiveProfileIds(envelope.settings, envelope.profiles).has(profile.id));
+        const currentActiveId = activeProfileIdForGpu(envelope.settings, envelope.profiles, profileGpuIdentity(ctx.store.get()).key);
+        const activeProfile = envelope.profiles.find((profile) => profile.id === currentActiveId)
+          ?? activeProfiles[0]
+          ?? (envelope.settings.activeProfileId ? envelope.profiles.find((p) => p.id === envelope.settings.activeProfileId) : null);
+        if (!activeProfile && activeProfiles.length === 0) {
+          toast('warn', 'No active profile', 'Load a profile first - start-at-boot applies active profiles for each GPU.');
+          if (box) box.checked = false;
+          return;
+        }
+        try {
+          // M4-D2 (plan F4): the toggle only persists the intent -
+          // profilesSettingsSave({ ocOnBoot }) is the ONLY writer of the
+          // startup registration (main re-derives it from the merged intent;
+          // NO direct startupSet call).
+          await api.profilesSettingsSave({
+            ocOnBoot: true,
+            activeProfileIds: activeMap,
+            activeProfileId: activeProfile?.id ?? null,
+          });
+        } catch (err) {
+          toast('error', 'Start at boot could not be set', err instanceof Error ? err.message : String(err));
+          if (box) box.checked = false; // transient honest state - the re-render below follows startup-get
+          return;
+        }
+        toast('success', 'Start at boot enabled', activeProfiles.length > 1
+          ? `${activeProfiles.length} GPU profiles will apply when Arc Power starts.`
+          : `"${activeProfile?.name ?? 'the active profile'}" will apply when Arc Power starts.`);
+      } else {
+        try {
+          // M4-D2 (plan F4): disabling just persists the intent - main removes
+          // the startup registration only when nothing else owns it (the merged
+          // intent derivation). NO direct startupSet call, no renderer-side
+          // ownership guard (the single writer cannot double-remove).
+          await api.profilesSettingsSave({ ocOnBoot: false });
+        } catch (err) {
+          toast('error', 'Start at boot could not be removed', err instanceof Error ? err.message : String(err));
+          if (box) box.checked = true; // transient honest state - the re-render below follows startup-get
+          return;
+        }
+        toast('info', 'Start at boot disabled', '');
       }
-      try {
-        // M4-D2 (plan F4): the toggle only persists the intent -
-        // profilesSettingsSave({ ocOnBoot }) is the ONLY writer of the
-        // startup registration (main re-derives it from the merged intent;
-        // NO direct startupSet call).
-        await api.profilesSettingsSave({
-          ocOnBoot: true,
-          activeProfileIds: activeMap,
-          activeProfileId: activeProfile?.id ?? null,
-        });
-      } catch (err) {
-        toast('error', 'Start at boot could not be set', err instanceof Error ? err.message : String(err));
-        if (box) box.checked = false; // transient honest state - the re-render below follows startup-get
-        await refresh(); // F3: re-render the card from startup-get so the honest state shows immediately
-        return;
-      }
-      toast('success', 'Start at boot enabled', activeProfiles.length > 1
-        ? `${activeProfiles.length} GPU profiles will apply when Arc Power starts.`
-        : `"${activeProfile?.name ?? 'the active profile'}" will apply when Arc Power starts.`);
-    } else {
-      try {
-        // M4-D2 (plan F4): disabling just persists the intent - main removes
-        // the startup registration only when nothing else owns it (the merged
-        // intent derivation). NO direct startupSet call, no renderer-side
-        // ownership guard (the single writer cannot double-remove).
-        await api.profilesSettingsSave({ ocOnBoot: false });
-      } catch (err) {
-        toast('error', 'Start at boot could not be removed', err instanceof Error ? err.message : String(err));
-        if (box) box.checked = true; // transient honest state - the re-render below follows startup-get
-        await refresh(); // F3: re-render the card from startup-get so the honest state shows immediately
-        return;
-      }
-      toast('info', 'Start at boot disabled', '');
+      void api.trayRebuild().catch(() => {});
+    } finally {
+      bootToggleInFlight = false;
+      await refresh();
     }
-    void api.trayRebuild().catch(() => {});
-    await refresh();
   };
 
   const onCreate = async (): Promise<void> => {

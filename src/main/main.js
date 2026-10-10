@@ -84,9 +84,10 @@ import { createRecordingStatusPillWindow } from './recording-status-pill.js';
 // overlay.js stays untouched - this panel has its own lifecycle + its own
 // interactivity (NO setIgnoreMouseEvents).
 import { createAdvancedOverlayWindow } from './advanced-overlay.js';
-import { createStartup, createMockStartup } from './startup.js';
+import { createStartup, createMockStartup, reconcileStartupRegistration } from './startup.js';
 import { createRtssStartup, createMockRtssStartup } from './rtss-startup.js';
-import { createRtssProfileController } from './rtss-profile.js';
+import { createRtssProfileHelperProxy } from './rtss-profile-helper-proxy.js';
+import { createQuitTeardownGate } from './quit-teardown-gate.js';
 import { attachStartupUpdateStatus, createStartupSplash } from './splash.js';
 import { runInstallerMode } from './installer.js';
 import { INSTALLED_EXECUTABLE_NAME, INSTALLED_LAUNCH_ENV, installerModeFromEnvironment, resolveNewerInstalledExecutable } from './installer-pure.js';
@@ -2405,6 +2406,23 @@ async function main() {
         logonExecPath: portableStartupPath ?? process.execPath,
         useElevatedTask: app.isPackaged && process.platform === 'win32',
       });
+  // A prior packaged release could persist the user's startup intent while
+  // task creation failed. On the next manual launch, retry that registration
+  // from the saved intent so Windows can launch Arc Power on the next sign-in.
+  // Keep this off the critical startup path: a task query or UAC response must
+  // never hold the window or the current session's profile apply.
+  if (!mock && startup.registrationMode === 'task') {
+    const expectedIntentRevision = startup.getIntentRevision();
+    void Promise.all([store.loadSettings(), store.loadProfiles()])
+      .then(([settings, profiles]) => reconcileStartupRegistration({
+        startup,
+        settings,
+        profiles,
+        expectedIntentRevision,
+        log: (message) => console.log(`[startup] ${message}`),
+      }))
+      .catch((err) => console.log(`[startup] saved startup intent could not be restored: ${err.message}`));
+  }
   // RTSS startup is always an independent, unelevated HKCU Run value. It
   // must never reuse Arc Power's elevated startup task.
   const rtssStartup = mock
@@ -2416,9 +2434,23 @@ async function main() {
   // Arc Power still owns the text, colors, scale tag, and telemetry content.
   const rtssProfile = mock
     ? null
-    : createRtssProfileController({
-        getExecutablePath: async () => (await rtssStartup.get())?.executablePath ?? null,
-        isRunning: async () => await rtssStartup.isRunning?.() === true,
+    : createRtssProfileHelperProxy({
+        entryPath: app.isPackaged
+          ? path.join(app.getAppPath(), 'src', 'main', 'rtss-profile-helper-entry.js')
+          : path.join(__dirname, 'rtss-profile-helper-entry.js'),
+        getRuntime: async () => {
+          try {
+            const startupState = await rtssStartup.get();
+            return {
+              executablePath: startupState?.executablePath ?? null,
+              isRunning: await rtssStartup.isRunning?.() === true,
+            };
+          } catch {
+            // An unavailable RTSS process probe is passed through as current
+            // state; the controller will return its normal fallback result.
+            return { executablePath: null, isRunning: false };
+          }
+        },
       });
   // The product telemetry HUD is rendered by RTSS itself. Keep the FPS lane
   // mutable because the foreground/process ownership seam is created after
@@ -2595,18 +2627,26 @@ async function main() {
   // swallowed by the window close interception (the close event fires
   // during a quit too; the flag lets it through).
   let isQuitting = false;
-  let quitTeardownStarted = false;
+  let rtssProfileClosed = false;
+  const closeRtssProfile = () => {
+    if (rtssProfileClosed) return;
+    rtssProfileClosed = true;
+    // RTSSHooks can hang inside synchronous native code. The proxy's close
+    // kills that isolated child without waiting and prevents any later call.
+    try { rtssProfile?.close?.(); } catch { /* best effort */ }
+  };
+  const handleQuitTeardown = createQuitTeardownGate({
+    getTeardown: () => teardown,
+    closeRtssHelper: closeRtssProfile,
+    quit: () => app.quit(),
+  });
   app.on('before-quit', (event) => {
     isQuitting = true;
     try { recordingEditor.shutdown(); } catch { /* editor child cleanup is best effort */ }
     // M99: Electron otherwise proceeds while the async Ascent SHUTDOWN is
     // still queued. Hold the first quit event, await the bounded teardown,
     // then re-enter app.quit once so the child has a chance to finalize.
-    if (!quitTeardownStarted && teardown) {
-      event.preventDefault();
-      quitTeardownStarted = true;
-      void teardown().catch(() => {}).finally(() => app.quit());
-    }
+    handleQuitTeardown(event);
     void backend.close().catch(() => {});
     void oldIgcl?.close?.().catch(() => {});
     void lhmTelemetry?.close?.().catch(() => {});

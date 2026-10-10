@@ -3,14 +3,17 @@ import test from 'node:test';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
-import { Readable } from 'node:stream';
+import { createHash } from 'node:crypto';
+import { PassThrough, Readable } from 'node:stream';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import {
   createPortableHandoffScript,
+  createUpdateReceiptRegistry,
   expectedAssetName,
   installedUpdateArguments,
   parseReleaseTag,
+  parseSha256Digest,
   selectReleaseAsset,
   validateDownloadedUpdatePath,
   validatePortableTargetPath,
@@ -19,6 +22,7 @@ import {
 import { createUpdateOperations } from '../src/main/auto-update-runtime.js';
 import { createStartupUpdateCoordinator, shouldBlockStartupSplashClose } from '../src/main/startup-update.js';
 import { createStartupUpdateHandoff } from '../src/main/startup-update-handoff.js';
+import { fetchUpdateResponse } from '../src/main/auto-update-download.js';
 
 const release = {
   tag_name: 'v1.0.6',
@@ -44,11 +48,55 @@ test('release tags and build-specific assets are parsed deterministically', () =
   assert.deepEqual(selectReleaseAsset(release, 'installed'), {
     assetName: 'Arc-Power_Installer.exe',
     assetUrl: release.assets[0].browser_download_url,
+    assetSize: null,
+    assetDigest: null,
   });
   assert.deepEqual(selectReleaseAsset(release, 'portable'), {
     assetName: 'Arc-Power_Portable.exe',
     assetUrl: release.assets[1].browser_download_url,
+    assetSize: null,
+    assetDigest: null,
   });
+});
+
+test('GitHub asset size and SHA-256 metadata are parsed and malformed digests are rejected', () => {
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const result = selectReleaseAsset({ ...release, assets: [{
+    ...release.assets[1], size: 1234, digest,
+  }] }, 'portable');
+  assert.equal(result.assetSize, 1234);
+  assert.equal(result.assetDigest, digest);
+  assert.equal(parseSha256Digest(digest), 'a'.repeat(64));
+  assert.equal(parseSha256Digest('sha256:bad'), null);
+});
+
+test('update receipt allows one installer at a time, retries failed handoffs, and consumes success', async () => {
+  const token = '12345678-1234-1234-1234-123456789abc';
+  const receipts = createUpdateReceiptRegistry({ createToken: () => token });
+  receipts.issue({ buildKind: 'portable', path: 'private-main-process-path' });
+  let releaseInstall;
+  const pendingInstall = new Promise((resolve) => { releaseInstall = resolve; });
+  let calls = 0;
+  const first = receipts.install(token, 'portable', async (receipt) => {
+    calls += 1;
+    assert.equal(receipt.path, 'private-main-process-path');
+    return pendingInstall;
+  });
+  await assert.rejects(receipts.install(token, 'portable', async () => {
+    calls += 1;
+  }), /already being installed/);
+  assert.equal(calls, 1, 'concurrent invokes must not launch a second installer');
+  releaseInstall('installed');
+  assert.equal(await first, 'installed');
+  await assert.rejects(receipts.install(token, 'portable', async () => {}), /receipt is unavailable/);
+
+  const retryToken = 'abcdefab-cdef-abcd-efab-cdefabcdefab';
+  const retryReceipts = createUpdateReceiptRegistry({ createToken: () => retryToken });
+  retryReceipts.issue({ buildKind: 'portable' });
+  await assert.rejects(retryReceipts.install(retryToken, 'portable', async () => {
+    throw new Error('handoff failed');
+  }), /handoff failed/);
+  assert.equal(await retryReceipts.install(retryToken, 'portable', async () => 'retry succeeded'), 'retry succeeded');
 });
 
 test('release asset validation rejects non-GitHub, non-HTTPS, wrong-repository, and wrong-name URLs', () => {
@@ -79,15 +127,24 @@ test('portable handoff validates the target and supports cross-volume replacemen
   assert.equal(validatePortableTargetPath('Arc-Power_Portable.exe', downloaded), null);
 
   const script = createPortableHandoffScript();
+  assert.match(script, /ExpectedSha256/);
+  assert.match(script, /trusted release digest/);
   assert.match(script, /Get-Process -Id \$ParentPid/);
   assert.match(script, /Copy-Item -LiteralPath \$DownloadedPath -Destination \$stagedPath -Force/);
   assert.match(script, /Get-FileHash -LiteralPath \$DownloadedPath -Algorithm SHA256/);
   assert.match(script, /\$targetHash -eq \$sourceHash/);
-  assert.match(script, /\[System\.IO\.File\]::Replace\(\$stagedPath, \$TargetPath/);
+  assert.match(script, /\[System\.IO\.File\]::Replace\(\$stagedPath, \$TargetPath, \$backupPath/);
   assert.match(script, /Move-Item -LiteralPath \$stagedPath -Destination \$TargetPath -Force/);
   assert.match(script, /Test-Path -LiteralPath \$TargetPath -PathType Leaf/);
   assert.match(script, /Remove-Item -LiteralPath \$DownloadedPath -Force/);
   assert.match(script, /Start-Process -FilePath \$TargetPath/);
+  assert.match(script, /portable update replacement failed; attempting to restore and relaunch the existing executable/);
+  assert.match(script, /Arc Power could not complete the update/);
+  assert.match(script, /Write-Result 'succeeded'/);
+  assert.match(script, /Write-Result 'failed'/);
+  assert.match(script, /Start-Sleep -Seconds 8/);
+  assert.match(script, /updated Arc Power exited during startup/);
+  assert.match(script, /\$ResultPath/);
   assert.ok(script.indexOf('Copy-Item') < script.indexOf('Start-Process'));
   assert.ok(script.indexOf('Remove-Item -LiteralPath \$stagedPath') < script.indexOf('Start-Process'));
 });
@@ -129,6 +186,10 @@ function fakeProcess(tempDir) {
   };
 }
 
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 test('injected downloader writes the selected asset and reports deterministic progress and failure', async () => {
   const root = await mkdtemp(join(tmpdir(), 'arc-power-m98-download-'));
   try {
@@ -143,12 +204,49 @@ test('injected downloader writes the selected asset and reports deterministic pr
     });
     const path = await operations.downloadUpdate(
       'https://github.com/YamsSE/Arc-Power/releases/download/v1.0.6/Arc-Power_Portable.exe',
-      (percent) => progress.push(percent),
+      (sample) => progress.push(sample.percent),
       'portable',
     );
-    assert.equal(existsSync(path), true);
-    assert.equal((await readFile(path, 'utf8')), 'abcd');
-    assert.deepEqual(progress, [50, 100]);
+    assert.equal(existsSync(path.path), true);
+    assert.equal((await readFile(path.path, 'utf8')), 'abcd');
+    assert.equal(path.sha256, createHash('sha256').update('abcd').digest('hex'));
+    assert.deepEqual(progress, [50, 99, 100]);
+
+    const unknownLengthProgress = [];
+    const unknownLengthOperations = createUpdateOperations({
+      tempDirPath: root,
+      appApi: { getVersion: () => '1.0.5', quit: () => {} },
+      fetchResponse: async () => ({
+        headers: new Headers(),
+        body: Readable.toWeb(Readable.from([Buffer.from('abcd')])),
+      }),
+    });
+    await unknownLengthOperations.downloadUpdate(
+      'https://github.com/YamsSE/Arc-Power/releases/download/v1.0.6/Arc-Power_Portable.exe',
+      (sample) => unknownLengthProgress.push(sample), 'portable',
+    );
+    assert.equal(unknownLengthProgress[0].percent, null, 'unknown total must not report a fabricated percentage');
+    assert.equal(unknownLengthProgress[0].downloadedBytes, 4);
+
+    const mismatchOperations = createUpdateOperations({
+      tempDirPath: root,
+      appApi: { getVersion: () => '1.0.5', quit: () => {} },
+      fetchResponse: async () => ({
+        headers: new Headers(),
+        body: Readable.toWeb(Readable.from([Buffer.from('abcd')])),
+      }),
+    });
+    await assert.rejects(mismatchOperations.downloadUpdate(
+      'https://github.com/YamsSE/Arc-Power/releases/download/v1.0.6/Arc-Power_Portable.exe',
+      null, 'portable', { expectedSha256: '0'.repeat(64) },
+    ), /does not match the GitHub release digest/);
+
+    const expectedSizeProgress = [];
+    await unknownLengthOperations.downloadUpdate(
+      'https://github.com/YamsSE/Arc-Power/releases/download/v1.0.6/Arc-Power_Portable.exe',
+      (sample) => expectedSizeProgress.push(sample), 'portable', { assetSize: 4 },
+    );
+    assert.equal(expectedSizeProgress[0].percent, 99, 'known GitHub asset size supplies progress without Content-Length');
 
     const failureOperations = createUpdateOperations({
       tempDirPath: root,
@@ -163,9 +261,62 @@ test('injected downloader writes the selected asset and reports deterministic pr
       null,
       'portable',
     ), /stream failed/);
+    assert.equal(existsSync(join(root, 'Arc-Power_Portable.exe')), false, 'failed downloads must remove partial files');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('download progress is emitted while the response is still streaming', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'arc-power-update-stream-'));
+  try {
+    let releaseSecondChunk;
+    const secondChunk = new Promise((resolve) => { releaseSecondChunk = resolve; });
+    let reportFirstProgress;
+    const firstProgress = new Promise((resolve) => { reportFirstProgress = resolve; });
+    let downloadSettled = false;
+    const operations = createUpdateOperations({
+      tempDirPath: root,
+      appApi: { getVersion: () => '1.0.5', quit: () => {} },
+      fetchResponse: async () => ({
+        headers: new Headers({ 'content-length': '4' }),
+        body: Readable.toWeb(Readable.from((async function* streamChunks() {
+          yield Buffer.from('ab');
+          await secondChunk;
+          yield Buffer.from('cd');
+        }()))),
+      }),
+    });
+    const download = operations.downloadUpdate(
+      'https://github.com/YamsSE/Arc-Power/releases/download/v1.0.6/Arc-Power_Portable.exe',
+      (sample) => { if (sample.percent === 50) reportFirstProgress(); },
+      'portable',
+    ).finally(() => { downloadSettled = true; });
+
+    await firstProgress;
+    assert.equal(downloadSettled, false, 'download must still be pending when initial byte progress is reported');
+    releaseSecondChunk();
+    assert.equal((await download).path.endsWith('Arc-Power_Portable.exe'), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('GitHub update response times out when its body stops producing bytes', async () => {
+  const responseStream = new PassThrough();
+  responseStream.statusCode = 200;
+  responseStream.headers = { 'content-length': '4' };
+  const request = new EventEmitter();
+  request.end = () => queueMicrotask(() => request.emit('response', responseStream));
+  request.abort = () => responseStream.destroy();
+  const response = await fetchUpdateResponse(
+    'https://github.com/YamsSE/Arc-Power/releases/download/v1.0.6/Arc-Power_Portable.exe',
+    () => request,
+    0,
+    { headerTimeoutMs: 1000, idleTimeoutMs: 20 },
+  );
+
+  await assert.rejects(response.body.getReader().read(), /stalled with no data for 20 ms/);
 });
 
 test('injected installed handoff waits for spawn, quits, and records spawn failures', async () => {
@@ -184,6 +335,7 @@ test('injected installed handoff waits for spawn, quits, and records spawn failu
     });
     const result = await operations.installUpdate(downloaded, {
       buildKind: 'installed',
+      expectedSha256: sha256('installer'),
       onHandoffStarted: () => calls.push('handoff-started'),
     });
     assert.equal(result.kind, 'installed');
@@ -202,12 +354,34 @@ test('injected installed handoff waits for spawn, quits, and records spawn failu
     let failureHandoffStarted = 0;
     await assert.rejects(failureOperations.installUpdate(failurePath, {
       buildKind: 'installed',
+      expectedSha256: sha256('installer'),
       onHandoffStarted: () => { failureHandoffStarted += 1; },
     }), /installer launch failed/);
     assert.equal(failureHandoffStarted, 0, 'spawn failure must not mark the handoff started');
     assert.equal(calls.filter((call) => call === 'quit').length, 1, 'spawn failure must not request another quit');
     const diagnostic = await readFile(join(root, 'arc-power-update-2718.log'), 'utf8');
     assert.match(diagnostic, /installer spawn failed/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('install rechecks the main-process digest receipt before launching a handoff', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'arc-power-update-integrity-'));
+  try {
+    const downloaded = join(root, 'Arc-Power_Installer.exe');
+    await writeFile(downloaded, 'tampered');
+    let spawnCalls = 0;
+    const operations = createUpdateOperations({
+      tempDirPath: root,
+      appApi: { quit: () => {}, getVersion: () => '1.0.5' },
+      processApi: fakeProcess(root),
+      spawnProcess: () => { spawnCalls += 1; return fakeChild(); },
+    });
+    await assert.rejects(operations.installUpdate(downloaded, {
+      buildKind: 'installed', expectedSha256: sha256('installer'),
+    }), /changed after verification/);
+    assert.equal(spawnCalls, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -234,12 +408,14 @@ test('injected portable handoff uses the validated wrapper target and records ha
     const result = await operations.installUpdate(downloaded, {
       buildKind: 'portable',
       portableWrapperPath: target,
+      expectedSha256: sha256('portable'),
       onHandoffStarted: () => calls.push('handoff-started'),
     });
     assert.equal(result.kind, 'portable');
     assert.equal(result.targetPath, target);
     assert.equal(calls[0].args.includes('-TargetPath'), true);
     assert.equal(calls[0].args[calls[0].args.indexOf('-TargetPath') + 1], target);
+    assert.equal(calls[0].args[calls[0].args.indexOf('-ExpectedSha256') + 1], sha256('portable'));
     assert.deepEqual(calls.slice(1), ['handoff-started', 'quit']);
 
     const failureOperations = createUpdateOperations({
@@ -252,6 +428,7 @@ test('injected portable handoff uses the validated wrapper target and records ha
     await assert.rejects(failureOperations.installUpdate(downloaded, {
       buildKind: 'portable',
       portableWrapperPath: target,
+      expectedSha256: sha256('portable'),
       onHandoffStarted: () => { failureHandoffStarted += 1; },
     }), /PowerShell launch failed/);
     assert.equal(failureHandoffStarted, 0, 'spawn failure must not mark the handoff started');
@@ -273,6 +450,8 @@ test('startup update marks the handoff before a real runtime quit closes the spl
     const coordinator = createStartupUpdateCoordinator({
       check: async () => ({ available: true, version: '1.0.6', assetUrl: 'https://example.invalid/update.exe' }),
     });
+    const statuses = [];
+    const unsubscribeStatus = coordinator.subscribe((status) => statuses.push(status));
     const appApi = {
       getVersion: () => '1.0.5',
       quit: () => {
@@ -297,8 +476,12 @@ test('startup update marks the handoff before a real runtime quit closes the spl
     const handoff = createStartupUpdateHandoff({
       coordinator,
       buildKind: 'installed',
-      downloadUpdate: async () => downloaded,
-      installUpdate: (...args) => operations.installUpdate(...args),
+      downloadUpdate: async (_url, onProgress, buildKind) => {
+        assert.equal(buildKind, 'installed');
+        onProgress({ percent: 42, downloadedBytes: 42, totalBytes: 100 });
+        return { token: 'test-receipt' };
+      },
+      installUpdate: (_token, options) => operations.installUpdate(downloaded, { ...options, expectedSha256: sha256('installer') }),
       completeUpdate: () => { completeCalls += 1; return { ok: true, action: 'restart' }; },
     });
 
@@ -321,6 +504,8 @@ test('startup update marks the handoff before a real runtime quit closes the spl
     assert.equal(closePrevented, false);
     assert.equal(completeCalls, 0);
     assert.equal(coordinator.handoffStarted(), true);
+    assert.ok(statuses.some((status) => status.state === 'downloading' && status.percent === 42));
+    unsubscribeStatus();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

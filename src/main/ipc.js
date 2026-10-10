@@ -252,6 +252,11 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
         return;
       }
+      if (channel === 'update:download-progress') {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+        return;
+      }
       if (channel !== 'telemetry:sample') return;
       const win = getWindow();
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -330,10 +335,10 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
   let nextOcModeRevision = 0;
   for (const [channel, fn] of Object.entries(handlers)) {
     ipcMain.handle(channel, async (event, ...args) => {
-      if (channel === 'device-selection-push') {
+      if (channel === 'device-selection-push' || channel.startsWith('update:')) {
         const win = getWindow();
         if (!win || win.isDestroyed() || event.sender !== win.webContents) {
-          throw new Error('device-selection-push is restricted to the main renderer');
+          throw new Error(`${channel} is restricted to the main renderer`);
         }
       }
       const recordingAction = recordingInvokeActions[channel];

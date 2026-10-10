@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
 import { createArcSleepController } from '../src/main/arc-sleep-controller.js';
 import { createArcSleepIGCLLimiter } from '../src/main/arc-sleep-igcl-limiter.js';
+import { createUnifiedGpuBackend, physicalTargetOf } from '../src/main/gpu-inventory.js';
 
 function createGraphicsHandlers({ rtssFrameLimiter, applyRunner, arcSleepController, backend: backendOverride, store: storeOverride }) {
   const target = { id: 0, deviceKey: 'pci:arc-b580-test', synthetic: false, backendKind: 'igcl' };
@@ -26,6 +27,91 @@ function createGraphicsHandlers({ rtssFrameLimiter, applyRunner, arcSleepControl
     applyRunner,
   }).handlers;
 }
+
+test('elevated GPU target accepts a unique PCI alias with matching physical proof', async () => {
+  const pnp = 'PCI\\VEN_8086&DEV_56A0&SUBSYS_12345678';
+  const bdf = '0000:03:00.0';
+  const backend = createUnifiedGpuBackend({
+    backend: {
+      kind: 'igcl',
+      async listDevices() {
+        return [{ id: 0, name: 'Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf, pnpDeviceId: pnp }];
+      },
+    },
+    videoControllers: [{ name: 'Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf, pnpDeviceId: pnp }],
+  });
+  const [target] = await backend.listDevices();
+  const pciAlias = 'pci:0x8086:0x56a0@0000:03:00.0';
+
+  assert.match(target.deviceKey, /^pnp:/);
+  assert.ok(target.deviceKeys.includes(pciAlias));
+  assert.equal((await backend.assertDeviceTarget(target.id, pciAlias, physicalTargetOf(target))).deviceKey, target.deviceKey);
+});
+
+test('elevated GPU target preserves parent PNP proof for a PCI-only worker inventory', async () => {
+  const pnp = 'PCI\\VEN_8086&DEV_56A0&SUBSYS_12345678';
+  const bdf = '0000:03:00.0';
+  const backend = createUnifiedGpuBackend({
+    backend: {
+      kind: 'igcl',
+      async listDevices() {
+        return [{ id: 0, name: 'Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf }];
+      },
+    },
+    videoControllers: [],
+  });
+  const [target] = await backend.listDevices();
+  const parentProof = {
+    pnpDeviceId: pnp,
+    pciVendorId: '0x8086',
+    pciDeviceId: '0x56a0',
+    bdf,
+  };
+
+  assert.equal(target.pnpDeviceId, null);
+  assert.equal(target.deviceKey, 'pci:0x8086:0x56a0@0000:03:00.0');
+  assert.equal((await backend.assertDeviceTarget(target.id, `pnp:${pnp}`, parentProof)).deviceKey, target.deviceKey);
+});
+
+test('elevated GPU target rejects unknown aliases and mismatched physical proof', async () => {
+  const pnp = 'PCI\\VEN_8086&DEV_56A0&SUBSYS_12345678';
+  const bdf = '0000:03:00.0';
+  const backend = createUnifiedGpuBackend({
+    backend: {
+      kind: 'igcl',
+      async listDevices() {
+        return [{ id: 0, name: 'Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf, pnpDeviceId: pnp }];
+      },
+    },
+    videoControllers: [{ name: 'Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf, pnpDeviceId: pnp }],
+  });
+  const [target] = await backend.listDevices();
+  const proof = physicalTargetOf(target);
+  const pciAlias = 'pci:0x8086:0x56a0@0000:03:00.0';
+
+  await assert.rejects(backend.assertDeviceTarget(target.id, 'pci:unknown-alias', proof), /no longer resolves/);
+  await assert.rejects(
+    backend.assertDeviceTarget(target.id, pciAlias, { ...proof, pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_87654321' }),
+    /physical proof does not match/,
+  );
+});
+
+test('elevated GPU target rejects an alias shared by multiple inventory rows', async () => {
+  const sharedBdf = '0000:03:00.0';
+  const devices = [
+    { id: 0, name: 'Intel Arc GPU A', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf: sharedBdf, pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_12345678' },
+    { id: 1, name: 'Intel Arc GPU B', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf: sharedBdf, pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_87654321' },
+  ];
+  const backend = createUnifiedGpuBackend({
+    backend: { kind: 'igcl', async listDevices() { return devices; } },
+    videoControllers: devices.map((device) => ({ ...device })),
+  });
+  const [target] = await backend.listDevices();
+  const pciAlias = 'pci:0x8086:0x56a0@0000:03:00.0';
+
+  assert.equal(target.deviceKeys.includes(pciAlias), false, 'shared aliases must be removed from the unique alias set');
+  await assert.rejects(backend.assertDeviceTarget(target.id, pciAlias, physicalTargetOf(target)), /no longer resolves/);
+});
 
 test('graphics apply checks the saved GPU key after resolving a fresh physical target', async () => {
   const target = {
@@ -69,6 +155,90 @@ test('graphics apply checks the saved GPU key after resolving a fresh physical t
   assert.deepEqual(resolveArgs, [[0]]);
   assert.equal(applied.deviceKey, target.deviceKey);
   assert.equal(applied.physicalTarget.pnpDeviceId, target.pnpDeviceId);
+});
+
+test('graphics apply follows the saved durable GPU identity after numeric IDs reorder', async () => {
+  const selected = { id: 2, deviceKey: 'pci:selected-gpu', synthetic: false, backendKind: 'igcl' };
+  const applied = [];
+  const handlers = createGraphicsHandlers({
+    backend: {
+      async listDevices() { return [{ id: 0, deviceKey: 'pci:other-gpu' }, selected]; },
+      async getDeviceTarget(id) { return id === 2 ? selected : { id, deviceKey: 'pci:other-gpu' }; },
+      async getGraphicsSettings(id) {
+        assert.equal(id, 2);
+        return { supported: { lowLatency: true }, values: { lowLatency: 'off' } };
+      },
+    },
+    store: { async loadSettings() { return { deviceId: 0, deviceKey: selected.deviceKey }; } },
+    applyRunner: { async graphicsApplyIsolated(request) { applied.push(request); return { ok: true, perControl: { lowLatency: { ok: true } } }; } },
+  });
+
+  const result = await handlers['graphics:apply'](0, { lowLatency: 'on' });
+
+  assert.equal(result.ok, true);
+  assert.equal(applied.length, 1);
+  assert.equal(applied[0].deviceId, 2);
+  assert.equal(applied[0].deviceKey, selected.deviceKey);
+});
+
+test('Graphics page read follows the saved durable GPU identity after numeric IDs reorder', async () => {
+  const selected = { id: 2, deviceKey: 'pci:selected-gpu', synthetic: false, backendKind: 'igcl' };
+  const handlers = createGraphicsHandlers({
+    backend: {
+      async listDevices() { return [{ id: 0, deviceKey: 'pci:other-gpu' }, selected]; },
+      async getDeviceTarget(id) { return id === 2 ? selected : { id, deviceKey: 'pci:other-gpu' }; },
+      async getGraphicsSettings(id) {
+        assert.equal(id, 2);
+        return { supported: { lowLatency: true }, values: { lowLatency: 'on' } };
+      },
+    },
+    store: { async loadSettings() { return { deviceId: 0, deviceKey: selected.deviceKey }; } },
+  });
+
+  const state = await handlers['graphics:get'](0);
+
+  assert.equal(state.values.lowLatency, 'on');
+});
+
+test('Arc Sleep base cap read follows the saved durable GPU identity after numeric IDs reorder', async () => {
+  const selected = { id: 2, deviceKey: 'pci:selected-gpu', synthetic: false, backendKind: 'igcl' };
+  const handlers = createGraphicsHandlers({
+    backend: {
+      async listDevices() { return [{ id: 0, deviceKey: 'pci:other-gpu' }, selected]; },
+      async getDeviceTarget(id) { return id === 2 ? selected : { id, deviceKey: 'pci:other-gpu' }; },
+      async getGraphicsSettings(id) {
+        assert.equal(id, 2);
+        return { supported: { frameLimit: true }, values: { frameLimit: { enabled: false, value: 60 } } };
+      },
+    },
+    store: { async loadSettings() { return { deviceId: 0, deviceKey: selected.deviceKey }; } },
+  });
+
+  const state = await handlers['arc-sleep-base-cap-get'](0);
+
+  assert.equal(state.supported.frameLimit, true);
+});
+
+test('graphics apply refuses when the saved physical GPU identity is missing or ambiguous', async (t) => {
+  for (const [label, devices] of [
+    ['missing', [{ id: 1, deviceKey: 'pci:other-gpu' }]],
+    ['ambiguous', [
+      { id: 1, deviceKey: 'pci:selected-gpu' },
+      { id: 2, deviceKey: 'pci:selected-gpu' },
+    ]],
+  ]) {
+    await t.test(label, async () => {
+      let applyCount = 0;
+      const handlers = createGraphicsHandlers({
+        backend: { async listDevices() { return devices; } },
+        store: { async loadSettings() { return { deviceId: 0, deviceKey: 'pci:selected-gpu' }; } },
+        applyRunner: { async graphicsApplyIsolated() { applyCount += 1; return { ok: true, perControl: {} }; } },
+      });
+
+      await assert.rejects(handlers['graphics:apply'](0, { lowLatency: 'on' }), /selected device identity .* (missing|ambiguous)/);
+      assert.equal(applyCount, 0);
+    });
+  }
 });
 
 test('graphics apply rolls RTSS back when the driver apply returns a failure', async () => {
@@ -134,6 +304,238 @@ test('graphics apply sends the limiter to IGCL when RTSS is unavailable', async 
   assert.equal(result.ok, true);
   assert.deepEqual(driverSettings, { frameLimit: { enabled: true, value: 144 } });
   assert.equal(result.graphicsState.frameLimitSource, 'igcl');
+});
+
+test('production Graphics FPS apply falls back from unavailable RTSS to verified IGCL identity alias', async () => {
+  const aliasKey = 'pnp:unique-b580-alias';
+  const canonicalKey = 'gpu:8086:56a0:0000:03:00.0';
+  const device = {
+    id: 0,
+    deviceKey: canonicalKey,
+    deviceKeys: [canonicalKey, aliasKey],
+    name: 'Intel Arc B580',
+    pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0',
+    synthetic: false,
+    backendKind: 'igcl',
+  };
+  let rawFrameLimit = { enabled: false, value: 60 };
+  let saved = {
+    deviceId: 0,
+    deviceKey: aliasKey,
+    arcSleep: {},
+    arcSleepFrameLimitBase: null,
+    arcSleepJournal: null,
+  };
+  const writes = [];
+  const store = {
+    async loadSettings() { return structuredClone(saved); },
+    async saveSettings(next) { saved = structuredClone(next); return next; },
+    async saveArcSleepState(patch) { saved = { ...saved, ...structuredClone(patch) }; },
+  };
+  const backend = {
+    async listDevices() { return [device]; },
+    async getDeviceTarget(id, key, physicalTarget) {
+      assert.equal(id, 0);
+      if (key !== undefined) {
+        assert.equal(key, canonicalKey, 'IGCL must resolve the alias to the canonical key before device access');
+        assert.equal(physicalTarget.pnpDeviceId, device.pnpDeviceId);
+      }
+      return device;
+    },
+    async getGraphicsSettings() {
+      return {
+        supported: { frameLimit: true },
+        frameLimitRange: { min: 30, max: 300, step: 1, default: 60 },
+        frameLimitLiveChange: true,
+        values: { frameLimit: { ...rawFrameLimit } },
+      };
+    },
+  };
+  const rtssFrameLimiter = {
+    async getFrameLimit() { return { ok: false, available: false, error: 'RTSS is unavailable' }; },
+  };
+  const applyRunner = {
+    async graphicsApplyIsolated(request) {
+      writes.push(request);
+      rawFrameLimit = { ...request.settings.frameLimit };
+      return { ok: true, perControl: { frameLimit: { ok: true } } };
+    },
+  };
+  const igclFrameLimiter = createArcSleepIGCLLimiter({
+    backend,
+    store,
+    applyRunner,
+    isElevated: () => true,
+  });
+  const arcSleepController = createArcSleepController({ store, rtssFrameLimiter, igclFrameLimiter });
+  const handlers = createGraphicsHandlers({
+    backend,
+    store,
+    rtssFrameLimiter,
+    arcSleepController,
+    applyRunner,
+  });
+
+  try {
+    const result = await handlers['graphics:apply'](0, { frameLimit: { enabled: true, value: 144 } });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.perControl.frameLimit.ok, true);
+    assert.equal(result.perControl.frameLimit.source, 'igcl');
+    assert.equal(result.graphicsState.frameLimitSource, 'igcl');
+    assert.equal(writes.length, 1, 'the driver write must go through the isolated runner');
+    assert.equal(writes[0].deviceKey, canonicalKey);
+    assert.equal(writes[0].physicalTarget.pnpDeviceId, device.pnpDeviceId);
+    assert.deepEqual(writes[0].settings, { frameLimit: { enabled: true, value: 144 } });
+    assert.deepEqual(rawFrameLimit, { enabled: true, value: 144 }, 'the successful result must follow IGCL read-back');
+    assert.equal(saved.deviceKey, aliasKey, 'resolving an alias must not rewrite the user selection');
+  } finally {
+    await arcSleepController.stop();
+  }
+});
+
+test('Arc Sleep IGCL limiter refuses a duplicated saved identity alias without touching either GPU', async () => {
+  const aliasKey = 'pnp:duplicate-alias';
+  const devices = [
+    {
+      id: 0,
+      deviceKey: 'gpu:8086:56a0:0000:03:00.0',
+      deviceKeys: ['gpu:8086:56a0:0000:03:00.0', aliasKey],
+      pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0',
+      synthetic: false,
+      backendKind: 'igcl',
+    },
+    {
+      id: 1,
+      deviceKey: 'gpu:8086:56a0:0000:04:00.0',
+      deviceKeys: ['gpu:8086:56a0:0000:04:00.0', aliasKey],
+      pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_DUPLICATE',
+      synthetic: false,
+      backendKind: 'igcl',
+    },
+  ];
+  let deviceTargetCalls = 0;
+  let driverWriteCalls = 0;
+  const limiter = createArcSleepIGCLLimiter({
+    store: { async loadSettings() { return { deviceKey: aliasKey }; } },
+    backend: {
+      async listDevices() { return devices; },
+      async getDeviceTarget() { deviceTargetCalls += 1; return devices[0]; },
+      async getGraphicsSettings() {
+        return {
+          supported: { frameLimit: true },
+          values: { frameLimit: { enabled: false, value: 60 } },
+        };
+      },
+    },
+    applyRunner: {
+      async graphicsApplyIsolated() { driverWriteCalls += 1; return { ok: true, perControl: { frameLimit: { ok: true } } }; },
+    },
+    isElevated: () => true,
+  });
+
+  const read = await limiter.getFrameLimit();
+  const apply = await limiter.applyFrameLimit({ enabled: true, value: 144 });
+
+  assert.equal(read.ok, false);
+  assert.equal(read.available, false);
+  assert.match(read.error, /durable identity/);
+  assert.equal(apply.ok, false);
+  assert.equal(apply.available, false);
+  assert.equal(deviceTargetCalls, 0, 'ambiguous aliases must be rejected before resolving a GPU target');
+  assert.equal(driverWriteCalls, 0, 'ambiguous aliases must never reach the graphics worker');
+});
+
+test('Arc Sleep recovers an alias-pinned IGCL journal through the verified canonical route', async () => {
+  const aliasKey = 'pnp:unique-b580-alias';
+  const canonicalKey = 'gpu:8086:56a0:0000:03:00.0';
+  const device = {
+    id: 0,
+    deviceKey: canonicalKey,
+    deviceKeys: [canonicalKey, aliasKey],
+    name: 'Intel Arc B580',
+    pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0',
+    synthetic: false,
+    backendKind: 'igcl',
+  };
+  const baseline = { limit: 120, denominator: 1, limiterEnabled: true };
+  let rawFrameLimit = { enabled: true, value: 90 };
+  let saved = {
+    deviceId: 0,
+    deviceKey: aliasKey,
+    arcSleep: {},
+    arcSleepFrameLimitBase: { enabled: true, value: 120 },
+    arcSleepJournal: {
+      version: 1,
+      route: { source: 'igcl', deviceKey: aliasKey },
+      baseline,
+      underlay: baseline,
+      expected: { limit: 90, denominator: 1, limiterEnabled: true },
+      pending: {
+        from: baseline,
+        to: { limit: 90, denominator: 1, limiterEnabled: true },
+      },
+    },
+  };
+  const writes = [];
+  const store = {
+    async loadSettings() { return structuredClone(saved); },
+    async saveSettings(next) { saved = structuredClone(next); return next; },
+    async saveArcSleepState(patch) { saved = { ...saved, ...structuredClone(patch) }; },
+  };
+  const backend = {
+    async listDevices() { return [device]; },
+    async getDeviceTarget(id, key, physicalTarget) {
+      assert.equal(id, 0);
+      if (key !== undefined) {
+        assert.equal(key, canonicalKey, 'journal alias must be resolved before IGCL device access');
+        assert.equal(physicalTarget.pnpDeviceId, device.pnpDeviceId);
+      }
+      return device;
+    },
+    async getGraphicsSettings() {
+      return {
+        supported: { frameLimit: true },
+        frameLimitRange: { min: 30, max: 300, step: 1, default: 60 },
+        frameLimitLiveChange: true,
+        values: { frameLimit: { ...rawFrameLimit } },
+      };
+    },
+  };
+  const applyRunner = {
+    async graphicsApplyIsolated(request) {
+      writes.push(request);
+      rawFrameLimit = { ...request.settings.frameLimit };
+      return { ok: true, perControl: { frameLimit: { ok: true } } };
+    },
+  };
+  const igclFrameLimiter = createArcSleepIGCLLimiter({
+    backend,
+    store,
+    applyRunner,
+    isElevated: () => true,
+  });
+  const controller = createArcSleepController({
+    store,
+    rtssFrameLimiter: { async getFrameLimit() { return { ok: false, available: false }; } },
+    igclFrameLimiter,
+  });
+
+  try {
+    const snapshot = await controller.withTransaction(({ getSnapshot }) => getSnapshot());
+
+    assert.equal(snapshot.activeLimiter, 'igcl');
+    assert.equal(snapshot.limiterDeviceKey, canonicalKey);
+    assert.equal(snapshot.status, 'disabled');
+    assert.deepEqual(rawFrameLimit, { enabled: baseline.limiterEnabled, value: baseline.limit });
+    assert.equal(saved.arcSleepJournal, null, 'recovery clears the journal only after restoring the baseline');
+    assert.deepEqual(saved.arcSleepFrameLimitBase, { enabled: true, value: baseline.limit });
+    assert.ok(writes.length >= 1, 'recovery must issue an IGCL write');
+    assert.ok(writes.every((request) => request.deviceKey === canonicalKey));
+    assert.ok(writes.every((request) => request.physicalTarget.pnpDeviceId === device.pnpDeviceId));
+  } finally {
+    await controller.stop();
+  }
 });
 
 test('graphics apply rolls RTSS back when the isolated driver apply throws', async () => {

@@ -39,10 +39,14 @@ export function createArcSleepIGCLLimiter({ backend, store, applyRunner, isEleva
         : null;
     if (!storedKey) return null;
     const matches = (Array.isArray(devices) ? devices : [])
-      .filter((device) => device?.deviceKey === storedKey);
+      .filter((device) => device?.deviceKey === storedKey
+        || (Array.isArray(device?.deviceKeys) && device.deviceKeys.includes(storedKey)));
     if (matches.length !== 1) return null;
     const device = matches[0];
-    if (!integer(device.id) || device.identityAmbiguous === true
+    const canonicalKey = typeof device.deviceKey === 'string' && device.deviceKey.length > 0
+      ? device.deviceKey
+      : null;
+    if (!canonicalKey || !integer(device.id) || device.identityAmbiguous === true
       || device.synthetic === true || device.backendKind === 'os') return null;
     const physicalTarget = physicalTargetOf(device);
     const hasDurableProof = [
@@ -53,12 +57,12 @@ export function createArcSleepIGCLLimiter({ backend, store, applyRunner, isEleva
       physicalTarget.legacyDeviceKey,
     ].some((part) => part !== null && part !== undefined && part !== '');
     if (!hasDurableProof) return null;
-    const target = await backend.getDeviceTarget(device.id, storedKey, physicalTarget);
+    const target = await backend.getDeviceTarget(device.id, canonicalKey, physicalTarget);
     if (!target || target.synthetic === true || target.identityAmbiguous === true
-      || target.deviceKey !== storedKey) return null;
+      || target.deviceKey !== canonicalKey) return null;
     return {
       deviceId: device.id,
-      deviceKey: storedKey,
+      deviceKey: canonicalKey,
       name: typeof device.name === 'string' ? device.name : null,
       physicalTarget: physicalTargetOf(target),
     };

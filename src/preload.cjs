@@ -212,6 +212,11 @@ contextBridge.exposeInMainWorld('arcPower', {
     ipcRenderer.on('intel-driver-download:progress', listener);
     return () => ipcRenderer.removeListener('intel-driver-download:progress', listener);
   },
+  onUpdateDownloadProgress: (cb) => {
+    const listener = (_event, progress) => cb(progress);
+    ipcRenderer.on('update:download-progress', listener);
+    return () => ipcRenderer.removeListener('update:download-progress', listener);
+  },
   // M4-D: pushed window-maximize state (the title-bar max button icon
   // follows the live state; main sends on maximize/unmaximize).
   onWindowMaximizedChanged: (cb) => {
@@ -302,5 +307,5 @@ contextBridge.exposeInMainWorld('arcPower', {
   // M25: auto-update IPC (GitHub Releases check/download/install).
   updateCheck: (intent = 'startup') => ipcRenderer.invoke('update:check', { intent }),
   updateDownload: (assetUrl) => ipcRenderer.invoke('update:download', assetUrl),
-  updateInstall: (filePath) => ipcRenderer.invoke('update:install', filePath),
+  updateInstall: (token) => ipcRenderer.invoke('update:install', token),
 });
