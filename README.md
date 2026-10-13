@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="docs/branding/Arc-Power-Main-Logo-Navy.png" alt="Arc Power" width="540">
+</p>
+
+<p align="center">
   <a href="https://discord.gg/nXAjasHy6e"><img src="https://api.iconify.design/simple-icons/discord.svg?color=%235865F2" alt="Join the Arc Power Discord" title="Join the Arc Power Discord" width="22" height="22"></a>
 </p>
 

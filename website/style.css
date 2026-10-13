@@ -98,7 +98,6 @@ a:hover { text-decoration: underline; }
 
 .nav-brand { display: flex; align-items: center; gap: 10px; color: var(--text); }
 .nav-brand:hover { text-decoration: none; }
-.nav-logo { filter: drop-shadow(0 0 10px rgba(76,194,255,0.35)); }
 .nav-name { font-weight: 800; font-size: 17px; letter-spacing: -0.02em; }
 .nav-ver {
   font-size: 10.5px; color: var(--muted-2); border: 1px solid var(--border);
@@ -203,7 +202,6 @@ a:hover { text-decoration: underline; }
 
 .card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
 .card-head-left { display: flex; align-items: center; gap: 12px; }
-.card-head-left img { filter: drop-shadow(0 0 8px rgba(76,194,255,0.4)); }
 .card-title { font-weight: 700; font-size: 15.5px; }
 .card-sub { font-size: 11.5px; color: var(--muted-2); }
 
@@ -316,7 +314,7 @@ a:hover { text-decoration: underline; }
 
 .gpu-head { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted-2); background: rgba(255,255,255,0.025); }
 .gpu-name { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; }
-.gpu-name img { opacity: 0.9; filter: drop-shadow(0 0 6px rgba(76,194,255,0.35)); }
+.gpu-name img { opacity: 0.9; }
 
 .chip {
   justify-self: start; display: inline-flex; flex-direction: column; gap: 2px;
@@ -354,7 +352,6 @@ a:hover { text-decoration: underline; }
   gap: 24px; padding-top: 44px; padding-bottom: 30px; flex-wrap: wrap;
 }
 .footer-brand { display: flex; align-items: center; gap: 14px; }
-.footer-brand img { filter: drop-shadow(0 0 12px rgba(76,194,255,0.35)); }
 .footer-name { font-weight: 800; font-size: 17px; }
 .footer-tag { font-size: 12.5px; color: var(--muted-2); }
 .footer-links { display: flex; gap: 22px; font-size: 13.5px; flex-wrap: wrap; }

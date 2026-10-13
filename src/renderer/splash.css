@@ -56,7 +56,6 @@ body {
   width: 208px;
   height: 208px;
   object-fit: contain;
-  filter: drop-shadow(0 10px 24px rgba(35, 164, 255, 0.13));
 }
 
 .splash-brand {
