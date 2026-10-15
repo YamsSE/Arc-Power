@@ -11,7 +11,7 @@ import { nativeImage } from 'electron';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEV_ICON_PATH = path.join(__dirname, '..', 'assets', 'app-icon.ico');
-const PACKAGED_TASKBAR_ICON_PATH = path.join(process.resourcesPath ?? '', 'ArcPowerTaskbar.ico');
+const PACKAGED_TASKBAR_ICON_PATH = path.join(process.resourcesPath ?? '', 'ArcPowerTaskbar-blue-gradient.ico');
 const PACKAGED_ICON_PATH = path.join(process.resourcesPath ?? '', 'app-icon.ico');
 const PACKAGED_FALLBACK_ICON_PATH = path.join(process.resourcesPath ?? '', 'app-icon-fallback.ico');
 const BUILD_ICON_PATH = path.join(__dirname, '..', '..', 'build', 'icon.ico');

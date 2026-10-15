@@ -48,6 +48,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { prepareArcPowerCacheSync, resolveArcPowerCachePath, shouldClearCache, resolveCacheRestartRelaunchOptions, ensureCacheDirectorySync, resetCacheDirectorySync } from './cache-lifecycle.js';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
+import { collectGpuReadOnlyDiagnostics } from './gpu-read-only-diagnostics.js';
 import { runSmoke } from './smoke.js';
 import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runLaptopSysinfoVerify, runOverlayVerify, runGraphicsVerify, runNoSysmanVerify, runAdvancedOverlayVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
@@ -62,7 +63,7 @@ import { createWheaMonitor } from './whea-check.js';
 import { OverlayLayoutStore } from './overlay-layout-store.js';
 import { createObsStreamService } from './obs-stream.js';
 import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js';
-import { formatDxgiLuid, recordingRuntimeEncoderIdForTarget, resolveRecordingRuntimeCandidates } from './recording-pure.js';
+import { formatDxgiLuid, recordingAbsolutePath, recordingRuntimeEncoderIdForTarget, resolveRecordingRuntimeCandidates } from './recording-pure.js';
 import { normalizeDxgiLuid } from './recording-pure.js';
 import { listRecordingCaptureTargets, mergeRecordingDisplayMetadata, recordingCaptureSelection } from './recording-capture.js';
 import { createRecordingCaptureTargetsReader, recordingCaptureSelectionForStart } from './recording-target-inventory.js';
@@ -185,6 +186,7 @@ protocol.registerSchemesAsPrivileged([{
 const profileBoot = bootProfilingEnabled();
 
 const headless = process.argv.includes('--headless');
+const gpuDiagnostics = process.argv.includes('--gpu-diagnostics');
 const uiVerify = process.argv.includes('--ui-verify');
 // M4-E: the ArcPowerBootApply logon task's action (`"<exe>" --boot-apply`).
 // No id argument - reads the ACTIVE profile from the store like the
@@ -392,13 +394,13 @@ if (process.platform === 'win32') {
   try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch { /* best effort */ }
 }
 // Keep the native Windows identity on the same generated resources used by
-// the packaged executable. The live window uses the optimized PNG buffer;
-// Windows taskbar metadata always uses the external ICO, never the Portable
+// the packaged executable. The live window and Windows taskbar metadata use
+// the external ICO, never the Portable
 // wrapper or Electron's extracted executable.
 const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'app-icon.ico');
 const APP_ICON_PNG_PATH = path.join(__dirname, '..', 'assets', 'icon.png');
 const TRAY_ICON_PATH = path.join(__dirname, '..', 'assets', 'tray-icon.png');
-const PACKAGED_TASKBAR_ICON_PATH = path.join(process.resourcesPath, 'ArcPowerTaskbar.ico');
+const PACKAGED_TASKBAR_ICON_PATH = path.join(process.resourcesPath, 'ArcPowerTaskbar-blue-gradient.ico');
 const PACKAGED_APP_ICON_PATH = path.join(process.resourcesPath, 'app-icon.ico');
 const PACKAGED_APP_ICON_FALLBACK_PATH = path.join(process.resourcesPath, 'app-icon-fallback.ico');
 const BUILD_APP_ICON_PATH = path.join(__dirname, '..', '..', 'build', 'icon.ico');
@@ -422,10 +424,16 @@ const APP_ICON_PNG_FALLBACK_PATH = firstExistingIconPath([
   path.join(__dirname, '..', '..', 'build', 'icon.png'),
 ]);
 const APP_ICON = (() => {
-  // Electron's live Windows taskbar path is more reliable with the optimized
-  // PNG than with a PNG-in-ICO. Read it through Electron's ASAR-aware fs
-  // layer, then hand nativeImage the bytes so packaged and dev launches use
-  // the same native image. The ICO remains the shell/shortcut resource.
+  // Keep the live handle and shell metadata on the same multi-size icon.
+  // The branded resource filename also gives the shell a fresh icon resource
+  // when upgrading from the older logo without changing application identity.
+  for (const iconPath of [WINDOWS_APP_ICON_PATH, APP_ICON_PATH]) {
+    if (!iconPath) continue;
+    try {
+      const icon = nativeImage.createFromPath(iconPath);
+      if (!icon.isEmpty()) return icon;
+    } catch { /* try the PNG fallback */ }
+  }
   try {
     const icon = nativeImage.createFromBuffer(fs.readFileSync(APP_ICON_PNG_PATH));
     if (!icon.isEmpty()) return icon;
@@ -435,12 +443,6 @@ const APP_ICON = (() => {
       const icon = nativeImage.createFromBuffer(fs.readFileSync(APP_ICON_PNG_FALLBACK_PATH));
       if (!icon.isEmpty()) return icon;
     } catch { /* fall through to the external ICO */ }
-  }
-  for (const iconPath of [WINDOWS_APP_ICON_PATH, APP_ICON_PATH]) {
-    try {
-      const icon = nativeImage.createFromPath(iconPath);
-      if (!icon.isEmpty()) return icon;
-    } catch { /* try the next source */ }
   }
   return nativeImage.createEmpty();
 })();
@@ -488,9 +490,7 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
     // requested `show` value is honored in the ready-to-show handler below;
     // start-minimized and splash-held windows remain hidden.
     show: false,
-    // Give Chromium/Windows the real ICO at construction time. The native
-    // PNG is still applied below for the live window handle, but the
-    // constructor path prevents a generic icon during taskbar registration.
+    // Use the same multi-size ICO at construction and on the live handle.
     icon: WINDOWS_APP_ICON_PATH ?? undefined,
     // M2b UX: no visible Electron menu bar (an Alt-key shortcut can reveal
     // it later if ever needed).
@@ -690,6 +690,26 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, sysm
 }
 
 async function main() {
+  // This support path exits before normal startup, profiles, fan capability
+  // probes, boot apply, recording, and the RTSS controller are constructed.
+  if (gpuDiagnostics) {
+    const backend = createBackend({ kind: 'igcl', igcl: { allowAutoWaiver: false } });
+    let exitCode = 0;
+    try {
+      const report = await collectGpuReadOnlyDiagnostics(backend);
+      const output = path.join(app.getPath('desktop'), `Arc-Power-GPU-Report-${Date.now()}.json`);
+      fs.writeFileSync(output, JSON.stringify({ appVersion: app.getVersion(), ...report }, null, 2), { flag: 'wx' });
+      if (report.initError) exitCode = 1;
+      console.log(`[gpu-diagnostics] Read-only GPU report saved: ${output}`);
+    } catch (error) {
+      exitCode = 1;
+      console.error(`[gpu-diagnostics] ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      try { await backend.close(); } catch { /* Preserve the diagnostic result. */ }
+    }
+    app.exit(exitCode);
+    return;
+  }
   if (installerMode) {
     await runInstallerMode(installerMode);
     return;

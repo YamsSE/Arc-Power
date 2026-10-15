@@ -22,6 +22,7 @@ import { launchRtss } from './rtss-startup.js';
 import {
   PRODUCT_NAME,
   INSTALLED_EXECUTABLE_NAME,
+  INSTALLED_ICON_RELATIVE_PATH,
   INSTALLED_LAUNCH_ENV,
   createInstallationPlan,
   createUninstallLaunchScript,
@@ -270,7 +271,7 @@ function verifyCopiedPayload(sourceRoot, installDir) {
     INSTALLED_EXECUTABLE_NAME,
     path.join('resources', 'app.asar'),
     path.join('resources', 'app-icon.ico'),
-    path.join('resources', 'ArcPowerTaskbar.ico'),
+    INSTALLED_ICON_RELATIVE_PATH,
   ];
   for (const relativePath of requiredFiles) {
     const sourcePath = path.join(sourceRoot, relativePath);

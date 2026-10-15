@@ -2854,6 +2854,14 @@ export function createIpcHandlers({
     if (!state) return state;
     if (!rtssState?.ok) return { ...state, frameLimitSource: 'igcl', frameLimitLiveChange: state.frameLimitLiveChange === true };
     const limit = Number.isFinite(rtssState.limit) ? Math.max(0, Math.round(rtssState.limit)) : 0;
+    return decorateRtssFrameLimitState(state, {
+      enabled: rtssState.limiterEnabled !== false && limit > 0,
+      value: limit > 0 ? limit : GRAPHICS_RTSS_FRAME_LIMIT_RANGE.default,
+    });
+  };
+
+  const decorateRtssFrameLimitState = (baseState, frameLimit) => {
+    const state = baseState && typeof baseState === 'object' ? baseState : {};
     return {
       ...state,
       supported: { ...(state.supported ?? {}), frameLimit: true },
@@ -2862,10 +2870,7 @@ export function createIpcHandlers({
       frameLimitLiveChange: true,
       values: {
         ...(state.values ?? {}),
-        frameLimit: {
-          enabled: rtssState.limiterEnabled !== false && limit > 0,
-          value: limit > 0 ? limit : GRAPHICS_RTSS_FRAME_LIMIT_RANGE.default,
-        },
+        frameLimit: { ...frameLimit },
       },
     };
   };
@@ -3004,6 +3009,64 @@ export function createIpcHandlers({
       };
     }
     return decorateGraphicsState(baseState, rtssState);
+  };
+
+  const readRtssGlobalGraphicsState = async (deviceId, { rtssTimeoutMs = 0, requireDeviceState = false } = {}) => {
+    let baseState = null;
+    const gpuRead = (async () => {
+      const resolvedDeviceId = await selectedGraphicsDeviceId(deviceId);
+      return await backend.getGraphicsSettings(resolvedDeviceId);
+    })().catch(() => null);
+
+    let rtssState = null;
+    if (typeof rtssFrameLimiter?.getFrameLimit === 'function') {
+      try {
+        const read = Promise.resolve().then(() => rtssFrameLimiter.getFrameLimit());
+        if (rtssTimeoutMs > 0) {
+          let timeout;
+          try {
+            rtssState = await Promise.race([
+              read,
+              new Promise((resolve) => { timeout = setTimeout(() => resolve(null), rtssTimeoutMs); }),
+            ]);
+          } finally {
+            if (timeout !== undefined) clearTimeout(timeout);
+          }
+        } else {
+          rtssState = await read;
+        }
+      } catch { /* The controller's saved Base Cap can still populate the state. */ }
+    }
+    let gpuReadTimeout;
+    try {
+      baseState = await Promise.race([
+        gpuRead,
+        new Promise((resolve) => { gpuReadTimeout = setTimeout(() => resolve(null), 250); }),
+      ]);
+    } finally {
+      if (gpuReadTimeout !== undefined) clearTimeout(gpuReadTimeout);
+    }
+    // Graphics apply responses are broadcast to the full Graphics page,
+    // which needs the complete device state to rebuild its other controls.
+    if (requireDeviceState && !baseState) return null;
+    const baseCap = arcSleepController?.getSnapshot?.().baseFrameLimit;
+    if (baseCap && typeof baseCap.enabled === 'boolean'
+      && Number.isFinite(baseCap.value)
+      && baseCap.value >= GRAPHICS_RTSS_FRAME_LIMIT_RANGE.min
+      && baseCap.value <= GRAPHICS_RTSS_FRAME_LIMIT_RANGE.max) {
+      return decorateRtssFrameLimitState(baseState, baseCap);
+    }
+    if (rtssState?.ok === true) {
+      const limit = Number.isFinite(rtssState.limit) ? Math.max(0, Math.round(rtssState.limit)) : 0;
+      return decorateRtssFrameLimitState(baseState, {
+        enabled: rtssState.limiterEnabled !== false && limit > 0,
+        value: limit > 0 ? limit : GRAPHICS_RTSS_FRAME_LIMIT_RANGE.default,
+      });
+    }
+    return decorateRtssFrameLimitState(baseState, {
+      enabled: false,
+      value: GRAPHICS_RTSS_FRAME_LIMIT_RANGE.default,
+    });
   };
 
   const applyRtssFrameLimit = async (frameLimit, executablePath = null, removeProfile = false, rollbackToken = null) => {
@@ -3368,6 +3431,9 @@ export function createIpcHandlers({
       // can recover even when the controller's serialized RTSS queue stalls.
       'arc-sleep-base-cap-get': async (deviceId) => {
         assertValidDeviceId(deviceId);
+        if (arcSleepController?.getSnapshot?.().activeLimiter === 'rtss') {
+          return readRtssGlobalGraphicsState(deviceId, { rtssTimeoutMs: 1200 });
+        }
         const resolvedDeviceId = await selectedGraphicsDeviceId(deviceId);
         return readGraphicsState(resolvedDeviceId, { rtssTimeoutMs: 1200 });
       },
@@ -3409,6 +3475,34 @@ export function createIpcHandlers({
       'graphics:apply': async (deviceId, payload) => {
         const apply = async (arcSleepTransaction = null) => {
         assertValidDeviceId(deviceId);
+        // Base Cap is a global RTSS setting. Keep this narrow path clear of
+        // selected-GPU identity resolution and every driver apply route.
+        if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+          && Object.keys(payload).length === 1 && Object.prototype.hasOwnProperty.call(payload, 'frameLimit')
+          && arcSleepTransaction?.requiredSource === 'rtss'
+          && typeof arcSleepTransaction?.setBaseFrameLimit === 'function') {
+          const settings = sanitizeGraphicsSettings(payload, GRAPHICS_RTSS_FRAME_LIMIT_RANGE);
+          const rtssApply = await arcSleepTransaction.setBaseFrameLimit(settings.frameLimit, { requiredSource: 'rtss' });
+          const ok = rtssApply?.handled === true && rtssApply?.ok === true;
+          let rollback = { ok: true };
+          if (!ok && typeof rtssApply?.rollback === 'function') {
+            try { rollback = await rtssApply.rollback(); }
+            catch (error) { rollback = { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+          }
+          const graphicsState = await readRtssGlobalGraphicsState(deviceId, { requireDeviceState: true });
+          return {
+            ok: ok && rollback.ok === true,
+            perControl: { frameLimit: ok && rollback.ok === true
+              ? { ok: true, source: 'rtss' }
+              : { ok: false,
+                errorCode: !rollback.ok ? 'cleanup-pending' : (rtssApply?.errorCode ?? 'limiter-unavailable'),
+                message: !rollback.ok
+                  ? `RTSS rollback failed: ${rollback.error ?? 'the previous FPS limit could not be restored'}`
+                  : (rtssApply?.error ?? 'RTSS could not safely apply the global FPS limit.') },
+            },
+            graphicsState,
+          };
+        }
         let expectedDeviceKey = null;
         try {
           const selectedSettings = await store.loadSettings();
@@ -3525,8 +3619,11 @@ export function createIpcHandlers({
         const controlsOk = Object.values(perControl).every((result) => result?.ok !== false);
         return { ok: driverOut?.ok === true && rtssRollback.ok === true && controlsOk, perControl, graphicsState };
         };
+        const rtssOnlyBaseCap = typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+          && Object.keys(payload).length === 1 && Object.prototype.hasOwnProperty.call(payload, 'frameLimit')
+          && arcSleepController?.getSnapshot?.().activeLimiter === 'rtss';
         return arcSleepController?.withTransaction
-          ? arcSleepController.withTransaction(apply)
+          ? arcSleepController.withTransaction(apply, { requiredSource: rtssOnlyBaseCap ? 'rtss' : null })
           : apply();
       },
 

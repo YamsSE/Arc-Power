@@ -89,7 +89,7 @@
                                         },
                                         {
                                           "from":  "src/assets/app-icon.ico",
-                                          "to":  "ArcPowerTaskbar.ico"
+                                          "to":  "ArcPowerTaskbar-blue-gradient.ico"
                                         },
                                         {
                                           "from":  "build/icon.ico",

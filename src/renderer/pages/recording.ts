@@ -2165,7 +2165,7 @@ function render(): void {
         el('span', { class: 'recording-eyebrow', text: 'Arc Capture' }),
         el('h1', { text: 'Recording' }),
       ]),
-      activeTab === 'manual' ? renderRecordingHeadingActions() : null,
+      activeTab === 'manual' || activeTab === 'audio' ? renderRecordingHeadingActions() : null,
       renderTabs(),
     ]),
     activeTab === 'manual' ? renderManualView() : activeTab === 'clips' ? renderClipsView() : renderAudioView(),

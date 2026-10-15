@@ -306,6 +306,11 @@ export function createRtssProfileController({
     // failed delete and left the sidecar in a misleading cleanup-pending
     // state.
     if (activeFrameLimitProfiles.size > 0) return { ok: true, restored: false, deferred: true };
+    // Saved game profiles also share this flag, even after the final profile
+    // owned by this Arc Power session has been released.
+    if (limiterFlagSnapshot.previousEnabled === false && hasConfiguredGameFrameLimit(api)) {
+      return { ok: true, restored: false, deferred: true };
+    }
     const current = readLimiterFlags(api);
     if (current === null) return { ok: false, restored: false, deferred: false };
     const currentDisabled = (current & RTSS_LIMITER_DISABLED_FLAG) !== 0;
@@ -411,6 +416,20 @@ export function createRtssProfileController({
       : 0;
     try {
       api.loadProfile(profile);
+      let preserveSharedFlagForGameCap = false;
+      if (profile === RTSS_GLOBAL_PROFILE && enabled !== true) {
+        const hasActiveGameCap = [...activeFrameLimitProfiles].some((activeProfile) => activeProfile !== RTSS_GLOBAL_PROFILE);
+        const hasPersistedGameCap = hasConfiguredGameFrameLimit(api);
+        preserveSharedFlagForGameCap = hasActiveGameCap || hasPersistedGameCap;
+        if (expectedState !== null) {
+          const observedAfterProfileScan = readGlobalFrameLimitState(api);
+          if (!observedAfterProfileScan) return { ok: false, used: false, conflict: false, errorCode: 'unavailable', error: 'RTSS global frame-limit state could not be read after scanning game profiles' };
+          if (!sameRawFrameLimitState(observedAfterProfileScan, expectedState)) {
+            return { ok: false, used: false, conflict: true, errorCode: 'external-change', observedState: observedAfterProfileScan, expectedState: { ...expectedState }, error: 'RTSS global frame-limit state changed outside Arc Power' };
+          }
+          api.loadProfile(profile);
+        }
+      }
       const beforeLimit = readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY);
       const beforeDenominator = readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY);
       if (beforeLimit === null) throw new Error('RTSS FramerateLimit property is unavailable');
@@ -587,42 +606,22 @@ export function createRtssProfileController({
           };
         }
         if (profile === RTSS_GLOBAL_PROFILE) {
-          // Restore a value Arc Power changed in this process while it still
-          // matches our last target. If there is no snapshot (for example a
-          // restart after an older Arc Power session), explicitly turning the
-          // General control Off clears the persisted global cap.
-          const owned = snapshot
-            && beforeLimit === snapshot.desiredLimit
-            && (snapshot.desiredDenominator === null || beforeDenominator === snapshot.desiredDenominator);
-          if (owned && snapshot.previousLimit !== null && beforeLimit !== snapshot.previousLimit) {
-            if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, snapshot.previousLimit)
-              || readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY) !== snapshot.previousLimit) {
-              throw new Error('RTSS FramerateLimit could not be restored');
+          // General Off is an explicit global setting: clear the persisted
+          // cap even when Arc Power has an ownership snapshot. The snapshot
+          // remains available as underlay information for rollback/quit paths.
+          if (beforeLimit !== 0) {
+            if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, 0)
+              || readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY) !== 0) {
+              throw new Error('RTSS FramerateLimit could not be disabled');
             }
             changed = true;
           }
-          if (owned && snapshot.previousDenominator !== null && beforeDenominator !== snapshot.previousDenominator) {
-            if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY, snapshot.previousDenominator)
-              || readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY) !== snapshot.previousDenominator) {
-              throw new Error('RTSS FramerateLimitDenominator could not be restored');
+          if (beforeDenominator !== null && beforeDenominator !== 1) {
+            if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY, 1)
+              || readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY) !== 1) {
+              throw new Error('RTSS FramerateLimitDenominator could not be reset');
             }
             changed = true;
-          }
-          if (!owned && !snapshot) {
-            if (beforeLimit !== 0) {
-              if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, 0)
-                || readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY) !== 0) {
-                throw new Error('RTSS FramerateLimit could not be disabled');
-              }
-              changed = true;
-            }
-            if (beforeDenominator !== null && beforeDenominator !== 1) {
-              if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY, 1)
-                || readProfileProperty(api, RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY) !== 1) {
-                throw new Error('RTSS FramerateLimitDenominator could not be reset');
-              }
-              changed = true;
-            }
           }
           if (changed) api.saveProfile(profile);
         } else if (snapshot
@@ -660,9 +659,19 @@ export function createRtssProfileController({
         }
         activeFrameLimitProfiles.delete(profile);
         const hadFlagSnapshot = Boolean(limiterFlagSnapshot);
-        const flagStatus = hadFlagSnapshot
-          ? restoreLimiterFlagIfIdle(api)
-          : { ok: true, restored: true, deferred: false };
+        if (preserveSharedFlagForGameCap && !limiterFlagSnapshot) {
+          limiterFlagSnapshot = {
+            previousEnabled: (beforeFlags & RTSS_LIMITER_DISABLED_FLAG) === 0,
+            desiredDisabled: false,
+          };
+        }
+        const flagStatus = preserveSharedFlagForGameCap
+          ? (setLimiterEnabled(api, true)
+            ? { ok: true, restored: false, deferred: true }
+            : { ok: false, restored: false, deferred: false })
+          : hadFlagSnapshot
+            ? restoreLimiterFlagIfIdle(api)
+            : { ok: true, restored: true, deferred: false };
         if (!flagStatus.ok) throw new Error('RTSS limiter flag rollback was not verified');
         if (snapshot && frameLimitSnapshots.has(profile)) frameLimitSnapshots.delete(profile);
           if (changed || flagStatus.restored) api.updateProfiles();
@@ -1099,24 +1108,15 @@ export function createRtssProfileController({
           ? limiterFlagSnapshot.previousEnabled
           : current.limiterEnabled,
       };
-      const snapshotOwnsCurrent = Boolean(snapshot)
-        && current.limit === snapshot.desiredLimit
-        && (snapshot.desiredDenominator === null || current.denominator === snapshot.desiredDenominator);
-      const disableState = snapshot
-        ? {
-            limit: snapshotOwnsCurrent && snapshot.previousLimit !== null ? snapshot.previousLimit : current.limit,
-            denominator: snapshotOwnsCurrent && snapshot.previousDenominator !== null
-              ? snapshot.previousDenominator
-              : current.denominator,
-            limiterEnabled: underlay.limiterEnabled,
-          }
-        : {
-            limit: 0,
-            // A disabled cap only resets a readable denominator. If RTSS
-            // omitted it, preserve that exact state for controller read-back.
-            denominator: current.denominator === null ? null : current.denominator === 0 ? 0 : 1,
-            limiterEnabled: current.limiterEnabled,
-          };
+      const disableState = {
+        limit: 0,
+        // Explicit global Off resets any readable denominator. If RTSS
+        // omitted it, preserve that exact state for controller read-back.
+        denominator: current.denominator === null ? null : 1,
+        // The explicit write checks game profiles and reports deferred flag
+        // restoration when they still need the shared limiter enabled.
+        limiterEnabled: snapshot ? underlay.limiterEnabled : current.limiterEnabled,
+      };
       return { ok: true, state: current, underlay, disableState };
     } catch (cause) {
       return { ok: false, errorCode: 'unavailable', error: cause instanceof Error ? cause.message : String(cause) };

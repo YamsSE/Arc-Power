@@ -32,7 +32,7 @@ function meta(source, name) {
 export function parseIntelDownloadPage(source, kind) {
   if (!validKind(kind)) throw new Error('invalid kind');
   const versionText = meta(source, 'DownloadVersion')?.trim() ?? '';
-  const versionMatch = versionText.match(/^(\d{1,5}\.\d{1,5}\.\d{1,5}\.\d{1,5})(?:\s+-\s+Q\d{1,2}\.\d{2}\.R\d+)?$/i);
+  const versionMatch = versionText.match(/^(\d{1,5}\.\d{1,5}\.\d{1,5}\.\d{1,5})(?:(?:\s+-\s+Q\d{1,2}\.\d{2}\.R\d+)|(?:(?:\s+-\s+|\s+)(?:WHQL(?:\s+Certified)?|Non-WHQL|Beta)))?$/i);
   const version = versionMatch?.[1] ?? null;
   if (!VERSION_RE.test(version ?? '')) throw new Error('Intel release page has an invalid driver version');
   const hrefs = [];

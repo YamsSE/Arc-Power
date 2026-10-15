@@ -620,7 +620,7 @@ export function createArcSleepController({
     return true;
   };
 
-  const initialize = async () => {
+  const initialize = async ({ requiredSource = null } = {}) => {
     if (initialized) return;
     const saved = await store.loadSettings();
     settings = normalizeArcSleepSettings(saved.arcSleep);
@@ -631,8 +631,18 @@ export function createArcSleepController({
     pendingBaseDisable = saved.arcSleepPendingBaseDisable === true;
     pendingBaseDisableExpected = pendingBaseDisable ? rawState(saved.arcSleepPendingBaseDisableExpected) : null;
     policyState = createArcSleepPolicyState(settings);
+    if (requiredSource === 'rtss' && journal && normalizeRoute(journal.route).source !== 'rtss') {
+      // Do not even read/reconcile the other provider while handling a
+      // global RTSS-only request; the transaction will fail closed below.
+      initialized = true;
+      status = 'recovery-pending';
+      message = 'The saved FPS limiter recovery record belongs to a different provider.';
+      return;
+    }
     if (journal) await recoverJournal();
-    if (!baseFrameLimit) await ensureBaseFrameLimit(await readRawState());
+    if (!baseFrameLimit) await ensureBaseFrameLimit(await (requiredSource === 'rtss'
+      ? readFromRoute({ source: 'rtss' })
+      : readRawState()));
     initialized = true;
     if (invalidJournal) {
       status = 'recovery-pending';
@@ -670,8 +680,12 @@ export function createArcSleepController({
     await persistArcSleep({ arcSleepFrameLimitBase: baseFrameLimit });
   };
 
-  const applyDesiredTarget = async (policyTarget, source, { automatic = true } = {}) => {
-    let current = await readRawState();
+  const applyDesiredTarget = async (policyTarget, source, { automatic = true, requiredSource = null } = {}) => {
+    const readCurrent = () => requiredSource === 'rtss'
+      ? readFromRoute({ source: 'rtss' })
+      : readRawState();
+    let current = await readCurrent();
+    if (requiredSource === 'rtss' && limiterRoute?.source !== 'rtss') current = null;
     if (!current) {
       status = journal ? 'recovery-pending' : 'limiter-unavailable';
       message = journal
@@ -697,8 +711,8 @@ export function createArcSleepController({
       }
       const disabled = await applyBaseDisable(current, baseFrameLimit ?? { enabled: false, value: DEFAULT_BASE_FPS }, { automatic });
       if (!disabled.ok) return false;
-      current = await readRawState();
-      if (!current) {
+      current = await readCurrent();
+      if (!current || (requiredSource === 'rtss' && limiterRoute?.source !== 'rtss')) {
         status = 'recovery-pending';
         message = `${limiterName()} became unavailable after applying the pending Graphics FPS Limit change.`;
         return false;
@@ -1007,15 +1021,26 @@ export function createArcSleepController({
     await applyDesiredTarget(result.targetFps, result.source);
   };
 
-  const setBaseFrameLimit = async (input, { deviceKey = null } = {}) => {
+  const setBaseFrameLimit = async (input, { deviceKey = null, requiredSource = null } = {}) => {
     let nextBase = normalizeBaseFrameLimit(input);
     if (!nextBase) throw new Error('Arc Sleep base frame limit is invalid');
+    // A global RTSS request must never migrate to a device-scoped IGCL
+    // limiter or recover an IGCL journal as a side effect.
+    if (requiredSource === 'rtss' && journal && normalizeRoute(journal.route).source !== 'rtss') {
+      return { handled: false, ok: false, error: 'The active FPS limiter recovery record belongs to a different provider.' };
+    }
     if (invalidJournal) {
       status = 'recovery-pending';
       message = 'The saved FPS limiter recovery record is invalid; Arc Sleep paused to avoid changing an unverified cap.';
       return { handled: false, ok: false, error: message };
     }
-    const current = await ensureCurrentRoute(deviceKey);
+    const current = requiredSource === 'rtss'
+      ? await readFromRoute({ source: 'rtss' })
+      : await ensureCurrentRoute(deviceKey);
+    if (requiredSource === 'rtss' && (!current || limiterRoute?.source !== 'rtss')) {
+      rtssAvailable = false;
+      return { handled: false, ok: false, error: 'RTSS is unavailable; the global FPS limit was not changed.' };
+    }
     if (current && limiterRoute?.source === 'igcl') {
       const value = clampTargetToRange(nextBase.value);
       if (value != null) nextBase = { ...nextBase, value };
@@ -1147,7 +1172,7 @@ export function createArcSleepController({
         version: 1,
         baseline: nextBase.enabled
           ? { limit: nextBase.value, denominator: 1, limiterEnabled: true }
-          : journal.underlay,
+          : await readDisableTargetState(journal.underlay, journal.route),
         underlay: journal.underlay,
         expected: current ?? journal.expected,
         pending: null,
@@ -1176,7 +1201,7 @@ export function createArcSleepController({
       };
     }
     await saveBaseAndJournal(nextBase, nextJournal);
-    const applied = await applyDesiredTarget(result.targetFps, result.source, { automatic: false });
+    const applied = await applyDesiredTarget(result.targetFps, result.source, { automatic: false, requiredSource });
     return applied
       ? {
           handled: true,
@@ -1254,9 +1279,9 @@ export function createArcSleepController({
     },
   });
 
-  const withTransaction = (work) => enqueue(async () => {
-    await initialize();
-    return work({ setBaseFrameLimit, setSettings: updateSettings, getSnapshot });
+  const withTransaction = (work, { requiredSource = null } = {}) => enqueue(async () => {
+    await initialize({ requiredSource });
+    return work({ setBaseFrameLimit, setSettings: updateSettings, getSnapshot, requiredSource });
   });
 
   const tick = () => {
