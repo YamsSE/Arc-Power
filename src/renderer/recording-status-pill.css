@@ -35,7 +35,6 @@ body {
   height: 20px;
   flex: 0 0 20px;
   object-fit: contain;
-  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.62));
 }
 
 .status-dot {

@@ -40,6 +40,31 @@ import { applyTheme } from '../app.ts';
 import { isValidTheme, reconcileThemeSave, THEMES, type Theme } from '../pure/theme.ts';
 import type { StartupGetState } from '../types.ts';
 
+function showMaintenanceConfirm(title: string, message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const root = document.getElementById('modal-root') ?? (() => {
+      const node = el('div', { id: 'modal-root' });
+      document.body.append(node);
+      return node;
+    })();
+    clear(root);
+    const close = (confirmed: boolean): void => {
+      clear(root);
+      resolve(confirmed);
+    };
+    root.append(el('div', { class: 'modal-overlay' }, [
+      el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, [
+        el('h2', { class: 'modal-title', text: title }),
+        el('p', { class: 'modal-text', text: message }),
+        el('div', { class: 'modal-actions' }, [
+          el('button', { class: 'btn btn-ghost', text: 'Cancel', onClick: () => close(false) }),
+          el('button', { class: 'btn btn-danger', text: title, onClick: () => close(true) }),
+        ]),
+      ]),
+    ]));
+  });
+}
+
 /** 1.0.4 Themes: the display label per theme id (the swatch buttons). */
 const THEME_LABELS: Record<Theme, string> = {
   dark: 'Dark Steel',
@@ -75,7 +100,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let themeSelectionGeneration = 0;
   let committedTheme: Theme;
   let bootState: StartupGetState | null = null;
-  let clearCachePending = false;
+  let maintenancePending = false;
   try {
     // The persisted Settings-tab fields ride in the profiles envelope
     // (settings.json via ProfileStore - the same read the Profiles page uses).
@@ -240,15 +265,19 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
     const maintenanceCard = el('section', { class: 'card settings-card maintenance-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Maintenance' }),
-      el('p', { class: 'card-note', text: 'Remove temporary Arc Power cache files without deleting profiles or saved settings, then restart the software.' }),
+      el('p', { class: 'card-note', text: 'Clear temporary files from all Arc Power cache locations and restart. Reset removes saved preferences and profiles but keeps downloaded drivers. Reset and delete drivers also removes downloaded driver installers. Your clip library, recording folder, and recorded files are kept with either reset.' }),
       el('div', { class: 'settings-row maintenance-row' }, [
-        el('button', {
+        ...([
+          { action: 'clear-cache' as const, label: 'Clear Cache' },
+          { action: 'reset' as const, label: 'Reset Arc Power' },
+          { action: 'reset-with-drivers' as const, label: 'Reset Arc Power and delete Downloaded Drivers' },
+        ].map(({ action, label }) => el('button', {
           type: 'button',
           class: 'maintenance-action',
-          dataset: { action: 'clear-cache-restart' },
-          disabled: clearCachePending,
-          onclick: () => void onClearCacheAndRestart(),
-        }, [el('span', { text: 'Clear cache & restart software' })]),
+          dataset: { action: action === 'clear-cache' ? 'clear-cache-restart' : action },
+          disabled: maintenancePending,
+          onclick: () => void onMaintenanceAction(action),
+        }, [el('span', { text: label })]))),
       ]),
     ]);
 
@@ -405,22 +434,32 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     render();
   };
 
-  const onClearCacheAndRestart = async (): Promise<void> => {
-    if (clearCachePending) return;
-    clearCachePending = true;
-    const button = root.querySelector<HTMLButtonElement>('[data-action="clear-cache-restart"]');
-    if (button) button.disabled = true;
+  const onMaintenanceAction = async (action: 'clear-cache' | 'reset' | 'reset-with-drivers'): Promise<void> => {
+    if (maintenancePending) return;
+    if (action !== 'clear-cache') {
+      const message = action === 'reset'
+        ? 'Reset Arc Power will delete saved preferences and profiles. Downloaded driver installers will be kept. Your clip library, recording folder, and recorded files will be kept. Continue?'
+        : 'Reset Arc Power and delete Downloaded Drivers will delete saved preferences, profiles, and downloaded driver installers. Your clip library, recording folder, and recorded files will be kept. Continue?';
+      if (!await showMaintenanceConfirm(action === 'reset' ? 'Reset Arc Power' : 'Reset Arc Power and delete Downloaded Drivers', message)) return;
+    }
+    maintenancePending = true;
+    const buttons = root.querySelectorAll<HTMLButtonElement>('.maintenance-action');
+    buttons.forEach((button) => { button.disabled = true; });
+    let keepPendingForRestart = false;
     try {
-      const result = await api.appClearCacheAndRestart();
+      const result = await api.appMaintenanceAndRestart(action);
       if (!result || result.ok !== true) {
-        throw new Error('The cache could not be cleared');
+        throw new Error('Arc Power maintenance could not be completed');
       }
-      toast('success', 'Cache cleared', result.restarting ? 'Arc Power is restarting.' : 'Restart request completed.');
+      keepPendingForRestart = result.restarting;
+      toast('success', action === 'clear-cache' ? 'Cache cleared' : 'Arc Power reset', result.restarting ? 'Arc Power is restarting.' : 'Restart request completed.');
     } catch (err) {
-      toast('error', 'Cache clear failed', err instanceof Error ? err.message : String(err));
+      toast('error', 'Arc Power maintenance failed', err instanceof Error ? err.message : String(err));
     } finally {
-      clearCachePending = false;
-      if (button && button.isConnected) button.disabled = false;
+      if (!keepPendingForRestart) {
+        maintenancePending = false;
+        buttons.forEach((button) => { if (button.isConnected) button.disabled = false; });
+      }
     }
   };
   // 1.0.1 Themes: one swatch selected - apply IMMEDIATELY (the <html>

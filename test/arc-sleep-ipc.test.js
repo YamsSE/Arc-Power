@@ -1,6 +1,182 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
+import { createQuitTeardownGate } from '../src/main/quit-teardown-gate.js';
+import { createStartup, reconcileStartupRegistration } from '../src/main/startup.js';
+
+test('startup task reconciliation skips non-task registrations and absent intent', async () => {
+  let calls = 0;
+  const startup = {
+    registrationMode: 'run',
+    async get() { calls += 1; return { valueExists: false }; },
+    async set() { calls += 1; },
+  };
+  assert.deepEqual(await reconcileStartupRegistration({ startup, settings: { startWithWindows: true } }), { action: 'not-required' });
+  startup.registrationMode = 'task';
+  assert.deepEqual(await reconcileStartupRegistration({ startup, settings: { startWithWindows: false, ocOnBoot: true, activeProfileId: 'missing' }, profiles: [] }), { action: 'not-required' });
+  assert.equal(calls, 0);
+});
+
+test('startup task reconciliation accepts a valid active profile as saved intent', async () => {
+  const calls = [];
+  const result = await reconcileStartupRegistration({
+    startup: {
+      registrationMode: 'task',
+      async get() { calls.push('get'); return { valueExists: false }; },
+      async set(enabled) { calls.push(['set', enabled]); },
+    },
+    settings: { startWithWindows: false, ocOnBoot: true, activeProfileId: 'p1' },
+    profiles: [{ id: 'p1', name: 'Profile' }],
+  });
+  assert.deepEqual(result, { action: 'repaired' });
+  assert.deepEqual(calls, ['get', ['set', true]]);
+});
+
+test('startup task reconciliation restores the task for a valid per-GPU active profile', async () => {
+  const deviceKey = 'pnp:PCI\\VEN_8086&DEV_E20B&SUBSYS_60211849&REV_00\\6&1CC85095&0&00080018';
+  const calls = [];
+  const result = await reconcileStartupRegistration({
+    startup: {
+      registrationMode: 'task',
+      async get() { calls.push('get'); return { valueExists: false }; },
+      async set(enabled) { calls.push(['set', enabled]); },
+    },
+    settings: {
+      startWithWindows: false,
+      ocOnBoot: true,
+      activeProfileIds: { [deviceKey]: 'p1' },
+    },
+    profiles: [{ id: 'p1', name: 'B580', deviceKey }],
+  });
+  assert.deepEqual(result, { action: 'repaired' });
+  assert.deepEqual(calls, ['get', ['set', true]]);
+});
+
+test('startup task reconciliation leaves an already registered task alone', async () => {
+  let setCalls = 0;
+  const result = await reconcileStartupRegistration({
+    startup: {
+      registrationMode: 'task',
+      async get() { return { valueExists: true }; },
+      async set() { setCalls += 1; },
+    },
+    settings: { startWithWindows: true },
+  });
+  assert.deepEqual(result, { action: 'already-registered' });
+  assert.equal(setCalls, 0);
+});
+
+test('startup task reconciliation repairs a missing task and propagates setup errors', async () => {
+  const setupError = new Error('administrator approval is required');
+  let setCalls = 0;
+  const startup = {
+    registrationMode: 'task',
+    async get() { return { valueExists: false }; },
+    async set(enabled) { setCalls += 1; assert.equal(enabled, true); throw setupError; },
+  };
+  await assert.rejects(reconcileStartupRegistration({ startup, settings: { startWithWindows: true } }), setupError);
+  assert.equal(setCalls, 1);
+});
+
+test('a newer startup disable cancels a repair waiting on the task query', async () => {
+  let revision = 0;
+  let resolveTaskRead;
+  let markTaskReadStarted;
+  const taskReadStarted = new Promise((resolve) => { markTaskReadStarted = resolve; });
+  const calls = [];
+  const startup = {
+    registrationMode: 'task',
+    getIntentRevision: () => revision,
+    get() {
+      markTaskReadStarted();
+      return new Promise((resolve) => { resolveTaskRead = resolve; });
+    },
+    async set(enabled) {
+      revision += 1;
+      calls.push(enabled);
+    },
+  };
+
+  const reconciliation = reconcileStartupRegistration({
+    startup,
+    settings: { startWithWindows: false, ocOnBoot: true, activeProfileId: 'p1' },
+    profiles: [{ id: 'p1', name: 'Profile' }],
+    expectedIntentRevision: revision,
+  });
+  await taskReadStarted;
+  await startup.set(false);
+  resolveTaskRead({ valueExists: false });
+
+  assert.deepEqual(await reconciliation, { action: 'superseded' });
+  assert.deepEqual(calls, [false]);
+});
+
+test('packaged startup intent revision advances synchronously when a setting is written', async () => {
+  const execFile = async () => {
+    const error = new Error('task or registry value not found');
+    error.code = 1;
+    throw error;
+  };
+  const startup = createStartup({ execFile, useElevatedTask: true, cleanupLegacy: false });
+  assert.equal(startup.getIntentRevision(), 0);
+
+  const write = startup.set(false);
+  assert.equal(startup.getIntentRevision(), 1);
+  await write;
+  assert.equal(startup.getIntentRevision(), 1);
+});
+
+test('repeated quit requests wait for Arc Sleep teardown before closing its RTSS helper', async () => {
+  let resolveTeardown;
+  let teardownCalls = 0;
+  let helperCloseCalls = 0;
+  let quitCalls = 0;
+  const teardown = () => {
+    teardownCalls += 1;
+    return new Promise((resolve) => { resolveTeardown = resolve; });
+  };
+  const handleQuit = createQuitTeardownGate({
+    getTeardown: () => teardown,
+    closeRtssHelper: () => { helperCloseCalls += 1; },
+    quit: () => { quitCalls += 1; },
+  });
+  const makeEvent = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
+
+  const firstQuit = makeEvent();
+  handleQuit(firstQuit);
+  await Promise.resolve();
+  const repeatedQuit = makeEvent();
+  handleQuit(repeatedQuit);
+  assert.equal(firstQuit.prevented, true);
+  assert.equal(repeatedQuit.prevented, true);
+  assert.equal(teardownCalls, 1);
+  assert.equal(helperCloseCalls, 0);
+  assert.equal(quitCalls, 0);
+
+  resolveTeardown();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(helperCloseCalls, 1);
+  assert.equal(quitCalls, 1);
+
+  const quitReentry = makeEvent();
+  handleQuit(quitReentry);
+  assert.equal(quitReentry.prevented, false);
+  assert.equal(helperCloseCalls, 1);
+});
+
+test('quit closes the RTSS helper directly when Arc Sleep teardown is not registered', () => {
+  let helperCloseCalls = 0;
+  const handleQuit = createQuitTeardownGate({
+    getTeardown: () => null,
+    closeRtssHelper: () => { helperCloseCalls += 1; },
+    quit: () => assert.fail('quit should not be re-entered'),
+  });
+  const event = { prevented: false, preventDefault() { this.prevented = true; } };
+  handleQuit(event);
+  assert.equal(event.prevented, false);
+  assert.equal(helperCloseCalls, 1);
+});
 
 function createTaskStartupSaveHarness() {
   let settings = {
@@ -81,6 +257,314 @@ test('startup task registration failure remains reported when startup intent cha
     harness.startupError,
   );
   assert.equal((await harness.loadSettings()).startWithWindows, true);
+});
+
+test('startup task registration failure is reported for an explicit same-value intent retry', async () => {
+  const harness = createTaskStartupSaveHarness();
+
+  await assert.rejects(
+    harness.handlers['profiles-settings-save']({ startWithWindows: false }),
+    harness.startupError,
+  );
+  assert.equal((await harness.loadSettings()).startWithWindows, false);
+});
+
+test('unrelated settings saves remain best-effort when startup task registration fails', async () => {
+  const harness = createTaskStartupSaveHarness();
+
+  const result = await harness.handlers['profiles-settings-save']({ theme: 'light' });
+  assert.equal(result.theme, 'light');
+  assert.equal((await harness.loadSettings()).theme, 'light');
+});
+
+test('a failed startup task elevation can be retried without restarting Arc Power', async () => {
+  let prompts = 0;
+  const startup = createStartup({
+    useElevatedTask: true,
+    execPath: 'C:/ArcPower/ArcPower.exe',
+    cleanupLegacy: false,
+    async execFile() {
+      const error = new Error('task missing');
+      error.code = 1;
+      throw error;
+    },
+    spawnFn() {
+      prompts += 1;
+      const child = new EventEmitter();
+      queueMicrotask(() => child.emit('exit', 1223));
+      return child;
+    },
+  });
+
+  await assert.rejects(startup.set(true), /administrator approval is required/);
+  await assert.rejects(startup.set(true), /administrator approval is required/);
+  assert.equal(prompts, 2);
+});
+
+test('concurrent startup task requests share one elevation attempt', async () => {
+  let releasePrompt;
+  let prompts = 0;
+  const startup = createStartup({
+    useElevatedTask: true,
+    execPath: 'C:/ArcPower/ArcPower.exe',
+    cleanupLegacy: false,
+    async execFile() {
+      const error = new Error('task missing');
+      error.code = 1;
+      throw error;
+    },
+    spawnFn() {
+      prompts += 1;
+      const child = new EventEmitter();
+      releasePrompt = () => child.emit('exit', 1223);
+      return child;
+    },
+  });
+
+  const first = startup.set(true);
+  const second = startup.set(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(prompts, 1);
+  releasePrompt();
+  await Promise.all([
+    assert.rejects(first, /administrator approval is required/),
+    assert.rejects(second, /administrator approval is required/),
+  ]);
+});
+
+test('a delayed startup task precheck cannot prompt again after another request verifies setup', async () => {
+  let releaseInitialQuery;
+  let taskExists = false;
+  let queryCalls = 0;
+  let prompts = 0;
+  const startup = createStartup({
+    useElevatedTask: true,
+    execPath: 'C:/ArcPower/ArcPower.exe',
+    cleanupLegacy: false,
+    execFile(_file, args) {
+      if (_file === 'reg') return Promise.resolve({ stdout: '' });
+      if (args[0] === '/query') {
+        if (args[args.length - 1] === '/xml') {
+          if (!taskExists) {
+            const error = new Error('task missing');
+            error.code = 1;
+            return Promise.reject(error);
+          }
+          return Promise.resolve({ stdout: Buffer.from('<Task><Settings><Enabled>true</Enabled></Settings><Actions><Exec><Command>C:/ArcPower/ArcPower.exe</Command><Arguments></Arguments></Exec></Actions></Task>') });
+        }
+        queryCalls += 1;
+        if (queryCalls === 1) return new Promise((_resolve, reject) => { releaseInitialQuery = () => {
+          const error = new Error('task missing');
+          error.code = 1;
+          reject(error);
+        }; });
+        if (!taskExists) {
+          const error = new Error('task missing');
+          error.code = 1;
+          return Promise.reject(error);
+        }
+        return Promise.resolve({ stdout: '' });
+      }
+      const error = new Error('unexpected command');
+      return Promise.reject(error);
+    },
+    spawnFn() {
+      prompts += 1;
+      const child = new EventEmitter();
+      queueMicrotask(() => { taskExists = true; child.emit('exit', 0); });
+      return child;
+    },
+  });
+
+  const first = startup.set(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = startup.set(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(queryCalls, 1);
+  releaseInitialQuery();
+  await Promise.all([first, second]);
+  assert.equal(prompts, 1);
+  assert.equal(queryCalls, 3); // initial precheck, setup verification, and final returned state
+});
+
+test('opposite startup task changes wait for the active operation to verify', async () => {
+  let taskExists = true;
+  let releaseDelete;
+  const commands = [];
+  let promptCount = 0;
+  let activePrompts = 0;
+  let maxActivePrompts = 0;
+  const startup = createStartup({
+    useElevatedTask: true,
+    execPath: 'C:/ArcPower/ArcPower.exe',
+    cleanupLegacy: false,
+    async execFile(_file, args) {
+      if (_file === 'reg') return { stdout: '' };
+      if (args[0] !== '/query') throw new Error('unexpected command');
+      if (!taskExists) {
+        const error = new Error('task missing');
+        error.code = 1;
+        throw error;
+      }
+      if (args[args.length - 1] === '/xml') {
+        return { stdout: Buffer.from('<Task><Settings><Enabled>true</Enabled></Settings><Actions><Exec><Command>C:/ArcPower/ArcPower.exe</Command><Arguments></Arguments></Exec></Actions></Task>') };
+      }
+      return { stdout: '' };
+    },
+    spawnFn() {
+      const command = promptCount++ === 0 ? 'delete' : 'create';
+      commands.push(command);
+      activePrompts += 1;
+      maxActivePrompts = Math.max(maxActivePrompts, activePrompts);
+      const child = new EventEmitter();
+      const finish = () => {
+        activePrompts -= 1;
+        taskExists = command === 'create';
+        child.emit('exit', 0);
+      };
+      if (command === 'delete') releaseDelete = finish;
+      else queueMicrotask(finish);
+      return child;
+    },
+  });
+
+  const disable = startup.set(false);
+  await new Promise((resolve) => setImmediate(resolve));
+  const enable = startup.set(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(commands, ['delete']);
+  releaseDelete();
+  await Promise.all([disable, enable]);
+  assert.deepEqual(commands, ['delete', 'create']);
+  assert.equal(maxActivePrompts, 1);
+});
+
+test('A-B-A startup intent changes stay ordered and finish with the newest intent', async () => {
+  let taskExists = false;
+  const commands = [];
+  const releasePrompts = [];
+  let activePrompts = 0;
+  let maxActivePrompts = 0;
+  const startup = createStartup({
+    useElevatedTask: true,
+    execPath: 'C:/ArcPower/ArcPower.exe',
+    cleanupLegacy: false,
+    async execFile(_file, args) {
+      if (_file === 'reg') return { stdout: '' };
+      if (args[0] !== '/query') throw new Error('unexpected command');
+      if (!taskExists) {
+        const error = new Error('task missing');
+        error.code = 1;
+        throw error;
+      }
+      if (args[args.length - 1] === '/xml') {
+        return { stdout: Buffer.from('<Task><Settings><Enabled>true</Enabled></Settings><Actions><Exec><Command>C:/ArcPower/ArcPower.exe</Command><Arguments></Arguments></Exec></Actions></Task>') };
+      }
+      return { stdout: '' };
+    },
+    spawnFn() {
+      const command = commands.length === 1 ? 'delete' : 'create';
+      commands.push(command);
+      activePrompts += 1;
+      maxActivePrompts = Math.max(maxActivePrompts, activePrompts);
+      const child = new EventEmitter();
+      releasePrompts.push(() => {
+        activePrompts -= 1;
+        taskExists = command === 'create';
+        child.emit('exit', 0);
+      });
+      return child;
+    },
+  });
+  const waitForPrompts = async (count) => {
+    for (let attempt = 0; attempt < 20 && commands.length < count; attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(commands.length, count);
+  };
+
+  const firstEnable = startup.set(true);
+  await waitForPrompts(1);
+  const disable = startup.set(false);
+  const finalEnable = startup.set(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(commands, ['create']);
+
+  releasePrompts[0]();
+  await waitForPrompts(2);
+  assert.deepEqual(commands, ['create', 'delete']);
+  releasePrompts[1]();
+  await waitForPrompts(3);
+  assert.deepEqual(commands, ['create', 'delete', 'create']);
+  releasePrompts[2]();
+  await Promise.all([firstEnable, disable, finalEnable]);
+
+  assert.equal(maxActivePrompts, 1);
+  assert.equal((await startup.get()).valueExists, true);
+});
+
+test('OC-locked GPU waiver is not required and acceptance touches neither driver nor settings', async () => {
+  let driverCalls = 0;
+  let storeWrites = 0;
+  const handlers = createIpcHandlers({
+    backend: {
+      async getCapabilities() { return { overclockingSupported: false, waiverAccepted: false }; },
+      async setWaiverAccepted() { driverCalls += 1; },
+    },
+    store: {
+      async loadSettings() { return { waiverAccepted: false }; },
+      async saveSettings() { storeWrites += 1; },
+    },
+    emit: () => {},
+  }).handlers;
+
+  assert.deepEqual(await handlers['waiver-get'](0), { accepted: false, required: false });
+  assert.deepEqual(await handlers['waiver-accept'](0), { accepted: false, required: false });
+  assert.equal(driverCalls, 0);
+  assert.equal(storeWrites, 0);
+});
+
+test('waiver remains an explicit requirement on OC-capable GPUs', async () => {
+  let driverCalls = 0;
+  let persisted = null;
+  const handlers = createIpcHandlers({
+    backend: {
+      async getCapabilities() { return { overclockingSupported: true, waiverAccepted: false }; },
+      async setWaiverAccepted() { driverCalls += 1; },
+    },
+    store: {
+      async loadSettings() { return {}; },
+      async saveSettings(settings) { persisted = settings; },
+    },
+    emit: () => {},
+  }).handlers;
+
+  assert.deepEqual(await handlers['waiver-get'](0), { accepted: false, required: true });
+  assert.deepEqual(await handlers['waiver-accept'](0), { accepted: true, required: true });
+  assert.equal(driverCalls, 1);
+  assert.equal(persisted.waiverAccepted, true);
+});
+
+test('update download progress is emitted to the renderer while the download runs', async () => {
+  const progressEvents = [];
+  let receivedArguments = null;
+  const handlers = createIpcHandlers({
+    backend: {},
+    store: { async loadSettings() { return {}; } },
+    emit(channel, payload) { progressEvents.push({ channel, payload }); },
+    buildKind: 'portable',
+    updateDownloadOperation: async (url, onProgress, buildKind) => {
+      receivedArguments = { url, buildKind };
+      onProgress({ percent: 42.6, downloadedBytes: 426, totalBytes: 1000 });
+      return { token: 'opaque-test-receipt' };
+    },
+  }).handlers;
+
+  const result = await handlers['update:download']('https://github.com/YamsSE/Arc-Power/releases/download/v1.2.3/Arc-Power_Portable.exe');
+
+  assert.deepEqual(result, { ok: true, token: 'opaque-test-receipt' });
+  assert.equal(receivedArguments.buildKind, 'portable');
+  assert.deepEqual(progressEvents, [{ channel: 'update:download-progress', payload: { percent: 43, downloadedBytes: 426, totalBytes: 1000 } }]);
 });
 
 test('profiles settings save normalizes Arc Sleep and applies it inside its RTSS transaction', async () => {

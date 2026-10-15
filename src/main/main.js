@@ -42,12 +42,15 @@
 
 import { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, clipboard, safeStorage, globalShortcut, ipcMain, protocol, screen, desktopCapturer } from 'electron';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import fs from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
-import { prepareArcPowerCacheSync, resolveArcPowerCachePath, shouldClearCache, resolveCacheRestartRelaunchOptions, ensureCacheDirectorySync, resetCacheDirectorySync } from './cache-lifecycle.js';
+import { prepareArcPowerCacheSync, resolveArcPowerCachePath, readMaintenanceAction, readMaintenanceToken, filterRelaunchArgs, compareArcPowerVersions, readArcPowerLastOpenedVersionSync, resolveCacheRestartRelaunchOptions, resetArcPowerCachesSync, resetArcPowerDataSync, ensureCacheDirectorySync, consumeMaintenanceReceiptSync, writeMaintenanceReceiptSync } from './cache-lifecycle.js';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
+import { collectGpuReadOnlyDiagnostics } from './gpu-read-only-diagnostics.js';
+import { ARC_POWER_APP_USER_MODEL_ID, ARC_POWER_DEVELOPMENT_APP_USER_MODEL_ID, resolveTaskbarIconPath, repairArcPowerTaskbarShortcuts } from './taskbar-identity.js';
 import { runSmoke } from './smoke.js';
 import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runLaptopSysinfoVerify, runOverlayVerify, runGraphicsVerify, runNoSysmanVerify, runAdvancedOverlayVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
@@ -62,7 +65,7 @@ import { createWheaMonitor } from './whea-check.js';
 import { OverlayLayoutStore } from './overlay-layout-store.js';
 import { createObsStreamService } from './obs-stream.js';
 import { createAscentEngine, resolveAscentRuntime } from './recording-engine.js';
-import { formatDxgiLuid, recordingRuntimeEncoderIdForTarget, resolveRecordingRuntimeCandidates } from './recording-pure.js';
+import { formatDxgiLuid, recordingAbsolutePath, recordingRuntimeEncoderIdForTarget, resolveRecordingRuntimeCandidates } from './recording-pure.js';
 import { normalizeDxgiLuid } from './recording-pure.js';
 import { listRecordingCaptureTargets, mergeRecordingDisplayMetadata, recordingCaptureSelection } from './recording-capture.js';
 import { createRecordingCaptureTargetsReader, recordingCaptureSelectionForStart } from './recording-target-inventory.js';
@@ -84,15 +87,18 @@ import { createRecordingStatusPillWindow } from './recording-status-pill.js';
 // overlay.js stays untouched - this panel has its own lifecycle + its own
 // interactivity (NO setIgnoreMouseEvents).
 import { createAdvancedOverlayWindow } from './advanced-overlay.js';
-import { createStartup, createMockStartup } from './startup.js';
+import { createStartup, createMockStartup, reconcileStartupRegistration } from './startup.js';
 import { createRtssStartup, createMockRtssStartup } from './rtss-startup.js';
-import { createRtssProfileController } from './rtss-profile.js';
+import { createRtssProfileHelperProxy } from './rtss-profile-helper-proxy.js';
+import { createQuitTeardownGate } from './quit-teardown-gate.js';
 import { attachStartupUpdateStatus, createStartupSplash } from './splash.js';
 import { runInstallerMode } from './installer.js';
 import { INSTALLED_EXECUTABLE_NAME, INSTALLED_LAUNCH_ENV, installerModeFromEnvironment, resolveNewerInstalledExecutable } from './installer-pure.js';
 import { checkForUpdates } from './auto-update.js';
 import { createStartupUpdateCoordinator, shouldBlockStartupSplashClose } from './startup-update.js';
 import { createStartupUpdateHandoff } from './startup-update-handoff.js';
+import { createIntelDriverDownloadService } from './intel-driver-download.js';
+import { createIntelDriverUpdateService } from './intel-driver-update.js';
 import { createDriverInfo, createMockDriverInfo } from './driver-info.js';
 import { REGISTRY_CATALOG, createRegistryCatalog, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createRegistryApply, createMockRegistryApply } from './registry-apply.js';
@@ -184,6 +190,7 @@ protocol.registerSchemesAsPrivileged([{
 const profileBoot = bootProfilingEnabled();
 
 const headless = process.argv.includes('--headless');
+const gpuDiagnostics = process.argv.includes('--gpu-diagnostics');
 const uiVerify = process.argv.includes('--ui-verify');
 // M4-E: the ArcPowerBootApply logon task's action (`"<exe>" --boot-apply`).
 // No id argument - reads the ACTIVE profile from the store like the
@@ -382,7 +389,7 @@ let bootWindowTheme = 'dark';
 // Bump the shell identity after the earlier desktop identity was observed
 // cached with Windows' generic document icon. Keeping this value stable for
 // the repaired release lets the shell reuse the branded resource thereafter.
-const APP_USER_MODEL_ID = 'com.rid.arcpower.desktop.v4';
+const APP_USER_MODEL_ID = app.isPackaged ? ARC_POWER_APP_USER_MODEL_ID : ARC_POWER_DEVELOPMENT_APP_USER_MODEL_ID;
 // Set the Windows identity while this module is loading, before Electron can
 // create the startup splash or the main window. Keeping this at the earliest
 // possible point prevents the shell from briefly assigning the default
@@ -391,13 +398,12 @@ if (process.platform === 'win32') {
   try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch { /* best effort */ }
 }
 // Keep the native Windows identity on the same generated resources used by
-// the packaged executable. The live window uses the optimized PNG buffer;
-// Windows taskbar metadata always uses the external ICO, never the Portable
-// wrapper or Electron's extracted executable.
+// the packaged executable. Live windows use the external ICO; Portable shell
+// metadata uses its stable wrapper instead of the temporary extracted path.
 const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'app-icon.ico');
 const APP_ICON_PNG_PATH = path.join(__dirname, '..', 'assets', 'icon.png');
 const TRAY_ICON_PATH = path.join(__dirname, '..', 'assets', 'tray-icon.png');
-const PACKAGED_TASKBAR_ICON_PATH = path.join(process.resourcesPath, 'ArcPowerTaskbar.ico');
+const PACKAGED_TASKBAR_ICON_PATH = path.join(process.resourcesPath, 'ArcPowerTaskbar-blue-gradient.ico');
 const PACKAGED_APP_ICON_PATH = path.join(process.resourcesPath, 'app-icon.ico');
 const PACKAGED_APP_ICON_FALLBACK_PATH = path.join(process.resourcesPath, 'app-icon-fallback.ico');
 const BUILD_APP_ICON_PATH = path.join(__dirname, '..', '..', 'build', 'icon.ico');
@@ -421,10 +427,16 @@ const APP_ICON_PNG_FALLBACK_PATH = firstExistingIconPath([
   path.join(__dirname, '..', '..', 'build', 'icon.png'),
 ]);
 const APP_ICON = (() => {
-  // Electron's live Windows taskbar path is more reliable with the optimized
-  // PNG than with a PNG-in-ICO. Read it through Electron's ASAR-aware fs
-  // layer, then hand nativeImage the bytes so packaged and dev launches use
-  // the same native image. The ICO remains the shell/shortcut resource.
+  // Keep the live handle and shell metadata on the same multi-size icon.
+  // The branded resource filename also gives the shell a fresh icon resource
+  // when upgrading from the older logo without changing application identity.
+  for (const iconPath of [WINDOWS_APP_ICON_PATH, APP_ICON_PATH]) {
+    if (!iconPath) continue;
+    try {
+      const icon = nativeImage.createFromPath(iconPath);
+      if (!icon.isEmpty()) return icon;
+    } catch { /* try the PNG fallback */ }
+  }
   try {
     const icon = nativeImage.createFromBuffer(fs.readFileSync(APP_ICON_PNG_PATH));
     if (!icon.isEmpty()) return icon;
@@ -435,12 +447,6 @@ const APP_ICON = (() => {
       if (!icon.isEmpty()) return icon;
     } catch { /* fall through to the external ICO */ }
   }
-  for (const iconPath of [WINDOWS_APP_ICON_PATH, APP_ICON_PATH]) {
-    try {
-      const icon = nativeImage.createFromPath(iconPath);
-      if (!icon.isEmpty()) return icon;
-    } catch { /* try the next source */ }
-  }
   return nativeImage.createEmpty();
 })();
 
@@ -450,15 +456,15 @@ function applyWindowIdentity(win) {
   }
   if (process.platform !== 'win32') return;
   const taskbarExecutablePath = portableWrapperPath ?? process.execPath;
-  const taskbarIconPath = WINDOWS_APP_ICON_PATH;
+  const taskbarIconPath = resolveTaskbarIconPath({ portableWrapperPath, windowIconPath: WINDOWS_APP_ICON_PATH });
   try {
     const details = {
       appId: APP_USER_MODEL_ID,
-      // The Portable wrapper is only the relaunch target. It is not the live
-      // taskbar icon source.
+      // Windows persists this reference beyond the Portable extraction's
+      // lifetime. Its stable wrapper contains the same approved icon frames.
       appIconPath: taskbarIconPath ?? undefined,
       appIconIndex: 0,
-      relaunchCommand: taskbarExecutablePath,
+      relaunchCommand: `"${taskbarExecutablePath}"`,
       relaunchDisplayName: 'Arc Power',
     };
     // A missing external resource must never be handed to Windows as an
@@ -487,9 +493,7 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
     // requested `show` value is honored in the ready-to-show handler below;
     // start-minimized and splash-held windows remain hidden.
     show: false,
-    // Give Chromium/Windows the real ICO at construction time. The native
-    // PNG is still applied below for the live window handle, but the
-    // constructor path prevents a generic icon during taskbar registration.
+    // Use the same multi-size ICO at construction and on the live handle.
     icon: WINDOWS_APP_ICON_PATH ?? undefined,
     // M2b UX: no visible Electron menu bar (an Alt-key shortcut can reveal
     // it later if ever needed).
@@ -689,6 +693,27 @@ async function setupTray({ getWindow, backend, store, oldIgcl, applyRunner, sysm
 }
 
 async function main() {
+  let maintenanceRestartPending = false;
+  // This support path exits before normal startup, profiles, fan capability
+  // probes, boot apply, recording, and the RTSS controller are constructed.
+  if (gpuDiagnostics) {
+    const backend = createBackend({ kind: 'igcl', igcl: { allowAutoWaiver: false } });
+    let exitCode = 0;
+    try {
+      const report = await collectGpuReadOnlyDiagnostics(backend);
+      const output = path.join(app.getPath('desktop'), `Arc-Power-GPU-Report-${Date.now()}.json`);
+      fs.writeFileSync(output, JSON.stringify({ appVersion: app.getVersion(), ...report }, null, 2), { flag: 'wx' });
+      if (report.initError) exitCode = 1;
+      console.log(`[gpu-diagnostics] Read-only GPU report saved: ${output}`);
+    } catch (error) {
+      exitCode = 1;
+      console.error(`[gpu-diagnostics] ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      try { await backend.close(); } catch { /* Preserve the diagnostic result. */ }
+    }
+    app.exit(exitCode);
+    return;
+  }
   if (installerMode) {
     await runInstallerMode(installerMode);
     return;
@@ -788,6 +813,7 @@ async function main() {
   // %APPDATA%\arc-power userData identity. Switching to ArcPowerCache first
   // would let a legacy process and this process acquire different locks.
   const instanceLockMode = { headless, uiVerify, bootApply, applyProfileId, workerReqFile, mock };
+  const instanceLockUserDataPath = app.getPath('userData');
   let windowForInstance = null;
   let pendingSecondInstance = false;
   let instanceLockAcquired = false;
@@ -797,6 +823,22 @@ async function main() {
       mode: instanceLockMode,
     });
     if (!acquired) {
+      const currentVersion = app.getVersion();
+      const previousVersion = readArcPowerLastOpenedVersionSync(app.getPath('appData'));
+      if (portableWrapperPath && compareArcPowerVersions(currentVersion, '1.2.3') >= 0
+        && (previousVersion === null || compareArcPowerVersions(currentVersion, previousVersion) > 0)) {
+        try {
+          dialog.showMessageBoxSync({
+            type: 'info',
+            buttons: ['OK'],
+            title: 'Arc Power cache cleanup is waiting',
+            message: 'A prior Portable instance is still running.',
+            detail: `Arc Power ${currentVersion} will clear its caches after the older instance closes. Close the running Arc Power window, then start this Portable release again. No settings or Intel driver downloads are being removed.`,
+          });
+        } catch {
+          console.log(`[cache] Arc Power ${currentVersion} needs to clear caches after the running Portable instance closes; close it and start this release again.`);
+        }
+      }
       console.log('[boot] another Arc Power instance is running - quitting');
       app.quit();
       return;
@@ -819,33 +861,50 @@ async function main() {
   // build is newer than the last one opened (or when maintenance explicitly
   // requests it). The durable ArcPower profile directory is not a target.
   let cachePath;
-  let lockReleasedForCacheReset = false;
   try {
-    if (app.isPackaged) {
-      cachePath = prepareArcPowerCacheSync(app.getPath('appData'), app.getVersion(), {
-        forceReset: shouldClearCache(process.argv),
-        beforeReset: () => {
-          // Electron's legacy single-instance lock lives beside the old
-          // `%APPDATA%\\arc-power` cache. Release it only for a real reset so
-          // Windows can remove that directory, then reacquire it immediately
-          // below while the app is still on the legacy lock identity.
-          if (instanceLockAcquired) {
-            app.releaseSingleInstanceLock();
-            lockReleasedForCacheReset = true;
-          }
-        },
+    const maintenanceAction = readMaintenanceAction(process.argv);
+    const maintenanceToken = readMaintenanceToken(process.argv);
+    // One-shot maintenance flags are consumed before any downstream relaunch
+    // or application code can forward them as normal renderer arguments.
+    process.argv = filterRelaunchArgs(process.argv);
+    if (maintenanceAction !== null && !instanceLockAcquired) {
+      throw new Error('Cache maintenance requires the normal Arc Power application instance');
+    }
+    const appDataPath = app.getPath('appData');
+    const localAppDataPath = typeof process.env.LOCALAPPDATA === 'string'
+      && path.isAbsolute(process.env.LOCALAPPDATA)
+      ? process.env.LOCALAPPDATA
+      : null;
+    if (maintenanceAction === 'reset' || maintenanceAction === 'reset-with-drivers') {
+      consumeMaintenanceReceiptSync(appDataPath, {
+        action: maintenanceAction,
+        token: maintenanceToken,
+        version: app.getVersion(),
+        launchPath: portableWrapperPath ?? process.execPath,
+      });
+    }
+    if (app.isPackaged && instanceLockAcquired) {
+      cachePath = prepareArcPowerCacheSync(appDataPath, app.getVersion(), {
+        localAppDataPath,
+        activeLockPath: path.join(instanceLockUserDataPath, 'lockfile'),
+        forceReset: maintenanceAction !== null,
       }).cachePath;
     } else {
-      // Source/dev launches keep the existing isolated cache contract and do
-      // not migrate or delete legacy release data on the host machine.
-      cachePath = resolveArcPowerCachePath(app.getPath('appData'));
-      ensureCacheDirectorySync(cachePath);
-      if (shouldClearCache(process.argv)) resetCacheDirectorySync(cachePath);
+      // Source/dev launches and helper modes do not run release migrations.
+      // A headless smoke, elevated worker, or logon helper may run beside
+      // an older UI and must never clear that UI's active cache folders.
+      cachePath = resolveArcPowerCachePath(appDataPath);
+      if (maintenanceAction !== null) {
+        resetArcPowerCachesSync(appDataPath, {
+          localAppDataPath,
+          activeLockPath: path.join(instanceLockUserDataPath, 'lockfile'),
+        });
+      }
+      else ensureCacheDirectorySync(cachePath);
     }
-    if (lockReleasedForCacheReset && !app.requestSingleInstanceLock()) {
-      console.error('[cache] unable to reacquire the Arc Power instance lock after reset');
-      app.exit(1);
-      return;
+    // The shared instance lock stays held throughout both cleanup steps.
+    if (maintenanceAction === 'reset' || maintenanceAction === 'reset-with-drivers') {
+      resetArcPowerDataSync(appDataPath, { includeDriverDownloads: maintenanceAction === 'reset-with-drivers' });
     }
     app.setPath('userData', cachePath);
   } catch (err) {
@@ -1256,6 +1315,18 @@ async function main() {
   }
 
   await app.whenReady();
+  if (app.isPackaged && !mock && !uiVerify && !profileBoot) {
+    try {
+      const repair = await repairArcPowerTaskbarShortcuts({
+        appDataPath: app.getPath('appData'),
+        appId: APP_USER_MODEL_ID,
+        executablePath: portableWrapperPath ?? process.execPath,
+        iconPath: resolveTaskbarIconPath({ portableWrapperPath, windowIconPath: WINDOWS_APP_ICON_PATH }),
+        shell,
+      });
+      if (repair.repaired) console.log(`[taskbar] repaired ${repair.repaired} Arc Power shortcuts`);
+    } catch (error) { console.log(`[taskbar] shortcut repair unavailable: ${error.message}`); }
+  }
   let recordingThumbnailService = null;
   // M99: narrowly scoped range-capable media serving. The renderer supplies
   // only an opaque clip id; main resolves and revalidates the metadata and
@@ -2405,6 +2476,24 @@ async function main() {
         logonExecPath: portableStartupPath ?? process.execPath,
         useElevatedTask: app.isPackaged && process.platform === 'win32',
       });
+  // A prior packaged release could persist the user's startup intent while
+  // task creation failed. On the next manual launch, retry that registration
+  // from the saved intent so Windows can launch Arc Power on the next sign-in.
+  // Keep this off the critical startup path: a task query or UAC response must
+  // never hold the window or the current session's profile apply.
+  let startupRegistrationRepair = Promise.resolve();
+  if (!mock && startup.registrationMode === 'task') {
+    const expectedIntentRevision = startup.getIntentRevision();
+    startupRegistrationRepair = Promise.all([store.loadSettings(), store.loadProfiles()])
+      .then(([settings, profiles]) => maintenanceRestartPending ? null : reconcileStartupRegistration({
+        startup,
+        settings,
+        profiles,
+        expectedIntentRevision,
+        log: (message) => console.log(`[startup] ${message}`),
+      }))
+      .catch((err) => console.log(`[startup] saved startup intent could not be restored: ${err.message}`));
+  }
   // RTSS startup is always an independent, unelevated HKCU Run value. It
   // must never reuse Arc Power's elevated startup task.
   const rtssStartup = mock
@@ -2416,9 +2505,23 @@ async function main() {
   // Arc Power still owns the text, colors, scale tag, and telemetry content.
   const rtssProfile = mock
     ? null
-    : createRtssProfileController({
-        getExecutablePath: async () => (await rtssStartup.get())?.executablePath ?? null,
-        isRunning: async () => await rtssStartup.isRunning?.() === true,
+    : createRtssProfileHelperProxy({
+        entryPath: app.isPackaged
+          ? path.join(app.getAppPath(), 'src', 'main', 'rtss-profile-helper-entry.js')
+          : path.join(__dirname, 'rtss-profile-helper-entry.js'),
+        getRuntime: async () => {
+          try {
+            const startupState = await rtssStartup.get();
+            return {
+              executablePath: startupState?.executablePath ?? null,
+              isRunning: await rtssStartup.isRunning?.() === true,
+            };
+          } catch {
+            // An unavailable RTSS process probe is passed through as current
+            // state; the controller will return its normal fallback result.
+            return { executablePath: null, isRunning: false };
+          }
+        },
       });
   // The product telemetry HUD is rendered by RTSS itself. Keep the FPS lane
   // mutable because the foreground/process ownership seam is created after
@@ -2591,22 +2694,34 @@ async function main() {
   });
 
   let teardown = null;
+  let maintenanceQuiesced = false;
   // M4-D: close-to-tray - the tray's Quit (app.quit) must NOT be
   // swallowed by the window close interception (the close event fires
   // during a quit too; the flag lets it through).
   let isQuitting = false;
-  let quitTeardownStarted = false;
+  let rtssProfileClosed = false;
+  const closeRtssProfile = () => {
+    if (rtssProfileClosed) return;
+    rtssProfileClosed = true;
+    // RTSSHooks can hang inside synchronous native code. The proxy's close
+    // kills that isolated child without waiting and prevents any later call.
+    try { rtssProfile?.close?.(); } catch { /* best effort */ }
+  };
+  const handleQuitTeardown = createQuitTeardownGate({
+    getTeardown: () => maintenanceQuiesced ? null : teardown,
+    closeRtssHelper: closeRtssProfile,
+    quit: () => app.quit(),
+  });
   app.on('before-quit', (event) => {
     isQuitting = true;
-    try { recordingEditor.shutdown(); } catch { /* editor child cleanup is best effort */ }
+    if (!maintenanceQuiesced) {
+      try { recordingEditor.shutdown(); } catch { /* editor child cleanup is best effort */ }
+    }
     // M99: Electron otherwise proceeds while the async Ascent SHUTDOWN is
     // still queued. Hold the first quit event, await the bounded teardown,
     // then re-enter app.quit once so the child has a chance to finalize.
-    if (!quitTeardownStarted && teardown) {
-      event.preventDefault();
-      quitTeardownStarted = true;
-      void teardown().catch(() => {}).finally(() => app.quit());
-    }
+    handleQuitTeardown(event);
+    if (maintenanceQuiesced) return;
     void backend.close().catch(() => {});
     void oldIgcl?.close?.().catch(() => {});
     void lhmTelemetry?.close?.().catch(() => {});
@@ -2713,8 +2828,10 @@ async function main() {
   // double-apply with the Run-launched app is idempotent).
   let bootGate = null; // { green: boolean } | null - null = not applicable/unknown
   let bootGateCheck = null; // the in-flight check promise (informational since M4M)
+  let bootSetupForMaintenance = null;
+  let bootSetupOperation = Promise.resolve();
   if (installedBuild && !mock) {
-    const bootSetup = createBootSetup();
+    const bootSetup = bootSetupForMaintenance = createBootSetup();
     // NOT awaited: the first window must never wait on schtasks (two
     // queries, 10 s timeout each). The promise never rejects - the catch
     // degrades to null ("gate unknown" -> the in-app apply stays).
@@ -2722,10 +2839,10 @@ async function main() {
       .then((task) => {
         bootGate = { green: taskActionMatches(task, process.execPath) };
         console.log(`[boot] setup gate: ${bootGate.green ? 'GREEN' : 'NOT GREEN'} (task ${task.exists ? 'exists' : 'missing'}, action exe ${task.command ? `'${task.command}'` : 'unknown'})`);
-        if (!bootGate.green) {
+        if (!bootGate.green && !maintenanceRestartPending) {
           // Fire-and-forget: the UAC prompt must not block the window boot.
           // createBootSetup latches - exactly ONE elevated spawn per launch.
-          bootSetup.setup({ execPath: process.execPath })
+          bootSetupOperation = bootSetup.setup({ execPath: process.execPath })
             .then((r) => {
               if (r.ok) console.log('[boot] elevated setup OK - ArcPowerBootApply task created/overwritten');
               else if (r.alreadyStarted) console.log('[boot] elevated setup already started this launch');
@@ -3748,30 +3865,115 @@ async function main() {
   // M52: product restarts relaunch with a one-shot reset flag; ui-verify
   // counts the request and deliberately remains alive for the next pin.
   let appClearCacheRestarts = 0;
-  const appLifecycle = {
-    clearCacheAndRestart: async () => {
-      if (uiVerify) {
-        appClearCacheRestarts += 1;
-        return { ok: true, restarting: false };
+  const intelDriverUpdateService = createIntelDriverUpdateService();
+  const intelDriverDownloadService = createIntelDriverDownloadService({
+    appDataPath: app.getPath('appData'),
+    appApi: app,
+    intelDriverUpdateService,
+  });
+  const awaitMaintenanceStep = async (label, operation, timeoutMs = 15_000) => {
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(operation),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} did not finish within ${timeoutMs} ms`)), timeoutMs); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  };
+  const maintenanceAndRestart = async (action, { waitForPendingRequests = async () => {} } = {}) => {
+    if (!['clear-cache', 'reset', 'reset-with-drivers'].includes(action)) throw new Error('maintenance action is invalid');
+    if (uiVerify) {
+      appClearCacheRestarts += 1;
+      return { ok: true, restarting: false };
+    }
+    if (maintenanceRestartPending) return { ok: false, restarting: false };
+    maintenanceRestartPending = true;
+    let teardownStarted = false;
+    try {
+      // Stop a partial Intel download first, then drain all previously
+      // accepted IPC work before stopping the recording/native services.
+      await awaitMaintenanceStep('driver downloads', () => intelDriverDownloadService.quiesce({ timeoutMs: 10_000 }), 12_000);
+      await awaitMaintenanceStep('existing Arc Power requests', waitForPendingRequests, 16_000);
+      // Elevated registration operations cannot be cancelled by a JS timer.
+      // Keep maintenance gated until UAC settles so a late create/delete
+      // cannot mutate registrations after a failed reset resumes the UI.
+      await startupRegistrationRepair;
+      await awaitMaintenanceStep('apply-on-boot check', () => bootGateCheck, 25_000);
+      await bootSetupOperation;
+      if (action !== 'clear-cache') {
+        await startup.set(false);
+        await awaitMaintenanceStep('RTSS startup registration cleanup', () => rtssStartup.set(false), 15_000);
+        const bootSetup = bootSetupForMaintenance ?? createBootSetup();
+        await bootSetup.remove();
       }
-      try {
-        const relaunchOptions = resolveCacheRestartRelaunchOptions({
-          argv: process.argv.slice(1),
-          isPackaged: app.isPackaged,
-          platform: process.platform,
-          portableWrapperPath,
+
+      teardownStarted = true;
+      await awaitMaintenanceStep('existing quit teardown', () => teardown?.(), 15_000);
+      await awaitMaintenanceStep('recording editor shutdown', () => recordingEditor.shutdown(), 5_000);
+      // Every store mutation already accepted by IPC has now finished. These
+      // serialized queues also cover writes started by a handler that settled
+      // before the maintenance request took its in-flight snapshot.
+      await awaitMaintenanceStep('queued store writes', () => Promise.all([
+        store?._settingsWriteQueue,
+        recordingStore?._mutationQueue,
+        gameProfiles?._mutation,
+        stabilityStore?._mutationQueue,
+      ].filter(Boolean)), 15_000);
+      closeRtssProfile();
+      await awaitMaintenanceStep('native controller shutdown', () => Promise.all([
+        Promise.resolve().then(() => backend.close()),
+        Promise.resolve().then(() => oldIgcl?.close?.()),
+        Promise.resolve().then(() => lhmTelemetry?.close?.()),
+        Promise.resolve().then(() => realSysmanLimits?.shutdown?.()),
+      ]), 10_000);
+      try { msrReader?.close?.(); } catch (error) { throw new Error(`MSR handle shutdown failed: ${error.message}`); }
+
+      const resetToken = action === 'clear-cache' ? null : randomUUID();
+      if (resetToken) {
+        writeMaintenanceReceiptSync(app.getPath('appData'), {
+          action,
+          token: resetToken,
+          version: app.getVersion(),
+          launchPath: path.resolve(portableWrapperPath ?? process.execPath),
+          createdAt: Date.now(),
         });
-        app.relaunch(relaunchOptions);
-        // app.quit() can be held by a renderer close-to-tray handler while
-        // the relaunch target is already queued. Exit deterministically after
-        // scheduling the relaunch so Maintenance really restarts Arc Power.
-        app.exit(0);
-        return { ok: true, restarting: true };
-      } catch (err) {
-        console.error(`[cache] restart scheduling failed: ${err.message}`);
-        return { ok: false, restarting: false };
       }
-    },
+      const relaunchOptions = resolveCacheRestartRelaunchOptions({
+        argv: process.argv.slice(1),
+        action,
+        isPackaged: app.isPackaged,
+        platform: process.platform,
+        portableWrapperPath,
+        token: resetToken,
+      });
+      app.relaunch(relaunchOptions);
+      maintenanceQuiesced = true;
+      app.exit(0);
+      return { ok: true, restarting: true };
+    } catch (error) {
+      if (teardownStarted) {
+        // Services cannot safely resume after partial teardown. Restart
+        // without any cleanup flags so the user's saved data stays intact.
+        console.error(`[maintenance] restarting without reset after teardown failure: ${error?.message ?? error}`);
+        try {
+          dialog.showErrorBox('Arc Power maintenance could not finish', 'Arc Power will restart without resetting your saved data. Please try the maintenance action again after it restarts.');
+          const recovery = resolveCacheRestartRelaunchOptions({
+            argv: process.argv.slice(1), action: 'clear-cache', isPackaged: app.isPackaged,
+            platform: process.platform, portableWrapperPath,
+          });
+          app.relaunch({ ...recovery, args: filterRelaunchArgs(recovery.args) });
+        } finally { app.exit(1); }
+        return { ok: false, restarting: true };
+      }
+      try { intelDriverDownloadService.resume(); } catch { /* preserve the maintenance failure */ }
+      maintenanceRestartPending = false;
+      console.error(`[maintenance] restart preparation failed: ${error?.message ?? String(error)}`);
+      throw new Error(`Maintenance restart could not be prepared: ${error?.message ?? String(error)}`);
+    }
+  };
+  const appLifecycle = {
+    maintenanceAndRestart,
+    clearCacheAndRestart: () => maintenanceAndRestart('clear-cache'),
   };
   // M4-H (D1): the open-external op - shell.openExternal in the product
   // path; --ui-verify injects a COUNTING probe (opening a real browser
@@ -3917,6 +4119,8 @@ async function main() {
     openExternal,
     registryCatalog,
     appLifecycle,
+    intelDriverUpdateService,
+    intelDriverDownloadService,
     registryApply,
     fpsAdapter,
     fpsLane,

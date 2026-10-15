@@ -2874,7 +2874,7 @@ input[type="number"] {
 }
 .settings-card > .card-note { margin-left: 4px; margin-right: 4px; }
 .maintenance-card .card-note { max-width: 58ch; }
-.maintenance-row { justify-content: flex-start; margin-top: 10px; }
+.maintenance-row { justify-content: flex-start; flex-wrap: wrap; margin-top: 10px; }
 .maintenance-action {
   padding: 7px 14px;
   border: 1px solid var(--border-strong);

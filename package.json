@@ -1,6 +1,6 @@
 {
     "name":  "arc-power",
-    "version":  "1.2.2",
+    "version":  "1.2.3",
     "license":  "GPL-2.0-only",
     "private":  true,
     "description":  "Arc Power",
@@ -22,7 +22,7 @@
                     "dist":  "npm run build:renderer \u0026\u0026 node build/build-dist.js"
                 },
     "build":  {
-                  "appId":  "com.rid.arcpower.desktop.v4",
+                  "appId":  "com.rid.arcpower.desktop.v5",
                   "productName":  "Arc Power",
                   "icon":  "build/icon.ico",
                   "files":  [
@@ -89,7 +89,7 @@
                                         },
                                         {
                                           "from":  "src/assets/app-icon.ico",
-                                          "to":  "ArcPowerTaskbar.ico"
+                                          "to":  "ArcPowerTaskbar-blue-gradient.ico"
                                         },
                                         {
                                           "from":  "build/icon.ico",

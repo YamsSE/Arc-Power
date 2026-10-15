@@ -62,7 +62,7 @@ function harness({
         return { ok: false, used: false, available: false, errorCode: 'unavailable' };
       }
       current = enabled
-        ? { limit: value, denominator: 1, limiterEnabled: true }
+        ? { limit: value, denominator: current.denominator === null ? null : 1, limiterEnabled: true }
         : { ...initialUnderlay };
       return { ok: true, used: true, restoreToken: { expectedLimit: current.limit, expectedDenominator: current.denominator, expectedEnabled: current.limiterEnabled } };
     },
@@ -145,6 +145,22 @@ test('Graphics base cap keeps the RTSS 1 FPS endpoint', async (t) => {
   await h.controller.start();
   assert.equal(h.controller.getSnapshot().baseCapFps, 1);
   assert.deepEqual(h.readState(), { limit: 1, denominator: 1, limiterEnabled: true });
+});
+
+test('Arc Sleep applies a Base FPS Cap when RTSS denominator metadata is unavailable', async (t) => {
+  const h = harness({
+    state: { limit: 60, denominator: null, limiterEnabled: true },
+    underlay: { limit: 60, denominator: null, limiterEnabled: true },
+  });
+  t.after(() => h.controller.stop());
+
+  await h.controller.start();
+  const result = await h.controller.withTransaction((transaction) => transaction.setBaseFrameLimit({ enabled: true, value: 72 }));
+
+  assert.equal(result.handled, true);
+  assert.equal(result.ok, true);
+  assert.deepEqual(h.readState(), { limit: 72, denominator: null, limiterEnabled: true });
+  assert.equal(h.controller.getSnapshot().status, 'disabled');
 });
 
 test('adaptive cap releases to the saved underlay when load telemetry stays stale', async (t) => {

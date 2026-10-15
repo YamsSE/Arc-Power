@@ -58,8 +58,8 @@ export interface HealthInput {
   waiverAccepted: boolean | null;
   /**
    * M17: FALSE on OC-locked devices (caps.overclockingSupported === false) -
-   * there is no waiver to accept; the row reads the neutral
-   * "Not supported on this GPU" (ok, never the clickable error state).
+   * there is no waiver to accept; the row says
+   * "No OC Capabilities = No OC Waiver" (ok, never the clickable error state).
    */
   overclockingSupported?: boolean | null;
   /**
@@ -259,12 +259,12 @@ export function ocRow(input: HealthInput): HealthRow {
  * time; the dashboard full-re-renders on caps changes (its sig includes
  * caps), so an accept-time store patch refreshes this row. Unknown while no
  * caps have landed. M17 (B50-class): on OC-locked devices there is no
- * waiver - the row reads the neutral "Not supported on this GPU" (ok level,
+ * waiver - the row reads "No OC Capabilities = No OC Waiver" (ok level,
  * never clickable) instead of an un-answerable "Not Accepted" error.
  */
 export function waiverRow(input: HealthInput): HealthRow {
   if (input.overclockingSupported === false) {
-    return { id: 'waiver', label: 'OC waiver', level: 'ok', detail: 'Not supported on this GPU' };
+    return { id: 'waiver', label: 'OC waiver', level: 'ok', detail: 'No OC Capabilities = No OC Waiver' };
   }
   if (input.waiverAccepted === null) {
     return { id: 'waiver', label: 'OC waiver', level: 'unknown', detail: 'Waiting for device…' };

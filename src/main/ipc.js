@@ -93,6 +93,25 @@ import { createArcSleepIGCLLimiter } from './arc-sleep-igcl-limiter.js';
  * @returns {() => Promise<void>}
  */
 export function registerIpc({ backend, store, getWindow, startup = createStartup(), rtssStartup = createRtssStartup(), driverInfo = createDriverInfo(), driverMonitor = null, sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), fpsLane = null, rtssOverlay = null, rtssFrameLimiter = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null, recordingStore = null, recordingCopyFile = async () => false, recordingEngine = null, recordingLifecycle = null, recordingEditor = null, stabilityLab = null, stabilityStore = null, stabilityWorkload = null, overlayLayoutStore = null, obsStream = null, applyOverlayLayout = async () => {}, chooseRecordingDirectory = async () => null, openRecordingFolder = async () => {}, refreshRecordingHotkeys = async () => null, getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }), recordingCaptureTargets = null, onRecordingActionResult = () => {}, onRecordingState = () => {}, getRecordingMemorySavingMode = () => false }) {
+  let maintenancePending = false;
+  const pendingIpcRequests = new Set();
+  const waitForPendingRequests = async ({ timeoutMs = 15_000 } = {}) => {
+    const pending = [...pendingIpcRequests];
+    if (!pending.length) return;
+    let timer;
+    try {
+      await Promise.race([
+        Promise.allSettled(pending),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('existing Arc Power requests did not finish before maintenance')), timeoutMs); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  };
+  const appLifecycleForHandlers = {
+    ...appLifecycle,
+    maintenanceAndRestart: typeof appLifecycle.maintenanceAndRestart === 'function'
+      ? (action) => appLifecycle.maintenanceAndRestart(action, { waitForPendingRequests })
+      : undefined,
+  };
   // Mock/UI verification still exercises the production Arc Sleep controller
   // and adapter. Its executor writes only to the in-memory MockBackend; real
   // sessions continue to require the isolated graphics worker.
@@ -177,7 +196,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     memoryUtil,
     sysStats,
     onSysStatsReady: () => arcSleepController.onAdaptiveSamplerReady(),
-    appLifecycle,
+    appLifecycle: appLifecycleForHandlers,
     monitorLog,
     rebuildTray,
     appVersion: app.getVersion(),
@@ -248,6 +267,11 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         return;
       }
       if (channel === 'intel-driver-download:progress') {
+        const win = getWindow();
+        if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+        return;
+      }
+      if (channel === 'update:download-progress') {
         const win = getWindow();
         if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
         return;
@@ -329,11 +353,12 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
   let ocModeSetQueue = Promise.resolve();
   let nextOcModeRevision = 0;
   for (const [channel, fn] of Object.entries(handlers)) {
-    ipcMain.handle(channel, async (event, ...args) => {
-      if (channel === 'device-selection-push') {
+    const isMaintenanceChannel = channel === 'app:maintenance-restart' || channel === 'app:clear-cache-restart';
+    const invokeHandler = async (event, ...args) => {
+      if (channel === 'device-selection-push' || channel.startsWith('update:')) {
         const win = getWindow();
         if (!win || win.isDestroyed() || event.sender !== win.webContents) {
-          throw new Error('device-selection-push is restricted to the main renderer');
+          throw new Error(`${channel} is restricted to the main renderer`);
         }
       }
       const recordingAction = recordingInvokeActions[channel];
@@ -490,6 +515,23 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(GRAPHICS_STATE_UPDATED_CHANNEL, payload);
       }
       return out;
+    };
+    ipcMain.handle(channel, (event, ...args) => {
+      if (maintenancePending) throw new Error('Arc Power is preparing a maintenance restart');
+      if (isMaintenanceChannel) maintenancePending = true;
+      const request = invokeHandler(event, ...args);
+      if (isMaintenanceChannel) {
+        return request.then((result) => {
+          if (result?.restarting !== true) maintenancePending = false;
+          return result;
+        }, (error) => {
+          maintenancePending = false;
+          throw error;
+        });
+      }
+      pendingIpcRequests.add(request);
+      void request.finally(() => pendingIpcRequests.delete(request)).catch(() => {});
+      return request;
     });
   }
   void arcSleepController.start().catch((error) => {

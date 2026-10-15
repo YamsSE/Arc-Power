@@ -1,17 +1,21 @@
 <p align="center">
+  <img src="docs/branding/Arc-Power-Main-Logo-Navy.png?v=1.2.3" alt="Arc Power" width="540">
+</p>
+
+<p align="center">
   <a href="https://discord.gg/nXAjasHy6e"><img src="https://api.iconify.design/simple-icons/discord.svg?color=%235865F2" alt="Join the Arc Power Discord" title="Join the Arc Power Discord" width="22" height="22"></a>
 </p>
 
-# Arc Power Ver. 1.2.2
+# Arc Power Ver. 1.2.3
 
-Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.2.2 improves Arc Sleep's inactivity and GPU-load adaptive caps, and reuses a long-lived worker for recurring system-stat queries. Arc Power also includes the Driver Library for browsing Intel driver releases and managing downloaded installers.
+Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.2.3 adds blue-gradient branding, fan-speed hover details, and three maintenance choices for clearing cache or resetting saved data. New installs and higher-version Portable launches clear cache automatically. It also improves recording audio and Instant Replay saving, Intel 9150 driver downloads, Base Cap and Arc Sleep frame limiting, update reliability, GPU target recovery, and Arc Pro waiver status. Arc Power includes the Driver Library for browsing Intel driver releases and managing downloaded installers.
 
 ## What Arc Power does
 
 - Tune supported GPU clocks, power limits, voltage offsets, and fan controls.
 - Monitor GPU, CPU, memory, frame rate, and frame time data.
 - Configure the Arc Power or RTSS in-game overlay, including optional CPU/GPU chip labels, compact value units, and a shared Celsius/Fahrenheit temperature setting.
-- Record video and Instant Replay with configurable encoders, CBR/VBR/CQP/ICQ rate control, and a global start/stop recording hotkey.
+- Record video and Instant Replay with configurable encoders, CBR/VBR/CQP/ICQ rate control, improved audio capture and replay saving, and a global start/stop recording hotkey.
 - Save and apply named profiles, including at Windows logon.
 - Adjust supported graphics options and reversible Windows settings.
 - Browse Intel Arc and Arc Pro driver versions in the Driver Library, review release information, and download or remove driver installers.
@@ -32,7 +36,7 @@ AMD and NVIDIA adapters may appear for telemetry when their vendor libraries are
 
 ## Install
 
-Arc Power requires Windows 10 or 11, 64 bit, and an installed Intel graphics driver for Arc features. Download the latest [Version 1.2.2 release](https://github.com/YamsSE/Arc-Power/releases/latest):
+Arc Power requires Windows 10 or 11, 64 bit, and an installed Intel graphics driver for Arc features. Download the [Version 1.2.3 release](https://github.com/YamsSE/Arc-Power/releases/latest):
 
 - **Installer:** `Arc-Power_Installer.exe` installs Arc Power and supports elevated apply-at-startup behavior.
 - **Portable:** `Arc-Power_Portable.exe` runs without installation. Some hardware changes may request administrator approval.

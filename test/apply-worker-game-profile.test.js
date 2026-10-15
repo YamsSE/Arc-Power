@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHmac } from 'node:crypto';
 import { runApplyWorker, validateWorkerResult } from '../src/main/apply-worker.js';
+import { createUnifiedGpuBackend } from '../src/main/gpu-inventory.js';
 
 async function withWorkerFiles(request, run) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'arc-power-worker-test-'));
@@ -37,6 +38,23 @@ function applyWorkerCaps() {
     aibVendor: 'test',
     aibModel: 'test',
   };
+}
+
+function workerInventoryBackend(devices) {
+  return createUnifiedGpuBackend({
+    backend: {
+      kind: 'igcl',
+      async listDevices() { return devices; },
+      async getGraphicsSettings() {
+        return {
+          supported: { frameLimit: true },
+          frameLimitRange: { min: 30, max: 300, step: 1, default: 60 },
+          values: { frameLimit: { enabled: false, value: 60 } },
+        };
+      },
+    },
+    videoControllers: [],
+  });
 }
 
 test('apply worker routes game-profile writes with physical GPU proof', async () => {
@@ -96,6 +114,114 @@ test('apply worker routes game-profile writes with physical GPU proof', async ()
   }).ok, false);
   assert.deepEqual(result.output.perControl, { lowLatency: { ok: false, errorCode: 'io-failed' } });
   assert.deepEqual(calls, [[target.id, request.exePath.toLowerCase(), request.settings, true]]);
+});
+
+test('apply worker resolves the selected target despite process-local GPU IDs', async (t) => {
+  const pnp = 'PCI\\VEN_8086&DEV_56A0&SUBSYS_12345678';
+  const pciKey = 'pci:0x8086:0x56a0@0000:03:00.0';
+  const devices = [
+    { id: 0, name: 'Other Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf: '0000:04:00.0' },
+    { id: 1, name: 'Selected Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf: '0000:03:00.0' },
+  ];
+  const scenarios = [
+    { name: 'reported PCI key', deviceKey: pciKey },
+    { name: 'parent PNP key missing from worker aliases', deviceKey: `pnp:${pnp}` },
+  ];
+
+  for (const [index, scenario] of scenarios.entries()) {
+    await t.test(scenario.name, async () => {
+      const request = {
+        requestId: `worker-local-id-remap-${index}`,
+        op: 'graphics-apply',
+        deviceId: 0,
+        deviceKey: scenario.deviceKey,
+        physicalTarget: {
+          pnpDeviceId: pnp,
+          pciVendorId: '0x8086',
+          pciDeviceId: '0x56a0',
+          bdf: '0000:03:00.0',
+        },
+        settings: { frameLimit: { enabled: true, value: 144 } },
+      };
+      const writes = [];
+      const result = await withWorkerFiles(request, async ({ requestPath, outputPath, workerSecret }) => {
+        const backend = workerInventoryBackend(devices);
+        backend.setGraphicsSettings = async (id, settings) => {
+          writes.push({ id, settings });
+          return { ok: true, perControl: { frameLimit: { ok: true } } };
+        };
+        const exitCode = await runApplyWorker({ reqPath: requestPath, outPath: outputPath, backend, oldIgcl: {}, workerSecret });
+        return { exitCode, output: JSON.parse(await fs.readFile(outputPath, 'utf8')) };
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.output.ok, true);
+      assert.deepEqual(writes, [{ id: 1, settings: request.settings }]);
+    });
+  }
+});
+
+test('apply worker rejects mismatched or ambiguous physical target before writing', async (t) => {
+  const pnp = 'PCI\\VEN_8086&DEV_56A0&SUBSYS_12345678';
+  const selected = { id: 1, name: 'Selected Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf: '0000:03:00.0' };
+  const other = { id: 0, name: 'Other Intel Arc GPU', pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf: '0000:04:00.0' };
+  const cases = [
+    {
+      name: 'mismatched proof',
+      devices: [other, selected],
+      physicalTarget: {
+        pnpDeviceId: 'PCI\\VEN_1002&DEV_73BF&SUBSYS_12345678',
+        pciVendorId: '0x1002',
+        pciDeviceId: '0x73bf',
+        bdf: '0000:03:00.0',
+      },
+    },
+    {
+      name: 'ambiguous physical match',
+      devices: [other, selected, { ...selected, id: 2, name: 'Duplicate BDF GPU' }],
+      physicalTarget: { pnpDeviceId: pnp, pciVendorId: '0x8086', pciDeviceId: '0x56a0', bdf: '0000:03:00.0' },
+    },
+    {
+      name: 'synthetic parent proof matching a writable worker row',
+      devices: [other, selected],
+      physicalTarget: {
+        deviceKey: `pnp:${pnp}`,
+        pnpDeviceId: pnp,
+        pciVendorId: '0x8086',
+        pciDeviceId: '0x56a0',
+        bdf: '0000:03:00.0',
+        synthetic: true,
+        backendKind: 'os',
+      },
+    },
+  ];
+
+  for (const [index, scenario] of cases.entries()) {
+    await t.test(scenario.name, async () => {
+      const request = {
+        requestId: `worker-local-id-reject-${index}`,
+        op: 'graphics-apply',
+        deviceId: 0,
+        deviceKey: `pnp:${pnp}`,
+        physicalTarget: scenario.physicalTarget,
+        settings: { frameLimit: { enabled: true, value: 144 } },
+      };
+      let writes = 0;
+      const result = await withWorkerFiles(request, async ({ requestPath, outputPath, workerSecret }) => {
+        const backend = workerInventoryBackend(scenario.devices);
+        backend.setGraphicsSettings = async () => {
+          writes += 1;
+          return { ok: true, perControl: {} };
+        };
+        const exitCode = await runApplyWorker({ reqPath: requestPath, outPath: outputPath, backend, oldIgcl: {}, workerSecret });
+        return { exitCode, output: JSON.parse(await fs.readFile(outputPath, 'utf8')) };
+      });
+
+      assert.equal(result.exitCode, 1);
+      assert.equal(result.output.ok, false);
+      assert.equal(writes, 0);
+    });
+  }
 });
 
 test('apply worker rejects a stale physical game-profile target before writing', async () => {

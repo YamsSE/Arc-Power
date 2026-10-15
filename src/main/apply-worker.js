@@ -203,6 +203,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
   const requestId = authenticated.requestId;
   const op = req?.op ?? 'apply';
   const deviceId = Number.isInteger(req?.deviceId) && req.deviceId >= 0 ? req.deviceId : null;
+  let workerDeviceId = deviceId;
   const finish = async (payload) => {
     await writeWorkerResult(outPath, { requestId, op, ...payload }, workerSecret);
   };
@@ -293,7 +294,33 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     // stale keys and synthetic OS-only adapters before any write. Keep the
     // legacy injected-backend seam usable when it has no resolver at all.
     let target = null;
-    if (typeof backend?.getDeviceTarget === 'function') {
+    if (typeof backend?.resolvePhysicalTarget === 'function') {
+      try {
+        target = await guardedBackend.resolvePhysicalTarget(
+          typeof req?.deviceKey === 'string' ? req.deviceKey : null,
+          req?.physicalTarget && typeof req.physicalTarget === 'object' ? req.physicalTarget : null,
+        );
+      } catch (err) {
+        const message = `stale or unsupported GPU target: ${err instanceof Error ? err.message : String(err)}`;
+        if (op === 'display-apply') {
+          const errorCode = /ambiguous|multiple/i.test(message) ? 'ambiguous-target' : 'stale-target';
+          await finish(displayIdentityFailure(errorCode, message));
+        } else {
+          await finish({ ok: false, error: message });
+        }
+        return 1;
+      }
+      if (!target || !Number.isInteger(target.id) || target.id < 0
+        || target.synthetic === true || target.backendKind === 'os' || target.identityAmbiguous === true) {
+        if (op === 'display-apply') {
+          await finish(displayIdentityFailure('unsupported', 'selected GPU is read-only and does not support elevated display writes'));
+        } else {
+          await finish({ ok: false, error: 'selected GPU is read-only and does not support elevated writes' });
+        }
+        return 1;
+      }
+      workerDeviceId = target.id;
+    } else if (typeof backend?.getDeviceTarget === 'function') {
       try {
         target = await guardedBackend.getDeviceTarget(
           deviceId,
@@ -333,22 +360,22 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     // worker has its own IGCL context, so replay that cached consent into the
     // driver before an apply; this is not a new acceptance or a user prompt.
     if (req.waiverAccepted === true) {
-      await guardedBackend.restoreWaiverState(deviceId, true);
+      await guardedBackend.restoreWaiverState(workerDeviceId, true);
       if (op === 'apply' && typeof guardedBackend.setWaiverAccepted === 'function') {
-        await guardedBackend.setWaiverAccepted(deviceId);
+        await guardedBackend.setWaiverAccepted(workerDeviceId);
       }
     }
 
     if (op === 'waiver-accept') {
-      await guardedBackend.setWaiverAccepted(deviceId);
+      await guardedBackend.setWaiverAccepted(workerDeviceId);
       await finish({ ok: true });
       return 0;
     }
 
     if (op === 'reset') {
-      await guardedBackend.resetToDefaults(deviceId);
+      await guardedBackend.resetToDefaults(workerDeviceId);
       let state = null;
-      try { state = await guardedBackend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+      try { state = await guardedBackend.getCurrentSettings(workerDeviceId); } catch { /* degraded */ }
       await finish({ ok: true, state });
       return 0;
     }
@@ -368,14 +395,14 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       }
       let range = null;
       try {
-        range = (await guardedBackend.getGraphicsSettings(deviceId)).frameLimitRange;
+        range = (await guardedBackend.getGraphicsSettings(workerDeviceId)).frameLimitRange;
       } catch {
         // degraded - the sanitizer's fallback applies
       }
       const settings = sanitizeGraphicsSettings(req.settings, range);
-      const out = await guardedBackend.setGraphicsSettings(deviceId, settings);
+      const out = await guardedBackend.setGraphicsSettings(workerDeviceId, settings);
       let graphicsState = null;
-      try { graphicsState = await guardedBackend.getGraphicsSettings(deviceId); } catch { /* degraded */ }
+      try { graphicsState = await guardedBackend.getGraphicsSettings(workerDeviceId); } catch { /* degraded */ }
       await finish({ ok: out.ok, perControl: out.perControl, graphicsState });
       return 0;
     }
@@ -395,10 +422,10 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
         return 1;
       }
       let range = null;
-      try { range = (await guardedBackend.getGraphicsSettings(deviceId)).frameLimitRange; } catch { /* sanitizer fallback */ }
+      try { range = (await guardedBackend.getGraphicsSettings(workerDeviceId)).frameLimitRange; } catch { /* sanitizer fallback */ }
       const settings = sanitizeGraphicsSettings(req.settings, range);
       if (await abortIfCanceled()) return 1;
-      const out = await guardedBackend.setGameProfileSettings(deviceId, safeExePath, settings, req.enabled === true);
+      const out = await guardedBackend.setGameProfileSettings(workerDeviceId, safeExePath, settings, req.enabled === true);
       await finish({ ok: out.ok === true, perControl: out.perControl ?? {} });
       return 0;
     }
@@ -429,7 +456,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       const writeDisplayKey = displayKeyInNamespace(req.displayKey, writeDeviceKey);
       if (settings.superResolution?.enabled === true) {
         let displayState = null;
-        try { displayState = await guardedBackend.getDisplaySettings(deviceId); } catch { /* fail closed below */ }
+        try { displayState = await guardedBackend.getDisplaySettings(workerDeviceId); } catch { /* fail closed below */ }
         const capability = validateDisplaySuperResolutionCapability(settings, displayState, writeDisplayKey);
         if (!capability.ok) {
           await finish({
@@ -441,10 +468,10 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
         }
       }
       if (await abortIfCanceled()) return 1;
-      const out = await guardedBackend.setDisplaySettings(deviceId, { deviceKey: writeDeviceKey, displayKey: writeDisplayKey, patch: settings });
+      const out = await guardedBackend.setDisplaySettings(workerDeviceId, { deviceKey: writeDeviceKey, displayKey: writeDisplayKey, patch: settings });
       let displayState = null;
       try {
-        displayState = normalizeDisplayStateIdentity(await guardedBackend.getDisplaySettings(deviceId), req.deviceKey);
+        displayState = normalizeDisplayStateIdentity(await guardedBackend.getDisplaySettings(workerDeviceId), req.deviceKey);
       } catch { /* degraded */ }
       await finish({ ok: out.ok, perControl: out.perControl, displayState });
       return 0;
@@ -476,7 +503,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     // must never silently clamp (the worker's caps max IS the sysman-
     // primary 375 W on the a770, so the flagless skip would clamp silently
     // - the forbidden class).
-    const caps = await guardedBackend.getCapabilities(deviceId);
+    const caps = await guardedBackend.getCapabilities(workerDeviceId);
     // M17c: the DEVICE-SCOPED gate thresholds - the caps carry the device
     // identity (pciDeviceId/aibVendor/aibModel - resolved from the
     // worker's OWN post-M17c caps enumeration, round-2 N7), which the
@@ -514,7 +541,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
       // is the state before the refused apply. Degraded to null only if the
       // read itself fails.
       let state = null;
-      try { state = await guardedBackend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+      try { state = await guardedBackend.getCurrentSettings(workerDeviceId); } catch { /* degraded */ }
       await finish({ ok: false, perControl: refusalPerControl(refusal), state, ocModeRefused: true });
       return 0;
     }
@@ -546,7 +573,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     if (unavailable && Object.keys(settings).every((key) => unavailable.controls.includes(key))) {
       log(`[apply-worker] extended-unavailable refusal: ${unavailable.message} (${unavailable.controls.join(', ')}) - nothing applied`);
       let state = null;
-      try { state = await guardedBackend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+      try { state = await guardedBackend.getCurrentSettings(workerDeviceId); } catch { /* degraded */ }
       await finish({ ok: false, perControl: extendedUnavailablePerControl(unavailable.controls), state, extendedUnavailable: true });
       return 0;
     }
@@ -558,7 +585,7 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
     const out = await executeApply({
       backend: guardedBackend,
       oldIgcl: guardedOldIgcl,
-      deviceId,
+      deviceId: workerDeviceId,
       deviceKey: req.deviceKey ?? null,
       physicalTarget: req.physicalTarget ?? null,
       settings: clamped,

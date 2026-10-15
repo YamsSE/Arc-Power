@@ -749,6 +749,50 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
       if (!target || typeof target.deviceKey !== 'string') return null;
       return rows.find((d) => d.deviceKey === target.deviceKey) ?? null;
     },
+    // Resolve a parent-selected GPU in this process's own inventory. Session
+    // IDs are process-local, so the parent id is deliberately not an input.
+    // Prefer the durable key when the worker knows it; use physical proof as
+    // a fallback only when that key is absent from every worker alias set.
+    async resolvePhysicalTarget(expectedKey, physicalProof) {
+      const rows = await refresh();
+      const hasPhysicalProof = physicalProof !== null && typeof physicalProof === 'object' && !Array.isArray(physicalProof);
+      if (!hasPhysicalProof) throw new Error('missing physical proof for elevated GPU target');
+      if (physicalProof.synthetic === true || physicalProof.backendKind === 'os'
+        || physicalProof.owner === 'os' || /^os:/i.test(physicalProof.deviceKey ?? '')) {
+        throw new Error('parent physical proof identifies a read-only OS GPU target');
+      }
+      const proofParts = physicalParts(physicalProof);
+      const matchesPhysicalProof = (row) => {
+        const rowParts = physicalParts(row);
+        // When a worker row lacks PNP, its PCI identity still must agree with
+        // the vendor/device encoded in the parent's PNP proof. A matching BDF
+        // cannot make contradictory hardware IDs safe to route.
+        if ((proofParts.ven && rowParts.ven && proofParts.ven !== rowParts.ven)
+          || (proofParts.dev && rowParts.dev && proofParts.dev !== rowParts.dev)) return false;
+        return physicalTargetMatches(row, physicalProof, rows);
+      };
+      const aliasMatches = typeof expectedKey === 'string'
+        ? rows.filter((row) => row.deviceKey === expectedKey || row.deviceKeys?.includes(expectedKey))
+        : [];
+      let target;
+      if (aliasMatches.length > 0) {
+        if (aliasMatches.length !== 1) throw new Error('selected GPU identity alias is ambiguous');
+        [target] = aliasMatches;
+        if (!matchesPhysicalProof(target)) {
+          throw new Error('selected GPU physical proof does not match the resolved identity');
+        }
+      } else {
+        const physicalMatches = rows.filter(matchesPhysicalProof);
+        if (physicalMatches.length === 0) throw new Error('no worker GPU matches the parent physical proof');
+        if (physicalMatches.length !== 1) throw new Error('parent physical proof matches multiple worker GPUs');
+        [target] = physicalMatches;
+      }
+      if (target.synthetic === true || target.backendKind === 'os' || target.identityAmbiguous === true
+        || !Number.isInteger(target.backendId)) {
+        throw new Error('selected GPU is read-only and does not support elevated writes');
+      }
+      return target;
+    },
     async assertDeviceTarget(id, expectedKey, physicalProof = null) {
       const rows = await refresh();
       const target = rows.find((d) => d.id === id);
@@ -767,16 +811,19 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
       }
       const physicalMatch = hasPhysicalProof ? physicalTargetMatches(target, physicalProof, rows) : false;
       if (typeof expectedKey === 'string' && target.deviceKey !== expectedKey) {
-        // The elevated worker intentionally rebuilds inventory without the
-        // parent OS snapshot. A unique worker row may therefore have a
-        // PCI/BDF durable key while the parent supplied the PNP durable key.
-        // The physical proof is authoritative for this one reconciliation;
-        // it must still match and the worker row must not claim a conflicting
-        // PNP of its own.
+        // A refreshed worker row may have a different canonical key from the
+        // parent snapshot. Reconcile only an alias retained uniquely by the
+        // worker inventory, and require matching physical proof for it.
+        const aliasMatchesUniquely = rows.filter((row) => row.deviceKeys?.includes(expectedKey)).length === 1
+          && target.deviceKeys?.includes(expectedKey) === true;
+        // Preserve the original PNP-parent to PCI-only worker reconciliation:
+        // the worker cannot retain a PNP alias it never observed, so matching
+        // physical proof remains the authority for this direction.
         const workerProofReconciliation = physicalMatch
           && !normalizePnpDeviceId(target.pnpDeviceId)
           && normalizePnpDeviceId(physicalProof?.pnpDeviceId);
-        if (!workerProofReconciliation) {
+        const physicalAliasReconciliation = physicalMatch && aliasMatchesUniquely;
+        if (!workerProofReconciliation && !physicalAliasReconciliation) {
           throw new Error(`stale GPU target: device id ${id} no longer resolves to ${expectedKey}`);
         }
       }

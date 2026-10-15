@@ -19,9 +19,12 @@ import { getElevationStatus, isElevated } from './elevation.js';
 import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.js';
 import { detectRtssInstallation, installRtss } from './rtss-install.js';
 import { launchRtss } from './rtss-startup.js';
+import { ARC_POWER_APP_USER_MODEL_ID } from './taskbar-identity.js';
+import { prepareArcPowerCacheSync } from './cache-lifecycle.js';
 import {
   PRODUCT_NAME,
   INSTALLED_EXECUTABLE_NAME,
+  INSTALLED_ICON_RELATIVE_PATH,
   INSTALLED_LAUNCH_ENV,
   createInstallationPlan,
   createUninstallLaunchScript,
@@ -46,7 +49,7 @@ const INSTALLER_ELEVATION_RELAUNCHED = 'ARC_POWER_INSTALLER_ELEVATION_RELAUNCHED
 // The previous desktop identity was cached by Windows with the generic
 // document icon on some installations. Keep the new identity stable for
 // this release so a repaired shortcut cannot inherit that stale shell entry.
-const APP_USER_MODEL_ID = 'com.rid.arcpower.desktop.v4';
+export const APP_USER_MODEL_ID = ARC_POWER_APP_USER_MODEL_ID;
 if (process.platform === 'win32') {
   try { app.setAppUserModelId(APP_USER_MODEL_ID); } catch { /* best effort */ }
 }
@@ -270,7 +273,7 @@ function verifyCopiedPayload(sourceRoot, installDir) {
     INSTALLED_EXECUTABLE_NAME,
     path.join('resources', 'app.asar'),
     path.join('resources', 'app-icon.ico'),
-    path.join('resources', 'ArcPowerTaskbar.ico'),
+    INSTALLED_ICON_RELATIVE_PATH,
   ];
   for (const relativePath of requiredFiles) {
     const sourcePath = path.join(sourceRoot, relativePath);
@@ -310,6 +313,46 @@ function launchInstalledApp(executablePath, workingDirectory) {
   });
 }
 
+// Setup's Chromium session stays in its temporary userData directory. Select
+// the product identity only for the synchronous singleton request; Electron
+// captures that path in the lock, so restoring it cannot move the lock.
+export function createInstallerOperationGuard({
+  electronApp = app,
+  productUserDataPath = electronApp.getPath('userData'),
+  waitForParentExit = waitForProcessExit,
+} = {}) {
+  let busy = false;
+  return async (options, operation) => {
+    if (busy) throw new Error('Another installation is already in progress.');
+    busy = true;
+    let acquired = false;
+    try {
+      if (options.updateParentPid !== undefined && options.updateParentPid !== null) {
+        await waitForParentExit(options.updateParentPid);
+      }
+      const setupUserDataPath = electronApp.getPath('userData');
+      try {
+        electronApp.setPath('userData', productUserDataPath);
+        acquired = electronApp.requestSingleInstanceLock();
+      } finally {
+        electronApp.setPath('userData', setupUserDataPath);
+      }
+      if (!acquired) {
+        throw new Error('Close every Arc Power window, including the tray copy, before installing or updating. Then retry Setup.');
+      }
+      return await operation({ activeLockPath: path.join(productUserDataPath, 'lockfile') });
+    } finally {
+      try {
+        if (acquired) electronApp.releaseSingleInstanceLock();
+      } finally {
+        busy = false;
+      }
+    }
+  };
+}
+
+let withInstallerProductLock = null;
+
 async function installArcPower(win, options = {}) {
   const paths = windowsPaths();
   const plan = createInstallationPlan({
@@ -324,41 +367,63 @@ async function installArcPower(win, options = {}) {
     throw new Error('The installer payload and install location cannot be the same directory');
   }
 
-  if (options.updateParentPid !== undefined && options.updateParentPid !== null) {
-    await waitForProcessExit(options.updateParentPid);
-  }
+  if (!withInstallerProductLock) throw new Error('Setup is not initialized.');
+  let rtss;
+  await withInstallerProductLock(options, async ({ activeLockPath }) => {
+    // Setup has its own temporary userData. Refuse to clean product caches
+    // while another UI can still be using them, including a Portable copy.
+    const assertProductStopped = async () => {
+      const command = `$ErrorActionPreference = 'Stop'; $session = (Get-Process -Id $PID).SessionId; $running = @(Get-CimInstance Win32_Process -Filter "Name='Arc Power.exe'" | Where-Object { $_.ProcessId -ne ${process.pid} -and $_.SessionId -eq $session -and $_.CommandLine -notmatch '--type=|--apply-worker|sysman.*helper|rtss-profile-helper|--headless|--gpu-diagnostics|--ui-verify' }); if ($running.Count -gt 0) { throw 'Close Arc Power from its tray menu before installing so its cache can be cleared.' }`;
+      try {
+        await execFileAsync(powershellPath(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 });
+      } catch (error) {
+        if (String(error.stderr ?? '').includes('Close Arc Power')) throw new Error('Close Arc Power from its tray menu before installing so its cache can be cleared.');
+        throw new Error('Setup could not check whether Arc Power is running. Close other Arc Power copies and try again.');
+      }
+    };
+    await assertProductStopped();
 
-  sendProgress(win, 8, 'Preparing your Arc Power installation');
-  await mkdir(plan.installDir, { recursive: true });
-  sendProgress(win, 20, 'Copying the Arc Power application');
-  await copyPackagedPayload(sourceRoot, plan.installDir);
-  let rtss = { ok: true, installed: false, skipped: true, reason: 'not-requested', launch: { started: false, alreadyRunning: false, reason: 'not-requested' } };
-  if (options.installRtss === true) {
-    sendProgress(win, 64, 'Checking the RTSS FPS provider');
-    rtss = await installRtss();
-    sendProgress(win, rtss.ok ? 70 : 68, rtss.ok ? 'RTSS FPS provider is ready' : 'RTSS was not installed; continuing with DXGI fallback');
-  }
-  sendProgress(win, 76, 'Creating your Start Menu shortcut');
-  await createShortcut({
-    shortcutPath: plan.startMenuShortcutPath,
-    targetPath: plan.executablePath,
-    workingDirectory: plan.installDir,
-    iconPath: plan.iconPath,
-  });
-  if (plan.createDesktopShortcut) {
-    sendProgress(win, 84, 'Creating your desktop shortcut');
+    sendProgress(win, 8, 'Preparing your Arc Power installation');
+    await mkdir(plan.installDir, { recursive: true });
+    sendProgress(win, 20, 'Copying the Arc Power application');
+    await copyPackagedPayload(sourceRoot, plan.installDir);
+    await assertProductStopped();
+    sendProgress(win, 48, 'Clearing Arc Power cache folders');
+    prepareArcPowerCacheSync(paths.appDataPath ?? app.getPath('appData'), app.getVersion(), {
+      forceReset: true,
+      localAppDataPath: paths.localAppData,
+      activeLockPath,
+    });
+    rtss = { ok: true, installed: false, skipped: true, reason: 'not-requested', launch: { started: false, alreadyRunning: false, reason: 'not-requested' } };
+    if (options.installRtss === true) {
+      sendProgress(win, 64, 'Checking the RTSS FPS provider');
+      rtss = await installRtss();
+      sendProgress(win, rtss.ok ? 70 : 68, rtss.ok ? 'RTSS FPS provider is ready' : 'RTSS was not installed; continuing with DXGI fallback');
+    }
+    sendProgress(win, 76, 'Creating your Start Menu shortcut');
     await createShortcut({
-      shortcutPath: plan.desktopShortcutPath,
+      shortcutPath: plan.startMenuShortcutPath,
       targetPath: plan.executablePath,
       workingDirectory: plan.installDir,
       iconPath: plan.iconPath,
     });
-  } else {
-    await rm(plan.desktopShortcutPath, { force: true });
-  }
-  sendProgress(win, 92, 'Registering Arc Power with Windows');
-  await writeUninstallRegistration(plan, app.getVersion(), { displayIcon: `${plan.iconPath},0` });
-  await refreshWindowsShellIcons();
+    if (plan.createDesktopShortcut) {
+      sendProgress(win, 84, 'Creating your desktop shortcut');
+      await createShortcut({
+        shortcutPath: plan.desktopShortcutPath,
+        targetPath: plan.executablePath,
+        workingDirectory: plan.installDir,
+        iconPath: plan.iconPath,
+      });
+    } else {
+      await rm(plan.desktopShortcutPath, { force: true });
+    }
+    sendProgress(win, 92, 'Registering Arc Power with Windows');
+    await writeUninstallRegistration(plan, app.getVersion(), { displayIcon: `${plan.iconPath},0` });
+    await refreshWindowsShellIcons();
+  });
+  // The product lock must be released before either launch path. The setup
+  // completion window may remain open while the installed app owns its lock.
   sendProgress(win, 100, 'Arc Power is ready');
   // RTSS remains optional and its HKCU Run registration is a separate user
   // preference. Start it immediately only for the install handoff the user
@@ -680,6 +745,12 @@ function registerInstallerIpc(win, mode) {
 
 export async function runInstallerMode(mode = 'install') {
   if (!(await ensurePackagedInstallerElevation())) return;
+  // Capture the same default identity used by normal startup before selecting
+  // setup's session directory. Acquire only during an actual operation, after
+  // the updater's parent has exited, so failures can be retried in this UI.
+  if (mode === 'install' || mode === 'update') {
+    withInstallerProductLock = createInstallerOperationGuard();
+  }
   // Installer/uninstaller UI must not open the legacy `%APPDATA%\arc-power`
   // user-data root. That root is one of the disposable historical caches and
   // would otherwise remain locked while the detached uninstaller tries to

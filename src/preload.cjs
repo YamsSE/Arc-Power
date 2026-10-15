@@ -110,6 +110,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   appBuildInfo: () => ipcRenderer.invoke('app:build-info'),
   // M52: clear only ArcPowerCache, then relaunch with --clear-cache.
   appClearCacheAndRestart: () => ipcRenderer.invoke('app:clear-cache-restart'),
+  appMaintenanceAndRestart: (action) => ipcRenderer.invoke('app:maintenance-restart', action),
   // M4N (A.1): the window-path boot apply's outcome ({ ok, detail, at } or
   // null when no boot apply ran this session) - the dashboard OC Status row
   // reads it at boot.
@@ -212,6 +213,11 @@ contextBridge.exposeInMainWorld('arcPower', {
     ipcRenderer.on('intel-driver-download:progress', listener);
     return () => ipcRenderer.removeListener('intel-driver-download:progress', listener);
   },
+  onUpdateDownloadProgress: (cb) => {
+    const listener = (_event, progress) => cb(progress);
+    ipcRenderer.on('update:download-progress', listener);
+    return () => ipcRenderer.removeListener('update:download-progress', listener);
+  },
   // M4-D: pushed window-maximize state (the title-bar max button icon
   // follows the live state; main sends on maximize/unmaximize).
   onWindowMaximizedChanged: (cb) => {
@@ -302,5 +308,5 @@ contextBridge.exposeInMainWorld('arcPower', {
   // M25: auto-update IPC (GitHub Releases check/download/install).
   updateCheck: (intent = 'startup') => ipcRenderer.invoke('update:check', { intent }),
   updateDownload: (assetUrl) => ipcRenderer.invoke('update:download', assetUrl),
-  updateInstall: (filePath) => ipcRenderer.invoke('update:install', filePath),
+  updateInstall: (token) => ipcRenderer.invoke('update:install', token),
 });

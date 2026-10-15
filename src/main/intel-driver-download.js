@@ -32,7 +32,7 @@ function meta(source, name) {
 export function parseIntelDownloadPage(source, kind) {
   if (!validKind(kind)) throw new Error('invalid kind');
   const versionText = meta(source, 'DownloadVersion')?.trim() ?? '';
-  const versionMatch = versionText.match(/^(\d{1,5}\.\d{1,5}\.\d{1,5}\.\d{1,5})(?:\s+-\s+Q\d{1,2}\.\d{2}\.R\d+)?$/i);
+  const versionMatch = versionText.match(/^(\d{1,5}\.\d{1,5}\.\d{1,5}\.\d{1,5})(?:(?:\s+-\s+Q\d{1,2}\.\d{2}\.R\d+)|(?:(?:\s+-\s+|\s+)(?:WHQL(?:\s+Certified)?|Non-WHQL|Beta)))?$/i);
   const version = versionMatch?.[1] ?? null;
   if (!VERSION_RE.test(version ?? '')) throw new Error('Intel release page has an invalid driver version');
   const hrefs = [];
@@ -67,6 +67,7 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, intelDri
   const transfers = new Map();
   const installs = new Map();
   const deletions = new Map();
+  let quiescing = false;
   const basePath = path.join(appDataPath, 'ArcPower', 'DriverDownloads');
   const filePath = (kind, version) => path.join(basePath, kind, version, `gfx_win_101.exe`);
   function validate(kind, version) {
@@ -178,11 +179,14 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, intelDri
   }
   async function startDownload(kind, version, onProgress = () => {}) {
     validate(kind, version);
+    if (quiescing) throw new Error('driver downloads are paused for Arc Power maintenance');
     if (installs.has(kind) || deletions.has(kind)) throw new Error('a driver operation is already active for this driver kind');
     if (transfers.has(kind)) throw new Error('a download is already active for this driver kind');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error('Intel download timed out')), TRANSFER_TIMEOUT_MS);
-    const transfer = { controller };
+    let settleTransfer;
+    const settled = new Promise((resolve) => { settleTransfer = resolve; });
+    const transfer = { controller, settled };
     transfers.set(kind, transfer);
     const target = filePath(kind, version);
     const partial = `${target}.part`;
@@ -263,7 +267,11 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, intelDri
     } catch (error) {
       try { await fsImpl.promises.unlink(partial); } catch { /* absent */ }
       throw error;
-    } finally { clearTimeout(timeout); if (transfers.get(kind) === transfer) transfers.delete(kind); }
+    } finally {
+      clearTimeout(timeout);
+      if (transfers.get(kind) === transfer) transfers.delete(kind);
+      settleTransfer();
+    }
   }
   async function cancelDownload(kind) {
     if (!validKind(kind)) throw new Error('invalid kind');
@@ -274,6 +282,7 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, intelDri
   }
   async function deleteDownloaded(kind, version) {
     validate(kind, version);
+    if (quiescing) throw new Error('driver downloads are paused for Arc Power maintenance');
     if (transfers.has(kind) || installs.has(kind) || deletions.has(kind)) throw new Error('cannot delete a driver download while a driver operation is active');
     const deletion = {};
     deletions.set(kind, deletion);
@@ -299,6 +308,7 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, intelDri
   }
   async function installDownloaded(kind, version) {
     validate(kind, version);
+    if (quiescing) throw new Error('driver downloads are paused for Arc Power maintenance');
     if (transfers.has(kind) || deletions.has(kind)) throw new Error('a download or deletion is already active for this driver kind');
     if (installs.has(kind)) throw new Error('a driver install is already active for this driver kind');
     const install = {};
@@ -334,5 +344,26 @@ export function createIntelDriverDownloadService({ appDataPath, appApi, intelDri
       return { launched: true };
     } finally { if (installs.get(kind) === install) installs.delete(kind); }
   }
-  return { getStatus, startDownload, cancelDownload, deleteDownloaded, installDownloaded };
+  async function quiesce({ timeoutMs = 10_000 } = {}) {
+    quiescing = true;
+    if (installs.size || deletions.size) {
+      throw new Error('an Intel driver install or file operation is still active');
+    }
+    const active = [...transfers.values()];
+    for (const transfer of active) transfer.controller.abort(new Error('Arc Power is restarting for maintenance'));
+    if (active.length) {
+      let timeout;
+      try {
+        await Promise.race([
+          Promise.all(active.map((transfer) => transfer.settled)),
+          new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Intel driver download did not stop before maintenance')), timeoutMs); }),
+        ]);
+      } finally { clearTimeout(timeout); }
+    }
+    if (transfers.size || installs.size || deletions.size) throw new Error('Intel driver activity remains active');
+    return { cancelledTransfers: active.length };
+  }
+  function resume() { quiescing = false; }
+
+  return { getStatus, startDownload, cancelDownload, deleteDownloaded, installDownloaded, quiesce, resume };
 }

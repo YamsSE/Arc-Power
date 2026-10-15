@@ -5,9 +5,12 @@
 
 import { app } from 'electron';
 import { net } from 'electron';
+import { randomUUID } from 'node:crypto';
 import { fetchUpdateResponse } from './auto-update-download.js';
 import {
   compareVersions,
+  createUpdateReceiptRegistry,
+  parseSha256Digest,
   parseReleaseTag,
   selectReleaseAsset,
 } from './auto-update-pure.js';
@@ -16,6 +19,8 @@ import { createUpdateOperations } from './auto-update-runtime.js';
 const OWNER = 'YamsSE';
 const REPO = 'Arc-Power';
 const API_URL = `https://api.github.com/repos/${OWNER}/${REPO}/releases/latest`;
+const checkedAssets = new Map();
+const downloadReceipts = createUpdateReceiptRegistry({ createToken: randomUUID });
 
 /**
  * Check GitHub Releases for a newer version.
@@ -23,6 +28,7 @@ const API_URL = `https://api.github.com/repos/${OWNER}/${REPO}/releases/latest`;
  */
 export async function checkForUpdates({ buildKind = 'portable' } = {}) {
   if (buildKind !== 'installed' && buildKind !== 'portable') return { available: false, reason: 'unknown-build-kind' };
+  checkedAssets.delete(buildKind);
   const currentVersion = app.getVersion();
 
   const response = await fetchJson(API_URL);
@@ -35,17 +41,32 @@ export async function checkForUpdates({ buildKind = 'portable' } = {}) {
   const asset = selectReleaseAsset(response, buildKind);
   if (!asset) return { available: false };
 
+  const expectedSha256 = parseSha256Digest(asset.assetDigest);
+  if (!expectedSha256) throw new Error('GitHub release asset is missing a valid SHA-256 digest');
+  const trustedAsset = { ...asset, version: latestVersion, expectedSha256 };
+  checkedAssets.set(buildKind, trustedAsset);
+
   return {
     available: true,
     version: latestVersion,
     assetUrl: asset.assetUrl,
     assetName: asset.assetName,
+    assetSize: asset.assetSize,
   };
 }
 
 const defaultUpdateOperations = createUpdateOperations({ appApi: app, netApi: net, fetchResponse: fetchUpdateResponse });
-export const downloadUpdate = (...args) => defaultUpdateOperations.downloadUpdate(...args);
-export const installUpdate = (...args) => defaultUpdateOperations.installUpdate(...args);
+export async function downloadUpdate(assetUrl, onProgress, buildKind = 'portable') {
+  const asset = checkedAssets.get(buildKind);
+  if (!asset || asset.assetUrl !== assetUrl) throw new Error('Update asset is not authorized by the latest main-process release check');
+  const downloaded = await defaultUpdateOperations.downloadUpdate(asset.assetUrl, onProgress, buildKind, asset);
+  const token = downloadReceipts.issue({ ...downloaded, buildKind, assetUrl: asset.assetUrl, version: asset.version });
+  return { token };
+}
+
+export async function installUpdate(token, options = {}) {
+  return downloadReceipts.install(token, options.buildKind, (receipt) => defaultUpdateOperations.installUpdate(receipt, options));
+}
 
 // ---------------------------------------------------------------------------
 // Helpers

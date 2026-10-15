@@ -36,16 +36,21 @@ export function createStartupUpdateHandoff({
 
       const choice = coordinator.choose('update');
       if (!choice.ok) return { ok: false, action: 'abort' };
-      setStatus({ state: 'downloading', percent: 0, message: 'Downloading update... 0%' });
-      const downloadedPath = await downloadUpdate(result.assetUrl, (percent) => {
-        setStatus({ state: 'downloading', percent, message: `Downloading update... ${percent}%` });
+      const knownSize = Number.isSafeInteger(result.assetSize) && result.assetSize > 0 ? result.assetSize : null;
+      setStatus({ state: 'downloading', percent: knownSize ? 0 : null, message: knownSize ? 'Downloading update... 0%' : 'Downloading update...' });
+      const downloadReceipt = await downloadUpdate(result.assetUrl, (progress) => {
+        const percent = Number.isFinite(progress?.percent) ? progress.percent : null;
+        const message = percent === null
+          ? `Downloading update... ${(Math.max(0, Number(progress?.downloadedBytes) || 0) / (1024 * 1024)).toFixed(1)} MB`
+          : `Downloading update... ${percent}%`;
+        setStatus({ state: 'downloading', percent, message });
       }, buildKind);
       // A fatal renderer failure can happen while the download is in flight.
       // Never start a replacement after that process has been told to quit.
       if (coordinator.fatalSplashFailed()) return { ok: false, action: 'abort' };
 
       setStatus({ state: 'restarting', percent: 100, message: 'Update downloaded — restarting Arc Power' });
-      const handoff = await installUpdate(downloadedPath, {
+      const handoff = await installUpdate(downloadReceipt.token, {
         buildKind,
         portableWrapperPath,
         onHandoffStarted: () => coordinator.markHandoffStarted?.(),
@@ -54,9 +59,8 @@ export function createStartupUpdateHandoff({
       // The installer and portable helper must wait for this process to exit
       // before they can copy or relaunch. A child-process `spawn` event is
       // therefore only a detached handoff, never proof that the replacement
-      // succeeded. Keep startup gated and let the replacement's diagnostic
-      // path describe post-exit copy/launch failures. A future durable
-      // handshake may set restartConfirmed before calling completeUpdate().
+      // succeeded. Keep startup gated; the portable helper writes a durable
+      // result and presents recovery details if replacement or relaunch fails.
       if (handoff?.restartConfirmed === true) {
         const completed = completeUpdate(handoff);
         if (!completed.ok) throw new Error('Startup update handoff did not resolve the restart gate');

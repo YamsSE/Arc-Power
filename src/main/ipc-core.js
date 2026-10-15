@@ -1237,7 +1237,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: log-to-file writer (monitor-YYYYMMDD.txt)
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
- *   appLifecycle?: { clearCacheAndRestart: () => Promise<{ ok: boolean, restarting: boolean }> },
+ *   appLifecycle?: { maintenanceAndRestart?: (action: 'clear-cache'|'reset'|'reset-with-drivers') => Promise<{ ok: boolean, restarting: boolean }>, clearCacheAndRestart: () => Promise<{ ok: boolean, restarting: boolean }> },
  *   buildKind?: 'installed' | 'portable' | 'dev' | 'unknown',  // M4-E: app:build-info
  *   portableWrapperPath?: string | null,  // M98: validated portable wrapper target shared by classification and replacement
  *   startupUpdateCheck?: (options: { buildKind: string, intent: 'startup' | 'manual' }) => Promise<object>,
@@ -1388,12 +1388,13 @@ export function createIpcHandlers({
   rebuildTray = async () => {},
   appVersion = PKG_VERSION,
   // M52: injected app lifecycle seam; default/test action does not exit.
-  appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) },
+  appLifecycle = { maintenanceAndRestart: async () => ({ ok: false, restarting: false }), clearCacheAndRestart: async () => ({ ok: false, restarting: false }) },
   // M4-E: the distribution kind for the app:build-info channel ('dev' in
   // tests; main.js injects 'installed' | 'portable' | 'dev').
   buildKind = 'dev',
   portableWrapperPath = null,
   startupUpdateCheck = null,
+  updateDownloadOperation = null,
   // M4N (A.1): the window-path boot apply's outcome record (main.js
   // injects the session record; null when no boot apply ran this session -
   // the DEFAULT is null, tests never have a boot apply).
@@ -2853,6 +2854,14 @@ export function createIpcHandlers({
     if (!state) return state;
     if (!rtssState?.ok) return { ...state, frameLimitSource: 'igcl', frameLimitLiveChange: state.frameLimitLiveChange === true };
     const limit = Number.isFinite(rtssState.limit) ? Math.max(0, Math.round(rtssState.limit)) : 0;
+    return decorateRtssFrameLimitState(state, {
+      enabled: rtssState.limiterEnabled !== false && limit > 0,
+      value: limit > 0 ? limit : GRAPHICS_RTSS_FRAME_LIMIT_RANGE.default,
+    });
+  };
+
+  const decorateRtssFrameLimitState = (baseState, frameLimit) => {
+    const state = baseState && typeof baseState === 'object' ? baseState : {};
     return {
       ...state,
       supported: { ...(state.supported ?? {}), frameLimit: true },
@@ -2861,12 +2870,56 @@ export function createIpcHandlers({
       frameLimitLiveChange: true,
       values: {
         ...(state.values ?? {}),
-        frameLimit: {
-          enabled: rtssState.limiterEnabled !== false && limit > 0,
-          value: limit > 0 ? limit : GRAPHICS_RTSS_FRAME_LIMIT_RANGE.default,
-        },
+        frameLimit: { ...frameLimit },
       },
     };
+  };
+
+  // A renderer can retain a numeric session ID across a GPU re-enumeration.
+  // Reconcile selected Graphics/Arc Sleep operations through the persisted
+  // durable key and verify the fresh backend target before using that ID.
+  // Missing or ambiguous identities never fall back to an ordinal.
+  const resolveSelectedGraphicsDevice = async (requestedId, expectedKey) => {
+    if (typeof expectedKey !== 'string' || expectedKey.length === 0) {
+      return { id: requestedId, target: await backend.getDeviceTarget?.(requestedId) };
+    }
+    // The fast path also avoids an inventory round trip when the current ID
+    // already proves the expected identity.
+    try {
+      const currentTarget = await backend.getDeviceTarget?.(requestedId);
+      const currentMatchesKey = currentTarget?.deviceKey === expectedKey
+        || (Array.isArray(currentTarget?.deviceKeys) && currentTarget.deviceKeys.includes(expectedKey));
+      if (currentMatchesKey && currentTarget.identityAmbiguous !== true) return { id: requestedId, target: currentTarget };
+    } catch { /* a stale numeric ID may no longer resolve; try durable inventory */ }
+    if (typeof backend.listDevices !== 'function') {
+      throw new Error(`stale GPU target: cannot resolve selected device identity ${expectedKey}`);
+    }
+    const devices = await backend.listDevices();
+    const matches = (Array.isArray(devices) ? devices : []).filter((device) =>
+      device?.identityAmbiguous !== true
+      && (device?.deviceKey === expectedKey
+        || (Array.isArray(device?.deviceKeys) && device.deviceKeys.includes(expectedKey)))
+      && Number.isInteger(device?.id));
+    if (matches.length !== 1) {
+      throw new Error(`stale GPU target: selected device identity ${expectedKey} is ${matches.length === 0 ? 'missing' : 'ambiguous'}`);
+    }
+    const match = matches[0];
+    const target = await backend.getDeviceTarget?.(match.id);
+    const targetMatchesKey = target?.deviceKey === expectedKey
+      || (Array.isArray(target?.deviceKeys) && target.deviceKeys.includes(expectedKey));
+    if (!target || target.identityAmbiguous === true || !targetMatchesKey) {
+      throw new Error(`stale GPU target: device id ${match.id} could not verify ${expectedKey}`);
+    }
+    return { id: match.id, target };
+  };
+
+  const selectedGraphicsDeviceId = async (requestedId) => {
+    let settings = null;
+    try { settings = await store.loadSettings(); } catch { /* retain existing backend identity checks */ }
+    const expectedKey = settings?.deviceId === requestedId
+      && typeof settings?.deviceKey === 'string' && settings.deviceKey.length > 0
+      ? settings.deviceKey : null;
+    return (await resolveSelectedGraphicsDevice(requestedId, expectedKey)).id;
   };
 
   const readGraphicsState = async (deviceId, { useRtss = true, rtssTimeoutMs = 0 } = {}) => {
@@ -2956,6 +3009,64 @@ export function createIpcHandlers({
       };
     }
     return decorateGraphicsState(baseState, rtssState);
+  };
+
+  const readRtssGlobalGraphicsState = async (deviceId, { rtssTimeoutMs = 1200, requireDeviceState = false } = {}) => {
+    let baseState = null;
+    const gpuRead = (async () => {
+      const resolvedDeviceId = await selectedGraphicsDeviceId(deviceId);
+      return await backend.getGraphicsSettings(resolvedDeviceId);
+    })().catch(() => null);
+
+    let rtssState = null;
+    if (typeof rtssFrameLimiter?.getFrameLimit === 'function') {
+      try {
+        const read = Promise.resolve().then(() => rtssFrameLimiter.getFrameLimit());
+        if (rtssTimeoutMs > 0) {
+          let timeout;
+          try {
+            rtssState = await Promise.race([
+              read,
+              new Promise((resolve) => { timeout = setTimeout(() => resolve(null), rtssTimeoutMs); }),
+            ]);
+          } finally {
+            if (timeout !== undefined) clearTimeout(timeout);
+          }
+        } else {
+          rtssState = await read;
+        }
+      } catch { /* The controller's saved Base Cap can still populate the state. */ }
+    }
+    let gpuReadTimeout;
+    try {
+      baseState = await Promise.race([
+        gpuRead,
+        new Promise((resolve) => { gpuReadTimeout = setTimeout(() => resolve(null), 250); }),
+      ]);
+    } finally {
+      if (gpuReadTimeout !== undefined) clearTimeout(gpuReadTimeout);
+    }
+    // Graphics apply responses are broadcast to the full Graphics page,
+    // which needs the complete device state to rebuild its other controls.
+    if (requireDeviceState && !baseState) return null;
+    const baseCap = arcSleepController?.getSnapshot?.().baseFrameLimit;
+    if (baseCap && typeof baseCap.enabled === 'boolean'
+      && Number.isFinite(baseCap.value)
+      && baseCap.value >= GRAPHICS_RTSS_FRAME_LIMIT_RANGE.min
+      && baseCap.value <= GRAPHICS_RTSS_FRAME_LIMIT_RANGE.max) {
+      return decorateRtssFrameLimitState(baseState, baseCap);
+    }
+    if (rtssState?.ok === true) {
+      const limit = Number.isFinite(rtssState.limit) ? Math.max(0, Math.round(rtssState.limit)) : 0;
+      return decorateRtssFrameLimitState(baseState, {
+        enabled: rtssState.limiterEnabled !== false && limit > 0,
+        value: limit > 0 ? limit : GRAPHICS_RTSS_FRAME_LIMIT_RANGE.default,
+      });
+    }
+    // A failed read does not establish that the limiter is disabled. Apply
+    // results must retain their outcome even when read-back is unavailable.
+    if (requireDeviceState) return null;
+    throw new Error('FPS limiter status is temporarily unavailable; retry the check.');
   };
 
   const applyRtssFrameLimit = async (frameLimit, executablePath = null, removeProfile = false, rollbackToken = null) => {
@@ -3308,10 +3419,9 @@ export function createIpcHandlers({
       // 'No GPU available.' first, plan-review S3). The backend never
       // throws - the all-false/null state is the honest degrade.
       'graphics:get': async (deviceId) => {
-        const read = async () => {
-          assertValidDeviceId(deviceId);
-          return readGraphicsState(deviceId);
-        };
+        assertValidDeviceId(deviceId);
+        const resolvedDeviceId = await selectedGraphicsDeviceId(deviceId);
+        const read = async () => readGraphicsState(resolvedDeviceId);
         return arcSleepController?.withTransaction
           ? arcSleepController.withTransaction(read)
           : read();
@@ -3321,7 +3431,11 @@ export function createIpcHandlers({
       // can recover even when the controller's serialized RTSS queue stalls.
       'arc-sleep-base-cap-get': async (deviceId) => {
         assertValidDeviceId(deviceId);
-        return readGraphicsState(deviceId, { rtssTimeoutMs: 1200 });
+        if (arcSleepController?.getSnapshot?.().activeLimiter === 'rtss') {
+          return readRtssGlobalGraphicsState(deviceId, { rtssTimeoutMs: 1200 });
+        }
+        const resolvedDeviceId = await selectedGraphicsDeviceId(deviceId);
+        return readGraphicsState(resolvedDeviceId, { rtssTimeoutMs: 1200 });
       },
 
       'arc-sleep-state-get': async (...args) => {
@@ -3361,6 +3475,34 @@ export function createIpcHandlers({
       'graphics:apply': async (deviceId, payload) => {
         const apply = async (arcSleepTransaction = null) => {
         assertValidDeviceId(deviceId);
+        // Base Cap is a global RTSS setting. Keep this narrow path clear of
+        // selected-GPU identity resolution and every driver apply route.
+        if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+          && Object.keys(payload).length === 1 && Object.prototype.hasOwnProperty.call(payload, 'frameLimit')
+          && arcSleepTransaction?.requiredSource === 'rtss'
+          && typeof arcSleepTransaction?.setBaseFrameLimit === 'function') {
+          const settings = sanitizeGraphicsSettings(payload, GRAPHICS_RTSS_FRAME_LIMIT_RANGE);
+          const rtssApply = await arcSleepTransaction.setBaseFrameLimit(settings.frameLimit, { requiredSource: 'rtss' });
+          const ok = rtssApply?.handled === true && rtssApply?.ok === true;
+          let rollback = { ok: true };
+          if (!ok && typeof rtssApply?.rollback === 'function') {
+            try { rollback = await rtssApply.rollback(); }
+            catch (error) { rollback = { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+          }
+          const graphicsState = await readRtssGlobalGraphicsState(deviceId, { requireDeviceState: true });
+          return {
+            ok: ok && rollback.ok === true,
+            perControl: { frameLimit: ok && rollback.ok === true
+              ? { ok: true, source: 'rtss' }
+              : { ok: false,
+                errorCode: !rollback.ok ? 'cleanup-pending' : (rtssApply?.errorCode ?? 'limiter-unavailable'),
+                message: !rollback.ok
+                  ? `RTSS rollback failed: ${rollback.error ?? 'the previous FPS limit could not be restored'}`
+                  : (rtssApply?.error ?? 'RTSS could not safely apply the global FPS limit.') },
+            },
+            graphicsState,
+          };
+        }
         let expectedDeviceKey = null;
         try {
           const selectedSettings = await store.loadSettings();
@@ -3368,11 +3510,15 @@ export function createIpcHandlers({
             expectedDeviceKey = selectedSettings.deviceKey;
           }
         } catch { /* target resolution still has its backend identity checks */ }
-        const target = await backend.getDeviceTarget?.(deviceId);
-        if (expectedDeviceKey && target?.deviceKey !== expectedDeviceKey) {
-          throw new Error(`stale GPU target: device id ${deviceId} no longer resolves to ${expectedDeviceKey}`);
+        const resolved = await resolveSelectedGraphicsDevice(deviceId, expectedDeviceKey);
+        const resolvedDeviceId = resolved.id;
+        const target = resolved.target;
+        const targetMatchesKey = target?.deviceKey === expectedDeviceKey
+          || (Array.isArray(target?.deviceKeys) && target.deviceKeys.includes(expectedDeviceKey));
+        if (expectedDeviceKey && (!target || target.identityAmbiguous === true || !targetMatchesKey)) {
+          throw new Error(`stale GPU target: device id ${resolvedDeviceId} no longer resolves to ${expectedDeviceKey}`);
         }
-        const baseGraphicsState = await backend.getGraphicsSettings(deviceId);
+        const baseGraphicsState = await backend.getGraphicsSettings(resolvedDeviceId);
         let rtssFrameState = null;
         if (typeof rtssFrameLimiter?.getFrameLimit === 'function') {
           try { rtssFrameState = await rtssFrameLimiter.getFrameLimit(); } catch { /* IGCL fallback */ }
@@ -3419,11 +3565,11 @@ export function createIpcHandlers({
         if (Object.keys(settingsForDriver).length > 0) {
           try {
             if (typeof applyRunner?.graphicsApplyIsolated === 'function') {
-              driverOut = await applyRunner.graphicsApplyIsolated({ deviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings: settingsForDriver });
+              driverOut = await applyRunner.graphicsApplyIsolated({ deviceId: resolvedDeviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings: settingsForDriver });
             } else if (applyRunner?.needsWorker?.()) {
-              driverOut = await applyRunner.graphicsApply({ deviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings: settingsForDriver });
+              driverOut = await applyRunner.graphicsApply({ deviceId: resolvedDeviceId, deviceKey: target?.deviceKey ?? null, physicalTarget: physicalTargetOf(target), settings: settingsForDriver });
             } else {
-              driverOut = await backend.setGraphicsSettings(deviceId, settingsForDriver);
+              driverOut = await backend.setGraphicsSettings(resolvedDeviceId, settingsForDriver);
             }
           } catch (cause) {
             driverError = cause;
@@ -3439,7 +3585,7 @@ export function createIpcHandlers({
             ? await rtssApply.rollback()
             : await rollbackRtssFrameLimit(rtssApply));
         let graphicsState = null;
-        try { graphicsState = await readGraphicsState(deviceId, { useRtss: rtssApply?.handled !== false }); } catch { /* degraded */ }
+        try { graphicsState = await readGraphicsState(resolvedDeviceId, { useRtss: rtssApply?.handled !== false }); } catch { /* degraded */ }
         const perControl = { ...(driverOut?.perControl ?? {}) };
         if (rtssApply?.handled === true) {
           if (rtssRollback.ok === true && driverOut?.ok === true) {
@@ -3473,8 +3619,11 @@ export function createIpcHandlers({
         const controlsOk = Object.values(perControl).every((result) => result?.ok !== false);
         return { ok: driverOut?.ok === true && rtssRollback.ok === true && controlsOk, perControl, graphicsState };
         };
+        const rtssOnlyBaseCap = typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+          && Object.keys(payload).length === 1 && Object.prototype.hasOwnProperty.call(payload, 'frameLimit')
+          && arcSleepController?.getSnapshot?.().activeLimiter === 'rtss';
         return arcSleepController?.withTransaction
-          ? arcSleepController.withTransaction(apply)
+          ? arcSleepController.withTransaction(apply, { requiredSource: rtssOnlyBaseCap ? 'rtss' : null })
           : apply();
       },
 
@@ -3843,11 +3992,14 @@ export function createIpcHandlers({
       'waiver-get': async (deviceId) => {
         assertValidDeviceId(deviceId);
         const caps = await backend.getCapabilities(deviceId);
-        return { accepted: caps.waiverAccepted === true };
+        if (caps?.overclockingSupported === false) return { accepted: false, required: false };
+        return { accepted: caps.waiverAccepted === true, required: true };
       },
 
       'waiver-accept': async (deviceId) => {
         assertValidDeviceId(deviceId);
+        const caps = await backend.getCapabilities(deviceId);
+        if (caps?.overclockingSupported === false) return { accepted: false, required: false };
         // Product path: explicit user acceptance ONLY. Never auto-accept.
         // M2C-C: the driver-side waiver write needs elevation like any other
         // OC write - the non-elevated app delegates to the elevated worker.
@@ -3864,7 +4016,7 @@ export function createIpcHandlers({
         }
         const settings = await store.loadSettings();
         await store.saveSettings({ ...settings, waiverAccepted: true });
-        return { accepted: true };
+        return { accepted: true, required: true };
       },
 
       'telemetry-start': async (deviceId, options = {}) => {
@@ -4275,14 +4427,30 @@ export function createIpcHandlers({
         return { kind: buildKind };
       },
 
-      // M52: clear the dedicated disposable user-data cache and restart.
-      // The lifecycle operation is injected by main.js; tests and default
-      // handlers use its honest no-op result.
+      // Maintenance actions are restricted to an enum at the main-process
+      // boundary. The operation is injected by main.js; mock/default handlers
+      // retain an honest no-op result.
+      'app:maintenance-restart': async (action, ...rest) => {
+        if (rest.length !== 0 || !['clear-cache', 'reset', 'reset-with-drivers'].includes(action)) {
+          throw new Error('app:maintenance-restart requires a valid maintenance action');
+        }
+        const out = await appLifecycle.maintenanceAndRestart?.(action)
+          ?? (action === 'clear-cache' ? await appLifecycle.clearCacheAndRestart() : { ok: false, restarting: false });
+        if (!out || typeof out.ok !== 'boolean' || typeof out.restarting !== 'boolean') {
+          throw new Error('app lifecycle returned an invalid maintenance result');
+        }
+        return out;
+      },
+
+      // M52 compatibility: callers of the original clear-cache action keep
+      // the same no-argument contract and now delegate to maintenance.
       'app:clear-cache-restart': async (...args) => {
         assertNoPayload(args, 'app:clear-cache-restart');
-        const out = await appLifecycle.clearCacheAndRestart();
+        const out = appLifecycle.maintenanceAndRestart
+          ? await appLifecycle.maintenanceAndRestart('clear-cache')
+          : await appLifecycle.clearCacheAndRestart();
         if (!out || typeof out.ok !== 'boolean' || typeof out.restarting !== 'boolean') {
-          throw new Error('app lifecycle returned an invalid clear-cache result');
+          throw new Error('app lifecycle returned an invalid maintenance result');
         }
         return out;
       },
@@ -4328,24 +4496,30 @@ export function createIpcHandlers({
         return checkForUpdates({ buildKind });
       },
 
-      // M25: download an update asset to temp. Returns { ok, path } or
-      // throws on failure. The renderer sends the assetUrl from the check.
+      // M25: download an update asset and return only its opaque main-process receipt.
       'update:download': async (assetUrl) => {
         if (typeof assetUrl !== 'string' || !assetUrl.startsWith('https://')) {
           throw new Error('invalid asset URL');
         }
-        const { downloadUpdate } = await import('./auto-update.js');
-        const filePath = await downloadUpdate(assetUrl, undefined, buildKind);
-        return { ok: true, path: filePath };
+        const downloadUpdate = updateDownloadOperation
+          ?? (await import('./auto-update.js')).downloadUpdate;
+        const receipt = await downloadUpdate(assetUrl, (progress) => {
+          if (!progress || typeof progress !== 'object') return;
+          emit('update:download-progress', {
+            downloadedBytes: progress.downloadedBytes,
+            totalBytes: progress.totalBytes,
+            percent: Number.isFinite(progress.percent) ? Math.max(0, Math.min(100, Math.round(progress.percent))) : null,
+          });
+        }, buildKind);
+        return { ok: true, token: receipt.token };
       },
 
       // M25: install a downloaded update and quit the app. The main process
-      // validates the temp path again before either launching the installer
-      // or starting the portable replacement handoff.
-      'update:install': async (filePath) => {
-        if (typeof filePath !== 'string') throw new Error('missing file path');
+      // validates the main-owned receipt and file digest before handoff.
+      'update:install': async (token) => {
+        if (typeof token !== 'string') throw new Error('missing update receipt');
         const { installUpdate } = await import('./auto-update.js');
-        await installUpdate(filePath, { buildKind, portableWrapperPath });
+        await installUpdate(token, { buildKind, portableWrapperPath });
       },
 
       // FPS/frametime via native RTSS shared memory. The default adapter is
@@ -5551,7 +5725,7 @@ export function createIpcHandlers({
           startupError = err;
           // Legacy Run registration keeps the historical best-effort save;
           // packaged task registration reports an explicit UAC failure when
-          // startup intent changes; unrelated settings saves must still
+          // startup intent is patched (including a same-value retry); unrelated saves must still
           // reach their runtime reactions even if task registration fails.
         }
         if (patch.arcSleep !== undefined && typeof store.saveSettingsWithArcSleep === 'function') {
@@ -5568,18 +5742,9 @@ export function createIpcHandlers({
             console.log(`[recording] memory-saving setting reaction failed: ${err.message}`);
           }
         }
-        const startupIntentChanged = ['startWithWindows', 'ocOnBoot', 'activeProfileId', 'activeProfileIds']
-          .some((key) => {
-            if (patch[key] === undefined) return false;
-            if (key !== 'activeProfileIds') return next[key] !== cur[key];
-            const before = cur.activeProfileIds ?? {};
-            const after = next.activeProfileIds ?? {};
-            const beforeKeys = Object.keys(before);
-            const afterKeys = Object.keys(after);
-            return beforeKeys.length !== afterKeys.length
-              || beforeKeys.some((id) => before[id] !== after[id]);
-          });
-        if (startupError && startup.registrationMode === 'task' && startupIntentChanged) throw startupError;
+        const hasExplicitStartupIntent = ['startWithWindows', 'ocOnBoot', 'activeProfileId', 'activeProfileIds']
+          .some((key) => patch[key] !== undefined);
+        if (startupError && startup.registrationMode === 'task' && hasExplicitStartupIntent) throw startupError;
         // M5: the overlay reaction (the rebuildTray pattern) - when any
         // overlay field the PATCH touched actually changed, the injected
         // callback gets the CHANGED fields so main.js applies the new
