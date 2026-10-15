@@ -208,6 +208,31 @@ export function createBootSetup(deps = {}) {
   // Exactly ONE elevated spawn per launch (a declined UAC must never
   // re-prompt in the same session).
   let spawned = false;
+  let removeOperation = null;
+
+  const taskExistsForRemoval = async () => {
+    try {
+      await exec('schtasks', ['/query', '/tn', BOOT_TASK_NAME], { windowsHide: true, timeout: timeoutMs });
+      return true;
+    } catch (error) {
+      const message = `${error?.stderr ?? ''} ${error?.message ?? ''}`;
+      if (/cannot find the file specified|does not exist|not found/i.test(message)) return false;
+      throw new Error(`boot-setup: could not verify ${BOOT_TASK_NAME}: ${message.trim() || 'query failed'}`);
+    }
+  };
+
+  const runElevatedCommand = async (command) => {
+    const encoded = encodePowerShellCommand(command);
+    const escapedPowerShell = powershellExe.replace(/'/g, "''");
+    const script = `$p = Start-Process -FilePath '${escapedPowerShell}' -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','${encoded}' -Verb RunAs -Wait -PassThru -ErrorAction Stop; if ($null -eq $p) { exit 1 }; exit $p.ExitCode`;
+    return new Promise((resolve) => {
+      let child;
+      try { child = spawn(powershellExe, ['-NoProfile', '-Command', script], { windowsHide: true, stdio: 'ignore' }); }
+      catch { resolve(null); return; }
+      child.on('exit', (code) => resolve(code));
+      child.on('error', () => resolve(null));
+    });
+  };
 
   return {
     /**
@@ -264,6 +289,22 @@ export function createBootSetup(deps = {}) {
       } finally {
         // The latch stays set - one spawn per launch by design.
       }
+    },
+
+    /** Remove only ArcPowerBootApply; an absent task is an idempotent success. */
+    remove() {
+      if (!removeOperation) {
+        removeOperation = (async () => {
+          if (!await taskExistsForRemoval()) return { ok: true, removed: false };
+          const exitCode = await runElevatedCommand(`schtasks /delete /tn ${BOOT_TASK_NAME} /f`);
+          if (exitCode !== 0) throw new Error('boot-setup: administrator approval is required to remove ArcPowerBootApply');
+          if (await taskExistsForRemoval()) throw new Error('boot-setup: ArcPowerBootApply still exists after removal');
+          return { ok: true, removed: true };
+          })().finally(() => { removeOperation = null; });
+      }
+      // A caller timeout does not start a second elevated operation. A retry
+      // observes and waits for this same in-flight removal before proceeding.
+      return removeOperation;
     },
   };
 }

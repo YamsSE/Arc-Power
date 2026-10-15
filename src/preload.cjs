@@ -110,6 +110,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   appBuildInfo: () => ipcRenderer.invoke('app:build-info'),
   // M52: clear only ArcPowerCache, then relaunch with --clear-cache.
   appClearCacheAndRestart: () => ipcRenderer.invoke('app:clear-cache-restart'),
+  appMaintenanceAndRestart: (action) => ipcRenderer.invoke('app:maintenance-restart', action),
   // M4N (A.1): the window-path boot apply's outcome ({ ok, detail, at } or
   // null when no boot apply ran this session) - the dashboard OC Status row
   // reads it at boot.

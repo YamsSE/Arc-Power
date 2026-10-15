@@ -206,6 +206,18 @@ export function updateFanReadout(container: HTMLElement, ctx: PageContext): void
   const temp = sample?.tempC;
   const maxRpm = ctx.store.get().caps?.fan.maxRpm ?? -1;
   if (readout) readout.textContent = rpm !== undefined ? `${Math.round(rpm)} RPM` : '-';
+  // The driver reports RPM rather than a fan percentage. Show the marker's
+  // RPM/max-RPM position as an explicitly approximate percentage, matching
+  // the vertical position used by rpmMarkerY (never the configured curve).
+  marker.style.pointerEvents = 'auto';
+  if (rpm !== undefined && Number.isFinite(rpm) && Number.isFinite(maxRpm) && maxRpm > 0) {
+    const percent = Math.round(100 - rpmMarkerY(rpm, maxRpm));
+    marker.title = `Current fan speed: ~${percent}% (${Math.round(rpm)} RPM)`;
+  } else if (rpm !== undefined && Number.isFinite(rpm)) {
+    marker.title = `Current fan speed: ${Math.round(rpm)} RPM (percentage unavailable)`;
+  } else {
+    marker.title = 'Current fan speed: unavailable';
+  }
   if (rpm !== undefined && temp !== undefined && maxRpm > 0) {
     const card = container.querySelector<HTMLElement>('.fan-card');
     const domain = card

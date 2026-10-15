@@ -246,6 +246,8 @@ export interface ArcPowerApi {
   appBuildInfo(): Promise<{ kind: 'installed' | 'portable' | 'dev' }>;
   /** M52: clear disposable cache and request a graceful application restart. */
   appClearCacheAndRestart(): Promise<{ ok: boolean; restarting: boolean }>;
+  /** Clear Arc Power caches or reset saved state, optionally deleting downloaded drivers, and restart. */
+  appMaintenanceAndRestart(action: 'clear-cache' | 'reset' | 'reset-with-drivers'): Promise<{ ok: boolean; restarting: boolean }>;
   /** M4N (A.1): the window-path boot apply's outcome record ({ ok, detail,
    *  at }) or null when no boot apply ran this session. M16: the dashboard
    *  OC status row no longer displays the record - the row's stock-state

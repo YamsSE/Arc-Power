@@ -1237,7 +1237,7 @@ export async function resolveBootDeviceId(backend, store) {
  *   monitorLog?: { append: (sample: object) => Promise<{ ok: boolean, error?: string }> },  // M4-D2: log-to-file writer (monitor-YYYYMMDD.txt)
  *   rebuildTray?: () => Promise<unknown>,
  *   appVersion?: string,
- *   appLifecycle?: { clearCacheAndRestart: () => Promise<{ ok: boolean, restarting: boolean }> },
+ *   appLifecycle?: { maintenanceAndRestart?: (action: 'clear-cache'|'reset'|'reset-with-drivers') => Promise<{ ok: boolean, restarting: boolean }>, clearCacheAndRestart: () => Promise<{ ok: boolean, restarting: boolean }> },
  *   buildKind?: 'installed' | 'portable' | 'dev' | 'unknown',  // M4-E: app:build-info
  *   portableWrapperPath?: string | null,  // M98: validated portable wrapper target shared by classification and replacement
  *   startupUpdateCheck?: (options: { buildKind: string, intent: 'startup' | 'manual' }) => Promise<object>,
@@ -1388,7 +1388,7 @@ export function createIpcHandlers({
   rebuildTray = async () => {},
   appVersion = PKG_VERSION,
   // M52: injected app lifecycle seam; default/test action does not exit.
-  appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) },
+  appLifecycle = { maintenanceAndRestart: async () => ({ ok: false, restarting: false }), clearCacheAndRestart: async () => ({ ok: false, restarting: false }) },
   // M4-E: the distribution kind for the app:build-info channel ('dev' in
   // tests; main.js injects 'installed' | 'portable' | 'dev').
   buildKind = 'dev',
@@ -3011,7 +3011,7 @@ export function createIpcHandlers({
     return decorateGraphicsState(baseState, rtssState);
   };
 
-  const readRtssGlobalGraphicsState = async (deviceId, { rtssTimeoutMs = 0, requireDeviceState = false } = {}) => {
+  const readRtssGlobalGraphicsState = async (deviceId, { rtssTimeoutMs = 1200, requireDeviceState = false } = {}) => {
     let baseState = null;
     const gpuRead = (async () => {
       const resolvedDeviceId = await selectedGraphicsDeviceId(deviceId);
@@ -3063,10 +3063,10 @@ export function createIpcHandlers({
         value: limit > 0 ? limit : GRAPHICS_RTSS_FRAME_LIMIT_RANGE.default,
       });
     }
-    return decorateRtssFrameLimitState(baseState, {
-      enabled: false,
-      value: GRAPHICS_RTSS_FRAME_LIMIT_RANGE.default,
-    });
+    // A failed read does not establish that the limiter is disabled. Apply
+    // results must retain their outcome even when read-back is unavailable.
+    if (requireDeviceState) return null;
+    throw new Error('FPS limiter status is temporarily unavailable; retry the check.');
   };
 
   const applyRtssFrameLimit = async (frameLimit, executablePath = null, removeProfile = false, rollbackToken = null) => {
@@ -4427,14 +4427,30 @@ export function createIpcHandlers({
         return { kind: buildKind };
       },
 
-      // M52: clear the dedicated disposable user-data cache and restart.
-      // The lifecycle operation is injected by main.js; tests and default
-      // handlers use its honest no-op result.
+      // Maintenance actions are restricted to an enum at the main-process
+      // boundary. The operation is injected by main.js; mock/default handlers
+      // retain an honest no-op result.
+      'app:maintenance-restart': async (action, ...rest) => {
+        if (rest.length !== 0 || !['clear-cache', 'reset', 'reset-with-drivers'].includes(action)) {
+          throw new Error('app:maintenance-restart requires a valid maintenance action');
+        }
+        const out = await appLifecycle.maintenanceAndRestart?.(action)
+          ?? (action === 'clear-cache' ? await appLifecycle.clearCacheAndRestart() : { ok: false, restarting: false });
+        if (!out || typeof out.ok !== 'boolean' || typeof out.restarting !== 'boolean') {
+          throw new Error('app lifecycle returned an invalid maintenance result');
+        }
+        return out;
+      },
+
+      // M52 compatibility: callers of the original clear-cache action keep
+      // the same no-argument contract and now delegate to maintenance.
       'app:clear-cache-restart': async (...args) => {
         assertNoPayload(args, 'app:clear-cache-restart');
-        const out = await appLifecycle.clearCacheAndRestart();
+        const out = appLifecycle.maintenanceAndRestart
+          ? await appLifecycle.maintenanceAndRestart('clear-cache')
+          : await appLifecycle.clearCacheAndRestart();
         if (!out || typeof out.ok !== 'boolean' || typeof out.restarting !== 'boolean') {
-          throw new Error('app lifecycle returned an invalid clear-cache result');
+          throw new Error('app lifecycle returned an invalid maintenance result');
         }
         return out;
       },

@@ -2,24 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-test('installer leaves shared cache preparation to the installed app startup', async () => {
+test('installer and startup prepare caches while retaining the shared native lock', async () => {
   const [installer, main] = await Promise.all([
     readFile(new URL('../src/main/installer.js', import.meta.url), 'utf8'),
     readFile(new URL('../src/main/main.js', import.meta.url), 'utf8'),
   ]);
 
   const installStart = installer.indexOf('async function installArcPower(');
-  const installEnd = installer.indexOf('\nasync function ', installStart + 1);
+  const installEnd = installer.indexOf('\nexport function waitForProcessExit', installStart + 1);
   assert.notEqual(installStart, -1, 'installer install function exists');
   assert.notEqual(installEnd, -1, 'installer install function has a clear boundary');
   const installImplementation = installer.slice(installStart, installEnd);
 
-  assert.doesNotMatch(installer, /import\s*\{[^}]*prepareArcPowerCacheSync[^}]*\}\s*from\s*['"]\.\/cache-lifecycle\.js['"]/);
-  assert.doesNotMatch(installImplementation, /prepareArcPowerCacheSync|resetCacheDirectorySync/);
+  assert.match(installImplementation, /withInstallerProductLock\(options/);
+  assert.match(installImplementation, /prepareArcPowerCacheSync/);
+  assert.match(installImplementation, /activeLockPath/);
 
   const startupCacheGate = main.indexOf('// The version-aware cache gate must run before Electron selects userData.');
   const startupInstanceLock = main.lastIndexOf('requestSingleInstanceLock()', startupCacheGate);
-  const startupCachePreparation = main.indexOf('prepareArcPowerCacheSync(app.getPath(\'appData\'), app.getVersion(), {', startupCacheGate);
+  const startupCachePreparation = main.indexOf('prepareArcPowerCacheSync(appDataPath, app.getVersion(), {', startupCacheGate);
   const startupUserDataSelection = main.indexOf('app.setPath(\'userData\', cachePath);', startupCachePreparation);
   assert.ok(startupCacheGate !== -1, 'startup documents the version-aware cache gate');
   assert.ok(startupInstanceLock !== -1 && startupInstanceLock < startupCachePreparation,

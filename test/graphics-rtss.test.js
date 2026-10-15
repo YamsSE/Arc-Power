@@ -736,6 +736,87 @@ test('Arc Sleep Base FPS Cap read reports transient failure when RTSS state is a
   await assert.rejects(handlers['arc-sleep-base-cap-get'](0), /temporarily unavailable/);
 });
 
+test('Arc Sleep Base FPS Cap read rejects an invalid saved RTSS cap instead of reporting Off', async () => {
+  const handlers = createGraphicsHandlers({
+    rtssFrameLimiter: { async getFrameLimit() { return { ok: false, available: false }; } },
+    arcSleepController: {
+      getSnapshot() { return { activeLimiter: 'rtss', baseFrameLimit: { enabled: false, value: NaN } }; },
+    },
+  });
+
+  await assert.rejects(handlers['arc-sleep-base-cap-get'](0), /temporarily unavailable/);
+});
+
+test('Arc Sleep Base FPS Cap read keeps the saved base over a live temporary RTSS cap with a stale GPU', async () => {
+  const handlers = createGraphicsHandlers({
+    backend: { async getDeviceTarget() { throw new Error('stale GPU target'); } },
+    rtssFrameLimiter: {
+      async getFrameLimit() { return { ok: true, limit: 30, limiterEnabled: true }; },
+    },
+    arcSleepController: {
+      getSnapshot() { return { activeLimiter: 'rtss', baseFrameLimit: { enabled: true, value: 144 } }; },
+    },
+  });
+
+  const state = await handlers['arc-sleep-base-cap-get'](0);
+
+  assert.equal(state.frameLimitSource, 'rtss');
+  assert.deepEqual(state.values.frameLimit, { enabled: true, value: 144 });
+});
+
+for (const applyOk of [true, false]) {
+  for (const gpuAvailable of [true, false]) {
+    test(`RTSS Base Cap ${applyOk ? 'successful' : 'failed'} apply preserves its outcome when RTSS read-back stalls and GPU state is ${gpuAvailable ? 'available' : 'unavailable'}`, { timeout: 3000 }, async () => {
+      let driverCalls = 0;
+      let rollbackCalls = 0;
+      let readCalls = 0;
+      const handlers = createGraphicsHandlers({
+        ...(gpuAvailable ? {} : {
+          backend: { async getDeviceTarget() { throw new Error('stale GPU target'); } },
+        }),
+        rtssFrameLimiter: {
+          async getFrameLimit() {
+            readCalls += 1;
+            return new Promise(() => {});
+          },
+        },
+        applyRunner: { async graphicsApplyIsolated() { driverCalls += 1; throw new Error('unexpected driver apply'); } },
+        arcSleepController: {
+          getSnapshot() { return { activeLimiter: 'rtss', baseFrameLimit: null }; },
+          async withTransaction(work, options) {
+            assert.equal(options.requiredSource, 'rtss');
+            return work({
+              requiredSource: options.requiredSource,
+              async setBaseFrameLimit(value, request) {
+                assert.deepEqual(value, { enabled: true, value: 144 });
+                assert.equal(request.requiredSource, 'rtss');
+                return {
+                  handled: applyOk,
+                  ok: applyOk,
+                  errorCode: 'rtss-write-failed',
+                  error: 'RTSS refused the FPS limit.',
+                  async rollback() { rollbackCalls += 1; return { ok: true }; },
+                };
+              },
+            });
+          },
+        },
+      });
+
+      const result = await handlers['graphics:apply'](0, { frameLimit: { enabled: true, value: 144 } });
+
+      assert.equal(result.ok, applyOk);
+      assert.deepEqual(result.perControl.frameLimit, applyOk
+        ? { ok: true, source: 'rtss' }
+        : { ok: false, errorCode: 'rtss-write-failed', message: 'RTSS refused the FPS limit.' });
+      assert.equal(result.graphicsState, null, 'unavailable limiter read-back must not fabricate an Off cap');
+      assert.equal(readCalls, 1);
+      assert.equal(driverCalls, 0);
+      assert.equal(rollbackCalls, applyOk ? 0 : 1);
+    });
+  }
+}
+
 test('IGCL write failure rolls back the Graphics Base Cap and clears its temporary journal', async () => {
   const device = {
     id: 0,
