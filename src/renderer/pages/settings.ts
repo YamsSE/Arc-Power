@@ -100,6 +100,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let themeSelectionGeneration = 0;
   let committedTheme: Theme;
   let bootState: StartupGetState | null = null;
+  let startupCheckPending = false;
   let maintenancePending = false;
   try {
     // The persisted Settings-tab fields ride in the profiles envelope
@@ -131,9 +132,13 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   } catch { /* the cards below degrade to the persisted state */ }
 
   const refresh = async (): Promise<void> => {
+    if (startupCheckPending) return;
+    startupCheckPending = true;
+    render();
     try {
       bootState = await api.startupGet();
-    } catch { /* keep the last known startup state */ }
+    } catch { bootState = null; /* a failed recheck invalidates the prior state */ }
+    startupCheckPending = false;
     render();
   };
 
@@ -146,24 +151,41 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const valueExists = startWithWindows || applyOnBoot;
     const packagedStartup = s.buildKind === 'installed' || s.buildKind === 'portable';
     const taskStartup = bootState?.registration === 'task' || packagedStartup;
+    const startupVerified = bootState !== null;
+    const startupCheckbox = el('input', {
+      type: 'checkbox',
+      class: 'settings-checkbox',
+      dataset: { setting: 'startWithWindows' },
+      checked: valueExists,
+      disabled: !startupVerified || startupCheckPending,
+      onchange: (ev: Event) => void onStartWithWindowsToggle((ev.target as HTMLInputElement).checked),
+    });
+    startupCheckbox.indeterminate = !startupVerified;
 
     const startWithCard = el('section', { class: 'card settings-card settings-startup-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Start with Windows' }),
       el('div', { class: 'settings-row' }, [
         el('label', { class: 'boot-toggle' }, [
-          el('input', {
-            type: 'checkbox',
-            class: 'settings-checkbox',
-            dataset: { setting: 'startWithWindows' },
-            checked: valueExists,
-            onchange: (ev: Event) => void onStartWithWindowsToggle((ev.target as HTMLInputElement).checked),
-          }),
+          startupCheckbox,
           el('span', { text: 'Launch Arc Power when Windows starts' }),
         ]),
       ]),
       // Honest current-state line: packaged builds report the verified task;
       // dev/mock retains the Run adapter wording.
-      valueExists
+      !startupVerified
+        ? el('div', { class: 'settings-startup-unknown' }, [
+          el('p', { class: 'card-note settings-state', role: 'status', text: startupCheckPending
+            ? 'Checking the Windows startup registration…'
+            : 'Could not verify the Windows startup registration. Its current state is unknown.' }),
+          el('button', {
+            class: 'btn btn-ghost settings-startup-retry',
+            type: 'button',
+            disabled: startupCheckPending,
+            text: startupCheckPending ? 'Checking…' : 'Retry',
+            onclick: () => void refresh(),
+          }),
+        ])
+        : valueExists
         ? el('p', { class: 'card-note settings-state', text: taskStartup ? 'Active - an administrator startup task launches Arc Power at logon.' : 'Active - Arc Power starts at logon.' })
         : el('p', { class: 'card-note settings-state', text: taskStartup ? 'Not active - enable this setting to create the one-time administrator startup task.' : 'Not active - the app starts manually.' }),
     ]);
@@ -265,12 +287,16 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
     const maintenanceCard = el('section', { class: 'card settings-card maintenance-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Maintenance' }),
-      el('p', { class: 'card-note', text: 'Clear temporary files from all Arc Power cache locations and restart. Reset removes saved preferences and profiles but keeps downloaded drivers. Reset and delete drivers also removes downloaded driver installers. Your clip library, recording folder, and recorded files are kept with either reset.' }),
+      el('div', { class: 'card-note maintenance-descriptions' }, [
+        el('p', { text: 'Clear Cache: Removes Cache and Restarts Arc Power.' }),
+        el('p', { text: 'Stock Reset: Clears Cache and Deletes Settings and Presets.' }),
+        el('p', { text: 'Full Reset: Clears Cache, Deletes Settings, Presets and Downloaded Drivers.' }),
+      ]),
       el('div', { class: 'settings-row maintenance-row' }, [
         ...([
           { action: 'clear-cache' as const, label: 'Clear Cache' },
-          { action: 'reset' as const, label: 'Reset Arc Power' },
-          { action: 'reset-with-drivers' as const, label: 'Reset Arc Power and delete Downloaded Drivers' },
+          { action: 'reset' as const, label: 'Stock Reset' },
+          { action: 'reset-with-drivers' as const, label: 'Full Reset' },
         ].map(({ action, label }) => el('button', {
           type: 'button',
           class: 'maintenance-action',
@@ -438,9 +464,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     if (maintenancePending) return;
     if (action !== 'clear-cache') {
       const message = action === 'reset'
-        ? 'Reset Arc Power will delete saved preferences and profiles. Downloaded driver installers will be kept. Your clip library, recording folder, and recorded files will be kept. Continue?'
-        : 'Reset Arc Power and delete Downloaded Drivers will delete saved preferences, profiles, and downloaded driver installers. Your clip library, recording folder, and recorded files will be kept. Continue?';
-      if (!await showMaintenanceConfirm(action === 'reset' ? 'Reset Arc Power' : 'Reset Arc Power and delete Downloaded Drivers', message)) return;
+        ? 'Stock Reset clears the cache and deletes settings and presets. Downloaded drivers and your clip library, recording folder, and recorded files will be kept. Continue?'
+        : 'Full Reset clears the cache and deletes settings, presets, and downloaded drivers. Your clip library, recording folder, and recorded files will be kept. Continue?';
+      if (!await showMaintenanceConfirm(action === 'reset' ? 'Stock Reset' : 'Full Reset', message)) return;
     }
     maintenancePending = true;
     const buttons = root.querySelectorAll<HTMLButtonElement>('.maintenance-action');

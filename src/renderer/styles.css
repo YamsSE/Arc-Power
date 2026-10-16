@@ -2067,7 +2067,7 @@ input[type="number"] {
 .fan-yaxis-tick-edge-top { transform: translateY(0); }
 .fan-yaxis-tick-edge-bottom { transform: translateY(-100%); }
 
-.fan-dots { position: absolute; inset: 0; }
+.fan-dots { position: absolute; inset: 0; pointer-events: none; }
 
 .fan-dot {
   position: absolute;
@@ -2079,6 +2079,7 @@ input[type="number"] {
   border: 2px solid var(--accent);
   cursor: grab;
   touch-action: none;
+  pointer-events: auto;
 }
 .fan-dot:hover { background: var(--accent-soft); }
 .fan-dot-selected { background: var(--accent); }
@@ -2176,9 +2177,33 @@ input[type="number"] {
   border-radius: 50%;
   background: var(--warn);
   border: 2px solid #fff;
-  pointer-events: none;
+  pointer-events: auto;
+  z-index: 1;
   box-shadow: 0 0 8px rgba(251, 191, 36, 0.7);
 }
+.fan-marker-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  padding: 6px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font: 11px var(--mono);
+  white-space: nowrap;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+.fan-marker:hover .fan-marker-tooltip,
+.fan-marker:focus-visible .fan-marker-tooltip { visibility: visible; opacity: 1; }
+.fan-marker-tooltip-below .fan-marker-tooltip { top: calc(100% + 8px); bottom: auto; }
+.fan-marker-tooltip-left .fan-marker-tooltip { left: 6px; transform: none; }
+.fan-marker-tooltip-right .fan-marker-tooltip { left: auto; right: 6px; transform: none; }
 
 .fan-axis {
   display: flex;
@@ -4394,3 +4419,44 @@ input[type="number"] {
 .sidebar-icon-arc-sleep { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M20 15.2A8.5 8.5 0 0 1 8.8 4 9 9 0 1 0 20 15.2z'/%3E%3C/svg%3E" ); }
 @media (max-width: 900px) { .arc-sleep-panels { grid-template-columns: 1fr; } .arc-sleep-base-cap { grid-column: auto; } .arc-sleep-hero { padding: 20px 22px; } .arc-sleep-footer { align-items: flex-start; flex-direction: column; gap: 6px; } }
 @media (max-width: 560px) { .arc-sleep-page { gap: 12px; } .arc-sleep-hero { align-items: flex-start; flex-direction: column; padding: 18px; } .arc-sleep-runtime, .arc-sleep-panel { padding: 16px; } .arc-sleep-summary { gap: 12px; } .arc-sleep-summary strong { font-size: 16px; } .arc-sleep-cap-heading { align-items: flex-start; flex-direction: column; gap: 12px; } .arc-sleep-cap-enable { align-self: flex-end; } .arc-sleep-cap-bottom { align-items: flex-start; flex-direction: column; } .arc-sleep-base-cap-actions { align-self: flex-end; } }
+
+/* Settings uses Arc Sleep's clear hero, spacious panels and responsive grid. */
+.settings-root {
+  width: min(1120px, 100%);
+  max-width: 1120px;
+  margin: 0 auto;
+  gap: 14px;
+}
+.settings-root > .settings-page-hero {
+  min-height: 116px;
+  padding: 26px 28px;
+  border-color: color-mix(in srgb, #5ba1ff 28%, var(--border));
+  background: linear-gradient(115deg, color-mix(in srgb, #296edc 17%, var(--bg-elev)), color-mix(in srgb, #459d8b 7%, var(--bg-inset)));
+}
+.settings-root > .settings-page-hero::after { border-color: color-mix(in srgb, #5ba1ff 20%, transparent); }
+.settings-root > .settings-toolbar { width: 100%; justify-self: stretch; justify-content: space-between; padding: 0 2px; }
+.settings-root > .settings-card { min-height: 100%; }
+.settings-root > .theme-card,
+.settings-root > .maintenance-card { grid-column: 1 / -1; }
+.settings-root > .settings-card { border-radius: 14px; }
+.settings-root .settings-card .card-title { font-size: 15px; }
+.settings-root .settings-card > .card-note { color: var(--text-muted); }
+.settings-root .maintenance-descriptions { display: grid; gap: 5px; max-width: none; margin-top: 0; }
+.settings-root .maintenance-descriptions p { margin: 0; line-height: 1.45; }
+.settings-root .maintenance-row { gap: 9px; }
+.settings-root .maintenance-action { min-height: 36px; padding: 7px 14px; }
+.settings-startup-unknown { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.settings-startup-unknown .settings-state { margin: 0; }
+.settings-startup-retry { min-height: 30px; padding: 5px 12px; }
+@media (max-width: 760px) {
+  .settings-root { grid-template-columns: 1fr; gap: 12px; }
+  .settings-root > .settings-card,
+  .settings-root > .theme-card,
+  .settings-root > .maintenance-card { grid-column: 1; }
+  .settings-root > .settings-page-hero { padding: 20px 22px; }
+}
+@media (max-width: 520px) {
+  .settings-root > .settings-page-hero { padding: 18px; }
+  .settings-root .settings-card { padding: 16px; }
+  .settings-root .maintenance-row { align-items: stretch; flex-direction: column; }
+}

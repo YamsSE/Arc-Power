@@ -111,16 +111,50 @@ export function scalingMethodOptionsForView(display: Display | null | undefined,
   }
   if (view === 'retro-scaling') {
     const supported = display?.supportedOptions.scalingMethods ?? [];
+    // A capability bitmask alone is not enough to safely describe a current
+    // Retro selection. Keep the row read-only until GET returns a known mode.
+    const current = display?.scalingMethod?.value?.method;
+    if (display?.scalingMethod?.controllable !== true || !current || !supported.includes(current)) return [];
     return DISPLAY_RETRO_SCALING_METHOD_OPTIONS.filter((method) => supported.includes(method));
   }
-  return [...DISPLAY_DISPLAY_SCALING_METHOD_OPTIONS];
+  const supported = display?.supportedOptions.scalingModes ?? [];
+  return DISPLAY_DISPLAY_SCALING_METHOD_OPTIONS.filter((method) => supported.includes(method === 'custom' ? 'custom' : 'identity'));
+}
+
+/** Only offer IGS scaling modes that have a matching driver capability and a
+ * complete readback contract for the distinct Retro surface. */
+export function scalingModeViewOptionsForDisplay(display: Display | null | undefined): DisplayScalingView[] {
+  const supported = display?.supportedOptions.scalingModes ?? [];
+  const options: DisplayScalingView[] = [];
+  if (DISPLAY_GPU_SCALING_METHOD_OPTIONS.some((mode) => supported.includes(mode))) options.push('gpu-scaling');
+  if (supported.includes('identity') || supported.includes('custom')) options.push('display-scaling');
+  if (supported.includes('identity') && scalingMethodOptionsForView(display, 'retro-scaling').length > 0) options.push('retro-scaling');
+  return options;
+}
+
+/** Windows modes exposed by the existing source-resolution capability. The
+ * UI intentionally excludes generated presets and modes that have not yet
+ * been enumerated by Windows. */
+export function superResolutionSourceModesForDisplay(display: Display | null | undefined) {
+  const capability = display?.superResolution;
+  const native = capability?.nativeResolution;
+  if (!display || display.identityVerified !== true || !display.displayKey
+    || capability?.supported !== true || capability.controllable !== true || !native
+    || !Number.isFinite(native.width) || native.width <= 0 || !Number.isFinite(native.height) || native.height <= 0
+    || !capability.currentSourceResolution || !Number.isFinite(capability.currentSourceRefreshRate)
+    || (capability.currentSourceRefreshRate ?? 0) <= 0 || !Array.isArray(capability.modes)) return [];
+  return capability.modes.filter((mode) => Number.isFinite(mode.width) && mode.width > 0
+    && Number.isFinite(mode.height) && mode.height > 0
+    && Number.isFinite(mode.refreshRate) && mode.refreshRate > 0
+    && mode.width > native.width && mode.height > native.height);
 }
 
 export function scalingMethodViewOf(display: Display | null | undefined): string {
   const view = scalingViewOf(display);
   if (view === 'retro-scaling') {
     const method = display?.scalingMethod?.value?.method;
-    return method && scalingMethodOptionsForView(display, view).includes(method) ? method : scalingMethodOptionsForView(display, view)[0];
+    const options = scalingMethodOptionsForView(display, view);
+    return method && options.includes(method) ? method : options[0] ?? '';
   }
   const raw = effectiveScalingModeOf(display);
   if (view === 'gpu-scaling') {
@@ -132,9 +166,11 @@ export function scalingMethodViewOf(display: Display | null | undefined): string
     const preferred = display?.scalingMode === 'identity' && isGpuScalingMode(display.preferredScalingMode)
       ? display.preferredScalingMode
       : raw;
-    return preferred && options.includes(preferred) ? preferred : options[0];
+    return preferred && options.includes(preferred) ? preferred : options[0] ?? '';
   }
-  return raw === 'custom' ? 'custom' : 'maintain-display-scaling';
+  const options = scalingMethodOptionsForView(display, view);
+  const preferred = raw === 'custom' ? 'custom' : 'maintain-display-scaling';
+  return options.includes(preferred) ? preferred : options[0] ?? '';
 }
 
 /**
@@ -181,9 +217,9 @@ export function isDisplayControlSupported(display: Display | null | undefined, c
   if (!display || display.identityVerified !== true || typeof display.displayKey !== 'string' || display.displayKey.length === 0) return false;
   switch (control) {
     case 'quantizationRange': return display.supportedOptions.quantizationRanges.length > 0;
-    case 'scalingMode': return display.supportedOptions.scalingModes.length > 0;
-    case 'displayScalingMethod': return display.supportedOptions.scalingModes.includes('custom');
-    case 'scalingMethod': return display.scalingMethod?.controllable === true && display.supportedOptions.scalingMethods.length > 0;
+    case 'scalingMode': return scalingModeViewOptionsForDisplay(display).length > 0;
+    case 'displayScalingMethod': return scalingMethodOptionsForView(display, 'display-scaling').length > 0;
+    case 'scalingMethod': return scalingMethodOptionsForView(display, 'retro-scaling').length > 0;
     case 'vrrMode': return display.vrrMode?.controllable === true && (display.supportedOptions.vrrModes ?? []).length > 0;
     // Keep the IGS choices visible even when the driver refuses a read-back.
     // The apply path still reports the native refusal; hiding the control here
@@ -191,16 +227,32 @@ export function isDisplayControlSupported(display: Display | null | undefined, c
     case 'globalVrrMode': return display.globalVrrMode?.supported === true && (display.supportedOptions.globalVrrModes ?? []).length > 0;
     case 'variableRefreshRate': return display.variableRefreshRate?.controllable === true && display.variableRefreshRate.supported === true;
     case 'scalingCustom': return display.supportedOptions.scalingModes.includes('custom');
-    case 'wireFormat': return display.supportedOptions.wireFormats.length > 0 && display.supportedOptions.bpcDepths.length > 0;
-    case 'hue': return display.hue?.controllable === true;
-    case 'saturation': return display.saturation?.controllable === true;
-    case 'brightness': return display.brightness?.controllable === true;
-    case 'contrast': return display.contrast?.controllable === true;
-    case 'superResolution': return display.superResolution?.controllable === true
-      && display.superResolution.supported === true
-      && display.superResolution.modes.length + display.superResolution.customSourceModes.length + display.superResolution.presets.length > 0;
+    case 'wireFormat': return DISPLAY_WIRE_FORMAT_OPTIONS.includes(display.colorFormat as NonNullable<DisplaySettings['wireFormat']>['model'])
+      && display.supportedOptions.wireFormats.includes(display.colorFormat ?? '')
+      && DISPLAY_BPC_OPTIONS.includes(display.colorDepth ?? 0)
+      && display.supportedOptions.bpcDepths.includes(display.colorDepth ?? 0);
+    case 'hue': return isDisplayColorWritable(display, 'hue');
+    case 'saturation': return isDisplayColorWritable(display, 'saturation');
+    case 'brightness': return isDisplayColorWritable(display, 'brightness');
+    case 'contrast': return isDisplayColorWritable(display, 'contrast');
+    case 'superResolution': {
+      const capability = display.superResolution;
+      const modes = superResolutionSourceModesForDisplay(display);
+      const current = capability?.currentSourceResolution;
+      return modes.length > 0 && (capability?.enabled !== true || modes.some((mode) => mode.width === current?.width
+        && mode.height === current?.height && mode.refreshRate === capability.currentSourceRefreshRate));
+    }
     default: return false;
   }
+}
+
+function isDisplayColorWritable(display: Display, key: typeof DISPLAY_COLOR_CONTROLS[number]): boolean {
+  const capability = display[key];
+  const range = display.supportedOptions.colorRanges?.[key];
+  return capability?.supported === true && capability.controllable === true
+    && typeof capability.value === 'number' && Number.isFinite(capability.value)
+    && !!range && Number.isFinite(range.min) && Number.isFinite(range.max) && range.max >= range.min
+    && Number.isFinite(range.step) && range.step > 0;
 }
 
 export function displayDriverValue(display: Display | null | undefined, control: string): unknown {

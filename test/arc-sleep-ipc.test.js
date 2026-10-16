@@ -113,9 +113,10 @@ test('a newer startup disable cancels a repair waiting on the task query', async
 });
 
 test('packaged startup intent revision advances synchronously when a setting is written', async () => {
-  const execFile = async () => {
+  const execFile = async (file) => {
+    if (file.toLowerCase().endsWith('powershell.exe')) return { stdout: 'MISSING' };
     const error = new Error('task or registry value not found');
-    error.code = 1;
+    error.code = file === 'schtasks' ? -2147024894 : 1;
     throw error;
   };
   const startup = createStartup({ execFile, useElevatedTask: true, cleanupLegacy: false });
@@ -125,6 +126,65 @@ test('packaged startup intent revision advances synchronously when a setting is 
   assert.equal(startup.getIntentRevision(), 1);
   await write;
   assert.equal(startup.getIntentRevision(), 1);
+});
+
+test('startup task read distinguishes missing registration from task service failure', async () => {
+  const missing = createStartup({ useElevatedTask: true, cleanupLegacy: false, async execFile(_file, args) {
+    assert.ok(args.includes('/hresult'));
+    const error = new Error('task missing');
+    error.code = -2147024894;
+    throw error;
+  } });
+  assert.deepEqual(await missing.get(), { valueExists: false, value: null });
+
+  const unavailable = createStartup({ useElevatedTask: true, cleanupLegacy: false, async execFile() {
+    const error = new Error('Task Scheduler unavailable');
+    error.code = -2147024891;
+    throw error;
+  } });
+  await assert.rejects(unavailable.get(), /task query failed/);
+});
+
+test('startup task XML failure remains unknown instead of inactive', async () => {
+  const startup = createStartup({ useElevatedTask: true, cleanupLegacy: false, async execFile(_file, args) {
+    return { stdout: args.includes('/xml') ? Buffer.from('not task XML') : '' };
+  } });
+  await assert.rejects(startup.get(), /task XML query failed/);
+});
+
+test('Run key query confirms a missing value and rejects generic failures', async () => {
+  let state = 'MISSING';
+  const startup = createStartup({ useElevatedTask: false, cleanupLegacy: false, async execFile(file) {
+    if (file === 'reg') {
+      const error = new Error('reg failed');
+      error.code = 1;
+      throw error;
+    }
+    return { stdout: state };
+  } });
+  assert.deepEqual(await startup.get(), { valueExists: false, value: null });
+  state = 'EXISTS';
+  await assert.rejects(startup.get(), /reg query failed/);
+});
+
+test('startup setters verify a failed Run-value deletion before reporting success', async () => {
+  let registryState = 'MISSING';
+  const execFile = async (file) => {
+    if (file.toLowerCase().endsWith('powershell.exe')) return { stdout: registryState };
+    const error = new Error(file === 'reg' ? 'delete failed' : 'task missing');
+    error.code = file === 'reg' ? 1 : -2147024894;
+    throw error;
+  };
+  const run = createStartup({ execFile, useElevatedTask: false, cleanupLegacy: false });
+  const task = createStartup({ execFile, useElevatedTask: true, cleanupLegacy: false });
+  assert.deepEqual(await run.set(false), { valueExists: false, value: null });
+  assert.deepEqual(await task.set(false), { valueExists: false, value: null });
+  registryState = 'EXISTS';
+  await assert.rejects(run.set(false), /reg delete failed/);
+  await assert.rejects(task.set(false), /legacy Run cleanup failed/);
+  registryState = 'UNKNOWN';
+  await assert.rejects(run.set(false), /reg delete failed/);
+  await assert.rejects(task.set(false), /legacy Run cleanup failed/);
 });
 
 test('repeated quit requests wait for Arc Sleep teardown before closing its RTSS helper', async () => {
@@ -285,7 +345,7 @@ test('a failed startup task elevation can be retried without restarting Arc Powe
     cleanupLegacy: false,
     async execFile() {
       const error = new Error('task missing');
-      error.code = 1;
+      error.code = -2147024894;
       throw error;
     },
     spawnFn() {
@@ -310,7 +370,7 @@ test('concurrent startup task requests share one elevation attempt', async () =>
     cleanupLegacy: false,
     async execFile() {
       const error = new Error('task missing');
-      error.code = 1;
+      error.code = -2147024894;
       throw error;
     },
     spawnFn() {
@@ -347,7 +407,7 @@ test('a delayed startup task precheck cannot prompt again after another request 
         if (args[args.length - 1] === '/xml') {
           if (!taskExists) {
             const error = new Error('task missing');
-            error.code = 1;
+            error.code = -2147024894;
             return Promise.reject(error);
           }
           return Promise.resolve({ stdout: Buffer.from('<Task><Settings><Enabled>true</Enabled></Settings><Actions><Exec><Command>C:/ArcPower/ArcPower.exe</Command><Arguments></Arguments></Exec></Actions></Task>') });
@@ -355,12 +415,12 @@ test('a delayed startup task precheck cannot prompt again after another request 
         queryCalls += 1;
         if (queryCalls === 1) return new Promise((_resolve, reject) => { releaseInitialQuery = () => {
           const error = new Error('task missing');
-          error.code = 1;
+          error.code = -2147024894;
           reject(error);
         }; });
         if (!taskExists) {
           const error = new Error('task missing');
-          error.code = 1;
+          error.code = -2147024894;
           return Promise.reject(error);
         }
         return Promise.resolve({ stdout: '' });
@@ -403,7 +463,7 @@ test('opposite startup task changes wait for the active operation to verify', as
       if (args[0] !== '/query') throw new Error('unexpected command');
       if (!taskExists) {
         const error = new Error('task missing');
-        error.code = 1;
+        error.code = -2147024894;
         throw error;
       }
       if (args[args.length - 1] === '/xml') {
@@ -454,7 +514,7 @@ test('A-B-A startup intent changes stay ordered and finish with the newest inten
       if (args[0] !== '/query') throw new Error('unexpected command');
       if (!taskExists) {
         const error = new Error('task missing');
-        error.code = 1;
+        error.code = -2147024894;
         throw error;
       }
       if (args[args.length - 1] === '/xml') {

@@ -731,6 +731,29 @@ async function boot() {
     // transient re-fetch failure
   }
   store.set({ sysinfo: info ?? null, devices: freshDevices, latestSamples: {} });
+  // A driver that is still initializing at the first read can leave ReBAR
+  // unknown. Ask once more after boot and refresh the matched controller in
+  // the device inventory if the later bounded driver probe succeeds.
+  if (info?.videoControllers?.some((controller) => controller.rebarActive === null)) {
+    window.setTimeout(() => { void (async () => {
+      try {
+        const refreshed = await api.sysinfo();
+        const current = store.get();
+        if (!refreshed || JSON.stringify(refreshed.videoControllers) === JSON.stringify(current.sysinfo?.videoControllers)) return;
+        let nextDevices = current.devices;
+        try {
+          const candidate = await api.listDevices();
+          if (candidate.length > 0) nextDevices = candidate;
+        } catch { /* keep the current inventory */ }
+        const selected = nextDevices.find((device) => device.id === current.deviceId) ?? null;
+        store.set({
+          sysinfo: refreshed,
+          devices: nextDevices,
+          osGpu: nextDevices.length === 0 ? primaryVideoController(refreshed) : selected?.osController ?? null,
+        });
+      } catch { /* unknown remains unknown when the delayed probe fails */ }
+    })(); }, 4000);
+  }
   noDevice = freshDevices.length === 0;
   if (!noDevice) {
     // M151: the first inventory paint may precede the Windows controller

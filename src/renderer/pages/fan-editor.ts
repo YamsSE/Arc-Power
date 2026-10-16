@@ -199,6 +199,7 @@ export function renderFanEditor(container: HTMLElement, ctx: PageContext): void 
  */
 export function updateFanReadout(container: HTMLElement, ctx: PageContext): void {
   const marker = container.querySelector<HTMLElement>('#fan-rpm-marker');
+  const tooltip = marker?.querySelector<HTMLElement>('.fan-marker-tooltip');
   const readout = container.querySelector<HTMLElement>('#fan-rpm-readout');
   if (!marker) return;
   const sample = ctx.store.get().latestSample;
@@ -209,22 +210,34 @@ export function updateFanReadout(container: HTMLElement, ctx: PageContext): void
   // The driver reports RPM rather than a fan percentage. Show the marker's
   // RPM/max-RPM position as an explicitly approximate percentage, matching
   // the vertical position used by rpmMarkerY (never the configured curve).
-  marker.style.pointerEvents = 'auto';
+  let label: string;
+  let hoverText: string;
   if (rpm !== undefined && Number.isFinite(rpm) && Number.isFinite(maxRpm) && maxRpm > 0) {
     const percent = Math.round(100 - rpmMarkerY(rpm, maxRpm));
-    marker.title = `Current fan speed: ~${percent}% (${Math.round(rpm)} RPM)`;
+    label = `Current fan speed: ~${percent}% (${Math.round(rpm)} RPM)`;
+    hoverText = `Fan ~${percent}% · ${Math.round(rpm)} RPM`;
   } else if (rpm !== undefined && Number.isFinite(rpm)) {
-    marker.title = `Current fan speed: ${Math.round(rpm)} RPM (percentage unavailable)`;
+    label = `Current fan speed: ${Math.round(rpm)} RPM (percentage unavailable)`;
+    hoverText = `Fan ${Math.round(rpm)} RPM`;
   } else {
-    marker.title = 'Current fan speed: unavailable';
+    label = 'Current fan speed: unavailable';
+    hoverText = 'Fan speed unavailable';
   }
+  marker.removeAttribute('title');
+  marker.setAttribute('aria-label', label);
+  if (tooltip) tooltip.textContent = hoverText;
   if (rpm !== undefined && temp !== undefined && maxRpm > 0) {
     const card = container.querySelector<HTMLElement>('.fan-card');
     const domain = card
       ? { minT: Number(card.dataset['fanDomainMin']), maxT: Number(card.dataset['fanDomainMax']) }
       : curveDomain([]);
-    marker.style.left = `${tempToX(temp, domain)}%`;
-    marker.style.top = `${rpmMarkerY(rpm, maxRpm)}%`;
+    const x = tempToX(temp, domain);
+    const y = rpmMarkerY(rpm, maxRpm);
+    marker.style.left = `${x}%`;
+    marker.style.top = `${y}%`;
+    marker.classList.toggle('fan-marker-tooltip-below', y < 20);
+    marker.classList.toggle('fan-marker-tooltip-left', x < 25);
+    marker.classList.toggle('fan-marker-tooltip-right', x > 75);
     marker.hidden = false;
   } else if (marker) {
     marker.hidden = true;
@@ -258,7 +271,9 @@ function renderReadOnly(container: HTMLElement, ctx: PageContext, points: CurveP
       el('div', { class: 'fan-stage' }, [
         el('div', { class: 'fan-plot' }, [
           editorSvg(points, maxRpm, false),
-          el('div', { class: 'fan-marker', id: 'fan-rpm-marker', hidden: true }),
+          el('div', { class: 'fan-marker', id: 'fan-rpm-marker', hidden: true, tabindex: '0', role: 'img' }, [
+            el('span', { class: 'fan-marker-tooltip', 'aria-hidden': 'true' }),
+          ]),
         ]),
         fanAxis(),
       ]),
@@ -496,7 +511,9 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
       const stage = el('div', { class: 'fan-stage' }, [
         el('div', { class: 'fan-plot' }, [
           editorSvg(editor.points, maxRpm, true, domain),
-          el('div', { class: 'fan-marker', id: 'fan-rpm-marker', hidden: true }),
+          el('div', { class: 'fan-marker', id: 'fan-rpm-marker', hidden: true, tabindex: '0', role: 'img' }, [
+            el('span', { class: 'fan-marker-tooltip', 'aria-hidden': 'true' }),
+          ]),
           el('div', { class: 'fan-dots' }),
         ]),
         fanAxis(),

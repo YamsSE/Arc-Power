@@ -67,6 +67,8 @@ import {
   isGraphicsControlDirtyVsApplied,
 } from '../pure/graphics.ts';
 import {
+  DISPLAY_BPC_OPTIONS,
+  DISPLAY_WIRE_FORMAT_OPTIONS,
   isDisplayControlSupported,
   displayDriverValue,
   normalizeDisplaySettings,
@@ -77,6 +79,8 @@ import {
   scalingViewOf as displayScalingViewOf,
   scalingMethodViewOf as displayScalingMethodViewOf,
   scalingMethodOptionsForView,
+  scalingModeViewOptionsForDisplay,
+  superResolutionSourceModesForDisplay,
   type DisplayColorRange,
   isDisplayControlDirtyVsApplied as isDisplayControlDirtyVsAppliedPure,
   selectedDisplayOf,
@@ -186,9 +190,10 @@ const VARIABLE_REFRESH_RATE_LABELS: Record<string, string> = {
   enabled: 'Enabled',
   disabled: 'Disabled',
 };
-const IGS_WIRE_FORMATS = ['RGB', 'YCbCr444'];
 const IGS_WIRE_FORMAT_LABELS: Record<string, string> = {
   RGB: 'RGB',
+  YCbCr420: 'YCbCr 4:2:0',
+  YCbCr422: 'YCbCr 4:2:2',
   YCbCr444: 'YCbCr 4:4:4',
 };
 const RETRO_SCALING_LABELS: Record<string, string> = {
@@ -235,8 +240,8 @@ function resetOption(key: string, options: string[], defaults: Record<string, st
 }
 
 function displayWireFormatDefault(display: DisplayState['displays'][number]): NonNullable<DisplaySettings['wireFormat']> | null {
-  const models = display.supportedOptions.wireFormats;
-  const depths = display.supportedOptions.bpcDepths;
+  const models = display.supportedOptions.wireFormats.filter((model) => DISPLAY_WIRE_FORMAT_OPTIONS.includes(model as NonNullable<DisplaySettings['wireFormat']>['model']));
+  const depths = display.supportedOptions.bpcDepths.filter((depth) => DISPLAY_BPC_OPTIONS.includes(depth));
   if (models.length === 0 || depths.length === 0) return null;
   return {
     model: (models.includes('RGB') ? 'RGB' : models[0]) as NonNullable<DisplaySettings['wireFormat']>['model'],
@@ -564,12 +569,9 @@ function refreshAll() {
   updateFloating();
 }
 
-// Color correction and wire-format editing stay implemented in the native
-// layer, but the Display UI intentionally exposes only Quantization Range
-// until those driver paths are revalidated on every adapter. Keeping the
-// hidden keys out of this list prevents a global Apply from sending controls
-// the user cannot see or edit.
-const DISPLAY_APPLY_KEYS = ['scalingMode', 'displayScalingMethod', 'globalVrrMode', 'variableRefreshRate', 'quantizationRange', 'superResolution'];
+// Every editable Display row participates in the global Apply and reset flow.
+// The capability checks keep incomplete driver read-backs out of the payload.
+const DISPLAY_APPLY_KEYS = ['scalingMode', 'displayScalingMethod', 'globalVrrMode', 'variableRefreshRate', 'quantizationRange', 'wireFormat', 'hue', 'saturation', 'brightness', 'contrast', 'superResolution'];
 const DISPLAY_COLOR_KEYS = ['hue', 'saturation', 'brightness', 'contrast'];
 
 function displayHasDirtyDraft(display: DisplayState['displays'][number] | null): boolean {
@@ -590,12 +592,13 @@ function updateDisplayFloating(): void {
 function resetDisplayDraft(display: DisplayState['displays'][number]): void {
   markDisplayScalingDraftChanged();
   displayDraft = normalizeDisplaySettings(display);
-  if (isDisplayControlSupported(display, 'scalingMode')) {
+  if (isDisplayControlSupported(display, 'scalingMode') && scalingModeViewOptionsForDisplay(display).includes('display-scaling')) {
     displayScalingViewDraft = 'display-scaling';
     displayDraft.scalingMode = rawScalingForView(display, displayScalingViewDraft);
     delete displayDraft.scalingCustom;
   }
-  if (isDisplayControlSupported(display, 'displayScalingMethod')) {
+  if (isDisplayControlSupported(display, 'displayScalingMethod')
+    && scalingMethodOptionsForView(display, 'display-scaling').includes('maintain-display-scaling')) {
     displayScalingMethodDraft = 'maintain-display-scaling';
     displayDraft.displayScalingMethod = 'maintain-display-scaling';
   }
@@ -1484,14 +1487,15 @@ function buildDisplayDropdownRow(
  * one serialized driver transaction as soon as the selector changes. */
 function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
   const display = selectedDisplay();
-  const supported = display !== null && isDisplayControlSupported(display, 'scalingMode');
+  const options = scalingModeViewOptionsForDisplay(display);
+  const supported = display !== null && isDisplayControlSupported(display, 'scalingMode') && options.includes(displayScalingViewDraft as 'gpu-scaling' | 'display-scaling' | 'retro-scaling');
   if (!supported) {
     return el('div', { class: 'display-control display-control-readonly', dataset: { control: 'scalingMode' } }, [
       el('h3', { class: 'display-control-title', text: 'Scaling Mode' }),
       el('p', { class: 'card-note', text: 'Not supported on this GPU.' }),
     ]);
   }
-  const select = buildDropdown(displayScalingViewDraft, IGS_SCALING_MODE_OPTIONS.map((option) => ({
+  const select = buildDropdown(displayScalingViewDraft, IGS_SCALING_MODE_OPTIONS.filter((option) => options.includes(option as 'gpu-scaling' | 'display-scaling' | 'retro-scaling')).map((option) => ({
     value: option,
     label: IGS_SCALING_MODE_LABELS[option],
   })), {
@@ -1542,7 +1546,7 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
       el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'scalingMode'); } }),
       el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
         markDisplayScalingDraftChanged();
-        displayScalingViewDraft = 'display-scaling';
+        displayScalingViewDraft = options.includes('display-scaling') ? 'display-scaling' : options[0];
         displayDraft.scalingMode = rawScalingForView(display!, displayScalingViewDraft);
         delete displayDraft.scalingCustom;
         if (display.scalingMethod?.value?.enabled === true) {
@@ -1567,7 +1571,7 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
   const display = selectedDisplay();
   const view = displayScalingViewDraft;
   const methodOptions = scalingMethodOptionsForView(display, view);
-  const supported = display !== null && methodOptions.length > 0
+  const supported = display !== null && methodOptions.includes(displayScalingMethodDraft)
     && (view === 'retro-scaling'
       ? isDisplayControlSupported(display, 'scalingMethod')
       : isDisplayControlSupported(display, 'scalingMode'));
@@ -1684,7 +1688,7 @@ function buildWireFormatRow(ctx: PageContext): HTMLElement {
     ]);
   }
   const wf: NonNullable<DisplaySettings['wireFormat']> = displayDraft.wireFormat ?? displayWireFormatDefault(display!)!;
-  const modelOptions = display!.supportedOptions.wireFormats.filter((o) => IGS_WIRE_FORMATS.includes(o));
+  const modelOptions = display!.supportedOptions.wireFormats.filter((o) => DISPLAY_WIRE_FORMAT_OPTIONS.includes(o as NonNullable<DisplaySettings['wireFormat']>['model']));
   const modelSelect = buildDropdown(wf.model, modelOptions.map((o) => ({
     value: o,
     label: IGS_WIRE_FORMAT_LABELS[o] ?? o,
@@ -1693,11 +1697,14 @@ function buildWireFormatRow(ctx: PageContext): HTMLElement {
     dataset: { displaySelect: 'colorFormat' },
     ariaLabel: 'Color Format',
     onChange: (value) => {
-      displayDraft.wireFormat = { model: value as NonNullable<DisplaySettings['wireFormat']>['model'], depth: wf.depth };
+      displayDraft.wireFormat = {
+        model: value as NonNullable<DisplaySettings['wireFormat']>['model'],
+        depth: displayDraft.wireFormat?.depth ?? wf.depth,
+      };
       refreshDisplayChip('wireFormat');
     },
   });
-  const depthOptions = display!.supportedOptions.bpcDepths.map((d) => String(d));
+  const depthOptions = display!.supportedOptions.bpcDepths.filter((depth) => DISPLAY_BPC_OPTIONS.includes(depth)).map((d) => String(d));
   const depthSelect = buildDropdown(String(wf.depth), depthOptions.map((d) => ({
     value: d,
     label: `${d} bpc`,
@@ -1706,7 +1713,7 @@ function buildWireFormatRow(ctx: PageContext): HTMLElement {
     dataset: { displaySelect: 'colorDepth' },
     ariaLabel: 'Color Depth',
     onChange: (value) => {
-      displayDraft.wireFormat = { model: wf.model, depth: Number(value) };
+      displayDraft.wireFormat = { model: displayDraft.wireFormat?.model ?? wf.model, depth: Number(value) };
       refreshDisplayChip('wireFormat');
     },
   });
@@ -1861,10 +1868,9 @@ function buildDisplaySlider(ctx: PageContext, key: DisplayColorKey, title: strin
   const value = colorUiValue(key, nativeValue, { min, max, step, default: range?.default });
   if (!supported) {
     return el('div', { class: 'display-control display-slider-row display-control-readonly', dataset: { control: key } }, [
-      el('div', { class: 'display-control-heading' }, [el('h3', { class: 'display-control-title', text: title })]),
-      el('div', { class: 'display-slider-line' }, [
-        el('input', { class: 'display-number-input', type: 'number', min: uiRange.min, max: uiRange.max, value: capability?.value === null || capability?.value === undefined ? '' : value, disabled: true, 'aria-label': title + ' value' }),
-        el('input', { class: 'graphics-slider', type: 'range', min: uiRange.min, max: uiRange.max, step: uiRange.step, value, disabled: true, 'aria-label': title }),
+      el('div', { class: 'display-control-heading' }, [
+        el('h3', { class: 'display-control-title', text: title }),
+        el('span', { class: 'display-readonly-value', text: typeof capability?.value === 'number' ? String(capability.value) : 'Not available' }),
       ]),
       el('p', { class: 'card-note', text: capability?.reason ?? fallbackReason }),
     ]);
@@ -1912,6 +1918,74 @@ function buildDisplaySlider(ctx: PageContext, key: DisplayColorKey, title: strin
   chipNodes.set(key, row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
   chipApplyNodes.set(key, row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
   refreshDisplayChip(key);
+  return row;
+}
+
+function buildSuperResolutionRow(ctx: PageContext, display: DisplayState['displays'][number]): HTMLElement {
+  const capability = display.superResolution;
+  // Only Windows-enumerated source modes are offered here. The generated
+  // presets and driver-installed custom modes remain internal capability data.
+  const modes = superResolutionSourceModesForDisplay(display);
+  const current = capability?.currentSourceResolution;
+  const currentListed = capability?.enabled !== true || modes.some((mode) => mode.width === current?.width
+    && mode.height === current?.height && mode.refreshRate === capability?.currentSourceRefreshRate);
+  const supported = isDisplayControlSupported(display, 'superResolution') && modes.length > 0 && currentListed;
+  if (!supported) {
+    const currentText = current
+      ? `${current.width} × ${current.height}${capability?.currentSourceRefreshRate ? ` @ ${capability.currentSourceRefreshRate} Hz` : ''}`
+      : 'Not available';
+    return el('div', { class: 'display-control display-control-readonly', dataset: { control: 'superResolution' } }, [
+      el('div', { class: 'display-control-heading' }, [
+        el('h3', { class: 'display-control-title', text: 'Supernative Source Resolution' }),
+        el('span', { class: 'display-readonly-value', text: currentText }),
+      ]),
+      el('p', { class: 'card-note', text: capability?.reason ?? 'No higher Windows-listed source mode is available.' }),
+    ]);
+  }
+
+  const modeKey = (mode: { width: number; height: number; refreshRate: number }): string => `${mode.width}x${mode.height}@${mode.refreshRate}`;
+  const choices = new Map(modes.map((mode) => [modeKey(mode), mode]));
+  const draft = displayDraft.superResolution;
+  const selected = draft?.enabled
+    ? modeKey({ width: draft.width!, height: draft.height!, refreshRate: draft.refreshRate! })
+    : 'desktop';
+  const options = [{ value: 'desktop', label: 'Desktop resolution' }, ...modes.map((mode) => ({
+    value: modeKey(mode),
+    label: mode.label ?? mode.name ?? `${mode.width} × ${mode.height} @ ${mode.refreshRate} Hz`,
+  }))];
+  const select = buildDropdown(selected, options, {
+    className: 'graphics-select display-select',
+    dataset: { displaySelect: 'superResolution' },
+    ariaLabel: 'Supernative source resolution',
+    onChange: (value) => {
+      if (value === 'desktop') displayDraft.superResolution = { enabled: false };
+      else {
+        const mode = choices.get(value);
+        if (mode) displayDraft.superResolution = { enabled: true, width: mode.width, height: mode.height, refreshRate: mode.refreshRate };
+      }
+      refreshDisplayChip('superResolution');
+    },
+  });
+  selectNodes.set('superResolution', select);
+  const row = el('div', { class: 'display-control', dataset: { control: 'superResolution' } }, [
+    el('div', { class: 'display-control-heading' }, [
+      el('h3', { class: 'display-control-title', text: 'Supernative Source Resolution' }),
+      el('div', { class: 'graphics-control display-inline-control' }, [select]),
+    ]),
+    el('p', { class: 'card-note', text: 'Uses a source resolution currently listed by Windows for this display. Switching modes may flash or briefly blank the screen.' }),
+    el('div', { class: 'graphics-card-actions' }, [
+      el('span', { class: 'chip oc-chip-status', hidden: true }),
+      el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'superResolution'); } }),
+      el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to desktop resolution', onClick: () => {
+        displayDraft.superResolution = { enabled: false };
+        select.value = 'desktop';
+        refreshDisplayChip('superResolution');
+      } }),
+    ]),
+  ]);
+  chipNodes.set('superResolution', row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+  chipApplyNodes.set('superResolution', row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
+  refreshDisplayChip('superResolution');
   return row;
 }
 
@@ -1994,14 +2068,20 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
   });
 
   const general = buildDisplayGroup('general', 'General', [
-    buildDisplayDropdownRow(ctx, 'scalingMode', 'Scaling Mode', DISPLAY_SCALING_NOTE, display.supportedOptions.scalingModes, SCALING_MODE_LABELS),
+    buildDisplayScalingModeRow(ctx),
     buildDisplayScalingMethodRow(ctx),
     buildDisplayDropdownRow(ctx, 'globalVrrMode', 'Variable Refresh Rate Mode', DISPLAY_GLOBAL_VRR_NOTE, display.supportedOptions.globalVrrModes ?? [], GLOBAL_VRR_LABELS),
     buildDisplayDropdownRow(ctx, 'variableRefreshRate', 'Variable Refresh Rate', DISPLAY_VRR_NOTE, ['enabled', 'disabled'], VARIABLE_REFRESH_RATE_LABELS),
+    buildSuperResolutionRow(ctx, display),
   ]);
 
   const color = buildDisplayGroup('color', 'Color', [
+    buildWireFormatRow(ctx),
     buildDisplayDropdownRow(ctx, 'quantizationRange', 'Quantization Range', 'The color-quantization range of the display output.', display.supportedOptions.quantizationRanges, QUANTIZATION_LABELS),
+    buildDisplaySlider(ctx, 'hue', 'Hue', display.hue, -180, 180, DISPLAY_SLIDERS_NOTE),
+    buildDisplaySlider(ctx, 'saturation', 'Saturation', display.saturation, 0, 100, DISPLAY_SLIDERS_NOTE),
+    buildDisplaySlider(ctx, 'brightness', 'Brightness', display.brightness, 0, 100, DISPLAY_SLIDERS_NOTE),
+    buildDisplaySlider(ctx, 'contrast', 'Contrast', display.contrast, 0, 100, DISPLAY_SLIDERS_NOTE),
   ], false);
 
   const infoRow = (label: string, value: string): HTMLElement => el('div', { class: 'display-info-row' }, [
@@ -2275,6 +2355,8 @@ async function applyDisplay(ctx: PageContext, only: string) {
           (displayApplied as Record<string, unknown>)[key] = readBack;
           if (DISPLAY_COLOR_KEYS.includes(key) && typeof readBack === 'number') {
             (displayDraft as Record<string, unknown>)[key] = readBack;
+          } else if (key === 'wireFormat' && readBack && typeof readBack === 'object') {
+            displayDraft.wireFormat = readBack as DisplaySettings['wireFormat'];
           }
         } else {
           (displayApplied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];

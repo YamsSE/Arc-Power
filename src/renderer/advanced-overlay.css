@@ -1058,7 +1058,7 @@ html, body {
 .fan-yaxis-tick-edge-top { transform: translateY(0); }
 .fan-yaxis-tick-edge-bottom { transform: translateY(-100%); }
 
-.fan-dots { position: absolute; inset: 0; }
+.fan-dots { position: absolute; inset: 0; pointer-events: none; }
 
 .fan-dot {
   position: absolute;
@@ -1070,6 +1070,7 @@ html, body {
   border: 2px solid var(--accent);
   cursor: grab;
   touch-action: none;
+  pointer-events: auto;
 }
 .fan-dot:hover { background: var(--accent-soft); }
 .fan-dot-selected { background: var(--accent); }
@@ -1147,9 +1148,33 @@ html, body {
   border-radius: 50%;
   background: var(--warn);
   border: 2px solid #fff;
-  pointer-events: none;
+  pointer-events: auto;
+  z-index: 1;
   box-shadow: 0 0 8px rgba(251, 191, 36, 0.7);
 }
+.fan-marker-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  padding: 6px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font: 11px var(--mono);
+  white-space: nowrap;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+.fan-marker:hover .fan-marker-tooltip,
+.fan-marker:focus-visible .fan-marker-tooltip { visibility: visible; opacity: 1; }
+.fan-marker-tooltip-below .fan-marker-tooltip { top: calc(100% + 8px); bottom: auto; }
+.fan-marker-tooltip-left .fan-marker-tooltip { left: 6px; transform: none; }
+.fan-marker-tooltip-right .fan-marker-tooltip { left: auto; right: 6px; transform: none; }
 
 .fan-axis {
   display: flex;

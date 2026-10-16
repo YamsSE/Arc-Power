@@ -1544,7 +1544,7 @@ async function main() {
     const sysinfoPromise = collectSysinfo({
       timeoutMs: 10000,
       // The first installed launch can race PowerShell/CIM initialization.
-      // Retry one degraded snapshot without changing the normal collector's
+      // Retry degraded snapshots at most twice without changing the normal collector's
       // one-query/cache contract used by other startup paths and tests.
       retryOnDegraded: true,
       retryTimeoutMs: 5000,
@@ -1578,6 +1578,8 @@ async function main() {
     // identity-matched verdict into the corresponding OS controller.
     const driverReBars = new Map();
     const driverReBarRetries = new Map();
+    const driverReBarFinalAttempts = new Map();
+    const driverReBarLateAttempts = new Map();
     const rebarTargetKey = (target) => {
       if (typeof target?.deviceKey === 'string' && target.deviceKey.trim()) return `key:${target.deviceKey.trim().toUpperCase()}`;
       const vendor = typeof target?.pciVendorId === 'string' ? target.pciVendorId : '';
@@ -1606,14 +1608,47 @@ async function main() {
             // own session contract. A new reader is the bounded main-path
             // recovery for a transient first IGCL read; concurrent callers
             // share the same retry promise and never fan out duplicate reads.
-            let retry = driverReBarRetries.get(key);
-            if (!retry) {
+            let retryState = driverReBarRetries.get(key);
+            if (!retryState) {
               const retryReader = createDriverReBar(rawBackend, target);
               driverReBars.set(key, retryReader);
-              retry = retryReader();
-              driverReBarRetries.set(key, retry);
+              retryState = { promise: retryReader() };
+              driverReBarRetries.set(key, retryState);
             }
-            verdict = await retry;
+            verdict = await retryState.promise;
+            // If both immediate reads are unknown, make one final fresh-reader
+            // probe after a short bounded backoff. The promise is stored before
+            // awaiting it so concurrent sysinfo.get() calls share this read.
+            if (verdict === null || verdict === undefined) {
+              let finalAttempt = driverReBarFinalAttempts.get(key);
+              if (!finalAttempt) {
+                finalAttempt = (async () => {
+                  await new Promise((resolve) => setTimeout(resolve, 150));
+                  const finalReader = createDriverReBar(rawBackend, target);
+                  driverReBars.set(key, finalReader);
+                  return finalReader();
+                })();
+                driverReBarFinalAttempts.set(key, finalAttempt);
+              }
+              verdict = await finalAttempt;
+              if (verdict === null || verdict === undefined) {
+                let late = driverReBarLateAttempts.get(key);
+                if (!late) {
+                  late = { readyAt: Date.now() + 3000, promise: null };
+                  driverReBarLateAttempts.set(key, late);
+                }
+                if (Date.now() >= late.readyAt) {
+                  if (!late.promise) {
+                    late.promise = (async () => {
+                      const lateReader = createDriverReBar(rawBackend, target);
+                      driverReBars.set(key, lateReader);
+                      return lateReader();
+                    })();
+                  }
+                  verdict = await late.promise;
+                }
+              }
+            }
           }
           if (verdict !== null && verdict !== undefined) {
             const resolvedReader = driverReBars.get(key);

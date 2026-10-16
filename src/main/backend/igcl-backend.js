@@ -5031,7 +5031,7 @@ export class IgclBackend {
             d.scalingMethod = displayCapability(
               method ? { enabled: value.enable, method } : null,
               d.supportedOptions.scalingMethods.length > 0,
-              d.supportedOptions.scalingMethods.length > 0,
+              d.supportedOptions.scalingMethods.length > 0 && method !== null,
               method ? null : 'The driver returned an unknown retro-scaling method.',
             );
           } else {

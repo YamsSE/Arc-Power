@@ -8,14 +8,25 @@ import { sanitizeDisplaySettings } from '../src/main/ipc-core.js';
 import { IgclBackend } from '../src/main/backend/igcl-backend.js';
 import { CTL_CUSTOM_MODE_OPERATION } from '../src/main/backend/igcl-bindings.js';
 import {
+  buildDisplaySettings,
+  isDisplayControlDirty,
   isDisplayControlSupported,
   normalizeDisplaySettings,
+  scalingMethodViewOf,
+  scalingMethodOptionsForView,
+  scalingModeViewOptionsForDisplay,
+  superResolutionSourceModesForDisplay,
   validateDisplaySettings,
 } from '../src/renderer/pure/display.ts';
 import { validateDisplaySuperResolutionCapability } from '../src/main/ipc-core.js';
 
+function createDisplayMock() {
+  const featureset = JSON.parse(fs.readFileSync(new URL('../mock/featuresets/b580.json', import.meta.url), 'utf8'));
+  return new MockBackend({ featureset });
+}
+
 test('Display Supernative Resolution mock exposes a verified desktop/game source-mode round trip', async () => {
-  const backend = new MockBackend();
+  const backend = createDisplayMock();
   const before = await backend.getDisplaySettings(0);
   const display = before.displays[0];
   assert.equal(isDisplayControlSupported(display, 'superResolution'), true);
@@ -53,7 +64,7 @@ test('Display Supernative Resolution mock exposes a verified desktop/game source
 });
 
 test('Display Supernative Resolution stays capability-gated and rejects unlisted modes', async () => {
-  const backend = new MockBackend();
+  const backend = createDisplayMock();
   const before = await backend.getDisplaySettings(0);
   const display = before.displays[0];
   assert.equal(validateDisplaySettings({ superResolution: { enabled: true, width: 3333, height: 2222, refreshRate: 144 } }, display), false);
@@ -491,4 +502,104 @@ test('IgclBackend serializes display writes for one verified output', async () =
     backend.setDisplaySettings(0, { deviceKey: 'adapter', displayKey: 'display' }),
   ]);
   assert.equal(maximumActive, 1);
+});
+
+test('each Display control uses a verified mock target and returns a fresh matching read-back', async () => {
+  const cases = [
+    ['quantizationRange', { quantizationRange: 'full' }, (d) => d.quantizationRange === 'full'],
+    ['wireFormat', { wireFormat: { model: 'YCbCr444', depth: 10 } }, (d) => d.colorFormat === 'YCbCr444' && d.colorDepth === 10],
+    ['wireFormat', { wireFormat: { model: 'RGB', depth: 8 } }, (d) => d.colorFormat === 'RGB' && d.colorDepth === 8],
+    ['scalingMode', { scalingMode: 'stretched' }, (d) => d.scalingMode === 'stretched'],
+    ['displayScalingMethod', { scalingMode: 'custom', displayScalingMethod: 'custom', scalingCustom: { x: 90, y: 90, hardwareModeSet: true } }, (d) => d.scalingMode === 'custom'],
+    ['scalingMethod', { scalingMode: 'identity', displayScalingMethod: 'nearest-neighbour', scalingMethod: { enabled: true, method: 'nearest-neighbour' } }, (d) => d.scalingMethod.value.method === 'nearest-neighbour'],
+    ['globalVrrMode', { globalVrrMode: 'disabled' }, (d) => d.globalVrrMode.value === 'disabled'],
+    ['variableRefreshRate', { variableRefreshRate: false }, (d) => d.variableRefreshRate.value === false],
+    ['vrrMode', { vrrMode: 'off' }, (d) => d.vrrMode.value === 'off'],
+    ['superResolution', null, (d) => d.superResolution.enabled === true],
+    ['hue', { hue: 12 }, (d) => d.hue.value === 12],
+    ['saturation', { saturation: 1.2 }, (d) => d.saturation.value === 1.2],
+    ['brightness', { brightness: 20 }, (d) => d.brightness.value === 20],
+    ['contrast', { contrast: 1.3 }, (d) => d.contrast.value === 1.3],
+  ];
+  for (const [control, requested, matches] of cases) {
+    const backend = createDisplayMock();
+    const before = await backend.getDisplaySettings(0);
+    const display = before.displays[0];
+    assert.equal(isDisplayControlSupported(display, control), true, `${control} capability`);
+    const mode = superResolutionSourceModesForDisplay(display)[0];
+    const patch = requested ?? { superResolution: { enabled: true, width: mode.width, height: mode.height, refreshRate: mode.refreshRate } };
+    assert.equal(validateDisplaySettings(patch, display), true, `${control} payload validation`);
+    const result = await backend.setDisplaySettings(0, {
+      deviceKey: before.deviceKey,
+      displayKey: display.displayKey,
+      patch,
+    });
+    assert.equal(result.perControl[control]?.ok, true, `${control} mock apply`);
+    assert.equal(result.perControl[control]?.readBackEqual, true, `${control} mock backend read-back`);
+    const fresh = (await backend.getDisplaySettings(0)).displays[0];
+    assert.equal(matches(fresh), true, `${control} fresh GET`);
+  }
+});
+
+test('color and wire controls participate in normalization, dirty checks, and global payloads', async () => {
+  const state = await createDisplayMock().getDisplaySettings(0);
+  const display = state.displays[0];
+  const draft = normalizeDisplaySettings(display);
+  assert.deepEqual(draft.wireFormat, { model: 'RGB', depth: 10 });
+  for (const key of ['hue', 'saturation', 'brightness', 'contrast']) {
+    assert.equal(typeof draft[key], 'number', `${key} normalized`);
+  }
+  Object.assign(draft, {
+    wireFormat: { model: 'YCbCr444', depth: 8 },
+    hue: 12,
+    saturation: 1.2,
+    brightness: 20,
+    contrast: 1.3,
+  });
+  const payload = buildDisplaySettings(draft, display, {});
+  for (const key of ['wireFormat', 'hue', 'saturation', 'brightness', 'contrast']) {
+    assert.equal(isDisplayControlDirty(key, draft, display), true, `${key} dirty`);
+    assert.deepEqual(payload[key], draft[key], `${key} global payload`);
+  }
+});
+
+test('incomplete color and wire GET data stays read-only and out of the payload', async () => {
+  const state = await createDisplayMock().getDisplaySettings(0);
+  const display = state.displays[0];
+  display.supportedOptions.bpcDepths = [];
+  display.hue = { ...display.hue, value: null, controllable: false, reason: 'IGCL CURRENT failed' };
+  assert.equal(isDisplayControlSupported(display, 'wireFormat'), false);
+  assert.equal(isDisplayControlSupported(display, 'hue'), false);
+  const draft = { wireFormat: { model: 'YCbCr444', depth: 8 }, hue: 12 };
+  assert.deepEqual(buildDisplaySettings(draft, display, {}), {});
+});
+
+test('scaling choices require advertised methods and a known Retro current value', async () => {
+  const state = await createDisplayMock().getDisplaySettings(0);
+  const display = state.displays[0];
+  assert.deepEqual(scalingModeViewOptionsForDisplay(display), ['gpu-scaling', 'display-scaling', 'retro-scaling']);
+  display.supportedOptions.scalingModes = ['identity', 'centered'];
+  assert.deepEqual(scalingMethodOptionsForView(display, 'gpu-scaling'), ['centered']);
+  assert.deepEqual(scalingMethodOptionsForView(display, 'display-scaling'), ['maintain-display-scaling']);
+  display.scalingMethod = { ...display.scalingMethod, value: null, controllable: false, reason: 'Unknown CURRENT method' };
+  assert.deepEqual(scalingModeViewOptionsForDisplay(display), ['gpu-scaling', 'display-scaling']);
+  assert.deepEqual(scalingMethodOptionsForView(display, 'retro-scaling'), []);
+  display.supportedOptions.scalingModes = ['centered'];
+  assert.deepEqual(scalingModeViewOptionsForDisplay(display), ['gpu-scaling']);
+  display.supportedOptions.scalingModes = ['custom'];
+  assert.deepEqual(scalingMethodOptionsForView(display, 'display-scaling'), ['custom']);
+  assert.equal(scalingMethodViewOf(display), 'custom');
+});
+
+test('Supernative choices require a native baseline and higher Windows-listed modes', async () => {
+  const state = await createDisplayMock().getDisplaySettings(0);
+  const display = state.displays[0];
+  assert.equal(superResolutionSourceModesForDisplay(display).length, 2);
+  display.superResolution.modes = [];
+  assert.deepEqual(superResolutionSourceModesForDisplay(display), []);
+  assert.equal(isDisplayControlSupported(display, 'superResolution'), false);
+  display.superResolution.modes = [{ width: 1920, height: 1080, refreshRate: 144 }];
+  assert.deepEqual(superResolutionSourceModesForDisplay(display), []);
+  display.superResolution.nativeResolution = null;
+  assert.equal(isDisplayControlSupported(display, 'superResolution'), false);
 });
