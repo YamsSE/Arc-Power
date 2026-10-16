@@ -1496,3 +1496,24 @@ export interface RecordingSettingsSaveResult {
   settings: RecordingSettings;
   hotkeys: RecordingEngineState['hotkeys'];
 }
+
+/** Shader sharpening is shared across GPUs and only affects opted-in games. */
+export interface PostprocessSharpeningValue {
+  enabled: boolean;
+  percentage: number;
+}
+export interface PostprocessSharpeningGlobal {
+  value: PostprocessSharpeningValue;
+  managedGameCount: number;
+  runtimeReady: boolean;
+  provider: 'reshade';
+  requiresRestart: boolean;
+}
+export interface PostprocessSharpeningGame {
+  installed: boolean;
+  value: PostprocessSharpeningValue;
+  globalValue: PostprocessSharpeningValue;
+  override: PostprocessSharpeningValue | null;
+  mode: 'direct' | 'optiscaler' | null;
+  reason?: string | null;
+}

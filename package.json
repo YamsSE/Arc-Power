@@ -41,6 +41,7 @@
                                 "src/main/backend/PawnIO_setup.exe",
                                 "THIRD_PARTY_NOTICES.txt",
                                 "LICENSES/MPL-2.0.txt",
+                                "LICENSES/ReShade-BSD-3-Clause.txt",
                                 "LICENSE",
                                 "package.json",
                                 "!node_modules/koffi/CHANGELOG.md",
@@ -73,6 +74,7 @@
                   "asarUnpack":  [
                                      "node_modules/koffi/build/koffi/win32_x64/koffi.node",
                                      "src/main/backend/igcl2023/**",
+                                     "src/main/sharpening-runtime/*.dll",
                                      "src/main/backend/PawnIO_setup.exe"
                                  ],
                   "extraResources":  [

@@ -58,6 +58,8 @@ import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, resolvePreferredDevice, clampOverlayScale, overlayHotkeysCollide, validateOverlayHotkeyLetter, waiverProbeDue, pushRecordingActionResult } from './ipc-core.js';
 import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT, OVERLAY_RENDERERS } from './store/profile-store.js';
 import { GameProfileStore } from './store/game-profile-store.js';
+import { createPostprocessSharpening } from './sharpening-postprocess.js';
+import { createMockPostprocessSharpening } from './sharpening-postprocess-mock.js';
 import { RecordingStore } from './store/recording-store.js';
 import { StabilityStore } from './store/stability-store.js';
 import { createGpuWorkloadController } from './gpu-workload.js';
@@ -1808,6 +1810,9 @@ async function main() {
     ocModeDefault: mock ? (process.env.RID_MOCK_STOCK_MODE === '1' ? 'stock' : 'advanced') : 'stock',
   });
   const gameProfiles = new GameProfileStore({ dir: store.dir });
+  const postprocessSharpening = mock
+    ? createMockPostprocessSharpening()
+    : createPostprocessSharpening({ dir: store.dir });
   // M99: recording state is isolated from settings.json so future recording
   // migrations cannot alter the GPU/profile schema. The default capture
   // directory is created only when the user starts recording or chooses it.
@@ -4160,6 +4165,7 @@ async function main() {
     sysmanPowerLimits,
     gameProfiles,
     gameScan,
+    postprocessSharpening,
     chooseGameExecutable: async () => {
       const result = await dialog.showOpenDialog(win, {
         title: 'Add game executable',
@@ -4445,6 +4451,12 @@ async function main() {
     // Focused rendered Chromium regression for global and per-game
     // sharpening. The mock backend is mandatory in --ui-verify; this early
     // branch bypasses every unrelated full ui-verify flow.
+    if (process.env.RID_MOCK_POSTPROCESS_VERIFY === '1') {
+      const { verifyPostprocessSharpeningUi } = await import('../../test/postprocess-sharpening-ui.js');
+      await verifyPostprocessSharpeningUi(win, postprocessSharpening, gameProfiles, backend);
+      app.exit(0);
+      return;
+    }
     if (process.env.RID_MOCK_SHARPENING_VERIFY === '1') {
       const { verifySharpeningUi } = await import('../../test/sharpening-ui.js');
       await verifySharpeningUi(win, backend, gameProfiles);

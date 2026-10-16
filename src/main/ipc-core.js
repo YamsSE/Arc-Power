@@ -1465,6 +1465,7 @@ export function createIpcHandlers({
   vendorTelemetry = createVendorTelemetry({ sysinfo }),
   vendorTelemetryFactory = null,
   gameProfiles = null,
+  postprocessSharpening = null,
   gameScan = createGameScanAdapter(),
   chooseGameExecutable = async () => null,
   gameArtwork = async () => null,
@@ -3140,7 +3141,57 @@ export function createIpcHandlers({
     }
   };
 
+  const postprocessService = () => {
+    if (!postprocessSharpening) throw new Error('Shader sharpening is unavailable in this session.');
+    return postprocessSharpening;
+  };
+  const postprocessValue = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).some((key) => !['enabled', 'percentage'].includes(key))
+      || typeof value.enabled !== 'boolean' || !Number.isInteger(value.percentage)
+      || value.percentage < 0 || value.percentage > 100) {
+      throw new Error('Sharpening requires an enabled flag and a whole percentage from 0 to 100.');
+    }
+    return { enabled: value.enabled, percentage: value.percentage };
+  };
+  const postprocessTarget = async (value, requireCatalog = false) => {
+    const exePath = canonicalExePath(value);
+    if (!exePath) throw new Error('Choose a valid game executable.');
+    if (requireCatalog) {
+      const { catalog } = await gameProfiles.loadCatalog();
+      if (!Array.isArray(catalog) || !catalog.some((entry) => canonicalExePath(entry.exePath) === exePath)) {
+        throw new Error('Add this game to Profiles before setting up sharpening.');
+      }
+    }
+    return exePath;
+  };
+
   const handlers = {
+    'postprocess-sharpening:get': async (...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:get');
+      return postprocessService().getGlobal();
+    },
+    'postprocess-sharpening:set': async (value, ...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:set');
+      return postprocessService().setGlobal(postprocessValue(value));
+    },
+    'postprocess-sharpening:game-get': async (exePath, ...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:game-get');
+      return postprocessService().getGame(await postprocessTarget(exePath));
+    },
+    'postprocess-sharpening:install': async (exePath, ...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:install');
+      return postprocessService().install(await postprocessTarget(exePath, true));
+    },
+    'postprocess-sharpening:game-set': async (exePath, override, ...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:game-set');
+      const value = override === null ? null : postprocessValue(override);
+      return postprocessService().setGame(await postprocessTarget(exePath), value);
+    },
+    'postprocess-sharpening:remove': async (exePath, ...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:remove');
+      return postprocessService().remove(await postprocessTarget(exePath));
+    },
     'health': async () => collectHealth(backend),
 
     'intel-driver-update-check': async (...args) => {

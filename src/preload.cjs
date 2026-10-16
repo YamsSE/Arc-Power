@@ -33,6 +33,12 @@ contextBridge.exposeInMainWorld('arcPower', {
   graphicsGet: (deviceId) => ipcRenderer.invoke('graphics:get', deviceId),
   arcSleepBaseCapGet: (deviceId) => ipcRenderer.invoke('arc-sleep-base-cap-get', deviceId),
   graphicsApply: (deviceId, settings) => ipcRenderer.invoke('graphics:apply', deviceId, settings),
+  postprocessSharpeningGet: () => ipcRenderer.invoke('postprocess-sharpening:get'),
+  postprocessSharpeningSet: (value) => ipcRenderer.invoke('postprocess-sharpening:set', value),
+  postprocessSharpeningGameGet: (exePath) => ipcRenderer.invoke('postprocess-sharpening:game-get', exePath),
+  postprocessSharpeningInstall: (exePath) => ipcRenderer.invoke('postprocess-sharpening:install', exePath),
+  postprocessSharpeningGameSet: (exePath, override) => ipcRenderer.invoke('postprocess-sharpening:game-set', exePath, override),
+  postprocessSharpeningRemove: (exePath) => ipcRenderer.invoke('postprocess-sharpening:remove', exePath),
   // M10b (the Graphics "Display" view): the display-output surface - the
   // Graphics page's Display-view IPC (the dedicated display apply path -
   // NOT the OC apply-routing machinery: display settings have no OC

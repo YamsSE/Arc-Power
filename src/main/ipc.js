@@ -218,6 +218,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     getRecordingMemorySavingMode,
     sysmanPowerLimits,
     gameProfiles,
+    postprocessSharpening: arguments[0]?.postprocessSharpening ?? null,
     gameScan: gameScan ?? undefined,
     chooseGameExecutable,
     gameArtwork,
@@ -355,7 +356,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
   for (const [channel, fn] of Object.entries(handlers)) {
     const isMaintenanceChannel = channel === 'app:maintenance-restart' || channel === 'app:clear-cache-restart';
     const invokeHandler = async (event, ...args) => {
-      if (channel === 'device-selection-push' || channel.startsWith('update:')) {
+      if (channel === 'device-selection-push' || channel.startsWith('update:') || channel.startsWith('postprocess-sharpening:')) {
         const win = getWindow();
         if (!win || win.isDestroyed() || event.sender !== win.webContents) {
           throw new Error(`${channel} is restricted to the main renderer`);

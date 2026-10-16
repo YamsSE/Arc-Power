@@ -23,6 +23,9 @@ import type {
   GraphicsApplyResponse,
   GraphicsSettings,
   GraphicsState,
+  PostprocessSharpeningValue,
+  PostprocessSharpeningGlobal,
+  PostprocessSharpeningGame,
   HealthReport,
   MockFeaturesetsResponse,
   MockSwapResponse,
@@ -136,6 +139,12 @@ export interface ArcPowerApi {
    *  NO OC-mode gate). Returns the { ok, perControl, graphicsState } envelope
    *  with the FRESH read-back for the per-control refresh. */
   graphicsApply(deviceId: number, settings: GraphicsSettings): Promise<GraphicsApplyResponse>;
+  postprocessSharpeningGet(): Promise<PostprocessSharpeningGlobal>;
+  postprocessSharpeningSet(value: PostprocessSharpeningValue): Promise<PostprocessSharpeningGlobal>;
+  postprocessSharpeningGameGet(exePath: string): Promise<PostprocessSharpeningGame>;
+  postprocessSharpeningInstall(exePath: string): Promise<PostprocessSharpeningGame>;
+  postprocessSharpeningGameSet(exePath: string, override: PostprocessSharpeningValue | null): Promise<PostprocessSharpeningGame>;
+  postprocessSharpeningRemove(exePath: string): Promise<PostprocessSharpeningGame>;
   /** M10b (the Graphics "Display" view): the display-output read (never
    *  throws - { displays: [] } is the honest no-controls degrade). NEVER
    *  called with a null deviceId - the no-Intel page guard renders

@@ -1,0 +1,362 @@
+diff --git a/ReShade.vcxproj b/ReShade.vcxproj
+index 1948e3e..9a1d689 100644
+--- a/ReShade.vcxproj
++++ b/ReShade.vcxproj
+@@ -89,7 +89,6 @@
+   <ImportGroup Label="PropertySheets">
+     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+     <Import Project="Common.props" />
+-    <Import Project="deps\D3D12On7.props" />
+     <Import Project="deps\fpng.props" />
+     <Import Project="deps\glad.props" />
+     <Import Project="deps\ImGui.props" />
+@@ -255,7 +254,7 @@
+       <IntrinsicFunctions>true</IntrinsicFunctions>
+       <FunctionLevelLinking>true</FunctionLevelLinking>
+       <AdditionalIncludeDirectories>$(SolutionDir)res;$(SolutionDir)source;$(SolutionDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+-      <PreprocessorDefinitions>RESHADE_GUI;RESHADE_API_LIBRARY_EXPORT;RESHADE_ADDON=2;RESHADE_LOCALIZATION;_HAS_EXCEPTIONS=0;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
++      <PreprocessorDefinitions>ARC_POWER_MANAGED=1;RESHADE_API_LIBRARY_EXPORT;RESHADE_ADDON=0;_HAS_EXCEPTIONS=0;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+       <DisableSpecificWarnings>6387;26812;28251;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+       <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
+       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+@@ -297,7 +296,7 @@
+       <IntrinsicFunctions>true</IntrinsicFunctions>
+       <FunctionLevelLinking>true</FunctionLevelLinking>
+       <AdditionalIncludeDirectories>$(SolutionDir)res;$(SolutionDir)source;$(SolutionDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+-      <PreprocessorDefinitions>RESHADE_GUI;RESHADE_API_LIBRARY_EXPORT;RESHADE_ADDON=2;RESHADE_LOCALIZATION;_HAS_EXCEPTIONS=0;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
++      <PreprocessorDefinitions>ARC_POWER_MANAGED=1;RESHADE_API_LIBRARY_EXPORT;RESHADE_ADDON=0;_HAS_EXCEPTIONS=0;_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+       <DisableSpecificWarnings>6387;26812;28251;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+       <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
+       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+@@ -526,15 +525,6 @@
+     </ProjectReference>
+   </ItemGroup>
+   <ItemGroup>
+-    <ClCompile Include="examples\09-depth\generic_depth_addon.cpp">
+-      <!-- Force include "reshade.hpp" before anything else when creating built-in add-on, so that no Dear ImGui functions are created. -->
+-      <ForcedIncludeFiles>reshade.hpp;%(ForcedIncludeFiles)</ForcedIncludeFiles>
+-      <PreprocessorDefinitions>BUILTIN_ADDON;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+-    </ClCompile>
+-    <ClCompile Include="examples\15-effect_runtime_sync\runtime_sync_addon.cpp">
+-      <ForcedIncludeFiles>reshade.hpp;%(ForcedIncludeFiles)</ForcedIncludeFiles>
+-      <PreprocessorDefinitions>BUILTIN_ADDON;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+-    </ClCompile>
+     <ClCompile Include="source\addon.cpp" />
+     <ClCompile Include="source\addon_manager.cpp" />
+     <ClCompile Include="source\d2d1\d2d1.cpp" />
+@@ -568,10 +558,8 @@
+     <ClCompile Include="source\d3d12\d3d12.cpp" />
+     <ClCompile Include="source\d3d12\d3d12_command_list.cpp" />
+     <ClCompile Include="source\d3d12\d3d12_command_queue.cpp" />
+-    <ClCompile Include="source\d3d12\d3d12_command_queue_downlevel.cpp" />
+     <ClCompile Include="source\d3d12\d3d12_descriptor_heap.cpp" />
+     <ClCompile Include="source\d3d12\d3d12_device.cpp" />
+-    <ClCompile Include="source\d3d12\d3d12_device_downlevel.cpp" />
+     <ClCompile Include="source\d3d12\d3d12_extensions.cpp" />
+     <ClCompile Include="source\d3d12\d3d12_impl_command_list.cpp" />
+     <ClCompile Include="source\d3d12\d3d12_impl_command_list_immediate.cpp" />
+@@ -716,10 +704,8 @@
+     <ClInclude Include="source\d3d11\d3d11_resource_call_vtable.inl" />
+     <ClInclude Include="source\d3d12\d3d12_command_list.hpp" />
+     <ClInclude Include="source\d3d12\d3d12_command_queue.hpp" />
+-    <ClInclude Include="source\d3d12\d3d12_command_queue_downlevel.hpp" />
+     <ClInclude Include="source\d3d12\d3d12_descriptor_heap.hpp" />
+     <ClInclude Include="source\d3d12\d3d12_device.hpp" />
+-    <ClInclude Include="source\d3d12\d3d12_device_downlevel.hpp" />
+     <ClInclude Include="source\d3d12\d3d12_extensions.hpp" />
+     <ClInclude Include="source\d3d12\d3d12_impl_command_list.hpp" />
+     <ClInclude Include="source\d3d12\d3d12_impl_command_list_immediate.hpp" />
+@@ -842,4 +828,4 @@
+     </CustomBuild>
+   </ItemGroup>
+   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+-</Project>
+\ No newline at end of file
++</Project>
+diff --git a/source/d3d12/d3d12_command_queue.cpp b/source/d3d12/d3d12_command_queue.cpp
+index 2b5073e..fd0ab60 100644
+--- a/source/d3d12/d3d12_command_queue.cpp
++++ b/source/d3d12/d3d12_command_queue.cpp
+@@ -6,7 +6,7 @@
+ #include "d3d12_device.hpp"
+ #include "d3d12_command_list.hpp"
+ #include "d3d12_command_queue.hpp"
+-#include "d3d12_command_queue_downlevel.hpp"
++
+ #include "dll_log.hpp"
+ #include "com_utils.hpp"
+ #include "addon_manager.hpp"
+@@ -89,21 +89,6 @@ HRESULT STDMETHODCALLTYPE D3D12CommandQueue::QueryInterface(REFIID riid, void **
+ 		return S_OK;
+ 	}
+ 
+-	// Special case for d3d12on7
+-	if (riid == __uuidof(ID3D12CommandQueueDownlevel)) // {38A8C5EF-7CCB-4E81-914F-A6E9D072C494}
+-	{
+-		if (_downlevel == nullptr)
+-		{
+-			// Not a 'com_ptr' since D3D12CommandQueueDownlevel will take ownership
+-			ID3D12CommandQueueDownlevel *downlevel = nullptr;
+-			if (SUCCEEDED(_orig->QueryInterface(&downlevel)))
+-				_downlevel = new D3D12CommandQueueDownlevel(this, downlevel);
+-		}
+-
+-		if (_downlevel != nullptr)
+-			return _downlevel->QueryInterface(riid, ppvObj);
+-		return E_NOINTERFACE;
+-	}
+ 
+ 	return _orig->QueryInterface(riid, ppvObj);
+ }
+@@ -121,12 +106,6 @@ ULONG   STDMETHODCALLTYPE D3D12CommandQueue::Release()
+ 		return ref;
+ 	}
+ 
+-	if (_downlevel != nullptr)
+-	{
+-		// Release the reference that was added when the downlevel interface was first queried in 'QueryInterface' above
+-		_downlevel->_orig->Release();
+-		delete _downlevel;
+-	}
+ 
+ 	const auto orig = _orig;
+ 	const auto device = static_cast<D3D12Device *>(_device);
+@@ -265,3 +244,4 @@ HRESULT STDMETHODCALLTYPE D3D12CommandQueue::GetGlobalPriority(D3D12_COMMAND_QUE
+ 
+ 	return static_cast<ID3D12CommandQueue1 *>(_orig)->GetGlobalPriority(pOutValue);
+ }
++
+diff --git a/source/d3d12/d3d12_command_queue.hpp b/source/d3d12/d3d12_command_queue.hpp
+index 8c79531..570e37b 100644
+--- a/source/d3d12/d3d12_command_queue.hpp
++++ b/source/d3d12/d3d12_command_queue.hpp
+@@ -8,11 +8,9 @@
+ #include "d3d12_impl_command_queue.hpp"
+ 
+ class D3D12Device;
+-class D3D12CommandQueueDownlevel;
+ 
+ class DECLSPEC_UUID("2C576D2A-0C1C-4D1D-AD7C-BC4FAEC15ABC") D3D12CommandQueue final : public ID3D12CommandQueue1, public reshade::d3d12::command_queue_impl
+ {
+-	friend class D3D12CommandQueueDownlevel;
+ 
+ public:
+ 	D3D12CommandQueue(D3D12Device *device, ID3D12CommandQueue *original);
+@@ -60,5 +58,5 @@ public:
+ 	unsigned short _interface_version = 0;
+ 
+ private:
+-	D3D12CommandQueueDownlevel *_downlevel = nullptr;
+ };
++
+diff --git a/source/d3d12/d3d12_device.cpp b/source/d3d12/d3d12_device.cpp
+index fab80ad..747a312 100644
+--- a/source/d3d12/d3d12_device.cpp
++++ b/source/d3d12/d3d12_device.cpp
+@@ -4,7 +4,7 @@
+  */
+ 
+ #include "d3d12_device.hpp"
+-#include "d3d12_device_downlevel.hpp"
++
+ #include "d3d12_command_list.hpp"
+ #include "d3d12_command_queue.hpp"
+ #include "d3d12_extensions.hpp"
+@@ -143,21 +143,6 @@ HRESULT STDMETHODCALLTYPE D3D12Device::QueryInterface(REFIID riid, void **ppvObj
+ 	}
+ #endif
+ 
+-	// Special case for d3d12on7
+-	if (riid == __uuidof(ID3D12DeviceDownlevel)) // {74EAEE3F-2F4B-476D-82BA-2B85CB49E310}
+-	{
+-		if (_downlevel == nullptr)
+-		{
+-			// Not a 'com_ptr' since D3D12DeviceDownlevel will take ownership
+-			ID3D12DeviceDownlevel *downlevel = nullptr;
+-			if (SUCCEEDED(_orig->QueryInterface(&downlevel)))
+-				_downlevel = new D3D12DeviceDownlevel(this, downlevel);
+-		}
+-
+-		if (_downlevel != nullptr)
+-			return _downlevel->QueryInterface(riid, ppvObj);
+-		return E_NOINTERFACE;
+-	}
+ 
+ 	// Unimplemented interfaces:
+ 	//   ID3D12DebugDevice  {3FEBD6DD-4973-4787-8194-E45F9E28923E}
+@@ -184,12 +169,6 @@ ULONG   STDMETHODCALLTYPE D3D12Device::Release()
+ 		return ref;
+ 	}
+ 
+-	if (_downlevel != nullptr)
+-	{
+-		// Release the reference that was added when the downlevel interface was first queried in 'QueryInterface' above
+-		_downlevel->_orig->Release();
+-		delete _downlevel;
+-	}
+ 
+ 	const auto orig = _orig;
+ 	const auto interface_version = _interface_version;
+@@ -3333,3 +3312,4 @@ bool D3D12Device::invoke_create_and_init_pipeline_layout_event(UINT node_mask, c
+ }
+ 
+ #endif
++
+diff --git a/source/d3d12/d3d12_device.hpp b/source/d3d12/d3d12_device.hpp
+index 065e55f..1fea5bc 100644
+--- a/source/d3d12/d3d12_device.hpp
++++ b/source/d3d12/d3d12_device.hpp
+@@ -7,11 +7,9 @@
+ 
+ #include "d3d12_impl_device.hpp"
+ 
+-class D3D12DeviceDownlevel;
+ 
+ class DECLSPEC_UUID("2523AFF4-978B-4939-BA16-8EE876A4CB2A") D3D12Device final : public ID3D12Device15, public reshade::d3d12::device_impl
+ {
+-	friend class D3D12DeviceDownlevel;
+ 
+ public:
+ 	D3D12Device(ID3D12Device *original);
+@@ -166,5 +164,6 @@ public:
+ 	unsigned short _interface_version = 0;
+ 
+ private:
+-	D3D12DeviceDownlevel *_downlevel = nullptr;
+ };
++
++
+diff --git a/source/d3d12/d3d12_impl_swapchain.cpp b/source/d3d12/d3d12_impl_swapchain.cpp
+index 26ae993..5e54133 100644
+--- a/source/d3d12/d3d12_impl_swapchain.cpp
++++ b/source/d3d12/d3d12_impl_swapchain.cpp
+@@ -86,35 +86,3 @@ reshade::api::color_space reshade::d3d12::swapchain_impl::get_color_space() cons
+ 	return convert_color_space(color_space);
+ }
+ 
+-reshade::d3d12::swapchain_d3d12on7_impl::swapchain_d3d12on7_impl(device_impl *device, ID3D12CommandQueueDownlevel *command_queue_downlevel) :
+-	api_object_impl(command_queue_downlevel),
+-	_device(device)
+-{
+-	// Default to three back buffers for d3d12on7
+-	_back_buffers.resize(3);
+-}
+-
+-reshade::api::device *reshade::d3d12::swapchain_d3d12on7_impl::get_device()
+-{
+-	return _device;
+-}
+-
+-void *reshade::d3d12::swapchain_d3d12on7_impl::get_hwnd() const
+-{
+-	return _hwnd;
+-}
+-
+-reshade::api::resource reshade::d3d12::swapchain_d3d12on7_impl::get_back_buffer(uint32_t index)
+-{
+-	return to_handle(_back_buffers[index].get());
+-}
+-
+-uint32_t reshade::d3d12::swapchain_d3d12on7_impl::get_back_buffer_count() const
+-{
+-	return static_cast<uint32_t>(_back_buffers.size());
+-}
+-
+-uint32_t reshade::d3d12::swapchain_d3d12on7_impl::get_current_back_buffer_index() const
+-{
+-	return _swap_index;
+-}
+diff --git a/source/d3d12/d3d12_impl_swapchain.hpp b/source/d3d12/d3d12_impl_swapchain.hpp
+index 05e27d9..a42e592 100644
+--- a/source/d3d12/d3d12_impl_swapchain.hpp
++++ b/source/d3d12/d3d12_impl_swapchain.hpp
+@@ -7,7 +7,7 @@
+ 
+ #include <dxgi1_5.h>
+ 
+-struct ID3D12CommandQueueDownlevel;
++
+ 
+ namespace reshade::d3d12
+ {
+@@ -35,29 +35,5 @@ namespace reshade::d3d12
+ 		device_impl *const _device;
+ 	};
+ 
+-	class swapchain_d3d12on7_impl : public api::api_object_impl<ID3D12CommandQueueDownlevel *, api::swapchain>
+-	{
+-	public:
+-		swapchain_d3d12on7_impl(device_impl *device, ID3D12CommandQueueDownlevel *command_queue_downlevel);
+-
+-		api::device *get_device() final;
+-
+-		void *get_hwnd() const final;
+-
+-		api::resource get_back_buffer(uint32_t index) final;
+-
+-		uint32_t get_back_buffer_count() const final;
+-		uint32_t get_current_back_buffer_index() const final;
+-
+-		bool check_color_space_support(api::color_space color_space) const final { return color_space == api::color_space::srgb; }
+-
+-		api::color_space get_color_space() const final { return api::color_space::unknown; }
+-
+-	protected:
+-		device_impl *const _device;
+-
+-		std::vector<com_ptr<ID3D12Resource>> _back_buffers;
+-		HWND _hwnd = nullptr;
+-		UINT _swap_index = 0;
+-	};
+ }
++
+diff --git a/source/runtime.cpp b/source/runtime.cpp
+index 9ad4b62..867df86 100644
+--- a/source/runtime.cpp
++++ b/source/runtime.cpp
+@@ -335,7 +335,9 @@ reshade::runtime::runtime(api::swapchain *swapchain, api::command_queue *graphic
+ 	else
+ 		log::message(log::level::info, "Running on %s.", device_description);
+ 
++#if !defined(ARC_POWER_MANAGED)
+ 	check_for_update();
++#endif
+ 
+ 	// Default shortcut PrtScrn
+ 	_screenshot_key_data[0] = 0x2C;
+@@ -1076,6 +1078,9 @@ void reshade::runtime::load_config()
+ }
+ void reshade::runtime::save_config() const
+ {
++#if defined(ARC_POWER_MANAGED)
++	return;
++#else
+ 	ini_file &config = ini_file::load_cache(_config_path);
+ 
+ 	config.set("INPUT", "ForceShortcutModifiers", _force_shortcut_modifiers);
+@@ -1136,6 +1141,7 @@ void reshade::runtime::save_config() const
+ #if RESHADE_GUI
+ 	save_config_gui(config);
+ #endif
++#endif
+ }
+ 
+ void reshade::runtime::load_current_preset()
+@@ -1327,6 +1333,9 @@ void reshade::runtime::load_current_preset()
+ }
+ void reshade::runtime::save_current_preset(ini_file &preset) const
+ {
++#if defined(ARC_POWER_MANAGED)
++	return;
++#else
+ 	assert(!_is_in_preset_transition);
+ 
+ 	// Build list of active techniques and effects
+@@ -1422,6 +1431,7 @@ void reshade::runtime::save_current_preset(ini_file &preset) const
+ 			}
+ 		}
+ 	}
++#endif
+ }
+ 
+ bool reshade::runtime::switch_to_next_preset(std::filesystem::path filter_path, bool reversed)
