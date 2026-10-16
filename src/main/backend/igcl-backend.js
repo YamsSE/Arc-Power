@@ -89,6 +89,7 @@ import {
 } from './vrr-registry.js';
 import { createSharedMemoryOverride, sharedMemoryPlatformSupported } from './shared-memory-override.js';
 import { createWindowsDisplayModeController } from './windows-display-mode.js';
+import { createSharpeningProxy } from '../sharpening-proxy.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
 
@@ -1328,6 +1329,10 @@ export class IgclBackend {
     this._displayModeController = Object.prototype.hasOwnProperty.call(opts, 'displayModeController')
       ? opts.displayModeController
       : (opts.lib ? null : createWindowsDisplayModeController());
+    this._sharpening = Object.prototype.hasOwnProperty.call(opts, 'sharpening')
+      ? opts.sharpening
+      : (opts.lib ? null : createSharpeningProxy());
+    this._sharpeningRequestGuard = null;
     // Injected native libraries are test seams. They must never cause a test
     // to query or write the real Windows registry; a product backend without
     // an injected lib gets the real, identity-resolved fallback instead.
@@ -1530,12 +1535,18 @@ export class IgclBackend {
   }
 
   async close() {
+    try { await this._sharpening?.close?.(); } catch { /* helper teardown must not block native cleanup */ }
     this._provenVfRequests?.clear();
     this._telemetryCbs.clear();
     if (this._apiHandle && this._lib && typeof this._lib.ctlClose === 'function') {
       try { this._lib.ctlClose(this._apiHandle); } catch { /* best effort */ }
     }
     this._apiHandle = null;
+  }
+
+  /** Install the current elevated apply's revocation files for the next set. */
+  setSharpeningRequestGuard(guard) {
+    this._sharpeningRequestGuard = guard ?? null;
   }
 
   // -------------------------------------------------------------------------
@@ -1583,7 +1594,12 @@ export class IgclBackend {
     for (let i = 0; i < count; i++) {
       const handle = koffi.decode(handlesBuf, i * 8, 'void*');
       const propsBuf = koffi.alloc('ctl_device_adapter_properties_t', 1);
-      koffi.encode(propsBuf, 'ctl_device_adapter_properties_t', { Size: koffi.sizeof('ctl_device_adapter_properties_t'), Version: 3 });
+      const deviceId = koffi.alloc('uint8', 8);
+      for (let n = 0; n < 8; n += 1) koffi.encode(deviceId, n, 'uint8', 0);
+      koffi.encode(propsBuf, 'ctl_device_adapter_properties_t', {
+        Size: koffi.sizeof('ctl_device_adapter_properties_t'), Version: 3,
+        pDeviceID: koffi.address(deviceId), device_id_size: 8,
+      });
       result = lib.ctlGetDeviceProperties(handle, propsBuf);
       if (result !== CTL_RESULT.SUCCESS) {
         this._enumFail(new Error(`ctlGetDeviceProperties(${i}) failed: ${describeResult(result)}`));
@@ -1612,6 +1628,14 @@ export class IgclBackend {
         pciDeviceId: `0x${(Number(p.pci_device_id) >>> 0).toString(16).padStart(8, '0')}`,
         revId: p.rev_id,
         bdf: { bus: p.adapter_bdf.bus, device: p.adapter_bdf.device, function: p.adapter_bdf.function },
+        // Internal physical adapter identity used by the isolated legacy
+        // sharpening worker. IGCL writes the adapter LUID through pDeviceID.
+        luid: Number(koffi.decode(propsBuf, koffi.offsetof('ctl_device_adapter_properties_t', 'device_id_size'), 'uint32')) === 8
+          ? (() => {
+            const bytes = Array.from({ length: 8 }, (_, n) => Number(koffi.decode(deviceId, n, 'uint8')));
+            return bytes.some((byte) => byte !== 0) ? Buffer.from(bytes).toString('hex') : null;
+          })()
+          : null,
         driverVersion: '0x' + p.driver_version.toString(16).padStart(16, '0'),
         graphicsClockMHz: p.Frequency,
         numXeCores: p.num_xe_cores,
@@ -3222,11 +3246,15 @@ export class IgclBackend {
    */
   _graphicsDegraded() {
     return {
-      supported: { frameGen: false, flipModes: false, frameLimit: false, lowLatency: false },
+      supported: { frameGen: false, flipModes: false, frameLimit: false, lowLatency: false, sharpening: false },
       supportedOptions: { frameGen: [], flipModes: [], lowLatency: [] },
       frameLimitRange: null,
       frameLimitLiveChange: false,
-      values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null },
+      values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null, sharpening: null },
+      sharpeningRange: null,
+      sharpeningReason: 'The sharpening control is unavailable for this adapter.',
+      sharpeningPerAppSupport: false,
+      sharpeningLiveChange: false,
     };
   }
 
@@ -3351,10 +3379,20 @@ export class IgclBackend {
       const xeFg = frameGenDetail?.valueType === CTL_PROPERTY_VALUE_TYPE.ENUM
         && frameGenDetail.perAppSupport === true;
       const xeFgAllowed = xeFg && executable.supported;
+      let sharpening = { supported: false, reason: 'The isolated sharpening control is unavailable.' };
+      const appName = typeof exePath === 'string' ? path.win32.basename(exePath) : '';
+      if (this._sharpening && /^[^\\/\0]+$/.test(appName) && Buffer.byteLength(appName, 'utf8') <= 127) {
+        try { sharpening = await this._sharpening.run({ action: 'capabilities', luid: dev.luid, applicationName: appName }); } catch { /* degrade below */ }
+      }
       return {
         enduranceGaming: supported,
         xeFg: xeFgAllowed,
         xeFgOptions: xeFgAllowed ? [...GRAPHICS_FRAME_GEN_OPTIONS] : [],
+        sharpening: sharpening?.supported === true && sharpening.perAppSupport === true,
+        sharpeningRange: sharpening?.range ?? null,
+        sharpeningLiveChange: sharpening?.supported === true && sharpening.liveChange === true,
+        sharpeningReason: sharpening?.supported === true && sharpening.perAppSupport === true ? null
+          : sharpening?.message ?? 'The driver does not expose sharpening as a per-game setting.',
         reason: supported ? null : (!platform
           ? 'Endurance Gaming is available only on integrated Intel graphics.'
           : !detail
@@ -3371,10 +3409,22 @@ export class IgclBackend {
             : 'XeFG is not available on this driver surface.'),
       };
     } catch {
+      let sharpening = null;
+      try {
+        const dev = await this._device(deviceId);
+        const appName = typeof exePath === 'string' ? path.win32.basename(exePath) : '';
+        if (this._sharpening && dev.luid && appName && Buffer.byteLength(appName, 'utf8') <= 127) {
+          sharpening = await this._sharpening.run({ action: 'capabilities', luid: dev.luid, applicationName: appName });
+        }
+      } catch { /* keep the sharpening capability failure isolated */ }
       return {
         enduranceGaming: false,
         xeFg: false,
         xeFgOptions: [],
+        sharpening: sharpening?.supported === true && sharpening.perAppSupport === true,
+        sharpeningRange: sharpening?.range ?? null,
+        sharpeningLiveChange: sharpening?.supported === true && sharpening.liveChange === true,
+        sharpeningReason: sharpening?.message ?? (sharpening?.perAppSupport === false ? 'The driver does not expose sharpening as a per-game setting.' : 'Sharpening capabilities could not be read.'),
         reason: 'Endurance Gaming could not be read from this driver.',
         xeFgReason: 'XeFG could not be read from this driver.',
       };
@@ -3456,8 +3506,8 @@ export class IgclBackend {
       // The shared-memory override is a DxgKrnl registry control, not an
       // IGCL 3D feature. Keep it readable on an integrated/mobile adapter even if a
       // particular runtime lacks the optional 3D symbols.
-      const features = threeDSurface ? await this._graphicsCapsOf(deviceId, dev.handle) : new Map();
-      if (threeDSurface && !features) return this._graphicsDegraded();
+      const featureMap = threeDSurface ? await this._graphicsCapsOf(deviceId, dev.handle) : new Map();
+      const features = featureMap ?? new Map();
 
       const supported = {
         frameGen: features.has(CTL_3D_FEATURE.FRAME_GENERATION),
@@ -3516,6 +3566,25 @@ export class IgclBackend {
         frameLimit: null,
         lowLatency: supported.lowLatency ? readEnum(CTL_3D_FEATURE.LOW_LATENCY, GRAPHICS_LL_FROM_IGCL) : null,
       };
+      let sharpening = null;
+      let sharpeningReason = 'The isolated sharpening control is unavailable.';
+      let sharpeningRange = null;
+      let sharpeningPerAppSupport = false;
+      let sharpeningLiveChange = false;
+      if (this._sharpening && dev.luid) {
+        try {
+          const state = await this._sharpening.run({ action: 'read', luid: dev.luid });
+          if (state?.ok === true && state.supported === true) {
+            sharpening = state.value;
+            sharpeningRange = state.range ?? null;
+            sharpeningPerAppSupport = state.perAppSupport === true;
+            sharpeningLiveChange = state.liveChange === true;
+            sharpeningReason = null;
+            supported.sharpening = true;
+          } else sharpeningReason = state?.message ?? sharpeningReason;
+        } catch { /* keep optional feature degraded */ }
+      }
+      values.sharpening = sharpening;
       if (prebuiltSupported) values.prebuiltShaderDownload = readBool(CTL_3D_FEATURE.PREBUILT_SHADER_DOWNLOAD);
       if (supported.frameLimit) {
         try {
@@ -3583,6 +3652,10 @@ export class IgclBackend {
         frameLimitLiveChange: supported.frameLimit === true && flDetail?.liveChange === true,
         ...(sharedMemoryRange ? { sharedMemoryRange } : {}),
         values,
+        sharpeningRange,
+        sharpeningReason,
+        sharpeningPerAppSupport,
+        sharpeningLiveChange,
       };
     } catch {
       return this._graphicsDegraded();
@@ -3621,7 +3694,7 @@ export class IgclBackend {
     const featureMap = threeDSurface ? await this._graphicsCapsOf(deviceId, dev.handle) : null;
     const features = featureMap ?? new Map();
     const surfaceUp = featureMap !== null && threeDSurface;
-    const controls = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency', 'prebuiltShaderDownload']
+    const controls = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency', 'prebuiltShaderDownload', 'sharpening']
       .filter((c) => settings[c] !== null && settings[c] !== undefined);
 
     // Shared GPU/NPU memory is a Windows graphics-memory-manager setting and
@@ -3651,7 +3724,31 @@ export class IgclBackend {
       }
     }
 
-    const nativeControls = controls.filter((c) => c !== 'sharedMemoryOverride');
+    if (settings.sharpening !== null && settings.sharpening !== undefined) {
+      const appName = appScope;
+      const value = settings.sharpening;
+      if (!this._sharpening || !dev.luid) {
+        fail('sharpening', 'unsupported', 'The isolated IGCL sharpening runtime is unavailable for this adapter.');
+      } else if (appName && (!/^[^\\/\0]+$/.test(appName) || Buffer.byteLength(appName, 'utf8') > 127)) {
+        fail('sharpening', 'invalid-argument', 'The per-game executable name is invalid or too long for IGCL.');
+      } else if (!value || typeof value.enabled !== 'boolean' || !Number.isInteger(value.percentage)
+        || value.percentage < 0 || value.percentage > 100) {
+        fail('sharpening', 'out-of-range', 'Sharpening requires an enabled flag and an integer percentage from 0 to 100.');
+      } else {
+        try {
+          const applied = await this._sharpening.run({ action: 'set', luid: dev.luid,
+            applicationName: appName, enabled: value.enabled, percentage: value.percentage,
+            ...(this._sharpeningRequestGuard ? { guard: this._sharpeningRequestGuard } : {}) });
+          result.perControl.sharpening = { ok: applied?.ok === true,
+            errorCode: applied?.ok === true ? undefined : (applied?.errorCode ?? 'io-failed'),
+            message: applied?.message, readBackEqual: applied?.readBackEqual === true,
+            value: applied?.value ?? undefined, source: applied?.source };
+          if (applied?.ok !== true) result.ok = false;
+        } catch { fail('sharpening', 'io-failed', 'The isolated sharpening operation failed.'); }
+      }
+    }
+
+    const nativeControls = controls.filter((c) => c !== 'sharedMemoryOverride' && c !== 'sharpening');
     if (!surfaceUp) {
       for (const c of nativeControls) {
         fail(c, 'unavailable-symbol', 'the 3D-feature API is missing in the IGCL runtime');

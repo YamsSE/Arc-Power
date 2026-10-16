@@ -103,6 +103,7 @@ export const CARD_NOTES: Record<string, string> = {
   frameLimit: 'A driver-level frame-rate cap. The limiter works independently of Arc Power.',
   lowLatency: 'The driver\'s XeLL-based low-latency mode.',
   prebuiltShaderDownload: 'Automatically download and cache precompiled shaders for smoother game startup and fewer shader-compilation hitches.',
+  sharpening: 'Driver image sharpening strength for supported games. The driver reports whether changes apply live; otherwise restart the game.',
 };
 
 // Display-view notes for the driver-backed IGS-style controls.
@@ -123,6 +124,7 @@ export const CARD_TITLES: Record<string, string> = {
   frameLimit: 'FPS Limit',
   lowLatency: 'Low Latency Mode',
   prebuiltShaderDownload: 'Precompiled Shaders',
+  sharpening: 'Image Sharpening',
 };
 
 export const DROPDOWN_LABELS: Record<string, Record<string, string>> = {
@@ -276,7 +278,7 @@ const sliderNodes = new Map<string, HTMLInputElement>();
 const sliderRowNodes = new Map<string, HTMLElement>();
 const toggleNodes = new Map<string, DropdownElement>();
 const selectNodes = new Map<string, DropdownElement>();
-const GRAPHICS_REFRESH_KEYS = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency', 'prebuiltShaderDownload'];
+const GRAPHICS_REFRESH_KEYS = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency', 'prebuiltShaderDownload', 'sharpening'];
 let viewContainer: HTMLElement | null = null;
 let displayPickerHost: HTMLElement | null = null;
 let currentCtx: PageContext | null = null;
@@ -790,6 +792,7 @@ function supportedOf(state: GraphicsState, key: string): boolean {
     case 'frameLimit': return state.supported.frameLimit;
     case 'lowLatency': return state.supported.lowLatency;
     case 'prebuiltShaderDownload': return state.supported.prebuiltShaderDownload === true;
+    case 'sharpening': return state.supported.sharpening === true && state.sharpeningRange?.min === 0 && state.sharpeningRange?.max === 100 && state.sharpeningRange?.step === 1;
     default: return false;
   }
 }
@@ -833,7 +836,8 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
   const anySupported = state.supported.frameGen || state.supported.flipModes
     || state.supported.frameLimit || state.supported.lowLatency
     || supportedOf(state, 'enduranceGaming') || supportedOf(state, 'sharedMemoryOverride')
-    || supportedOf(state, 'prebuiltShaderDownload');
+    || supportedOf(state, 'prebuiltShaderDownload') || supportedOf(state, 'sharpening');
+  const sharpeningSupported = supportedOf(state, 'sharpening');
   applyBtn = anySupported ? el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT }) : null;
   applyBtn?.addEventListener('click', () => {
     if (applying) return;
@@ -857,6 +861,17 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
         draft.prebuiltShaderDownload = false;
         const prebuilt = toggleNodes.get('prebuiltShaderDownload');
         if (prebuilt) prebuilt.value = 'off';
+      }
+      if (sharpeningSupported) {
+        draft.sharpening = { enabled: false, percentage: 0 };
+        const sharpeningToggle = toggleNodes.get('sharpening');
+        if (sharpeningToggle) sharpeningToggle.value = 'off';
+        const sharpeningSlider = sliderNodes.get('sharpening');
+        if (sharpeningSlider) sharpeningSlider.value = '0';
+        const sharpeningValue = valueNodes.get('sharpening');
+        if (sharpeningValue) sharpeningValue.textContent = '0%';
+        const sharpeningRow = sliderRowNodes.get('sharpening');
+        if (sharpeningRow) sharpeningRow.hidden = true;
       }
       const range = frameLimitRange(state);
       draft.frameLimit = { enabled: false, value: range.default };
@@ -1296,6 +1311,41 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     return card;
   };
 
+  const buildSharpeningCard = (): HTMLElement => {
+    const current = draft.sharpening ?? { enabled: false, percentage: 0 };
+    const toggle = buildDropdown(current.enabled ? 'on' : 'off', [
+      { value: 'off', label: 'Off' }, { value: 'on', label: 'On' },
+    ], { className: 'graphics-select graphics-toggle', dataset: { graphicsToggle: 'sharpening' }, ariaLabel: 'Image sharpening enabled', onChange: (v) => {
+      const enabled = v === 'on';
+      draft.sharpening = { enabled, percentage: draft.sharpening?.percentage ?? 0 };
+      const row = sliderRowNodes.get('sharpening'); if (row) row.hidden = !enabled;
+      refreshChip('sharpening'); updateFloating();
+    } });
+    toggleNodes.set('sharpening', toggle);
+    const slider = el('input', { type: 'range', class: 'graphics-slider', min: 0, max: 100, step: 1, value: current.percentage,
+      'aria-label': 'Image sharpening strength', 'aria-valuetext': `${current.percentage}%`, oninput: (e: Event) => {
+        const percentage = Math.max(0, Math.min(100, Math.round(Number((e.target as HTMLInputElement).value))));
+        slider.setAttribute('aria-valuetext', `${percentage}%`);
+        draft.sharpening = { enabled: draft.sharpening?.enabled === true, percentage };
+        const value = valueNodes.get('sharpening'); if (value) value.textContent = `${percentage}%`;
+        refreshChip('sharpening'); updateFloating();
+      } });
+    sliderNodes.set('sharpening', slider);
+    const value = el('span', { class: 'graphics-fps-value', text: `${current.percentage}%` }); valueNodes.set('sharpening', value);
+    const row = el('div', { class: 'graphics-fps-slider-row', hidden: !current.enabled }, [slider, value]); sliderRowNodes.set('sharpening', row);
+    const note = `${CARD_NOTES.sharpening}${state.sharpeningLiveChange === true ? ' Changes apply while the game is running.' : ' Restart the game after applying.'}`;
+    const card = el('section', { class: 'card graphics-card', dataset: { control: 'sharpening' } }, [
+      el('div', { class: 'graphics-card-heading' }, [el('h2', { class: 'card-title', text: CARD_TITLES.sharpening }), el('div', { class: 'graphics-control graphics-inline-control' }, [toggle])]),
+      el('p', { class: 'card-note', text: state.sharpeningReason || note }),
+      el('div', { class: 'graphics-fps-row' }, [row]),
+      el('div', { class: 'graphics-card-actions' }, [el('span', { class: 'chip oc-chip-status', hidden: true }), el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void apply(ctx, 'sharpening'); } })]),
+    ]);
+    chipNodes.set('sharpening', card.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+    chipApplyNodes.set('sharpening', card.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
+    refreshChip('sharpening');
+    return card;
+  };
+
   const mobileCards: HTMLElement[] = [];
   // These cards are appended only when the backend proves the selected
   // adapter is integrated or mobile Intel Arc graphics. Real desktop dGPUs
@@ -1318,6 +1368,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     ]),
     el('div', { class: 'card-stack graphics-stack' }, [
       ...mobileCards,
+      ...(sharpeningSupported ? [buildSharpeningCard()] : []),
       ...(!battlemage ? [prebuiltShaderCard] : []),
       buildDropdownCard('frameGenOverride'),
       buildDropdownCard('flipMode'),

@@ -1011,6 +1011,7 @@ export type EnduranceGamingMode = 'performance' | 'balanced' | 'battery';
 
 /** M8 apply intent; an absent field = leave the driver value untouched. */
 export interface GraphicsSettings {
+  sharpening?: { enabled: boolean; percentage: number };
   enduranceGaming?: EnduranceGaming;
   enduranceGamingMode?: EnduranceGamingMode;
   sharedMemoryOverride?: { enabled: boolean; percentage: number };
@@ -1032,6 +1033,7 @@ export interface GraphicsState {
     enduranceGaming?: boolean;
     sharedMemoryOverride?: boolean;
     prebuiltShaderDownload?: boolean;
+    sharpening?: boolean;
   };
   /** M8: the driver's SupportedTypes-gated option lists (Speed Sync etc.) -
    *  the page's dropdown gating source. */
@@ -1057,7 +1059,12 @@ export interface GraphicsState {
     enduranceGamingMode?: EnduranceGamingMode | null;
     sharedMemoryOverride?: { enabled: boolean; percentage: number } | null;
     prebuiltShaderDownload?: boolean | null;
+    sharpening?: { enabled: boolean; percentage: number } | null;
   };
+  sharpeningRange?: RangeInfo | null;
+  sharpeningReason?: string | null;
+  sharpeningPerAppSupport?: boolean;
+  sharpeningLiveChange?: boolean;
 }
 
 /** M8: the graphics:apply envelope - the FRESH read-back (graphicsState)
@@ -1104,6 +1111,7 @@ export interface DisplaySettings {
 }
 
 export interface GameProfileGraphics {
+  sharpening?: { enabled: boolean; percentage: number };
   enduranceGaming?: 'off' | 'on';
   frameGenOverride?: FrameGenOverride;
   flipMode?: FlipMode;
@@ -1132,6 +1140,10 @@ export interface GameProfileCapabilities {
   /** XeFG is the per-game frame-generation multiplier exposed by IGCL. */
   xeFg: boolean;
   xeFgOptions: FrameGenOverride[];
+  sharpening: boolean;
+  sharpeningRange?: RangeInfo | null;
+  sharpeningReason?: string | null;
+  sharpeningLiveChange?: boolean;
   reason?: string | null;
   xeFgReason?: string | null;
 }

@@ -4442,6 +4442,15 @@ async function main() {
       if (win.webContents.isLoading()) win.webContents.once('did-finish-load', resolve);
       else resolve();
     });
+    // Focused rendered Chromium regression for global and per-game
+    // sharpening. The mock backend is mandatory in --ui-verify; this early
+    // branch bypasses every unrelated full ui-verify flow.
+    if (process.env.RID_MOCK_SHARPENING_VERIFY === '1') {
+      const { verifySharpeningUi } = await import('../../test/sharpening-ui.js');
+      await verifySharpeningUi(win, backend, gameProfiles);
+      app.exit(0);
+      return;
+    }
     // M2D featureset variant: RID_MOCK_FEATURESET=<id> (b580 / pro-b50 /
     // arc-igpu) runs the reduced per-featureset verification flow - the full
     // default flow is pinned to A770 values.

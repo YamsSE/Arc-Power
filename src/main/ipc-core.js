@@ -368,6 +368,14 @@ export function sanitizeGraphicsSettings(payload, range = null) {
     } else if (key === 'prebuiltShaderDownload') {
       if (typeof value !== 'boolean') throw new Error('prebuiltShaderDownload must be enabled or disabled');
       out[key] = value;
+    } else if (key === 'sharpening') {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)
+        || Object.keys(value).some((nestedKey) => nestedKey !== 'enabled' && nestedKey !== 'percentage')
+        || typeof value.enabled !== 'boolean'
+        || !Number.isInteger(value.percentage) || value.percentage < 0 || value.percentage > 100) {
+        throw new Error('sharpening must be { enabled: boolean, percentage: integer 0-100 }');
+      }
+      out[key] = { enabled: value.enabled, percentage: value.percentage };
     } else if (key === 'frameLimit') {
       if (typeof value !== 'object' || value === null
         || typeof value.enabled !== 'boolean'
@@ -4997,6 +5005,18 @@ export function createIpcHandlers({
 
       'game-settings-save': async (payload) => serializeGameProfileMutation(async () => {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('game-settings-save: payload must be an object');
+        if (Object.prototype.hasOwnProperty.call(payload, 'graphics')) {
+          if (!payload.graphics || typeof payload.graphics !== 'object' || Array.isArray(payload.graphics)) throw new Error('game-settings-save: graphics must be an object');
+          for (const [key, value] of Object.entries(payload.graphics)) {
+            if (key === 'sharpening') {
+              if (typeof value !== 'object' || value === null || Array.isArray(value)
+                || Object.keys(value).some((nestedKey) => nestedKey !== 'enabled' && nestedKey !== 'percentage')
+                || typeof value.enabled !== 'boolean' || !Number.isInteger(value.percentage) || value.percentage < 0 || value.percentage > 100) {
+                throw new Error('game-settings-save: sharpening must be { enabled: boolean, percentage: integer 0-100 }');
+              }
+            }
+          }
+        }
         if (Object.prototype.hasOwnProperty.call(payload, 'gpuProfiles')) throw new Error('game-settings-save: save one GPU assignment at a time');
         if (payload.deviceKey !== undefined && payload.deviceKey !== null
           && (typeof payload.deviceKey !== 'string' || payload.deviceKey.trim().length === 0 || payload.deviceKey.length > 256)) {

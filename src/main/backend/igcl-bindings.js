@@ -1531,6 +1531,7 @@ export function decode3dFeatureDetails(buf, index) {
         step: koffi.decode(buf, u + 12, 'int32') | 0,
         default: koffi.decode(buf, u + 16, 'int32') | 0,
       },
+      defaultEnabled: koffi.decode(buf, u, 'bool') === true,
       perAppSupport,
       miscSupport,
       liveChange,

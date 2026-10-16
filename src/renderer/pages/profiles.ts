@@ -593,7 +593,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let gameCatalogLoaded = gameCatalogSession.loaded;
   let gameCatalogLoading = Boolean(gameCatalogSession.loading || gameCatalogSession.scanLoading);
   let gameCatalogError: string | null = null;
-  let gameProfileCapabilities: GameProfileCapabilities = { enduranceGaming: false, xeFg: false, xeFgOptions: [] };
+  let gameProfileCapabilities: GameProfileCapabilities = { enduranceGaming: false, xeFg: false, xeFgOptions: [], sharpening: false };
+  let gameGlobalSharpening: { enabled: boolean; percentage: number } | null = null;
   let gameCapabilityRequestGeneration = 0;
   let viewMode: 'oc' | 'game' = 'oc';
   let selectedGameExePath: string | null = null;
@@ -764,11 +765,21 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       return;
     }
     const requestGeneration = ++gameCapabilityRequestGeneration;
-    gameProfileCapabilities = { enduranceGaming: false, xeFg: false, xeFgOptions: [] };
+    gameProfileCapabilities = { enduranceGaming: false, xeFg: false, xeFgOptions: [], sharpening: false };
+    gameGlobalSharpening = null;
     try {
-      const capabilities = await api.gameProfileCapabilities(targetDevice?.id ?? deviceId, game.exePath);
+      const [capabilityResult, graphicsResult] = await Promise.allSettled([
+        api.gameProfileCapabilities(targetDevice.id, game.exePath),
+        api.graphicsGet(targetDevice.id),
+      ]);
       if (requestGeneration !== gameCapabilityRequestGeneration || selectedGameExePath !== game.exePath) return;
-      gameProfileCapabilities = capabilities;
+      if (capabilityResult.status === 'fulfilled') gameProfileCapabilities = capabilityResult.value;
+      if (graphicsResult.status === 'fulfilled') {
+        const value = graphicsResult.value.values?.sharpening;
+        if (value && Number.isInteger(value.percentage)) {
+          gameGlobalSharpening = { enabled: value.enabled === true, percentage: Math.max(0, Math.min(100, value.percentage)) };
+        }
+      }
     } catch { /* unsupported surface stays hidden */ }
     if (requestGeneration === gameCapabilityRequestGeneration && viewMode === 'game' && selectedGameExePath === game.exePath) renderGameDetail(game, targetDevice ?? gameDeviceFor(selectedGameDeviceKey));
   };
@@ -821,6 +832,11 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       { value: 'on', label: 'On' },
       { value: 'on-boost', label: 'On + Boost' },
     ], { className: 'profile-setting-control game-setting-control', ariaLabel: 'Low Latency Mode' });
+    const sharpeningInherited = !Object.prototype.hasOwnProperty.call(graphics, 'sharpening');
+    const sharpening = graphics.sharpening ?? gameGlobalSharpening ?? { enabled: false, percentage: gameProfileCapabilities.sharpeningRange?.default ?? 0 };
+    const sharpeningEnabled = el('input', { class: 'profile-setting-check game-setting-control', type: 'checkbox', checked: sharpening.enabled, 'aria-label': 'Per-game image sharpening enabled' }) as HTMLInputElement;
+    const sharpeningSlider = el('input', { class: 'profile-setting-control game-setting-control profile-sharpening-slider', type: 'range', min: 0, max: 100, step: 1, value: sharpening.percentage, 'aria-label': 'Per-game image sharpening strength', 'aria-valuetext': `${sharpening.percentage}%` }) as HTMLInputElement;
+    const sharpeningValue = el('span', { class: 'profile-capability-note', text: `${sharpening.percentage}%` });
     const save = (patch: Partial<GameGpuProfile>): void => { void onGameSettingsSave(game, targetDevice, patch); };
     const gpuSwitch = el('div', { class: 'game-profile-gpu-switch', role: 'tablist', 'aria-label': 'Game Profile GPU' }, gameDevices().map((device) => el('button', {
       class: `btn btn-ghost btn-sm${(device.deviceKey ?? null) === targetKey ? ' active' : ''}`,
@@ -853,6 +869,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         settingRow('FPS Limiter', 'Uses RTSS when available and the Intel driver limiter otherwise.', el('span', { class: 'profile-inline-control' }, [fps, fpsValue])),
         settingRow('Low Latency Mode', 'Improves the responsiveness between user input and graphics rendering for a better gaming experience.', latency),
       ]),
+      ...(gameProfileCapabilities.sharpening ? [el('section', { class: 'profile-settings-section game-igs-settings' }, [
+        el('h3', { class: 'profile-section-title', text: 'Graphics' }),
+        settingRow('Image Sharpening', gameProfileCapabilities.sharpeningReason || (sharpeningInherited
+          ? gameGlobalSharpening
+            ? `Using global sharpening: ${gameGlobalSharpening.enabled ? 'On' : 'Off'} (${gameGlobalSharpening.percentage}%). Changing these controls creates a game override.`
+            : 'No per-game override is saved; the global setting applies. Changing these controls creates a game override.'
+          : 'Overrides the global sharpening setting for this game and GPU.'), el('span', { class: 'profile-inline-control' }, [sharpeningEnabled, sharpeningSlider, sharpeningValue])),
+        el('p', { class: 'profile-capability-note', text: gameProfileCapabilities.sharpeningLiveChange === true ? 'The driver reports live changes for this setting.' : 'Restart the game after changing sharpening.' }),
+      ])] : []),
       el('p', { class: 'profile-capability-note', text: `When Use Profile is enabled for ${gameGpuLabel(targetDevice)}, its tuning preset and Graphics values are applied only to that GPU.` }),
     ]);
     tuning.addEventListener('change', () => save({ tuningProfileId: tuning.value || null }));
@@ -860,6 +885,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     xeFg.addEventListener('change', () => { if (gameProfileCapabilities.xeFg) save({ graphics: { frameGenOverride: xeFg.value as FrameGenOverride } }); });
     frame.addEventListener('change', () => save({ graphics: { flipMode: frame.value as FlipMode } }));
     latency.addEventListener('change', () => save({ graphics: { lowLatency: latency.value as LowLatency } }));
+    sharpeningEnabled.addEventListener('change', () => save({ graphics: { sharpening: { enabled: sharpeningEnabled.checked, percentage: Math.max(0, Math.min(100, Math.round(Number(sharpeningSlider.value)))) } } }));
+    sharpeningSlider.addEventListener('input', () => {
+      const percentage = Math.max(0, Math.min(100, Math.round(Number(sharpeningSlider.value))));
+      sharpeningValue.textContent = `${percentage}%`;
+      sharpeningSlider.setAttribute('aria-valuetext', `${percentage}%`);
+    });
+    sharpeningSlider.addEventListener('change', () => {
+      save({ graphics: { sharpening: { enabled: sharpeningEnabled.checked, percentage: Math.max(0, Math.min(100, Math.round(Number(sharpeningSlider.value)))) } } });
+    });
     fps.addEventListener('change', () => save({ graphics: { frameLimit: { enabled: fps.checked, value: Number(fpsValue.value) || 60 } } }));
     fpsValue.addEventListener('change', () => save({ graphics: { frameLimit: { enabled: fps.checked, value: Number(fpsValue.value) || 60 } } }));
     clear(root); root.append(modeToggle(), detail);

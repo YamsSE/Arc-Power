@@ -59,6 +59,11 @@ function cleanGraphics(value) {
   if (['off', 'on', 'on-boost'].includes(value.lowLatency)) out.lowLatency = value.lowLatency;
   if (['off', 'on'].includes(value.enduranceGaming)) out.enduranceGaming = value.enduranceGaming;
   if (['app-choice', '2x', '3x', '4x'].includes(value.frameGenOverride)) out.frameGenOverride = value.frameGenOverride;
+  if (value.sharpening && typeof value.sharpening === 'object' && !Array.isArray(value.sharpening)
+    && typeof value.sharpening.enabled === 'boolean'
+    && Number.isInteger(value.sharpening.percentage) && value.sharpening.percentage >= 0 && value.sharpening.percentage <= 100) {
+    out.sharpening = { enabled: value.sharpening.enabled, percentage: value.sharpening.percentage };
+  }
   return out;
 }
 
