@@ -712,18 +712,33 @@ export const monitoringPage: Page = {
         ]),
       ]),
     ]);
+    const pageKicker = el('span', { class: 'arc-section-kicker', text: monView === 'overlay' ? 'OVERLAY CONTROLS' : 'SYSTEM MONITORING' });
+    const pageTitle = el('h1', { class: 'page-title', text: monView === 'overlay' ? 'Overlay' : 'Monitoring' });
+    const heroLabel = el('span', { class: 'arc-hero-label', text: monView === 'overlay' ? 'IN-GAME HUD' : 'LIVE TELEMETRY' });
+    const heroValue = el('span', { class: 'arc-hero-value', text: monView === 'overlay' ? 'Display and appearance' : 'System and GPU metrics' });
+    const pageSubtitle = el('p', {
+      class: 'page-subtitle',
+      text: monView === 'overlay'
+        ? 'The in-game HUD - enable it, pick the stats, colors, size, position and hotkey.'
+        : `Live values and ${TELEMETRY_HISTORY_WINDOW_LABEL} rolling graphs from the GPU.`,
+    });
+    const pageShell = el('div', { class: 'arc-page-shell monitoring-page-shell' }, [
+      el('header', { class: 'arc-page-hero monitoring-page-hero' }, [
+        el('div', { class: 'arc-page-hero-copy' }, [
+          pageKicker,
+          pageTitle,
+          pageSubtitle,
+        ]),
+        el('div', { class: 'arc-page-hero-side' }, [
+          heroLabel,
+          heroValue,
+        ]),
+      ]),
+      el('div', { class: 'arc-page-toolbar' }, [viewToggle]),
+    ]);
     viewContainer = el('div', { class: 'mon-view' });
-    container.append(
-      el('h1', { class: 'page-title', text: monView === 'overlay' ? 'Overlay' : 'Monitoring' }),
-      el('p', {
-        class: 'page-subtitle',
-        text: monView === 'overlay'
-          ? 'The in-game HUD - enable it, pick the stats, colors, size, position and hotkey.'
-          : `Live values and ${TELEMETRY_HISTORY_WINDOW_LABEL} rolling graphs from the GPU.`,
-      }),
-      viewToggle,
-      viewContainer,
-    );
+    pageShell.append(viewContainer);
+    container.append(pageShell);
     // M9: the view switch re-renders ONLY the sub-view container - the
     // telemetry series (module-level mon.series) survive the round trip,
     // and every monitoring-view rebuild re-registers the metric canvases +
@@ -740,6 +755,13 @@ export const monitoringPage: Page = {
     const setMonView = (v: 'monitoring' | 'overlay'): void => {
       if (monView === v) return;
       monView = v;
+      pageKicker.textContent = monView === 'overlay' ? 'OVERLAY CONTROLS' : 'SYSTEM MONITORING';
+      pageTitle.textContent = monView === 'overlay' ? 'Overlay' : 'Monitoring';
+      heroLabel.textContent = monView === 'overlay' ? 'IN-GAME HUD' : 'LIVE TELEMETRY';
+      heroValue.textContent = monView === 'overlay' ? 'Display and appearance' : 'System and GPU metrics';
+      pageSubtitle.textContent = monView === 'overlay'
+        ? 'The in-game HUD - enable it, pick the stats, colors, size, position and hotkey.'
+        : `Live values and ${TELEMETRY_HISTORY_WINDOW_LABEL} rolling graphs from the GPU.`;
       renderMonView();
       viewToggle.querySelectorAll<HTMLButtonElement>('.mon-view-btn').forEach((b) => {
         b.classList.toggle('active', b.dataset.view === monView);
@@ -953,7 +975,7 @@ function renderTrackingPanel(state: AppState): HTMLElement {
     },
   });
   const list = el('div', { class: 'telemetry-tracking-list' }, groupNodes);
-  return el('aside', { class: 'card telemetry-tracking-card', dataset: { logCard: 'true' } }, [
+  return el('aside', { class: 'card arc-surface-card telemetry-tracking-card', dataset: { logCard: 'true' } }, [
     el('div', { class: 'telemetry-tracking-heading' }, [
       el('div', {}, [el('h2', { class: 'card-title', text: 'Log to file' }), el('p', { class: 'card-note', text: 'Choose the metrics written to the telemetry log.' })]),
       el('span', { class: 'telemetry-tracking-live', text: getMonitorLogToFile() ? 'Logging' : 'Ready' }),
@@ -1253,7 +1275,7 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
   }
   m.fpsTileValue = panels.querySelector('.mon-fps-tile .stat-value') as HTMLElement;
 
-  const readout = el('section', { class: 'card telemetry-metrics-card' }, [
+  const readout = el('section', { class: 'card arc-surface-card telemetry-metrics-card' }, [
     el('div', { class: 'telemetry-section-heading' }, [
       el('div', {}, [el('h2', { class: 'card-title', text: 'Metrics' }), el('p', { class: 'card-note', text: 'Choose a section to expand its complete live readout.' })]),
       el('span', { class: 'telemetry-live-badge', text: `${s.devices.length} GPU${s.devices.length === 1 ? '' : 's'}` }),

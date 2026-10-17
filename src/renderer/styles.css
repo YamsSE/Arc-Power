@@ -3391,9 +3391,8 @@ input[type="number"] {
   .overlay-renderer-row { grid-template-columns: 1fr; gap: 6px; }
 }
 
-/* Shared Arc control surface. The Overlay Settings hero is the visual
-   reference for the control pages: a restrained navy glass panel, cyan edge
-   light, compact kicker, and a small live-status rail. These classes are
+/* Shared Arc page surface. Arc Sleep is the visual reference: a restrained
+   blue/green glass hero, compact kicker, and a small live-status rail. These classes are
    presentation-only; the existing page hooks and control data attributes
    remain unchanged. */
 .arc-page-hero {
@@ -3402,13 +3401,13 @@ input[type="number"] {
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  min-height: 112px;
-  padding: 22px 24px;
+  min-height: 116px;
+  padding: 26px 28px;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
-  border-radius: var(--radius);
-  background: linear-gradient(115deg, color-mix(in srgb, var(--bg-elev) 92%, var(--accent) 8%), color-mix(in srgb, var(--bg) 88%, var(--accent) 4%));
-  box-shadow: inset 3px 0 0 var(--accent), 0 12px 34px rgba(0, 0, 0, .2);
+  border: 1px solid color-mix(in srgb, #5ba1ff 28%, var(--border));
+  border-radius: 16px;
+  background: linear-gradient(115deg, color-mix(in srgb, #296edc 17%, var(--bg-elev)), color-mix(in srgb, #459d8b 7%, var(--bg-inset)));
+  box-shadow: var(--shadow);
 }
 .arc-page-hero::after {
   position: absolute;
@@ -3416,12 +3415,13 @@ input[type="number"] {
   top: -110px;
   width: 280px;
   height: 280px;
-  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  border: 1px solid color-mix(in srgb, #5ba1ff 15%, transparent);
   border-radius: 50%;
-  box-shadow: 0 0 0 24px color-mix(in srgb, var(--accent) 3%, transparent), 0 0 42px color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: 0 0 0 24px color-mix(in srgb, #5ba1ff 3%, transparent), 0 0 42px color-mix(in srgb, #459d8b 9%, transparent);
   content: '';
   pointer-events: none;
 }
+.arc-page-shell { width: 100%; max-width: 1120px; margin: 0 auto; display: grid; gap: 14px; }
 .arc-page-hero-copy,
 .arc-page-hero-side,
 .arc-page-hero-status { position: relative; z-index: 1; min-width: 0; }
@@ -3476,9 +3476,10 @@ input[type="number"] {
 .arc-surface-card {
   position: relative;
   overflow: hidden;
-  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
-  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%), color-mix(in srgb, var(--bg-inset) 92%, var(--bg-elev)));
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent), 0 9px 24px color-mix(in srgb, #000 14%, transparent);
+  border-color: color-mix(in srgb, #5ba1ff 20%, var(--border));
+  border-radius: 14px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-elev) 96%, #296edc 4%), color-mix(in srgb, var(--bg-elev) 98%, #459d8b 2%));
+  box-shadow: var(--shadow);
 }
 .arc-surface-card::after {
   position: absolute;
@@ -3486,7 +3487,7 @@ input[type="number"] {
   bottom: -120px;
   width: 230px;
   height: 230px;
-  border: 1px solid color-mix(in srgb, var(--accent) 9%, transparent);
+  border: 1px solid color-mix(in srgb, #5ba1ff 8%, transparent);
   border-radius: 50%;
   content: '';
   pointer-events: none;
@@ -3646,6 +3647,9 @@ input[type="number"] {
 .overlay-settings-root .overlay-stat-group-count { flex: 0 0 auto; color: var(--accent); font: 650 10px var(--mono); }
 .overlay-settings-root .overlay-stat-grid { grid-template-columns: 1fr; gap: 3px; }
 
+@media (max-width: 900px) {
+  .arc-page-hero { padding: 20px 22px; }
+}
 @media (max-width: 760px) {
   .arc-page-hero { align-items: flex-start; flex-direction: column; padding: 18px; }
   .arc-page-hero-status,
@@ -4104,6 +4108,7 @@ input[type="number"] {
 .recording-player-heading-copy .recording-panel-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recording-player-meta { margin-top: 3px; color: var(--text-dim); font-size: 11px; }
 .recording-player-heading-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-left: auto; }
+.recording-player-view-heading .recording-player-heading-actions { flex-direction: row; justify-content: flex-end; }
 .recording-player-back { display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--control-bg); color: var(--text-muted); font: 650 12px var(--font); cursor: pointer; }
 .recording-player-back:hover, .recording-player-back:focus-visible { border-color: var(--accent); color: var(--text); outline: none; }
 .recording-player-back-icon { width: 13px; height: 13px; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='m14.7 5.3-1.4-1.4L5.2 12l8.1 8.1 1.4-1.4L9.4 13H20v-2H9.4l5.3-5.7Z'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='m14.7 5.3-1.4-1.4L5.2 12l8.1 8.1 1.4-1.4L9.4 13H20v-2H9.4l5.3-5.7Z'/%3E%3C/svg%3E") center / contain no-repeat; }

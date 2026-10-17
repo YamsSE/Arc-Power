@@ -448,10 +448,10 @@ function renderSidebar() {
   const nav = document.getElementById('sidebar') as HTMLElement;
   const active = currentPage();
   clear(nav);
-  // Settings remains in the sidebar footer. PAGE_IDS supplies the exact
-  // main-tab order: Dashboard, Tuning, Graphics, Arc Sleep, Recording, Monitoring,
-  // Profiles and Tweaks. Driver Library is launched from the Intel GPU card.
-  const navIds = PAGE_IDS.filter((id) => id !== 'settings' && id !== 'driver-library');
+  // Settings remains in the sidebar footer. Tweaks stays registered for
+  // direct links, but is hidden from the main navigation until it is needed.
+  // Driver Library is launched from the Intel GPU card.
+  const navIds = PAGE_IDS.filter((id) => id !== 'settings' && id !== 'driver-library' && id !== 'tweaks');
   nav.append(
     // M4-D: the sidebar brand - "Arc Power" with "Power" ILLUMINATED
     // like the title bar (the blue gradient + glow) and a BOLD weight; the
