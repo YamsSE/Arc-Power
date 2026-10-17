@@ -4500,6 +4500,12 @@ async function main() {
     // Focused rendered Chromium regression for global and per-game
     // sharpening. The mock backend is mandatory in --ui-verify; this early
     // branch bypasses every unrelated full ui-verify flow.
+    if (process.env.RID_MOCK_DISPLAY_COLOR_VERIFY === '1') {
+      const { verifyManagedDisplayColorUi } = await import('../../test/managed-display-color-ui.js');
+      await verifyManagedDisplayColorUi(win, backend);
+      app.exit(0);
+      return;
+    }
     if (process.env.RID_MOCK_POSTPROCESS_VERIFY === '1') {
       const { verifyPostprocessSharpeningUi } = await import('../../test/postprocess-sharpening-ui.js');
       await verifyPostprocessSharpeningUi(win, postprocessSharpening, gameProfiles, backend);

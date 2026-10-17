@@ -90,6 +90,9 @@ import {
 import { createSharedMemoryOverride, sharedMemoryPlatformSupported } from './shared-memory-override.js';
 import { createWindowsDisplayModeController } from './windows-display-mode.js';
 import { createSharpeningProxy } from '../sharpening-proxy.js';
+import { displayKeyInNamespace } from '../display-identity.js';
+import { createDisplayColorStateStore, DISPLAY_COLOR_RANGES } from './display-color-state.js';
+import { queryDisplayColorCapabilities, applyDisplayHueSaturation, applyDisplayBrightnessContrast } from './igcl-display-color.js';
 
 const ZERO_UID = { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] };
 
@@ -606,6 +609,17 @@ const DISPLAY_QUANT_TO_IGCL = { default: 0, limited: 1, full: 2 };
 const DISPLAY_QUANT_FROM_IGCL = { 0: 'default', 1: 'limited', 2: 'full' };
 const DISPLAY_WIRE_MODEL_TO_IGCL = { RGB: 0, YCbCr420: 1, YCbCr422: 2, YCbCr444: 3 };
 const DISPLAY_WIRE_MODEL_FROM_IGCL = { 0: 'RGB', 1: 'YCbCr420', 2: 'YCbCr422', 3: 'YCbCr444' };
+// Parent and elevated inventories may use different public adapter aliases.
+// Persist color intent in the native PCI/BDF namespace whenever it is known;
+// the encoder/EDID suffix continues to identify the exact physical output.
+function displayColorNamespace(device) {
+  const bdf = device?.bdf;
+  const knownBdf = ['bus', 'device', 'function'].every((key) => Number.isInteger(bdf?.[key]) && bdf[key] >= 0)
+    && (bdf.bus !== 0 || bdf.device !== 0 || bdf.function !== 0);
+  return knownBdf && device?.pciVendorId && device?.pciDeviceId
+    ? deviceHardwareKey(device)
+    : device?.deviceKey ?? deviceHardwareKey(device);
+}
 const DISPLAY_SCALING_MODE_TO_IGCL = {
   identity: 1, centered: 2, stretched: 4,
   'aspect-ratio-centered-max': 8, custom: 16,
@@ -918,12 +932,8 @@ const PIXEL_FORMAT_SIZE = 120;
 const PIXEL_BLOCK_CONFIG_SIZE = 144;
 const PIXEL_MATRIX_CONFIG_SIZE = 128;
 const PIXEL_GET_CONFIG_SIZE = 272;
-const PIXEL_SET_CONFIG_SIZE = 32;
 const PIXEL_BLOCK_TYPE_MATRIX_AND_OFFSETS = 4;
 const PIXEL_QUERY_CAPABILITIES = 0;
-const PIXEL_QUERY_CURRENT = 1;
-const PIXEL_OPERATION_RESTORE_DEFAULT = 1;
-const PIXEL_OPERATION_SET = 2;
 // ctl_pixtx_color_model_t has separate full/limited entries, unlike the
 // legacy wire-format enum. Collapse those pairs only when presenting the
 // active output format to the Display page.
@@ -1020,88 +1030,6 @@ function readPixelTransformation(lib, displayHandle, { queryType = PIXEL_QUERY_C
     };
   } catch {
     return null;
-  }
-}
-
-function pixelMatrixForColors({ hue = 0, saturation = 1, brightness = 0, contrast = 1 }) {
-  const angle = (Number(hue) * Math.PI) / 180;
-  const c = Math.cos(angle);
-  const s = Math.sin(angle);
-  const lum = [0.2126, 0.7152, 0.0722];
-  const sat = Number(saturation);
-  const satMatrix = [
-    lum[0] * (1 - sat) + sat, lum[1] * (1 - sat), lum[2] * (1 - sat),
-    lum[0] * (1 - sat), lum[1] * (1 - sat) + sat, lum[2] * (1 - sat),
-    lum[0] * (1 - sat), lum[1] * (1 - sat), lum[2] * (1 - sat) + sat,
-  ];
-  const hueMatrix = [
-    lum[0] + c * (1 - lum[0]) - s * lum[0], lum[1] * (1 - c) + s * lum[1], lum[2] * (1 - c) + s * lum[2],
-    lum[0] * (1 - c) + s * 0.143, lum[1] + c * (1 - lum[1]) - s * 0.14, lum[2] * (1 - c) + s * 0.283,
-    lum[0] * (1 - c) - s * (1 - lum[0]), lum[1] * (1 - c) + s * lum[1], lum[2] + c * (1 - lum[2]) - s * lum[2],
-  ];
-  const multiply = (a, b) => {
-    const out = Array(9).fill(0);
-    for (let row = 0; row < 3; row += 1) {
-      for (let col = 0; col < 3; col += 1) {
-        for (let k = 0; k < 3; k += 1) out[row * 3 + col] += a[row * 3 + k] * b[k * 3 + col];
-      }
-    }
-    return out;
-  };
-  const scale = Number(contrast);
-  const matrix = multiply(hueMatrix, satMatrix).map((value) => value * scale);
-  const offset = 0.5 * (1 - scale) + Number(brightness) / 100;
-  return { matrix, offsets: [offset, offset, offset] };
-}
-
-function pixelMatrixMatches(block, expected, tolerance = 0.00001) {
-  if (!block || !Array.isArray(block.matrix) || block.matrix.length !== 9
-    || !Array.isArray(block.preOffsets) || !Array.isArray(block.postOffsets)) return false;
-  const values = [...block.preOffsets, ...block.postOffsets, ...block.matrix];
-  const wanted = [0, 0, 0, ...expected.offsets, ...expected.matrix];
-  return values.length === wanted.length
-    && values.every((value, index) => Number.isFinite(value) && Math.abs(value - wanted[index]) <= tolerance);
-}
-
-function pixelMatrixIsNeutral(block) {
-  return pixelMatrixMatches(block, {
-    offsets: [0, 0, 0],
-    matrix: [1, 0, 0, 0, 1, 0, 0, 0, 1],
-  });
-}
-
-function pixelSetMatrix(lib, displayHandle, block, colors) {
-  if (!block || typeof lib?.ctlPixelTransformationSetConfig !== 'function'
-    || lib.ctlPixelTransformationSetConfig.unavailable) {
-    return { ok: false, errorCode: 'unsupported', message: 'display pixel color transformation is not exposed by this driver' };
-  }
-  try {
-    const blocks = koffi.alloc('uint8', PIXEL_BLOCK_CONFIG_SIZE + 16);
-    pixelWrite(blocks, 0, 'uint32', PIXEL_MATRIX_CONFIG_SIZE + 16);
-    pixelWrite(blocks, 4, 'uint8', 0);
-    pixelWrite(blocks, 8, 'uint32', block.id);
-    pixelWrite(blocks, 12, 'uint32', PIXEL_BLOCK_TYPE_MATRIX_AND_OFFSETS);
-    const matrix = pixelMatrixForColors(colors);
-    pixelWrite(blocks, 16, 'uint32', PIXEL_MATRIX_CONFIG_SIZE);
-    pixelWrite(blocks, 20, 'uint8', 0);
-    for (let i = 0; i < 3; i += 1) {
-      pixelWrite(blocks, 24 + i * 8, 'double', 0);
-      pixelWrite(blocks, 48 + i * 8, 'double', matrix.offsets[i]);
-    }
-    for (let i = 0; i < matrix.matrix.length; i += 1) pixelWrite(blocks, 72 + i * 8, 'double', matrix.matrix[i]);
-    const set = koffi.alloc('uint8', PIXEL_SET_CONFIG_SIZE + 16);
-    pixelWrite(set, 0, 'uint32', PIXEL_SET_CONFIG_SIZE);
-    pixelWrite(set, 4, 'uint8', 0);
-    pixelWrite(set, 8, 'uint32', PIXEL_OPERATION_SET);
-    pixelWrite(set, 12, 'uint32', 1);
-    pixelWrite(set, 16, 'uint32', 1);
-    pixelWrite(set, 24, 'void*', koffi.address(blocks));
-    const result = lib.ctlPixelTransformationSetConfig(displayHandle, set);
-    return result === CTL_RESULT.SUCCESS
-      ? { ok: true, readBackEqual: undefined, requested: { ...colors }, matrix }
-      : { ok: false, errorCode: igclErrorCode(result) ?? 'io-failed', message: `IGCL ${describeResult(result)}` };
-  } catch (error) {
-    return { ok: false, errorCode: 'io-failed', message: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -1408,11 +1336,12 @@ export class IgclBackend {
       : (opts.lib ? null : superResolutionStateFile());
     this._superResolutionPersisted = readSuperResolutionState(this._superResolutionStateFile);
     this._displayApplyLocks = new Map();
+    this._displayColorState = createDisplayColorStateStore({
+      dir: Object.prototype.hasOwnProperty.call(opts, 'displayColorStateDir')
+        ? opts.displayColorStateDir
+        : (opts.lib ? null : undefined),
+    });
     this._tuningTransactionLocks = new Map();
-    // Keep the complete color state only after a verified pixel-transform
-    // write. A fresh process never assumes that the driver's transform is
-    // neutral; the GET path establishes that before exposing a writable row.
-    this._displayPixelColors = new Map();
   }
 
   /**
@@ -4747,7 +4676,7 @@ export class IgclBackend {
    * the adapter-scoped retro/media APIs)
    * @returns {Promise<object>} the canonical display shape
    */
-  async _readDisplayOutput(index, handle, deviceKey = null, adapterHandle = null, globalVrr = null, registryScalingState = null) {
+  async _readDisplayOutput(index, handle, deviceKey = null, adapterHandle = null, globalVrr = null, registryScalingState = null, colorStateNamespace = deviceKey) {
     const lib = this._libOrThrow();
     const d = {
       id: index,
@@ -4947,10 +4876,8 @@ export class IgclBackend {
     // the A770 reports an empty-depth YCbCr422 wire slot even while the
     // active output is RGB (the state shown by IGS).
     let pixelTransform = null;
-    let pixelCurrent = null;
     try {
       pixelTransform = readPixelTransformation(lib, handle);
-      pixelCurrent = readPixelTransformation(lib, handle, { queryType: PIXEL_QUERY_CURRENT });
       if (pixelTransform?.outputFormat) {
         const outputModel = PIXEL_COLOR_MODEL_TO_WIRE[pixelTransform.outputFormat.model] ?? null;
         if (outputModel) d.colorFormat = outputModel;
@@ -5114,52 +5041,34 @@ export class IgclBackend {
       // degrade the arc-sync profile
     }
 
-    // Standard Color Correction is adapter-global in IGCL, while pixel
-    // transformation is the per-output desktop path. Prefer the latter when
-    // its matrix block is available so Apply changes the visible desktop
-    // output rather than only the adapter's video-processing path.
+    // IGS uses a per-output type-3 matrix for hue/saturation and an RGB 1D LUT for
+    // brightness/contrast. CURRENT is not available for these blocks on all
+    // drivers. Keep Arc Power's editor values distinct from native current
+    // state, rather than interpreting capability placeholders as calibration.
     try {
-      const color = readMediaColorCorrection(lib, adapterHandle);
-      const ranges = color?.ranges ?? {
-        hue: { min: -180, max: 180, step: 1, default: 0 },
-        saturation: { min: 0, max: 10, step: 0.1, default: 1 },
-        brightness: { min: -100, max: 100, step: 1, default: 0 },
-        contrast: { min: 0, max: 10, step: 0.1, default: 1 },
-      };
-      if (pixelTransform?.matrixBlock) {
-        const key = d.displayKey;
-        const cached = typeof key === 'string' ? this._displayPixelColors.get(key) : null;
-        const nativeCurrent = pixelCurrent?.matrixBlock ?? null;
-        const defaults = Object.fromEntries(Object.entries(ranges).map(([name, range]) => [name, range.default]));
-        const cachedMatchesDriver = cached && nativeCurrent
-          ? pixelMatrixMatches(nativeCurrent, pixelMatrixForColors(cached))
-          : false;
-        const values = cachedMatchesDriver
-          ? cached
-          : (!cached && pixelMatrixIsNeutral(nativeCurrent) ? defaults : null);
-        if (typeof key === 'string' && !cached && values) this._displayPixelColors.set(key, values);
-        const setterAvailable = !this._isUnavailable(lib.ctlPixelTransformationSetConfig);
-        const currentAvailable = nativeCurrent !== null;
-        const canControl = setterAvailable && currentAvailable && values !== null;
-        const reason = canControl
-          ? null
-          : !setterAvailable
-            ? 'Pixel transformation setter is not available in this driver runtime.'
-            : !currentAvailable
-              ? 'Pixel transformation current configuration is not available for safe partial updates.'
-              : 'The driver has an existing color transform that Arc Power cannot safely merge; reset it in IGS first.';
-        for (const name of ['hue', 'saturation', 'brightness', 'contrast']) {
-          d[name] = displayCapability(values?.[name] ?? null, true, canControl, reason, 'igcl-pixel-transformation');
-          d.supportedOptions.colorRanges[name] = ranges[name];
-        }
-      } else if (color) {
-        for (const key of ['hue', 'saturation', 'brightness', 'contrast']) {
-          d[key] = displayCapability(color.values[key], true, true, null, 'igcl-media');
-          d.supportedOptions.colorRanges[key] = color.ranges[key];
-        }
+      const caps = queryDisplayColorCapabilities(lib, handle);
+      const saved = d.identityVerified && d.displayKey
+        ? await this._displayColorState.read(displayKeyInNamespace(d.displayKey, colorStateNamespace))
+        : { ok: false, reason: 'A verified physical display identity is required.' };
+      const setterAvailable = typeof lib.ctlPixelTransformationSetConfig === 'function'
+        && !lib.ctlPixelTransformationSetConfig.unavailable;
+      for (const name of ['hue', 'saturation', 'brightness', 'contrast']) {
+        const group = name === 'hue' || name === 'saturation' ? 'hueSaturation' : 'brightnessContrast';
+        const supported = group === 'hueSaturation' ? !!caps.hueSaturationBlock : !!caps.brightnessContrastBlock;
+        const controllable = supported && setterAvailable && saved.ok;
+        const unsupportedReason = group === 'hueSaturation' ? caps.hueSaturationUnsupportedReason : caps.brightnessContrastUnsupportedReason;
+        const reason = !supported ? ((!caps.ok ? caps.message : unsupportedReason) || 'The required display color block is unavailable or ambiguous.')
+          : !setterAvailable ? 'Display color adjustment is not available in this driver runtime.'
+            : !saved.ok ? saved.reason
+              : 'Values shown are Arc Power settings, starting from defaults. Applying replaces the corresponding IGS color adjustments; changes made in IGS are not read here.';
+        d[name] = {
+          ...displayCapability(null, supported, controllable, reason, 'igcl-managed-color'),
+          ...(saved.ok ? { desiredValue: saved.values[name], lastSent: saved.sent[group] === true } : {}),
+        };
+        d.supportedOptions.colorRanges[name] = { ...DISPLAY_COLOR_RANGES[name] };
       }
     } catch {
-      // Keep the honest read-only color capability defaults.
+      // Keep the read-only defaults when capabilities or local state fail.
     }
 
     try {
@@ -5197,7 +5106,7 @@ export class IgclBackend {
         : null;
       const displays = [];
       for (let i = 0; i < handles.length; i++) {
-        const d = await this._readDisplayOutput(i, handles[i], deviceKey, dev.handle, globalVrr, registryScalingState);
+        const d = await this._readDisplayOutput(i, handles[i], deviceKey, dev.handle, globalVrr, registryScalingState, displayColorNamespace(dev));
         if (d.flags.active) displays.push(d);
       }
       return { deviceKey, adapterName: dev.name ?? null, displays };
@@ -5210,11 +5119,10 @@ export class IgclBackend {
    * M10b: apply the Display view's settings for ONE display (the DEDICATED
    * display apply path - NOT the OC machinery: display settings have no OC
    * waiver and no OC-mode gate). Returns the ApplyResult shape with one
-   * per-control entry per requested field. Every set is followed by a
-   * read-back verification (the plan's every-apply-verified rule); a
-   * SUCCESS-with-unchanged-read-back surfaces as the honest silentNoop
-   * (the probe's wire-format finding: the SET answers SUCCESS but the
-   * read-back never changes - read-only in effect on this driver build).
+   * per-control entry per requested field. Controls with a native GET are
+   * read-back verified. Managed display color explicitly reports driver
+   * acceptance without a read-back claim and persists its editor intent.
+   * A successful wire setter whose native GET disagrees fails verification.
    * The error mapping reuses igclErrorCode; the 0x60000000-range display
    * codes fall through to the honest 'io-failed' fallback (never raw hex
    * in the UI). The scaling entry carries the honest modeset-flash warning
@@ -5287,7 +5195,7 @@ export class IgclBackend {
       : null;
     const fresh = [];
     for (let i = 0; i < handles.length; i++) {
-      const output = await this._readDisplayOutput(i, handles[i], deviceKey, dev.handle, null, registryScalingState);
+      const output = await this._readDisplayOutput(i, handles[i], deviceKey, dev.handle, null, registryScalingState, displayColorNamespace(dev));
       if (output.flags.active) fresh.push({ output, handle: handles[i] });
     }
     const matches = fresh.filter(({ output }) => output.displayKey === displayKey && output.identityVerified === true);
@@ -5453,10 +5361,13 @@ export class IgclBackend {
                 readBackEqual = false;
                 message = `read-back ${curModel ?? 'unknown'} with unverifiable depth != requested ${patch.wireFormat.model} ${depth}-bpc - the wire-format surface is read-only in effect on this driver build`;
               } else if (wf.current) {
-                readBackEqual = wf.current.model === patch.wireFormat.model && wf.current.depth === depth;
+                const curModel = DISPLAY_WIRE_MODEL_FROM_IGCL[
+                  Object.entries(CTL_WIRE_COLOR_MODEL).find(([, name]) => name === wf.current.model)?.[0]
+                ] ?? null;
+                readBackEqual = curModel === patch.wireFormat.model && wf.current.depth === depth;
                 message = readBackEqual
                   ? undefined
-                  : `read-back ${wf.current.model} ${wf.current.depth}-bpc != requested ${patch.wireFormat.model} ${depth}-bpc`;
+                  : `read-back ${curModel ?? 'unknown'} ${wf.current.depth}-bpc != requested ${patch.wireFormat.model} ${depth}-bpc`;
               } else {
                 message = 'set succeeded but the read-back reports no current wire format';
               }
@@ -5882,106 +5793,56 @@ export class IgclBackend {
 
     const colorKeys = ['hue', 'saturation', 'brightness', 'contrast'].filter((key) => patch[key] !== null && patch[key] !== undefined);
     if (colorKeys.length > 0) {
-      // Capability and current-configuration queries are separate IGCL
-      // operations. The former tells us which block can be written; the
-      // latter is the only safe source for verifying a completed transform.
-      const pixel = readPixelTransformation(lib, handle);
-      const pixelCurrent = readPixelTransformation(lib, handle, { queryType: PIXEL_QUERY_CURRENT });
-      const media = readMediaColorCorrection(lib, dev.handle);
-      const ranges = media?.ranges ?? {
-        hue: { min: -180, max: 180, step: 1, default: 0 },
-        saturation: { min: 0, max: 10, step: 0.1, default: 1 },
-        brightness: { min: -100, max: 100, step: 1, default: 0 },
-        contrast: { min: 0, max: 10, step: 0.1, default: 1 },
-      };
-      if (pixel?.matrixBlock) {
-        const setterAvailable = !this._isUnavailable(lib.ctlPixelTransformationSetConfig);
-        if (!setterAvailable) {
-          for (const key of colorKeys) fail(key, 'unavailable-symbol', 'the pixel-transformation setter is missing in the IGCL runtime');
-        } else {
-          const cached = this._displayPixelColors.get(displayKey);
-          const nativeCurrent = pixelCurrent?.matrixBlock ?? null;
-          const defaults = Object.fromEntries(Object.entries(ranges).map(([name, range]) => [name, range.default]));
-          const cachedMatchesDriver = cached && nativeCurrent
-            ? pixelMatrixMatches(nativeCurrent, pixelMatrixForColors(cached))
-            : false;
-          const current = cachedMatchesDriver
-            ? cached
-            : pixelMatrixIsNeutral(nativeCurrent)
-              ? defaults
-              : null;
-          // A partial slider apply must not replace an existing transform with
-          // neutral or stale defaults. Only a verified complete state, or an
-          // explicitly neutral current transform, can be used as the base.
-          if (!current) {
-            for (const key of colorKeys) fail(key, 'unsupported', nativeCurrent
-              ? 'the driver has an existing color transform that Arc Power cannot safely merge; reset it in IGS first'
-              : 'the driver current color transform could not be read safely');
-          } else {
-            const normalized = {};
-            for (const key of colorKeys) {
-              const range = ranges[key];
-              const requested = Number(patch[key]);
-              const bounded = Math.min(range.max, Math.max(range.min, requested));
-              const snapped = range.step > 0 ? range.min + Math.round((bounded - range.min) / range.step) * range.step : bounded;
-              normalized[key] = Math.min(range.max, Math.max(range.min, snapped));
-            }
-            const next = { ...current, ...normalized };
-            const applied = pixelSetMatrix(lib, handle, nativeCurrent ?? pixel.matrixBlock, next);
-            if (!applied.ok) {
-              for (const key of colorKeys) fail(key, applied.errorCode ?? 'io-failed', applied.message ?? 'display color transformation failed');
-            } else {
-              const readBack = readPixelTransformation(lib, handle, { queryType: PIXEL_QUERY_CURRENT, requireSet: true });
-              const readBackEqual = pixelMatrixMatches(readBack?.matrixBlock, applied.matrix);
-              if (!readBackEqual) {
-                for (const key of colorKeys) fail(key, 'io-failed', 'the driver accepted the color transform but current-configuration read-back did not match it');
-              } else {
-                this._displayPixelColors.set(displayKey, next);
-                for (const key of colorKeys) {
-                  result.perControl[key] = {
-                    ok: true,
-                    readBackEqual: true,
-                    silentNoop: false,
-                  };
-                }
-              }
-            }
-          }
+      const caps = queryDisplayColorCapabilities(lib, handle);
+      const colorStateKey = displayKeyInNamespace(displayKey, displayColorNamespace(dev));
+      let saved = await this._displayColorState.read(colorStateKey);
+      const normalized = {};
+      for (const key of colorKeys) {
+        if (typeof patch[key] !== 'number' || !Number.isFinite(patch[key])) {
+          fail(key, 'out-of-range', 'Display color values must be finite numbers.');
+          continue;
         }
-      } else if (this._isUnavailable(lib.ctlGetSupportedVideoProcessingCapabilities)
-        || this._isUnavailable(lib.ctlGetSetVideoProcessingFeature)) {
-        for (const key of colorKeys) fail(key, 'unavailable-symbol', 'the color-correction API is missing in the IGCL runtime');
-      } else {
-        const current = media;
-        if (!current) {
-          for (const key of colorKeys) fail(key, 'unsupported', 'standard color correction is not exposed by this driver');
-        } else {
-          const normalized = {};
-          for (const key of colorKeys) {
-            const range = current.ranges[key];
-            const requested = Number(patch[key]);
-            const bounded = Math.min(range.max, Math.max(range.min, requested));
-            const snapped = range.step > 0 ? range.min + Math.round((bounded - range.min) / range.step) * range.step : bounded;
-            normalized[key] = Math.min(range.max, Math.max(range.min, snapped));
-          }
-          const applied = mediaColorApply(lib, dev.handle, normalized, current);
-          if (!applied.ok || !applied.readBack) {
-            for (const key of colorKeys) fail(key, applied.errorCode ?? 'io-failed', applied.message ?? 'color correction read-back failed');
-          } else {
-            for (const key of colorKeys) {
-              const range = current.ranges[key];
-              const readBackEqual = Math.abs(applied.readBack.values[key] - normalized[key]) <= Math.max(0.0001, range.step);
-              result.perControl[key] = {
-                ok: readBackEqual,
-                errorCode: readBackEqual ? undefined : 'io-failed',
-                message: readBackEqual ? undefined : `read-back ${applied.readBack.values[key]} != requested ${normalized[key]}`,
-                readBackEqual,
-                silentNoop: !readBackEqual,
-              };
-              if (!readBackEqual) result.ok = false;
-            }
-          }
+        const range = DISPLAY_COLOR_RANGES[key];
+        const bounded = Math.min(range.max, Math.max(range.min, patch[key]));
+        normalized[key] = Number((range.min + Math.round((bounded - range.min) / range.step) * range.step).toFixed(8));
+      }
+      for (const [group, fields, block, setter] of [
+        ['hueSaturation', ['hue', 'saturation'], caps.hueSaturationBlock, applyDisplayHueSaturation],
+        ['brightnessContrast', ['brightness', 'contrast'], caps.brightnessContrastBlock, applyDisplayBrightnessContrast],
+      ]) {
+        const requested = fields.filter((key) => colorKeys.includes(key));
+        if (!requested.length) continue;
+        if (requested.some((key) => result.perControl[key]?.ok === false)) continue;
+        if (!saved.ok) {
+          for (const key of requested) fail(key, 'io-failed', saved.reason);
+          continue;
         }
+        if (!block) {
+          const unsupportedReason = group === 'hueSaturation' ? caps.hueSaturationUnsupportedReason : caps.brightnessContrastUnsupportedReason;
+          for (const key of requested) fail(key, 'unsupported', (!caps.ok ? caps.message : unsupportedReason) || 'The required display color block is unavailable or ambiguous.');
+          continue;
+        }
+        if (!saved.sent[group] && patch.replaceExistingColorSettings !== true) {
+          for (const key of requested) fail(key, 'unsupported', 'Use Apply Arc Power settings to replace the corresponding IGS adjustments with Arc Power settings.');
+          continue;
+        }
+        const next = Object.fromEntries(fields.map((key) => [key, normalized[key] ?? saved.values[key]]));
+        const applied = setter(lib, handle, block, next);
+        if (!applied.ok) {
+          for (const key of requested) fail(key, igclErrorCode(applied.result) ?? 'io-failed', applied.message || 'The driver rejected the display color settings.');
+          continue;
+        }
+        const stored = await this._displayColorState.saveGroup(colorStateKey, group, next);
+        if (!stored.ok) {
+          for (const key of requested) fail(key, 'io-failed', `The driver accepted the settings, but Arc Power could not save them: ${stored.reason}`);
+          continue;
+        }
+        saved = await this._displayColorState.read(colorStateKey);
+        for (const key of requested) result.perControl[key] = {
+          ok: true,
+          verification: 'readback-unavailable',
+          message: 'The driver accepted the color settings. Values shown are saved by Arc Power; current-value read-back is unavailable.',
+        };
       }
     }
 

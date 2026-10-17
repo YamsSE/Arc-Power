@@ -249,10 +249,11 @@ export function isDisplayControlSupported(display: Display | null | undefined, c
 function isDisplayColorWritable(display: Display, key: typeof DISPLAY_COLOR_CONTROLS[number]): boolean {
   const capability = display[key];
   const range = display.supportedOptions.colorRanges?.[key];
+  const value = capability?.source === 'igcl-managed-color' ? capability.desiredValue : capability?.value;
   return capability?.supported === true && capability.controllable === true
-    && typeof capability.value === 'number' && Number.isFinite(capability.value)
-    && !!range && Number.isFinite(range.min) && Number.isFinite(range.max) && range.max >= range.min
-    && Number.isFinite(range.step) && range.step > 0;
+    && typeof value === 'number' && Number.isFinite(value)
+    && !!range && Number.isFinite(range.min) && Number.isFinite(range.max) && range.max > range.min
+    && Number.isFinite(range.step) && range.step > 0 && value >= range.min && value <= range.max;
 }
 
 export function displayDriverValue(display: Display | null | undefined, control: string): unknown {
@@ -288,6 +289,20 @@ export function displayDriverValue(display: Display | null | undefined, control:
     }
     default: return null;
   }
+}
+
+/** Value used to seed the user's editor. Managed Arc Power intent is kept
+ * separate from `displayDriverValue`, which remains native/live-only. */
+export function displaySettingValue(display: Display | null | undefined, control: string): unknown {
+  if (!display) return null;
+  if (DISPLAY_COLOR_CONTROLS.includes(control as typeof DISPLAY_COLOR_CONTROLS[number])) {
+    const capability = display[control as typeof DISPLAY_COLOR_CONTROLS[number]];
+    if (capability?.source === 'igcl-managed-color'
+      && typeof capability.desiredValue === 'number' && Number.isFinite(capability.desiredValue)) {
+      return capability.desiredValue;
+    }
+  }
+  return displayDriverValue(display, control);
 }
 
 export function normalizeDisplaySettings(display: Display | null | undefined): DisplaySettings {
@@ -337,7 +352,7 @@ export function normalizeDisplaySettings(display: Display | null | undefined): D
   }
   for (const key of DISPLAY_COLOR_CONTROLS) {
     if (!isDisplayControlSupported(display, key)) continue;
-    const value = displayDriverValue(display, key);
+    const value = displaySettingValue(display, key);
     if (typeof value === 'number' && Number.isFinite(value)) (out as Record<string, unknown>)[key] = value;
   }
   return out;
@@ -374,7 +389,9 @@ export function validateSuperResolutionSettings(value: unknown, display?: Displa
 export function validateDisplaySettings(value: unknown, display?: Display | null): value is DisplaySettings {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   for (const [key, v] of Object.entries(value)) {
-    if (key === 'quantizationRange') {
+    if (key === 'replaceExistingColorSettings') {
+      if (typeof v !== 'boolean') return false;
+    } else if (key === 'quantizationRange') {
       if (!QUANTIZATION_SET.has(v)) return false;
     } else if (key === 'scalingMode') {
       if (!SCALING_MODE_SET.has(v)) return false;
@@ -434,7 +451,9 @@ function sameSuperResolutionIntent(a: unknown, b: unknown): boolean {
 export function isDisplayControlDirty(control: string, draft: DisplaySettings, display: Display | null): boolean {
   if (!(control in draft) || !display || !isDisplayControlSupported(display, control)) return false;
   const wanted = (draft as Record<string, unknown>)[control];
-  const driver = displayDriverValue(display, control);
+  const driver = DISPLAY_COLOR_CONTROLS.includes(control as typeof DISPLAY_COLOR_CONTROLS[number])
+    ? displaySettingValue(display, control)
+    : displayDriverValue(display, control);
   if (control === 'superResolution' && !validateSuperResolutionSettings(wanted, display)) return false;
   if (driver === null || driver === undefined) return true;
   if (control === 'superResolution') return !sameSuperResolutionIntent(wanted, driver);
@@ -460,6 +479,7 @@ export function isDisplayControlDirtyVsApplied(control: string, draft: DisplaySe
 export function buildDisplaySettings(draft: DisplaySettings, display: Display | null, applied: DisplaySettings): DisplaySettings {
   const out: DisplaySettings = {};
   for (const key of Object.keys(draft) as (keyof DisplaySettings)[]) {
+    if (key === 'replaceExistingColorSettings') continue;
     if (display && !isDisplayControlSupported(display, key)) continue;
     if (isDisplayControlDirtyVsApplied(key, draft, display, applied)) {
       let value = (draft as Record<string, unknown>)[key];

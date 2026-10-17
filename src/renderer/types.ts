@@ -181,6 +181,8 @@ export interface PerControlResult {
    *  message here; hard errors are mapped via pure/errors.ts errorMessage). */
   message?: string;
   readBackEqual?: boolean;
+  /** The write was accepted, but the driver does not expose a live getter. */
+  verification?: 'readback-unavailable';
   /** The driver changed a valid custom VF curve; readBackCurve holds the live curve. */
   driverAdjusted?: boolean;
   /** Exact=false but successful when the driver reports its verified grid-normalized values. */
@@ -1108,6 +1110,9 @@ export interface DisplaySettings {
   saturation?: number;
   brightness?: number;
   contrast?: number;
+  /** Explicitly confirms that the first Arc Power color apply may replace
+   * the matching IGS color adjustment, which Arc Power cannot read back. */
+  replaceExistingColorSettings?: boolean;
 }
 
 export interface GameProfileGraphics {
@@ -1195,6 +1200,11 @@ export interface GameCatalogEnvelope { catalog: GameCatalogEntry[]; settings: Ga
  * contract. */
 export interface DisplayCapability<T> {
   value: T | null;
+  /** Persisted Arc Power intent when the driver has no live getter. This is
+   * never represented as native `value` or claimed to be a live read-back. */
+  desiredValue?: T;
+  /** True after the backend accepted a write for this managed value. */
+  lastSent?: boolean;
   supported: boolean | null;
   controllable: boolean;
   reason: string | null;

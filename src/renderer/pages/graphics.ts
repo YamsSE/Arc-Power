@@ -71,6 +71,7 @@ import {
   DISPLAY_WIRE_FORMAT_OPTIONS,
   isDisplayControlSupported,
   displayDriverValue,
+  displaySettingValue,
   normalizeDisplaySettings,
   validateDisplaySettings,
   snapDisplayColorValue,
@@ -115,7 +116,8 @@ const DISPLAY_SCALING_NOTE = 'Changes may briefly flash the display.';
 const DISPLAY_SCALING_METHOD_NOTE = 'Custom mode exposes horizontal and vertical scaling.';
 const DISPLAY_GLOBAL_VRR_NOTE = 'Choose when variable refresh rate is used.';
 const DISPLAY_VRR_NOTE = 'Choose whether variable refresh rate is enabled.';
-const DISPLAY_SLIDERS_NOTE = 'IGS-style display color controls; Apply verifies the driver read-back.';
+const DISPLAY_SLIDERS_NOTE = 'IGS-style display color controls.';
+const DISPLAY_MANAGED_COLOR_NOTE = 'Values shown are Arc Power settings, starting from defaults. Applying replaces the corresponding IGS color adjustments; changes made in IGS are not read here.';
 const DISPLAY_WIRE_READONLY_NOTE = 'The driver did not report writable color-format data.';
 const DISPLAY_NO_DISPLAYS_NOTE = 'No display settings are available on this GPU.';
 
@@ -266,6 +268,7 @@ let displayScalingViewDraft = 'display-scaling';
 let displayScalingMethodDraft = 'maintain-display-scaling';
 let displayScalingDraftRevision = 0;
 let applying = false;
+let displayApplyPending = false;
 let queuedDisplayApply: { ctx: PageContext; only: string } | null = null;
 let applyBtn: HTMLButtonElement | null = null;
 let displayApplyBtn: HTMLButtonElement | null = null;
@@ -329,6 +332,7 @@ function resetPageState() {
   displayScalingMethodDraft = 'maintain-display-scaling';
   displayScalingDraftRevision = 0;
   applying = false;
+  displayApplyPending = false;
   applyBtn = null;
   displayApplyBtn = null;
   displayResetBtn = null;
@@ -534,7 +538,7 @@ function refreshDisplayChip(key: string) {
       : (displayApplied as Record<string, unknown>)[key];
   const driverValue = key === 'scalingMode' ? scalingViewOf(display)
     : key === 'displayScalingMethod' ? scalingMethodViewOf(display)
-      : displayDriverValue(display, key);
+      : DISPLAY_COLOR_KEYS.includes(key) ? displaySettingValue(display, key) : displayDriverValue(display, key);
   const customDirty = key === 'displayScalingMethod' && displayScalingMethodDraft === 'custom'
     && !sameCustomScaling(displayDraft.scalingCustom, customScalingOf(display!));
   const chipViewKey = key === 'superResolution' && viewKey && typeof viewKey === 'object'
@@ -544,16 +548,25 @@ function refreshDisplayChip(key: string) {
   const state = customDirty ? 'dirty' : chipState(key, { [key]: chipViewKey }, { [key]: appliedKey }, driverValue, key === 'scalingMode' || key === 'displayScalingMethod'
     ? isDisplayControlSupported(display, 'scalingMode')
     : isDisplayControlSupported(display, key));
-  chip.hidden = state !== 'applied';
+  const managedUnsentDefault = DISPLAY_COLOR_KEYS.includes(key)
+    && display?.[key as DisplayColorKey]?.source === 'igcl-managed-color'
+    && display[key as DisplayColorKey]?.lastSent !== true;
+  chip.hidden = state !== 'applied' || managedUnsentDefault;
   if (state === 'applied') {
-    chip.textContent = 'Applied';
+    chip.textContent = DISPLAY_COLOR_KEYS.includes(key)
+      && display?.[key as DisplayColorKey]?.source === 'igcl-managed-color' ? 'Last sent' : 'Applied';
     chip.className = 'chip oc-chip-status chip-ok';
   } else {
     chip.textContent = '';
     chip.className = 'chip oc-chip-status';
   }
   const btn = chipApplyNodes.get(key);
-  if (btn) btn.hidden = state !== 'dirty';
+  if (btn) {
+    btn.hidden = state !== 'dirty';
+    if (DISPLAY_COLOR_KEYS.includes(key) && !btn.hidden) {
+      btn.textContent = managedUnsentDefault ? 'Apply Arc Power settings' : 'Apply';
+    }
+  }
   updateDisplayFloating();
 }
 
@@ -582,11 +595,21 @@ function displayHasDirtyDraft(display: DisplayState['displays'][number] | null):
   });
 }
 
+function displayHasUnsentManagedColor(display: DisplayState['displays'][number] | null): boolean {
+  if (!display) return false;
+  return DISPLAY_COLOR_KEYS.some((key) => {
+    const capability = display[key as DisplayColorKey];
+    return capability?.source === 'igcl-managed-color' && capability.lastSent !== true
+      && displayPayloadForControl(key, display)?.[key as keyof DisplaySettings] !== undefined;
+  });
+}
+
 function updateDisplayFloating(): void {
   if (!displayApplyBtn) return;
   displayApplyBtn.hidden = applying ? false : !displayHasDirtyDraft(selectedDisplay());
   displayApplyBtn.disabled = applying;
-  displayApplyBtn.textContent = applying ? APPLY_BTN_BUSY_TEXT : APPLY_BTN_TEXT;
+  displayApplyBtn.textContent = applying ? APPLY_BTN_BUSY_TEXT
+    : displayHasUnsentManagedColor(selectedDisplay()) ? 'Apply Arc Power settings' : APPLY_BTN_TEXT;
 }
 
 function resetDisplayDraft(display: DisplayState['displays'][number]): void {
@@ -706,7 +729,7 @@ export const graphicsPage: Page = {
       void renderSettingsView(viewContainer, ctx, subViewGeneration);
     };
     const setGraphicsView = (v: 'settings' | 'display'): void => {
-      if (graphicsView === v) return;
+      if (graphicsView === v || displayApplyPending) return;
       graphicsView = v;
       renderGraphicsView();
       const heading = title.querySelector<HTMLElement>('.page-title');
@@ -1863,16 +1886,19 @@ function buildDisplaySlider(ctx: PageContext, key: DisplayColorKey, title: strin
   const min = range?.min ?? fallbackMin;
   const max = range?.max ?? fallbackMax;
   const step = range?.step ?? 1;
-  const nativeValue = capability?.value ?? range?.default ?? 50;
+  const settingValue = displaySettingValue(display, key);
+  const nativeValue = typeof settingValue === 'number' ? settingValue : range?.default ?? 50;
+  const managedColor = capability?.source === 'igcl-managed-color';
+  const note = managedColor ? DISPLAY_MANAGED_COLOR_NOTE : capability?.reason ?? fallbackReason;
   const uiRange = key === 'hue' ? { min: fallbackMin, max: fallbackMax, step: 1, default: 0 } : { min: 0, max: 100, step: 1, default: 50 };
   const value = colorUiValue(key, nativeValue, { min, max, step, default: range?.default });
   if (!supported) {
     return el('div', { class: 'display-control display-slider-row display-control-readonly', dataset: { control: key } }, [
       el('div', { class: 'display-control-heading' }, [
         el('h3', { class: 'display-control-title', text: title }),
-        el('span', { class: 'display-readonly-value', text: typeof capability?.value === 'number' ? String(capability.value) : 'Not available' }),
+        el('span', { class: 'display-readonly-value', text: typeof settingValue === 'number' ? String(settingValue) : 'Not available' }),
       ]),
-      el('p', { class: 'card-note', text: capability?.reason ?? fallbackReason }),
+      el('p', { class: 'card-note', text: note }),
     ]);
   }
   const slider = el('input', {
@@ -1899,7 +1925,7 @@ function buildDisplaySlider(ctx: PageContext, key: DisplayColorKey, title: strin
   const row = el('div', { class: 'display-control display-slider-row', dataset: { control: key } }, [
     el('div', { class: 'display-control-heading' }, [el('h3', { class: 'display-control-title', text: title })]),
     el('div', { class: 'display-slider-line' }, [numberInput, slider]),
-    el('p', { class: 'card-note', text: capability?.reason ?? fallbackReason }),
+    el('p', { class: 'card-note', text: note }),
     el('div', { class: 'graphics-card-actions' }, [
       el('span', { class: 'chip oc-chip-status', hidden: true }),
       el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, key); } }),
@@ -2055,7 +2081,12 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
     className: 'graphics-select display-picker',
     dataset: { displayPicker: '' },
     ariaLabel: 'Select display',
+    disabled: applying,
     onChange: (value) => {
+      if (applying) {
+        picker.setValue(String(display.id));
+        return;
+      }
       selectedDisplayId = Number(value);
       selectedDisplayKey = displayState?.displays.find((d) => d.id === selectedDisplayId)?.displayKey ?? null;
       displayDraft = normalizeDisplaySettings(selectedDisplay());
@@ -2315,11 +2346,21 @@ async function applyDisplay(ctx: PageContext, only: string) {
   } else {
     Object.assign(payload, displayPayloadForControl(only, display) ?? {});
   }
+  if (DISPLAY_COLOR_KEYS.some((key) => Object.prototype.hasOwnProperty.call(payload, key)
+    && display[key as DisplayColorKey]?.source === 'igcl-managed-color'
+    && display[key as DisplayColorKey]?.lastSent !== true)) {
+    payload.replaceExistingColorSettings = true;
+  }
   if (!validateDisplaySettings(payload, display)) {
     toast('error', 'Apply aborted', 'The display payload failed validation - this is a bug.');
     return;
   }
   if (Object.keys(payload).length === 0) return;
+  // Keep the submitted managed-color intent separate from any slider edits
+  // made while the IPC request is in flight.
+  const submittedColorValues = Object.fromEntries(DISPLAY_COLOR_KEYS
+    .filter((key) => Object.prototype.hasOwnProperty.call(payload, key))
+    .map((key) => [key, (payload as Record<string, unknown>)[key]])) as Partial<Record<DisplayColorKey, number>>;
   // M2C-C: a non-elevated product app delegates the apply to the elevated
   // self-worker (one UAC prompt) - explain BEFORE the prompt. The elevation
   // toast pattern is kept; there is NO OC waiver anywhere in this flow.
@@ -2327,13 +2368,20 @@ async function applyDisplay(ctx: PageContext, only: string) {
     toast('info', 'Administrator approval needed', ELEVATION_TOAST_TEXT);
   }
   applying = true;
+  displayApplyPending = true;
   for (const b of chipApplyNodes.values()) b.disabled = true;
+  const displayPicker = displayPickerHost?.querySelector<HTMLElement>('[data-display-picker]') as DropdownElement | null;
+  if (displayPicker) displayPicker.disabled = true;
+  const displayViewButtons = [...(displayPickerHost?.parentElement?.querySelectorAll<HTMLButtonElement>('.graphics-view-btn') ?? [])];
+  for (const button of displayViewButtons) button.disabled = true;
   if (only === 'scalingMode' || only === 'displayScalingMethod' || only === 'all') {
     selectNodes.get('scalingMode')?.setAttribute('disabled', 'true');
     selectNodes.get('displayScalingMethod')?.setAttribute('disabled', 'true');
   }
   updateDisplayFloating();
   const scalingDraftRevisionAtStart = displayScalingDraftRevision;
+  const applyRenderGeneration = renderGeneration;
+  const applyDisplayKey = display.displayKey;
   try {
     const deviceKey = displayState.deviceKey ?? live.devices.find((d) => d.id === deviceId)?.deviceKey ?? null;
     if (!deviceKey || !display.displayKey || display.identityVerified !== true) {
@@ -2341,6 +2389,9 @@ async function applyDisplay(ctx: PageContext, only: string) {
       return;
     }
     const out = await api.displayApply(deviceId, { deviceKey, displayKey: display.displayKey, patch: payload });
+    if (renderGeneration !== applyRenderGeneration
+      || displayDeviceId !== deviceId
+      || selectedDisplayKey !== applyDisplayKey) return;
     if (out.displayState) {
       displayState = out.displayState;
     }
@@ -2351,9 +2402,15 @@ async function applyDisplay(ctx: PageContext, only: string) {
           const readBackKey = key === 'scalingMode' ? 'scalingMode' : key === 'displayScalingMethod' ? 'displayScalingMethod' : key;
           const readBack = readBackKey === 'scalingMode' ? scalingViewOf(freshDisplay)
             : readBackKey === 'displayScalingMethod' ? scalingMethodViewOf(freshDisplay)
-              : displayDriverValue(freshDisplay, readBackKey);
+              : DISPLAY_COLOR_KEYS.includes(readBackKey) ? displaySettingValue(freshDisplay, readBackKey)
+                : displayDriverValue(freshDisplay, readBackKey);
           (displayApplied as Record<string, unknown>)[key] = readBack;
-          if (DISPLAY_COLOR_KEYS.includes(key) && typeof readBack === 'number') {
+          if (DISPLAY_COLOR_KEYS.includes(key) && typeof readBack === 'number'
+            && Object.prototype.hasOwnProperty.call(submittedColorValues, key)
+            && Object.is((displayDraft as Record<string, unknown>)[key], submittedColorValues[key as DisplayColorKey])) {
+            // Only normalize the visible editor when it still represents the
+            // submitted request. A newer edit stays in the draft and remains
+            // dirty against this newly accepted baseline.
             (displayDraft as Record<string, unknown>)[key] = readBack;
           } else if (key === 'wireFormat' && readBack && typeof readBack === 'object') {
             displayDraft.wireFormat = readBack as DisplaySettings['wireFormat'];
@@ -2361,7 +2418,9 @@ async function applyDisplay(ctx: PageContext, only: string) {
         } else {
           (displayApplied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
         }
-        if (!per.internal && per.igsPreferredSelectionApplied) {
+        if (!per.internal && per.verification === 'readback-unavailable') {
+          toast('info', 'Color settings sent', per.message ?? 'The driver accepted the settings, but does not provide a live read-back.');
+        } else if (!per.internal && per.igsPreferredSelectionApplied) {
           toast('success', `${CONTROL_LABELS[key] ?? key} applied`, per.message ?? 'The driver will use GPU Scaling when the output requires scaling.');
         } else if (!per.internal && (per.deferred || per.preferredOnly || per.preferenceAlreadyApplied)) {
           toast('info', `${CONTROL_LABELS[key] ?? key} preference ${per.preferenceAlreadyApplied ? 'already saved' : 'saved'}`, per.message
@@ -2414,14 +2473,22 @@ async function applyDisplay(ctx: PageContext, only: string) {
       toast('error', 'Apply failed', msg);
     }
   } finally {
-    applying = false;
-    for (const b of chipApplyNodes.values()) b.disabled = false;
-    selectNodes.get('scalingMode')?.removeAttribute('disabled');
-    selectNodes.get('displayScalingMethod')?.removeAttribute('disabled');
-    updateDisplayFloating();
-    const queued = queuedDisplayApply;
-    queuedDisplayApply = null;
-    if (queued) setTimeout(() => requestDisplayApply(queued.ctx, queued.only), 0);
+    // A route/view/device switch resets page state. An old IPC completion
+    // must not clear the new page's busy state or manipulate its controls.
+    if (renderGeneration === applyRenderGeneration) {
+      applying = false;
+      displayApplyPending = false;
+      for (const b of chipApplyNodes.values()) b.disabled = false;
+      const picker = displayPickerHost?.querySelector<HTMLElement>('[data-display-picker]') as DropdownElement | null;
+      if (picker) picker.disabled = false;
+      for (const button of displayViewButtons) button.disabled = false;
+      selectNodes.get('scalingMode')?.removeAttribute('disabled');
+      selectNodes.get('displayScalingMethod')?.removeAttribute('disabled');
+      updateDisplayFloating();
+      const queued = queuedDisplayApply;
+      queuedDisplayApply = null;
+      if (queued) setTimeout(() => requestDisplayApply(queued.ctx, queued.only), 0);
+    }
   }
 }
 

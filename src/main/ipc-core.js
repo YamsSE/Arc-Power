@@ -479,6 +479,9 @@ export function sanitizeDisplaySettings(payload) {
     } else if (['hue', 'saturation', 'brightness', 'contrast'].includes(key)) {
       if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${key} must be a finite number`);
       out[key] = value;
+    } else if (key === 'replaceExistingColorSettings') {
+      if (typeof value !== 'boolean') throw new Error('replaceExistingColorSettings must be a boolean');
+      out[key] = value;
     } else {
       throw new Error(`unknown display setting: ${key}`);
     }

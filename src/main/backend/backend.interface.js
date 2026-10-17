@@ -118,10 +118,10 @@
  * surface). Only ACTIVE display outputs are enumerated (the M10b probe:
  * 30 outputs, ONE active on the A770); a display's per-feature reads are
  * defensive - a failing feature reads null/[] without taking the surface
- * down. The wire-format surface is read-only in effect on this driver
- * build (ColorDepth is never populated - wireFormats/bpcDepths come back
- * empty and the COLOR card degrades honestly); the Arc Sync surface is
- * read-only too (recorded for the INFORMATION section).
+ * down. Wire format uses the complete native model/depth pair. Managed
+ * color capabilities keep native `value` null when CURRENT is unavailable;
+ * `desiredValue` and `lastSent` describe Arc Power's persisted editor intent,
+ * never a live driver reading or an automatic startup reapply.
  * @typedef {{
  *   displays: Array<{
  *     id: number,
@@ -175,6 +175,8 @@
  *   scalingMode?: 'identity' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'custom',
  *   displayScalingMethod?: 'maintain-display-scaling' | 'custom' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'integer' | 'nearest-neighbour',
  *   superResolution?: { enabled: boolean, width?: number, height?: number, refreshRate?: number },
+ *   hue?: number, saturation?: number, brightness?: number, contrast?: number,
+ *   replaceExistingColorSettings?: boolean,
  * }} DisplaySettings
  */
 
