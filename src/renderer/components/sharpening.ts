@@ -1,8 +1,17 @@
 import { api } from '../ipc.ts';
 import { el } from '../dom.ts';
+import { buildDropdown, type DropdownElement } from './dropdown.ts';
 import type { PostprocessSharpeningGame, PostprocessSharpeningGlobal, PostprocessSharpeningValue } from '../types.ts';
 
 const safePercentage = (value: number): number => Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+
+const sharpeningHelp = (text: string): HTMLElement => el('details', { class: 'sharpening-help' }, [
+  el('summary', { text: 'How sharpening works' }),
+  el('p', { class: 'card-note', text }),
+]);
+
+const makeSelect = (value: string, options: Array<{ value: string; label: string }>, onChange: (value: string) => void, ariaLabel: string): DropdownElement =>
+  buildDropdown(value, options, { className: 'graphics-select sharpening-select', ariaLabel, onChange });
 
 /** App-managed screen sharpening controls, kept outside the driver's graphics apply path. */
 export function renderGlobalSharpening(): HTMLElement {
@@ -29,34 +38,46 @@ export function renderGlobalSharpening(): HTMLElement {
 
   const render = (): void => {
     const request = generation;
-    const slider = el('input', { type: 'range', class: 'graphics-slider', min: 0, max: 100, step: 1, value: draft.percentage, disabled: busy || !state,
+    const slider = el('input', { type: 'range', class: 'graphics-slider', min: 0, max: 100, step: 1, value: draft.percentage, disabled: busy || !state || !draft.enabled,
       'aria-label': 'Image sharpening strength', 'aria-valuetext': `${draft.percentage}%`, oninput: (event: Event) => {
         draft.percentage = safePercentage((event.target as HTMLInputElement).valueAsNumber);
-        const text = root.querySelector<HTMLElement>('.graphics-fps-value');
+        const text = root.querySelector<HTMLElement>('.sharpening-value');
         if (text) text.textContent = `${draft.percentage}%`;
         (event.currentTarget as HTMLInputElement).setAttribute('aria-valuetext', `${draft.percentage}%`);
       } });
-    const toggle = el('input', { type: 'checkbox', checked: draft.enabled, disabled: busy || !state, 'aria-label': 'Enable app-managed image sharpening', onchange: (event: Event) => { draft.enabled = (event.target as HTMLInputElement).checked; } });
+    const sliderRow = el('div', { class: 'graphics-fps-slider-row sharpening-slider-row', hidden: !draft.enabled }, [slider, el('span', { class: 'graphics-fps-value sharpening-value', text: `${draft.percentage}%` })]);
+    const select = makeSelect(draft.enabled ? 'on' : 'off', [
+      { value: 'off', label: 'Image Sharpening Off' },
+      { value: 'on', label: 'Image Sharpening On' },
+    ], (value) => {
+      draft.enabled = value === 'on';
+      sliderRow.hidden = !draft.enabled;
+      slider.disabled = busy || !state || !draft.enabled;
+    }, 'Image Sharpening');
+    select.disabled = busy || !state;
     const apply = async (): Promise<void> => {
-      if (busy) return;
+      if (busy || !state) return;
       busy = true; error = ''; render();
       try {
         state = await api.postprocessSharpeningSet({ enabled: draft.enabled, percentage: draft.percentage });
-        if (latestRuntimeStatus) {
-          state = { ...state, active: latestRuntimeStatus.active, reason: latestRuntimeStatus.reason };
-        }
+        if (latestRuntimeStatus) state = { ...state, active: latestRuntimeStatus.active, reason: latestRuntimeStatus.reason };
         draft = { ...state.value };
       } catch (err) { error = err instanceof Error ? err.message : String(err); }
       finally { busy = false; if (request === generation && root.isConnected) render(); }
     };
     root.replaceChildren(
-      el('div', { class: 'graphics-card-heading' }, [el('h2', { class: 'card-title', text: 'Image Sharpening' }), el('label', { class: 'graphics-control graphics-inline-control' }, [toggle, el('span', { text: 'On' })])]),
-      el('p', { class: 'card-note', text: 'Sharpens only the foreground game on a display connected to Intel Arc while Arc Power is open. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game. No capture prompt, setup download, or game-folder files are used.' }),
+      el('div', { class: 'sharpening-card-heading' }, [
+        el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Image Sharpening' }), el('p', { class: 'card-note', text: 'Sharpens the foreground game on an Intel Arc display.' })]),
+        el('div', { class: 'sharpening-card-control' }, [select, sliderRow]),
+      ]),
+      sharpeningHelp('Sharpens only the foreground game on a display connected to Intel Arc while Arc Power is open. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game. No capture prompt, setup download, or game-folder files are used.'),
       ...legacyWarning(),
-      el('div', { class: 'graphics-fps-slider-row' }, [slider, el('span', { class: 'graphics-fps-value', text: `${draft.percentage}%` })]),
-      el('p', { class: 'profile-capability-note sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading sharpening settings…' }),
+      el('p', { class: 'sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading sharpening settings…' }),
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),
-      el('div', { class: 'graphics-card-actions' }, [el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : 'Apply sharpening', disabled: busy || !state, onclick: () => void apply() })]),
+      el('div', { class: 'graphics-card-actions' }, [
+        el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : 'Apply', disabled: busy || !state, onclick: () => void apply() }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { draft = { enabled: false, percentage: 50 }; render(); } }),
+      ]),
     );
   };
   render();
@@ -88,7 +109,7 @@ export function renderGlobalSharpening(): HTMLElement {
 }
 
 export function renderGameSharpening(exePath: string): HTMLElement {
-  const root = el('section', { class: 'profile-settings-section game-igs-settings sharpening-card' });
+  const root = el('section', { class: 'card graphics-card sharpening-card sharpening-game-card' });
   let generation = 0;
   let state: PostprocessSharpeningGame | null = null;
   let draft: PostprocessSharpeningValue = { enabled: false, percentage: 50 };
@@ -97,9 +118,7 @@ export function renderGameSharpening(exePath: string): HTMLElement {
   let error = '';
 
   const legacyWarning = (): HTMLElement[] => {
-    if (state?.legacyManifestStatus === 'unreadable') {
-      return [el('p', { class: 'profile-capability-note', text: 'The previous game-folder sharpening manifest could not be checked. Older integrations may remain; this build does not change game files.' })];
-    }
+    if (state?.legacyManifestStatus === 'unreadable') return [el('p', { class: 'profile-capability-note', text: 'The previous game-folder sharpening manifest could not be checked. Older integrations may remain; this build does not change game files.' })];
     const legacy = state?.legacyIntegration;
     if (!legacy) return [];
     const mode = legacy.mode === 'optiscaler' ? 'OptiScaler/ReShade' : 'ReShade';
@@ -115,12 +134,12 @@ export function renderGameSharpening(exePath: string): HTMLElement {
     } catch (err) { if (request === generation) error = err instanceof Error ? err.message : String(err); }
     if (request === generation && root.isConnected) render();
   };
-  const mutate = async (action: () => Promise<PostprocessSharpeningGame>): Promise<void> => {
+  const mutate = async (value: PostprocessSharpeningValue | null): Promise<void> => {
     if (busy) return;
     const request = generation;
     busy = true; error = ''; render();
     try {
-      state = await action();
+      state = await api.postprocessSharpeningGameSet(exePath, value);
       useGlobal = state.override === null;
       draft = { ...(state.override ?? state.globalValue) };
     } catch (err) { error = err instanceof Error ? err.message : String(err); }
@@ -128,29 +147,41 @@ export function renderGameSharpening(exePath: string): HTMLElement {
   };
   const render = (): void => {
     const globalValue = state?.globalValue ?? { enabled: false, percentage: 50 };
-    const slider = el('input', { class: 'profile-setting-control game-setting-control profile-sharpening-slider', type: 'range', min: 0, max: 100, step: 1, value: draft.percentage, disabled: busy || !state || useGlobal,
-      'aria-label': 'Per-game image sharpening strength', 'aria-valuetext': `${draft.percentage}%`, oninput: (event: Event) => {
+    const shownValue = useGlobal ? globalValue : draft;
+    const slider = el('input', { class: 'graphics-slider', type: 'range', min: 0, max: 100, step: 1, value: shownValue.percentage, disabled: busy || !state || useGlobal || !draft.enabled,
+      'aria-label': 'Per-game image sharpening strength', 'aria-valuetext': `${shownValue.percentage}%`, oninput: (event: Event) => {
         draft.percentage = safePercentage((event.target as HTMLInputElement).valueAsNumber);
         const label = root.querySelector<HTMLElement>('.sharpening-game-value'); if (label) label.textContent = `${draft.percentage}%`;
         (event.currentTarget as HTMLInputElement).setAttribute('aria-valuetext', `${draft.percentage}%`);
       } });
-    const enabled = el('input', { class: 'profile-setting-check game-setting-control', type: 'checkbox', checked: draft.enabled, disabled: busy || !state || useGlobal, 'aria-label': 'Enable per-game image sharpening', onchange: (event: Event) => { draft.enabled = (event.target as HTMLInputElement).checked; } });
-    const perform = (fn: () => Promise<PostprocessSharpeningGame>): void => { void mutate(fn); };
-    const apply = el('button', { class: 'btn btn-ghost btn-sm', text: 'Apply override', disabled: busy || !state || useGlobal, onclick: () => perform(() => api.postprocessSharpeningGameSet(exePath, { ...draft })) });
+    const sliderRow = el('div', { class: 'graphics-fps-slider-row sharpening-slider-row', hidden: useGlobal || !draft.enabled }, [slider, el('span', { class: 'graphics-fps-value sharpening-game-value', text: `${shownValue.percentage}%` })]);
+    const select = makeSelect(useGlobal ? 'global' : draft.enabled ? 'on' : 'off', [
+      { value: 'global', label: `Use global (${globalValue.enabled ? 'On' : 'Off'}, ${globalValue.percentage}%)` },
+      { value: 'off', label: 'Image Sharpening Off' },
+      { value: 'on', label: 'Image Sharpening On' },
+    ], (value) => {
+      useGlobal = value === 'global';
+      if (!useGlobal) draft.enabled = value === 'on';
+      sliderRow.hidden = useGlobal || !draft.enabled;
+      slider.disabled = busy || !state || useGlobal || !draft.enabled;
+      const shown = useGlobal ? globalValue : draft;
+      const label = root.querySelector<HTMLElement>('.sharpening-game-value'); if (label) label.textContent = `${shown.percentage}%`;
+    }, 'Per-game Image Sharpening');
+    select.disabled = busy || !state;
     root.replaceChildren(
-      el('h3', { class: 'profile-section-title', text: 'Image Sharpening' }),
-      el('p', { class: 'profile-capability-note', text: 'Changes sharpening for this game while it is the active window. The global Image Sharpening switch in Graphics must be on.' }),
+      el('div', { class: 'sharpening-card-heading' }, [
+        el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Image Sharpening' }), el('p', { class: 'card-note', text: 'Set a sharpening override for this game.' })]),
+        el('div', { class: 'sharpening-card-control' }, [select, sliderRow]),
+      ]),
+      sharpeningHelp('Per-game sharpening applies while this recognized game is the foreground window on a display connected to Intel Arc. The global Image Sharpening switch in Graphics must be on. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game.'),
       ...legacyWarning(),
       ...(state?.reason ? [el('p', { class: 'text-error', text: state.reason })] : []),
-      el('label', { class: 'profile-use-toggle' }, [el('input', { type: 'checkbox', checked: useGlobal, disabled: busy || !state, onchange: (event: Event) => {
-          const nextUsesGlobal = (event.target as HTMLInputElement).checked;
-          perform(() => api.postprocessSharpeningGameSet(exePath, nextUsesGlobal ? null : { ...globalValue }));
-        } }), el('span', { text: `Use global (${globalValue.enabled ? 'On' : 'Off'}, ${globalValue.percentage}%)` })]),
-        el('div', { class: 'profile-inline-control' }, [enabled, slider, el('span', { class: 'profile-capability-note sharpening-game-value', text: `${draft.percentage}%` })]),
-      el('div', { class: 'graphics-card-actions' }, [apply]),
-      el('p', { class: 'profile-capability-note', text: 'Changes take effect while this game is running.' }),
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),
       ...(!state ? [el('p', { class: 'profile-capability-note', text: 'Loading game sharpening…' })] : []),
+      el('div', { class: 'graphics-card-actions' }, [
+        el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : 'Apply', disabled: busy || !state, onclick: () => void mutate(useGlobal ? null : { ...draft }) }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { useGlobal = true; draft = { ...globalValue }; render(); } }),
+      ]),
     );
   };
   render(); void load();

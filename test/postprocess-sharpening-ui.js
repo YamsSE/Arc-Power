@@ -12,6 +12,15 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     catch (error) { process.stdout.write(`[postprocess-sharpening-ui] executeJavaScript failed: ${code}\n${error?.stack ?? error}\n`); throw error; }
   };
   const pause = () => new Promise((resolve) => setTimeout(resolve, 120));
+  const chooseMode = async (label, value) => js(`(() => {
+    const control = document.querySelector('.sharpening-card [role="combobox"][aria-label=' + JSON.stringify(${JSON.stringify(label)}) + ']');
+    if (!control) throw new Error('Missing sharpening mode: ' + ${JSON.stringify(label)});
+    control.click();
+    const option = control.options.find((item) => item.dataset.value === ${JSON.stringify(value)});
+    if (!option) throw new Error('Missing sharpening mode value: ' + ${JSON.stringify(value)});
+    option.click();
+  })()`);
+  const applyCard = async () => js(`Array.from(document.querySelectorAll('.sharpening-card .graphics-card-actions button')).find((button) => button.textContent.trim() === 'Apply')?.click()`);
   let legacyGraphicsWrites = 0;
   const originalSetGraphicsSettings = backend.setGraphicsSettings;
   const originalGetGlobal = postprocessSharpening.getGlobal;
@@ -40,7 +49,7 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     assert.fail(`${message}; state=${JSON.stringify(await js(`(async () => ({ hash: location.hash, title: document.querySelector('.page-title')?.textContent ?? null, page: (document.getElementById('page')?.textContent ?? '').slice(0, 500), catalog: await window.arcPower.gameCatalogList().catch((error) => String(error)) }))()`))}`);
   };
   const screenshot = async (name, selector) => {
-    const directory = path.resolve('.codex/task-artifacts/sharpening-render-proof');
+    const directory = path.resolve('.codex/task-artifacts/sharpening-card-layout');
     fs.mkdirSync(directory, { recursive: true });
     const visible = await js(`(() => { const target = document.querySelector(${JSON.stringify(selector)}); if (!target || target.getClientRects().length === 0) return false; document.querySelectorAll('.toast').forEach((item) => item.remove()); target.scrollIntoView({ block: 'center', inline: 'center' }); return true; })()`);
     assert.equal(visible, true, `Screenshot target was not visible: ${selector}`);
@@ -72,8 +81,8 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     assert.equal(await js(`document.querySelector('.sharpening-card input[aria-label="Image sharpening strength"]')?.max`), '100');
     assert.equal(await js(`document.querySelector('.sharpening-card input[aria-label="Image sharpening strength"]')?.step`), '1');
     assert.equal(await js(`document.querySelector('.sharpening-card input[aria-label="Image sharpening strength"]')?.getAttribute('aria-valuetext')`), '50%');
-    assert.equal(await js(`document.querySelector('.sharpening-card input[aria-label="Enable app-managed image sharpening"]')?.checked`), false);
-    const globalHelp = await js(`document.querySelector('.sharpening-card .card-note')?.textContent ?? ''`);
+    assert.equal(await js(`document.querySelector('.sharpening-card [role="combobox"]')?.dataset.value`), 'off');
+    const globalHelp = await js(`document.querySelector('.sharpening-card .sharpening-help')?.textContent ?? ''`);
     assert.match(globalHelp, /only the foreground game/i);
     assert.match(globalHelp, /display connected to Intel Arc/i);
     assert.match(globalHelp, /No capture prompt/i);
@@ -81,22 +90,23 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     assert.match(globalHelp, /game-folder files/i);
     assert.match(globalHelp, /Windowed, borderless, and fullscreen/i);
     assert.match(globalHelp, /exclusive fullscreen capture can vary/i);
-    await screenshot('global-sharpening-initial.png', '.sharpening-card input[aria-label="Image sharpening strength"]');
+    await screenshot('global-sharpening-initial.png', '.sharpening-card');
 
     // Slider edits remain drafts until Apply is clicked.
+    await chooseMode('Image Sharpening', 'on');
+    assert.equal((await postprocessSharpening.getGlobal()).value.enabled, false, 'Changing mode applied without Apply');
     await js(`(() => { const input = document.querySelector('.sharpening-card input[aria-label="Image sharpening strength"]'); input.value = '0'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     assert.equal((await postprocessSharpening.getGlobal()).value.percentage, 50, 'Editing the global slider applied without user action');
-    await js(`(() => { const input = document.querySelector('.sharpening-card input[aria-label="Enable app-managed image sharpening"]'); input.checked = true; input.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-    await js(`document.querySelector('.sharpening-card button')?.click()`);
+    await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => state.value.enabled === true && state.value.percentage === 0)`, 'Global 0% setting did not Apply');
     assert.equal(legacyGraphicsWrites, 0, 'Global sharpening Apply routed a write to the legacy graphics backend');
     await js(`location.hash = '#/dashboard'`);
     await pause();
     await js(`location.hash = '#/graphics'`);
     await waitFor(`document.querySelector('.sharpening-card input[aria-label="Image sharpening strength"]')?.value === '0'`, 'Global value did not persist after reopening Graphics');
-    assert.equal(await js(`document.querySelector('.sharpening-card input[aria-label="Enable app-managed image sharpening"]')?.checked`), true);
+    assert.equal(await js(`document.querySelector('.sharpening-card [role="combobox"]')?.dataset.value`), 'on');
     await js(`(() => { const input = document.querySelector('.sharpening-card input[aria-label="Image sharpening strength"]'); input.value = '100'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-    await js(`document.querySelector('.sharpening-card button')?.click()`);
+    await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => state.value.percentage === 100)`, 'Global 100% did not Apply');
     assert.deepEqual((await postprocessSharpening.getGlobal()).value, { enabled: true, percentage: 100 });
     assert.equal(legacyGraphicsWrites, 0, 'Global sharpening Apply routed a write to the legacy graphics backend');
@@ -106,7 +116,7 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     await waitFor(`document.querySelector('.sharpening-runtime-status')?.textContent === 'Screen capture is unavailable.'`, 'Global sharpening runtime error did not reach Graphics');
     postprocessSharpening.setRuntimeStatusForTest({ active: false, reason: null });
     await waitFor(`document.querySelector('.sharpening-runtime-status')?.textContent?.includes('Applies only to recognized games')`, 'Global sharpening runtime status did not recover to idle');
-    await screenshot('global-sharpening-100.png', '.sharpening-card input[aria-label="Image sharpening strength"]');
+    await screenshot('global-sharpening-100.png', '.sharpening-card');
 
     // A game profile has an override slider immediately; no setup action is
     // needed. Actual support and image quality remain game/runtime dependent.
@@ -126,28 +136,30 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     assert.equal(await js(`document.querySelector('.sharpening-card input[aria-label="Per-game image sharpening strength"]')?.max`), '100');
     assert.equal(await js(`document.querySelector('.sharpening-card input[aria-label="Per-game image sharpening strength"]')?.step`), '1');
     assert.equal(await js(`document.querySelector('.sharpening-card input[aria-label="Per-game image sharpening strength"]')?.disabled`), true);
-    const gameHelp = await js(`document.querySelector('.sharpening-card .profile-capability-note')?.textContent ?? ''`);
-    assert.match(gameHelp, /active window/i);
+    const gameHelp = await js(`document.querySelector('.sharpening-card .sharpening-help')?.textContent ?? ''`);
+    assert.match(gameHelp, /foreground window/i);
     assert.match(gameHelp, /global Image Sharpening switch/i);
-    await screenshot('game-sharpening-inherited-global.png', '.sharpening-card input[aria-label="Per-game image sharpening strength"]');
+    await screenshot('game-sharpening-inherited-global.png', '.sharpening-card');
 
     // Disable global inheritance, then apply a 0% override and verify it does
     // not mutate the global setting. Re-enabling inheritance restores global.
-    await js(`(() => { const useGlobal = document.querySelector('.sharpening-card input[type="checkbox"]'); useGlobal.checked = false; useGlobal.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-    await waitFor(`window.arcPower.postprocessSharpeningGameGet(${JSON.stringify(game.exePath)}).then((state) => state.override !== null)`, 'Disabling inheritance did not create an override');
+    await chooseMode('Per-game Image Sharpening', 'on');
+    assert.equal((await postprocessSharpening.getGame(game.exePath)).override, null, 'Changing inheritance applied without Apply');
     await waitFor(`document.querySelector('.sharpening-card input[aria-label="Per-game image sharpening strength"]')?.disabled === false`, 'Per-game override controls did not enable');
     await js(`(() => { const input = document.querySelector('.sharpening-card input[aria-label="Per-game image sharpening strength"]'); input.value = '0'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-    await js(`document.querySelector('.sharpening-card button')?.click()`);
+    await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGameGet(${JSON.stringify(game.exePath)}).then((state) => state.override?.percentage === 0)`, 'Per-game 0% override did not Apply');
-    await js(`(() => { const input = document.querySelector('.sharpening-card input[aria-label="Enable per-game image sharpening"]'); input.checked = false; input.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-    await js(`document.querySelector('.sharpening-card button')?.click()`);
+    await chooseMode('Per-game Image Sharpening', 'off');
+    await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGameGet(${JSON.stringify(game.exePath)}).then((state) => state.override?.enabled === false && state.override?.percentage === 0)`, 'Disabling the override lost its 0% strength');
-    await js(`(() => { const input = document.querySelector('.sharpening-card input[aria-label="Enable per-game image sharpening"]'); input.checked = true; input.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-    await js(`document.querySelector('.sharpening-card button')?.click()`);
+    await chooseMode('Per-game Image Sharpening', 'on');
+    await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGameGet(${JSON.stringify(game.exePath)}).then((state) => state.override?.enabled === true && state.override?.percentage === 0)`, 'Re-enabling the override lost its 0% strength');
     assert.deepEqual((await postprocessSharpening.getGlobal()).value, { enabled: true, percentage: 100 }, 'Per-game override changed global sharpening');
-    await screenshot('game-sharpening-override-0.png', '.sharpening-card input[aria-label="Per-game image sharpening strength"]');
-    await js(`(() => { const useGlobal = document.querySelector('.sharpening-card input[type="checkbox"]'); useGlobal.checked = true; useGlobal.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    await screenshot('game-sharpening-override-0.png', '.sharpening-card');
+    await js(`Array.from(document.querySelectorAll('.sharpening-card .graphics-card-actions button')).find((button) => button.textContent.trim() === 'Reset to default')?.click()`);
+    assert.notEqual((await postprocessSharpening.getGame(game.exePath)).override, null, 'Per-game reset applied before Apply');
+    await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGameGet(${JSON.stringify(game.exePath)}).then((state) => state.override === null && state.effective.percentage === 100)`, 'Returning to global inheritance did not clear the override');
     gameState = await postprocessSharpening.getGame(game.exePath);
     assert.equal(gameState.override, null);
@@ -155,6 +167,10 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     await js(`location.hash = '#/graphics'`);
     await waitFor(`location.hash === '#/graphics' && document.getElementById('page')?.textContent?.includes('Image Sharpening') && !!document.querySelector('.sharpening-card')`, 'Graphics page did not reopen');
     assert.deepEqual((await postprocessSharpening.getGlobal()).value, { enabled: true, percentage: 100 });
+    await js(`Array.from(document.querySelectorAll('.sharpening-card .graphics-card-actions button')).find((button) => button.textContent.trim() === 'Reset to default')?.click()`);
+    assert.deepEqual((await postprocessSharpening.getGlobal()).value, { enabled: true, percentage: 100 }, 'Global reset applied before Apply');
+    await applyCard();
+    await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => !state.value.enabled && state.value.percentage === 50)`, 'Global reset did not restore defaults on Apply');
     assert.equal(legacyGraphicsWrites, 0, 'Sharpening UI routed changes to driver graphics settings');
   } finally {
     releaseInitialGlobalRead();
