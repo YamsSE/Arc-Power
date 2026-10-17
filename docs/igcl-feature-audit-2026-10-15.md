@@ -20,7 +20,7 @@ An advertised capability establishes an API surface, not a visible IGS control o
 | 4 | CMAA | Enum, options mask 0 | Enum, options mask 0 | Candidate only; no selectable options advertised. |
 | 5 | Texture filtering quality | Absent | Absent | No reported support. |
 | 6 | Adaptive tessellation | Absent | Absent | No reported support. |
-| 7 | Game sharpening | Absent; direct get unsupported | **Integer 0–100, step 1, default 0; per-app** | Legacy route used by this change. No live-change flag: restart the game after changes. |
+| 7 | Game sharpening | Absent; direct get unsupported | **Integer 0–100, step 1, default 0; per-app** | Legacy driver route; writes/read-back succeeded but produced no visible change in the user's DX11/DX12 tests. No live-change flag. |
 | 8 | MSAA override | Absent | Absent | No reported support. |
 | 9 | Gaming flip modes | Enum mask 0x6f | Enum mask 0x6f | Already exposed by Arc Power. |
 | 10 | Adaptive Sync Plus | Absent | Absent | No reported support under this feature ID. |
@@ -56,15 +56,11 @@ Advanced display LUT/matrix transformations are declared in public IGCL. This au
 
 ## Sharpening implementation and verification boundary
 
-The original Intel 3D feature ID is **7** with an `INT32` enable/value payload. Current IGCL rejects it, while the bundled older library advertises its complete 0–100 range. An isolated helper keeps the legacy graphics context separate from Arc Power's overclocking runtime. It resolves the adapter by Windows LUID, validates values and application scope, and verifies native writes by read-back.
+The original Intel 3D feature ID is **7** with an `INT32` enable/value payload. Current IGCL rejects it, while the bundled older library advertises its complete 0–100 range. On the tested B580, writes and read-back succeeded, but the user reported no visible change in Expedition 33 (DX12) or Palworld (DX11) after fully relaunching the game. This confirms that accepting a value is not enough to establish an image effect.
 
-The UI has separate enable switches and **0–100% integer sliders** in **Graphics → General** and **Game Profile → Graphics**. An absent game-specific sharpening field preserves inheritance from global settings. Enabling a game assignment selects the driver's per-application scope; disabling the assignment restores the global scope.
+Arc Power's current replacement test path is described in [the sharpening render-path investigation](sharpening-render-path-2026-10-16.md). It uses DXGI Desktop Duplication to capture the composed output on an Intel Arc-connected monitor, crop the foreground window, and composite an Arc Power-authored shader without game-folder changes, API injection, or a downloaded setup. Its controls are integer **0–100%** sliders in **Graphics → General** and **Game Profile → Graphics**. The global switch gates both global and per-game values. The separate B580 probe verified that the test overlay was excluded from Desktop Duplication on that display. A controlled visible-window test of the integrated helper and compatibility with actual games/APIs remain pending; no game-rendering support is claimed yet. Vulkan and pointer compositing are not verified, and rotated/mismatched outputs currently fail closed.
 
-A live test through Arc Power's backend and isolated helper set global sharpening to enabled/23 and a disposable game override to enabled/73. Both passed immediate and delayed native read-back; the game override left the global value at 23. The test then restored global sharpening to disabled/0, set the disposable override to disabled/0, and returned that game's profile scope to global inheritance. This does not prove that the initially absent override record was deleted. An earlier direct native probe also accepted and returned enabled/37. These checks prove control-state persistence, not rendered-image processing.
-
-Focused validation passed 71 automated tests, TypeScript checking, and a real Chromium UI run using the mock backend. The UI run covered integer percent sliders, enable-state preservation, applying and reopening settings, inherited global values without creating an override, and per-GPU stored assignments. Packaged validation is recorded separately in the distributable build report.
-
-The user will perform the final visual comparison in **Clair Obscur: Expedition 33**. Restart the game between disabled and enabled comparisons; use a fixed scene and camera, leave other graphics settings unchanged, and compare disabled against a high sharpening level before choosing a preferred strength. This build does not claim that modern drivers reproduce the old IGS filter until that comparison succeeds. A-series hardware has not been tested in this investigation.
+The separate per-output IGCL sharpness capability is a possible driver-backed global mode, but it advertises only 1–5 intensity, reports default 0 outside that range, and its visible effect has not been established. It is not currently written by Arc Power. See the render-path document for the safe test conditions and limitations.
 
 ## Primary references
 

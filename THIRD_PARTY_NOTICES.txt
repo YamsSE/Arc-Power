@@ -3,24 +3,6 @@
 Arc Power bundles third-party components. Their licenses are reproduced
 below.
 
-## Included managed sharpening runtime
-
-- The sharpening runtime is built from ReShade v6.8.0, copyright Patrick
-  Mours and contributors, https://github.com/crosire/reshade.
-- It is a separately licensed component loaded by an opted-in game, not
-  linked into Arc Power's Electron process. ReShade's BSD-3-Clause notice
-  is reproduced in `LICENSES/ReShade-BSD-3-Clause.txt`.
-- The shipped runtime is a custom source build, not a copy of the official
-  ReShade installer. Its source revision, modifications, dependency notices,
-  and rebuild instructions accompany `src/main/sharpening-runtime/`.
-- The custom build omits Windows 7 D3D12On7 support, the ReShade overlay and
-  add-ons. Arc Power manages the included effect and its settings. No runtime
-  download is required to set up or launch games.
-- Arc Power's `ArcPowerSharpen.fx` is newly authored under this project's
-  GPL-2.0-only license. It is not Intel's original filter, an upstream ReShade
-  shader-pack file, or AMD FidelityFX CAS.
-- ReShade and its contributors do not endorse Arc Power.
-
 ## Included recording runtime (ascent-obs / OBS fork)
 
 - Component: `recording-runtime/`, including the native

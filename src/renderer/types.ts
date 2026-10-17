@@ -1497,23 +1497,31 @@ export interface RecordingSettingsSaveResult {
   hotkeys: RecordingEngineState['hotkeys'];
 }
 
-/** Shader sharpening is shared across GPUs and only affects opted-in games. */
+/** Screen sharpening is shared across GPUs and controlled by the active window. */
 export interface PostprocessSharpeningValue {
   enabled: boolean;
   percentage: number;
 }
 export interface PostprocessSharpeningGlobal {
   value: PostprocessSharpeningValue;
-  managedGameCount: number;
+  overrideCount: number;
   runtimeReady: boolean;
-  provider: 'reshade';
-  requiresRestart: boolean;
+  provider: 'screen';
+  requiresRestart: false;
+  active?: boolean;
+  reason?: string | null;
+  legacyIntegrations?: Array<{ exePath: string; mode: 'direct' | 'optiscaler' }>;
+  legacyManifestPath?: string;
+  legacyManifestStatus?: 'clear' | 'found' | 'unreadable';
+  legacyManifestReason?: string;
 }
 export interface PostprocessSharpeningGame {
-  installed: boolean;
   value: PostprocessSharpeningValue;
+  effective: PostprocessSharpeningValue;
   globalValue: PostprocessSharpeningValue;
   override: PostprocessSharpeningValue | null;
-  mode: 'direct' | 'optiscaler' | null;
   reason?: string | null;
+  legacyIntegration?: { exePath: string; mode: 'direct' | 'optiscaler' } | null;
+  legacyManifestStatus?: 'clear' | 'found' | 'unreadable';
+  legacyManifestReason?: string;
 }

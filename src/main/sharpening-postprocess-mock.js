@@ -1,29 +1,48 @@
-// Source mock/UI verification only: never downloads or writes game files.
+// Source mock/UI verification only: never launches a capture helper or writes game files.
+import { canonicalExePath } from './game-candidate.js';
+
 export function createMockPostprocessSharpening() {
   let value = { enabled: false, percentage: 50 };
-  let runtimeReady = true;
+  let runtimeStatus = { active: false, reason: null };
   const games = new Map();
-  const game = (exePath) => {
-    const row = games.get(exePath);
-    return { installed: !!row, value: { ...(row?.override ?? value) }, globalValue: { ...value },
-      override: row?.override ? { ...row.override } : null, mode: row ? 'direct' : null };
+  const statusListeners = new Set();
+  const publishStatus = () => {
+    for (const listener of statusListeners) listener({ ...runtimeStatus });
   };
-  const global = () => ({ value: { ...value }, managedGameCount: games.size,
-    runtimeReady, provider: 'reshade', requiresRestart: true });
+  const global = () => ({ value: { ...value }, overrideCount: games.size,
+    runtimeReady: true, provider: 'screen', requiresRestart: false, active: false,
+    legacyIntegrations: [], legacyManifestStatus: 'clear' });
+  const game = (exePath) => {
+    const key = canonicalExePath(exePath);
+    const override = key ? games.get(key) ?? null : null;
+    const source = override ?? value;
+    const effective = { enabled: value.enabled && source.enabled && source.percentage > 0,
+      percentage: value.enabled && source.enabled ? source.percentage : 0 };
+    return { value: { ...effective }, globalValue: { ...value },
+      override: override ? { ...override } : null, effective,
+      legacyIntegration: null, legacyManifestStatus: 'clear' };
+  };
   return {
+    async start() { return global(); },
+    async stop() { return global(); },
     async getGlobal() { return global(); },
+    subscribeStatus(listener) {
+      statusListeners.add(listener);
+      listener({ ...runtimeStatus });
+      return () => statusListeners.delete(listener);
+    },
+    setRuntimeStatusForTest(status) {
+      runtimeStatus = { active: status.active === true, reason: typeof status.reason === 'string' ? status.reason : null };
+      publishStatus();
+    },
     async setGlobal(next) { value = { ...next }; return global(); },
     async getGame(exePath) { return game(exePath); },
-    async install(exePath) {
-      runtimeReady = true;
-      if (!games.has(exePath)) games.set(exePath, { override: null });
-      return game(exePath);
-    },
     async setGame(exePath, override) {
-      if (!games.has(exePath)) throw new Error('Set up sharpening for this game first.');
-      games.set(exePath, { override: override ? { ...override } : null });
-      return game(exePath);
+      const key = canonicalExePath(exePath);
+      if (!key) throw new Error('Choose a valid game executable.');
+      if (override === null) games.delete(key);
+      else games.set(key, { ...override });
+      return game(key);
     },
-    async remove(exePath) { games.delete(exePath); return game(exePath); },
   };
 }

@@ -273,6 +273,8 @@ export const DEVICE_SELECTION_REQUEST_CHANNEL = 'device-selection:request';
 export const DEVICE_SELECTION_UPDATED_CHANNEL = 'device-selection:updated';
 /** M3-C-E: keyed capability/state refresh after a Stock/Advanced write. */
 export const OC_MODE_UPDATED_CHANNEL = 'oc-mode:updated';
+/** Main-process screen sharpening runtime state for the Graphics card. */
+export const POSTPROCESS_SHARPENING_STATUS_CHANNEL = 'postprocess-sharpening:status';
 
 export function pushRecordingState({ getWindow, state, getHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }) }) {
   const win = getWindow?.();
@@ -3142,7 +3144,7 @@ export function createIpcHandlers({
   };
 
   const postprocessService = () => {
-    if (!postprocessSharpening) throw new Error('Shader sharpening is unavailable in this session.');
+    if (!postprocessSharpening) throw new Error('Image sharpening is unavailable in this session.');
     return postprocessSharpening;
   };
   const postprocessValue = (value) => {
@@ -3154,15 +3156,9 @@ export function createIpcHandlers({
     }
     return { enabled: value.enabled, percentage: value.percentage };
   };
-  const postprocessTarget = async (value, requireCatalog = false) => {
+  const postprocessTarget = async (value) => {
     const exePath = canonicalExePath(value);
     if (!exePath) throw new Error('Choose a valid game executable.');
-    if (requireCatalog) {
-      const { catalog } = await gameProfiles.loadCatalog();
-      if (!Array.isArray(catalog) || !catalog.some((entry) => canonicalExePath(entry.exePath) === exePath)) {
-        throw new Error('Add this game to Profiles before setting up sharpening.');
-      }
-    }
     return exePath;
   };
 
@@ -3179,18 +3175,10 @@ export function createIpcHandlers({
       assertNoPayload(args, 'postprocess-sharpening:game-get');
       return postprocessService().getGame(await postprocessTarget(exePath));
     },
-    'postprocess-sharpening:install': async (exePath, ...args) => {
-      assertNoPayload(args, 'postprocess-sharpening:install');
-      return postprocessService().install(await postprocessTarget(exePath, true));
-    },
     'postprocess-sharpening:game-set': async (exePath, override, ...args) => {
       assertNoPayload(args, 'postprocess-sharpening:game-set');
       const value = override === null ? null : postprocessValue(override);
       return postprocessService().setGame(await postprocessTarget(exePath), value);
-    },
-    'postprocess-sharpening:remove': async (exePath, ...args) => {
-      assertNoPayload(args, 'postprocess-sharpening:remove');
-      return postprocessService().remove(await postprocessTarget(exePath));
     },
     'health': async () => collectHealth(backend),
 

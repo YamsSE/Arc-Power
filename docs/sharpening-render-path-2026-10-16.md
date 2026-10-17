@@ -1,63 +1,44 @@
-# Game sharpening: rendering follow-up, 16 October 2026
+# Image sharpening investigation — 16 October 2026
 
-## Native Intel result
+## Result so far
 
-The legacy IGCL 1.0.100 library advertises feature ID 7 as an integer 0–100 sharpening setting, with DX9/DX11 flags and per-application support. Writes and read-back succeed on this B580, but that does not establish an image effect. The user saw no change in Expedition 33 (DX12) or Palworld (DX11, global 100%, fully relaunched). The current IGCL 1.3.306.0 does not advertise the feature on driver 32.0.101.9150.
+The old IGCL game-sharpening feature (feature ID 7) is unavailable in the current IGCL library on the tested Intel Arc B580 and driver 32.0.101.9150. The bundled 2023 IGCL library accepts its 0–100 per-game value and reads it back, but the user saw no visible result in Expedition 33 (DX12) or Palworld (DX11) after a full restart. Driver state read-back is not proof of a rendered effect.
 
-Intel's [support notice](https://www.intel.com/content/www/us/en/support/articles/000100477/graphics.html) describes sharpening having no visible effect and its removal from newer Graphics Software. No documented activation switch was found. The previous native controls are no longer offered in the normal UI; backend diagnostics remain available. This implementation does not claim to restore Intel's original filter.
+The previous ReShade prototype produced the expected sharpened pixels in controlled DX11 and DX12 samples, but required placing files in game directories. That workflow is superseded because the requested feature must work without setup, downloads, or game-folder changes.
 
-## Replacement
+## Current replacement under test
 
-Arc Power supplies its own adaptive unsharp-mask shader and a pinned, modified source build of ReShade 6.8.0. The runtime and shader are included with the application. Setup does not download or execute an external installer. The managed runtime has no overlay or add-ons, does not save over Arc Power's owned configuration/preset, and skips ReShade's update check.
+Arc Power now has a native DXGI Desktop Duplication helper under test. It captures the composed monitor output on the Intel Arc adapter, crops to the foreground window bounds, applies an Arc Power-authored D3D11 unsharp-mask shader, and presents the result in a click-through overlay. The app sends the active process ID and effective percentage over a private stdin pipe. It does not inject a DLL, install an API layer, request capture consent, download a runtime, or write to game directories.
 
-- Graphics → Image Sharpening sets the global default, using an integer 0–100% slider.
-- Profiles → selected game's Graphics → Image Sharpening sets up the game and supplies a per-game override, or inherits the global value.
-- Global settings apply only to games explicitly set up through these controls.
-- The setting is shared across GPUs. It uses its own Apply control independently of driver Graphics settings and the GPU tuning profile toggle.
-- Restart the game after setup or a setting change. The game must be closed during setup/removal.
-- Select the executable that renders the game, rather than a launcher. For Palworld this is `Palworld-Win64-Shipping.exe`.
+- Graphics → Image Sharpening and Game Profile → Graphics → Image Sharpening use integer sliders from **0% to 100%** in **1%** steps.
+- A global switch gates all sharpening. Each game can inherit the global value or store its own enable/value override.
+- The effect is intended for a windowed or borderless foreground window on a monitor connected to Intel Arc. Exclusive fullscreen, protected content, anti-cheat behavior, hybrid-display routing, and specific games have not been established yet. The helper currently fails closed for rotated or mismatched output dimensions.
+- The overlay uses a top-level layered window with `WS_EX_TRANSPARENT` and full opacity. Windows documents this style combination as passing mouse input through a layered window; the helper no longer depends on `HTTRANSPARENT`, which only forwards within the same thread. Per-monitor DPI awareness is enabled before creating any native windows, with a per-monitor fallback for older supported Windows builds. Input delivery and alignment still need a visible-window test at mixed DPI.
+- Desktop Duplication captures the composed display rather than the game's API, so it can in principle process DX9/DX10/DX11/DX12 and OpenGL output. Microsoft documents DirectX and OpenGL support; Vulkan is not explicitly named in the documentation. None of these statements establish compatibility with a particular game or anti-cheat. DX9, DX10, DX11, DX12, Vulkan, and OpenGL game paths still need visual and runtime testing.
+- The app-owned overlay uses `WDA_EXCLUDEFROMCAPTURE`. A controlled B580 probe verified that this overlay was omitted by Desktop Duplication on the tested display, avoiding recursive capture there. This behavior is not a universal guarantee for every driver/compositor. Desktop Duplication can report the pointer separately; exact cursor compositing in the helper has not been verified.
+- The helper selects an Intel Arc adapter output matching the foreground window's monitor, waits for desktop updates, reports active/idle status, and verifies a pinned SHA-256 before launch. It does not use WGC and does not need a package manifest capability or capture-consent prompt.
+- Runtime active, idle, and error changes are pushed back to the Graphics card while it is open, so the displayed status follows helper transitions instead of relying on the initial settings read.
 
-The initial validated setup supports **64-bit DirectX 11 and DirectX 12** on Windows 10/11. DX9, DX10, OpenGL and Vulkan are requested follow-up work under the same controls; their setup paths and rendered behavior are not yet validated or offered as supported. Vulkan needs its own layer installation/removal.
+## Controlled tests
 
-## Existing modifications and removal
+An artifact-only prototype previously verified B580 monitor capture, shader output differences at 100%, click-through behavior, and capture exclusion. With diagnostic full-frame readback on every frame, an animated 60-frame fixture delivered 45.6 capture frames per second, with 11.6 ms median capture-to-present submission time and 16.3 ms p95. Those measurements are not from the final bundled helper and should not be treated as product performance.
 
-A free game directory receives an owned `dxgi.dll`, `ReShade.ini`, and `ArcPowerSharpening` shader/preset directory. If an existing proxy is positively identified as OptiScaler, it is preserved: the runtime is installed as `ReShade64.dll`, and only `[Plugins] LoadReshade` is enabled in the existing OptiScaler configuration. Unrecognized proxies/configuration conflicts are refused.
+The final bundled helper has passed command parsing and clean-stop smoke checks, and the focused renderer check exercises active/idle/error status updates. The separate B580 Desktop Duplication probe verified capture exclusion, but the integrated helper has not yet passed a controlled visible-window test. No actual-game compatibility or image-quality result is claimed. The user plans to test Expedition 33 after receiving a Portable build.
 
-The service records ownership and hashes, checks paths/links before writes, and refuses to overwrite changed managed files. Removal restores the original OptiScaler configuration if it still matches the managed copy. Existing user mods are not replaced. No actual game directory was changed during the automated probes.
+## IGCL display-output sharpness lead
 
-## Rendering evidence
+Intel's public IGCL API exposes `ctlGetSharpnessCaps`, `ctlGetCurrentSharpness`, and `ctlSetCurrentSharpness` for a display output. The observed B580 output advertises a non-adaptive intensity range of 1–5, step 1, and a reported default of 0. This may offer a driver-level whole-output effect without game-folder files, but the documented range excludes 0, off/default semantics are unclear, and no visual effect has been measured. It cannot provide per-game behavior on its own. A setting read-back would not prove that the panel visibly changed.
 
-Tests use native DX11 and DX12 sample programs selecting the physical Intel Arc B580. GPU backbuffers are read after the runtime's Present processing. These are controlled rendering samples, not screenshots from Expedition 33 or Palworld.
-
-The full service installs its bundled runtime and shader, applies disabled, 0%, 50%, 100%, and per-game 0% over global 100%, then removes its files. In both APIs:
-
-- Disabled, enabled 0%, and per-game 0% yield identical image data.
-- 50% and 100% change pixels; 100% increases the measured image difference over 50%.
-- Edge energy increases with sharpening.
-- Owned config, preset and shader hashes remain unchanged after the samples exit.
-- Removal succeeds.
-
-The same 0%/100% comparison also passed through a disposable copy of the user's OptiScaler proxy on DX11 and DX12. Removal restored that copy's proxy hash and configuration bytes exactly. The source Palworld files were read and copied only; this does not prove compatibility inside Palworld itself.
-
-Focused tests cover service security/rollback, global inheritance and overrides, IPC validation/catalog authorization, existing graphics routing and game profiles. An Electron/Chromium test exercises the actual global and per-game controls and verifies they issue no legacy IGCL sharpening writes. Typechecking and renderer compilation pass. Full-suite status is not inferred from these focused checks.
-
-Not yet established: rendering in the user's actual games, HDR output, 32-bit games, other graphics APIs, every third-party mod combination, or games that block injected runtimes.
+Because this is only five coarse levels and has unresolved enable semantics, Arc Power does not currently write this control. A reversible test would need to save the exact current tuple, target one uniquely identified physical output, try only advertised values, compare the physical display, and restore/read back the exact saved tuple.
 
 ## Licensing and provenance
 
-ReShade's [BSD 3-clause source licence](https://github.com/crosire/reshade/blob/v6.8.0/LICENSE.md) explicitly permits modified source/binary redistribution with notices and without implied endorsement. The package includes that licence, dependency notices, source commit/submodule identities, the local patch and rebuild instructions in `src/main/sharpening-runtime/`. Arc Power's shader is newly authored under the application's GPL-2.0-only licence; no third-party sharpening shader pack is included. The ReShade runtime runs in the game process and retains its separate licensing.
+The active sharpening shader is authored in the native helper source by Arc Power; no ReShade binary, setup program, third-party shader, or game hook is included in this implementation. The old ReShade sample-build provenance remains in repository history and its prototype files are excluded from packaged builds.
 
-The custom build excludes the Microsoft D3D12On7 component, whose redistribution terms are narrower, and excludes the GUI's embedded font. Standard Windows 10/11 DX12 remains compiled and passes the rendering probe.
+## Primary references
 
-ReShade's [website](https://reshade.me/) separately asks users not to redistribute binaries/shaders. Our modified source-build approach relies on the explicit source licence; it is not a claim of upstream endorsement or legal advice. The official downloaded setup binary is not included in the product.
-
-## Reproducing focused checks
-
-```text
-npm run typecheck
-npm run build:renderer
-node --test test/sharpening-proxy.test.js test/sharpening-contract.test.js test/sharpening-postprocess.test.js test/postprocess-sharpening-ipc.test.js test/graphics-rtss.test.js test/game-profile-rtss.test.js test/apply-worker-game-profile.test.js
-npx electron test/postprocess-sharpening-ui-runner.mjs
-```
-
-Build the two controlled sample programs using `test/native-sharpening-probe/build.cmd` and `build-dx12.cmd`, placing their output in `.codex/task-artifacts/sharpening-render-proof/`, then explicitly run `node test/sharpening-render-proof.mjs`. The optional `test/sharpening-optiscaler-proof.mjs` reads the locally installed Palworld proxy to create owned copies; it does not redistribute that proxy. The render tests create owned temporary directories and retain their JSON/image results there.
+- [Intel IGCL Control API](https://intel.github.io/drivers.gpu.control-library/Control/api.html)
+- [Intel public IGCL header](https://github.com/intel/drivers.gpu.control-library/blob/master/include/igcl_api.h)
+- [Intel notice on removal of legacy IGS game effects](https://www.intel.com/content/www/us/en/support/articles/000100477/graphics.html)
+- [Microsoft: Layered windows and mouse input](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features)
+- [Microsoft: DPI awareness](https://learn.microsoft.com/en-us/windows/win32/hidpi/setting-the-default-dpi-awareness-for-a-process)

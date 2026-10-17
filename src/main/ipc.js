@@ -3,7 +3,7 @@
 // module only binds the map to ipcMain.handle.
 
 import { app, ipcMain, powerMonitor } from 'electron';
-import { createIpcHandlers, assertNoPayload, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, RECORDING_SETTINGS_CHANNEL, RECORDING_PILL_SETTINGS_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL, OC_MODE_UPDATED_CHANNEL } from './ipc-core.js';
+import { createIpcHandlers, assertNoPayload, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, RECORDING_SETTINGS_CHANNEL, RECORDING_PILL_SETTINGS_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL, OC_MODE_UPDATED_CHANNEL, POSTPROCESS_SHARPENING_STATUS_CHANNEL } from './ipc-core.js';
 import { createDriverInfo } from './driver-info.js';
 import { createRegistryCatalog, REGISTRY_CATALOG } from './registry-catalog.js';
 import { createRegistryApply } from './registry-apply.js';
@@ -173,6 +173,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     ?? (async () => recordingEngine?.getState?.() ?? null);
   const recordingRuntimeShutdownIfIdle = arguments[0]?.recordingRuntimeShutdownIfIdle
     ?? (async () => recordingEngine?.shutdownIfIdle?.() ?? null);
+  const postprocessSharpening = arguments[0]?.postprocessSharpening ?? null;
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -218,7 +219,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     getRecordingMemorySavingMode,
     sysmanPowerLimits,
     gameProfiles,
-    postprocessSharpening: arguments[0]?.postprocessSharpening ?? null,
+    postprocessSharpening,
     gameScan: gameScan ?? undefined,
     chooseGameExecutable,
     gameArtwork,
@@ -310,6 +311,10 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     }
     try { onRecordingState(enrichedState, previousRecordingState); } catch { /* desktop notifications are best effort */ }
     previousRecordingState = enrichedState;
+  });
+  const unsubscribePostprocessSharpeningStatus = postprocessSharpening?.subscribeStatus?.((status) => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.send(POSTPROCESS_SHARPENING_STATUS_CHANNEL, status);
   });
   // The foreground detector is absent in mock/ui-verify mode. In the real
   // product it gives Game Profiles the same executable identity used by the
@@ -547,6 +552,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
   ]);
   return async () => {
     unsubscribeRecordingState?.();
+    unsubscribePostprocessSharpeningStatus?.();
     await gameTuning?.stop();
     await arcSleepController.stop();
     await stopAllTelemetry();
