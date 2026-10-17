@@ -55,4 +55,3 @@ test('legacy sharpening audit fails closed for malformed ownership records', () 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
-
