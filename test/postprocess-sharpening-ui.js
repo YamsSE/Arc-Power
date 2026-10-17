@@ -74,12 +74,13 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     assert.equal(await js(`document.querySelector('.sharpening-card input[aria-label="Image sharpening strength"]')?.getAttribute('aria-valuetext')`), '50%');
     assert.equal(await js(`document.querySelector('.sharpening-card input[aria-label="Enable app-managed image sharpening"]')?.checked`), false);
     const globalHelp = await js(`document.querySelector('.sharpening-card .card-note')?.textContent ?? ''`);
-    assert.match(globalHelp, /active window/i);
+    assert.match(globalHelp, /only the foreground game/i);
     assert.match(globalHelp, /display connected to Intel Arc/i);
     assert.match(globalHelp, /No capture prompt/i);
     assert.match(globalHelp, /setup download/i);
     assert.match(globalHelp, /game-folder files/i);
-    assert.match(globalHelp, /windowed or borderless/i);
+    assert.match(globalHelp, /Windowed, borderless, and fullscreen/i);
+    assert.match(globalHelp, /exclusive fullscreen capture can vary/i);
     await screenshot('global-sharpening-initial.png', '.sharpening-card input[aria-label="Image sharpening strength"]');
 
     // Slider edits remain drafts until Apply is clicked.
@@ -104,7 +105,7 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     postprocessSharpening.setRuntimeStatusForTest({ active: false, reason: 'Screen capture is unavailable.' });
     await waitFor(`document.querySelector('.sharpening-runtime-status')?.textContent === 'Screen capture is unavailable.'`, 'Global sharpening runtime error did not reach Graphics');
     postprocessSharpening.setRuntimeStatusForTest({ active: false, reason: null });
-    await waitFor(`document.querySelector('.sharpening-runtime-status')?.textContent?.includes('Applies while a supported window is active')`, 'Global sharpening runtime status did not recover to idle');
+    await waitFor(`document.querySelector('.sharpening-runtime-status')?.textContent?.includes('Applies only to recognized games')`, 'Global sharpening runtime status did not recover to idle');
     await screenshot('global-sharpening-100.png', '.sharpening-card input[aria-label="Image sharpening strength"]');
 
     // A game profile has an override slider immediately; no setup action is

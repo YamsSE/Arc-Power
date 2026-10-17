@@ -10,7 +10,7 @@ const DEFAULT = Object.freeze({ enabled: false, percentage: 50 });
 const SETTINGS = 'postprocess-sharpening.json';
 const SOURCE_HELPER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'sharpening-runtime', 'ArcPower.ScreenSharpen.exe');
 // Pin the bundled native executable before spawning it from an elevated Portable.
-const HELPER_SHA256 = '0C1A1D804C088084482C97876A1CFCDBA1C6305F4DE31EA6D702F0A78939D999';
+const HELPER_SHA256 = 'B4D80F55A65F8AA467E6E253BA1996357142ED96D708250C0BE7B2B6E2714112';
 
 function helperIntegrity(helperPath) {
   try {
@@ -60,10 +60,11 @@ function readSettings(file) {
   return { global, games: cleanGames };
 }
 
-/** Global desktop-output sharpening. The native helper owns capture and compositing. */
-export function createScreenPostprocessSharpening({ dir, detector, helperPath = SOURCE_HELPER, spawn = nodeSpawn, stageHelper = null, pollMs = 1000 } = {}) {
+/** Game-scoped screen sharpening. The native helper owns capture and compositing. */
+export function createScreenPostprocessSharpening({ dir, detector, isGameExecutable = async () => false, helperPath = SOURCE_HELPER, spawn = nodeSpawn, stageHelper = null, pollMs = 1000 } = {}) {
   if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw new TypeError('An absolute AppData directory is required.');
   if (!detector || typeof detector.detectProcess !== 'function') throw new TypeError('A foreground process detector is required.');
+  if (typeof isGameExecutable !== 'function') throw new TypeError('A game catalog lookup is required.');
   const configPath = path.join(dir, SETTINGS);
   let settings = { global: { ...DEFAULT }, games: {} };
   let settingsError = null;
@@ -198,7 +199,15 @@ export function createScreenPostprocessSharpening({ dir, detector, helperPath = 
         const pid = Number.isInteger(identity?.pid) && identity.pid > 0 ? identity.pid : 0;
         const exePath = identity?.exePath;
         const ownPid = pid === process.pid || canonicalExePath(exePath) === canonicalExePath(process.execPath);
-        const value = pid === 0 || ownPid ? { enabled: false, percentage: 0 } : effectiveFor(exePath);
+        // Global sharpening is intentionally scoped to executables explicitly
+        // present in the user's Game Profile catalog. Unknown desktop programs
+        // and catalog lookup failures always clear the native capture target.
+        let game = false;
+        if (pid > 0 && !ownPid && typeof exePath === 'string') {
+          try { game = await isGameExecutable(exePath) === true; } catch { game = false; }
+        }
+        if (token !== generation || stopped || !ready || !settings.global.enabled) return;
+        const value = game ? effectiveFor(exePath) : { enabled: false, percentage: 0 };
         writeCommand(`SET ${value.enabled ? pid : 0} ${value.enabled ? value.percentage : 0}`);
       } catch (error) {
         reason = `Unable to detect the foreground process: ${error?.message ?? String(error)}`;

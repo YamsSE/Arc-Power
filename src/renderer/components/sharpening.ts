@@ -25,7 +25,7 @@ export function renderGlobalSharpening(): HTMLElement {
     return [el('p', { class: 'profile-capability-note', text: `The previous game-folder sharpening manifest still lists ${games.length} game(s): ${list}. It may affect these games while this switch is off or stack with the screen effect. This build does not change game files; remove the old integration with the previous Arc Power version while each game is closed before testing.` })];
   };
   const runtimeStatusText = (): string => state?.reason
-    ?? (state?.active ? 'Sharpening is active on the foreground window.' : state?.runtimeReady ? 'Included with Arc Power · Applies while a supported window is active.' : 'Sharpening is unavailable on this system.');
+    ?? (state?.active ? 'Sharpening is active on the foreground game.' : state?.runtimeReady ? 'Included with Arc Power · Applies only to recognized games.' : 'Sharpening is unavailable on this system.');
 
   const render = (): void => {
     const request = generation;
@@ -51,7 +51,7 @@ export function renderGlobalSharpening(): HTMLElement {
     };
     root.replaceChildren(
       el('div', { class: 'graphics-card-heading' }, [el('h2', { class: 'card-title', text: 'Image Sharpening' }), el('label', { class: 'graphics-control graphics-inline-control' }, [toggle, el('span', { text: 'On' })])]),
-      el('p', { class: 'card-note', text: 'Sharpens the active window on a display connected to Intel Arc while Arc Power is open. No capture prompt, setup download, or game-folder files are used. Windowed or borderless mode is recommended.' }),
+      el('p', { class: 'card-note', text: 'Sharpens only the foreground game on a display connected to Intel Arc while Arc Power is open. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game. No capture prompt, setup download, or game-folder files are used.' }),
       ...legacyWarning(),
       el('div', { class: 'graphics-fps-slider-row' }, [slider, el('span', { class: 'graphics-fps-value', text: `${draft.percentage}%` })]),
       el('p', { class: 'profile-capability-note sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading sharpening settings…' }),

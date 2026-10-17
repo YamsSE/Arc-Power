@@ -5039,7 +5039,7 @@ export function createIpcHandlers({
             throw new Error('game-catalog-sync: executable is not a safe existing game candidate');
           }
         }
-        return { catalog: await gameProfiles.syncCatalog(normalizeScannedApps(payload, [], { requireExists: true }), { authoritative: true }) };
+        return { catalog: await gameProfiles.syncCatalog(normalizeScannedApps(payload, [], { onlyGames: true, requireExists: true }), { authoritative: true }) };
       },
 
       'game-settings-save': async (payload) => serializeGameProfileMutation(async () => {

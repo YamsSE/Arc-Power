@@ -73,6 +73,7 @@ test('screen sharpening service starts without capture consent, selects, overrid
     dir,
     helperPath: HELPER,
     detector: { async detectProcess() { return foreground; } },
+    isGameExecutable: async (exePath) => exePath.toLowerCase() === GAME.toLowerCase(),
     spawn,
     pollMs: 250,
   });
@@ -126,6 +127,90 @@ test('screen sharpening service starts without capture consent, selects, overrid
       child.exitCode ??= 0;
       child.stdin.destroyed = true;
     }
+    await service.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('screen sharpening clears the target for desktop apps and fails closed when game lookup fails', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-power-sharpening-game-gate-'));
+  const commands = [];
+  const children = [];
+  let foreground = { pid: 4242, exePath: 'C:\\Program Files\\ChatGPT\\ChatGPT.exe' };
+  let catalogAvailable = true;
+  const service = createScreenPostprocessSharpening({
+    dir,
+    helperPath: HELPER,
+    detector: { async detectProcess() { return foreground; } },
+    isGameExecutable: async (exePath) => {
+      if (!catalogAvailable) throw new Error('catalog unavailable');
+      return exePath.toLowerCase() === GAME.toLowerCase();
+    },
+    spawn() {
+      const child = new FakeChild();
+      children.push(child);
+      child.stdin.write = (value) => { child.stdin.writes.push(String(value)); commands.push(String(value).trim()); return true; };
+      setTimeout(() => child.stdout.emit('data', 'READY screen-sharpen-v1\n'), 0);
+      return child;
+    },
+    pollMs: 250,
+  });
+
+  try {
+    await service.start();
+    await service.setGlobal({ enabled: true, percentage: 100 });
+    await until(() => commands.includes('SET 0 0'), 'desktop foreground app was not rejected');
+    assert.equal(commands.some((command) => command.startsWith('SET 4242 ')), false, 'desktop apps must never receive an active sharpening target');
+
+    foreground = { pid: 4242, exePath: GAME };
+    await until(() => commands.includes('SET 4242 100'), 'cataloged game did not receive the global sharpening target');
+    foreground = { pid: 4343, exePath: 'C:\\Program Files\\ChatGPT\\ChatGPT.exe' };
+    let previousCount = commands.length;
+    await until(() => commands.length > previousCount && commands.at(-1) === 'SET 0 0', 'switching to a desktop app did not clear sharpening');
+    assert.equal(commands.some((command) => command.startsWith('SET 4343 ')), false);
+    foreground = { pid: 4242, exePath: GAME };
+    previousCount = commands.length;
+    await until(() => commands.length > previousCount && commands.at(-1) === 'SET 4242 100', 'returning to the game did not restore sharpening');
+    catalogAvailable = false;
+    previousCount = commands.length;
+    await until(() => commands.length > previousCount && commands.at(-1) === 'SET 0 0', 'catalog failure did not fail closed');
+    assert.equal(commands.at(-1), 'SET 0 0', 'a failed game lookup must clear the active capture target');
+  } finally {
+    for (const child of children) {
+      child.exitCode ??= 0;
+      child.stdin.destroyed = true;
+    }
+    await service.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('disabling sharpening while game discovery is pending cannot reactivate capture', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-power-sharpening-discovery-race-'));
+  let resolveLookup;
+  const child = new FakeChild();
+  const service = createScreenPostprocessSharpening({
+    dir,
+    helperPath: HELPER,
+    detector: { async detectProcess() { return { pid: 4242, exePath: GAME }; } },
+    isGameExecutable() { return new Promise((resolve) => { resolveLookup = resolve; }); },
+    spawn() {
+      setTimeout(() => child.stdout.emit('data', 'READY screen-sharpen-v1\n'), 0);
+      return child;
+    },
+    pollMs: 250,
+  });
+  try {
+    await service.start();
+    await service.setGlobal({ enabled: true, percentage: 100 });
+    await until(() => !!resolveLookup, 'game discovery did not start');
+    await service.setGlobal({ enabled: false, percentage: 100 });
+    resolveLookup(true);
+    await delay(20);
+    assert.equal(child.stdin.writes.some((command) => command.startsWith('SET 4242 ')), false, 'late game discovery must not restore an old target');
+    assert.equal((await service.getGlobal()).active, false);
+  } finally {
+    child.exitCode = 0;
     await service.stop();
     fs.rmSync(dir, { recursive: true, force: true });
   }

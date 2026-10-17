@@ -301,6 +301,7 @@ export class GameProfileStore {
     this.filePath = path.join(this.dir, 'game-profiles.json');
     this._mutation = Promise.resolve();
     this._tmpCounter = 0;
+    this._catalogPathCache = null;
   }
 
   _ensureDir() {
@@ -415,6 +416,7 @@ export class GameProfileStore {
       settings: normalizeSettings(safeCatalogRecords(data.settings)),
     };
     this._writeAtomic(clean);
+    this._catalogPathCache = null;
     return clean;
   }
 
@@ -508,7 +510,20 @@ export class GameProfileStore {
   async loadCatalog() {
     return this._mutate(() => {
       const data = this._loadDataUnlocked();
+      this._catalogPathCache = new Set(data.catalog.map((item) => item.exePath));
       return { catalog: data.catalog, settings: data.settings };
+    });
+  }
+
+  async hasCatalogPath(value) {
+    const exePath = canonicalExePath(value);
+    if (!exePath) return false;
+    return this._mutate(() => {
+      if (!this._catalogPathCache) {
+        const data = this._loadDataUnlocked();
+        this._catalogPathCache = new Set(data.catalog.map((item) => item.exePath));
+      }
+      return this._catalogPathCache.has(exePath);
     });
   }
 

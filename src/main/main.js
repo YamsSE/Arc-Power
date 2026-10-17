@@ -58,6 +58,7 @@ import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, resolvePreferredDevice, clampOverlayScale, overlayHotkeysCollide, validateOverlayHotkeyLetter, waiverProbeDue, pushRecordingActionResult } from './ipc-core.js';
 import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT, OVERLAY_RENDERERS } from './store/profile-store.js';
 import { GameProfileStore } from './store/game-profile-store.js';
+import { createSharpeningGameLookup } from './sharpening-game-eligibility.js';
 import { createScreenPostprocessSharpening } from './sharpening-screen.js';
 import { stageScreenSharpeningHelper } from './sharpening-helper-stage.js';
 import { createMockPostprocessSharpening } from './sharpening-postprocess-mock.js';
@@ -2695,9 +2696,12 @@ async function main() {
   const sharpeningHelperPath = app.isPackaged
     ? path.join(process.resourcesPath, 'app.asar.unpacked', 'src', 'main', 'sharpening-runtime', 'ArcPower.ScreenSharpen.exe')
     : undefined;
+  const isSharpeningGameExecutable = createSharpeningGameLookup({ gameProfiles, gameScan });
   const postprocessSharpening = mock
     ? createMockPostprocessSharpening()
-    : createScreenPostprocessSharpening({ dir: store.dir, detector: sharpeningDetector, helperPath: sharpeningHelperPath,
+    : createScreenPostprocessSharpening({ dir: store.dir, detector: sharpeningDetector,
+      isGameExecutable: isSharpeningGameExecutable,
+      helperPath: sharpeningHelperPath,
       stageHelper: app.isPackaged && process.platform === 'win32' ? stageScreenSharpeningHelper : null });
   // The desktop capture helper is activated only after the foreground
   // detector exists, and only when the persisted global setting is enabled.

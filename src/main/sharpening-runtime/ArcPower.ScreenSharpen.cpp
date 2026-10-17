@@ -122,6 +122,10 @@ struct Runtime {
   HWND overlay{};
   bool overlayVisible{};
   ComPtr<IDXGISwapChain> swapChain;
+  ComPtr<ID3D11RenderTargetView> backBufferRtv;
+  ComPtr<ID3D11Texture2D> cropTexture;
+  ComPtr<ID3D11ShaderResourceView> cropSrv;
+  DXGI_FORMAT cropFormat{DXGI_FORMAT_UNKNOWN};
   UINT width{};
   UINT height{};
 
@@ -187,6 +191,7 @@ struct Runtime {
   }
 
   void resetGraphics() noexcept {
+    cropSrv.Reset(); cropTexture.Reset(); cropFormat = DXGI_FORMAT_UNKNOWN; backBufferRtv.Reset();
     duplication.Reset(); output.Reset(); adapter.Reset();
     sampler.Reset(); rasterizer.Reset(); constants.Reset(); pixelShader.Reset(); vertexShader.Reset();
     context.Reset(); device.Reset(); outputBounds = {};
@@ -228,6 +233,9 @@ struct Runtime {
     ComPtr<IDXGIFactory> parentFactory;
     if (FAILED(hr = baseAdapter->GetParent(IID_PPV_ARGS(&parentFactory)))) throw hresult_error(hr, L"GetParent factory failed");
     if (FAILED(hr = parentFactory->CreateSwapChain(device.Get(), &sd, &swapChain))) throw hresult_error(hr, L"CreateSwapChain failed");
+    ComPtr<ID3D11Texture2D> backBuffer;
+    if (FAILED(hr = swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer)))) throw hresult_error(hr, L"GetBuffer failed");
+    if (FAILED(hr = device->CreateRenderTargetView(backBuffer.Get(), nullptr, &backBufferRtv))) throw hresult_error(hr, L"CreateRenderTargetView failed");
     overlayVisible = false;
   }
 
@@ -239,28 +247,21 @@ struct Runtime {
   }
 
   void destroyOverlay() noexcept {
+    backBufferRtv.Reset(); cropSrv.Reset(); cropTexture.Reset(); cropFormat = DXGI_FORMAT_UNKNOWN;
     swapChain.Reset();
     if (overlay) DestroyWindow(overlay);
     overlay = nullptr; overlayVisible = false; width = height = 0;
   }
 
   void render(ID3D11Texture2D* source, UINT sourceWidth, UINT sourceHeight, int percent) {
-    if (!swapChain || !overlay) return;
-    ComPtr<ID3D11Texture2D> backBuffer;
-    HRESULT hr = swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
-    if (FAILED(hr)) throw hresult_error(hr, L"GetBuffer failed");
-    ComPtr<ID3D11ShaderResourceView> srv;
+    if (!swapChain || !overlay || !backBufferRtv || !cropSrv) return;
+    HRESULT hr;
     D3D11_TEXTURE2D_DESC sourceDesc{}; source->GetDesc(&sourceDesc);
-    D3D11_SHADER_RESOURCE_VIEW_DESC view{}; view.Format = sourceDesc.Format;
-    view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; view.Texture2D.MipLevels = 1;
-    if (FAILED(hr = device->CreateShaderResourceView(source, &view, &srv))) throw hresult_error(hr, L"CreateShaderResourceView failed");
-    ComPtr<ID3D11RenderTargetView> rtv;
-    if (FAILED(hr = device->CreateRenderTargetView(backBuffer.Get(), nullptr, &rtv))) throw hresult_error(hr, L"CreateRenderTargetView failed");
     D3D11_VIEWPORT vp{0,0,static_cast<float>(width),static_cast<float>(height),0,1};
     context->RSSetState(rasterizer.Get()); context->RSSetViewports(1, &vp);
-    context->OMSetRenderTargets(1, rtv.GetAddressOf(), nullptr);
+    context->OMSetRenderTargets(1, backBufferRtv.GetAddressOf(), nullptr);
     context->VSSetShader(vertexShader.Get(), nullptr, 0); context->PSSetShader(pixelShader.Get(), nullptr, 0);
-    context->PSSetShaderResources(0, 1, srv.GetAddressOf()); context->PSSetSamplers(0, 1, sampler.GetAddressOf());
+    context->PSSetShaderResources(0, 1, cropSrv.GetAddressOf()); context->PSSetSamplers(0, 1, sampler.GetAddressOf());
     const float params[4]{1.0f / static_cast<float>(sourceWidth), 1.0f / static_cast<float>(sourceHeight), static_cast<float>(percent) / 100.0f, 0};
     context->UpdateSubresource(constants.Get(), 0, nullptr, params, 0, 0); context->PSSetConstantBuffers(0, 1, constants.GetAddressOf());
     context->IASetInputLayout(nullptr); context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); context->Draw(3, 0);
@@ -317,7 +318,7 @@ void run() {
       pumpMessages();
       Command incoming = currentCommand();
       if (incoming.revision != seenRevision) { command = incoming; seenRevision = incoming.revision; resetActive(); }
-      if (command.percent <= 0 || command.pid == 0) { resetActive(); std::this_thread::sleep_for(std::chrono::milliseconds(40)); continue; }
+      if (command.percent <= 0 || command.pid == 0) { resetActive(); runtime.resetGraphics(); lastBounds = {}; std::this_thread::sleep_for(std::chrono::milliseconds(40)); continue; }
 
       auto now = std::chrono::steady_clock::now();
       if (now >= nextForegroundCheck) {
@@ -327,6 +328,7 @@ void run() {
       }
       if (!activeWindow) {
         hideOverlay();
+        runtime.resetGraphics(); lastBounds = {};
         std::this_thread::sleep_for(std::chrono::milliseconds(100)); continue;
       }
       try {
@@ -378,15 +380,21 @@ void run() {
           const UINT top = static_cast<UINT>(clipped.top - runtime.outputBounds.top);
           const UINT cropWidth = static_cast<UINT>(clipped.right - clipped.left);
           const UINT cropHeight = static_cast<UINT>(clipped.bottom - clipped.top);
-          D3D11_TEXTURE2D_DESC cropDesc = desktopDesc;
-          cropDesc.Width = cropWidth; cropDesc.Height = cropHeight; cropDesc.MipLevels = 1; cropDesc.ArraySize = 1;
-          cropDesc.SampleDesc.Count = 1; cropDesc.SampleDesc.Quality = 0; cropDesc.Usage = D3D11_USAGE_DEFAULT;
-          cropDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE; cropDesc.MiscFlags = 0; cropDesc.CPUAccessFlags = 0;
-          ComPtr<ID3D11Texture2D> crop;
-          if (FAILED(hr = runtime.device->CreateTexture2D(&cropDesc, nullptr, &crop))) throw hresult_error(hr, L"Create cropped desktop texture failed");
+          if (!runtime.cropTexture || runtime.width != cropWidth || runtime.height != cropHeight || runtime.cropFormat != desktopDesc.Format) {
+            runtime.cropSrv.Reset(); runtime.cropTexture.Reset();
+            D3D11_TEXTURE2D_DESC cropDesc = desktopDesc;
+            cropDesc.Width = cropWidth; cropDesc.Height = cropHeight; cropDesc.MipLevels = 1; cropDesc.ArraySize = 1;
+            cropDesc.SampleDesc.Count = 1; cropDesc.SampleDesc.Quality = 0; cropDesc.Usage = D3D11_USAGE_DEFAULT;
+            cropDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE; cropDesc.MiscFlags = 0; cropDesc.CPUAccessFlags = 0;
+            if (FAILED(hr = runtime.device->CreateTexture2D(&cropDesc, nullptr, &runtime.cropTexture))) throw hresult_error(hr, L"Create cropped desktop texture failed");
+            D3D11_SHADER_RESOURCE_VIEW_DESC view{}; view.Format = desktopDesc.Format;
+            view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D; view.Texture2D.MipLevels = 1;
+            if (FAILED(hr = runtime.device->CreateShaderResourceView(runtime.cropTexture.Get(), &view, &runtime.cropSrv))) throw hresult_error(hr, L"CreateShaderResourceView failed");
+            runtime.cropFormat = desktopDesc.Format;
+          }
           D3D11_BOX box{left, top, 0, left + cropWidth, top + cropHeight, 1};
-          runtime.context->CopySubresourceRegion(crop.Get(), 0, 0, 0, 0, desktop.Get(), 0, &box);
-          runtime.render(crop.Get(), cropWidth, cropHeight, command.percent);
+          runtime.context->CopySubresourceRegion(runtime.cropTexture.Get(), 0, 0, 0, 0, desktop.Get(), 0, &box);
+          runtime.render(runtime.cropTexture.Get(), cropWidth, cropHeight, command.percent);
           runtime.showOverlay();
           if (!activeAnnounced && runtime.overlayVisible) { statusLine("ACTIVE " + std::to_string(command.pid)); activeAnnounced = true; }
         } catch (const hresult_error& e) {
