@@ -82,6 +82,7 @@ import {
   scalingMethodOptionsForView,
   scalingModeViewOptionsForDisplay,
   superResolutionSourceModesForDisplay,
+  customScalingPreferenceOf,
   type DisplayColorRange,
   isDisplayControlDirtyVsApplied as isDisplayControlDirtyVsAppliedPure,
   selectedDisplayOf,
@@ -175,11 +176,14 @@ function scalingStateNoteOf(display: DisplayState['displays'][number] | null): s
   const preferredLabel = preferred === 'centered' || preferred === 'stretched' || preferred === 'aspect-ratio-centered-max'
     ? IGS_SCALING_METHOD_LABELS[preferred]
     : undefined;
-  const gpuPreferred = display?.scalingPreference === 'gpu-scaling'
-    || ((display?.scalingPreference === null || display?.scalingPreference === undefined) && preferredLabel !== undefined);
-  if (display?.scalingMode === 'identity' && gpuPreferred) {
-    const method = preferredLabel ? ` (${preferredLabel})` : '';
-    return `Saved preference: GPU Scaling${method}. Active scaler: Display Scaling at the current desktop resolution. ${DISPLAY_SCALING_NOTE}`;
+  if (display?.scalingPreferenceSource === 'arc-selection') {
+    const selected = display.scalingPreference === 'gpu-scaling'
+      ? `GPU Scaling${preferredLabel ? ` (${preferredLabel})` : ''}`
+      : 'Display Scaling';
+    const readback = display.scalingMode === 'identity'
+      ? ' No GPU resizing is active at the current desktop resolution.'
+      : '';
+    return `Arc Power saved selection: ${selected}.${readback} Changes made in Intel Graphics Software may not be reflected until the Arc selection is updated. ${DISPLAY_SCALING_NOTE}`;
   }
   return DISPLAY_SCALING_NOTE;
 }
@@ -364,14 +368,10 @@ function scalingMethodViewOf(display: DisplayState['displays'][number] | null): 
 }
 
 function customScalingOf(display: DisplayState['displays'][number]): NonNullable<DisplaySettings['scalingCustom']> {
-  const details = display.scalingDetails;
-  const isCustom = effectiveScalingModeOf(display) === 'custom';
+  const preference = customScalingPreferenceOf(display);
   return {
-    // Identity/centered read-backs commonly return zero because the custom
-    // fields are inactive. IGS treats Custom as 100/100 until that mode is
-    // selected, so do not turn an inactive 0/0 into the visible default.
-    x: isCustom && Number.isFinite(details?.customX) && details!.customX > 0 ? Math.max(0, Math.min(100, details!.customX)) : 100,
-    y: isCustom && Number.isFinite(details?.customY) && details!.customY > 0 ? Math.max(0, Math.min(100, details!.customY)) : 100,
+    x: preference.x,
+    y: preference.y,
     // A new Custom transition is an IGS-style physical modeset. Never carry
     // an old/disabled read-back flag into the next user-initiated apply.
     hardwareModeSet: true,
@@ -1528,7 +1528,21 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
     onChange: (value) => {
       markDisplayScalingDraftChanged();
       displayScalingViewDraft = value;
-      displayScalingMethodDraft = scalingMethodOptionsForView(display!, displayScalingViewDraft)[0] ?? 'maintain-display-scaling';
+      const methodOptions = scalingMethodOptionsForView(display!, displayScalingViewDraft);
+      const savedGpuMethod = displayScalingViewDraft === 'gpu-scaling'
+        && methodOptions.includes(display!.preferredScalingMode ?? '')
+        ? display!.preferredScalingMode
+        : null;
+      const activeGpuMethod = displayScalingViewDraft === 'gpu-scaling'
+        && methodOptions.includes(effectiveScalingModeOf(display) ?? '')
+        ? effectiveScalingModeOf(display)
+        : null;
+      const retainedMethod = methodOptions.includes(displayScalingMethodDraft)
+        ? displayScalingMethodDraft
+        : savedGpuMethod ?? activeGpuMethod ?? scalingMethodViewOf(display);
+      displayScalingMethodDraft = methodOptions.includes(retainedMethod)
+        ? retainedMethod
+        : methodOptions[0] ?? 'maintain-display-scaling';
       const raw = rawScalingForView(display!, displayScalingViewDraft);
       if (displayScalingViewDraft === 'gpu-scaling') {
         displayDraft.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
@@ -1572,7 +1586,7 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
         displayScalingViewDraft = options.includes('display-scaling') ? 'display-scaling' : options[0];
         displayDraft.scalingMode = rawScalingForView(display!, displayScalingViewDraft);
         delete displayDraft.scalingCustom;
-        if (display.scalingMethod?.value?.enabled === true) {
+        if (display.scalingMethod?.value?.enabled === true && display.scalingMethod.value.method !== null) {
           displayDraft.scalingMethod = { enabled: false, method: display.scalingMethod.value.method };
         } else {
           delete displayDraft.scalingMethod;
@@ -2441,7 +2455,11 @@ async function applyDisplay(ctx: PageContext, only: string) {
     if (freshDisplay && (out.perControl.scalingMode?.ok || out.perControl.scalingMethod?.ok || out.perControl.displayScalingMethod?.ok)) {
       (displayApplied as Record<string, unknown>).scalingMode = scalingViewOf(freshDisplay);
       (displayApplied as Record<string, unknown>).displayScalingMethod = scalingMethodViewOf(freshDisplay);
-      if (freshDisplay.scalingMethod?.value) displayApplied.scalingMethod = freshDisplay.scalingMethod.value;
+      if (freshDisplay.scalingMethod?.value?.method) {
+        displayApplied.scalingMethod = { enabled: freshDisplay.scalingMethod.value.enabled, method: freshDisplay.scalingMethod.value.method };
+      } else {
+        delete displayApplied.scalingMethod;
+      }
     }
     const hasScalingReadback = out.perControl.scalingMode !== undefined
       || out.perControl.scalingMethod !== undefined

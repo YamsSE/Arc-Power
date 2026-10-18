@@ -54,48 +54,35 @@ function isExplicitScalingPreference(value: unknown): value is 'gpu-scaling' | '
   return value === 'gpu-scaling' || value === 'display-scaling';
 }
 
-/** Resolve the raw mode used by payload construction and method selection.
- * Intel's output-handle GET can retain a stale PreferredScalingType after
- * the user switches back to Display Scaling. NNScalingState is the same
- * driver preference that IGS uses for its Display-vs-GPU selector, so an
- * explicit registry preference must override that stale native field while
- * active IGCL Identity remains available as the physical read-back. */
+/** Resolve raw mode for payload construction without changing native readback.
+ * Active Custom wins over stale GPU preference; Arc selection is trusted only
+ * when the backend marks it as validated for this display. */
 export function effectiveScalingModeOf(display: Display | null | undefined): string | null {
   if (!display) return null;
   const active = display.scalingMode;
   const preferred = display.preferredScalingMode;
-  if (active === 'identity' && preferred === 'custom') return 'custom';
-  if (active === 'identity' && display.scalingPreference === 'display-scaling') return 'identity';
-  if (active === 'identity' && display.scalingPreference === 'gpu-scaling' && isGpuScalingMode(preferred)) return preferred;
-  if (active === 'identity' && isGpuScalingMode(preferred)) return preferred;
+  if (active === 'custom') return 'custom';
+  if (display.scalingPreferenceSource === 'arc-selection' && display.scalingPreference === 'display-scaling') return 'identity';
+  if (preferred === 'custom') return 'custom';
+  if (isGpuScalingMode(preferred)) return preferred;
   if (active !== null && active !== undefined) return active;
   return preferred ?? null;
 }
 
 export function scalingViewOf(display: Display | null | undefined): DisplayScalingView {
   if (!display) return 'display-scaling';
-  if (display.scalingMethod?.value?.enabled === true) return 'retro-scaling';
-  // A native Custom preference is a real Display Scaling state. Resolve it
-  // before consulting the adapter-level registry hint: the registry can say
-  // "GPU Scaling" while IGCL is currently reporting Identity, but that hint
-  // must never hide the Custom scaling-method controls.
-  if ((display.scalingMode === 'identity' || display.scalingMode === null || display.scalingMode === undefined)
-    && display.preferredScalingMode === 'custom') {
-    return 'display-scaling';
-  }
-  // Identity is the driver's active read-back for Display Scaling. A saved
-  // GPU preference can remain in NNScalingState until the output actually
-  // requires scaling, but it must not make the UI claim that the GPU scaler is
-  // active while IGCL reports Identity (this is also how IGS presents the
-  // current desktop-resolution state).
-  if (display.scalingMode === 'identity') return 'display-scaling';
+  const retro = display.scalingMethod?.value;
+  if (retro?.enabled === true) return 'retro-scaling';
+  // The selectors describe the user's persisted choice. Keep the active raw
+  // IGCL read-back separate: a GPU preference can be saved while Identity is
+  // active because the current desktop resolution does not require resizing.
+  if (display.scalingMode === 'custom') return 'display-scaling';
+  if (display.scalingPreferenceSource === 'arc-selection'
+    && isExplicitScalingPreference(display.scalingPreference)) return display.scalingPreference;
   const raw = effectiveScalingModeOf(display);
-  if (display.scalingMode === null || display.scalingMode === undefined) {
-    if (raw === null && isExplicitScalingPreference(display.scalingPreference)) return display.scalingPreference;
-    if (isGpuScalingMode(raw)) return 'gpu-scaling';
-  }
-  // IGCL's Custom flag belongs to IGS Display Scaling > Scaling Method; it
-  // must not be mistaken for one of the GPU scaler modes.
+  if (raw === 'custom') return 'display-scaling';
+  if (isGpuScalingMode(raw)) return 'gpu-scaling';
+  if (raw === 'identity') return 'display-scaling';
   return raw && raw !== 'identity' && raw !== 'custom'
     ? 'gpu-scaling'
     : 'display-scaling';
@@ -111,10 +98,11 @@ export function scalingMethodOptionsForView(display: Display | null | undefined,
   }
   if (view === 'retro-scaling') {
     const supported = display?.supportedOptions.scalingMethods ?? [];
-    // A capability bitmask alone is not enough to safely describe a current
-    // Retro selection. Keep the row read-only until GET returns a known mode.
-    const current = display?.scalingMethod?.value?.method;
-    if (display?.scalingMethod?.controllable !== true || !current || !supported.includes(current)) return [];
+    const retro = display?.scalingMethod?.value;
+    if (display?.scalingMethod?.controllable !== true || !retro) return [];
+    // A known disabled/null GET plus explicit capabilities allows choices;
+    // an enabled but unknown native method must remain read-only.
+    if (retro?.enabled === true && (!retro.method || !supported.includes(retro.method))) return [];
     return DISPLAY_RETRO_SCALING_METHOD_OPTIONS.filter((method) => supported.includes(method));
   }
   const supported = display?.supportedOptions.scalingModes ?? [];
@@ -124,6 +112,8 @@ export function scalingMethodOptionsForView(display: Display | null | undefined,
 /** Only offer IGS scaling modes that have a matching driver capability and a
  * complete readback contract for the distinct Retro surface. */
 export function scalingModeViewOptionsForDisplay(display: Display | null | undefined): DisplayScalingView[] {
+  const retro = display?.scalingMethod?.value;
+  if (retro?.enabled === true && (!retro.method || !display?.supportedOptions.scalingMethods.includes(retro.method))) return [];
   const supported = display?.supportedOptions.scalingModes ?? [];
   const options: DisplayScalingView[] = [];
   if (DISPLAY_GPU_SCALING_METHOD_OPTIONS.some((mode) => supported.includes(mode))) options.push('gpu-scaling');
@@ -154,7 +144,7 @@ export function scalingMethodViewOf(display: Display | null | undefined): string
   if (view === 'retro-scaling') {
     const method = display?.scalingMethod?.value?.method;
     const options = scalingMethodOptionsForView(display, view);
-    return method && options.includes(method) ? method : options[0] ?? '';
+    return method && options.includes(method) ? method : '';
   }
   const raw = effectiveScalingModeOf(display);
   if (view === 'gpu-scaling') {
@@ -163,7 +153,7 @@ export function scalingMethodViewOf(display: Display | null | undefined): string
     // is Identity, retain a supported saved GPU method for the deferred
     // preference; an unsupported preference falls through to the existing
     // capability-ordered default.
-    const preferred = display?.scalingMode === 'identity' && isGpuScalingMode(display.preferredScalingMode)
+    const preferred = isGpuScalingMode(display?.preferredScalingMode)
       ? display.preferredScalingMode
       : raw;
     return preferred && options.includes(preferred) ? preferred : options[0] ?? '';
@@ -194,6 +184,35 @@ export function rawScalingForView(display: Display, view: string): NonNullable<D
   const gpuMode = currentGpuMode
     ?? ['stretched', 'aspect-ratio-centered-max', 'centered'].find((mode) => supported.includes(mode as NonNullable<DisplaySettings['scalingMode']>));
   return (gpuMode ?? supported[0]) as NonNullable<DisplaySettings['scalingMode']>;
+}
+
+/** Editor value for Custom scaling. Only read native percentages when Custom
+ * is currently active; otherwise preserve the saved editor value or use IGS's
+ * 100/100 default, never inactive zero-valued IGCL fields. */
+export function customScalingPreferenceOf(display: Display | null | undefined): { x: number; y: number } {
+  const details = display?.scalingMode === 'custom' ? display.scalingDetails : null;
+  const saved = display?.customScalingPreference;
+  const finitePair = (value: { x?: number; y?: number } | null | undefined): value is { x: number; y: number } =>
+    Number.isFinite(value?.x) && Number.isFinite(value?.y);
+  const active = Number.isFinite(details?.customX) && Number.isFinite(details?.customY)
+    ? { x: details!.customX, y: details!.customY }
+    : null;
+  const selected = finitePair(active)
+    ? active
+    : finitePair(saved) ? saved : { x: 100, y: 100 };
+  return {
+    x: Math.max(0, Math.min(100, selected.x)),
+    y: Math.max(0, Math.min(100, selected.y)),
+  };
+}
+
+/** A safe Retro disable pair exists only when GET confirmed both an enabled
+ * state and its current supported method. False/null needs no redundant SET. */
+export function retroScalingDisableSettingsOf(display: Display | null | undefined): NonNullable<DisplaySettings['scalingMethod']> | null {
+  const current = display?.scalingMethod?.value;
+  if (current?.enabled !== true || !current.method
+    || !(display?.supportedOptions.scalingMethods ?? []).includes(current.method)) return null;
+  return { enabled: false, method: current.method };
 }
 
 export type DisplayColorRange = { min: number; max: number; step: number; default?: number };
@@ -328,7 +347,7 @@ export function normalizeDisplaySettings(display: Display | null | undefined): D
   if (isDisplayControlSupported(display, 'displayScalingMethod')) {
     out.displayScalingMethod = scalingMethodViewOf(display) as DisplaySettings['displayScalingMethod'];
   }
-  if (isDisplayControlSupported(display, 'scalingMethod') && display.scalingMethod?.value) {
+  if (isDisplayControlSupported(display, 'scalingMethod') && display.scalingMethod?.value?.method) {
     out.scalingMethod = {
       enabled: display.scalingMethod.value.enabled,
       method: display.scalingMethod.value.method,

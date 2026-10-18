@@ -182,7 +182,7 @@ export interface PerControlResult {
   message?: string;
   readBackEqual?: boolean;
   /** The write was accepted, but the driver does not expose a live getter. */
-  verification?: 'readback-unavailable';
+  verification?: 'readback-unavailable' | 'native-active' | 'native-preference' | 'unverified';
   /** The driver changed a valid custom VF curve; readBackCurve holds the live curve. */
   driverAdjusted?: boolean;
   /** Exact=false but successful when the driver reports its verified grid-normalized values. */
@@ -1265,11 +1265,13 @@ export interface DisplayState {
      * keeps this diagnostic value separate while mirroring IGS's preferred
      * selection for the user-facing scaling selector at native timing. */
     preferredScalingMode?: string | null;
-    /** Adapter-level GPU-vs-Display preference when the native surface cannot
-     * identify the exact GPU scaler method. */
+    /** Selected mode, separate from the native active scaler. An Arc-owned
+     * Display choice is valid only while its native fingerprint matches. */
     scalingPreference?: 'gpu-scaling' | 'display-scaling' | null;
-    scalingDetails?: { customX: number; customY: number; hardwareModeSet: boolean; preferredScalingType: string | null; registryScalingState?: number } | null;
-    scalingMethod?: DisplayCapability<{ enabled: boolean; method: 'integer' | 'nearest-neighbour' }>;
+    scalingPreferenceSource?: 'arc-selection' | 'igcl-preferred' | null;
+    customScalingPreference?: { x: number; y: number } | null;
+    scalingDetails?: { customX: number; customY: number; hardwareModeSet: boolean; preferredScalingType: string | null } | null;
+    scalingMethod?: DisplayCapability<{ enabled: boolean; method: 'integer' | 'nearest-neighbour' | null }>;
     vrrMode?: DisplayCapability<'recommended' | 'excellent' | 'good' | 'compatible' | 'off' | 'vesa' | 'custom'>;
     globalVrrMode?: DisplayCapability<'fullscreen' | 'fullscreen-windowed' | 'disabled'>;
     variableRefreshRate?: DisplayCapability<boolean>;

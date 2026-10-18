@@ -18,9 +18,6 @@ const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershe
 export const DISPLAY_CLASS_KEY = 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}';
 export const GLOBAL_VRR_REGISTRY_VALUE = 'Global_VRRWindowedBLT';
 export const DISPLAY_3D_KEYS_SUBKEY = '3DKeys';
-export const SCALING_STATE_REGISTRY_VALUE = 'NNScalingState';
-export const SCALING_STATE_GPU = 0;
-export const SCALING_STATE_DISPLAY = 2;
 
 function normalizeHex(value, width = 4) {
   if (value === null || value === undefined || value === '') return null;
@@ -108,13 +105,6 @@ function psQuote(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
-function littleEndianDword(value) {
-  const n = Number(value) >>> 0;
-  return [n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
-}
-
 function vrrValueKeyPath(adapterKeyPath) {
   const suffix = `\\${DISPLAY_3D_KEYS_SUBKEY}`;
   return String(adapterKeyPath).endsWith(suffix)
@@ -122,36 +112,11 @@ function vrrValueKeyPath(adapterKeyPath) {
     : `${adapterKeyPath}${suffix}`;
 }
 
-function parseRegistryBinaryValue(stdout, valueName) {
-  const escaped = String(valueName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = String(stdout ?? '').match(new RegExp(`^\\s*${escaped}\\s+REG_BINARY\\s+([0-9a-f](?:[0-9a-f\\s]*[0-9a-f])?)\\s*$`, 'im'));
-  if (!match) return null;
-  const bytes = match[1].replace(/\s+/g, '').toLowerCase();
-  if (bytes.length !== 8) return null;
-  const value = Number.parseInt(bytes.match(/../g).reverse().join(''), 16);
-  return Number.isInteger(value) ? value : null;
-}
-
-async function queryRegistryBinary(exec, keyPath, valueName) {
-  const result = await exec('reg', ['query', keyPath, '/v', valueName], { windowsHide: true });
-  return parseRegistryBinaryValue(result.stdout, valueName);
-}
-
 export function buildVrrRegistryWriteScript(keyPath, value) {
   const reg = 'C:\\Windows\\System32\\reg.exe';
   return [
     `$reg = ${psQuote(reg)}`,
     `& $reg add ${psQuote(keyPath)} /v ${psQuote(GLOBAL_VRR_REGISTRY_VALUE)} /t REG_DWORD /d ${psQuote(`0x${Number(value).toString(16)}`)} /f | Out-Null`,
-    'exit $LASTEXITCODE',
-  ].join('; ');
-}
-
-export function buildScalingStateWriteScript(keyPath, value) {
-  const reg = 'C:\\Windows\\System32\\reg.exe';
-  const data = littleEndianDword(value);
-  return [
-    `$reg = ${psQuote(reg)}`,
-    `& $reg add ${psQuote(keyPath)} /v ${psQuote(SCALING_STATE_REGISTRY_VALUE)} /t REG_BINARY /d ${psQuote(data)} /f | Out-Null`,
     'exit $LASTEXITCODE',
   ].join('; ');
 }
@@ -179,17 +144,6 @@ async function writeRegistryDword({ exec, keyPath, value, elevated, powershellEx
     return;
   }
   const script = buildVrrRegistryWriteScript(keyPath, value);
-  await exec(powershellExe, ['-NoProfile', '-Command', buildElevatedLaunch(script)], { windowsHide: true });
-}
-
-async function writeRegistryBinary({ exec, keyPath, valueName, value, elevated, powershellExe }) {
-  const data = littleEndianDword(value);
-  const args = ['add', keyPath, '/v', valueName, '/t', 'REG_BINARY', '/d', data, '/f'];
-  if (elevated()) {
-    await exec('reg', args, { windowsHide: true });
-    return;
-  }
-  const script = buildScalingStateWriteScript(keyPath, value);
   await exec(powershellExe, ['-NoProfile', '-Command', buildElevatedLaunch(script)], { windowsHide: true });
 }
 
@@ -222,52 +176,6 @@ export function createVrrRegistry(deps = {}) {
         return { ok: true, keyPath };
       } catch {
         return { ok: false, errorCode: 'registry-write-failed', message: 'The elevated VRR registry write failed; no VRR value was changed.' };
-      }
-    },
-    async getScalingState(device) {
-      let entries;
-      try {
-        entries = await queryAdapters(device);
-      } catch {
-        return { ok: false, errorCode: 'registry-query-failed' };
-      }
-      const entry = resolveVrrAdapterEntry(entries, device);
-      if (!entry) return { ok: false, errorCode: 'registry-target-not-found' };
-      try {
-        const value = await queryRegistryBinary(exec, entry.keyPath, SCALING_STATE_REGISTRY_VALUE);
-        if (value !== SCALING_STATE_GPU && value !== SCALING_STATE_DISPLAY) return { ok: false, errorCode: 'registry-value-invalid', keyPath: entry.keyPath };
-        return { ok: true, keyPath: entry.keyPath, value };
-      } catch {
-        return { ok: false, errorCode: 'registry-read-failed', keyPath: entry.keyPath };
-      }
-    },
-    async setScalingState(device, value) {
-      if (value !== SCALING_STATE_GPU && value !== SCALING_STATE_DISPLAY) {
-        return { ok: false, errorCode: 'registry-value-invalid', message: 'The requested scaling state is not a supported IGS state.' };
-      }
-      let entries;
-      try {
-        entries = await queryAdapters(device);
-      } catch {
-        return { ok: false, errorCode: 'registry-query-failed', message: 'The display adapter registry could not be queried; no scaling value was changed.' };
-      }
-      const entry = resolveVrrAdapterEntry(entries, device);
-      if (!entry) return { ok: false, errorCode: 'registry-target-not-found', message: 'The matching display adapter registry entry could not be resolved; no scaling value was changed.' };
-      try {
-        await writeRegistryBinary({
-          exec,
-          keyPath: entry.keyPath,
-          valueName: SCALING_STATE_REGISTRY_VALUE,
-          value,
-          elevated,
-          powershellExe: deps.powershellExe ?? POWERSHELL_EXE,
-        });
-        const readBack = await queryRegistryBinary(exec, entry.keyPath, SCALING_STATE_REGISTRY_VALUE);
-        return readBack === value
-          ? { ok: true, keyPath: entry.keyPath, value, readBack }
-          : { ok: false, errorCode: 'registry-readback-mismatch', keyPath: entry.keyPath, value, readBack, message: 'The scaling registry write did not read back; no scaling value was confirmed.' };
-      } catch {
-        return { ok: false, errorCode: 'registry-write-failed', message: 'The elevated scaling registry write failed; no scaling value was confirmed.' };
       }
     },
   };
