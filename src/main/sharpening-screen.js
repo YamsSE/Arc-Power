@@ -10,7 +10,7 @@ const DEFAULT = Object.freeze({ enabled: false, percentage: 50 });
 const SETTINGS = 'postprocess-sharpening.json';
 const SOURCE_HELPER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'sharpening-runtime', 'ArcPower.ScreenSharpen.exe');
 // Pin the bundled native executable before spawning it from an elevated Portable.
-const HELPER_SHA256 = 'B4D80F55A65F8AA467E6E253BA1996357142ED96D708250C0BE7B2B6E2714112';
+const HELPER_SHA256 = '07C2BBA90F5B6215C906316ECBCE4FB6D046DBB48E7D9A7161BFD16A6E3990C3';
 
 function helperIntegrity(helperPath) {
   try {

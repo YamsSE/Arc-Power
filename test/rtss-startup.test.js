@@ -134,7 +134,7 @@ test('immediate RTSS launch skips an already-running process and missing paths h
   assert.deepEqual(running, { started: false, alreadyRunning: true, executablePath: RTSS, reason: 'already-running' });
   const missing = await launchRtss({
     platform: 'win32',
-    env: {},
+    env: { 'ProgramFiles(x86)': 'C:\\Program Files (x86)' },
     exists: () => false,
     getRunningProcessImagePath: async () => null,
     spawnProcess: () => { spawns += 1; },
@@ -290,6 +290,82 @@ test('RTSS adapter can remove a custom-path registration after the process exits
   assert.equal(current.registered, true);
   const removed = await startup.set(false);
   assert.equal(removed.valueExists, false);
+});
+
+test('RTSS runtime reads cache an absent registration probe while checking running state fresh', async () => {
+  const fake = fakeRegistry({ value: null });
+  let running = false;
+  const startup = createRtssStartup({
+    platform: 'win32',
+    env: {},
+    exists: () => false,
+    getRunningProcessImagePath: async () => running ? RTSS : null,
+    execFileAsync: fake.execFileAsync,
+  });
+  assert.deepEqual(await startup.getRuntime(), { executablePath: null, isRunning: false });
+  running = true;
+  assert.deepEqual(await startup.getRuntime(), { executablePath: null, isRunning: true });
+  assert.equal(fake.calls.filter((call) => call.args[0] === 'query').length, 1);
+});
+
+test('RTSS runtime learns a newly started default or custom-path process and follows path changes', async () => {
+  const custom = 'D:\\Tools\\RTSS\\RTSS.exe';
+  let running = null;
+  const fake = fakeRegistry({ value: null });
+  const startup = createRtssStartup({
+    platform: 'win32',
+    env: {},
+    exists: (filePath) => filePath === custom,
+    getRunningProcessImagePath: async () => running,
+    execFileAsync: fake.execFileAsync,
+  });
+  assert.deepEqual(await startup.getRuntime(), { executablePath: null, isRunning: false });
+  running = custom;
+  assert.deepEqual(await startup.getRuntime(), { executablePath: custom, isRunning: true });
+  running = null;
+  assert.deepEqual(await startup.getRuntime(), { executablePath: custom, isRunning: false });
+  assert.equal(fake.calls.filter((call) => call.args[0] === 'query').length, 1);
+});
+
+test('RTSS runtime rediscovers a default installation that appears after startup without per-poll registry queries', async () => {
+  let installed = false;
+  let now = 1_000;
+  const fake = fakeRegistry({ value: null });
+  const startup = createRtssStartup({
+    platform: 'win32',
+    env: { 'ProgramFiles(x86)': 'C:\\Program Files (x86)' },
+    exists: () => installed,
+    getRunningProcessImagePath: async () => null,
+    execFileAsync: fake.execFileAsync,
+    now: () => now,
+  });
+  assert.deepEqual(await startup.getRuntime(), { executablePath: null, isRunning: false });
+  installed = true;
+  for (let i = 0; i < 5; i += 1) await startup.getRuntime();
+  assert.equal(fake.calls.filter((call) => call.args[0] === 'query').length, 1);
+  now += 30_000;
+  assert.deepEqual(await startup.getRuntime(), { executablePath: RTSS, isRunning: false });
+  assert.equal(fake.calls.filter((call) => call.args[0] === 'query').length, 1);
+});
+
+test('RTSS runtime reuses a custom registered executable while settings get remains fresh', async () => {
+  const custom = 'D:\\Tools\\RTSS\\RTSS.exe';
+  const fake = fakeRegistry({ value: `"${custom}"` });
+  let running = false;
+  const startup = createRtssStartup({
+    platform: 'win32',
+    env: {},
+    exists: (filePath) => filePath === custom,
+    getRunningProcessImagePath: async () => running ? custom : null,
+    execFileAsync: fake.execFileAsync,
+  });
+  assert.deepEqual(await startup.getRuntime(), { executablePath: custom, isRunning: false });
+  running = true;
+  assert.deepEqual(await startup.getRuntime(), { executablePath: custom, isRunning: true });
+  assert.equal(fake.calls.filter((call) => call.args[0] === 'query').length, 1);
+  await startup.get();
+  await startup.get();
+  assert.equal(fake.calls.filter((call) => call.args[0] === 'query').length, 3);
 });
 
 test('RTSS adapter exposes process availability separately from an installed path', async () => {

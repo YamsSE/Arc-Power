@@ -428,9 +428,63 @@ export function createRtssStartup({
   exists = existsSync,
   execFileAsync = defaultExecFile,
   getRunningProcessImagePath,
+  now = Date.now,
 } = {}) {
   const getRunningImage = getRunningProcessImagePath ?? defaultRunningRtssImagePath;
   const resolve = () => resolveRtssExecutablePath({ platform, env, exists, getRunningProcessImagePath: getRunningImage });
+  // Profile-helper requests can arrive every frame-limit poll. Keep runtime
+  // discovery independent from the explicit settings read, which must always
+  // query HKCU so the UI sees external registration changes immediately.
+  let runtimeExecutablePath = null;
+  let runtimePathResolved = false;
+  let runtimeRegistrationPath = null;
+  let runtimeRegistrationExpiresAt = 0;
+  const runtimeRegistrationTtlMs = 30_000;
+  let runtimeDiscoveryExpiresAt = 0;
+  const rememberRuntimePath = (filePath) => {
+    runtimeExecutablePath = typeof filePath === 'string' && filePath ? filePath : null;
+    runtimePathResolved = true;
+  };
+  const runtimePath = async () => {
+    if (platform !== 'win32') return null;
+    // The running image is authoritative and can appear/change after Arc
+    // Power starts. Probe it on every runtime read; this avoids freezing an
+    // initial "not found" result for the lifetime of the app.
+    try {
+      const running = await getRunningImage();
+      if (isRtssProcessImage(running)) {
+        try {
+          if (exists(running)) {
+            runtimeExecutablePath = running.trim();
+            runtimePathResolved = true;
+            runtimeDiscoveryExpiresAt = now() + runtimeRegistrationTtlMs;
+            return runtimeExecutablePath;
+          }
+        } catch { /* continue with cached and installed paths */ }
+      }
+    } catch { /* process inspection can be temporarily unavailable */ }
+    if (runtimeExecutablePath) {
+      try {
+        if (exists(runtimeExecutablePath)) return runtimeExecutablePath;
+      } catch { /* stale cached path: rediscover below */ }
+      runtimeExecutablePath = null;
+      runtimePathResolved = false;
+    }
+    if (!runtimePathResolved || now() >= runtimeDiscoveryExpiresAt) {
+      rememberRuntimePath(await resolve());
+      runtimeDiscoveryExpiresAt = now() + runtimeRegistrationTtlMs;
+    }
+    if (!runtimeExecutablePath && now() >= runtimeRegistrationExpiresAt) {
+      runtimeRegistrationExpiresAt = now() + runtimeRegistrationTtlMs;
+      try { runtimeRegistrationPath = unquoteRunValue(await query()); } catch { runtimeRegistrationPath = null; }
+    }
+    if (!runtimeExecutablePath && /(?:^|[\\/])RTSS\.exe$/i.test(runtimeRegistrationPath ?? '')) {
+      try {
+        if (exists(runtimeRegistrationPath)) rememberRuntimePath(runtimeRegistrationPath);
+      } catch { /* stale registration remains unavailable */ }
+    }
+    return runtimeExecutablePath;
+  };
   const query = async () => {
     if (platform !== 'win32') return null;
     try {
@@ -454,6 +508,9 @@ export function createRtssStartup({
         if (exists(registeredPath)) executablePath = registeredPath;
       } catch { /* stale registration remains visible through valueExists */ }
     }
+    runtimeRegistrationPath = registeredPath || null;
+    runtimeRegistrationExpiresAt = now() + runtimeRegistrationTtlMs;
+    rememberRuntimePath(executablePath);
     return {
       capable: platform === 'win32' && executablePath !== null,
       executablePath,
@@ -466,6 +523,14 @@ export function createRtssStartup({
   return {
     registrationMode: 'run',
     get,
+    async getRuntime() {
+      const executablePath = await runtimePath();
+      let isRunning = false;
+      if (platform === 'win32') {
+        try { isRunning = isRtssProcessImage(await getRunningImage()); } catch { /* current probe unavailable */ }
+      }
+      return { executablePath, isRunning };
+    },
     async isRunning() {
       if (platform !== 'win32') return false;
       try {

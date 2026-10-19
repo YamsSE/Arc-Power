@@ -318,7 +318,7 @@
  *   // not-supported surface); setGraphicsSettings returns the ApplyResult
  *   // shape with per-feature results (success / igcl error code / refusal).
  *   // NO OC waiver applies to 3D features.
- *   getGraphicsSettings(deviceId: number): Promise<GraphicsState>,
+ *   getGraphicsSettings(deviceId: number, options?: { includeLegacySharpening?: boolean }): Promise<GraphicsState>,
  *   setGraphicsSettings(deviceId: number, s: GraphicsSettings, applicationName?: string): Promise<ApplyResult>,
  *   getGameProfileCapabilities(deviceId: number, executablePath?: string): Promise<{ enduranceGaming: boolean, xeFg: boolean, xeFgOptions: string[], sharpening?: boolean, sharpeningRange?: { min:number,max:number,step:number,default:number }|null, sharpeningReason?: string|null, reason?: string|null, xeFgReason?: string|null }>,
  *   setGameProfileSettings(deviceId: number, executablePath: string, s: GraphicsSettings, enabled?: boolean): Promise<ApplyResult>,

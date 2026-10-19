@@ -801,14 +801,14 @@ test('shutdown wait is bounded while a stalled RTSS read keeps its recovery jour
   await h.controller.start();
   assert.ok(h.savedSettings().arcSleepJournal);
 
-  const originalGetFrameLimit = h.rtssFrameLimiter.getFrameLimit.bind(h.rtssFrameLimiter);
+  const originalGetFrameLimitOwnership = h.rtssFrameLimiter.getFrameLimitOwnership.bind(h.rtssFrameLimiter);
   let markReadStarted;
   const readStarted = new Promise((resolve) => { markReadStarted = resolve; });
   const readGate = new Promise((resolve) => { releaseRead = resolve; });
-  h.rtssFrameLimiter.getFrameLimit = async () => {
+  h.rtssFrameLimiter.getFrameLimitOwnership = async () => {
     markReadStarted();
     await readGate;
-    return originalGetFrameLimit();
+    return originalGetFrameLimitOwnership();
   };
   const tick = h.controller.tick();
   await readStarted;

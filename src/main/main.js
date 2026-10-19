@@ -2550,6 +2550,11 @@ async function main() {
           : path.join(__dirname, 'rtss-profile-helper-entry.js'),
         getRuntime: async () => {
           try {
+            if (typeof rtssStartup.getRuntime === 'function') {
+              return await rtssStartup.getRuntime();
+            }
+            // Compatibility for injected startup adapters predating the
+            // runtime-only read seam.
             const startupState = await rtssStartup.get();
             return {
               executablePath: startupState?.executablePath ?? null,
@@ -2561,6 +2566,7 @@ async function main() {
             return { executablePath: null, isRunning: false };
           }
         },
+        log: (message) => console.warn(`[rtss] ${message}`),
       });
   // The product telemetry HUD is rendered by RTSS itself. Keep the FPS lane
   // mutable because the foreground/process ownership seam is created after

@@ -272,6 +272,11 @@ let displayScalingViewDraft = 'display-scaling';
 let displayScalingMethodDraft = 'maintain-display-scaling';
 let displayScalingDraftRevision = 0;
 let applying = false;
+let generalApplyBusy = false;
+let screenSharpeningDirty = false;
+let screenSharpeningBusy = false;
+let applyScreenSharpening: (() => Promise<void>) | null = null;
+let globalSharpeningCard: HTMLElement | null = null;
 let displayApplyPending = false;
 let queuedDisplayApply: { ctx: PageContext; only: string } | null = null;
 let applyBtn: HTMLButtonElement | null = null;
@@ -294,6 +299,7 @@ let viewContainer: HTMLElement | null = null;
 let displayPickerHost: HTMLElement | null = null;
 let currentCtx: PageContext | null = null;
 let renderGeneration = 0;
+let graphicsViewButtons: HTMLButtonElement[] = [];
 
 // M24 (Part B): subscribe ONCE to the graphics-state push (the ADVANCED
 // overlay panel's graphics apply + any future external graphics write). On a
@@ -336,6 +342,11 @@ function resetPageState() {
   displayScalingMethodDraft = 'maintain-display-scaling';
   displayScalingDraftRevision = 0;
   applying = false;
+  generalApplyBusy = false;
+  screenSharpeningDirty = false;
+  screenSharpeningBusy = false;
+  applyScreenSharpening = null;
+  globalSharpeningCard = null;
   displayApplyPending = false;
   applyBtn = null;
   displayApplyBtn = null;
@@ -350,6 +361,31 @@ function resetPageState() {
   viewContainer = null;
   displayPickerHost = null;
   currentCtx = null;
+  graphicsViewButtons = [];
+}
+
+function releaseGlobalSharpeningCard(card: HTMLElement): void {
+  if (globalSharpeningCard !== card) return;
+  globalSharpeningCard = null;
+  screenSharpeningDirty = false;
+  screenSharpeningBusy = false;
+  applyScreenSharpening = null;
+}
+
+function createScreenOnlySharpening(): { apply: HTMLButtonElement; card: HTMLElement } {
+  const apply = el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT, hidden: true,
+    onClick: () => { if (screenSharpeningDirty && !screenSharpeningBusy) void applyScreenSharpening?.(); } });
+  let card!: HTMLElement;
+  card = renderGlobalSharpening((state) => {
+    screenSharpeningDirty = state.dirty;
+    screenSharpeningBusy = state.busy;
+    applyScreenSharpening = state.apply;
+    apply.hidden = !state.dirty && !state.busy;
+    apply.disabled = state.busy;
+    apply.textContent = state.busy ? APPLY_BTN_BUSY_TEXT : APPLY_BTN_TEXT;
+  }, () => releaseGlobalSharpeningCard(card));
+  globalSharpeningCard = card;
+  return { apply, card };
 }
 
 /** M10b: the currently selected display of the loaded state (null when
@@ -572,8 +608,11 @@ function refreshDisplayChip(key: string) {
 
 function updateFloating() {
   if (!applyBtn) return;
-  if (applying) return;
-  applyBtn.hidden = !computeGraphicsDirty(draft, graphicsState, applied);
+  const busy = applying || generalApplyBusy || screenSharpeningBusy;
+  applyBtn.disabled = busy;
+  applyBtn.textContent = busy ? APPLY_BTN_BUSY_TEXT : APPLY_BTN_TEXT;
+  applyBtn.hidden = !busy && !computeGraphicsDirty(draft, graphicsState, applied) && !screenSharpeningDirty;
+  for (const button of graphicsViewButtons) button.disabled = busy;
 }
 
 function refreshAll() {
@@ -662,7 +701,8 @@ export const graphicsPage: Page = {
     // called with it (assertValidDeviceId throws) - the honest answer is
     // the Tuning-style 'No GPU available.' guard.
     if (s.deviceId === null) {
-      container.append(el('p', { class: 'page-subtitle', text: 'No GPU available for driver graphics settings.' }), renderGlobalSharpening());
+      const sharpening = createScreenOnlySharpening();
+      container.append(el('p', { class: 'page-subtitle', text: 'No GPU available for driver graphics settings.' }), sharpening.apply, sharpening.card);
       return;
     }
 
@@ -704,6 +744,7 @@ export const graphicsPage: Page = {
         ]),
       ]),
     ]);
+    graphicsViewButtons = [...viewToggle.querySelectorAll<HTMLButtonElement>('.graphics-view-btn')];
     container.append(
       title,
       el('div', { class: 'graphics-view-toolbar arc-page-toolbar' }, [viewToggle, displayPickerHost]),
@@ -729,7 +770,7 @@ export const graphicsPage: Page = {
       void renderSettingsView(viewContainer, ctx, subViewGeneration);
     };
     const setGraphicsView = (v: 'settings' | 'display'): void => {
-      if (graphicsView === v || displayApplyPending) return;
+      if (graphicsView === v || displayApplyPending || applying || generalApplyBusy || screenSharpeningBusy) return;
       graphicsView = v;
       renderGraphicsView();
       const heading = title.querySelector<HTMLElement>('.page-title');
@@ -791,7 +832,12 @@ async function renderSettingsView(view: HTMLElement, ctx: PageContext, generatio
   } catch (err) {
     if (!isCurrentRender()) return;
     clear(view);
-    view.append(el('p', { class: 'text-error', text: `Graphics settings unavailable: ${err instanceof Error ? err.message : String(err)}` }), renderGlobalSharpening());
+    const sharpening = createScreenOnlySharpening();
+    view.append(
+      el('p', { class: 'text-error', text: `Graphics settings unavailable: ${err instanceof Error ? err.message : String(err)}` }),
+      sharpening.apply,
+      sharpening.card,
+    );
     return;
   }
   if (!isCurrentRender()) return;
@@ -854,6 +900,7 @@ function sharedMemoryRange(state: GraphicsState): { min: number; max: number; st
 }
 
 function renderCards(view: HTMLElement, ctx: PageContext) {
+  const reusableSharpeningCard = globalSharpeningCard?.isConnected ? globalSharpeningCard : null;
   clear(view);
   const state = graphicsState;
   if (!state) return;
@@ -865,10 +912,24 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     || state.supported.frameLimit || state.supported.lowLatency
     || supportedOf(state, 'enduranceGaming') || supportedOf(state, 'sharedMemoryOverride')
     || supportedOf(state, 'prebuiltShaderDownload');
-  applyBtn = anySupported ? el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT }) : null;
+  applyBtn = el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT, hidden: !anySupported && !screenSharpeningDirty });
   applyBtn?.addEventListener('click', () => {
-    if (applying) return;
-    void apply(ctx);
+    if (applying || generalApplyBusy || screenSharpeningBusy) return;
+    const driverDirty = computeGraphicsDirty(draft, graphicsState, applied);
+    const screenDirty = screenSharpeningDirty;
+    if (!driverDirty && !screenDirty) return;
+    const pageGeneration = renderGeneration;
+    const owner = view;
+    generalApplyBusy = true;
+    updateFloating();
+    const tasks: Promise<void>[] = [];
+    if (driverDirty) tasks.push(apply(ctx));
+    if (screenDirty && applyScreenSharpening) tasks.push(applyScreenSharpening());
+    void Promise.all(tasks).finally(() => {
+      if (pageGeneration !== renderGeneration || !owner.isConnected) return;
+      generalApplyBusy = false;
+      updateFloating();
+    });
   });
 
   const resetAllBtn = el('button', {
@@ -1337,6 +1398,14 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
   const selectedDevice = ctx.store.get().devices.find((device) => device.id === ctx.store.get().deviceId);
   const prebuiltShaderCard = buildPrebuiltShaderCard();
   const battlemage = isBattlemageGpuName(selectedDevice?.name, selectedDevice);
+  let sharpeningCard!: HTMLElement;
+  sharpeningCard = reusableSharpeningCard ?? renderGlobalSharpening((state) => {
+    screenSharpeningDirty = state.dirty;
+    screenSharpeningBusy = state.busy;
+    applyScreenSharpening = state.apply;
+    updateFloating();
+  }, () => releaseGlobalSharpeningCard(sharpeningCard));
+  globalSharpeningCard = sharpeningCard;
 
   // The standard cards remain in the established order; the mobile/iGPU-only
   // controls sit together at the top of the list. Battlemage puts the
@@ -1349,7 +1418,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     ]),
     el('div', { class: 'card-stack graphics-stack' }, [
       ...mobileCards,
-      renderGlobalSharpening(),
+      sharpeningCard,
       ...(!battlemage ? [prebuiltShaderCard] : []),
       buildDropdownCard('frameGenOverride'),
       buildDropdownCard('flipMode'),
