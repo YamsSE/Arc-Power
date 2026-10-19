@@ -2901,18 +2901,14 @@ export function createIpcHandlers({
   // durable key and verify the fresh backend target before using that ID.
   // Missing or ambiguous identities never fall back to an ordinal.
   const resolveSelectedGraphicsDevice = async (requestedId, expectedKey) => {
-    if (typeof expectedKey !== 'string' || expectedKey.length === 0) {
+    if (expectedKey === undefined || expectedKey === null) {
       return { id: requestedId, target: await backend.getDeviceTarget?.(requestedId) };
     }
-    // The fast path also avoids an inventory round trip when the current ID
-    // already proves the expected identity.
-    try {
-      const currentTarget = await backend.getDeviceTarget?.(requestedId);
-      const currentMatchesKey = currentTarget?.deviceKey === expectedKey
-        || (Array.isArray(currentTarget?.deviceKeys) && currentTarget.deviceKeys.includes(expectedKey));
-      if (currentMatchesKey && currentTarget.identityAmbiguous !== true) return { id: requestedId, target: currentTarget };
-    } catch { /* a stale numeric ID may no longer resolve; try durable inventory */ }
     if (typeof backend.listDevices !== 'function') {
+      // Older focused adapters expose only a canonical target lookup. Accept
+      // that narrow compatibility seam, but never use a potentially shared alias.
+      const target = await backend.getDeviceTarget?.(requestedId);
+      if (target?.identityAmbiguous !== true && target?.deviceKey === expectedKey) return { id: requestedId, target };
       throw new Error(`stale GPU target: cannot resolve selected device identity ${expectedKey}`);
     }
     const devices = await backend.listDevices();
@@ -2932,6 +2928,31 @@ export function createIpcHandlers({
       throw new Error(`stale GPU target: device id ${match.id} could not verify ${expectedKey}`);
     }
     return { id: match.id, target };
+  };
+
+  const graphicsExpectedDeviceKey = async (requestedId, suppliedKey) => {
+    if (suppliedKey !== undefined) {
+      if (typeof suppliedKey !== 'string' || suppliedKey.trim().length === 0) {
+        throw new Error('invalid GPU target: expected device key must be a nonempty string');
+      }
+      return suppliedKey;
+    }
+    let settings;
+    try { settings = await store.loadSettings(); }
+    catch { throw new Error('stale GPU target: unable to read the selected device identity'); }
+    if (typeof settings?.deviceKey === 'string' && settings.deviceKey.length > 0) {
+      if (Number.isInteger(settings.deviceId) && settings.deviceId !== requestedId) {
+        throw new Error(`stale GPU target: selected device identity ${settings.deviceKey} does not match requested device id ${requestedId}`);
+      }
+      if (!Number.isInteger(settings.deviceId)) {
+        throw new Error('stale GPU target: the saved device identity has no associated device id');
+      }
+      return settings.deviceKey;
+    }
+    if (typeof backend.resolvePhysicalTarget === 'function' && backend.kind !== 'mock') {
+      throw new Error('stale GPU target: a stable selected device identity is required');
+    }
+    return null;
   };
 
   const selectedGraphicsDeviceId = async (requestedId) => {
@@ -3475,9 +3496,10 @@ export function createIpcHandlers({
       // calls it with a null deviceId: the no-Intel page guard renders
       // 'No GPU available.' first, plan-review S3). The backend never
       // throws - the all-false/null state is the honest degrade.
-      'graphics:get': async (deviceId) => {
+      'graphics:get': async (deviceId, expectedDeviceKey) => {
         assertValidDeviceId(deviceId);
-        const resolvedDeviceId = await selectedGraphicsDeviceId(deviceId);
+        const expectedKey = await graphicsExpectedDeviceKey(deviceId, expectedDeviceKey);
+        const resolvedDeviceId = (await resolveSelectedGraphicsDevice(deviceId, expectedKey)).id;
         const read = async () => readGraphicsState(resolvedDeviceId);
         return arcSleepController?.withTransaction
           ? arcSleepController.withTransaction(read)
@@ -3486,12 +3508,13 @@ export function createIpcHandlers({
 
       // Arc Sleep's Base FPS Cap panel needs a fast, independent read so it
       // can recover even when the controller's serialized RTSS queue stalls.
-      'arc-sleep-base-cap-get': async (deviceId) => {
+      'arc-sleep-base-cap-get': async (deviceId, expectedDeviceKey) => {
         assertValidDeviceId(deviceId);
         if (arcSleepController?.getSnapshot?.().activeLimiter === 'rtss') {
           return readRtssGlobalGraphicsState(deviceId, { rtssTimeoutMs: 1200 });
         }
-        const resolvedDeviceId = await selectedGraphicsDeviceId(deviceId);
+        const expectedKey = await graphicsExpectedDeviceKey(deviceId, expectedDeviceKey);
+        const resolvedDeviceId = (await resolveSelectedGraphicsDevice(deviceId, expectedKey)).id;
         return readGraphicsState(resolvedDeviceId, { rtssTimeoutMs: 1200 });
       },
 
@@ -3529,7 +3552,7 @@ export function createIpcHandlers({
       // (the elevation toast pattern stays on the page). The response
       // envelope is { ok, perControl, graphicsState } with the FRESH
       // getGraphicsSettings read-back for the page's per-control refresh.
-      'graphics:apply': async (deviceId, payload) => {
+      'graphics:apply': async (deviceId, payload, expectedDeviceKey) => {
         const apply = async (arcSleepTransaction = null) => {
         assertValidDeviceId(deviceId);
         // Base Cap is a global RTSS setting. Keep this narrow path clear of
@@ -3560,13 +3583,7 @@ export function createIpcHandlers({
             graphicsState,
           };
         }
-        let expectedDeviceKey = null;
-        try {
-          const selectedSettings = await store.loadSettings();
-          if (selectedSettings?.deviceId === deviceId && typeof selectedSettings.deviceKey === 'string' && selectedSettings.deviceKey.length > 0) {
-            expectedDeviceKey = selectedSettings.deviceKey;
-          }
-        } catch { /* target resolution still has its backend identity checks */ }
+        expectedDeviceKey = await graphicsExpectedDeviceKey(deviceId, expectedDeviceKey);
         const resolved = await resolveSelectedGraphicsDevice(deviceId, expectedDeviceKey);
         const resolvedDeviceId = resolved.id;
         const target = resolved.target;

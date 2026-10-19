@@ -787,7 +787,7 @@ async function renderSettingsView(view: HTMLElement, ctx: PageContext, generatio
   view.append(el('p', { class: 'page-subtitle', text: 'Loading graphics capabilities…' }));
   let state: GraphicsState;
   try {
-    state = await api.graphicsGet(deviceId);
+    state = await api.graphicsGet(deviceId, deviceKey ?? undefined);
   } catch (err) {
     if (!isCurrentRender()) return;
     clear(view);
@@ -2216,7 +2216,8 @@ async function apply(ctx: PageContext, only?: string | string[]) {
     applyBtn.textContent = APPLY_BTN_BUSY_TEXT;
   }
   try {
-    const out = await api.graphicsApply(deviceId, payload);
+    const deviceKey = live.devices.find(device => device.id === deviceId)?.deviceKey ?? live.caps?.deviceKey ?? undefined;
+    const out = await api.graphicsApply(deviceId, payload, deviceKey);
     if (out.graphicsState) {
       graphicsState = out.graphicsState;
     }

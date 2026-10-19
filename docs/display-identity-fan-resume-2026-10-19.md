@@ -1,4 +1,22 @@
-# Display identity repair and experimental fan resume
+# Display and Graphics identity repair and Arc Hibernation Fix
+
+## Graphics apply failure
+
+The reported `graphics:apply` failure named the saved key
+`pci:0x8086:0x56a1@0000:03:00.0`. Graphics reads and writes now carry the
+renderer-selected durable GPU key, resolve a unique current inventory target,
+and forward its canonical key and physical proof to the elevated worker. The
+worker resolves its own numeric ID. This also covers a boot-time ID remapping
+that has not yet been persisted, or re-enumeration after the page was opened.
+Unknown, unrelated, or ambiguous identities are refused before any hardware
+call. Missing or unreadable saved identity cannot authorize an ordinal-only
+production driver request. The global RTSS-only FPS cap remains independent
+of GPU identity.
+
+Regression tests exercise the exact reported 56a1 PCI key, PCI-to-PNP identity
+enrichment, separate parent and worker numeric IDs, and refusal cases with zero
+writes. This establishes the routing fix; the affected 56a1 card was not live
+tested. The B580 live display evidence below is separate.
 
 ## Display apply failure
 
@@ -33,9 +51,11 @@ Ignored local evidence is in
 `display-ipc-live.json`. These files contain local hardware identities and are
 not distribution payloads.
 
-## Experimental fan restore
+## Arc Hibernation Fix
 
 The Fan tab includes an opt-in switch, **Reapply fan settings after sleep**.
+Its card is named **Arc Hibernation Fix**. The user confirmed the feature works
+on their B580 after trying the previous build.
 It is off by default and scoped to the selected physical GPU. Arc Power must
 remain running, including in the tray. This feature is for returning from sleep
 or hibernation; it does not create a boot task or enable Windows startup.
@@ -98,10 +118,18 @@ every driver retains valid IGCL handles or becomes ready within the bounded
 retry window after a real resume. Focused automated checks, independent review,
 and packaging evidence are recorded with the final build report.
 
-The final source pass completed 213 focused Node tests, TypeScript checking,
+The earlier a425980 source pass completed 213 focused Node tests, TypeScript checking,
 the renderer build, and four real Electron/Chromium MockBackend checks (Fan
 resume, display scaling, managed display color, and sharpening). The Fan check
 also injected a restore refusal and verified visible failure feedback on the
 already open card. Independent Luna xhigh review reported no remaining material
 blockers. The full repository suite and an actual Installer installation were
 not run.
+
+After the card renames and additional Graphics request-identity repair, the
+combined focused batch passed 276 Node tests. TypeScript checking and the
+renderer build passed again. All four current Electron UI checks passed,
+including the Arc Hibernation Fix and global/per-game Arc Image Sharpening
+labels; the retired sharpening runner's compatibility entry point also passed
+the current sharpening checks. Independent Luna xhigh review accepted these
+final changes with no material blockers.

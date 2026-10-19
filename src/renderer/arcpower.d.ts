@@ -132,13 +132,13 @@ export interface ArcPowerApi {
    *  all-false/null state is the honest "not supported on this GPU" degrade).
    *  NEVER called with a null deviceId - the no-Intel page guard renders
    *  'No GPU available.' first. */
-  graphicsGet(deviceId: number): Promise<GraphicsState>;
+  graphicsGet(deviceId: number, expectedDeviceKey?: string): Promise<GraphicsState>;
   /** Fast Arc Sleep Base FPS Cap read; bypasses serialized writes and bounds RTSS waiting. */
-  arcSleepBaseCapGet(deviceId: number): Promise<GraphicsState>;
+  arcSleepBaseCapGet(deviceId: number, expectedDeviceKey?: string): Promise<GraphicsState>;
   /** M8: apply graphics settings - the DEDICATED apply path (NO OC waiver,
    *  NO OC-mode gate). Returns the { ok, perControl, graphicsState } envelope
    *  with the FRESH read-back for the per-control refresh. */
-  graphicsApply(deviceId: number, settings: GraphicsSettings): Promise<GraphicsApplyResponse>;
+  graphicsApply(deviceId: number, settings: GraphicsSettings, expectedDeviceKey?: string): Promise<GraphicsApplyResponse>;
   postprocessSharpeningGet(): Promise<PostprocessSharpeningGlobal>;
   postprocessSharpeningSet(value: PostprocessSharpeningValue): Promise<PostprocessSharpeningGlobal>;
   postprocessSharpeningGameGet(exePath: string): Promise<PostprocessSharpeningGame>;

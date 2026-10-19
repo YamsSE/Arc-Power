@@ -4519,15 +4519,9 @@ async function main() {
       app.exit(0);
       return;
     }
-    if (process.env.RID_MOCK_POSTPROCESS_VERIFY === '1') {
+    if (process.env.RID_MOCK_POSTPROCESS_VERIFY === '1' || process.env.RID_MOCK_SHARPENING_VERIFY === '1') {
       const { verifyPostprocessSharpeningUi } = await import('../../test/postprocess-sharpening-ui.js');
       await verifyPostprocessSharpeningUi(win, postprocessSharpening, gameProfiles, backend);
-      app.exit(0);
-      return;
-    }
-    if (process.env.RID_MOCK_SHARPENING_VERIFY === '1') {
-      const { verifySharpeningUi } = await import('../../test/sharpening-ui.js');
-      await verifySharpeningUi(win, backend, gameProfiles);
       app.exit(0);
       return;
     }

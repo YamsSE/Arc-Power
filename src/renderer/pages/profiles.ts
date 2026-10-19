@@ -855,7 +855,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         settingRow('Low Latency Mode', 'Improves the responsiveness between user input and graphics rendering for a better gaming experience.', latency),
       ]),
       renderGameSharpening(game.exePath),
-      el('p', { class: 'profile-capability-note', text: `When Use Profile is enabled for ${gameGpuLabel(targetDevice)}, its tuning preset and driver Graphics values apply to that GPU. Image Sharpening is shared across GPUs and uses its own controls above.` }),
+      el('p', { class: 'profile-capability-note', text: `When Use Profile is enabled for ${gameGpuLabel(targetDevice)}, its tuning preset and driver Graphics values apply to that GPU. Arc Image Sharpening is shared across GPUs and uses its own controls above.` }),
     ]);
     tuning.addEventListener('change', () => save({ tuningProfileId: tuning.value || null }));
     endurance.addEventListener('change', () => save({ graphics: { enduranceGaming: endurance.value as 'off' | 'on' } }));

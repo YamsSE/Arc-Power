@@ -30,9 +30,9 @@ contextBridge.exposeInMainWorld('arcPower', {
   // M8 (the Graphics tab): the 3D-feature surface - the page's ONLY IPC
   // surface (the dedicated graphics apply path - NOT the OC apply-routing
   // machinery: 3D features have no OC waiver).
-  graphicsGet: (deviceId) => ipcRenderer.invoke('graphics:get', deviceId),
-  arcSleepBaseCapGet: (deviceId) => ipcRenderer.invoke('arc-sleep-base-cap-get', deviceId),
-  graphicsApply: (deviceId, settings) => ipcRenderer.invoke('graphics:apply', deviceId, settings),
+  graphicsGet: (deviceId, expectedDeviceKey) => ipcRenderer.invoke('graphics:get', deviceId, expectedDeviceKey),
+  arcSleepBaseCapGet: (deviceId, expectedDeviceKey) => ipcRenderer.invoke('arc-sleep-base-cap-get', deviceId, expectedDeviceKey),
+  graphicsApply: (deviceId, settings, expectedDeviceKey) => ipcRenderer.invoke('graphics:apply', deviceId, settings, expectedDeviceKey),
   postprocessSharpeningGet: () => ipcRenderer.invoke('postprocess-sharpening:get'),
   postprocessSharpeningSet: (value) => ipcRenderer.invoke('postprocess-sharpening:set', value),
   postprocessSharpeningGameGet: (exePath) => ipcRenderer.invoke('postprocess-sharpening:game-get', exePath),

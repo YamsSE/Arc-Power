@@ -53,7 +53,7 @@ export async function runFanResumeUiVerification(win, backend, emitResume) {
     await clickFanTab();
 
     const initialA11y = await js(`(() => { const input = document.querySelector('${toggle}'); return { checked: input.checked, role: input.getAttribute('role'), label: input.getAttribute('aria-label'), disabled: input.disabled, heading: input.closest('.fan-resume-card')?.querySelector('.card-title')?.textContent }; })()`);
-    assert.deepEqual(initialA11y, { checked: false, role: 'switch', label: 'Reapply fan settings after sleep', disabled: false, heading: 'Experimental' }, 'Experimental toggle must be accessible and default off');
+    assert.deepEqual(initialA11y, { checked: false, role: 'switch', label: 'Reapply fan settings after sleep', disabled: false, heading: 'Arc Hibernation Fix' }, 'Arc Hibernation Fix must be accessible and default off');
     const staleIdentityError = await js(`window.arcPower.fanResumeSet({ enabled: true, deviceId: 0, deviceKey: 'pci:stale-gpu-identity' }).then(() => null, error => String(error))`);
     assert.match(staleIdentityError, /identity changed/i, 'Real preload IPC must reject an enable request with a stale GPU identity');
     const beforeEnable = await backend.getCurrentSettings(0);

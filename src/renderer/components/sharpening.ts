@@ -39,7 +39,7 @@ export function renderGlobalSharpening(): HTMLElement {
   const render = (): void => {
     const request = generation;
     const slider = el('input', { type: 'range', class: 'graphics-slider', min: 0, max: 100, step: 1, value: draft.percentage, disabled: busy || !state || !draft.enabled,
-      'aria-label': 'Image sharpening strength', 'aria-valuetext': `${draft.percentage}%`, oninput: (event: Event) => {
+      'aria-label': 'Arc Image Sharpening strength', 'aria-valuetext': `${draft.percentage}%`, oninput: (event: Event) => {
         draft.percentage = safePercentage((event.target as HTMLInputElement).valueAsNumber);
         const text = root.querySelector<HTMLElement>('.sharpening-value');
         if (text) text.textContent = `${draft.percentage}%`;
@@ -47,13 +47,13 @@ export function renderGlobalSharpening(): HTMLElement {
       } });
     const sliderRow = el('div', { class: 'graphics-fps-slider-row sharpening-slider-row', hidden: !draft.enabled }, [slider, el('span', { class: 'graphics-fps-value sharpening-value', text: `${draft.percentage}%` })]);
     const select = makeSelect(draft.enabled ? 'on' : 'off', [
-      { value: 'off', label: 'Image Sharpening Off' },
-      { value: 'on', label: 'Image Sharpening On' },
+      { value: 'off', label: 'Arc Image Sharpening Off' },
+      { value: 'on', label: 'Arc Image Sharpening On' },
     ], (value) => {
       draft.enabled = value === 'on';
       sliderRow.hidden = !draft.enabled;
       slider.disabled = busy || !state || !draft.enabled;
-    }, 'Image Sharpening');
+    }, 'Arc Image Sharpening');
     select.disabled = busy || !state;
     const apply = async (): Promise<void> => {
       if (busy || !state) return;
@@ -67,7 +67,7 @@ export function renderGlobalSharpening(): HTMLElement {
     };
     root.replaceChildren(
       el('div', { class: 'sharpening-card-heading' }, [
-        el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Image Sharpening' }), el('p', { class: 'card-note', text: 'Sharpens the foreground game on an Intel Arc display.' })]),
+        el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Arc Image Sharpening' }), el('p', { class: 'card-note', text: 'Sharpens the foreground game on an Intel Arc display.' })]),
         el('div', { class: 'sharpening-card-control' }, [select, sliderRow]),
       ]),
       sharpeningHelp('Sharpens only the foreground game on a display connected to Intel Arc while Arc Power is open. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game. No capture prompt, setup download, or game-folder files are used.'),
@@ -149,7 +149,7 @@ export function renderGameSharpening(exePath: string): HTMLElement {
     const globalValue = state?.globalValue ?? { enabled: false, percentage: 50 };
     const shownValue = useGlobal ? globalValue : draft;
     const slider = el('input', { class: 'graphics-slider', type: 'range', min: 0, max: 100, step: 1, value: shownValue.percentage, disabled: busy || !state || useGlobal || !draft.enabled,
-      'aria-label': 'Per-game image sharpening strength', 'aria-valuetext': `${shownValue.percentage}%`, oninput: (event: Event) => {
+      'aria-label': 'Per-game Arc Image Sharpening strength', 'aria-valuetext': `${shownValue.percentage}%`, oninput: (event: Event) => {
         draft.percentage = safePercentage((event.target as HTMLInputElement).valueAsNumber);
         const label = root.querySelector<HTMLElement>('.sharpening-game-value'); if (label) label.textContent = `${draft.percentage}%`;
         (event.currentTarget as HTMLInputElement).setAttribute('aria-valuetext', `${draft.percentage}%`);
@@ -157,8 +157,8 @@ export function renderGameSharpening(exePath: string): HTMLElement {
     const sliderRow = el('div', { class: 'graphics-fps-slider-row sharpening-slider-row', hidden: useGlobal || !draft.enabled }, [slider, el('span', { class: 'graphics-fps-value sharpening-game-value', text: `${shownValue.percentage}%` })]);
     const select = makeSelect(useGlobal ? 'global' : draft.enabled ? 'on' : 'off', [
       { value: 'global', label: `Use global (${globalValue.enabled ? 'On' : 'Off'}, ${globalValue.percentage}%)` },
-      { value: 'off', label: 'Image Sharpening Off' },
-      { value: 'on', label: 'Image Sharpening On' },
+      { value: 'off', label: 'Arc Image Sharpening Off' },
+      { value: 'on', label: 'Arc Image Sharpening On' },
     ], (value) => {
       useGlobal = value === 'global';
       if (!useGlobal) draft.enabled = value === 'on';
@@ -166,14 +166,14 @@ export function renderGameSharpening(exePath: string): HTMLElement {
       slider.disabled = busy || !state || useGlobal || !draft.enabled;
       const shown = useGlobal ? globalValue : draft;
       const label = root.querySelector<HTMLElement>('.sharpening-game-value'); if (label) label.textContent = `${shown.percentage}%`;
-    }, 'Per-game Image Sharpening');
+    }, 'Per-game Arc Image Sharpening');
     select.disabled = busy || !state;
     root.replaceChildren(
       el('div', { class: 'sharpening-card-heading' }, [
-        el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Image Sharpening' }), el('p', { class: 'card-note', text: 'Set a sharpening override for this game.' })]),
+        el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Arc Image Sharpening' }), el('p', { class: 'card-note', text: 'Set a sharpening override for this game.' })]),
         el('div', { class: 'sharpening-card-control' }, [select, sliderRow]),
       ]),
-      sharpeningHelp('Per-game sharpening applies while this recognized game is the foreground window on a display connected to Intel Arc. The global Image Sharpening switch in Graphics must be on. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game.'),
+      sharpeningHelp('Per-game sharpening applies while this recognized game is the foreground window on a display connected to Intel Arc. The global Arc Image Sharpening switch in Graphics must be on. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game.'),
       ...legacyWarning(),
       ...(state?.reason ? [el('p', { class: 'text-error', text: state.reason })] : []),
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),

@@ -206,7 +206,7 @@ function renderFanResumeCard(container: HTMLElement, ctx: PageContext): void {
   const message = el('p', { class: 'card-note', text: 'Arc Power reapplies the last successfully applied fan mode after Windows 10/11 sleep or hibernate. Auto uses the driver stock mode, Curve restores its custom curve, and valid Fixed mode is supported. Arc Power must stay running in the tray. Staged edits are not applied or saved.' });
   const card = el('section', { class: 'card fan-resume-card' }, [
     el('div', { class: 'arc-sleep-panel-heading' }, [
-      el('div', {}, [el('h2', { class: 'card-title', text: 'Experimental' }), el('p', { class: 'card-note', text: 'Reapply fan settings after sleep' })]), input,
+      el('div', {}, [el('h2', { class: 'card-title', text: 'Arc Hibernation Fix' }), el('p', { class: 'card-note', text: 'Reapply fan settings after sleep' })]), input,
     ]), message,
   ]);
   container.append(card);

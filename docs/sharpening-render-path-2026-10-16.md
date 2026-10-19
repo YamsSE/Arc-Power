@@ -1,4 +1,4 @@
-# Image sharpening investigation — 16 October 2026
+# Arc Image Sharpening investigation — 16 October 2026
 
 ## Result so far
 
@@ -10,7 +10,7 @@ The previous ReShade prototype produced the expected sharpened pixels in control
 
 Arc Power now has a native DXGI Desktop Duplication helper under test. It captures the composed monitor output on the Intel Arc adapter, crops to the foreground window bounds, applies an Arc Power-authored D3D11 unsharp-mask shader, and presents the result in a click-through overlay. The app sends the active process ID and effective percentage over a private stdin pipe. It does not inject a DLL, install an API layer, request capture consent, download a runtime, or write to game directories.
 
-- Graphics → Image Sharpening and Game Profile → Graphics → Image Sharpening use integer sliders from **0% to 100%** in **1%** steps.
+- Graphics → Arc Image Sharpening and Game Profile → Graphics → Arc Image Sharpening use integer sliders from **0% to 100%** in **1%** steps.
 - A global switch gates all sharpening. Each game can inherit the global value or store its own enable/value override.
 - Global sharpening now requires an exact executable match in Arc Power's Game Profile catalog. Common desktop application executables remain excluded even if manually catalogued. On the first unknown foreground executable, a single conservative background discovery merges into the catalog without removing saved game profiles; unknown games can be added through Game Profiles. Foreground polling uses an in-memory path cache, invalidated by catalog writes, instead of repeatedly parsing embedded artwork.
 - The game gate does not restrict window styles: windowed, borderless, fullscreen, and exclusive fullscreen game windows are eligible on a monitor connected to Intel Arc. Eligibility does not establish capture/presentation compatibility. Exclusive fullscreen, protected content, anti-cheat behavior, hybrid-display routing, and specific games have not been established yet. The helper currently fails closed for rotated or mismatched output dimensions.
