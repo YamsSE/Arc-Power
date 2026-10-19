@@ -448,10 +448,10 @@ function renderSidebar() {
   const nav = document.getElementById('sidebar') as HTMLElement;
   const active = currentPage();
   clear(nav);
-  // Settings remains in the sidebar footer. PAGE_IDS supplies the exact
-  // main-tab order: Dashboard, Tuning, Graphics, Arc Sleep, Recording, Monitoring,
-  // Profiles and Tweaks. Driver Library is launched from the Intel GPU card.
-  const navIds = PAGE_IDS.filter((id) => id !== 'settings' && id !== 'driver-library');
+  // Settings remains in the sidebar footer. Tweaks stays registered for
+  // direct links, but is hidden from the main navigation until it is needed.
+  // Driver Library is launched from the Intel GPU card.
+  const navIds = PAGE_IDS.filter((id) => id !== 'settings' && id !== 'driver-library' && id !== 'tweaks');
   nav.append(
     // M4-D: the sidebar brand - "Arc Power" with "Power" ILLUMINATED
     // like the title bar (the blue gradient + glow) and a BOLD weight; the
@@ -731,6 +731,29 @@ async function boot() {
     // transient re-fetch failure
   }
   store.set({ sysinfo: info ?? null, devices: freshDevices, latestSamples: {} });
+  // A driver that is still initializing at the first read can leave ReBAR
+  // unknown. Ask once more after boot and refresh the matched controller in
+  // the device inventory if the later bounded driver probe succeeds.
+  if (info?.videoControllers?.some((controller) => controller.rebarActive === null)) {
+    window.setTimeout(() => { void (async () => {
+      try {
+        const refreshed = await api.sysinfo();
+        const current = store.get();
+        if (!refreshed || JSON.stringify(refreshed.videoControllers) === JSON.stringify(current.sysinfo?.videoControllers)) return;
+        let nextDevices = current.devices;
+        try {
+          const candidate = await api.listDevices();
+          if (candidate.length > 0) nextDevices = candidate;
+        } catch { /* keep the current inventory */ }
+        const selected = nextDevices.find((device) => device.id === current.deviceId) ?? null;
+        store.set({
+          sysinfo: refreshed,
+          devices: nextDevices,
+          osGpu: nextDevices.length === 0 ? primaryVideoController(refreshed) : selected?.osController ?? null,
+        });
+      } catch { /* unknown remains unknown when the delayed probe fails */ }
+    })(); }, 4000);
+  }
   noDevice = freshDevices.length === 0;
   if (!noDevice) {
     // M151: the first inventory paint may precede the Windows controller

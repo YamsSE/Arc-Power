@@ -253,6 +253,18 @@ export async function runApplyWorker({ reqPath, outPath, backend, oldIgcl, log =
   }
   if (await abortIfCanceled()) return 1;
 
+  // The disposable sharpening helper must recheck the parent-owned token
+  // immediately before its own native write, after DLL loading/enumeration.
+  // Passing only the request's validated sibling paths keeps that check tied
+  // to this authenticated operation rather than a process-local GPU id.
+  if (tokenRequestId && typeof backend.setSharpeningRequestGuard === 'function') {
+    backend.setSharpeningRequestGuard({
+      requestId: tokenRequestId,
+      cancelPath,
+      tokenPath: path.join(path.dirname(reqPath), `arcpower-tok-${tokenRequestId}.json`),
+    });
+  }
+
   // The parent validates the target before spawning, but the elevated child
   // must defend its own native boundary too. This proxy checks for revocation
   // immediately before every backend write, including writes reached through

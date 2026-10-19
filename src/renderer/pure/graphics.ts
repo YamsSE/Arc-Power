@@ -44,6 +44,7 @@ const CONTROL_SUPPORT_KEY: Record<string, keyof GraphicsState['supported']> = {
   frameLimit: 'frameLimit',
   lowLatency: 'lowLatency',
   prebuiltShaderDownload: 'prebuiltShaderDownload',
+  sharpening: 'sharpening',
 };
 const CONTROL_OPTIONS_KEY: Record<string, keyof GraphicsState['supportedOptions']> = {
   enduranceGaming: 'enduranceGaming',
@@ -69,6 +70,10 @@ export function isGraphicsControlSupported(state: GraphicsState | null | undefin
     const range = state.sharedMemoryRange;
     if (!range || !Number.isInteger(range.min) || !Number.isInteger(range.max)
       || range.min < 13 || range.max < range.min || range.max > 100) return false;
+  }
+  if (control === 'sharpening') {
+    const range = state.sharpeningRange;
+    if (!range || range.min !== 0 || range.max !== 100 || range.step !== 1) return false;
   }
   const optionsKey = CONTROL_OPTIONS_KEY[control];
   if (optionsKey && (state.supportedOptions[optionsKey]?.length ?? 0) === 0) return false;
@@ -161,6 +166,10 @@ export function normalizeGraphicsSettings(state: GraphicsState | null | undefine
   if (isGraphicsControlSupported(state, 'prebuiltShaderDownload')) {
     out.prebuiltShaderDownload = values?.prebuiltShaderDownload === true;
   }
+  if (isGraphicsControlSupported(state, 'sharpening')) {
+    const sharpening = values?.sharpening;
+    out.sharpening = { enabled: sharpening?.enabled === true, percentage: clampPercentage(sharpening?.percentage, 0, { min: 0, max: 100, step: 1 }) };
+  }
   return out;
 }
 
@@ -211,6 +220,12 @@ export function validateGraphicsSettings(value: unknown): value is GraphicsSetti
         || !Number.isFinite((v as { value: number }).value)) return false;
     } else if (key === 'prebuiltShaderDownload') {
       if (typeof v !== 'boolean') return false;
+    } else if (key === 'sharpening') {
+      if (typeof v !== 'object' || v === null || Array.isArray(v)
+        || Object.keys(v).some((nestedKey) => nestedKey !== 'enabled' && nestedKey !== 'percentage')
+        || typeof (v as { enabled?: unknown }).enabled !== 'boolean'
+        || !Number.isInteger((v as { percentage?: unknown }).percentage)
+        || (v as { percentage: number }).percentage < 0 || (v as { percentage: number }).percentage > 100) return false;
     } else {
       return false; // unknown key
     }
@@ -228,6 +243,10 @@ function sameFrameLimit(a: { enabled: boolean; value: number } | null | undefine
 }
 
 function sameSharedMemory(a: GraphicsSettings['sharedMemoryOverride'], b: GraphicsSettings['sharedMemoryOverride']): boolean {
+  if (!a || !b) return a === b;
+  return a.enabled === b.enabled && a.percentage === b.percentage;
+}
+function sameSharpening(a: GraphicsSettings['sharpening'], b: GraphicsSettings['sharpening']): boolean {
   if (!a || !b) return a === b;
   return a.enabled === b.enabled && a.percentage === b.percentage;
 }
@@ -252,6 +271,7 @@ export function isGraphicsControlDirty(control: string, draft: GraphicsSettings,
   if (typeof wanted === 'string') return wanted !== driver;
   if (control === 'prebuiltShaderDownload') return wanted !== driver;
   if (control === 'sharedMemoryOverride') return !sameSharedMemory(wanted as GraphicsSettings['sharedMemoryOverride'], driver as GraphicsSettings['sharedMemoryOverride']);
+  if (control === 'sharpening') return !sameSharpening(wanted as GraphicsSettings['sharpening'], driver as GraphicsSettings['sharpening']);
   return !sameFrameLimit(wanted as { enabled: boolean; value: number }, driver as { enabled: boolean; value: number } | null);
 }
 
@@ -273,6 +293,7 @@ export function isGraphicsControlDirtyVsApplied(control: string, draft: Graphics
     if (typeof wanted === 'string') return wanted !== appliedValue;
     if (control === 'prebuiltShaderDownload') return wanted !== appliedValue;
     if (control === 'sharedMemoryOverride') return !sameSharedMemory(wanted as GraphicsSettings['sharedMemoryOverride'], appliedValue as GraphicsSettings['sharedMemoryOverride']);
+    if (control === 'sharpening') return !sameSharpening(wanted as GraphicsSettings['sharpening'], appliedValue as GraphicsSettings['sharpening']);
     return !sameFrameLimit(wanted as { enabled: boolean; value: number }, appliedValue as { enabled: boolean; value: number });
   }
   return isGraphicsControlDirty(control, draft, state);

@@ -1854,7 +1854,7 @@ async function renderGraphics(): Promise<void> {
     const timeout = new Promise<never>((_, reject) => {
       timeoutHandle = window.setTimeout(() => reject(new Error('graphics capability read timed out')), GRAPHICS_LOAD_TIMEOUT_MS);
     });
-    state = await Promise.race([api.graphicsGet(deviceId), timeout]);
+    state = await Promise.race([api.graphicsGet(deviceId, deviceKey ?? undefined), timeout]);
   } catch (err) {
     if (!panelIdentityMatches(deviceId, deviceKey, generation)
       || activeTab !== 'graphics' || !view.isConnected || !contentEl.contains(view)) return;
@@ -2125,7 +2125,7 @@ function renderGraphicsCards(view: HTMLElement): void {
       graphicsApplyBtn.textContent = 'Applying…';
     }
     try {
-      const out = await api.graphicsApply(deviceId, payload);
+      const out = await api.graphicsApply(deviceId, payload, deviceKey ?? undefined);
       if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
       if (out.graphicsState) graphicsState = out.graphicsState;
       for (const [key, per] of Object.entries(out.perControl)) {

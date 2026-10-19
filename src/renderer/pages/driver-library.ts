@@ -54,7 +54,7 @@ export const driverLibraryPage: Page = {
     let catalogPartial = false;
     let catalogLoading = true;
     let searchQuery = '';
-    const root = el('div', { class: 'driver-library-page' });
+    const root = el('div', { class: 'driver-library-page arc-page-shell' });
     container.replaceChildren(root);
 
     const selectedDevice = () => {
@@ -208,12 +208,25 @@ export const driverLibraryPage: Page = {
       clear(root);
       root.setAttribute('data-kind', String(kind));
       root.setAttribute('data-device-id', String(selectedDevice()?.id ?? ''));
-      root.append(el('header', { class: 'page-title-row' }, [
-        el('div', {}, [el('h1', { class: 'page-title', text: 'Driver Library' }), el('p', { class: 'page-subtitle', text: 'Intel releases for this GPU. Select a version to review its details and install.' }), el('p', { class: 'driver-library-catalog-note', text: 'The catalog includes versions Intel currently exposes on its current and historical driver pages.' })]),
+      const device = selectedDevice();
+      root.append(el('header', { class: 'arc-page-hero driver-library-hero' }, [
+        el('div', { class: 'arc-page-hero-copy' }, [
+          el('span', { class: 'arc-section-kicker', text: 'INTEL DRIVER CATALOG' }),
+          el('h1', { class: 'page-title', text: 'Driver Library' }),
+          el('p', { class: 'page-subtitle', text: 'Browse Intel releases for this GPU, review release details, and download an installer.' }),
+          el('p', { class: 'driver-library-catalog-note', text: 'The catalog includes versions Intel currently exposes on its current and historical driver pages.' }),
+        ]),
+        el('div', { class: 'arc-page-hero-status', role: 'status' }, [
+          el('span', { class: 'arc-status-dot', 'aria-hidden': 'true' }),
+          el('span', { class: 'arc-status-copy' }, [
+            el('strong', { text: kind ? device?.name ?? 'Selected Intel GPU' : 'No supported Intel GPU selected' }),
+            el('small', { text: kind ? `Installed driver ${selectedInstalledVersion()}` : 'Select an Intel Arc or Arc Pro GPU' }),
+          ]),
+        ]),
       ]));
       const layout = el('div', { class: 'driver-library-layout' });
-      const list = el('section', { class: 'driver-library-list card', 'aria-label': 'Available Intel drivers' });
-      const details = el('section', { class: 'driver-library-details card', 'aria-live': 'polite' });
+      const list = el('section', { class: 'driver-library-list card arc-surface-card', 'aria-label': 'Available Intel drivers' });
+      const details = el('section', { class: 'driver-library-details card arc-surface-card', 'aria-live': 'polite' });
       layout.append(list, details);
       root.append(layout);
       if (!kind) {

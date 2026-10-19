@@ -3,7 +3,7 @@
 // module only binds the map to ipcMain.handle.
 
 import { app, ipcMain, powerMonitor } from 'electron';
-import { createIpcHandlers, assertNoPayload, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, RECORDING_SETTINGS_CHANNEL, RECORDING_PILL_SETTINGS_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL, OC_MODE_UPDATED_CHANNEL } from './ipc-core.js';
+import { createIpcHandlers, assertNoPayload, DEVICE_STATE_UPDATED_CHANNEL, GRAPHICS_STATE_UPDATED_CHANNEL, RECORDING_STATE_CHANNEL, RECORDING_SETTINGS_CHANNEL, RECORDING_PILL_SETTINGS_CHANNEL, pushRecordingActionResult, pushRecordingState, DEVICE_SELECTION_UPDATED_CHANNEL, DEVICE_SELECTION_REQUEST_CHANNEL, OC_MODE_UPDATED_CHANNEL, POSTPROCESS_SHARPENING_STATUS_CHANNEL } from './ipc-core.js';
 import { createDriverInfo } from './driver-info.js';
 import { createRegistryCatalog, REGISTRY_CATALOG } from './registry-catalog.js';
 import { createRegistryApply } from './registry-apply.js';
@@ -17,6 +17,9 @@ import { createIntelDriverDownloadService } from './intel-driver-download.js';
 import { createIntelDriverUpdateService } from './intel-driver-update.js';
 import { createArcSleepController } from './arc-sleep-controller.js';
 import { createArcSleepIGCLLimiter } from './arc-sleep-igcl-limiter.js';
+import { createFanResumeController } from './fan-resume-controller.js';
+import { createFanResumeStore } from './store/fan-resume-store.js';
+import path from 'node:path';
 
 /**
  * Register every whitelisted handler on ipcMain. Returns a teardown that
@@ -173,6 +176,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     ?? (async () => recordingEngine?.getState?.() ?? null);
   const recordingRuntimeShutdownIfIdle = arguments[0]?.recordingRuntimeShutdownIfIdle
     ?? (async () => recordingEngine?.shutdownIfIdle?.() ?? null);
+  const postprocessSharpening = arguments[0]?.postprocessSharpening ?? null;
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -218,6 +222,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     getRecordingMemorySavingMode,
     sysmanPowerLimits,
     gameProfiles,
+    postprocessSharpening,
     gameScan: gameScan ?? undefined,
     chooseGameExecutable,
     gameArtwork,
@@ -292,6 +297,30 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       if (advancedOverlayWin && !advancedOverlayWin.isDestroyed()) advancedOverlayWin.webContents.send(channel, payload);
     },
   });
+  const rawApplySettings = handlers['apply-settings'];
+  const fanResumeStore = arguments[0]?.fanResumeStore ?? createFanResumeStore({ dir: store?.dir ?? path.join(app.getPath('appData'), 'ArcPower') });
+  const fanResumeController = createFanResumeController({
+    backend, store: fanResumeStore, rawApplySettings,
+    isElevated: typeof isElevated === 'function' ? isElevated : isElevatedReal,
+    applyRunner,
+    onStatus: () => {
+      const target = getWindow();
+      if (target && !target.isDestroyed()) target.webContents.send('fan-resume:status');
+    },
+    onState: ({ deviceId, state }) => {
+      const payload = { deviceId, state };
+      for (const target of [getWindow(), getAdvancedOverlayWindow?.()]) {
+        if (target && !target.isDestroyed()) target.webContents.send(DEVICE_STATE_UPDATED_CHANNEL, payload);
+      }
+    },
+  });
+  handlers['apply-settings'] = (...args) => fanResumeController.runUserApply(args);
+  handlers['fan-resume:get'] = async (payload) => {
+    if (!payload || !Number.isInteger(payload.deviceId) || typeof payload.deviceKey !== 'string' || !payload.deviceKey.trim()) throw new Error('fan-resume:get requires the selected GPU identity');
+    return fanResumeController.getState(payload.deviceId, payload.deviceKey);
+  };
+  handlers['fan-resume:set'] = async (payload) => fanResumeController.setEnabled(payload);
+  void fanResumeController.initialize().catch(() => {});
   const recordingStateWithSettings = (state) => state && typeof state === 'object'
     ? { ...state, memorySavingMode: getRecordingMemorySavingMode() === true }
     : state;
@@ -309,6 +338,10 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     }
     try { onRecordingState(enrichedState, previousRecordingState); } catch { /* desktop notifications are best effort */ }
     previousRecordingState = enrichedState;
+  });
+  const unsubscribePostprocessSharpeningStatus = postprocessSharpening?.subscribeStatus?.((status) => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.send(POSTPROCESS_SHARPENING_STATUS_CHANNEL, status);
   });
   // The foreground detector is absent in mock/ui-verify mode. In the real
   // product it gives Game Profiles the same executable identity used by the
@@ -355,7 +388,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
   for (const [channel, fn] of Object.entries(handlers)) {
     const isMaintenanceChannel = channel === 'app:maintenance-restart' || channel === 'app:clear-cache-restart';
     const invokeHandler = async (event, ...args) => {
-      if (channel === 'device-selection-push' || channel.startsWith('update:')) {
+      if (channel === 'device-selection-push' || channel.startsWith('update:') || channel.startsWith('postprocess-sharpening:') || channel.startsWith('fan-resume:')) {
         const win = getWindow();
         if (!win || win.isDestroyed() || event.sender !== win.webContents) {
           throw new Error(`${channel} is restricted to the main renderer`);
@@ -372,6 +405,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       }
       let out;
       try {
+        if (isMaintenanceChannel) await fanResumeController.quiesce();
         if (channel === 'recording-runtime-acquire') {
           assertNoPayload(args, channel);
           out = await recordingRuntimeAcquire(event);
@@ -519,13 +553,15 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     ipcMain.handle(channel, (event, ...args) => {
       if (maintenancePending) throw new Error('Arc Power is preparing a maintenance restart');
       if (isMaintenanceChannel) maintenancePending = true;
+      if (isMaintenanceChannel) fanResumeController.setMaintenance(true);
       const request = invokeHandler(event, ...args);
       if (isMaintenanceChannel) {
         return request.then((result) => {
-          if (result?.restarting !== true) maintenancePending = false;
+          if (result?.restarting !== true) { maintenancePending = false; fanResumeController.setMaintenance(false); }
           return result;
         }, (error) => {
           maintenancePending = false;
+          fanResumeController.setMaintenance(false);
           throw error;
         });
       }
@@ -534,6 +570,8 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       return request;
     });
   }
+  powerMonitor.on('resume', fanResumeController.onResume);
+  powerMonitor.on('suspend', fanResumeController.onSuspend);
   void arcSleepController.start().catch((error) => {
     console.error(`[arc-sleep] startup failed: ${error instanceof Error ? error.message : String(error)}`);
   });
@@ -545,8 +583,12 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     Promise.resolve(rtssOverlay?.stop?.()).catch(() => {}),
   ]);
   return async () => {
+    powerMonitor.removeListener('resume', fanResumeController.onResume);
+    powerMonitor.removeListener('suspend', fanResumeController.onSuspend);
     unsubscribeRecordingState?.();
+    unsubscribePostprocessSharpeningStatus?.();
     await gameTuning?.stop();
+    await fanResumeController.stop();
     await arcSleepController.stop();
     await stopAllTelemetry();
     await stopFps();

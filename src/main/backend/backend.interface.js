@@ -72,6 +72,7 @@
  *   enduranceGaming?: 'off' | 'on' | 'auto',
  *   enduranceGamingMode?: 'performance' | 'balanced' | 'battery',
  *   sharedMemoryOverride?: { enabled: boolean, percentage: number },
+ *   sharpening?: { enabled: boolean, percentage: number },
  *   frameGenOverride?: 'app-choice' | '2x' | '3x' | '4x',
  *   flipMode?: 'application-default' | 'vsync-on' | 'vsync-off' | 'smooth-sync' | 'speed-frame' | 'smart-vsync',
  *   frameLimit?: { enabled: boolean, value: number },
@@ -87,12 +88,16 @@
  * the driver's SupportedTypes-gated option lists (Speed Sync etc.) - the
  * page's dropdown gating source.
  * @typedef {{
- *   supported: { frameGen: boolean, flipModes: boolean, frameLimit: boolean, lowLatency: boolean, enduranceGaming?: boolean, sharedMemoryOverride?: boolean, prebuiltShaderDownload?: boolean },
+ *   supported: { frameGen: boolean, flipModes: boolean, frameLimit: boolean, lowLatency: boolean, enduranceGaming?: boolean, sharedMemoryOverride?: boolean, prebuiltShaderDownload?: boolean, sharpening?: boolean },
  *   supportedOptions: { frameGen: string[], flipModes: string[], lowLatency: string[], enduranceGaming?: string[], enduranceGamingModes?: string[] },
  *   frameLimitRange: { min: number, max: number, step: number, default: number } | null,
  *   frameLimitSource?: 'rtss' | 'igcl',
  *   frameLimitLiveChange?: boolean,
  *   sharedMemoryRange?: { min: number, max: number, step: number, default: number } | null,
+ *   sharpeningRange?: { min: number, max: number, step: number, default: number } | null,
+ *   sharpeningReason?: string | null,
+ *   sharpeningPerAppSupport?: boolean,
+ *   sharpeningLiveChange?: boolean,
  *   values: {
  *     frameGenOverride: string | null,
  *     flipMode: string | null,
@@ -102,6 +107,7 @@
  *     enduranceGamingMode?: string | null,
  *     sharedMemoryOverride?: { enabled: boolean, percentage: number } | null,
  *     prebuiltShaderDownload?: boolean | null,
+ *     sharpening?: { enabled: boolean, percentage: number } | null,
  *   },
  * }} GraphicsState
  */
@@ -112,10 +118,10 @@
  * surface). Only ACTIVE display outputs are enumerated (the M10b probe:
  * 30 outputs, ONE active on the A770); a display's per-feature reads are
  * defensive - a failing feature reads null/[] without taking the surface
- * down. The wire-format surface is read-only in effect on this driver
- * build (ColorDepth is never populated - wireFormats/bpcDepths come back
- * empty and the COLOR card degrades honestly); the Arc Sync surface is
- * read-only too (recorded for the INFORMATION section).
+ * down. Wire format uses the complete native model/depth pair. Managed
+ * color capabilities keep native `value` null when CURRENT is unavailable;
+ * `desiredValue` and `lastSent` describe Arc Power's persisted editor intent,
+ * never a live driver reading or an automatic startup reapply.
  * @typedef {{
  *   displays: Array<{
  *     id: number,
@@ -169,6 +175,8 @@
  *   scalingMode?: 'identity' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'custom',
  *   displayScalingMethod?: 'maintain-display-scaling' | 'custom' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'integer' | 'nearest-neighbour',
  *   superResolution?: { enabled: boolean, width?: number, height?: number, refreshRate?: number },
+ *   hue?: number, saturation?: number, brightness?: number, contrast?: number,
+ *   replaceExistingColorSettings?: boolean,
  * }} DisplaySettings
  */
 
@@ -312,7 +320,7 @@
  *   // NO OC waiver applies to 3D features.
  *   getGraphicsSettings(deviceId: number): Promise<GraphicsState>,
  *   setGraphicsSettings(deviceId: number, s: GraphicsSettings, applicationName?: string): Promise<ApplyResult>,
- *   getGameProfileCapabilities(deviceId: number, executablePath?: string): Promise<{ enduranceGaming: boolean, xeFg: boolean, xeFgOptions: string[], reason?: string|null, xeFgReason?: string|null }>,
+ *   getGameProfileCapabilities(deviceId: number, executablePath?: string): Promise<{ enduranceGaming: boolean, xeFg: boolean, xeFgOptions: string[], sharpening?: boolean, sharpeningRange?: { min:number,max:number,step:number,default:number }|null, sharpeningReason?: string|null, reason?: string|null, xeFgReason?: string|null }>,
  *   setGameProfileSettings(deviceId: number, executablePath: string, s: GraphicsSettings, enabled?: boolean): Promise<ApplyResult>,
  *   // M10b (the Graphics "Display" view): the display-output surface
  *   // (ctlEnumerateDisplayOutputs + ctlGetDisplayProperties + the wire-

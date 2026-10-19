@@ -1,0 +1,5 @@
+# Preserve upstream patch bytes: provenance records its SHA-256 and the rebuild
+# helper compares it with the pinned source diff. Patch context contains tabs.
+src/main/sharpening-runtime/source-build-local.patch -text whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab
+# Carry upstream notices verbatim, including their original line endings.
+src/main/sharpening-runtime/third-party-notices/** -text whitespace=cr-at-eol,-blank-at-eof

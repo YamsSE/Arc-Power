@@ -2139,11 +2139,11 @@ function renderPlayerView(): HTMLElement {
       onOpenFolder: () => api.recordingOpenFolder(),
     })).catch((err) => toast('error', 'Clip actions', messageOf(err)));
   }, 'btn btn-primary') : null;
-  return el('section', { class: 'recording-player-view' }, [
-    el('header', { class: 'recording-player-view-heading' }, [
+  return el('section', { class: 'arc-page-shell recording-page-shell recording-player-view' }, [
+    el('header', { class: 'arc-page-hero recording-player-view-heading' }, [
       back,
-      el('div', { class: 'recording-player-heading-copy' }, [el('span', { class: 'recording-eyebrow', text: 'Clip player' }), el('h2', { class: 'recording-panel-title', text: playerClip?.fileName ?? 'Clip' }), el('span', { class: 'recording-player-meta', text: playerClip ? `Saved ${new Date(playerClip.createdAt).toLocaleString()}` : '' })]),
-      el('div', { class: 'recording-player-heading-actions' }, [shareClip, button('Open Folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Clip folder', messageOf(err))), 'btn btn-secondary recording-player-folder')]),
+      el('div', { class: 'arc-page-hero-copy recording-player-heading-copy' }, [el('span', { class: 'arc-section-kicker', text: 'CLIP PLAYER' }), el('h1', { class: 'page-title recording-panel-title', text: playerClip?.fileName ?? 'Clip' }), el('p', { class: 'page-subtitle recording-player-meta', text: playerClip ? `Saved ${new Date(playerClip.createdAt).toLocaleString()}` : '' })]),
+      el('div', { class: 'arc-page-hero-side recording-player-heading-actions' }, [shareClip, button('Open Folder', () => void api.recordingOpenFolder().catch((err) => toast('error', 'Clip folder', messageOf(err))), 'btn btn-secondary recording-player-folder')]),
     ]),
     player,
     timelineSurface,
@@ -2159,17 +2159,20 @@ function render(): void {
     renderContainer.append(renderPlayerView());
     return;
   }
-  renderContainer.append(
-    el('div', { class: 'page-heading recording-heading' }, [
-      el('div', {}, [
-        el('span', { class: 'recording-eyebrow', text: 'Arc Capture' }),
-        el('h1', { text: 'Recording' }),
+  renderContainer.append(el('section', { class: 'arc-page-shell recording-page-shell' }, [
+    el('header', { class: 'arc-page-hero recording-heading' }, [
+      el('div', { class: 'arc-page-hero-copy' }, [
+        el('span', { class: 'arc-section-kicker', text: 'ARC CAPTURE' }),
+        el('h1', { class: 'page-title', text: 'Recording' }),
+        el('p', { class: 'page-subtitle', text: 'Capture gameplay, manage saved clips, and configure audio.' }),
       ]),
-      activeTab === 'manual' || activeTab === 'audio' ? renderRecordingHeadingActions() : null,
-      renderTabs(),
+      activeTab === 'manual' || activeTab === 'audio'
+        ? el('div', { class: 'arc-page-hero-side recording-heading-actions' }, [renderRecordingHeadingActions()])
+        : null,
     ]),
+    el('div', { class: 'arc-page-toolbar recording-tabs-toolbar' }, [renderTabs()]),
     activeTab === 'manual' ? renderManualView() : activeTab === 'clips' ? renderClipsView() : renderAudioView(),
-  );
+  ]));
 }
 
 function selectTab(tab: RecordingTab): void {

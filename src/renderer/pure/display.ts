@@ -54,48 +54,35 @@ function isExplicitScalingPreference(value: unknown): value is 'gpu-scaling' | '
   return value === 'gpu-scaling' || value === 'display-scaling';
 }
 
-/** Resolve the raw mode used by payload construction and method selection.
- * Intel's output-handle GET can retain a stale PreferredScalingType after
- * the user switches back to Display Scaling. NNScalingState is the same
- * driver preference that IGS uses for its Display-vs-GPU selector, so an
- * explicit registry preference must override that stale native field while
- * active IGCL Identity remains available as the physical read-back. */
+/** Resolve raw mode for payload construction without changing native readback.
+ * Active Custom wins over stale GPU preference; Arc selection is trusted only
+ * when the backend marks it as validated for this display. */
 export function effectiveScalingModeOf(display: Display | null | undefined): string | null {
   if (!display) return null;
   const active = display.scalingMode;
   const preferred = display.preferredScalingMode;
-  if (active === 'identity' && preferred === 'custom') return 'custom';
-  if (active === 'identity' && display.scalingPreference === 'display-scaling') return 'identity';
-  if (active === 'identity' && display.scalingPreference === 'gpu-scaling' && isGpuScalingMode(preferred)) return preferred;
-  if (active === 'identity' && isGpuScalingMode(preferred)) return preferred;
+  if (active === 'custom') return 'custom';
+  if (display.scalingPreferenceSource === 'arc-selection' && display.scalingPreference === 'display-scaling') return 'identity';
+  if (preferred === 'custom') return 'custom';
+  if (isGpuScalingMode(preferred)) return preferred;
   if (active !== null && active !== undefined) return active;
   return preferred ?? null;
 }
 
 export function scalingViewOf(display: Display | null | undefined): DisplayScalingView {
   if (!display) return 'display-scaling';
-  if (display.scalingMethod?.value?.enabled === true) return 'retro-scaling';
-  // A native Custom preference is a real Display Scaling state. Resolve it
-  // before consulting the adapter-level registry hint: the registry can say
-  // "GPU Scaling" while IGCL is currently reporting Identity, but that hint
-  // must never hide the Custom scaling-method controls.
-  if ((display.scalingMode === 'identity' || display.scalingMode === null || display.scalingMode === undefined)
-    && display.preferredScalingMode === 'custom') {
-    return 'display-scaling';
-  }
-  // Identity is the driver's active read-back for Display Scaling. A saved
-  // GPU preference can remain in NNScalingState until the output actually
-  // requires scaling, but it must not make the UI claim that the GPU scaler is
-  // active while IGCL reports Identity (this is also how IGS presents the
-  // current desktop-resolution state).
-  if (display.scalingMode === 'identity') return 'display-scaling';
+  const retro = display.scalingMethod?.value;
+  if (retro?.enabled === true) return 'retro-scaling';
+  // The selectors describe the user's persisted choice. Keep the active raw
+  // IGCL read-back separate: a GPU preference can be saved while Identity is
+  // active because the current desktop resolution does not require resizing.
+  if (display.scalingMode === 'custom') return 'display-scaling';
+  if (display.scalingPreferenceSource === 'arc-selection'
+    && isExplicitScalingPreference(display.scalingPreference)) return display.scalingPreference;
   const raw = effectiveScalingModeOf(display);
-  if (display.scalingMode === null || display.scalingMode === undefined) {
-    if (raw === null && isExplicitScalingPreference(display.scalingPreference)) return display.scalingPreference;
-    if (isGpuScalingMode(raw)) return 'gpu-scaling';
-  }
-  // IGCL's Custom flag belongs to IGS Display Scaling > Scaling Method; it
-  // must not be mistaken for one of the GPU scaler modes.
+  if (raw === 'custom') return 'display-scaling';
+  if (isGpuScalingMode(raw)) return 'gpu-scaling';
+  if (raw === 'identity') return 'display-scaling';
   return raw && raw !== 'identity' && raw !== 'custom'
     ? 'gpu-scaling'
     : 'display-scaling';
@@ -111,16 +98,53 @@ export function scalingMethodOptionsForView(display: Display | null | undefined,
   }
   if (view === 'retro-scaling') {
     const supported = display?.supportedOptions.scalingMethods ?? [];
+    const retro = display?.scalingMethod?.value;
+    if (display?.scalingMethod?.controllable !== true || !retro) return [];
+    // A known disabled/null GET plus explicit capabilities allows choices;
+    // an enabled but unknown native method must remain read-only.
+    if (retro?.enabled === true && (!retro.method || !supported.includes(retro.method))) return [];
     return DISPLAY_RETRO_SCALING_METHOD_OPTIONS.filter((method) => supported.includes(method));
   }
-  return [...DISPLAY_DISPLAY_SCALING_METHOD_OPTIONS];
+  const supported = display?.supportedOptions.scalingModes ?? [];
+  return DISPLAY_DISPLAY_SCALING_METHOD_OPTIONS.filter((method) => supported.includes(method === 'custom' ? 'custom' : 'identity'));
+}
+
+/** Only offer IGS scaling modes that have a matching driver capability and a
+ * complete readback contract for the distinct Retro surface. */
+export function scalingModeViewOptionsForDisplay(display: Display | null | undefined): DisplayScalingView[] {
+  const retro = display?.scalingMethod?.value;
+  if (retro?.enabled === true && (!retro.method || !display?.supportedOptions.scalingMethods.includes(retro.method))) return [];
+  const supported = display?.supportedOptions.scalingModes ?? [];
+  const options: DisplayScalingView[] = [];
+  if (DISPLAY_GPU_SCALING_METHOD_OPTIONS.some((mode) => supported.includes(mode))) options.push('gpu-scaling');
+  if (supported.includes('identity') || supported.includes('custom')) options.push('display-scaling');
+  if (supported.includes('identity') && scalingMethodOptionsForView(display, 'retro-scaling').length > 0) options.push('retro-scaling');
+  return options;
+}
+
+/** Windows modes exposed by the existing source-resolution capability. The
+ * UI intentionally excludes generated presets and modes that have not yet
+ * been enumerated by Windows. */
+export function superResolutionSourceModesForDisplay(display: Display | null | undefined) {
+  const capability = display?.superResolution;
+  const native = capability?.nativeResolution;
+  if (!display || display.identityVerified !== true || !display.displayKey
+    || capability?.supported !== true || capability.controllable !== true || !native
+    || !Number.isFinite(native.width) || native.width <= 0 || !Number.isFinite(native.height) || native.height <= 0
+    || !capability.currentSourceResolution || !Number.isFinite(capability.currentSourceRefreshRate)
+    || (capability.currentSourceRefreshRate ?? 0) <= 0 || !Array.isArray(capability.modes)) return [];
+  return capability.modes.filter((mode) => Number.isFinite(mode.width) && mode.width > 0
+    && Number.isFinite(mode.height) && mode.height > 0
+    && Number.isFinite(mode.refreshRate) && mode.refreshRate > 0
+    && mode.width > native.width && mode.height > native.height);
 }
 
 export function scalingMethodViewOf(display: Display | null | undefined): string {
   const view = scalingViewOf(display);
   if (view === 'retro-scaling') {
     const method = display?.scalingMethod?.value?.method;
-    return method && scalingMethodOptionsForView(display, view).includes(method) ? method : scalingMethodOptionsForView(display, view)[0];
+    const options = scalingMethodOptionsForView(display, view);
+    return method && options.includes(method) ? method : '';
   }
   const raw = effectiveScalingModeOf(display);
   if (view === 'gpu-scaling') {
@@ -129,12 +153,14 @@ export function scalingMethodViewOf(display: Display | null | undefined): string
     // is Identity, retain a supported saved GPU method for the deferred
     // preference; an unsupported preference falls through to the existing
     // capability-ordered default.
-    const preferred = display?.scalingMode === 'identity' && isGpuScalingMode(display.preferredScalingMode)
+    const preferred = isGpuScalingMode(display?.preferredScalingMode)
       ? display.preferredScalingMode
       : raw;
-    return preferred && options.includes(preferred) ? preferred : options[0];
+    return preferred && options.includes(preferred) ? preferred : options[0] ?? '';
   }
-  return raw === 'custom' ? 'custom' : 'maintain-display-scaling';
+  const options = scalingMethodOptionsForView(display, view);
+  const preferred = raw === 'custom' ? 'custom' : 'maintain-display-scaling';
+  return options.includes(preferred) ? preferred : options[0] ?? '';
 }
 
 /**
@@ -160,6 +186,35 @@ export function rawScalingForView(display: Display, view: string): NonNullable<D
   return (gpuMode ?? supported[0]) as NonNullable<DisplaySettings['scalingMode']>;
 }
 
+/** Editor value for Custom scaling. Only read native percentages when Custom
+ * is currently active; otherwise preserve the saved editor value or use IGS's
+ * 100/100 default, never inactive zero-valued IGCL fields. */
+export function customScalingPreferenceOf(display: Display | null | undefined): { x: number; y: number } {
+  const details = display?.scalingMode === 'custom' ? display.scalingDetails : null;
+  const saved = display?.customScalingPreference;
+  const finitePair = (value: { x?: number; y?: number } | null | undefined): value is { x: number; y: number } =>
+    Number.isFinite(value?.x) && Number.isFinite(value?.y);
+  const active = Number.isFinite(details?.customX) && Number.isFinite(details?.customY)
+    ? { x: details!.customX, y: details!.customY }
+    : null;
+  const selected = finitePair(active)
+    ? active
+    : finitePair(saved) ? saved : { x: 100, y: 100 };
+  return {
+    x: Math.max(0, Math.min(100, selected.x)),
+    y: Math.max(0, Math.min(100, selected.y)),
+  };
+}
+
+/** A safe Retro disable pair exists only when GET confirmed both an enabled
+ * state and its current supported method. False/null needs no redundant SET. */
+export function retroScalingDisableSettingsOf(display: Display | null | undefined): NonNullable<DisplaySettings['scalingMethod']> | null {
+  const current = display?.scalingMethod?.value;
+  if (current?.enabled !== true || !current.method
+    || !(display?.supportedOptions.scalingMethods ?? []).includes(current.method)) return null;
+  return { enabled: false, method: current.method };
+}
+
 export type DisplayColorRange = { min: number; max: number; step: number; default?: number };
 
 /** Clamp a native IGCL color value to the exact step reported by the driver. */
@@ -181,9 +236,9 @@ export function isDisplayControlSupported(display: Display | null | undefined, c
   if (!display || display.identityVerified !== true || typeof display.displayKey !== 'string' || display.displayKey.length === 0) return false;
   switch (control) {
     case 'quantizationRange': return display.supportedOptions.quantizationRanges.length > 0;
-    case 'scalingMode': return display.supportedOptions.scalingModes.length > 0;
-    case 'displayScalingMethod': return display.supportedOptions.scalingModes.includes('custom');
-    case 'scalingMethod': return display.scalingMethod?.controllable === true && display.supportedOptions.scalingMethods.length > 0;
+    case 'scalingMode': return scalingModeViewOptionsForDisplay(display).length > 0;
+    case 'displayScalingMethod': return scalingMethodOptionsForView(display, 'display-scaling').length > 0;
+    case 'scalingMethod': return scalingMethodOptionsForView(display, 'retro-scaling').length > 0;
     case 'vrrMode': return display.vrrMode?.controllable === true && (display.supportedOptions.vrrModes ?? []).length > 0;
     // Keep the IGS choices visible even when the driver refuses a read-back.
     // The apply path still reports the native refusal; hiding the control here
@@ -191,16 +246,33 @@ export function isDisplayControlSupported(display: Display | null | undefined, c
     case 'globalVrrMode': return display.globalVrrMode?.supported === true && (display.supportedOptions.globalVrrModes ?? []).length > 0;
     case 'variableRefreshRate': return display.variableRefreshRate?.controllable === true && display.variableRefreshRate.supported === true;
     case 'scalingCustom': return display.supportedOptions.scalingModes.includes('custom');
-    case 'wireFormat': return display.supportedOptions.wireFormats.length > 0 && display.supportedOptions.bpcDepths.length > 0;
-    case 'hue': return display.hue?.controllable === true;
-    case 'saturation': return display.saturation?.controllable === true;
-    case 'brightness': return display.brightness?.controllable === true;
-    case 'contrast': return display.contrast?.controllable === true;
-    case 'superResolution': return display.superResolution?.controllable === true
-      && display.superResolution.supported === true
-      && display.superResolution.modes.length + display.superResolution.customSourceModes.length + display.superResolution.presets.length > 0;
+    case 'wireFormat': return DISPLAY_WIRE_FORMAT_OPTIONS.includes(display.colorFormat as NonNullable<DisplaySettings['wireFormat']>['model'])
+      && display.supportedOptions.wireFormats.includes(display.colorFormat ?? '')
+      && DISPLAY_BPC_OPTIONS.includes(display.colorDepth ?? 0)
+      && display.supportedOptions.bpcDepths.includes(display.colorDepth ?? 0);
+    case 'hue': return isDisplayColorWritable(display, 'hue');
+    case 'saturation': return isDisplayColorWritable(display, 'saturation');
+    case 'brightness': return isDisplayColorWritable(display, 'brightness');
+    case 'contrast': return isDisplayColorWritable(display, 'contrast');
+    case 'superResolution': {
+      const capability = display.superResolution;
+      const modes = superResolutionSourceModesForDisplay(display);
+      const current = capability?.currentSourceResolution;
+      return modes.length > 0 && (capability?.enabled !== true || modes.some((mode) => mode.width === current?.width
+        && mode.height === current?.height && mode.refreshRate === capability.currentSourceRefreshRate));
+    }
     default: return false;
   }
+}
+
+function isDisplayColorWritable(display: Display, key: typeof DISPLAY_COLOR_CONTROLS[number]): boolean {
+  const capability = display[key];
+  const range = display.supportedOptions.colorRanges?.[key];
+  const value = capability?.source === 'igcl-managed-color' ? capability.desiredValue : capability?.value;
+  return capability?.supported === true && capability.controllable === true
+    && typeof value === 'number' && Number.isFinite(value)
+    && !!range && Number.isFinite(range.min) && Number.isFinite(range.max) && range.max > range.min
+    && Number.isFinite(range.step) && range.step > 0 && value >= range.min && value <= range.max;
 }
 
 export function displayDriverValue(display: Display | null | undefined, control: string): unknown {
@@ -238,6 +310,20 @@ export function displayDriverValue(display: Display | null | undefined, control:
   }
 }
 
+/** Value used to seed the user's editor. Managed Arc Power intent is kept
+ * separate from `displayDriverValue`, which remains native/live-only. */
+export function displaySettingValue(display: Display | null | undefined, control: string): unknown {
+  if (!display) return null;
+  if (DISPLAY_COLOR_CONTROLS.includes(control as typeof DISPLAY_COLOR_CONTROLS[number])) {
+    const capability = display[control as typeof DISPLAY_COLOR_CONTROLS[number]];
+    if (capability?.source === 'igcl-managed-color'
+      && typeof capability.desiredValue === 'number' && Number.isFinite(capability.desiredValue)) {
+      return capability.desiredValue;
+    }
+  }
+  return displayDriverValue(display, control);
+}
+
 export function normalizeDisplaySettings(display: Display | null | undefined): DisplaySettings {
   const out: DisplaySettings = {};
   if (!display) return out;
@@ -261,7 +347,7 @@ export function normalizeDisplaySettings(display: Display | null | undefined): D
   if (isDisplayControlSupported(display, 'displayScalingMethod')) {
     out.displayScalingMethod = scalingMethodViewOf(display) as DisplaySettings['displayScalingMethod'];
   }
-  if (isDisplayControlSupported(display, 'scalingMethod') && display.scalingMethod?.value) {
+  if (isDisplayControlSupported(display, 'scalingMethod') && display.scalingMethod?.value?.method) {
     out.scalingMethod = {
       enabled: display.scalingMethod.value.enabled,
       method: display.scalingMethod.value.method,
@@ -285,7 +371,7 @@ export function normalizeDisplaySettings(display: Display | null | undefined): D
   }
   for (const key of DISPLAY_COLOR_CONTROLS) {
     if (!isDisplayControlSupported(display, key)) continue;
-    const value = displayDriverValue(display, key);
+    const value = displaySettingValue(display, key);
     if (typeof value === 'number' && Number.isFinite(value)) (out as Record<string, unknown>)[key] = value;
   }
   return out;
@@ -322,7 +408,9 @@ export function validateSuperResolutionSettings(value: unknown, display?: Displa
 export function validateDisplaySettings(value: unknown, display?: Display | null): value is DisplaySettings {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   for (const [key, v] of Object.entries(value)) {
-    if (key === 'quantizationRange') {
+    if (key === 'replaceExistingColorSettings') {
+      if (typeof v !== 'boolean') return false;
+    } else if (key === 'quantizationRange') {
       if (!QUANTIZATION_SET.has(v)) return false;
     } else if (key === 'scalingMode') {
       if (!SCALING_MODE_SET.has(v)) return false;
@@ -382,7 +470,9 @@ function sameSuperResolutionIntent(a: unknown, b: unknown): boolean {
 export function isDisplayControlDirty(control: string, draft: DisplaySettings, display: Display | null): boolean {
   if (!(control in draft) || !display || !isDisplayControlSupported(display, control)) return false;
   const wanted = (draft as Record<string, unknown>)[control];
-  const driver = displayDriverValue(display, control);
+  const driver = DISPLAY_COLOR_CONTROLS.includes(control as typeof DISPLAY_COLOR_CONTROLS[number])
+    ? displaySettingValue(display, control)
+    : displayDriverValue(display, control);
   if (control === 'superResolution' && !validateSuperResolutionSettings(wanted, display)) return false;
   if (driver === null || driver === undefined) return true;
   if (control === 'superResolution') return !sameSuperResolutionIntent(wanted, driver);
@@ -408,6 +498,7 @@ export function isDisplayControlDirtyVsApplied(control: string, draft: DisplaySe
 export function buildDisplaySettings(draft: DisplaySettings, display: Display | null, applied: DisplaySettings): DisplaySettings {
   const out: DisplaySettings = {};
   for (const key of Object.keys(draft) as (keyof DisplaySettings)[]) {
+    if (key === 'replaceExistingColorSettings') continue;
     if (display && !isDisplayControlSupported(display, key)) continue;
     if (isDisplayControlDirtyVsApplied(key, draft, display, applied)) {
       let value = (draft as Record<string, unknown>)[key];

@@ -52,6 +52,7 @@ import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVE
 // RID_MOCK_VENDOR).
 import { createVendorTelemetry } from './vendor-telemetry/vendor-telemetry.js';
 import { physicalTargetOf } from './gpu-inventory.js';
+import { displayKeyInNamespace, displayKeySuffix } from './display-identity.js';
 import { GameProfileStore, canonicalExePath, mergeGameGpuProfiles, mergeGameGpuProfilePatch, normalizeAssociation, normalizeGameGpuProfile, normalizeGameSettings } from './store/game-profile-store.js';
 import { createGameScanAdapter, normalizeScannedApps } from './game-scan.js';
 import { validateSafeGameCandidate } from './game-candidate.js';
@@ -273,6 +274,8 @@ export const DEVICE_SELECTION_REQUEST_CHANNEL = 'device-selection:request';
 export const DEVICE_SELECTION_UPDATED_CHANNEL = 'device-selection:updated';
 /** M3-C-E: keyed capability/state refresh after a Stock/Advanced write. */
 export const OC_MODE_UPDATED_CHANNEL = 'oc-mode:updated';
+/** Main-process screen sharpening runtime state for the Graphics card. */
+export const POSTPROCESS_SHARPENING_STATUS_CHANNEL = 'postprocess-sharpening:status';
 
 export function pushRecordingState({ getWindow, state, getHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }) }) {
   const win = getWindow?.();
@@ -368,6 +371,14 @@ export function sanitizeGraphicsSettings(payload, range = null) {
     } else if (key === 'prebuiltShaderDownload') {
       if (typeof value !== 'boolean') throw new Error('prebuiltShaderDownload must be enabled or disabled');
       out[key] = value;
+    } else if (key === 'sharpening') {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)
+        || Object.keys(value).some((nestedKey) => nestedKey !== 'enabled' && nestedKey !== 'percentage')
+        || typeof value.enabled !== 'boolean'
+        || !Number.isInteger(value.percentage) || value.percentage < 0 || value.percentage > 100) {
+        throw new Error('sharpening must be { enabled: boolean, percentage: integer 0-100 }');
+      }
+      out[key] = { enabled: value.enabled, percentage: value.percentage };
     } else if (key === 'frameLimit') {
       if (typeof value !== 'object' || value === null
         || typeof value.enabled !== 'boolean'
@@ -468,6 +479,9 @@ export function sanitizeDisplaySettings(payload) {
       out[key] = value;
     } else if (['hue', 'saturation', 'brightness', 'contrast'].includes(key)) {
       if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${key} must be a finite number`);
+      out[key] = value;
+    } else if (key === 'replaceExistingColorSettings') {
+      if (typeof value !== 'boolean') throw new Error('replaceExistingColorSettings must be a boolean');
       out[key] = value;
     } else {
       throw new Error(`unknown display setting: ${key}`);
@@ -1457,6 +1471,7 @@ export function createIpcHandlers({
   vendorTelemetry = createVendorTelemetry({ sysinfo }),
   vendorTelemetryFactory = null,
   gameProfiles = null,
+  postprocessSharpening = null,
   gameScan = createGameScanAdapter(),
   chooseGameExecutable = async () => null,
   gameArtwork = async () => null,
@@ -2607,25 +2622,27 @@ export function createIpcHandlers({
    * never record - the store must only degrade on a driver 'out-of-range'.
    * @param {{ deviceId: number, settings: object, caps: object, ocMode: 'stock'|'advanced', profileApply?: boolean }} req
   */
-  const runApply = async ({ deviceId, settings, caps, ocMode, profileApply }) => {
+  const runApply = async ({ deviceId, settings, caps, ocMode, profileApply, expectedTarget = null }) => {
     const normalizeApply = (out) => withCapabilityFlags(out);
     // Resolve the durable target first. The capability payload is a renderer
     // snapshot and older sessions can carry a null deviceKey even though the
     // authoritative inventory row is keyed. Extended writes must use that
     // row key or the bundled runtime will reject the request before writing.
-    const target = typeof backend.getTarget === 'function'
+    const target = expectedTarget
+      ? await backend.getDeviceTarget(deviceId, expectedTarget.deviceKey, expectedTarget.physicalTarget)
+      : typeof backend.getTarget === 'function'
       ? await backend.getTarget(deviceId)
       : typeof backend.getDeviceTarget === 'function'
         ? await backend.getDeviceTarget(deviceId, null)
         : typeof backend.listDevices === 'function'
           ? (await backend.listDevices()).find((device) => device.id === deviceId) ?? null
           : null;
-    const deviceKey = typeof target?.deviceKey === 'string'
+    const deviceKey = expectedTarget?.deviceKey ?? (typeof target?.deviceKey === 'string'
       ? target.deviceKey
       : typeof caps?.deviceKey === 'string'
         ? caps.deviceKey
-        : null;
-    const physicalTarget = physicalTargetOf(target);
+        : null);
+    const physicalTarget = expectedTarget?.physicalTarget ?? physicalTargetOf(target);
     const recordRefusals = (result) => {
       if (!result || typeof result !== 'object') return;
       if (result.ocModeRefused === true || result.extendedUnavailable === true) return;
@@ -2660,6 +2677,10 @@ export function createIpcHandlers({
       }
     };
     const attempt = async (waiverAccepted) => {
+      // Resume keeps its original physical proof through the capability reads
+      // and the final dispatch. Re-deriving proof from a numeric ID here could
+      // authorize a different adapter after an inventory transition.
+      if (expectedTarget) await backend.assertDeviceTarget(deviceId, deviceKey, physicalTarget);
       if (applyRunner?.needsWorker?.()) {
         // M17c (step-4 N6): the parent-resolved limits-key rides the worker
         // request - the worker's gate thresholds must match the parent's
@@ -2880,18 +2901,14 @@ export function createIpcHandlers({
   // durable key and verify the fresh backend target before using that ID.
   // Missing or ambiguous identities never fall back to an ordinal.
   const resolveSelectedGraphicsDevice = async (requestedId, expectedKey) => {
-    if (typeof expectedKey !== 'string' || expectedKey.length === 0) {
+    if (expectedKey === undefined || expectedKey === null) {
       return { id: requestedId, target: await backend.getDeviceTarget?.(requestedId) };
     }
-    // The fast path also avoids an inventory round trip when the current ID
-    // already proves the expected identity.
-    try {
-      const currentTarget = await backend.getDeviceTarget?.(requestedId);
-      const currentMatchesKey = currentTarget?.deviceKey === expectedKey
-        || (Array.isArray(currentTarget?.deviceKeys) && currentTarget.deviceKeys.includes(expectedKey));
-      if (currentMatchesKey && currentTarget.identityAmbiguous !== true) return { id: requestedId, target: currentTarget };
-    } catch { /* a stale numeric ID may no longer resolve; try durable inventory */ }
     if (typeof backend.listDevices !== 'function') {
+      // Older focused adapters expose only a canonical target lookup. Accept
+      // that narrow compatibility seam, but never use a potentially shared alias.
+      const target = await backend.getDeviceTarget?.(requestedId);
+      if (target?.identityAmbiguous !== true && target?.deviceKey === expectedKey) return { id: requestedId, target };
       throw new Error(`stale GPU target: cannot resolve selected device identity ${expectedKey}`);
     }
     const devices = await backend.listDevices();
@@ -2911,6 +2928,31 @@ export function createIpcHandlers({
       throw new Error(`stale GPU target: device id ${match.id} could not verify ${expectedKey}`);
     }
     return { id: match.id, target };
+  };
+
+  const graphicsExpectedDeviceKey = async (requestedId, suppliedKey) => {
+    if (suppliedKey !== undefined) {
+      if (typeof suppliedKey !== 'string' || suppliedKey.trim().length === 0) {
+        throw new Error('invalid GPU target: expected device key must be a nonempty string');
+      }
+      return suppliedKey;
+    }
+    let settings;
+    try { settings = await store.loadSettings(); }
+    catch { throw new Error('stale GPU target: unable to read the selected device identity'); }
+    if (typeof settings?.deviceKey === 'string' && settings.deviceKey.length > 0) {
+      if (Number.isInteger(settings.deviceId) && settings.deviceId !== requestedId) {
+        throw new Error(`stale GPU target: selected device identity ${settings.deviceKey} does not match requested device id ${requestedId}`);
+      }
+      if (!Number.isInteger(settings.deviceId)) {
+        throw new Error('stale GPU target: the saved device identity has no associated device id');
+      }
+      return settings.deviceKey;
+    }
+    if (typeof backend.resolvePhysicalTarget === 'function' && backend.kind !== 'mock') {
+      throw new Error('stale GPU target: a stable selected device identity is required');
+    }
+    return null;
   };
 
   const selectedGraphicsDeviceId = async (requestedId) => {
@@ -3132,7 +3174,43 @@ export function createIpcHandlers({
     }
   };
 
+  const postprocessService = () => {
+    if (!postprocessSharpening) throw new Error('Image sharpening is unavailable in this session.');
+    return postprocessSharpening;
+  };
+  const postprocessValue = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).some((key) => !['enabled', 'percentage'].includes(key))
+      || typeof value.enabled !== 'boolean' || !Number.isInteger(value.percentage)
+      || value.percentage < 0 || value.percentage > 100) {
+      throw new Error('Sharpening requires an enabled flag and a whole percentage from 0 to 100.');
+    }
+    return { enabled: value.enabled, percentage: value.percentage };
+  };
+  const postprocessTarget = async (value) => {
+    const exePath = canonicalExePath(value);
+    if (!exePath) throw new Error('Choose a valid game executable.');
+    return exePath;
+  };
+
   const handlers = {
+    'postprocess-sharpening:get': async (...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:get');
+      return postprocessService().getGlobal();
+    },
+    'postprocess-sharpening:set': async (value, ...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:set');
+      return postprocessService().setGlobal(postprocessValue(value));
+    },
+    'postprocess-sharpening:game-get': async (exePath, ...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:game-get');
+      return postprocessService().getGame(await postprocessTarget(exePath));
+    },
+    'postprocess-sharpening:game-set': async (exePath, override, ...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:game-set');
+      const value = override === null ? null : postprocessValue(override);
+      return postprocessService().setGame(await postprocessTarget(exePath), value);
+    },
     'health': async () => collectHealth(backend),
 
     'intel-driver-update-check': async (...args) => {
@@ -3418,9 +3496,10 @@ export function createIpcHandlers({
       // calls it with a null deviceId: the no-Intel page guard renders
       // 'No GPU available.' first, plan-review S3). The backend never
       // throws - the all-false/null state is the honest degrade.
-      'graphics:get': async (deviceId) => {
+      'graphics:get': async (deviceId, expectedDeviceKey) => {
         assertValidDeviceId(deviceId);
-        const resolvedDeviceId = await selectedGraphicsDeviceId(deviceId);
+        const expectedKey = await graphicsExpectedDeviceKey(deviceId, expectedDeviceKey);
+        const resolvedDeviceId = (await resolveSelectedGraphicsDevice(deviceId, expectedKey)).id;
         const read = async () => readGraphicsState(resolvedDeviceId);
         return arcSleepController?.withTransaction
           ? arcSleepController.withTransaction(read)
@@ -3429,12 +3508,13 @@ export function createIpcHandlers({
 
       // Arc Sleep's Base FPS Cap panel needs a fast, independent read so it
       // can recover even when the controller's serialized RTSS queue stalls.
-      'arc-sleep-base-cap-get': async (deviceId) => {
+      'arc-sleep-base-cap-get': async (deviceId, expectedDeviceKey) => {
         assertValidDeviceId(deviceId);
         if (arcSleepController?.getSnapshot?.().activeLimiter === 'rtss') {
           return readRtssGlobalGraphicsState(deviceId, { rtssTimeoutMs: 1200 });
         }
-        const resolvedDeviceId = await selectedGraphicsDeviceId(deviceId);
+        const expectedKey = await graphicsExpectedDeviceKey(deviceId, expectedDeviceKey);
+        const resolvedDeviceId = (await resolveSelectedGraphicsDevice(deviceId, expectedKey)).id;
         return readGraphicsState(resolvedDeviceId, { rtssTimeoutMs: 1200 });
       },
 
@@ -3472,7 +3552,7 @@ export function createIpcHandlers({
       // (the elevation toast pattern stays on the page). The response
       // envelope is { ok, perControl, graphicsState } with the FRESH
       // getGraphicsSettings read-back for the page's per-control refresh.
-      'graphics:apply': async (deviceId, payload) => {
+      'graphics:apply': async (deviceId, payload, expectedDeviceKey) => {
         const apply = async (arcSleepTransaction = null) => {
         assertValidDeviceId(deviceId);
         // Base Cap is a global RTSS setting. Keep this narrow path clear of
@@ -3503,13 +3583,7 @@ export function createIpcHandlers({
             graphicsState,
           };
         }
-        let expectedDeviceKey = null;
-        try {
-          const selectedSettings = await store.loadSettings();
-          if (selectedSettings?.deviceId === deviceId && typeof selectedSettings.deviceKey === 'string' && selectedSettings.deviceKey.length > 0) {
-            expectedDeviceKey = selectedSettings.deviceKey;
-          }
-        } catch { /* target resolution still has its backend identity checks */ }
+        expectedDeviceKey = await graphicsExpectedDeviceKey(deviceId, expectedDeviceKey);
         const resolved = await resolveSelectedGraphicsDevice(deviceId, expectedDeviceKey);
         const resolvedDeviceId = resolved.id;
         const target = resolved.target;
@@ -3656,21 +3730,47 @@ export function createIpcHandlers({
           || typeof request.displayKey !== 'string' || request.displayKey.length === 0) {
           throw new Error('display apply request requires stable deviceKey and displayKey');
         }
-        const lockKey = `${request.deviceKey}|${request.displayKey}`;
+        const displayNamespaceEnd = request.displayKey.indexOf('|display|');
+        if (displayKeySuffix(request.displayKey) === null
+          || displayNamespaceEnd < 1
+          || request.displayKey.slice(0, displayNamespaceEnd) !== request.deviceKey) {
+          throw new Error('display apply request displayKey does not match the selected graphics adapter');
+        }
+        const initialTarget = await backend.getDeviceTarget?.(deviceId);
+        if (!initialTarget) {
+          throw new Error('stale display target: the selected graphics adapter changed; refresh Display and try again');
+        }
+        const physicalTarget = physicalTargetOf(initialTarget);
+        // Let the unified backend revalidate the selected key against the
+        // current physical target. It accepts only a uniquely retained alias
+        // and rejects ambiguity, replug, and physical identity changes.
+        const target = await backend.getDeviceTarget?.(deviceId, request.deviceKey, physicalTarget) ?? initialTarget;
+        const aliases = await backend.listDevices?.();
+        if (target.synthetic || target.backendKind === 'os' || target.identityAmbiguous === true
+          || (request.deviceKey !== target.deviceKey
+            && (!Array.isArray(aliases)
+              || aliases.filter((row) => row.deviceKey === request.deviceKey || row.deviceKeys?.includes(request.deviceKey)).length !== 1
+              || !target.deviceKeys?.includes(request.deviceKey)))) {
+          throw new Error('stale display target: the selected graphics adapter changed; refresh Display and try again');
+        }
+        const lockKey = `${target.deviceKey}|${displayKeyInNamespace(request.displayKey, target.deviceKey)}`;
         return withDisplayApplyLock(lockKey, async () => {
-          const target = await backend.getDeviceTarget?.(deviceId);
-          if (!target || target.deviceKey !== request.deviceKey) {
+          const currentTarget = await backend.getDeviceTarget?.(deviceId, request.deviceKey, physicalTarget);
+          const currentAliases = await backend.listDevices?.();
+          if (!currentTarget || currentTarget.deviceKey !== target.deviceKey
+            || currentTarget.identityAmbiguous === true || currentTarget.synthetic || currentTarget.backendKind === 'os'
+            || (request.deviceKey !== currentTarget.deviceKey
+              && (!Array.isArray(currentAliases)
+                || currentAliases.filter((row) => row.deviceKey === request.deviceKey || row.deviceKeys?.includes(request.deviceKey)).length !== 1
+                || !currentTarget.deviceKeys?.includes(request.deviceKey)))) {
             throw new Error('stale display target: the selected graphics adapter changed; refresh Display and try again');
           }
+          const displayKey = displayKeyInNamespace(request.displayKey, currentTarget.deviceKey);
           const settings = sanitizeDisplaySettings(request.patch);
-          if (target.synthetic || target.backendKind === 'os') {
-            const perControl = Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: false, errorCode: 'unsupported', message: 'display settings are not supported on this GPU' }]));
-            return { ok: Object.keys(perControl).length === 0, perControl, displayState: await backend.getDisplaySettings(deviceId) };
-          }
           let preflightState = null;
           if (settings.superResolution?.enabled === true) {
             try { preflightState = await backend.getDisplaySettings(deviceId); } catch { preflightState = null; }
-            const capability = validateDisplaySuperResolutionCapability(settings, preflightState, request.displayKey);
+            const capability = validateDisplaySuperResolutionCapability(settings, preflightState, displayKey);
             if (!capability.ok) {
               return {
                 ok: false,
@@ -3679,13 +3779,13 @@ export function createIpcHandlers({
               };
             }
           }
-          const applyRequest = { deviceId, deviceKey: request.deviceKey, displayKey: request.displayKey, physicalTarget: physicalTargetOf(target), settings };
+          const applyRequest = { deviceId, deviceKey: currentTarget.deviceKey, displayKey, physicalTarget: physicalTargetOf(currentTarget), settings };
           if (applyRunner) {
             const out = await applyRunner.displayApply(applyRequest);
             return { ok: out.ok === true, perControl: out.perControl ?? {}, displayState: out.displayState ?? null };
           }
-          await backend.assertDeviceTarget?.(deviceId, request.deviceKey, physicalTargetOf(target));
-          const out = await backend.setDisplaySettings(deviceId, { deviceKey: request.deviceKey, displayKey: request.displayKey, patch: settings });
+          await backend.assertDeviceTarget?.(deviceId, currentTarget.deviceKey, physicalTargetOf(currentTarget));
+          const out = await backend.setDisplaySettings(deviceId, { deviceKey: currentTarget.deviceKey, displayKey, patch: settings });
           let displayState = null;
           try { displayState = await backend.getDisplaySettings(deviceId); } catch { /* degraded */ }
           return { ok: out.ok, perControl: out.perControl, displayState };
@@ -3695,6 +3795,22 @@ export function createIpcHandlers({
       'apply-settings': async (deviceId, payload, opts) => {
         assertValidDeviceId(deviceId);
         const settings = sanitizeSettings(payload);
+        let expectedTarget = null;
+        if (opts?.expectedTarget !== undefined) {
+          const value = opts.expectedTarget;
+          if (!value || typeof value !== 'object' || Array.isArray(value)
+            || typeof value.deviceKey !== 'string' || !value.deviceKey.trim()
+            || !value.physicalTarget || typeof value.physicalTarget !== 'object' || Array.isArray(value.physicalTarget)
+            || typeof backend.assertDeviceTarget !== 'function' || typeof backend.getDeviceTarget !== 'function') {
+            throw new Error('apply-settings: expected target requires a stable GPU key and physical proof');
+          }
+          expectedTarget = { deviceKey: value.deviceKey, physicalTarget: structuredClone(value.physicalTarget) };
+          await backend.assertDeviceTarget(deviceId, expectedTarget.deviceKey, expectedTarget.physicalTarget);
+        }
+        if (opts?.resumeRestore === true
+          && (!expectedTarget || Object.keys(settings).some((key) => !['fanMode', 'fanCurve', 'fixedFanPct'].includes(key)))) {
+          throw new Error('apply-settings: resume restore requires a physically verified fan-only request');
+        }
         // M3-C-E: the OC-mode gate runs BEFORE every clamp - an explicit
         // pre-clamp REFUSAL, never a clamp. Stock mode refuses anything
         // beyond the standard limits (252 W / 90 C) with the mode message;
@@ -3858,7 +3974,7 @@ export function createIpcHandlers({
         // driver waiver + retries ONCE when the driver answers waiver-not-set
         // while the persisted acceptance is true (the consent stands - never
         // a dialog, never a dead-end, never a persisted false).
-        const out = await runApply({ deviceId, settings: clamped, caps, ocMode: gateMode, profileApply: opts?.profileApply === true });
+        const out = await runApply({ deviceId, settings: clamped, caps, ocMode: gateMode, profileApply: opts?.profileApply === true, expectedTarget });
         if (!capabilityRefusal) return out;
         const perControl = { ...out.result.perControl, ...capabilityPerControl };
         return withCapabilityFlags({
@@ -4992,11 +5108,23 @@ export function createIpcHandlers({
             throw new Error('game-catalog-sync: executable is not a safe existing game candidate');
           }
         }
-        return { catalog: await gameProfiles.syncCatalog(normalizeScannedApps(payload, [], { requireExists: true }), { authoritative: true }) };
+        return { catalog: await gameProfiles.syncCatalog(normalizeScannedApps(payload, [], { onlyGames: true, requireExists: true }), { authoritative: true }) };
       },
 
       'game-settings-save': async (payload) => serializeGameProfileMutation(async () => {
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('game-settings-save: payload must be an object');
+        if (Object.prototype.hasOwnProperty.call(payload, 'graphics')) {
+          if (!payload.graphics || typeof payload.graphics !== 'object' || Array.isArray(payload.graphics)) throw new Error('game-settings-save: graphics must be an object');
+          for (const [key, value] of Object.entries(payload.graphics)) {
+            if (key === 'sharpening') {
+              if (typeof value !== 'object' || value === null || Array.isArray(value)
+                || Object.keys(value).some((nestedKey) => nestedKey !== 'enabled' && nestedKey !== 'percentage')
+                || typeof value.enabled !== 'boolean' || !Number.isInteger(value.percentage) || value.percentage < 0 || value.percentage > 100) {
+                throw new Error('game-settings-save: sharpening must be { enabled: boolean, percentage: integer 0-100 }');
+              }
+            }
+          }
+        }
         if (Object.prototype.hasOwnProperty.call(payload, 'gpuProfiles')) throw new Error('game-settings-save: save one GPU assignment at a time');
         if (payload.deviceKey !== undefined && payload.deviceKey !== null
           && (typeof payload.deviceKey !== 'string' || payload.deviceKey.trim().length === 0 || payload.deviceKey.length > 256)) {

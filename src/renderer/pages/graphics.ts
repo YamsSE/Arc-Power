@@ -46,6 +46,7 @@ import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { applyFailureText, CONTROL_LABELS, errorMessage } from '../pure/errors.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
+import { renderGlobalSharpening } from '../components/sharpening.ts';
 import { activeDeviceLabel } from '../pure/device.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { chipState } from '../pure/chip.ts';
@@ -66,8 +67,11 @@ import {
   isGraphicsControlDirtyVsApplied,
 } from '../pure/graphics.ts';
 import {
+  DISPLAY_BPC_OPTIONS,
+  DISPLAY_WIRE_FORMAT_OPTIONS,
   isDisplayControlSupported,
   displayDriverValue,
+  displaySettingValue,
   normalizeDisplaySettings,
   validateDisplaySettings,
   snapDisplayColorValue,
@@ -76,6 +80,9 @@ import {
   scalingViewOf as displayScalingViewOf,
   scalingMethodViewOf as displayScalingMethodViewOf,
   scalingMethodOptionsForView,
+  scalingModeViewOptionsForDisplay,
+  superResolutionSourceModesForDisplay,
+  customScalingPreferenceOf,
   type DisplayColorRange,
   isDisplayControlDirtyVsApplied as isDisplayControlDirtyVsAppliedPure,
   selectedDisplayOf,
@@ -110,7 +117,8 @@ const DISPLAY_SCALING_NOTE = 'Changes may briefly flash the display.';
 const DISPLAY_SCALING_METHOD_NOTE = 'Custom mode exposes horizontal and vertical scaling.';
 const DISPLAY_GLOBAL_VRR_NOTE = 'Choose when variable refresh rate is used.';
 const DISPLAY_VRR_NOTE = 'Choose whether variable refresh rate is enabled.';
-const DISPLAY_SLIDERS_NOTE = 'IGS-style display color controls; Apply verifies the driver read-back.';
+const DISPLAY_SLIDERS_NOTE = 'IGS-style display color controls.';
+const DISPLAY_MANAGED_COLOR_NOTE = 'Values shown are Arc Power settings, starting from defaults. Applying replaces the corresponding IGS color adjustments; changes made in IGS are not read here.';
 const DISPLAY_WIRE_READONLY_NOTE = 'The driver did not report writable color-format data.';
 const DISPLAY_NO_DISPLAYS_NOTE = 'No display settings are available on this GPU.';
 
@@ -168,11 +176,14 @@ function scalingStateNoteOf(display: DisplayState['displays'][number] | null): s
   const preferredLabel = preferred === 'centered' || preferred === 'stretched' || preferred === 'aspect-ratio-centered-max'
     ? IGS_SCALING_METHOD_LABELS[preferred]
     : undefined;
-  const gpuPreferred = display?.scalingPreference === 'gpu-scaling'
-    || ((display?.scalingPreference === null || display?.scalingPreference === undefined) && preferredLabel !== undefined);
-  if (display?.scalingMode === 'identity' && gpuPreferred) {
-    const method = preferredLabel ? ` (${preferredLabel})` : '';
-    return `Saved preference: GPU Scaling${method}. Active scaler: Display Scaling at the current desktop resolution. ${DISPLAY_SCALING_NOTE}`;
+  if (display?.scalingPreferenceSource === 'arc-selection') {
+    const selected = display.scalingPreference === 'gpu-scaling'
+      ? `GPU Scaling${preferredLabel ? ` (${preferredLabel})` : ''}`
+      : 'Display Scaling';
+    const readback = display.scalingMode === 'identity'
+      ? ' No GPU resizing is active at the current desktop resolution.'
+      : '';
+    return `Arc Power saved selection: ${selected}.${readback} Changes made in Intel Graphics Software may not be reflected until the Arc selection is updated. ${DISPLAY_SCALING_NOTE}`;
   }
   return DISPLAY_SCALING_NOTE;
 }
@@ -185,9 +196,10 @@ const VARIABLE_REFRESH_RATE_LABELS: Record<string, string> = {
   enabled: 'Enabled',
   disabled: 'Disabled',
 };
-const IGS_WIRE_FORMATS = ['RGB', 'YCbCr444'];
 const IGS_WIRE_FORMAT_LABELS: Record<string, string> = {
   RGB: 'RGB',
+  YCbCr420: 'YCbCr 4:2:0',
+  YCbCr422: 'YCbCr 4:2:2',
   YCbCr444: 'YCbCr 4:4:4',
 };
 const RETRO_SCALING_LABELS: Record<string, string> = {
@@ -234,8 +246,8 @@ function resetOption(key: string, options: string[], defaults: Record<string, st
 }
 
 function displayWireFormatDefault(display: DisplayState['displays'][number]): NonNullable<DisplaySettings['wireFormat']> | null {
-  const models = display.supportedOptions.wireFormats;
-  const depths = display.supportedOptions.bpcDepths;
+  const models = display.supportedOptions.wireFormats.filter((model) => DISPLAY_WIRE_FORMAT_OPTIONS.includes(model as NonNullable<DisplaySettings['wireFormat']>['model']));
+  const depths = display.supportedOptions.bpcDepths.filter((depth) => DISPLAY_BPC_OPTIONS.includes(depth));
   if (models.length === 0 || depths.length === 0) return null;
   return {
     model: (models.includes('RGB') ? 'RGB' : models[0]) as NonNullable<DisplaySettings['wireFormat']>['model'],
@@ -260,6 +272,7 @@ let displayScalingViewDraft = 'display-scaling';
 let displayScalingMethodDraft = 'maintain-display-scaling';
 let displayScalingDraftRevision = 0;
 let applying = false;
+let displayApplyPending = false;
 let queuedDisplayApply: { ctx: PageContext; only: string } | null = null;
 let applyBtn: HTMLButtonElement | null = null;
 let displayApplyBtn: HTMLButtonElement | null = null;
@@ -323,6 +336,7 @@ function resetPageState() {
   displayScalingMethodDraft = 'maintain-display-scaling';
   displayScalingDraftRevision = 0;
   applying = false;
+  displayApplyPending = false;
   applyBtn = null;
   displayApplyBtn = null;
   displayResetBtn = null;
@@ -354,14 +368,10 @@ function scalingMethodViewOf(display: DisplayState['displays'][number] | null): 
 }
 
 function customScalingOf(display: DisplayState['displays'][number]): NonNullable<DisplaySettings['scalingCustom']> {
-  const details = display.scalingDetails;
-  const isCustom = effectiveScalingModeOf(display) === 'custom';
+  const preference = customScalingPreferenceOf(display);
   return {
-    // Identity/centered read-backs commonly return zero because the custom
-    // fields are inactive. IGS treats Custom as 100/100 until that mode is
-    // selected, so do not turn an inactive 0/0 into the visible default.
-    x: isCustom && Number.isFinite(details?.customX) && details!.customX > 0 ? Math.max(0, Math.min(100, details!.customX)) : 100,
-    y: isCustom && Number.isFinite(details?.customY) && details!.customY > 0 ? Math.max(0, Math.min(100, details!.customY)) : 100,
+    x: preference.x,
+    y: preference.y,
     // A new Custom transition is an IGS-style physical modeset. Never carry
     // an old/disabled read-back flag into the next user-initiated apply.
     hardwareModeSet: true,
@@ -528,7 +538,7 @@ function refreshDisplayChip(key: string) {
       : (displayApplied as Record<string, unknown>)[key];
   const driverValue = key === 'scalingMode' ? scalingViewOf(display)
     : key === 'displayScalingMethod' ? scalingMethodViewOf(display)
-      : displayDriverValue(display, key);
+      : DISPLAY_COLOR_KEYS.includes(key) ? displaySettingValue(display, key) : displayDriverValue(display, key);
   const customDirty = key === 'displayScalingMethod' && displayScalingMethodDraft === 'custom'
     && !sameCustomScaling(displayDraft.scalingCustom, customScalingOf(display!));
   const chipViewKey = key === 'superResolution' && viewKey && typeof viewKey === 'object'
@@ -538,16 +548,25 @@ function refreshDisplayChip(key: string) {
   const state = customDirty ? 'dirty' : chipState(key, { [key]: chipViewKey }, { [key]: appliedKey }, driverValue, key === 'scalingMode' || key === 'displayScalingMethod'
     ? isDisplayControlSupported(display, 'scalingMode')
     : isDisplayControlSupported(display, key));
-  chip.hidden = state !== 'applied';
+  const managedUnsentDefault = DISPLAY_COLOR_KEYS.includes(key)
+    && display?.[key as DisplayColorKey]?.source === 'igcl-managed-color'
+    && display[key as DisplayColorKey]?.lastSent !== true;
+  chip.hidden = state !== 'applied' || managedUnsentDefault;
   if (state === 'applied') {
-    chip.textContent = 'Applied';
+    chip.textContent = DISPLAY_COLOR_KEYS.includes(key)
+      && display?.[key as DisplayColorKey]?.source === 'igcl-managed-color' ? 'Last sent' : 'Applied';
     chip.className = 'chip oc-chip-status chip-ok';
   } else {
     chip.textContent = '';
     chip.className = 'chip oc-chip-status';
   }
   const btn = chipApplyNodes.get(key);
-  if (btn) btn.hidden = state !== 'dirty';
+  if (btn) {
+    btn.hidden = state !== 'dirty';
+    if (DISPLAY_COLOR_KEYS.includes(key) && !btn.hidden) {
+      btn.textContent = managedUnsentDefault ? 'Apply Arc Power settings' : 'Apply';
+    }
+  }
   updateDisplayFloating();
 }
 
@@ -563,12 +582,9 @@ function refreshAll() {
   updateFloating();
 }
 
-// Color correction and wire-format editing stay implemented in the native
-// layer, but the Display UI intentionally exposes only Quantization Range
-// until those driver paths are revalidated on every adapter. Keeping the
-// hidden keys out of this list prevents a global Apply from sending controls
-// the user cannot see or edit.
-const DISPLAY_APPLY_KEYS = ['scalingMode', 'displayScalingMethod', 'globalVrrMode', 'variableRefreshRate', 'quantizationRange', 'superResolution'];
+// Every editable Display row participates in the global Apply and reset flow.
+// The capability checks keep incomplete driver read-backs out of the payload.
+const DISPLAY_APPLY_KEYS = ['scalingMode', 'displayScalingMethod', 'globalVrrMode', 'variableRefreshRate', 'quantizationRange', 'wireFormat', 'hue', 'saturation', 'brightness', 'contrast', 'superResolution'];
 const DISPLAY_COLOR_KEYS = ['hue', 'saturation', 'brightness', 'contrast'];
 
 function displayHasDirtyDraft(display: DisplayState['displays'][number] | null): boolean {
@@ -579,22 +595,33 @@ function displayHasDirtyDraft(display: DisplayState['displays'][number] | null):
   });
 }
 
+function displayHasUnsentManagedColor(display: DisplayState['displays'][number] | null): boolean {
+  if (!display) return false;
+  return DISPLAY_COLOR_KEYS.some((key) => {
+    const capability = display[key as DisplayColorKey];
+    return capability?.source === 'igcl-managed-color' && capability.lastSent !== true
+      && displayPayloadForControl(key, display)?.[key as keyof DisplaySettings] !== undefined;
+  });
+}
+
 function updateDisplayFloating(): void {
   if (!displayApplyBtn) return;
   displayApplyBtn.hidden = applying ? false : !displayHasDirtyDraft(selectedDisplay());
   displayApplyBtn.disabled = applying;
-  displayApplyBtn.textContent = applying ? APPLY_BTN_BUSY_TEXT : APPLY_BTN_TEXT;
+  displayApplyBtn.textContent = applying ? APPLY_BTN_BUSY_TEXT
+    : displayHasUnsentManagedColor(selectedDisplay()) ? 'Apply Arc Power settings' : APPLY_BTN_TEXT;
 }
 
 function resetDisplayDraft(display: DisplayState['displays'][number]): void {
   markDisplayScalingDraftChanged();
   displayDraft = normalizeDisplaySettings(display);
-  if (isDisplayControlSupported(display, 'scalingMode')) {
+  if (isDisplayControlSupported(display, 'scalingMode') && scalingModeViewOptionsForDisplay(display).includes('display-scaling')) {
     displayScalingViewDraft = 'display-scaling';
     displayDraft.scalingMode = rawScalingForView(display, displayScalingViewDraft);
     delete displayDraft.scalingCustom;
   }
-  if (isDisplayControlSupported(display, 'displayScalingMethod')) {
+  if (isDisplayControlSupported(display, 'displayScalingMethod')
+    && scalingMethodOptionsForView(display, 'display-scaling').includes('maintain-display-scaling')) {
     displayScalingMethodDraft = 'maintain-display-scaling';
     displayDraft.displayScalingMethod = 'maintain-display-scaling';
   }
@@ -635,7 +662,7 @@ export const graphicsPage: Page = {
     // called with it (assertValidDeviceId throws) - the honest answer is
     // the Tuning-style 'No GPU available.' guard.
     if (s.deviceId === null) {
-      container.append(el('p', { class: 'page-subtitle', text: 'No GPU available.' }));
+      container.append(el('p', { class: 'page-subtitle', text: 'No GPU available for driver graphics settings.' }), renderGlobalSharpening());
       return;
     }
 
@@ -702,7 +729,7 @@ export const graphicsPage: Page = {
       void renderSettingsView(viewContainer, ctx, subViewGeneration);
     };
     const setGraphicsView = (v: 'settings' | 'display'): void => {
-      if (graphicsView === v) return;
+      if (graphicsView === v || displayApplyPending) return;
       graphicsView = v;
       renderGraphicsView();
       const heading = title.querySelector<HTMLElement>('.page-title');
@@ -760,16 +787,19 @@ async function renderSettingsView(view: HTMLElement, ctx: PageContext, generatio
   view.append(el('p', { class: 'page-subtitle', text: 'Loading graphics capabilities…' }));
   let state: GraphicsState;
   try {
-    state = await api.graphicsGet(deviceId);
+    state = await api.graphicsGet(deviceId, deviceKey ?? undefined);
   } catch (err) {
     if (!isCurrentRender()) return;
     clear(view);
-    view.append(el('p', { class: 'text-error', text: `Graphics settings unavailable: ${err instanceof Error ? err.message : String(err)}` }));
+    view.append(el('p', { class: 'text-error', text: `Graphics settings unavailable: ${err instanceof Error ? err.message : String(err)}` }), renderGlobalSharpening());
     return;
   }
   if (!isCurrentRender()) return;
   graphicsState = state;
   draft = normalizeGraphicsSettings(state);
+  // Legacy driver sharpening remains readable in persisted settings, but it
+  // is not part of the renderer's editable graphics draft or apply payload.
+  delete draft.sharpening;
   renderCards(view, ctx);
 }
 
@@ -790,6 +820,7 @@ function supportedOf(state: GraphicsState, key: string): boolean {
     case 'frameLimit': return state.supported.frameLimit;
     case 'lowLatency': return state.supported.lowLatency;
     case 'prebuiltShaderDownload': return state.supported.prebuiltShaderDownload === true;
+    case 'sharpening': return state.supported.sharpening === true && state.sharpeningRange?.min === 0 && state.sharpeningRange?.max === 100 && state.sharpeningRange?.step === 1;
     default: return false;
   }
 }
@@ -1318,6 +1349,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     ]),
     el('div', { class: 'card-stack graphics-stack' }, [
       ...mobileCards,
+      renderGlobalSharpening(),
       ...(!battlemage ? [prebuiltShaderCard] : []),
       buildDropdownCard('frameGenOverride'),
       buildDropdownCard('flipMode'),
@@ -1478,14 +1510,15 @@ function buildDisplayDropdownRow(
  * one serialized driver transaction as soon as the selector changes. */
 function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
   const display = selectedDisplay();
-  const supported = display !== null && isDisplayControlSupported(display, 'scalingMode');
+  const options = scalingModeViewOptionsForDisplay(display);
+  const supported = display !== null && isDisplayControlSupported(display, 'scalingMode') && options.includes(displayScalingViewDraft as 'gpu-scaling' | 'display-scaling' | 'retro-scaling');
   if (!supported) {
     return el('div', { class: 'display-control display-control-readonly', dataset: { control: 'scalingMode' } }, [
       el('h3', { class: 'display-control-title', text: 'Scaling Mode' }),
       el('p', { class: 'card-note', text: 'Not supported on this GPU.' }),
     ]);
   }
-  const select = buildDropdown(displayScalingViewDraft, IGS_SCALING_MODE_OPTIONS.map((option) => ({
+  const select = buildDropdown(displayScalingViewDraft, IGS_SCALING_MODE_OPTIONS.filter((option) => options.includes(option as 'gpu-scaling' | 'display-scaling' | 'retro-scaling')).map((option) => ({
     value: option,
     label: IGS_SCALING_MODE_LABELS[option],
   })), {
@@ -1495,7 +1528,21 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
     onChange: (value) => {
       markDisplayScalingDraftChanged();
       displayScalingViewDraft = value;
-      displayScalingMethodDraft = scalingMethodOptionsForView(display!, displayScalingViewDraft)[0] ?? 'maintain-display-scaling';
+      const methodOptions = scalingMethodOptionsForView(display!, displayScalingViewDraft);
+      const savedGpuMethod = displayScalingViewDraft === 'gpu-scaling'
+        && methodOptions.includes(display!.preferredScalingMode ?? '')
+        ? display!.preferredScalingMode
+        : null;
+      const activeGpuMethod = displayScalingViewDraft === 'gpu-scaling'
+        && methodOptions.includes(effectiveScalingModeOf(display) ?? '')
+        ? effectiveScalingModeOf(display)
+        : null;
+      const retainedMethod = methodOptions.includes(displayScalingMethodDraft)
+        ? displayScalingMethodDraft
+        : savedGpuMethod ?? activeGpuMethod ?? scalingMethodViewOf(display);
+      displayScalingMethodDraft = methodOptions.includes(retainedMethod)
+        ? retainedMethod
+        : methodOptions[0] ?? 'maintain-display-scaling';
       const raw = rawScalingForView(display!, displayScalingViewDraft);
       if (displayScalingViewDraft === 'gpu-scaling') {
         displayDraft.scalingMode = displayScalingMethodDraft as DisplaySettings['scalingMode'];
@@ -1536,10 +1583,10 @@ function buildDisplayScalingModeRow(ctx: PageContext): HTMLElement {
       el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'scalingMode'); } }),
       el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', onClick: () => {
         markDisplayScalingDraftChanged();
-        displayScalingViewDraft = 'display-scaling';
+        displayScalingViewDraft = options.includes('display-scaling') ? 'display-scaling' : options[0];
         displayDraft.scalingMode = rawScalingForView(display!, displayScalingViewDraft);
         delete displayDraft.scalingCustom;
-        if (display.scalingMethod?.value?.enabled === true) {
+        if (display.scalingMethod?.value?.enabled === true && display.scalingMethod.value.method !== null) {
           displayDraft.scalingMethod = { enabled: false, method: display.scalingMethod.value.method };
         } else {
           delete displayDraft.scalingMethod;
@@ -1561,7 +1608,7 @@ function buildDisplayScalingMethodRow(ctx: PageContext): HTMLElement {
   const display = selectedDisplay();
   const view = displayScalingViewDraft;
   const methodOptions = scalingMethodOptionsForView(display, view);
-  const supported = display !== null && methodOptions.length > 0
+  const supported = display !== null && methodOptions.includes(displayScalingMethodDraft)
     && (view === 'retro-scaling'
       ? isDisplayControlSupported(display, 'scalingMethod')
       : isDisplayControlSupported(display, 'scalingMode'));
@@ -1678,7 +1725,7 @@ function buildWireFormatRow(ctx: PageContext): HTMLElement {
     ]);
   }
   const wf: NonNullable<DisplaySettings['wireFormat']> = displayDraft.wireFormat ?? displayWireFormatDefault(display!)!;
-  const modelOptions = display!.supportedOptions.wireFormats.filter((o) => IGS_WIRE_FORMATS.includes(o));
+  const modelOptions = display!.supportedOptions.wireFormats.filter((o) => DISPLAY_WIRE_FORMAT_OPTIONS.includes(o as NonNullable<DisplaySettings['wireFormat']>['model']));
   const modelSelect = buildDropdown(wf.model, modelOptions.map((o) => ({
     value: o,
     label: IGS_WIRE_FORMAT_LABELS[o] ?? o,
@@ -1687,11 +1734,14 @@ function buildWireFormatRow(ctx: PageContext): HTMLElement {
     dataset: { displaySelect: 'colorFormat' },
     ariaLabel: 'Color Format',
     onChange: (value) => {
-      displayDraft.wireFormat = { model: value as NonNullable<DisplaySettings['wireFormat']>['model'], depth: wf.depth };
+      displayDraft.wireFormat = {
+        model: value as NonNullable<DisplaySettings['wireFormat']>['model'],
+        depth: displayDraft.wireFormat?.depth ?? wf.depth,
+      };
       refreshDisplayChip('wireFormat');
     },
   });
-  const depthOptions = display!.supportedOptions.bpcDepths.map((d) => String(d));
+  const depthOptions = display!.supportedOptions.bpcDepths.filter((depth) => DISPLAY_BPC_OPTIONS.includes(depth)).map((d) => String(d));
   const depthSelect = buildDropdown(String(wf.depth), depthOptions.map((d) => ({
     value: d,
     label: `${d} bpc`,
@@ -1700,7 +1750,7 @@ function buildWireFormatRow(ctx: PageContext): HTMLElement {
     dataset: { displaySelect: 'colorDepth' },
     ariaLabel: 'Color Depth',
     onChange: (value) => {
-      displayDraft.wireFormat = { model: wf.model, depth: Number(value) };
+      displayDraft.wireFormat = { model: displayDraft.wireFormat?.model ?? wf.model, depth: Number(value) };
       refreshDisplayChip('wireFormat');
     },
   });
@@ -1850,17 +1900,19 @@ function buildDisplaySlider(ctx: PageContext, key: DisplayColorKey, title: strin
   const min = range?.min ?? fallbackMin;
   const max = range?.max ?? fallbackMax;
   const step = range?.step ?? 1;
-  const nativeValue = capability?.value ?? range?.default ?? 50;
+  const settingValue = displaySettingValue(display, key);
+  const nativeValue = typeof settingValue === 'number' ? settingValue : range?.default ?? 50;
+  const managedColor = capability?.source === 'igcl-managed-color';
+  const note = managedColor ? DISPLAY_MANAGED_COLOR_NOTE : capability?.reason ?? fallbackReason;
   const uiRange = key === 'hue' ? { min: fallbackMin, max: fallbackMax, step: 1, default: 0 } : { min: 0, max: 100, step: 1, default: 50 };
   const value = colorUiValue(key, nativeValue, { min, max, step, default: range?.default });
   if (!supported) {
     return el('div', { class: 'display-control display-slider-row display-control-readonly', dataset: { control: key } }, [
-      el('div', { class: 'display-control-heading' }, [el('h3', { class: 'display-control-title', text: title })]),
-      el('div', { class: 'display-slider-line' }, [
-        el('input', { class: 'display-number-input', type: 'number', min: uiRange.min, max: uiRange.max, value: capability?.value === null || capability?.value === undefined ? '' : value, disabled: true, 'aria-label': title + ' value' }),
-        el('input', { class: 'graphics-slider', type: 'range', min: uiRange.min, max: uiRange.max, step: uiRange.step, value, disabled: true, 'aria-label': title }),
+      el('div', { class: 'display-control-heading' }, [
+        el('h3', { class: 'display-control-title', text: title }),
+        el('span', { class: 'display-readonly-value', text: typeof settingValue === 'number' ? String(settingValue) : 'Not available' }),
       ]),
-      el('p', { class: 'card-note', text: capability?.reason ?? fallbackReason }),
+      el('p', { class: 'card-note', text: note }),
     ]);
   }
   const slider = el('input', {
@@ -1887,7 +1939,7 @@ function buildDisplaySlider(ctx: PageContext, key: DisplayColorKey, title: strin
   const row = el('div', { class: 'display-control display-slider-row', dataset: { control: key } }, [
     el('div', { class: 'display-control-heading' }, [el('h3', { class: 'display-control-title', text: title })]),
     el('div', { class: 'display-slider-line' }, [numberInput, slider]),
-    el('p', { class: 'card-note', text: capability?.reason ?? fallbackReason }),
+    el('p', { class: 'card-note', text: note }),
     el('div', { class: 'graphics-card-actions' }, [
       el('span', { class: 'chip oc-chip-status', hidden: true }),
       el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, key); } }),
@@ -1906,6 +1958,74 @@ function buildDisplaySlider(ctx: PageContext, key: DisplayColorKey, title: strin
   chipNodes.set(key, row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
   chipApplyNodes.set(key, row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
   refreshDisplayChip(key);
+  return row;
+}
+
+function buildSuperResolutionRow(ctx: PageContext, display: DisplayState['displays'][number]): HTMLElement {
+  const capability = display.superResolution;
+  // Only Windows-enumerated source modes are offered here. The generated
+  // presets and driver-installed custom modes remain internal capability data.
+  const modes = superResolutionSourceModesForDisplay(display);
+  const current = capability?.currentSourceResolution;
+  const currentListed = capability?.enabled !== true || modes.some((mode) => mode.width === current?.width
+    && mode.height === current?.height && mode.refreshRate === capability?.currentSourceRefreshRate);
+  const supported = isDisplayControlSupported(display, 'superResolution') && modes.length > 0 && currentListed;
+  if (!supported) {
+    const currentText = current
+      ? `${current.width} × ${current.height}${capability?.currentSourceRefreshRate ? ` @ ${capability.currentSourceRefreshRate} Hz` : ''}`
+      : 'Not available';
+    return el('div', { class: 'display-control display-control-readonly', dataset: { control: 'superResolution' } }, [
+      el('div', { class: 'display-control-heading' }, [
+        el('h3', { class: 'display-control-title', text: 'Supernative Source Resolution' }),
+        el('span', { class: 'display-readonly-value', text: currentText }),
+      ]),
+      el('p', { class: 'card-note', text: capability?.reason ?? 'No higher Windows-listed source mode is available.' }),
+    ]);
+  }
+
+  const modeKey = (mode: { width: number; height: number; refreshRate: number }): string => `${mode.width}x${mode.height}@${mode.refreshRate}`;
+  const choices = new Map(modes.map((mode) => [modeKey(mode), mode]));
+  const draft = displayDraft.superResolution;
+  const selected = draft?.enabled
+    ? modeKey({ width: draft.width!, height: draft.height!, refreshRate: draft.refreshRate! })
+    : 'desktop';
+  const options = [{ value: 'desktop', label: 'Desktop resolution' }, ...modes.map((mode) => ({
+    value: modeKey(mode),
+    label: mode.label ?? mode.name ?? `${mode.width} × ${mode.height} @ ${mode.refreshRate} Hz`,
+  }))];
+  const select = buildDropdown(selected, options, {
+    className: 'graphics-select display-select',
+    dataset: { displaySelect: 'superResolution' },
+    ariaLabel: 'Supernative source resolution',
+    onChange: (value) => {
+      if (value === 'desktop') displayDraft.superResolution = { enabled: false };
+      else {
+        const mode = choices.get(value);
+        if (mode) displayDraft.superResolution = { enabled: true, width: mode.width, height: mode.height, refreshRate: mode.refreshRate };
+      }
+      refreshDisplayChip('superResolution');
+    },
+  });
+  selectNodes.set('superResolution', select);
+  const row = el('div', { class: 'display-control', dataset: { control: 'superResolution' } }, [
+    el('div', { class: 'display-control-heading' }, [
+      el('h3', { class: 'display-control-title', text: 'Supernative Source Resolution' }),
+      el('div', { class: 'graphics-control display-inline-control' }, [select]),
+    ]),
+    el('p', { class: 'card-note', text: 'Uses a source resolution currently listed by Windows for this display. Switching modes may flash or briefly blank the screen.' }),
+    el('div', { class: 'graphics-card-actions' }, [
+      el('span', { class: 'chip oc-chip-status', hidden: true }),
+      el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'superResolution'); } }),
+      el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to desktop resolution', onClick: () => {
+        displayDraft.superResolution = { enabled: false };
+        select.value = 'desktop';
+        refreshDisplayChip('superResolution');
+      } }),
+    ]),
+  ]);
+  chipNodes.set('superResolution', row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+  chipApplyNodes.set('superResolution', row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
+  refreshDisplayChip('superResolution');
   return row;
 }
 
@@ -1975,7 +2095,12 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
     className: 'graphics-select display-picker',
     dataset: { displayPicker: '' },
     ariaLabel: 'Select display',
+    disabled: applying,
     onChange: (value) => {
+      if (applying) {
+        picker.setValue(String(display.id));
+        return;
+      }
       selectedDisplayId = Number(value);
       selectedDisplayKey = displayState?.displays.find((d) => d.id === selectedDisplayId)?.displayKey ?? null;
       displayDraft = normalizeDisplaySettings(selectedDisplay());
@@ -1988,14 +2113,20 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
   });
 
   const general = buildDisplayGroup('general', 'General', [
-    buildDisplayDropdownRow(ctx, 'scalingMode', 'Scaling Mode', DISPLAY_SCALING_NOTE, display.supportedOptions.scalingModes, SCALING_MODE_LABELS),
+    buildDisplayScalingModeRow(ctx),
     buildDisplayScalingMethodRow(ctx),
     buildDisplayDropdownRow(ctx, 'globalVrrMode', 'Variable Refresh Rate Mode', DISPLAY_GLOBAL_VRR_NOTE, display.supportedOptions.globalVrrModes ?? [], GLOBAL_VRR_LABELS),
     buildDisplayDropdownRow(ctx, 'variableRefreshRate', 'Variable Refresh Rate', DISPLAY_VRR_NOTE, ['enabled', 'disabled'], VARIABLE_REFRESH_RATE_LABELS),
+    buildSuperResolutionRow(ctx, display),
   ]);
 
   const color = buildDisplayGroup('color', 'Color', [
+    buildWireFormatRow(ctx),
     buildDisplayDropdownRow(ctx, 'quantizationRange', 'Quantization Range', 'The color-quantization range of the display output.', display.supportedOptions.quantizationRanges, QUANTIZATION_LABELS),
+    buildDisplaySlider(ctx, 'hue', 'Hue', display.hue, -180, 180, DISPLAY_SLIDERS_NOTE),
+    buildDisplaySlider(ctx, 'saturation', 'Saturation', display.saturation, 0, 100, DISPLAY_SLIDERS_NOTE),
+    buildDisplaySlider(ctx, 'brightness', 'Brightness', display.brightness, 0, 100, DISPLAY_SLIDERS_NOTE),
+    buildDisplaySlider(ctx, 'contrast', 'Contrast', display.contrast, 0, 100, DISPLAY_SLIDERS_NOTE),
   ], false);
 
   const infoRow = (label: string, value: string): HTMLElement => el('div', { class: 'display-info-row' }, [
@@ -2085,7 +2216,8 @@ async function apply(ctx: PageContext, only?: string | string[]) {
     applyBtn.textContent = APPLY_BTN_BUSY_TEXT;
   }
   try {
-    const out = await api.graphicsApply(deviceId, payload);
+    const deviceKey = live.devices.find(device => device.id === deviceId)?.deviceKey ?? live.caps?.deviceKey ?? undefined;
+    const out = await api.graphicsApply(deviceId, payload, deviceKey);
     if (out.graphicsState) {
       graphicsState = out.graphicsState;
     }
@@ -2229,11 +2361,21 @@ async function applyDisplay(ctx: PageContext, only: string) {
   } else {
     Object.assign(payload, displayPayloadForControl(only, display) ?? {});
   }
+  if (DISPLAY_COLOR_KEYS.some((key) => Object.prototype.hasOwnProperty.call(payload, key)
+    && display[key as DisplayColorKey]?.source === 'igcl-managed-color'
+    && display[key as DisplayColorKey]?.lastSent !== true)) {
+    payload.replaceExistingColorSettings = true;
+  }
   if (!validateDisplaySettings(payload, display)) {
     toast('error', 'Apply aborted', 'The display payload failed validation - this is a bug.');
     return;
   }
   if (Object.keys(payload).length === 0) return;
+  // Keep the submitted managed-color intent separate from any slider edits
+  // made while the IPC request is in flight.
+  const submittedColorValues = Object.fromEntries(DISPLAY_COLOR_KEYS
+    .filter((key) => Object.prototype.hasOwnProperty.call(payload, key))
+    .map((key) => [key, (payload as Record<string, unknown>)[key]])) as Partial<Record<DisplayColorKey, number>>;
   // M2C-C: a non-elevated product app delegates the apply to the elevated
   // self-worker (one UAC prompt) - explain BEFORE the prompt. The elevation
   // toast pattern is kept; there is NO OC waiver anywhere in this flow.
@@ -2241,13 +2383,20 @@ async function applyDisplay(ctx: PageContext, only: string) {
     toast('info', 'Administrator approval needed', ELEVATION_TOAST_TEXT);
   }
   applying = true;
+  displayApplyPending = true;
   for (const b of chipApplyNodes.values()) b.disabled = true;
+  const displayPicker = displayPickerHost?.querySelector<HTMLElement>('[data-display-picker]') as DropdownElement | null;
+  if (displayPicker) displayPicker.disabled = true;
+  const displayViewButtons = [...(displayPickerHost?.parentElement?.querySelectorAll<HTMLButtonElement>('.graphics-view-btn') ?? [])];
+  for (const button of displayViewButtons) button.disabled = true;
   if (only === 'scalingMode' || only === 'displayScalingMethod' || only === 'all') {
     selectNodes.get('scalingMode')?.setAttribute('disabled', 'true');
     selectNodes.get('displayScalingMethod')?.setAttribute('disabled', 'true');
   }
   updateDisplayFloating();
   const scalingDraftRevisionAtStart = displayScalingDraftRevision;
+  const applyRenderGeneration = renderGeneration;
+  const applyDisplayKey = display.displayKey;
   try {
     const deviceKey = displayState.deviceKey ?? live.devices.find((d) => d.id === deviceId)?.deviceKey ?? null;
     if (!deviceKey || !display.displayKey || display.identityVerified !== true) {
@@ -2255,6 +2404,9 @@ async function applyDisplay(ctx: PageContext, only: string) {
       return;
     }
     const out = await api.displayApply(deviceId, { deviceKey, displayKey: display.displayKey, patch: payload });
+    if (renderGeneration !== applyRenderGeneration
+      || displayDeviceId !== deviceId
+      || selectedDisplayKey !== applyDisplayKey) return;
     if (out.displayState) {
       displayState = out.displayState;
     }
@@ -2265,15 +2417,25 @@ async function applyDisplay(ctx: PageContext, only: string) {
           const readBackKey = key === 'scalingMode' ? 'scalingMode' : key === 'displayScalingMethod' ? 'displayScalingMethod' : key;
           const readBack = readBackKey === 'scalingMode' ? scalingViewOf(freshDisplay)
             : readBackKey === 'displayScalingMethod' ? scalingMethodViewOf(freshDisplay)
-              : displayDriverValue(freshDisplay, readBackKey);
+              : DISPLAY_COLOR_KEYS.includes(readBackKey) ? displaySettingValue(freshDisplay, readBackKey)
+                : displayDriverValue(freshDisplay, readBackKey);
           (displayApplied as Record<string, unknown>)[key] = readBack;
-          if (DISPLAY_COLOR_KEYS.includes(key) && typeof readBack === 'number') {
+          if (DISPLAY_COLOR_KEYS.includes(key) && typeof readBack === 'number'
+            && Object.prototype.hasOwnProperty.call(submittedColorValues, key)
+            && Object.is((displayDraft as Record<string, unknown>)[key], submittedColorValues[key as DisplayColorKey])) {
+            // Only normalize the visible editor when it still represents the
+            // submitted request. A newer edit stays in the draft and remains
+            // dirty against this newly accepted baseline.
             (displayDraft as Record<string, unknown>)[key] = readBack;
+          } else if (key === 'wireFormat' && readBack && typeof readBack === 'object') {
+            displayDraft.wireFormat = readBack as DisplaySettings['wireFormat'];
           }
         } else {
           (displayApplied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
         }
-        if (!per.internal && per.igsPreferredSelectionApplied) {
+        if (!per.internal && per.verification === 'readback-unavailable') {
+          toast('info', 'Color settings sent', per.message ?? 'The driver accepted the settings, but does not provide a live read-back.');
+        } else if (!per.internal && per.igsPreferredSelectionApplied) {
           toast('success', `${CONTROL_LABELS[key] ?? key} applied`, per.message ?? 'The driver will use GPU Scaling when the output requires scaling.');
         } else if (!per.internal && (per.deferred || per.preferredOnly || per.preferenceAlreadyApplied)) {
           toast('info', `${CONTROL_LABELS[key] ?? key} preference ${per.preferenceAlreadyApplied ? 'already saved' : 'saved'}`, per.message
@@ -2294,7 +2456,11 @@ async function applyDisplay(ctx: PageContext, only: string) {
     if (freshDisplay && (out.perControl.scalingMode?.ok || out.perControl.scalingMethod?.ok || out.perControl.displayScalingMethod?.ok)) {
       (displayApplied as Record<string, unknown>).scalingMode = scalingViewOf(freshDisplay);
       (displayApplied as Record<string, unknown>).displayScalingMethod = scalingMethodViewOf(freshDisplay);
-      if (freshDisplay.scalingMethod?.value) displayApplied.scalingMethod = freshDisplay.scalingMethod.value;
+      if (freshDisplay.scalingMethod?.value?.method) {
+        displayApplied.scalingMethod = { enabled: freshDisplay.scalingMethod.value.enabled, method: freshDisplay.scalingMethod.value.method };
+      } else {
+        delete displayApplied.scalingMethod;
+      }
     }
     const hasScalingReadback = out.perControl.scalingMode !== undefined
       || out.perControl.scalingMethod !== undefined
@@ -2326,14 +2492,22 @@ async function applyDisplay(ctx: PageContext, only: string) {
       toast('error', 'Apply failed', msg);
     }
   } finally {
-    applying = false;
-    for (const b of chipApplyNodes.values()) b.disabled = false;
-    selectNodes.get('scalingMode')?.removeAttribute('disabled');
-    selectNodes.get('displayScalingMethod')?.removeAttribute('disabled');
-    updateDisplayFloating();
-    const queued = queuedDisplayApply;
-    queuedDisplayApply = null;
-    if (queued) setTimeout(() => requestDisplayApply(queued.ctx, queued.only), 0);
+    // A route/view/device switch resets page state. An old IPC completion
+    // must not clear the new page's busy state or manipulate its controls.
+    if (renderGeneration === applyRenderGeneration) {
+      applying = false;
+      displayApplyPending = false;
+      for (const b of chipApplyNodes.values()) b.disabled = false;
+      const picker = displayPickerHost?.querySelector<HTMLElement>('[data-display-picker]') as DropdownElement | null;
+      if (picker) picker.disabled = false;
+      for (const button of displayViewButtons) button.disabled = false;
+      selectNodes.get('scalingMode')?.removeAttribute('disabled');
+      selectNodes.get('displayScalingMethod')?.removeAttribute('disabled');
+      updateDisplayFloating();
+      const queued = queuedDisplayApply;
+      queuedDisplayApply = null;
+      if (queued) setTimeout(() => requestDisplayApply(queued.ctx, queued.only), 0);
+    }
   }
 }
 

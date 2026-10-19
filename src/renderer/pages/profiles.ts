@@ -26,6 +26,7 @@ import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
+import { renderGameSharpening } from '../components/sharpening.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
 import { hasScalarCoreOffsets, isExactStockVfCurve, repairLegacyScalarProfile } from '../pure/profile-core-surface.ts';
@@ -593,7 +594,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   let gameCatalogLoaded = gameCatalogSession.loaded;
   let gameCatalogLoading = Boolean(gameCatalogSession.loading || gameCatalogSession.scanLoading);
   let gameCatalogError: string | null = null;
-  let gameProfileCapabilities: GameProfileCapabilities = { enduranceGaming: false, xeFg: false, xeFgOptions: [] };
+  let gameProfileCapabilities: GameProfileCapabilities = { enduranceGaming: false, xeFg: false, xeFgOptions: [], sharpening: false };
   let gameCapabilityRequestGeneration = 0;
   let viewMode: 'oc' | 'game' = 'oc';
   let selectedGameExePath: string | null = null;
@@ -764,11 +765,11 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       return;
     }
     const requestGeneration = ++gameCapabilityRequestGeneration;
-    gameProfileCapabilities = { enduranceGaming: false, xeFg: false, xeFgOptions: [] };
+    gameProfileCapabilities = { enduranceGaming: false, xeFg: false, xeFgOptions: [], sharpening: false };
     try {
-      const capabilities = await api.gameProfileCapabilities(targetDevice?.id ?? deviceId, game.exePath);
+      const capabilityResult = await api.gameProfileCapabilities(targetDevice.id, game.exePath);
       if (requestGeneration !== gameCapabilityRequestGeneration || selectedGameExePath !== game.exePath) return;
-      gameProfileCapabilities = capabilities;
+      gameProfileCapabilities = capabilityResult;
     } catch { /* unsupported surface stays hidden */ }
     if (requestGeneration === gameCapabilityRequestGeneration && viewMode === 'game' && selectedGameExePath === game.exePath) renderGameDetail(game, targetDevice ?? gameDeviceFor(selectedGameDeviceKey));
   };
@@ -776,12 +777,11 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const renderGameDetail = (game: GameCatalogEntry, targetDevice: DeviceInfo | null = gameDeviceFor(selectedGameDeviceKey)): void => {
     if (!targetDevice) {
       clear(root);
-      root.append(modeToggle(), el('p', { class: 'page-subtitle', text: 'No writable GPU is available for Game Profiles.' }));
+      root.append(modeToggle(), el('p', { class: 'page-subtitle', text: 'No writable GPU is available for GPU-specific Game Profile settings.' }), renderGameSharpening(game.exePath));
       return;
     }
     const current = gameSettingFor(game.exePath);
     const gpuSettings = gameGpuSettingFor(current, targetDevice);
-    const graphics: GameProfileGraphics = gpuSettings.graphics ?? {};
     const targetKey = targetDevice.deviceKey ?? null;
     const availableProfiles = envelope.profiles.filter((profile) => !profile.deviceKey || profile.deviceKey === targetKey);
     const selectedTuningProfileId = gpuSettings.tuningProfileId && availableProfiles.some((profile) => profile.id === gpuSettings.tuningProfileId)
@@ -791,6 +791,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       { value: '', label: `Normal (${gameGpuLabel(targetDevice)} active profile)` },
       ...availableProfiles.map((profile) => ({ value: profile.id, label: `${profile.name} · ${profileOwnerLabel(profile).replace(/^GPU:\s*/, '')}` })),
     ], { className: 'profile-setting-control game-setting-control', ariaLabel: 'Overclock preset' });
+    const graphics: GameProfileGraphics = gpuSettings.graphics ?? {};
     const endurance = buildDropdown(graphics.enduranceGaming ?? 'off', [
       { value: 'off', label: 'Off' },
       { value: 'on', label: 'On' },
@@ -853,7 +854,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         settingRow('FPS Limiter', 'Uses RTSS when available and the Intel driver limiter otherwise.', el('span', { class: 'profile-inline-control' }, [fps, fpsValue])),
         settingRow('Low Latency Mode', 'Improves the responsiveness between user input and graphics rendering for a better gaming experience.', latency),
       ]),
-      el('p', { class: 'profile-capability-note', text: `When Use Profile is enabled for ${gameGpuLabel(targetDevice)}, its tuning preset and Graphics values are applied only to that GPU.` }),
+      renderGameSharpening(game.exePath),
+      el('p', { class: 'profile-capability-note', text: `When Use Profile is enabled for ${gameGpuLabel(targetDevice)}, its tuning preset and driver Graphics values apply to that GPU. Arc Image Sharpening is shared across GPUs and uses its own controls above.` }),
     ]);
     tuning.addEventListener('change', () => save({ tuningProfileId: tuning.value || null }));
     endurance.addEventListener('change', () => save({ graphics: { enduranceGaming: endurance.value as 'off' | 'on' } }));

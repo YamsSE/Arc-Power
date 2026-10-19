@@ -59,6 +59,11 @@ function cleanGraphics(value) {
   if (['off', 'on', 'on-boost'].includes(value.lowLatency)) out.lowLatency = value.lowLatency;
   if (['off', 'on'].includes(value.enduranceGaming)) out.enduranceGaming = value.enduranceGaming;
   if (['app-choice', '2x', '3x', '4x'].includes(value.frameGenOverride)) out.frameGenOverride = value.frameGenOverride;
+  if (value.sharpening && typeof value.sharpening === 'object' && !Array.isArray(value.sharpening)
+    && typeof value.sharpening.enabled === 'boolean'
+    && Number.isInteger(value.sharpening.percentage) && value.sharpening.percentage >= 0 && value.sharpening.percentage <= 100) {
+    out.sharpening = { enabled: value.sharpening.enabled, percentage: value.sharpening.percentage };
+  }
   return out;
 }
 
@@ -296,6 +301,7 @@ export class GameProfileStore {
     this.filePath = path.join(this.dir, 'game-profiles.json');
     this._mutation = Promise.resolve();
     this._tmpCounter = 0;
+    this._catalogPathCache = null;
   }
 
   _ensureDir() {
@@ -410,6 +416,7 @@ export class GameProfileStore {
       settings: normalizeSettings(safeCatalogRecords(data.settings)),
     };
     this._writeAtomic(clean);
+    this._catalogPathCache = null;
     return clean;
   }
 
@@ -503,7 +510,20 @@ export class GameProfileStore {
   async loadCatalog() {
     return this._mutate(() => {
       const data = this._loadDataUnlocked();
+      this._catalogPathCache = new Set(data.catalog.map((item) => item.exePath));
       return { catalog: data.catalog, settings: data.settings };
+    });
+  }
+
+  async hasCatalogPath(value) {
+    const exePath = canonicalExePath(value);
+    if (!exePath) return false;
+    return this._mutate(() => {
+      if (!this._catalogPathCache) {
+        const data = this._loadDataUnlocked();
+        this._catalogPathCache = new Set(data.catalog.map((item) => item.exePath));
+      }
+      return this._catalogPathCache.has(exePath);
     });
   }
 

@@ -30,9 +30,18 @@ contextBridge.exposeInMainWorld('arcPower', {
   // M8 (the Graphics tab): the 3D-feature surface - the page's ONLY IPC
   // surface (the dedicated graphics apply path - NOT the OC apply-routing
   // machinery: 3D features have no OC waiver).
-  graphicsGet: (deviceId) => ipcRenderer.invoke('graphics:get', deviceId),
-  arcSleepBaseCapGet: (deviceId) => ipcRenderer.invoke('arc-sleep-base-cap-get', deviceId),
-  graphicsApply: (deviceId, settings) => ipcRenderer.invoke('graphics:apply', deviceId, settings),
+  graphicsGet: (deviceId, expectedDeviceKey) => ipcRenderer.invoke('graphics:get', deviceId, expectedDeviceKey),
+  arcSleepBaseCapGet: (deviceId, expectedDeviceKey) => ipcRenderer.invoke('arc-sleep-base-cap-get', deviceId, expectedDeviceKey),
+  graphicsApply: (deviceId, settings, expectedDeviceKey) => ipcRenderer.invoke('graphics:apply', deviceId, settings, expectedDeviceKey),
+  postprocessSharpeningGet: () => ipcRenderer.invoke('postprocess-sharpening:get'),
+  postprocessSharpeningSet: (value) => ipcRenderer.invoke('postprocess-sharpening:set', value),
+  postprocessSharpeningGameGet: (exePath) => ipcRenderer.invoke('postprocess-sharpening:game-get', exePath),
+  postprocessSharpeningGameSet: (exePath, override) => ipcRenderer.invoke('postprocess-sharpening:game-set', exePath, override),
+  onPostprocessSharpeningStatus: (callback) => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on('postprocess-sharpening:status', listener);
+    return () => ipcRenderer.removeListener('postprocess-sharpening:status', listener);
+  },
   // M10b (the Graphics "Display" view): the display-output surface - the
   // Graphics page's Display-view IPC (the dedicated display apply path -
   // NOT the OC apply-routing machinery: display settings have no OC
@@ -44,6 +53,13 @@ contextBridge.exposeInMainWorld('arcPower', {
   // a PROFILE apply (the Profiles-page Apply button), which skips the
   // OC-mode gate (the mode is the interactive slider gate ONLY).
   applySettings: (deviceId, settings, opts) => ipcRenderer.invoke('apply-settings', deviceId, settings, opts),
+  fanResumeGet: (payload) => ipcRenderer.invoke('fan-resume:get', payload),
+  fanResumeSet: (payload) => ipcRenderer.invoke('fan-resume:set', payload),
+  onFanResumeStatus: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('fan-resume:status', listener);
+    return () => ipcRenderer.removeListener('fan-resume:status', listener);
+  },
   resetToDefaults: (deviceId) => ipcRenderer.invoke('reset-to-defaults', deviceId),
   waiverGet: (deviceId) => ipcRenderer.invoke('waiver-get', deviceId),
   waiverAccept: (deviceId) => ipcRenderer.invoke('waiver-accept', deviceId),

@@ -671,14 +671,9 @@ const ctl_get_set_wire_format_config_t = koffi.struct('ctl_get_set_wire_format_c
   Version: 'uint8',               // @4
   pad: 'uint8[3]',                // @5
   Operation: 'int32',             // @8  (ctl_get_set_operation_t: GET/SET/RESTORE_DEFAULT)
-  pad2: 'uint8[4]',               // @12 - the array is 8-aligned in the v290
-                                  //     header: the M10b probe's sentinel runs
-                                  //     (pipeline/live-display-feature.md 3b)
-                                  //     show the driver writing entries at
-                                  //     16/32/48/64, never at 12/28/44/60
-  SupportedWireFormat: 'ctl_wire_format_t[4]', // @16
-  WireFormat: 'ctl_wire_format_t', // @80 (the current/target format)
-}); // 96 bytes, align 8
+  SupportedWireFormat: 'ctl_wire_format_t[4]', // @12
+  WireFormat: 'ctl_wire_format_t', // @76 (the current/target format)
+}); // 92 bytes, align 4
 
 const ctl_display_settings_t = koffi.struct('ctl_display_settings_t', {
   Size: 'uint32',                 // @0
@@ -831,13 +826,13 @@ const EXPECTED_SIZES = {
   // (accepted 148/144/136/128/104/80/56 - the 156-byte Set@8 transcription
   // was wrong), scaling settings 28 (accepted 28/24/16), retro-scaling
   // settings 12 (ONLY 12 accepted), arc-sync monitor 24 (accepted 24/20/16),
-  // scaling caps 12 (accepted 12/8), retro caps 12. The WIRE-FORMAT config
-  // is the exception: v290 96 but THIS driver's ceiling is 80 (the Size
-  // field the calls pass) while the full 96-byte struct is still written.
+  // scaling caps 12 (accepted 12/8), retro caps 12. The wire-format config
+  // layout is 92 bytes (SupportedWireFormat@12, WireFormat@76), confirmed
+  // by the public header and B580 GET size sweep.
   ctl_display_timing_t: 64,
   ctl_display_properties_t: 200,
   ctl_wire_format_t: 16,
-  ctl_get_set_wire_format_config_t: 96,
+  ctl_get_set_wire_format_config_t: 92,
   ctl_display_settings_t: 148,
   ctl_scaling_caps_t: 12,
   ctl_scaling_settings_t: 28,
@@ -1531,6 +1526,7 @@ export function decode3dFeatureDetails(buf, index) {
         step: koffi.decode(buf, u + 12, 'int32') | 0,
         default: koffi.decode(buf, u + 16, 'int32') | 0,
       },
+      defaultEnabled: koffi.decode(buf, u, 'bool') === true,
       perAppSupport,
       miscSupport,
       liveChange,
@@ -1641,11 +1637,8 @@ export function decode3dFeatureGetsetValue(buf, valueType) {
 // layouts are the probe-verified v290 offsets (pipeline/live-display-
 // feature.md, the byte-truth record); the koffi structs above pin the sizes
 // at module load, the CALLS go through raw buffers (the ctlPciGetProperties
-// / M8 precedent). The encode helpers allocate the DRIVER-safe buffer sizes
-// (the full v290 allocation + headroom - this driver build validates the
-// wire-format Size as <=80 but writes its full 96-byte struct anyway) and
-// fill the Size field with the DRIVER-SIZE ceiling where it differs from
-// the v290 header size.
+// / M8 precedent). The encode helpers allocate header-sized raw buffers
+// with headroom and encode the corresponding struct size.
 // ---------------------------------------------------------------------------
 
 const DISPLAY_HEADROOM = 16;
@@ -1720,19 +1713,16 @@ export function decodeDisplayProperties(buf) {
 
 /**
  * Allocate a zeroed ctl_get_set_wire_format_config_t raw buffer for one
- * operation. The Size field carries THIS driver build's ceiling (80 - the
- * probe's size sweep: 96/112/128 answer ERROR_INVALID_SIZE) while the
- * allocation covers the FULL v290 struct + headroom (the driver validates
- * Size<=80 but writes its whole 96-byte struct anyway - the current member
- * at 80-95 IS populated, live-verified).
+ * operation. The public header and B580 query confirm the 92-byte layout;
+ * the driver accepts Size=92 and returns the current member in that layout.
  * @param {{ operation: number, colorModel?: number, colorDepth?: number }} o
  *   operation: 0 GET / 1 SET / 2 RESTORE_DEFAULT; the SET fills the current
- *   WireFormat member (ColorModel@88, ColorDepth@92 in the full struct).
+ *   WireFormat member (ColorModel@84, ColorDepth@88).
  * @returns {{ buf: unknown }}
  */
 export function encodeWireFormatConfig({ operation, colorModel, colorDepth }) {
   const buf = koffi.alloc('uint8', koffi.sizeof('ctl_get_set_wire_format_config_t') + DISPLAY_HEADROOM);
-  koffi.encode(buf, 0, 'uint32', 80); // the DRIVER ceiling, not the v290 96
+  koffi.encode(buf, 0, 'uint32', koffi.sizeof('ctl_get_set_wire_format_config_t'));
   koffi.encode(buf, 4, 'uint8', 0);
   koffi.encode(buf, koffi.offsetof('ctl_get_set_wire_format_config_t', 'Operation'), 'int32', operation);
   // Each nested ctl_wire_format_t is versioned too. Without these headers
@@ -1783,14 +1773,10 @@ export function decodeWireFormatConfig(buf) {
     const o = supportedOff + i * entrySize;
     const model = koffi.decode(buf, o + koffi.offsetof('ctl_wire_format_t', 'ColorModel'), 'int32') | 0;
     const depthFlags = Number(koffi.decode(buf, o + koffi.offsetof('ctl_wire_format_t', 'ColorDepth'), 'uint32')) >>> 0;
-    // Some Intel driver builds advertise the model in a model-only slot and
-    // expose the usable depth in a neighbouring slot. Keep the model even
-    // when ColorDepth is zero; dropping it made an active RGB output appear
-    // as an unsupported YCbCr422 current value in the renderer.
+    if (depthFlags === 0) continue; // empty slot; it does not advertise a usable format
     if (model >= 0 && model <= 3 && !supportedModels.includes(CTL_WIRE_COLOR_MODEL[model])) {
       supportedModels.push(CTL_WIRE_COLOR_MODEL[model]);
     }
-    if (depthFlags === 0) continue; // model-only entry; no BPC option here
     for (const [flag, depth] of Object.entries(CTL_DISPLAY_BPC_FROM_FLAG)) {
       if ((depthFlags & Number(flag)) !== 0) supported.push({ model: CTL_WIRE_COLOR_MODEL[model] ?? `MODEL_${model}`, depth });
     }

@@ -1060,19 +1060,81 @@ export function fallbackSysinfo() {
  * Identify the specific fallback shape that can occur during a cold first
  * launch. CPU name and total RAM remain populated in that shape, but the CIM
  * details needed for Mainboard, RAM metadata, or OS GPU identity are absent.
- * A partial snapshot therefore also gets the one bounded recovery attempt;
- * genuinely unavailable fields still degrade honestly after that attempt.
+ * A partial snapshot gets bounded recovery attempts; genuinely unavailable
+ * fields still degrade honestly after those attempts.
  */
 export function isDegradedSysinfo(value) {
+  const cpu = value?.cpu;
+  const hasCpuDetails = typeof cpu?.name === 'string' && cpu.name.trim().length > 0
+    && Number.isFinite(cpu?.cores) && cpu.cores > 0
+    && Number.isFinite(cpu?.threads) && cpu.threads > 0;
   const board = value?.baseboard;
   const hasBaseboard = [board?.manufacturer, board?.product]
-    .some((part) => typeof part === 'string' && part.trim().length > 0);
+    .every((part) => typeof part === 'string' && part.trim().length > 0);
   const ram = value?.ram;
-  const hasRamDetail = Number.isFinite(ram?.speedMhz)
-    || Number.isFinite(ram?.memoryType)
-    || (typeof ram?.manufacturer === 'string' && ram.manufacturer.trim().length > 0);
-  const hasControllers = Array.isArray(value?.videoControllers) && value.videoControllers.length > 0;
-  return !hasBaseboard || !hasRamDetail || !hasControllers;
+  const ramDetailCount = Number(Number.isFinite(ram?.speedMhz) && ram.speedMhz > 0)
+    + Number(Number.isFinite(ram?.memoryType) && ram.memoryType > 0)
+    + Number(typeof ram?.manufacturer === 'string' && ram.manufacturer.trim().length > 0);
+  const controllers = value?.videoControllers;
+  const hasControllerIdentity = Array.isArray(controllers) && controllers.length > 0
+    && controllers.every((controller) => typeof controller?.pnpDeviceId === 'string'
+      && /^PCI\\VEN_[0-9A-F]{4}&DEV_[0-9A-F]{4}/i.test(controller.pnpDeviceId));
+  return !hasCpuDetails || !hasBaseboard || ramDetailCount < 2 || !hasControllerIdentity;
+}
+
+function usefulSysinfoField(value) {
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (typeof value === 'number') return Number.isFinite(value) && value > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return value !== null && value !== undefined;
+}
+
+function mergeSysinfoSnapshots(snapshots) {
+  const mergeSection = (key) => {
+    const merged = {};
+    for (const snapshot of snapshots) {
+      for (const [field, value] of Object.entries(snapshot?.[key] ?? {})) {
+        if (usefulSysinfoField(value)) merged[field] = value;
+        else if (!(field in merged)) merged[field] = value;
+      }
+    }
+    return merged;
+  };
+  // Begin with the widest inventory so a later partial CIM response cannot
+  // erase a second GPU. Enrich only rows with a stable ID or unique name match.
+  const inventories = snapshots.map((snapshot) => Array.isArray(snapshot?.videoControllers) ? snapshot.videoControllers : []);
+  const widest = inventories.reduce((best, rows) => rows.length > best.length ? rows : best, []);
+  const videoControllers = widest.map((row) => ({ ...row }));
+  for (const rows of inventories) {
+    for (const row of rows) {
+      const id = typeof row?.pnpDeviceId === 'string' && /^PCI\\VEN_[0-9A-F]{4}&DEV_[0-9A-F]{4}/i.test(row.pnpDeviceId)
+        ? row.pnpDeviceId.toUpperCase() : null;
+      let match = id ? videoControllers.findIndex((existing) => existing.pnpDeviceId?.toUpperCase() === id) : -1;
+      if (match < 0 && typeof row?.name === 'string' && row.name.trim()) {
+        const named = videoControllers.map((existing, index) => existing.name === row.name ? index : -1).filter((index) => index >= 0);
+        if (named.length === 1 && rows.filter((candidate) => candidate?.name === row.name).length === 1
+          && (!id || !videoControllers[named[0]].pnpDeviceId || videoControllers[named[0]].pnpDeviceId.toUpperCase() === id)) match = named[0];
+      }
+      if (match < 0) {
+        const sameNameUnknown = videoControllers.some((existing) => existing.name === row?.name && !existing.pnpDeviceId);
+        if (!sameNameUnknown && (id || !videoControllers.some((existing) => existing.name === row?.name))) {
+          videoControllers.push({ ...row });
+        }
+        continue;
+      }
+      for (const [field, value] of Object.entries(row)) {
+        if (usefulSysinfoField(value)) videoControllers[match][field] = value;
+      }
+    }
+  }
+  return {
+    ...snapshots[0],
+    cpu: mergeSection('cpu'),
+    ram: mergeSection('ram'),
+    baseboard: mergeSection('baseboard'),
+    laptop: mergeSection('laptop'),
+    videoControllers,
+  };
 }
 
 async function collectSysinfoOnce(deps = {}) {
@@ -1138,7 +1200,7 @@ async function collectSysinfoOnce(deps = {}) {
  * Any query failure (PowerShell absent, spawn error, timeout, garbage
  * output) falls back to os.cpus()/os.totalmem() - never throws. The normal
  * path keeps the historical one-query/cache behavior; the real window path
- * may opt into one bounded retry for a degraded cold-start snapshot.
+ * may opt into two bounded retries for a degraded cold-start snapshot.
  * @param {{ execFile?: typeof execFile, powershellExe?: string, timeoutMs?: number, retryOnDegraded?: boolean, retryTimeoutMs?: number, retryDelayMs?: number }} [deps]
  * @returns {Promise<{ cpu: object, ram: object, videoControllers: object[] }>}
  */
@@ -1158,23 +1220,24 @@ export async function collectSysinfo(deps = {}) {
       : 100;
     if (retryDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
 
-    // Do not recurse through the public cache/retry gate. The second query is
-    // exactly one recovery attempt; if it is also degraded, keep the honest
-    // first fallback rather than turning a transient failure into a loop.
+    // Do not recurse through the public cache/retry gate. Keep the most
+    // informative snapshot across the bounded attempts; a later partial
+    // response must not replace useful fields already collected.
     cached = null;
     const retryTimeoutMs = Number.isFinite(deps.retryTimeoutMs) && deps.retryTimeoutMs > 0
       ? Math.floor(deps.retryTimeoutMs)
       : Math.min(Number.isFinite(deps.timeoutMs) ? deps.timeoutMs : 10_000, 5_000);
     const retried = await collectSysinfoOnce({ ...deps, timeoutMs: retryTimeoutMs });
-    if (isDegradedSysinfo(retried)) {
-      // The public result and the module cache must describe the same
-      // snapshot. The second attempt is still allowed to populate the cache
-      // internally before we decide that the first fallback is the honest
-      // result to return.
-      cached = first;
-      return first;
+    if (!isDegradedSysinfo(retried)) {
+      cached = mergeSysinfoSnapshots([first, retried]);
+      return cached;
     }
-    return retried;
+
+    if (retryDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    cached = null;
+    const finalAttempt = await collectSysinfoOnce({ ...deps, timeoutMs: retryTimeoutMs });
+    cached = mergeSysinfoSnapshots([first, retried, finalAttempt]);
+    return cached;
   })().finally(() => {
     inFlight = null;
   });

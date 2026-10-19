@@ -58,6 +58,10 @@ import { registerIpc } from './ipc.js';
 import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, resolvePreferredDevice, clampOverlayScale, overlayHotkeysCollide, validateOverlayHotkeyLetter, waiverProbeDue, pushRecordingActionResult } from './ipc-core.js';
 import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT, OVERLAY_RENDERERS } from './store/profile-store.js';
 import { GameProfileStore } from './store/game-profile-store.js';
+import { createSharpeningGameLookup } from './sharpening-game-eligibility.js';
+import { createScreenPostprocessSharpening } from './sharpening-screen.js';
+import { stageScreenSharpeningHelper } from './sharpening-helper-stage.js';
+import { createMockPostprocessSharpening } from './sharpening-postprocess-mock.js';
 import { RecordingStore } from './store/recording-store.js';
 import { StabilityStore } from './store/stability-store.js';
 import { createGpuWorkloadController } from './gpu-workload.js';
@@ -1541,7 +1545,7 @@ async function main() {
     const sysinfoPromise = collectSysinfo({
       timeoutMs: 10000,
       // The first installed launch can race PowerShell/CIM initialization.
-      // Retry one degraded snapshot without changing the normal collector's
+      // Retry degraded snapshots at most twice without changing the normal collector's
       // one-query/cache contract used by other startup paths and tests.
       retryOnDegraded: true,
       retryTimeoutMs: 5000,
@@ -1575,6 +1579,8 @@ async function main() {
     // identity-matched verdict into the corresponding OS controller.
     const driverReBars = new Map();
     const driverReBarRetries = new Map();
+    const driverReBarFinalAttempts = new Map();
+    const driverReBarLateAttempts = new Map();
     const rebarTargetKey = (target) => {
       if (typeof target?.deviceKey === 'string' && target.deviceKey.trim()) return `key:${target.deviceKey.trim().toUpperCase()}`;
       const vendor = typeof target?.pciVendorId === 'string' ? target.pciVendorId : '';
@@ -1603,14 +1609,47 @@ async function main() {
             // own session contract. A new reader is the bounded main-path
             // recovery for a transient first IGCL read; concurrent callers
             // share the same retry promise and never fan out duplicate reads.
-            let retry = driverReBarRetries.get(key);
-            if (!retry) {
+            let retryState = driverReBarRetries.get(key);
+            if (!retryState) {
               const retryReader = createDriverReBar(rawBackend, target);
               driverReBars.set(key, retryReader);
-              retry = retryReader();
-              driverReBarRetries.set(key, retry);
+              retryState = { promise: retryReader() };
+              driverReBarRetries.set(key, retryState);
             }
-            verdict = await retry;
+            verdict = await retryState.promise;
+            // If both immediate reads are unknown, make one final fresh-reader
+            // probe after a short bounded backoff. The promise is stored before
+            // awaiting it so concurrent sysinfo.get() calls share this read.
+            if (verdict === null || verdict === undefined) {
+              let finalAttempt = driverReBarFinalAttempts.get(key);
+              if (!finalAttempt) {
+                finalAttempt = (async () => {
+                  await new Promise((resolve) => setTimeout(resolve, 150));
+                  const finalReader = createDriverReBar(rawBackend, target);
+                  driverReBars.set(key, finalReader);
+                  return finalReader();
+                })();
+                driverReBarFinalAttempts.set(key, finalAttempt);
+              }
+              verdict = await finalAttempt;
+              if (verdict === null || verdict === undefined) {
+                let late = driverReBarLateAttempts.get(key);
+                if (!late) {
+                  late = { readyAt: Date.now() + 3000, promise: null };
+                  driverReBarLateAttempts.set(key, late);
+                }
+                if (Date.now() >= late.readyAt) {
+                  if (!late.promise) {
+                    late.promise = (async () => {
+                      const lateReader = createDriverReBar(rawBackend, target);
+                      driverReBars.set(key, lateReader);
+                      return lateReader();
+                    })();
+                  }
+                  verdict = await late.promise;
+                }
+              }
+            }
           }
           if (verdict !== null && verdict !== undefined) {
             const resolvedReader = driverReBars.get(key);
@@ -2653,6 +2692,20 @@ async function main() {
   // foreground process would honestly report 'dx11' and break the
   // none-case pins nondeterministically.
   const foregroundApi = mock ? undefined : createForegroundApiDetector();
+  const sharpeningDetector = foregroundApi ?? { detectProcess: async () => null };
+  const sharpeningHelperPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'src', 'main', 'sharpening-runtime', 'ArcPower.ScreenSharpen.exe')
+    : undefined;
+  const isSharpeningGameExecutable = createSharpeningGameLookup({ gameProfiles, gameScan });
+  const postprocessSharpening = mock
+    ? createMockPostprocessSharpening()
+    : createScreenPostprocessSharpening({ dir: store.dir, detector: sharpeningDetector,
+      isGameExecutable: isSharpeningGameExecutable,
+      helperPath: sharpeningHelperPath,
+      stageHelper: app.isPackaged && process.platform === 'win32' ? stageScreenSharpeningHelper : null });
+  // The desktop capture helper is activated only after the foreground
+  // detector exists, and only when the persisted global setting is enabled.
+  void postprocessSharpening.start().catch((error) => console.error(`[sharpening] ${error.message}`));
   // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in
   // bytes - total - avail - the Memory row's source). THE DETERMINISM
   // SEAM (the foregroundApi pattern): the REAL koffi detector runs ONLY
@@ -2714,6 +2767,7 @@ async function main() {
   });
   app.on('before-quit', (event) => {
     isQuitting = true;
+    void postprocessSharpening.stop().catch(() => {});
     if (!maintenanceQuiesced) {
       try { recordingEditor.shutdown(); } catch { /* editor child cleanup is best effort */ }
     }
@@ -4160,6 +4214,7 @@ async function main() {
     sysmanPowerLimits,
     gameProfiles,
     gameScan,
+    postprocessSharpening,
     chooseGameExecutable: async () => {
       const result = await dialog.showOpenDialog(win, {
         title: 'Add game executable',
@@ -4442,6 +4497,34 @@ async function main() {
       if (win.webContents.isLoading()) win.webContents.once('did-finish-load', resolve);
       else resolve();
     });
+    // Focused rendered Chromium regression for global and per-game
+    // sharpening. The mock backend is mandatory in --ui-verify; this early
+    // branch bypasses every unrelated full ui-verify flow.
+    if (process.env.RID_MOCK_DISPLAY_SCALING_VERIFY === '1') {
+      const { runDisplayScalingUiVerification } = await import('../../test/display-scaling-ui.js');
+      await runDisplayScalingUiVerification(win, backend);
+      app.exit(0);
+      return;
+    }
+    if (process.env.RID_MOCK_FAN_RESUME_VERIFY === '1') {
+      const { powerMonitor } = await import('electron');
+      const { runFanResumeUiVerification } = await import('../../test/fan-resume-ui.js');
+      await runFanResumeUiVerification(win, backend, () => powerMonitor.emit('resume'));
+      app.exit(0);
+      return;
+    }
+    if (process.env.RID_MOCK_DISPLAY_COLOR_VERIFY === '1') {
+      const { verifyManagedDisplayColorUi } = await import('../../test/managed-display-color-ui.js');
+      await verifyManagedDisplayColorUi(win, backend);
+      app.exit(0);
+      return;
+    }
+    if (process.env.RID_MOCK_POSTPROCESS_VERIFY === '1' || process.env.RID_MOCK_SHARPENING_VERIFY === '1') {
+      const { verifyPostprocessSharpeningUi } = await import('../../test/postprocess-sharpening-ui.js');
+      await verifyPostprocessSharpeningUi(win, postprocessSharpening, gameProfiles, backend);
+      app.exit(0);
+      return;
+    }
     // M2D featureset variant: RID_MOCK_FEATURESET=<id> (b580 / pro-b50 /
     // arc-igpu) runs the reduced per-featureset verification flow - the full
     // default flow is pinned to A770 values.

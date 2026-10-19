@@ -80,7 +80,7 @@ const MOCK_V1_PL_MAX_W = 315;
 // same values). The apply records the payload - the read-back reflects it
 // (the mock round trip the ui-verify pins).
 const GRAPHICS_FIXTURE = Object.freeze({
-  supported: { frameGen: true, flipModes: true, frameLimit: true, lowLatency: true },
+  supported: { frameGen: true, flipModes: true, frameLimit: true, lowLatency: true, sharpening: false },
   supportedOptions: {
     frameGen: ['app-choice', '2x', '3x', '4x'],
     flipModes: ['application-default', 'vsync-on', 'vsync-off', 'smooth-sync', 'smart-vsync'],
@@ -92,16 +92,17 @@ const GRAPHICS_FIXTURE = Object.freeze({
     flipMode: 'application-default',
     frameLimit: { enabled: false, value: 60 },
     lowLatency: 'off',
+    sharpening: null,
   },
 });
 
 // The honest all-false degrade (device 1 in the multi-device session + the
 // RID_MOCK_GRAPHICS_UNSUPPORTED knob + the no-Intel session).
 const GRAPHICS_DEGRADED = Object.freeze({
-  supported: { frameGen: false, flipModes: false, frameLimit: false, lowLatency: false },
+  supported: { frameGen: false, flipModes: false, frameLimit: false, lowLatency: false, sharpening: false },
   supportedOptions: { frameGen: [], flipModes: [], lowLatency: [] },
   frameLimitRange: null,
-  values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null },
+  values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null, sharpening: null },
 });
 
 const displayCapability = (value, supported, controllable = false, reason = null, source = 'mock-fixture') => ({ value, supported, controllable, reason, source });
@@ -1132,6 +1133,10 @@ export class MockBackend {
       supported,
       supportedOptions,
       frameLimitRange: { ...GRAPHICS_FIXTURE.frameLimitRange },
+      sharpeningRange: null,
+      sharpeningReason: 'The mock driver does not expose sharpening.',
+      sharpeningPerAppSupport: false,
+      sharpeningLiveChange: false,
       ...(optional ? { sharedMemoryRange: { min: 13, max: 87, step: 1, default: 57 } } : {}),
       values,
     };
@@ -1154,6 +1159,9 @@ export class MockBackend {
       enduranceGaming: supported,
       xeFg,
       xeFgOptions: xeFg ? [...GRAPHICS_FIXTURE.supportedOptions.frameGen] : [],
+      sharpening: false,
+      sharpeningRange: null,
+      sharpeningReason: 'The mock driver does not expose sharpening.',
       reason: supported ? null : (mobileOrIntegrated
         ? 'The mock driver does not expose Endurance Gaming for this fixture.'
         : 'Endurance Gaming is available only on integrated or mobile Intel Arc graphics.'),
@@ -1174,7 +1182,7 @@ export class MockBackend {
       this._gameGraphics.delete(mapKey);
       return { ok: true, perControl: { profileScope: { ok: true, readBackEqual: true, message: 'global settings restored' } } };
     }
-    const controls = ['enduranceGaming', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency']
+    const controls = ['enduranceGaming', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency', 'sharpening']
       .filter((key) => settings[key] !== null && settings[key] !== undefined);
     const profileCaps = await this.getGameProfileCapabilities(id, exePath);
     if (settings.enduranceGaming !== undefined && settings.enduranceGaming !== null && !profileCaps.enduranceGaming) {
@@ -1184,6 +1192,10 @@ export class MockBackend {
     if (settings.frameGenOverride !== undefined && settings.frameGenOverride !== null && !profileCaps.xeFg) {
       result.ok = false;
       result.perControl.frameGenOverride = { ok: false, errorCode: 'unsupported', message: profileCaps.xeFgReason };
+    }
+    if (settings.sharpening !== undefined && settings.sharpening !== null) {
+      result.ok = false;
+      result.perControl.sharpening = { ok: false, errorCode: 'unsupported', message: profileCaps.sharpeningReason };
     }
     const previous = this._gameGraphics.get(mapKey) ?? {};
     const next = { ...previous };
@@ -1221,7 +1233,7 @@ export class MockBackend {
   async setGraphicsSettings(deviceId = 0, settings = {}) {
     const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
     const result = { ok: true, perControl: {} };
-    const controls = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency', 'prebuiltShaderDownload']
+    const controls = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency', 'prebuiltShaderDownload', 'sharpening']
       .filter((c) => settings[c] !== null && settings[c] !== undefined);
     const e = this._entry(id);
     const mobileControls = (e.device?.integrated === true || e.device?.mobile === true) && this._enduranceGamingSupported;
@@ -1232,6 +1244,10 @@ export class MockBackend {
       }
       result.ok = controls.length === 0;
       return result;
+    }
+    if (settings.sharpening !== undefined && settings.sharpening !== null) {
+      result.ok = false;
+      result.perControl.sharpening = { ok: false, errorCode: 'unsupported', message: 'The mock driver does not expose sharpening.' };
     }
     if (!mobileControls) {
       for (const c of ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride']) {

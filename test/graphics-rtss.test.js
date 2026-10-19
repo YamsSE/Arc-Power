@@ -652,6 +652,7 @@ test('Arc Sleep applies IGCL read-back only to the requested adapter', async () 
   const handlers = createGraphicsHandlers({
     backend: {
       async listDevices() { return devices; },
+      async getDeviceTarget(id) { return devices.find((device) => device.id === id); },
       async getGraphicsSettings(id) {
         return {
           supported: { frameLimit: true },
@@ -672,8 +673,8 @@ test('Arc Sleep applies IGCL read-back only to the requested adapter', async () 
     },
   });
 
-  const other = await handlers['graphics:get'](1);
-  const selected = await handlers['graphics:get'](0);
+  const other = await handlers['graphics:get'](1, 'gpu:b');
+  const selected = await handlers['graphics:get'](0, 'gpu:a');
 
   assert.deepEqual(other.values.frameLimit, { enabled: false, value: 75 });
   assert.deepEqual(selected.values.frameLimit, { enabled: true, value: 120 });
@@ -827,6 +828,7 @@ test('IGCL write failure rolls back the Graphics Base Cap and clears its tempora
     backendKind: 'igcl',
   };
   let saved = {
+    deviceId: 0,
     deviceKey: device.deviceKey,
     arcSleep: {},
     arcSleepFrameLimitBase: { enabled: false, value: 60 },
@@ -839,7 +841,7 @@ test('IGCL write failure rolls back the Graphics Base Cap and clears its tempora
   };
   const backend = {
     async listDevices() { return [device]; },
-    async getDeviceTarget(id, key) { return id === device.id && key === device.deviceKey ? device : null; },
+    async getDeviceTarget(id, key) { return id === device.id && (key === undefined || key === device.deviceKey) ? device : null; },
     async getGraphicsSettings() {
       return {
         supported: { frameLimit: true },

@@ -1,0 +1,16 @@
+MSBuild version 17.14.51+25f168cee for .NET Framework
+
+  fpng.vcxproj -> C:\Users\Yams\.codex\worktrees\legacy-sharpening-audit\R.ID Arc Power\.codex\task-artifacts\sharpening-render-proof\reshade-source\bin\x64\Release\fpng.lib
+  glad.vcxproj -> C:\Users\Yams\.codex\worktrees\legacy-sharpening-audit\R.ID Arc Power\.codex\task-artifacts\sharpening-render-proof\reshade-source\bin\x64\Release\glad.lib
+  MinHook.vcxproj -> C:\Users\Yams\.codex\worktrees\legacy-sharpening-audit\R.ID Arc Power\.codex\task-artifacts\sharpening-render-proof\reshade-source\bin\x64\Release\MinHook.lib
+  stb.vcxproj -> C:\Users\Yams\.codex\worktrees\legacy-sharpening-audit\R.ID Arc Power\.codex\task-artifacts\sharpening-render-proof\reshade-source\bin\x64\Release\stb.lib
+  jxl_simple_lossless.vcxproj -> C:\Users\Yams\.codex\worktrees\legacy-sharpening-audit\R.ID Arc Power\.codex\task-artifacts\sharpening-render-proof\reshade-source\bin\x64\Release\jxl_simple_lossless.lib
+  ImGui.vcxproj -> C:\Users\Yams\.codex\worktrees\legacy-sharpening-audit\R.ID Arc Power\.codex\task-artifacts\sharpening-render-proof\reshade-source\bin\x64\Release\ImGui.lib
+  ReShadeFX.vcxproj -> C:\Users\Yams\.codex\worktrees\legacy-sharpening-audit\R.ID Arc Power\.codex\task-artifacts\sharpening-render-proof\reshade-source\bin\x64\Release\ReShadeFX64.lib
+  Updating version to 6.8.0.6 ...
+  dll_main.cpp
+  runtime.cpp
+     Creating library C:\Users\Yams\.codex\worktrees\legacy-sharpening-audit\R.ID Arc Power\.codex\task-artifacts\sharpening-render-proof\reshade-source\bin\x64\Release\ReShade64.lib and object C:\Users\Yams\.codex\worktrees\legacy-sharpening-audit\R.ID Arc Power\.codex\task-artifacts\sharpening-render-proof\reshade-source\bin\x64\Release\ReShade64.exp
+  Generating code
+  Finished generating code
+  ReShade.vcxproj -> C:\Users\Yams\.codex\worktrees\legacy-sharpening-audit\R.ID Arc Power\.codex\task-artifacts\sharpening-render-proof\reshade-source\bin\x64\Release\ReShade64.dll

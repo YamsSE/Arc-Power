@@ -23,6 +23,9 @@ import type {
   GraphicsApplyResponse,
   GraphicsSettings,
   GraphicsState,
+  PostprocessSharpeningValue,
+  PostprocessSharpeningGlobal,
+  PostprocessSharpeningGame,
   HealthReport,
   MockFeaturesetsResponse,
   MockSwapResponse,
@@ -129,13 +132,18 @@ export interface ArcPowerApi {
    *  all-false/null state is the honest "not supported on this GPU" degrade).
    *  NEVER called with a null deviceId - the no-Intel page guard renders
    *  'No GPU available.' first. */
-  graphicsGet(deviceId: number): Promise<GraphicsState>;
+  graphicsGet(deviceId: number, expectedDeviceKey?: string): Promise<GraphicsState>;
   /** Fast Arc Sleep Base FPS Cap read; bypasses serialized writes and bounds RTSS waiting. */
-  arcSleepBaseCapGet(deviceId: number): Promise<GraphicsState>;
+  arcSleepBaseCapGet(deviceId: number, expectedDeviceKey?: string): Promise<GraphicsState>;
   /** M8: apply graphics settings - the DEDICATED apply path (NO OC waiver,
    *  NO OC-mode gate). Returns the { ok, perControl, graphicsState } envelope
    *  with the FRESH read-back for the per-control refresh. */
-  graphicsApply(deviceId: number, settings: GraphicsSettings): Promise<GraphicsApplyResponse>;
+  graphicsApply(deviceId: number, settings: GraphicsSettings, expectedDeviceKey?: string): Promise<GraphicsApplyResponse>;
+  postprocessSharpeningGet(): Promise<PostprocessSharpeningGlobal>;
+  postprocessSharpeningSet(value: PostprocessSharpeningValue): Promise<PostprocessSharpeningGlobal>;
+  postprocessSharpeningGameGet(exePath: string): Promise<PostprocessSharpeningGame>;
+  postprocessSharpeningGameSet(exePath: string, override: PostprocessSharpeningValue | null): Promise<PostprocessSharpeningGame>;
+  onPostprocessSharpeningStatus(callback: (status: { active: boolean; reason: string | null }) => void): () => void;
   /** M10b (the Graphics "Display" view): the display-output read (never
    *  throws - { displays: [] } is the honest no-controls degrade). NEVER
    *  called with a null deviceId - the no-Intel page guard renders
@@ -150,6 +158,10 @@ export interface ArcPowerApi {
    *  Apply button) - main skips the OC-mode gate for it (the mode is the
    *  interactive slider gate ONLY; the ceiling + capability refusals stay). */
   applySettings(deviceId: number, settings: Settings, opts?: { profileApply?: boolean }): Promise<ApplyResponse>;
+  /** Experimental: persist the last confirmed fan settings for this physical GPU. */
+  fanResumeGet(payload: { deviceId: number; deviceKey: string }): Promise<{ enabled: boolean; state: string; error: string | null; settings?: Pick<Settings, 'fanMode' | 'fanCurve' | 'fixedFanPct'> | null }>;
+  fanResumeSet(payload: { enabled: boolean; deviceId: number; deviceKey: string }): Promise<{ enabled: boolean; state: string; error: string | null }>;
+  onFanResumeStatus(callback: () => void): () => void;
   resetToDefaults(deviceId: number): Promise<ResetResponse>;
   waiverGet(deviceId: number): Promise<{ accepted: boolean }>;
   waiverAccept(deviceId: number): Promise<{ accepted: boolean }>;

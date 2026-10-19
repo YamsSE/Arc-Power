@@ -134,7 +134,7 @@ export const arcSleepPage: Page = {
         const pendingMessageTimer = window.setTimeout(() => {
           if (isCurrent() && applyingBaseCap) baseCapStatus.textContent = 'Still applying Base FPS Cap…';
         }, IPC_TIMEOUT_MS);
-        void api.graphicsApply(deviceId, { frameLimit: next }).then(async result => {
+        void api.graphicsApply(deviceId, { frameLimit: next }, selected.deviceKey ?? undefined).then(async result => {
           window.clearTimeout(pendingMessageTimer);
           if (!isCurrent()) return;
           const outcome = result.perControl.frameLimit;
@@ -208,7 +208,7 @@ export const arcSleepPage: Page = {
         enabled.disabled = true;
         baseCapStatus.textContent = 'Checking FPS limiter support…';
         try {
-          const graphicsState = await withTimeout(api.arcSleepBaseCapGet(selected.id), 'FPS limiter check');
+          const graphicsState = await withTimeout(api.arcSleepBaseCapGet(selected.id, selected.deviceKey ?? undefined), 'FPS limiter check');
           if (!isCurrent()) return;
           if (!graphicsState.supported.frameLimit) {
             baseCapStatus.textContent = 'The selected GPU does not support the Graphics FPS limiter.';

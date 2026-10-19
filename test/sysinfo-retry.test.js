@@ -59,8 +59,72 @@ test('a failed recovery keeps the exact returned fallback in the module cache', 
   try {
     const result = await collectSysinfo({ execFile, retryOnDegraded: true, retryDelayMs: 0, retryTimeoutMs: 2500 });
     const cached = await collectSysinfo({ execFile });
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
     assert.equal(cached, result);
+  } finally {
+    resetSysinfoCache();
+  }
+});
+
+test('a delayed third CIM result can complete a partial cold-start snapshot', async () => {
+  resetSysinfoCache();
+  const partial = JSON.parse(RICH_CIM);
+  partial.videoControllers = [];
+  let calls = 0;
+  const execFile = async () => {
+    calls += 1;
+    return { stdout: calls === 1 ? 'transient startup output' : calls === 2 ? JSON.stringify(partial) : RICH_CIM };
+  };
+  try {
+    const result = await collectSysinfo({ execFile, retryOnDegraded: true, retryDelayMs: 0, retryTimeoutMs: 2500 });
+    assert.equal(calls, 3);
+    assert.equal(isDegradedSysinfo(result), false);
+    assert.equal(result.videoControllers.length, 1);
+    assert.equal(result.baseboard.product, 'MAXIMUS VII RANGER');
+  } finally {
+    resetSysinfoCache();
+  }
+});
+
+test('bounded retries merge complementary specs without accepting an unidentified GPU row', async () => {
+  resetSysinfoCache();
+  const specsOnly = JSON.parse(RICH_CIM);
+  specsOnly.videoControllers[0].PNPDeviceID = null;
+  const gpuOnly = JSON.parse(RICH_CIM);
+  gpuOnly.baseboard.Product = null;
+  gpuOnly.physicalMemory = { ConfiguredClockSpeed: 2400 };
+  let calls = 0;
+  const execFile = async () => {
+    calls += 1;
+    return { stdout: calls === 1 ? JSON.stringify(specsOnly) : calls === 2 ? JSON.stringify(gpuOnly) : 'CIM unavailable' };
+  };
+  try {
+    const result = await collectSysinfo({ execFile, retryOnDegraded: true, retryDelayMs: 0, retryTimeoutMs: 2500 });
+    assert.equal(calls, 3);
+    assert.equal(result.baseboard.product, 'MAXIMUS VII RANGER');
+    assert.equal(result.ram.manufacturer, 'G.Skill');
+    assert.match(result.videoControllers[0].pnpDeviceId, /VEN_8086/);
+    assert.equal(isDegradedSysinfo(result), false);
+    assert.equal(await collectSysinfo({ execFile }), result);
+  } finally {
+    resetSysinfoCache();
+  }
+});
+
+test('a later single-GPU CIM response does not remove another observed GPU', async () => {
+  resetSysinfoCache();
+  const twoGpus = JSON.parse(RICH_CIM);
+  twoGpus.videoControllers[0].PNPDeviceID = null;
+  twoGpus.videoControllers.push({ Name: 'Intel(R) Arc(TM) A770 Graphics', PNPDeviceID: null, AdapterRAM: 4294967295 });
+  const oneIdentified = JSON.parse(RICH_CIM);
+  oneIdentified.baseboard.Product = null;
+  let calls = 0;
+  const execFile = async () => ({ stdout: ++calls === 1 ? JSON.stringify(twoGpus) : JSON.stringify(oneIdentified) });
+  try {
+    const result = await collectSysinfo({ execFile, retryOnDegraded: true, retryDelayMs: 0, retryTimeoutMs: 2500 });
+    assert.equal(result.videoControllers.length, 2);
+    assert.match(result.videoControllers[0].pnpDeviceId, /VEN_8086/);
+    assert.match(result.videoControllers[1].name, /A770/);
   } finally {
     resetSysinfoCache();
   }

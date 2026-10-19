@@ -181,6 +181,8 @@ export interface PerControlResult {
    *  message here; hard errors are mapped via pure/errors.ts errorMessage). */
   message?: string;
   readBackEqual?: boolean;
+  /** The write was accepted, but the driver does not expose a live getter. */
+  verification?: 'readback-unavailable' | 'native-active' | 'native-preference' | 'unverified';
   /** The driver changed a valid custom VF curve; readBackCurve holds the live curve. */
   driverAdjusted?: boolean;
   /** Exact=false but successful when the driver reports its verified grid-normalized values. */
@@ -1011,6 +1013,7 @@ export type EnduranceGamingMode = 'performance' | 'balanced' | 'battery';
 
 /** M8 apply intent; an absent field = leave the driver value untouched. */
 export interface GraphicsSettings {
+  sharpening?: { enabled: boolean; percentage: number };
   enduranceGaming?: EnduranceGaming;
   enduranceGamingMode?: EnduranceGamingMode;
   sharedMemoryOverride?: { enabled: boolean; percentage: number };
@@ -1032,6 +1035,7 @@ export interface GraphicsState {
     enduranceGaming?: boolean;
     sharedMemoryOverride?: boolean;
     prebuiltShaderDownload?: boolean;
+    sharpening?: boolean;
   };
   /** M8: the driver's SupportedTypes-gated option lists (Speed Sync etc.) -
    *  the page's dropdown gating source. */
@@ -1057,7 +1061,12 @@ export interface GraphicsState {
     enduranceGamingMode?: EnduranceGamingMode | null;
     sharedMemoryOverride?: { enabled: boolean; percentage: number } | null;
     prebuiltShaderDownload?: boolean | null;
+    sharpening?: { enabled: boolean; percentage: number } | null;
   };
+  sharpeningRange?: RangeInfo | null;
+  sharpeningReason?: string | null;
+  sharpeningPerAppSupport?: boolean;
+  sharpeningLiveChange?: boolean;
 }
 
 /** M8: the graphics:apply envelope - the FRESH read-back (graphicsState)
@@ -1101,9 +1110,13 @@ export interface DisplaySettings {
   saturation?: number;
   brightness?: number;
   contrast?: number;
+  /** Explicitly confirms that the first Arc Power color apply may replace
+   * the matching IGS color adjustment, which Arc Power cannot read back. */
+  replaceExistingColorSettings?: boolean;
 }
 
 export interface GameProfileGraphics {
+  sharpening?: { enabled: boolean; percentage: number };
   enduranceGaming?: 'off' | 'on';
   frameGenOverride?: FrameGenOverride;
   flipMode?: FlipMode;
@@ -1132,6 +1145,10 @@ export interface GameProfileCapabilities {
   /** XeFG is the per-game frame-generation multiplier exposed by IGCL. */
   xeFg: boolean;
   xeFgOptions: FrameGenOverride[];
+  sharpening: boolean;
+  sharpeningRange?: RangeInfo | null;
+  sharpeningReason?: string | null;
+  sharpeningLiveChange?: boolean;
   reason?: string | null;
   xeFgReason?: string | null;
 }
@@ -1183,6 +1200,11 @@ export interface GameCatalogEnvelope { catalog: GameCatalogEntry[]; settings: Ga
  * contract. */
 export interface DisplayCapability<T> {
   value: T | null;
+  /** Persisted Arc Power intent when the driver has no live getter. This is
+   * never represented as native `value` or claimed to be a live read-back. */
+  desiredValue?: T;
+  /** True after the backend accepted a write for this managed value. */
+  lastSent?: boolean;
   supported: boolean | null;
   controllable: boolean;
   reason: string | null;
@@ -1243,11 +1265,13 @@ export interface DisplayState {
      * keeps this diagnostic value separate while mirroring IGS's preferred
      * selection for the user-facing scaling selector at native timing. */
     preferredScalingMode?: string | null;
-    /** Adapter-level GPU-vs-Display preference when the native surface cannot
-     * identify the exact GPU scaler method. */
+    /** Selected mode, separate from the native active scaler. An Arc-owned
+     * Display choice is valid only while its native fingerprint matches. */
     scalingPreference?: 'gpu-scaling' | 'display-scaling' | null;
-    scalingDetails?: { customX: number; customY: number; hardwareModeSet: boolean; preferredScalingType: string | null; registryScalingState?: number } | null;
-    scalingMethod?: DisplayCapability<{ enabled: boolean; method: 'integer' | 'nearest-neighbour' }>;
+    scalingPreferenceSource?: 'arc-selection' | 'igcl-preferred' | null;
+    customScalingPreference?: { x: number; y: number } | null;
+    scalingDetails?: { customX: number; customY: number; hardwareModeSet: boolean; preferredScalingType: string | null } | null;
+    scalingMethod?: DisplayCapability<{ enabled: boolean; method: 'integer' | 'nearest-neighbour' | null }>;
     vrrMode?: DisplayCapability<'recommended' | 'excellent' | 'good' | 'compatible' | 'off' | 'vesa' | 'custom'>;
     globalVrrMode?: DisplayCapability<'fullscreen' | 'fullscreen-windowed' | 'disabled'>;
     variableRefreshRate?: DisplayCapability<boolean>;
@@ -1483,4 +1507,33 @@ export interface RecordingEditorJob {
 export interface RecordingSettingsSaveResult {
   settings: RecordingSettings;
   hotkeys: RecordingEngineState['hotkeys'];
+}
+
+/** Screen sharpening is shared across GPUs and controlled by the active window. */
+export interface PostprocessSharpeningValue {
+  enabled: boolean;
+  percentage: number;
+}
+export interface PostprocessSharpeningGlobal {
+  value: PostprocessSharpeningValue;
+  overrideCount: number;
+  runtimeReady: boolean;
+  provider: 'screen';
+  requiresRestart: false;
+  active?: boolean;
+  reason?: string | null;
+  legacyIntegrations?: Array<{ exePath: string; mode: 'direct' | 'optiscaler' }>;
+  legacyManifestPath?: string;
+  legacyManifestStatus?: 'clear' | 'found' | 'unreadable';
+  legacyManifestReason?: string;
+}
+export interface PostprocessSharpeningGame {
+  value: PostprocessSharpeningValue;
+  effective: PostprocessSharpeningValue;
+  globalValue: PostprocessSharpeningValue;
+  override: PostprocessSharpeningValue | null;
+  reason?: string | null;
+  legacyIntegration?: { exePath: string; mode: 'direct' | 'optiscaler' } | null;
+  legacyManifestStatus?: 'clear' | 'found' | 'unreadable';
+  legacyManifestReason?: string;
 }

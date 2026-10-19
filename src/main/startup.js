@@ -41,8 +41,18 @@ export const LEGACY_TASK_NAMES = ['ArcPowerAppOnBoot', 'ArcPowerApplyOnBoot'];
 // name as the Run value name. The current ArcPower value is retained for
 // compatibility with releases since M4-D2.
 export const LEGACY_RUN_VALUE_NAMES = ['Arc Power'];
-// reg.exe exit code when the queried/deleted value does not exist.
+// reg.exe reports all failures with exit code 1, including a missing value.
 export const REG_NOT_FOUND = 1;
+const TASK_NOT_FOUND_HRESULT = 0x80070002;
+
+async function confirmMissingRunValue(exec) {
+  const script = `$ErrorActionPreference='Stop'; $key=[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\\Microsoft\\Windows\\CurrentVersion\\Run',$false); if ($null -eq $key) { 'MISSING' } else { try { if ($key.GetValueNames() -contains 'ArcPower') { 'EXISTS' } else { 'MISSING' } } finally { $key.Dispose() } }`;
+  const { stdout } = await exec(POWERSHELL_EXE, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    windowsHide: true,
+    timeout: 10000,
+  });
+  return String(stdout ?? '').trim() === 'MISSING';
+}
 
 /**
  * Restore a packaged logon task when persisted settings still request startup.
@@ -251,10 +261,13 @@ export function createStartup(deps = {}) {
   const readTask = async () => {
     let exists = false;
     try {
-      await exec('schtasks', ['/query', '/tn', taskName], { windowsHide: true, timeout: 10000 });
+      await exec('schtasks', ['/query', '/tn', taskName, '/hresult'], { windowsHide: true, timeout: 10000 });
       exists = true;
-    } catch {
-      return { valueExists: false, value: null, taskExists: false };
+    } catch (error) {
+      if ((Number(error?.code) >>> 0) === TASK_NOT_FOUND_HRESULT) {
+        return { valueExists: false, value: null, taskExists: false };
+      }
+      throw new Error(`startup-get: task query failed: ${error?.message ?? String(error)}`);
     }
     try {
       const { stdout } = await exec('schtasks', ['/query', '/tn', taskName, '/xml'], {
@@ -263,12 +276,13 @@ export function createStartup(deps = {}) {
         encoding: 'buffer',
       });
       const parsed = parseTaskXml(decodeTaskXml(stdout));
+      if (!parsed) throw new Error('task XML could not be parsed');
       if (!startupTaskActionMatches({ ...parsed, exists }, execPath)) {
         return { valueExists: false, value: null, taskExists: true };
       }
       return { valueExists: true, value: buildRunValue(execPath), registration: 'task', taskExists: true };
-    } catch {
-      return { valueExists: false, value: null, taskExists: true };
+    } catch (error) {
+      throw new Error(`startup-get: task XML query failed: ${error?.message ?? String(error)}`);
     }
   };
 
@@ -296,7 +310,12 @@ export function createStartup(deps = {}) {
     try {
       await exec('reg', ['delete', RUN_KEY, '/v', RUN_VALUE, '/f'], { windowsHide: true });
     } catch (err) {
-      if (err?.code !== REG_NOT_FOUND) throw new Error(`startup-set: legacy Run cleanup failed: ${err.message}`);
+      if (err?.code === REG_NOT_FOUND) {
+        try {
+          if (await confirmMissingRunValue(exec)) return;
+        } catch { /* a failed verification must surface as a set error */ }
+      }
+      throw new Error(`startup-set: legacy Run cleanup failed: ${err.message}`);
     }
   };
 
@@ -311,8 +330,8 @@ export function createStartup(deps = {}) {
     getIntentRevision() { return startupIntentRevision; },
     /**
      * The raw registration truth: whether our Run value/task exists and its
-     * value. A query failure (absent value -> exit 1, or any other error)
-     * degrades to valueExists:false - the read is never a boot blocker.
+     * value. A missing Run value is confirmed through the registry API;
+     * other query failures surface as unknown state in the UI.
      * @returns {Promise<{ valueExists: boolean, value: string | null }>}
      */
     async get() {
@@ -324,10 +343,12 @@ export function createStartup(deps = {}) {
           ? { valueExists: true, value: buildRunValue(parsed.execPath) }
           : { valueExists: false, value: null };
       } catch (err) {
-        if (err?.code === REG_NOT_FOUND) return { valueExists: false, value: null };
-        // Any other query failure (reg.exe missing, key unreadable):
-        // degrade to absent - never fail the read.
-        return { valueExists: false, value: null };
+        if (err?.code === REG_NOT_FOUND) {
+          try {
+            if (await confirmMissingRunValue(exec)) return { valueExists: false, value: null };
+          } catch { /* registry fallback failed; preserve unknown state */ }
+        }
+        throw new Error(`startup-get: reg query failed: ${err?.message ?? String(err)}`);
       }
     },
     /**
@@ -401,7 +422,12 @@ export function createStartup(deps = {}) {
       try {
         await exec('reg', ['delete', RUN_KEY, '/v', RUN_VALUE, '/f'], { windowsHide: true });
       } catch (err) {
-        if (err?.code !== REG_NOT_FOUND) throw new Error(`startup-set: reg delete failed: ${err.message}`);
+        if (err?.code === REG_NOT_FOUND) {
+          try {
+            if (await confirmMissingRunValue(exec)) return this.get();
+          } catch { /* retain the failure */ }
+        }
+        throw new Error(`startup-set: reg delete failed: ${err.message}`);
       }
       if (cleanupLegacy) await cleanupLegacyRegistrations(exec);
       return this.get();
