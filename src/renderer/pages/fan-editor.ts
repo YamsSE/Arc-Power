@@ -103,6 +103,7 @@ let waiverRetryCount = 0;
 // leftover from a previous render (redraw/view-switch - never a leak onto
 // other pages; the guard also self-cleans when its container is gone).
 let activeEditingCleanup: (() => void) | null = null;
+let activeFanResumeCleanup: (() => void) | null = null;
 
 interface EditorState {
   mode: FanMode;
@@ -133,6 +134,8 @@ export function renderFanEditor(container: HTMLElement, ctx: PageContext): void 
   // is gone; stop any leftover editing before rendering anew).
   activeEditingCleanup?.();
   activeEditingCleanup = null;
+  activeFanResumeCleanup?.();
+  activeFanResumeCleanup = null;
   clear(container);
 
   if (!caps || !state) {
@@ -189,7 +192,71 @@ export function renderFanEditor(container: HTMLElement, ctx: PageContext): void 
     fixedPct: state.fixedFanPct ?? 50,
   };
 
+  if (!window.location.pathname.endsWith('advanced-overlay.html')) {
+    renderFanResumeCard(container, ctx);
+  }
   renderEditor(container, ctx, editor, maxPoints);
+}
+
+function renderFanResumeCard(container: HTMLElement, ctx: PageContext): void {
+  const selectedDeviceId = ctx.store.get().deviceId;
+  const key = ctx.store.get().devices.find((device) => device.id === selectedDeviceId)?.deviceKey;
+  if (!key) return;
+  const input = el('input', { type: 'checkbox', class: 'arc-sleep-toggle', role: 'switch', 'aria-label': 'Reapply fan settings after sleep', disabled: true });
+  const message = el('p', { class: 'card-note', text: 'Arc Power reapplies the last successfully applied fan mode after Windows 10/11 sleep or hibernate. Auto uses the driver stock mode, Curve restores its custom curve, and valid Fixed mode is supported. Arc Power must stay running in the tray. Staged edits are not applied or saved.' });
+  const card = el('section', { class: 'card fan-resume-card' }, [
+    el('div', { class: 'arc-sleep-panel-heading' }, [
+      el('div', {}, [el('h2', { class: 'card-title', text: 'Experimental' }), el('p', { class: 'card-note', text: 'Reapply fan settings after sleep' })]), input,
+    ]), message,
+  ]);
+  container.append(card);
+  let pending = false;
+  const isCurrentSelection = (): boolean => {
+    const current = ctx.store.get();
+    return current.deviceId === selectedDeviceId
+      && current.devices.find((device) => device.id === current.deviceId)?.deviceKey === key;
+  };
+  const description = message.textContent ?? '';
+  const refresh = async () => {
+    if (!card.isConnected) { activeFanResumeCleanup?.(); activeFanResumeCleanup = null; return; }
+    if (pending || !isCurrentSelection()) return;
+    try {
+      const saved = await api.fanResumeGet({ deviceId: selectedDeviceId!, deviceKey: key });
+    if (!card.isConnected || !isCurrentSelection()) {
+      message.textContent = 'The selected GPU changed. Reopen the Fan tab to view its fan resume status.';
+      return;
+    }
+    if (pending) return;
+    input.checked = saved.enabled;
+    message.textContent = saved.error ?? (saved.state === 'restored' ? 'Fan settings restored after resume.'
+      : saved.state === 'waiting' ? 'Waiting for the GPU to wake before restoring fan settings.' : description);
+    } catch { if (card.isConnected) message.textContent = 'Fan resume status is unavailable.'; }
+    finally { if (!pending && isCurrentSelection()) input.disabled = false; }
+  };
+  activeFanResumeCleanup = api.onFanResumeStatus(() => { void refresh(); });
+  void refresh();
+  input.addEventListener('change', () => {
+    if (pending) return;
+    pending = true;
+    input.disabled = true;
+    const desired = input.checked;
+    if (!isCurrentSelection()) {
+      input.checked = !desired;
+      message.textContent = 'The selected GPU changed. Reopen the Fan tab and try again.';
+      pending = false;
+      input.disabled = false;
+      return;
+    }
+    void api.fanResumeSet({ enabled: desired, deviceId: ctx.store.get().deviceId!, deviceKey: key }).then((result) => {
+      input.checked = result.enabled;
+      message.textContent = result.error ?? (result.enabled
+        ? 'Arc Power will restore the last successfully applied fan settings after sleep or hibernate.'
+        : 'Fan resume is off.');
+    }).catch((error) => {
+      input.checked = !desired;
+      message.textContent = error instanceof Error ? error.message : String(error);
+    }).finally(() => { pending = false; input.disabled = false; });
+  });
 }
 
 /**

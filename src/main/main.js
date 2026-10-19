@@ -4506,6 +4506,13 @@ async function main() {
       app.exit(0);
       return;
     }
+    if (process.env.RID_MOCK_FAN_RESUME_VERIFY === '1') {
+      const { powerMonitor } = await import('electron');
+      const { runFanResumeUiVerification } = await import('../../test/fan-resume-ui.js');
+      await runFanResumeUiVerification(win, backend, () => powerMonitor.emit('resume'));
+      app.exit(0);
+      return;
+    }
     if (process.env.RID_MOCK_DISPLAY_COLOR_VERIFY === '1') {
       const { verifyManagedDisplayColorUi } = await import('../../test/managed-display-color-ui.js');
       await verifyManagedDisplayColorUi(win, backend);

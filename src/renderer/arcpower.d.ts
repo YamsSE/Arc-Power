@@ -158,6 +158,10 @@ export interface ArcPowerApi {
    *  Apply button) - main skips the OC-mode gate for it (the mode is the
    *  interactive slider gate ONLY; the ceiling + capability refusals stay). */
   applySettings(deviceId: number, settings: Settings, opts?: { profileApply?: boolean }): Promise<ApplyResponse>;
+  /** Experimental: persist the last confirmed fan settings for this physical GPU. */
+  fanResumeGet(payload: { deviceId: number; deviceKey: string }): Promise<{ enabled: boolean; state: string; error: string | null; settings?: Pick<Settings, 'fanMode' | 'fanCurve' | 'fixedFanPct'> | null }>;
+  fanResumeSet(payload: { enabled: boolean; deviceId: number; deviceKey: string }): Promise<{ enabled: boolean; state: string; error: string | null }>;
+  onFanResumeStatus(callback: () => void): () => void;
   resetToDefaults(deviceId: number): Promise<ResetResponse>;
   waiverGet(deviceId: number): Promise<{ accepted: boolean }>;
   waiverAccept(deviceId: number): Promise<{ accepted: boolean }>;

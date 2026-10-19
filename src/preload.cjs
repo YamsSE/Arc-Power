@@ -53,6 +53,13 @@ contextBridge.exposeInMainWorld('arcPower', {
   // a PROFILE apply (the Profiles-page Apply button), which skips the
   // OC-mode gate (the mode is the interactive slider gate ONLY).
   applySettings: (deviceId, settings, opts) => ipcRenderer.invoke('apply-settings', deviceId, settings, opts),
+  fanResumeGet: (payload) => ipcRenderer.invoke('fan-resume:get', payload),
+  fanResumeSet: (payload) => ipcRenderer.invoke('fan-resume:set', payload),
+  onFanResumeStatus: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('fan-resume:status', listener);
+    return () => ipcRenderer.removeListener('fan-resume:status', listener);
+  },
   resetToDefaults: (deviceId) => ipcRenderer.invoke('reset-to-defaults', deviceId),
   waiverGet: (deviceId) => ipcRenderer.invoke('waiver-get', deviceId),
   waiverAccept: (deviceId) => ipcRenderer.invoke('waiver-accept', deviceId),

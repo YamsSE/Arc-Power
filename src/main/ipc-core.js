@@ -52,6 +52,7 @@ import { THEMES, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVE
 // RID_MOCK_VENDOR).
 import { createVendorTelemetry } from './vendor-telemetry/vendor-telemetry.js';
 import { physicalTargetOf } from './gpu-inventory.js';
+import { displayKeyInNamespace, displayKeySuffix } from './display-identity.js';
 import { GameProfileStore, canonicalExePath, mergeGameGpuProfiles, mergeGameGpuProfilePatch, normalizeAssociation, normalizeGameGpuProfile, normalizeGameSettings } from './store/game-profile-store.js';
 import { createGameScanAdapter, normalizeScannedApps } from './game-scan.js';
 import { validateSafeGameCandidate } from './game-candidate.js';
@@ -2621,25 +2622,27 @@ export function createIpcHandlers({
    * never record - the store must only degrade on a driver 'out-of-range'.
    * @param {{ deviceId: number, settings: object, caps: object, ocMode: 'stock'|'advanced', profileApply?: boolean }} req
   */
-  const runApply = async ({ deviceId, settings, caps, ocMode, profileApply }) => {
+  const runApply = async ({ deviceId, settings, caps, ocMode, profileApply, expectedTarget = null }) => {
     const normalizeApply = (out) => withCapabilityFlags(out);
     // Resolve the durable target first. The capability payload is a renderer
     // snapshot and older sessions can carry a null deviceKey even though the
     // authoritative inventory row is keyed. Extended writes must use that
     // row key or the bundled runtime will reject the request before writing.
-    const target = typeof backend.getTarget === 'function'
+    const target = expectedTarget
+      ? await backend.getDeviceTarget(deviceId, expectedTarget.deviceKey, expectedTarget.physicalTarget)
+      : typeof backend.getTarget === 'function'
       ? await backend.getTarget(deviceId)
       : typeof backend.getDeviceTarget === 'function'
         ? await backend.getDeviceTarget(deviceId, null)
         : typeof backend.listDevices === 'function'
           ? (await backend.listDevices()).find((device) => device.id === deviceId) ?? null
           : null;
-    const deviceKey = typeof target?.deviceKey === 'string'
+    const deviceKey = expectedTarget?.deviceKey ?? (typeof target?.deviceKey === 'string'
       ? target.deviceKey
       : typeof caps?.deviceKey === 'string'
         ? caps.deviceKey
-        : null;
-    const physicalTarget = physicalTargetOf(target);
+        : null);
+    const physicalTarget = expectedTarget?.physicalTarget ?? physicalTargetOf(target);
     const recordRefusals = (result) => {
       if (!result || typeof result !== 'object') return;
       if (result.ocModeRefused === true || result.extendedUnavailable === true) return;
@@ -2674,6 +2677,10 @@ export function createIpcHandlers({
       }
     };
     const attempt = async (waiverAccepted) => {
+      // Resume keeps its original physical proof through the capability reads
+      // and the final dispatch. Re-deriving proof from a numeric ID here could
+      // authorize a different adapter after an inventory transition.
+      if (expectedTarget) await backend.assertDeviceTarget(deviceId, deviceKey, physicalTarget);
       if (applyRunner?.needsWorker?.()) {
         // M17c (step-4 N6): the parent-resolved limits-key rides the worker
         // request - the worker's gate thresholds must match the parent's
@@ -3706,21 +3713,47 @@ export function createIpcHandlers({
           || typeof request.displayKey !== 'string' || request.displayKey.length === 0) {
           throw new Error('display apply request requires stable deviceKey and displayKey');
         }
-        const lockKey = `${request.deviceKey}|${request.displayKey}`;
+        const displayNamespaceEnd = request.displayKey.indexOf('|display|');
+        if (displayKeySuffix(request.displayKey) === null
+          || displayNamespaceEnd < 1
+          || request.displayKey.slice(0, displayNamespaceEnd) !== request.deviceKey) {
+          throw new Error('display apply request displayKey does not match the selected graphics adapter');
+        }
+        const initialTarget = await backend.getDeviceTarget?.(deviceId);
+        if (!initialTarget) {
+          throw new Error('stale display target: the selected graphics adapter changed; refresh Display and try again');
+        }
+        const physicalTarget = physicalTargetOf(initialTarget);
+        // Let the unified backend revalidate the selected key against the
+        // current physical target. It accepts only a uniquely retained alias
+        // and rejects ambiguity, replug, and physical identity changes.
+        const target = await backend.getDeviceTarget?.(deviceId, request.deviceKey, physicalTarget) ?? initialTarget;
+        const aliases = await backend.listDevices?.();
+        if (target.synthetic || target.backendKind === 'os' || target.identityAmbiguous === true
+          || (request.deviceKey !== target.deviceKey
+            && (!Array.isArray(aliases)
+              || aliases.filter((row) => row.deviceKey === request.deviceKey || row.deviceKeys?.includes(request.deviceKey)).length !== 1
+              || !target.deviceKeys?.includes(request.deviceKey)))) {
+          throw new Error('stale display target: the selected graphics adapter changed; refresh Display and try again');
+        }
+        const lockKey = `${target.deviceKey}|${displayKeyInNamespace(request.displayKey, target.deviceKey)}`;
         return withDisplayApplyLock(lockKey, async () => {
-          const target = await backend.getDeviceTarget?.(deviceId);
-          if (!target || target.deviceKey !== request.deviceKey) {
+          const currentTarget = await backend.getDeviceTarget?.(deviceId, request.deviceKey, physicalTarget);
+          const currentAliases = await backend.listDevices?.();
+          if (!currentTarget || currentTarget.deviceKey !== target.deviceKey
+            || currentTarget.identityAmbiguous === true || currentTarget.synthetic || currentTarget.backendKind === 'os'
+            || (request.deviceKey !== currentTarget.deviceKey
+              && (!Array.isArray(currentAliases)
+                || currentAliases.filter((row) => row.deviceKey === request.deviceKey || row.deviceKeys?.includes(request.deviceKey)).length !== 1
+                || !currentTarget.deviceKeys?.includes(request.deviceKey)))) {
             throw new Error('stale display target: the selected graphics adapter changed; refresh Display and try again');
           }
+          const displayKey = displayKeyInNamespace(request.displayKey, currentTarget.deviceKey);
           const settings = sanitizeDisplaySettings(request.patch);
-          if (target.synthetic || target.backendKind === 'os') {
-            const perControl = Object.fromEntries(Object.keys(settings).map((key) => [key, { ok: false, errorCode: 'unsupported', message: 'display settings are not supported on this GPU' }]));
-            return { ok: Object.keys(perControl).length === 0, perControl, displayState: await backend.getDisplaySettings(deviceId) };
-          }
           let preflightState = null;
           if (settings.superResolution?.enabled === true) {
             try { preflightState = await backend.getDisplaySettings(deviceId); } catch { preflightState = null; }
-            const capability = validateDisplaySuperResolutionCapability(settings, preflightState, request.displayKey);
+            const capability = validateDisplaySuperResolutionCapability(settings, preflightState, displayKey);
             if (!capability.ok) {
               return {
                 ok: false,
@@ -3729,13 +3762,13 @@ export function createIpcHandlers({
               };
             }
           }
-          const applyRequest = { deviceId, deviceKey: request.deviceKey, displayKey: request.displayKey, physicalTarget: physicalTargetOf(target), settings };
+          const applyRequest = { deviceId, deviceKey: currentTarget.deviceKey, displayKey, physicalTarget: physicalTargetOf(currentTarget), settings };
           if (applyRunner) {
             const out = await applyRunner.displayApply(applyRequest);
             return { ok: out.ok === true, perControl: out.perControl ?? {}, displayState: out.displayState ?? null };
           }
-          await backend.assertDeviceTarget?.(deviceId, request.deviceKey, physicalTargetOf(target));
-          const out = await backend.setDisplaySettings(deviceId, { deviceKey: request.deviceKey, displayKey: request.displayKey, patch: settings });
+          await backend.assertDeviceTarget?.(deviceId, currentTarget.deviceKey, physicalTargetOf(currentTarget));
+          const out = await backend.setDisplaySettings(deviceId, { deviceKey: currentTarget.deviceKey, displayKey, patch: settings });
           let displayState = null;
           try { displayState = await backend.getDisplaySettings(deviceId); } catch { /* degraded */ }
           return { ok: out.ok, perControl: out.perControl, displayState };
@@ -3745,6 +3778,22 @@ export function createIpcHandlers({
       'apply-settings': async (deviceId, payload, opts) => {
         assertValidDeviceId(deviceId);
         const settings = sanitizeSettings(payload);
+        let expectedTarget = null;
+        if (opts?.expectedTarget !== undefined) {
+          const value = opts.expectedTarget;
+          if (!value || typeof value !== 'object' || Array.isArray(value)
+            || typeof value.deviceKey !== 'string' || !value.deviceKey.trim()
+            || !value.physicalTarget || typeof value.physicalTarget !== 'object' || Array.isArray(value.physicalTarget)
+            || typeof backend.assertDeviceTarget !== 'function' || typeof backend.getDeviceTarget !== 'function') {
+            throw new Error('apply-settings: expected target requires a stable GPU key and physical proof');
+          }
+          expectedTarget = { deviceKey: value.deviceKey, physicalTarget: structuredClone(value.physicalTarget) };
+          await backend.assertDeviceTarget(deviceId, expectedTarget.deviceKey, expectedTarget.physicalTarget);
+        }
+        if (opts?.resumeRestore === true
+          && (!expectedTarget || Object.keys(settings).some((key) => !['fanMode', 'fanCurve', 'fixedFanPct'].includes(key)))) {
+          throw new Error('apply-settings: resume restore requires a physically verified fan-only request');
+        }
         // M3-C-E: the OC-mode gate runs BEFORE every clamp - an explicit
         // pre-clamp REFUSAL, never a clamp. Stock mode refuses anything
         // beyond the standard limits (252 W / 90 C) with the mode message;
@@ -3908,7 +3957,7 @@ export function createIpcHandlers({
         // driver waiver + retries ONCE when the driver answers waiver-not-set
         // while the persisted acceptance is true (the consent stands - never
         // a dialog, never a dead-end, never a persisted false).
-        const out = await runApply({ deviceId, settings: clamped, caps, ocMode: gateMode, profileApply: opts?.profileApply === true });
+        const out = await runApply({ deviceId, settings: clamped, caps, ocMode: gateMode, profileApply: opts?.profileApply === true, expectedTarget });
         if (!capabilityRefusal) return out;
         const perControl = { ...out.result.perControl, ...capabilityPerControl };
         return withCapabilityFlags({
