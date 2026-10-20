@@ -2703,8 +2703,8 @@ async function main() {
       isGameExecutable: isSharpeningGameExecutable,
       helperPath: sharpeningHelperPath,
       stageHelper: app.isPackaged && process.platform === 'win32' ? stageScreenSharpeningHelper : null });
-  // The desktop capture helper is activated only after the foreground
-  // detector exists, and only when the persisted global setting is enabled.
+  // The screen post-processing helper is activated only after the foreground
+  // detector exists, and only when sharpening or ASR is enabled.
   void postprocessSharpening.start().catch((error) => console.error(`[sharpening] ${error.message}`));
   // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in
   // bytes - total - avail - the Memory row's source). THE DETERMINISM

@@ -1514,6 +1514,16 @@ export interface PostprocessSharpeningValue {
   enabled: boolean;
   percentage: number;
 }
+export interface ArcSuperResolutionValue {
+  enabled: boolean;
+}
+export interface ArcSuperResolutionState {
+  value: ArcSuperResolutionValue;
+  runtimeReady: boolean;
+  requiresRestart: false;
+  active: boolean;
+  reason?: string | null;
+}
 export interface PostprocessSharpeningGlobal {
   value: PostprocessSharpeningValue;
   overrideCount: number;

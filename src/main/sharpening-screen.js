@@ -7,10 +7,11 @@ import { canonicalExePath } from './game-candidate.js';
 import { inspectLegacySharpening } from './legacy-sharpening-audit.js';
 
 const DEFAULT = Object.freeze({ enabled: false, percentage: 50 });
+const DEFAULT_ASR = Object.freeze({ enabled: false });
 const SETTINGS = 'postprocess-sharpening.json';
 const SOURCE_HELPER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'sharpening-runtime', 'ArcPower.ScreenSharpen.exe');
 // Pin the bundled native executable before spawning it from an elevated Portable.
-const HELPER_SHA256 = 'B4D80F55A65F8AA467E6E253BA1996357142ED96D708250C0BE7B2B6E2714112';
+const HELPER_SHA256 = 'F254351FB3A539FB8FC7F4488FEAB3B05AE14230AF79C987A2ED1B889BC79F33';
 
 function helperIntegrity(helperPath) {
   try {
@@ -28,6 +29,15 @@ function validateValue(value) {
     throw new TypeError('Sharpening must be { enabled: boolean, percentage: integer 0-100 }.');
   }
   return { enabled: value.enabled, percentage: value.percentage };
+}
+
+function validateAsrValue(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || typeof value.enabled !== 'boolean'
+    || Object.keys(value).some((key) => key !== 'enabled')) {
+    throw new TypeError('Arc Super Resolution must be { enabled: boolean }.');
+  }
+  return { enabled: value.enabled };
 }
 
 function atomicJson(file, value) {
@@ -48,8 +58,9 @@ function readSettings(file) {
     else throw error;
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)
-    || Object.keys(raw).some((key) => !['global', 'games'].includes(key))) throw new Error('Sharpening settings file is invalid.');
+    || Object.keys(raw).some((key) => !['global', 'games', 'asr'].includes(key))) throw new Error('Screen post-processing settings file is invalid.');
   const global = validateValue(raw.global ?? DEFAULT);
+  const asr = validateAsrValue(raw.asr ?? DEFAULT_ASR);
   const games = raw.games ?? {};
   if (!games || typeof games !== 'object' || Array.isArray(games)) throw new Error('Sharpening game overrides are invalid.');
   const cleanGames = {};
@@ -57,7 +68,7 @@ function readSettings(file) {
     if (canonicalExePath(key) !== key) throw new Error('Sharpening game override identity is invalid.');
     cleanGames[key] = validateValue(value);
   }
-  return { global, games: cleanGames };
+  return { global, games: cleanGames, asr };
 }
 
 /** Game-scoped screen sharpening. The native helper owns capture and compositing. */
@@ -66,13 +77,14 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
   if (!detector || typeof detector.detectProcess !== 'function') throw new TypeError('A foreground process detector is required.');
   if (typeof isGameExecutable !== 'function') throw new TypeError('A game catalog lookup is required.');
   const configPath = path.join(dir, SETTINGS);
-  let settings = { global: { ...DEFAULT }, games: {} };
+  let settings = { global: { ...DEFAULT }, games: {}, asr: { ...DEFAULT_ASR } };
   let settingsError = null;
   try { settings = readSettings(configPath); }
   catch (error) { settingsError = error; }
   let child = null;
   let ready = false;
   let overlayActive = false;
+  let overlayMode = null;
   let reason = settingsError ? `Sharpening settings could not be loaded and were preserved: ${settingsError.message}` : null;
   let started = false;
   let stopped = false;
@@ -87,7 +99,9 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
   const statusListeners = new Set();
   let publishedStatus = null;
 
-  const runtimeStatus = () => ({ active: ready && overlayActive, reason: reason ?? null });
+  const runtimeEnabled = () => settings.global.enabled || settings.asr.enabled;
+  const idleCommand = () => settings.asr.enabled ? 'ASR 0' : 'SET 0 0';
+  const runtimeStatus = () => ({ active: ready && overlayActive, reason: reason ?? null, ...(overlayMode ? { mode: overlayMode } : {}) });
   const publishStatus = () => {
     const next = runtimeStatus();
     const signature = JSON.stringify(next);
@@ -106,7 +120,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
   };
 
   const persist = (next) => {
-    if (settingsError) throw new Error(`${reason}. Repair the settings file before changing sharpening.`);
+    if (settingsError) throw new Error(`${reason}. Repair the settings file before changing screen post-processing.`);
     fs.mkdirSync(dir, { recursive: true });
     atomicJson(configPath, next);
     settings = next;
@@ -126,7 +140,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
       runtimeReady: helperIntegrity(helperPath),
       provider: 'screen',
       requiresRestart: false,
-      active: ready && overlayActive,
+      active: ready && overlayActive && overlayMode === 'sharpening',
       legacyIntegrations: legacy.games,
       legacyManifestPath: legacy.manifestPath,
       legacyManifestStatus: legacy.status,
@@ -134,6 +148,13 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
       ...(reason ? { reason } : {}),
     };
   };
+  const asrState = () => ({
+    value: { ...settings.asr },
+    runtimeReady: helperIntegrity(helperPath),
+    requiresRestart: false,
+    active: ready && overlayActive && overlayMode === 'asr',
+    ...(reason ? { reason } : {}),
+  });
   const gameState = (exePath) => {
     const key = canonicalExePath(exePath);
     const override = key ? settings.games[key] ?? null : null;
@@ -150,8 +171,9 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
     try {
       child.stdin.write(`${command}\n`);
       lastCommand = command;
-      if (command === 'SET 0 0' && overlayActive) {
+      if ((command === 'SET 0 0' || command === 'ASR 0') && overlayActive) {
         overlayActive = false;
+        overlayMode = null;
         publishStatus();
       }
     } catch (error) {
@@ -166,6 +188,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
     child = null;
     ready = false;
     overlayActive = false;
+    overlayMode = null;
     lastCommand = null;
     publishStatus();
     settleStartup?.(false);
@@ -188,14 +211,14 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
   };
 
   const schedulePoll = () => {
-    if (!started || stopped || timer || polling || !settings.global.enabled || !child) return;
+    if (!started || stopped || timer || polling || !runtimeEnabled() || !child) return;
     timer = setTimeout(async () => {
       timer = null;
       polling = true;
       const token = generation;
       try {
         const identity = await detector.detectProcess();
-        if (token !== generation || stopped || !ready || !settings.global.enabled) return;
+        if (token !== generation || stopped || !ready || !runtimeEnabled()) return;
         const pid = Number.isInteger(identity?.pid) && identity.pid > 0 ? identity.pid : 0;
         const exePath = identity?.exePath;
         const ownPid = pid === process.pid || canonicalExePath(exePath) === canonicalExePath(process.execPath);
@@ -206,13 +229,17 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
         if (pid > 0 && !ownPid && typeof exePath === 'string') {
           try { game = await isGameExecutable(exePath) === true; } catch { game = false; }
         }
-        if (token !== generation || stopped || !ready || !settings.global.enabled) return;
-        const value = game ? effectiveFor(exePath) : { enabled: false, percentage: 0 };
-        writeCommand(`SET ${value.enabled ? pid : 0} ${value.enabled ? value.percentage : 0}`);
+        if (token !== generation || stopped || !ready || !runtimeEnabled()) return;
+        if (settings.asr.enabled) {
+          writeCommand(`ASR ${game ? pid : 0}`);
+        } else {
+          const value = game ? effectiveFor(exePath) : { enabled: false, percentage: 0 };
+          writeCommand(`SET ${value.enabled ? pid : 0} ${value.enabled ? value.percentage : 0}`);
+        }
       } catch (error) {
         reason = `Unable to detect the foreground process: ${error?.message ?? String(error)}`;
         publishStatus();
-        writeCommand('SET 0 0');
+        writeCommand(idleCommand());
       } finally {
         polling = false;
         schedulePoll();
@@ -224,7 +251,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
   const startHelper = () => {
     if (child) return helperStartup ?? Promise.resolve(ready);
     if (helperStartup) return helperStartup;
-    if (!settings.global.enabled || stopped) return Promise.resolve(false);
+    if (!runtimeEnabled() || stopped) return Promise.resolve(false);
     if (!helperIntegrity(helperPath)) {
       reason = 'The included screen sharpening helper is missing or damaged.';
       publishStatus();
@@ -258,7 +285,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
         if (!launchPath || (stageHelper && !helperIntegrity(launchPath))) {
           throw new Error('The protected screen sharpening helper failed its post-copy integrity check.');
         }
-        if (startupGeneration !== generation || stopped || !settings.global.enabled || resolved) {
+        if (startupGeneration !== generation || stopped || !runtimeEnabled() || resolved) {
           try { staged?.cleanup?.(); } catch { /* stop raced with asynchronous staging */ }
           settleStartupPromise(false);
           return;
@@ -279,12 +306,14 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
             publishStatus();
             schedulePoll();
             settleStartupPromise(true);
-          } else if (/^ACTIVE\s+\d+$/.test(message)) {
+          } else if (/^ACTIVE\s+\d+(?:\s+ASR)?$/.test(message)) {
             overlayActive = true;
+            overlayMode = /\sASR$/.test(message) ? 'asr' : 'sharpening';
             reason = null;
             publishStatus();
           } else if (message === 'IDLE') {
             overlayActive = false;
+            overlayMode = null;
             publishStatus();
           }
         }
@@ -308,6 +337,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
         child = null;
         ready = false;
         overlayActive = false;
+        overlayMode = null;
         reason = `Unable to start screen sharpening helper: ${error.message}`;
         publishStatus();
         settleStartup?.(false);
@@ -319,6 +349,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
         child = null;
         ready = false;
         overlayActive = false;
+        overlayMode = null;
         if (timer) clearTimeout(timer);
         timer = null;
         reason = `Screen sharpening helper exited (${signal ?? code ?? 'unknown'}). Toggle sharpening off and on to retry.`;
@@ -336,7 +367,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
       readyTimer.unref?.();
       } catch (error) {
         try { staged?.cleanup?.(); } catch { /* best effort cleanup after a failed launch */ }
-        if (startupGeneration !== generation || stopped || !settings.global.enabled || resolved) {
+        if (startupGeneration !== generation || stopped || !runtimeEnabled() || resolved) {
           settleStartupPromise(false);
           return;
         }
@@ -355,7 +386,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
       if (started) return globalState();
       started = true;
       stopped = false;
-      if (settings.global.enabled) void startHelper();
+      if (runtimeEnabled()) void startHelper();
       return globalState();
     },
     async stop() {
@@ -368,6 +399,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
       return globalState();
     },
     async getGlobal() { return globalState(); },
+    async getAsr() { return asrState(); },
     subscribeStatus(listener) {
       if (typeof listener !== 'function') throw new TypeError('A sharpening status listener is required.');
       statusListeners.add(listener);
@@ -377,7 +409,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
     async setGlobal(value) {
       const nextValue = validateValue(value);
       persist({ ...settings, global: nextValue });
-      if (!nextValue.enabled) {
+      if (!runtimeEnabled()) {
         generation++;
         if (timer) clearTimeout(timer);
         timer = null;
@@ -387,6 +419,19 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
       else schedulePoll();
       return globalState();
     },
+    async setAsr(value) {
+      const nextValue = validateAsrValue(value);
+      persist({ ...settings, asr: nextValue });
+      if (!runtimeEnabled()) {
+        generation++;
+        if (timer) clearTimeout(timer);
+        timer = null;
+        stopHelper();
+      } else if (started && !child) await startHelper();
+      else if (started && child && !ready) await (helperStartup ?? Promise.resolve(false));
+      else schedulePoll();
+      return asrState();
+    },
     async getGame(exePath) { return gameState(exePath); },
     async setGame(exePath, override) {
       const key = canonicalExePath(exePath);
@@ -395,7 +440,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
       if (override === null) delete games[key];
       else games[key] = validateValue(override);
       persist({ ...settings, games });
-      if (settings.global.enabled) schedulePoll();
+      if (runtimeEnabled()) schedulePoll();
       return gameState(key);
     },
   };

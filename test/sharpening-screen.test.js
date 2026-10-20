@@ -93,7 +93,7 @@ test('screen sharpening service starts without capture consent, selects, overrid
     assert.equal(commands[0], 'SET 4242 74');
 
     children[0].stdout.emit('data', 'ACTIVE 4242\n');
-    assert.deepEqual(statuses.at(-1), { active: true, reason: null }, 'helper ACTIVE transitions are published without polling the settings API');
+    assert.deepEqual(statuses.at(-1), { active: true, reason: null, mode: 'sharpening' }, 'helper ACTIVE transitions include the active screen-processing mode without polling the settings API');
     assert.equal((await service.getGlobal()).active, true, 'ACTIVE from the helper should be reflected in service state');
 
     foreground = { pid: 4242, exePath: GAME };
@@ -176,6 +176,60 @@ test('screen sharpening clears the target for desktop apps and fails closed when
     await until(() => commands.length > previousCount && commands.at(-1) === 'SET 0 0', 'catalog failure did not fail closed');
     assert.equal(commands.at(-1), 'SET 0 0', 'a failed game lookup must clear the active capture target');
   } finally {
+    for (const child of children) {
+      child.exitCode ??= 0;
+      child.stdin.destroyed = true;
+    }
+    await service.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Arc Super Resolution shares the protected helper without changing sharpening settings', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-power-asr-screen-'));
+  const commands = [];
+  const children = [];
+  let foreground = { pid: 4242, exePath: GAME };
+  const service = createScreenPostprocessSharpening({
+    dir,
+    helperPath: HELPER,
+    detector: { async detectProcess() { return foreground; } },
+    isGameExecutable: async (exePath) => exePath.toLowerCase() === GAME.toLowerCase(),
+    spawn() {
+      const child = new FakeChild();
+      children.push(child);
+      child.stdin.write = (value) => { child.stdin.writes.push(String(value)); commands.push(String(value).trim()); return true; };
+      setTimeout(() => child.stdout.emit('data', 'READY screen-sharpen-v1\n'), 0);
+      return child;
+    },
+    pollMs: 250,
+  });
+  const statuses = [];
+  const unsubscribe = service.subscribeStatus((status) => statuses.push(status));
+  try {
+    await service.start();
+    assert.equal(children.length, 0);
+    const enabled = await service.setAsr({ enabled: true });
+    assert.deepEqual(enabled.value, { enabled: true });
+    assert.equal(children.length, 1, 'ASR starts the same integrity-pinned helper');
+    await until(() => commands.includes('ASR 4242'), 'recognized foreground game was not selected for ASR');
+    children[0].stdout.emit('data', 'ACTIVE 4242 ASR\n');
+    assert.equal((await service.getAsr()).active, true);
+    assert.equal((await service.getGlobal()).active, false, 'ASR must not be reported as sharpening');
+    assert.equal(statuses.at(-1).mode, 'asr');
+
+    foreground = { pid: 4343, exePath: 'C:\\Program Files\\ChatGPT\\ChatGPT.exe' };
+    await until(() => commands.at(-1) === 'ASR 0', 'unrecognized foreground applications were not cleared');
+    assert.deepEqual((await service.getGlobal()).value, { enabled: false, percentage: 50 }, 'ASR did not alter sharpening values');
+
+    await service.setAsr({ enabled: false });
+    assert.ok(commands.includes('SET 0 0'), 'disabling ASR clears the native target');
+    assert.ok(commands.includes('STOP'), 'the helper stops when both spatial scaling and sharpening are off');
+    assert.equal((await service.getAsr()).active, false);
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'postprocess-sharpening.json'), 'utf8'));
+    assert.deepEqual(saved.asr, { enabled: false });
+  } finally {
+    unsubscribe();
     for (const child of children) {
       child.exitCode ??= 0;
       child.stdin.destroyed = true;

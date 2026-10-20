@@ -23,6 +23,8 @@ import type {
   GraphicsApplyResponse,
   GraphicsSettings,
   GraphicsState,
+  ArcSuperResolutionValue,
+  ArcSuperResolutionState,
   PostprocessSharpeningValue,
   PostprocessSharpeningGlobal,
   PostprocessSharpeningGame,
@@ -143,7 +145,9 @@ export interface ArcPowerApi {
   postprocessSharpeningSet(value: PostprocessSharpeningValue): Promise<PostprocessSharpeningGlobal>;
   postprocessSharpeningGameGet(exePath: string): Promise<PostprocessSharpeningGame>;
   postprocessSharpeningGameSet(exePath: string, override: PostprocessSharpeningValue | null): Promise<PostprocessSharpeningGame>;
-  onPostprocessSharpeningStatus(callback: (status: { active: boolean; reason: string | null }) => void): () => void;
+  arcSuperResolutionGet(): Promise<ArcSuperResolutionState>;
+  arcSuperResolutionSet(value: ArcSuperResolutionValue): Promise<ArcSuperResolutionState>;
+  onPostprocessSharpeningStatus(callback: (status: { active: boolean; reason: string | null; mode?: 'asr' | 'sharpening' }) => void): () => void;
   /** M10b (the Graphics "Display" view): the display-output read (never
    *  throws - { displays: [] } is the honest no-controls degrade). NEVER
    *  called with a null deviceId - the no-Intel page guard renders

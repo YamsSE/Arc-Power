@@ -16,7 +16,7 @@ foreach ($required in @($source, $vcvars, $cppwinrt, $um)) {
     }
 }
 
-$compile = 'cl.exe /nologo /O2 /std:c++20 /EHsc /MT /DNOMINMAX /DWIN32_LEAN_AND_MEAN /DWINRT_LEAN_AND_MEAN /I "{0}" /I "{1}" /Fo"ArcPower.ScreenSharpen.obj" /Fe"ArcPower.ScreenSharpen.exe" "{2}" d3d11.lib dxgi.lib d3dcompiler.lib windowsapp.lib runtimeobject.lib user32.lib dwmapi.lib' -f $cppwinrt, $um, $source
+$compile = 'cl.exe /nologo /O2 /std:c++20 /EHsc /MT /DNOMINMAX /DWIN32_LEAN_AND_MEAN /DWINRT_LEAN_AND_MEAN /I "{0}" /I "{1}" /Fo"ArcPower.ScreenSharpen.obj" /Fe"ArcPower.ScreenSharpen.exe" "{2}" d3d11.lib dxgi.lib d3dcompiler.lib windowsapp.lib runtimeobject.lib user32.lib gdi32.lib dwmapi.lib' -f $cppwinrt, $um, $source
 $cmd = 'call "{0}" >nul && {1}' -f $vcvars, $compile
 $process = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/s', '/c', $cmd) -WorkingDirectory $sourceDir -Wait -PassThru -NoNewWindow
 if ($process.ExitCode -ne 0) {
