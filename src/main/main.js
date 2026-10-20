@@ -2709,9 +2709,10 @@ async function main() {
       isGameExecutable: isSharpeningGameExecutable,
       helperPath: sharpeningHelperPath,
       ensureCompatibility: () => rtssProfile.ensureScreenSharpeningCompatibility(),
-      stageHelper: app.isPackaged && process.platform === 'win32' ? stageScreenSharpeningHelper : null });
-  // The desktop capture helper is activated only after the foreground
-  // detector exists, and only when the persisted global setting is enabled.
+      stageHelper: app.isPackaged && process.platform === 'win32' ? stageScreenSharpeningHelper : null,
+      allowCaptureOverlay: false });
+  // The capture overlay is paused because it causes frame-pacing and input-
+  // latency regressions. A future native/in-game provider can re-enable it.
   void postprocessSharpening.start().catch((error) => console.error(`[sharpening] ${error.message}`));
   // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in
   // bytes - total - avail - the Memory row's source). THE DETERMINISM

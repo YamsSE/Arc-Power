@@ -14,7 +14,7 @@ const sharpeningHelp = (text: string): HTMLElement => el('details', { class: 'sh
 const makeSelect = (value: string, options: Array<{ value: string; label: string }>, onChange: (value: string) => void, ariaLabel: string): DropdownElement =>
   buildDropdown(value, options, { className: 'graphics-select sharpening-select', ariaLabel, onChange });
 
-export type GlobalSharpeningApplyState = { dirty: boolean; busy: boolean; apply: () => Promise<void> };
+export type GlobalSharpeningApplyState = { dirty: boolean; busy: boolean; canApply: boolean; apply: () => Promise<void> };
 
 /** App-managed screen sharpening controls, kept outside the driver's graphics apply path. */
 export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningApplyState) => void, onUnmount?: () => void): HTMLElement {
@@ -35,7 +35,7 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
   };
   const isDirty = (): boolean => !!state && !!appliedValue
     && (draft.enabled !== appliedValue.enabled || draft.percentage !== appliedValue.percentage);
-  const notify = (): void => onStateChange?.({ dirty: isDirty(), busy, apply: applyGlobal });
+  const notify = (): void => onStateChange?.({ dirty: isDirty(), busy, canApply: !!state && (state.runtimeReady || !draft.enabled), apply: applyGlobal });
 
   const legacyWarning = (): HTMLElement[] => {
     if (state?.legacyManifestStatus === 'unreadable') {
@@ -52,7 +52,7 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
 
   const render = (): void => {
     const request = generation;
-    const slider = el('input', { type: 'range', class: 'graphics-slider', min: 0, max: 100, step: 1, value: draft.percentage, disabled: busy || !state || !draft.enabled,
+    const slider = el('input', { type: 'range', class: 'graphics-slider', min: 0, max: 100, step: 1, value: draft.percentage, disabled: busy || !state || !state.runtimeReady || !draft.enabled,
       'aria-label': 'Arc Image Sharpening strength', 'aria-valuetext': `${draft.percentage}%`, oninput: (event: Event) => {
         markEditing();
         draft.percentage = safePercentage((event.target as HTMLInputElement).valueAsNumber);
@@ -69,12 +69,15 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
       markEditing();
       draft.enabled = value === 'on';
       sliderRow.hidden = !draft.enabled;
-      slider.disabled = busy || !state || !draft.enabled;
+      slider.disabled = busy || !state || !state.runtimeReady || !draft.enabled;
+      const applyButton = root.querySelector<HTMLButtonElement>('.graphics-card-actions .btn-primary');
+      if (applyButton) applyButton.disabled = busy || !state || (!state.runtimeReady && draft.enabled);
       notify();
     }, 'Arc Image Sharpening');
     select.disabled = busy || !state;
     const apply = async (): Promise<void> => {
       if (busy || !state) return;
+      if (!state.runtimeReady && draft.enabled) return;
       const request = generation;
       busy = true; error = ''; saveStatus = ''; render(); notify();
       try {
@@ -104,7 +107,7 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
       el('p', { class: 'sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading sharpening settings…' }),
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),
       el('div', { class: 'graphics-card-actions' }, [
-        el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : saveStatus || 'Apply', disabled: busy || !state, onclick: () => void apply() }),
+        el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : saveStatus || 'Apply', disabled: busy || !state || (!state.runtimeReady && draft.enabled), onclick: () => void apply() }),
         el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { saveStatus = ''; draft = { enabled: false, percentage: 50 }; render(); notify(); } }),
       ]),
     );
@@ -193,7 +196,7 @@ export function renderGameSharpening(exePath: string): HTMLElement {
   const render = (): void => {
     const globalValue = state?.globalValue ?? { enabled: false, percentage: 50 };
     const shownValue = useGlobal ? globalValue : draft;
-    const slider = el('input', { class: 'graphics-slider', type: 'range', min: 0, max: 100, step: 1, value: shownValue.percentage, disabled: busy || !state || useGlobal || !draft.enabled,
+    const slider = el('input', { class: 'graphics-slider', type: 'range', min: 0, max: 100, step: 1, value: shownValue.percentage, disabled: busy || !state || state.runtimeReady === false || useGlobal || !draft.enabled,
       'aria-label': 'Per-game Arc Image Sharpening strength', 'aria-valuetext': `${shownValue.percentage}%`, oninput: (event: Event) => {
         markEditing();
         draft.percentage = safePercentage((event.target as HTMLInputElement).valueAsNumber);
@@ -210,9 +213,11 @@ export function renderGameSharpening(exePath: string): HTMLElement {
       useGlobal = value === 'global';
       if (!useGlobal) draft.enabled = value === 'on';
       sliderRow.hidden = useGlobal || !draft.enabled;
-      slider.disabled = busy || !state || useGlobal || !draft.enabled;
+      slider.disabled = busy || !state || state.runtimeReady === false || useGlobal || !draft.enabled;
       const shown = useGlobal ? globalValue : draft;
       const label = root.querySelector<HTMLElement>('.sharpening-game-value'); if (label) label.textContent = `${shown.percentage}%`;
+      const applyButton = root.querySelector<HTMLButtonElement>('.graphics-card-actions .btn-primary');
+      if (applyButton) applyButton.disabled = busy || !state || (state.runtimeReady === false && !useGlobal && draft.enabled);
     }, 'Per-game Arc Image Sharpening');
     select.disabled = busy || !state;
     root.replaceChildren(
@@ -227,7 +232,7 @@ export function renderGameSharpening(exePath: string): HTMLElement {
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),
       ...(!state ? [el('p', { class: 'profile-capability-note', text: 'Loading game sharpening…' })] : []),
       el('div', { class: 'graphics-card-actions' }, [
-        el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : saveStatus || 'Apply', disabled: busy || !state, onclick: () => void mutate(useGlobal ? null : { ...draft }) }),
+        el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : saveStatus || 'Apply', disabled: busy || !state || (state.runtimeReady === false && !useGlobal && draft.enabled), onclick: () => void mutate(useGlobal ? null : { ...draft }) }),
         el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { saveStatus = ''; useGlobal = true; draft = { ...globalValue }; render(); } }),
       ]),
     );

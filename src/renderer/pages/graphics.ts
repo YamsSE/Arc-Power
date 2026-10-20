@@ -275,6 +275,7 @@ let applying = false;
 let generalApplyBusy = false;
 let screenSharpeningDirty = false;
 let screenSharpeningBusy = false;
+let screenSharpeningCanApply = false;
 let applyScreenSharpening: (() => Promise<void>) | null = null;
 let globalSharpeningCard: HTMLElement | null = null;
 let displayApplyPending = false;
@@ -345,6 +346,7 @@ function resetPageState() {
   generalApplyBusy = false;
   screenSharpeningDirty = false;
   screenSharpeningBusy = false;
+  screenSharpeningCanApply = false;
   applyScreenSharpening = null;
   globalSharpeningCard = null;
   displayApplyPending = false;
@@ -369,19 +371,21 @@ function releaseGlobalSharpeningCard(card: HTMLElement): void {
   globalSharpeningCard = null;
   screenSharpeningDirty = false;
   screenSharpeningBusy = false;
+  screenSharpeningCanApply = false;
   applyScreenSharpening = null;
 }
 
 function createScreenOnlySharpening(): { apply: HTMLButtonElement; card: HTMLElement } {
   const apply = el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT, hidden: true,
-    onClick: () => { if (screenSharpeningDirty && !screenSharpeningBusy) void applyScreenSharpening?.(); } });
+    onClick: () => { if (screenSharpeningDirty && !screenSharpeningBusy && screenSharpeningCanApply) void applyScreenSharpening?.(); } });
   let card!: HTMLElement;
   card = renderGlobalSharpening((state) => {
     screenSharpeningDirty = state.dirty;
     screenSharpeningBusy = state.busy;
+    screenSharpeningCanApply = state.canApply;
     applyScreenSharpening = state.apply;
     apply.hidden = !state.dirty && !state.busy;
-    apply.disabled = state.busy;
+    apply.disabled = state.busy || (state.dirty && !state.canApply);
     apply.textContent = state.busy ? APPLY_BTN_BUSY_TEXT : APPLY_BTN_TEXT;
   }, () => releaseGlobalSharpeningCard(card));
   globalSharpeningCard = card;
@@ -609,7 +613,8 @@ function refreshDisplayChip(key: string) {
 function updateFloating() {
   if (!applyBtn) return;
   const busy = applying || generalApplyBusy || screenSharpeningBusy;
-  applyBtn.disabled = busy;
+  const driverDirty = computeGraphicsDirty(draft, graphicsState, applied);
+  applyBtn.disabled = busy || (!driverDirty && screenSharpeningDirty && !screenSharpeningCanApply);
   applyBtn.textContent = busy ? APPLY_BTN_BUSY_TEXT : APPLY_BTN_TEXT;
   applyBtn.hidden = !busy && !computeGraphicsDirty(draft, graphicsState, applied) && !screenSharpeningDirty;
   for (const button of graphicsViewButtons) button.disabled = busy;
@@ -916,7 +921,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
   applyBtn?.addEventListener('click', () => {
     if (applying || generalApplyBusy || screenSharpeningBusy) return;
     const driverDirty = computeGraphicsDirty(draft, graphicsState, applied);
-    const screenDirty = screenSharpeningDirty;
+    const screenDirty = screenSharpeningDirty && screenSharpeningCanApply;
     if (!driverDirty && !screenDirty) return;
     const pageGeneration = renderGeneration;
     const owner = view;
@@ -1402,6 +1407,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
   sharpeningCard = reusableSharpeningCard ?? renderGlobalSharpening((state) => {
     screenSharpeningDirty = state.dirty;
     screenSharpeningBusy = state.busy;
+    screenSharpeningCanApply = state.canApply;
     applyScreenSharpening = state.apply;
     updateFloating();
   }, () => releaseGlobalSharpeningCard(sharpeningCard));

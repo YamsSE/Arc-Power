@@ -1919,7 +1919,7 @@ function buildOverlaySharpeningCard(): HTMLElement {
   const render = (): void => {
     const slider = el('input', {
       type: 'range', class: 'graphics-slider', min: 0, max: 100, step: 1, value: draft.percentage,
-      disabled: busy || !state || !draft.enabled, 'aria-label': 'Arc Image Sharpening strength',
+      disabled: busy || !state || !state.runtimeReady || !draft.enabled, 'aria-label': 'Arc Image Sharpening strength',
       oninput: (event: Event) => {
         draft.percentage = Math.max(0, Math.min(100, Math.round((event.target as HTMLInputElement).valueAsNumber)));
         feedback = '';
@@ -1938,7 +1938,7 @@ function buildOverlaySharpeningCard(): HTMLElement {
       onChange: (value) => {
         draft.enabled = value === 'on';
         sliderRow.hidden = !draft.enabled;
-        slider.disabled = busy || !state || !draft.enabled;
+        slider.disabled = busy || !state || !state.runtimeReady || !draft.enabled;
         feedback = '';
         refresh();
       },
@@ -1946,7 +1946,7 @@ function buildOverlaySharpeningCard(): HTMLElement {
     enabled.disabled = busy || !state;
     const apply = el('button', {
       class: 'chip chip-btn oc-chip-apply', text: busy ? 'Applying…' : (feedback || 'Apply'),
-      disabled: busy || !state || !isDirty(),
+      disabled: busy || !state || !isDirty() || (!state.runtimeReady && draft.enabled),
       onclick: () => void save(),
     });
     const header = el('div', { class: 'graphics-card-head' }, [
@@ -1965,7 +1965,7 @@ function buildOverlaySharpeningCard(): HTMLElement {
   };
   const refresh = (): void => {
     const button = card.querySelector<HTMLButtonElement>('.oc-chip-apply');
-    if (button) button.disabled = busy || !state || !isDirty();
+    if (button) button.disabled = busy || !state || !isDirty() || (!state.runtimeReady && draft.enabled);
   };
   const save = async (): Promise<void> => {
     if (!state || busy || !isDirty()) return;

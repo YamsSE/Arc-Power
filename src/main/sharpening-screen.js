@@ -9,6 +9,7 @@ import { inspectLegacySharpening } from './legacy-sharpening-audit.js';
 const DEFAULT = Object.freeze({ enabled: false, percentage: 50 });
 const SETTINGS = 'postprocess-sharpening.json';
 const SOURCE_HELPER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'sharpening-runtime', 'ArcPower.ScreenSharpen.exe');
+export const SCREEN_SHARPENING_PAUSED_REASON = 'Arc Image Sharpening is paused because the desktop capture overlay causes game frame-pacing and input-latency regressions. A safe native game-sharpening path is not available on the current Intel driver.';
 // Pin the bundled native executable before spawning it from an elevated Portable.
 const HELPER_SHA256 = 'B47DB786043CBC3A95AE7903F81C00B70353D9C0B5E623F13D3F7377CDA5FB2D';
 
@@ -61,12 +62,13 @@ function readSettings(file) {
 }
 
 /** Game-scoped screen sharpening. The native helper owns capture and compositing. */
-export function createScreenPostprocessSharpening({ dir, detector, isGameExecutable = async () => false, helperPath = SOURCE_HELPER, spawn = nodeSpawn, stageHelper = null, ensureCompatibility = null, pollMs = 1000 } = {}) {
+export function createScreenPostprocessSharpening({ dir, detector, isGameExecutable = async () => false, helperPath = SOURCE_HELPER, spawn = nodeSpawn, stageHelper = null, ensureCompatibility = null, pollMs = 1000, allowCaptureOverlay = true } = {}) {
   if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw new TypeError('An absolute AppData directory is required.');
   if (!detector || typeof detector.detectProcess !== 'function') throw new TypeError('A foreground process detector is required.');
   if (typeof isGameExecutable !== 'function') throw new TypeError('A game catalog lookup is required.');
   if (ensureCompatibility !== null && typeof ensureCompatibility !== 'function') throw new TypeError('The sharpening compatibility check must be a function.');
   const configPath = path.join(dir, SETTINGS);
+  const captureOverlayAllowed = allowCaptureOverlay === true;
   let settings = { global: { ...DEFAULT }, games: {} };
   let settingsError = null;
   try { settings = readSettings(configPath); }
@@ -74,7 +76,8 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
   let child = null;
   let ready = false;
   let overlayActive = false;
-  let reason = settingsError ? `Sharpening settings could not be loaded and were preserved: ${settingsError.message}` : null;
+  let reason = settingsError ? `Sharpening settings could not be loaded and were preserved: ${settingsError.message}`
+    : captureOverlayAllowed ? null : SCREEN_SHARPENING_PAUSED_REASON;
   let started = false;
   let stopped = false;
   let timer = null;
@@ -96,7 +99,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
     if (result?.ok !== true) throw new Error(result?.error || 'RTSS compatibility could not be verified for Arc Image Sharpening.');
   };
 
-  const runtimeStatus = () => ({ active: ready && overlayActive, reason: reason ?? null });
+  const runtimeStatus = () => ({ active: captureOverlayAllowed && ready && overlayActive, reason: reason ?? null });
   const publishStatus = () => {
     const next = runtimeStatus();
     const signature = JSON.stringify(next);
@@ -124,7 +127,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
     const key = canonicalExePath(exePath);
     const override = key ? settings.games[key] ?? null : null;
     const chosen = override ?? settings.global;
-    const enabled = settings.global.enabled && chosen.enabled && chosen.percentage > 0;
+    const enabled = captureOverlayAllowed && settings.global.enabled && chosen.enabled && chosen.percentage > 0;
     return { enabled, percentage: enabled ? chosen.percentage : 0 };
   };
   const globalState = () => {
@@ -132,7 +135,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
     return {
       value: { ...settings.global },
       overrideCount: Object.keys(settings.games).length,
-      runtimeReady: helperIntegrity(helperPath),
+      runtimeReady: captureOverlayAllowed && helperIntegrity(helperPath),
       provider: 'screen',
       requiresRestart: false,
       active: ready && overlayActive,
@@ -148,10 +151,10 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
     const override = key ? settings.games[key] ?? null : null;
     const source = override ?? settings.global;
     const globalGate = settings.global.enabled;
-    const effective = { enabled: globalGate && source.enabled && source.percentage > 0, percentage: globalGate && source.enabled ? source.percentage : 0 };
+    const effective = { enabled: captureOverlayAllowed && globalGate && source.enabled && source.percentage > 0, percentage: captureOverlayAllowed && globalGate && source.enabled ? source.percentage : 0 };
     const legacy = inspectLegacySharpening(dir);
     const legacyIntegration = key ? legacy.games.find((game) => canonicalExePath(game.exePath) === key) ?? null : null;
-    return { value: { ...effective }, globalValue: { ...settings.global }, override: override ? { ...override } : null, effective, legacyIntegration, legacyManifestStatus: legacy.status, ...(legacy.reason ? { legacyManifestReason: legacy.reason } : {}), ...(reason ? { reason } : {}) };
+    return { value: { ...effective }, globalValue: { ...settings.global }, override: override ? { ...override } : null, effective, runtimeReady: captureOverlayAllowed && helperIntegrity(helperPath), legacyIntegration, legacyManifestStatus: legacy.status, ...(legacy.reason ? { legacyManifestReason: legacy.reason } : {}), ...(reason ? { reason } : {}) };
   };
 
   const writeCommand = (command) => {
@@ -241,6 +244,11 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
   };
 
   const startHelper = () => {
+    if (!captureOverlayAllowed) {
+      reason = SCREEN_SHARPENING_PAUSED_REASON;
+      publishStatus();
+      return Promise.resolve(false);
+    }
     if (child) return helperStartup ?? Promise.resolve(ready);
     if (helperStartup) return helperStartup;
     if (!settings.global.enabled || stopped) return Promise.resolve(false);
@@ -381,7 +389,8 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
       if (started) return globalState();
       started = true;
       stopped = false;
-      if (settings.global.enabled) void startHelper();
+      if (captureOverlayAllowed && settings.global.enabled) void startHelper();
+      else if (!captureOverlayAllowed) { reason = SCREEN_SHARPENING_PAUSED_REASON; publishStatus(); }
       return globalState();
     },
     async stop() {
@@ -402,6 +411,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
     },
     async setGlobal(value) {
       const nextValue = validateValue(value);
+      if (!captureOverlayAllowed && nextValue.enabled) throw new Error(SCREEN_SHARPENING_PAUSED_REASON);
       persist({ ...settings, global: nextValue });
       if (!nextValue.enabled) {
         generation++;
@@ -417,6 +427,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
     async setGame(exePath, override) {
       const key = canonicalExePath(exePath);
       if (!key) throw new Error('Choose a valid game executable.');
+      if (!captureOverlayAllowed && override?.enabled === true) throw new Error(SCREEN_SHARPENING_PAUSED_REASON);
       const games = { ...settings.games };
       if (override === null) delete games[key];
       else games[key] = validateValue(override);

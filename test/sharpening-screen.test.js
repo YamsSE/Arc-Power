@@ -11,6 +11,39 @@ const GAME = 'C:\\Games\\Palworld\\Pal\\Binaries\\Win64\\Palworld-Win64-Shipping
 const HELPER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/main/sharpening-runtime/ArcPower.ScreenSharpen.exe');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+test('production-disabled capture sharpening preserves preferences without starting the pacing-risk overlay', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-sharpening-paused-'));
+  const configPath = path.join(dir, 'postprocess-sharpening.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    global: { enabled: true, percentage: 100 },
+    games: { [GAME.toLowerCase()]: { enabled: true, percentage: 85 } },
+  }));
+  let launches = 0;
+  const service = createScreenPostprocessSharpening({
+    dir, helperPath: HELPER, allowCaptureOverlay: false,
+    detector: { async detectProcess() { return { pid: 4242, exePath: GAME }; } },
+    isGameExecutable: async () => true,
+    spawn() { launches++; throw new Error('disabled capture helper must not launch'); },
+  });
+  try {
+    const started = await service.start();
+    assert.equal(started.runtimeReady, false);
+    assert.equal(started.active, false);
+    assert.match(started.reason, /frame-pacing and input-latency regressions/);
+    assert.deepEqual(started.value, { enabled: true, percentage: 100 }, 'saved global preference is retained');
+    const game = await service.getGame(GAME);
+    assert.equal(game.runtimeReady, false);
+    assert.deepEqual(game.effective, { enabled: false, percentage: 0 }, 'saved game preference is inactive');
+    assert.deepEqual(game.override, { enabled: true, percentage: 85 }, 'saved per-game preference is retained');
+    await assert.rejects(service.setGlobal({ enabled: true, percentage: 50 }), /frame-pacing and input-latency regressions/);
+    await assert.rejects(service.setGame(GAME, { enabled: true, percentage: 50 }), /frame-pacing and input-latency regressions/);
+    assert.equal(launches, 0, 'no helper process may be started while the production gate is closed');
+  } finally {
+    await service.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('sharpening verifies its own RTSS compatibility before launching the capture process', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-sharpen-compat-'));
   let release;

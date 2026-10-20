@@ -53,6 +53,16 @@ The fixture is lightweight and does not represent a demanding game at high GPU l
 
 The existing RTSS test `RTSS recovery can retain the enabled Graphics cap for a later owned cleanup` previously called explicit global Off while expecting restoration of an older 40/3 cap. That obsolete assertion failed on the unchanged baseline too. The test now exercises the ownership-specific restore API and verifies the retained underlay. Production explicit Off semantics were preserved.
 
+## User recording and production safety gate — 20 October 2026
+
+The user marked the first half of `Arc Recording 491.mp4` as 100% sharpening and the second half as 0%, then pointed out that the game's frame-time graph is erratic while sharpening is on. Numeric graph values were not extracted from the video. The service code confirms that 0% sends `SET 0 0`; the helper then hides its overlay and tears down the duplication device. This is an active-overlay-versus-inactive comparison, not only a shader-strength comparison.
+
+A B580 stress-fixture comparison used a borderless 1920×1080 D3D11 window at 140 FPS with a 2,048-iteration pixel-shader workload. Windows GPU-engine counters showed about 78% average 3D utilization in the no-helper run and 86.45% in the helper run; the helper itself averaged 0.73%. Fixture p95 frame intervals were 7.44 ms without the helper and 7.50 ms with it; p99 was 7.68 ms and 7.77 ms, respectively. Each run had one late deadline. This controlled fixture did not reproduce the user's reported game regression, and its D3D11 timing does not establish what Expedition 33's DX12 swapchain or DWM present mode does.
+
+The code path still captures the composed monitor image and presents an opaque DirectComposition surface over the foreground game. That second presentation can change the game's composition, VRR, and frame-pacing path; this is the leading architectural explanation, but was not confirmed with PresentMon `PresentMode` rows. An elevated ETW capture attempt was rejected by execution policy, so no such live-game trace was collected. The user recording remains the strongest evidence that the current implementation is not acceptable for their game.
+
+Production now gates off the capture-overlay provider. Global and per-game preferences remain stored, but sharpening is reported unavailable, cannot be newly enabled, and the helper is never launched. This is a safety stop rather than a claim that sharpening itself has been fixed. The current Intel driver does not expose the native sharpening feature, and this app's no-game-folder-change constraint leaves no safe in-game replacement in the current implementation.
+
 ## References
 
 - [Microsoft: composition swap-chain requirements](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgifactory2-createswapchainforcomposition)
