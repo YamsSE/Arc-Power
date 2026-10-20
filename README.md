@@ -6,9 +6,9 @@
   <a href="https://discord.gg/nXAjasHy6e"><img src="https://api.iconify.design/simple-icons/discord.svg?color=%235865F2" alt="Join the Arc Power Discord" title="Join the Arc Power Discord" width="22" height="22"></a>
 </p>
 
-# Arc Power Ver. 1.2.3
+# Arc Power Ver. 1.2.4
 
-Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.2.3 adds blue-gradient branding, fan-speed hover details, and three maintenance choices for clearing cache or resetting saved data. New installs and higher-version Portable launches clear cache automatically. It also improves recording audio and Instant Replay saving, Intel 9150 driver downloads, Base Cap and Arc Sleep frame limiting, update reliability, GPU target recovery, and Arc Pro waiver status. Arc Power includes the Driver Library for browsing Intel driver releases and managing downloaded installers.
+Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.2.4 fixes repeated helper launches during FPS-limit polling, improves RTSS runtime discovery, and adds Graphics Apply support and save feedback for Arc Image Sharpening. It also improves sharpening output selection, error reporting, and frame submission. Arc Power includes the Driver Library for browsing Intel driver releases and managing downloaded installers.
 
 ## What Arc Power does
 
@@ -36,7 +36,7 @@ AMD and NVIDIA adapters may appear for telemetry when their vendor libraries are
 
 ## Install
 
-Arc Power requires Windows 10 or 11, 64 bit, and an installed Intel graphics driver for Arc features. Download the [Version 1.2.3 release](https://github.com/YamsSE/Arc-Power/releases/latest):
+Arc Power requires Windows 10 or 11, 64 bit, and an installed Intel graphics driver for Arc features. Download the [latest published release](https://github.com/YamsSE/Arc-Power/releases/latest):
 
 - **Installer:** `Arc-Power_Installer.exe` installs Arc Power and supports elevated apply-at-startup behavior.
 - **Portable:** `Arc-Power_Portable.exe` runs without installation. Some hardware changes may request administrator approval.

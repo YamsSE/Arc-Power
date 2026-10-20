@@ -8,6 +8,7 @@ import {
 const DEFAULT_BASE_FPS = 60;
 const RTSS_FRAME_LIMIT_MIN = 1;
 const RTSS_FRAME_LIMIT_MAX = 1000;
+const RTSS_AVAILABILITY_REFRESH_MS = 5000;
 
 function normalizeBaseFrameLimit(value) {
   if (!value || typeof value !== 'object') return null;
@@ -141,6 +142,8 @@ export function createArcSleepController({
   let status = 'ready';
   let message = null;
   let rtssAvailable = false;
+  let lastRtssAvailabilityCheckAtMs = null;
+  let rtssAvailabilityProbe = null;
   let limiterRoute = null;
   let limiterDeviceName = null;
   let igclReadError = null;
@@ -188,6 +191,45 @@ export function createArcSleepController({
     ? `RTSS and the selected GPU driver FPS limiter are unavailable. IGCL read failed: ${igclReadError}`
     : 'RTSS and the selected GPU driver FPS limiter are unavailable.';
 
+  // Provider availability is distinct from the journal's owned route. This
+  // read-only probe lets Arc Sleep report RTSS as present while an external
+  // change journal safely keeps automatic writes paused on another provider.
+  const refreshRtssAvailability = async ({ force = false } = {}) => {
+    if (rtssAvailabilityProbe) return rtssAvailabilityProbe;
+    const sampledAtMs = now();
+    if (!force && lastRtssAvailabilityCheckAtMs !== null
+      && sampledAtMs - lastRtssAvailabilityCheckAtMs < RTSS_AVAILABILITY_REFRESH_MS) {
+      return rtssAvailable;
+    }
+    lastRtssAvailabilityCheckAtMs = sampledAtMs;
+    rtssAvailabilityProbe = (async () => {
+      try {
+        const result = typeof rtssFrameLimiter?.getFrameLimitOwnership === 'function'
+          ? await rtssFrameLimiter.getFrameLimitOwnership()
+          : await rtssFrameLimiter?.getFrameLimit?.();
+        const exactState = result?.state && typeof result.state === 'object' ? result.state : result;
+        rtssAvailable = result?.ok === true && rawState({
+          limit: exactState?.limit,
+          denominator: exactState?.denominator ?? null,
+          limiterEnabled: exactState?.limiterEnabled,
+        }) !== null;
+      } catch {
+        rtssAvailable = false;
+      }
+      return rtssAvailable;
+    })().finally(() => { rtssAvailabilityProbe = null; });
+    return rtssAvailabilityProbe;
+  };
+
+  const resetPausedDiagnostics = () => {
+    runtimeDiagnostics = {
+      gpuUtilPct: null,
+      reportedFps: null,
+      fpsStatus: settings.adaptiveEnabled ? 'gpu-unavailable' : 'disabled',
+      lastFastAdjustmentAtMs: null,
+    };
+  };
+
   const persistArcSleep = async (patch) => {
     if (typeof store?.saveArcSleepState === 'function') {
       await store.saveArcSleepState(patch);
@@ -217,6 +259,9 @@ export function createArcSleepController({
       if (!state) {
         if (normalizedRoute.source === 'igcl') {
           igclReadError = result?.error ?? 'The selected GPU driver did not return a readable frame limit.';
+        } else {
+          rtssAvailable = false;
+          lastRtssAvailabilityCheckAtMs = now();
         }
         return null;
       }
@@ -239,16 +284,21 @@ export function createArcSleepController({
       igclReadError = null;
       limiterRoute = verifiedRoute;
       limiterDeviceName = typeof result.deviceName === 'string' ? result.deviceName : null;
-      rtssAvailable = normalizedRoute.source === 'rtss';
+      if (normalizedRoute.source === 'rtss') rtssAvailable = true;
       frameLimitRange = result.frameLimitRange ?? (normalizedRoute.source === 'rtss'
         ? { min: RTSS_FRAME_LIMIT_MIN, max: RTSS_FRAME_LIMIT_MAX, step: 1 }
         : null);
       frameLimitLiveChange = normalizedRoute.source === 'rtss' || result.liveChange === true;
       lastRawState = state;
       lastKnownRawState = state;
+      if (normalizedRoute.source === 'rtss') lastRtssAvailabilityCheckAtMs = now();
       return state;
     } catch (error) {
       if (normalizedRoute.source === 'igcl') igclReadError = errorText('The selected GPU driver frame-limit read failed.', error);
+      else {
+        rtssAvailable = false;
+        lastRtssAvailabilityCheckAtMs = now();
+      }
       return null;
     }
   };
@@ -279,7 +329,6 @@ export function createArcSleepController({
       igclReadError = null;
       limiterRoute = { source: 'igcl', deviceKey: selectedKey };
       limiterDeviceName = typeof igcl.deviceName === 'string' ? igcl.deviceName : null;
-      rtssAvailable = false;
       frameLimitRange = igcl.frameLimitRange ?? null;
       frameLimitLiveChange = igcl.liveChange === true;
       lastRawState = state;
@@ -289,7 +338,6 @@ export function createArcSleepController({
     if (igcl?.ok !== true) {
       igclReadError = igcl?.error ?? 'The selected GPU driver did not return a readable frame limit.';
     }
-    rtssAvailable = false;
     lastRawState = null;
     frameLimitRange = null;
     frameLimitLiveChange = false;
@@ -397,7 +445,7 @@ export function createArcSleepController({
         || (result.flagRestorationDeferred === true && observed?.limiterEnabled === true);
       if (!fieldsMatch || !flagMatches) return { ok: false, error: `${normalizedRoute.source.toUpperCase()} recovery read-back did not match the saved baseline`, observed };
       limiterRoute = normalizedRoute;
-      rtssAvailable = normalizedRoute.source === 'rtss';
+      if (normalizedRoute.source === 'rtss') rtssAvailable = true;
       lastRawState = observed;
       lastKnownRawState = observed;
       return { ok: true, observed, flagRestorationDeferred: result.flagRestorationDeferred === true };
@@ -1007,7 +1055,11 @@ export function createArcSleepController({
     if (status === 'elevation-required') return;
     if (journal && (status === 'external-change' || status === 'recovery-pending')) {
       const recovered = await recoverJournal();
-      if (!recovered) return;
+      if (!recovered) {
+        await refreshRtssAvailability();
+        resetPausedDiagnostics();
+        return;
+      }
     }
     const result = await readPolicySample();
     const current = await ensureCurrentRoute();
@@ -1024,6 +1076,8 @@ export function createArcSleepController({
   const setBaseFrameLimit = async (input, { deviceKey = null, requiredSource = null } = {}) => {
     let nextBase = normalizeBaseFrameLimit(input);
     if (!nextBase) throw new Error('Arc Sleep base frame limit is invalid');
+    const rearmingExternalJournal = journal?.externalChange === true && requiredSource === null;
+    let rollbackRoute = rearmingExternalJournal ? normalizeRoute(journal.route) : null;
     // A global RTSS request must never migrate to a device-scoped IGCL
     // limiter or recover an IGCL journal as a side effect.
     if (requiredSource === 'rtss' && journal && normalizeRoute(journal.route).source !== 'rtss') {
@@ -1036,7 +1090,10 @@ export function createArcSleepController({
     }
     const current = requiredSource === 'rtss'
       ? await readFromRoute({ source: 'rtss' })
-      : await ensureCurrentRoute(deviceKey);
+      : rearmingExternalJournal
+        ? await readFromRoute(journal.route)
+        : await ensureCurrentRoute(deviceKey);
+    if (rearmingExternalJournal && current) rollbackRoute = limiterRoute ?? rollbackRoute;
     if (requiredSource === 'rtss' && (!current || limiterRoute?.source !== 'rtss')) {
       rtssAvailable = false;
       return { handled: false, ok: false, error: 'RTSS is unavailable; the global FPS limit was not changed.' };
@@ -1057,8 +1114,9 @@ export function createArcSleepController({
     const rollback = async () => {
       if (rollbackUsed) return { ok: true };
       rollbackUsed = true;
+      const readRollbackState = () => readRawState(rollbackRoute ?? null);
       if (journal?.externalChange) {
-        const observed = await readRawState();
+        const observed = await readRollbackState();
         const externalJournal = {
           ...journal,
           baseline: previousJournal?.baseline ?? current ?? journal.baseline,
@@ -1073,7 +1131,7 @@ export function createArcSleepController({
         return { ok: false, conflict: true, error: message };
       }
       const expectedBeforeRead = lastKnownRawState;
-      const observed = await readRawState();
+      const observed = await readRollbackState();
       if (current && observed && !sameState(current, observed)) {
         const expectedWrite = expectedBeforeRead;
         if (!expectedWrite || !sameState(observed, expectedWrite)) {
@@ -1100,7 +1158,8 @@ export function createArcSleepController({
         await saveBaseAndJournal(previousBase, rollbackJournal, previousPendingBaseDisable, previousPendingBaseDisableExpected);
         const retained = previousBase?.enabled === true || Boolean(previousJournal);
         let restored;
-        if (nativeRestoreToken && sameState(observed, {
+        if (normalizeRoute(rollbackRoute ?? journal?.route ?? limiterRoute).source === 'rtss'
+          && nativeRestoreToken && sameState(observed, {
           limit: nativeRestoreToken.expectedLimit,
           denominator: nativeRestoreToken.expectedDenominator,
           limiterEnabled: nativeRestoreToken.expectedEnabled,
@@ -1110,7 +1169,7 @@ export function createArcSleepController({
             ? { ok: true }
             : { ok: false, conflict: result?.error?.includes('outside Arc Power') === true, error: result?.error ?? 'RTSS rollback was not verified' };
         } else {
-          restored = await restoreState(observed, current, { retainOwnership: retained });
+          restored = await restoreState(observed, current, { retainOwnership: retained, route: rollbackRoute ?? journal?.route ?? limiterRoute });
         }
         if (!restored.ok) {
           status = restored.unavailable ? 'recovery-pending' : (restored.conflict ? 'external-change' : 'error');
@@ -1140,7 +1199,77 @@ export function createArcSleepController({
     if (journal?.externalChange && !current) {
       status = 'limiter-unavailable';
       message = `The saved ${limiterName()} frame limit cannot be checked; recovery must complete before Arc Sleep resumes.`;
-      return { handled: false, error: message, rollback };
+      return { handled: false, error: message, ...(rearmingExternalJournal ? {} : { rollback }) };
+    }
+    if (rearmingExternalJournal) {
+      // Only an explicit Graphics/Base FPS Apply may relinquish an external-
+      // change latch. Read, apply, and roll back on the journal's verified
+      // provider so a newly available RTSS route cannot inherit IGCL state.
+      const originalExternalJournal = previousJournal;
+      const policy = await readPolicySample();
+      const requestedTarget = policy.targetFps == null
+        ? (nextBase.enabled ? nextBase.value : null)
+        : nextBase.enabled ? Math.min(nextBase.value, policy.targetFps) : policy.targetFps;
+      if (requestedTarget == null) {
+        const disabled = await applyBaseDisable(current, nextBase, { automatic: false });
+        nativeRestoreToken = disabled.restoreToken ?? null;
+        if (!disabled.ok) return { handled: false, ok: false, error: disabled.error, rollback };
+        return {
+          handled: true,
+          ok: true,
+          source: rollbackRoute?.source,
+          frameLimit: nextBase,
+          perControl: { frameLimit: { ok: true, source: rollbackRoute?.source } },
+          rollback,
+        };
+      }
+
+      const target = { limit: clampTargetToRange(requestedTarget), denominator: 1, limiterEnabled: true };
+      if (target.limit == null) {
+        status = 'error';
+        message = 'The requested frame limit is outside the original provider range.';
+        return { handled: false, ok: false, error: message, rollback };
+      }
+      const baseline = nextBase.enabled
+        ? { limit: nextBase.value, denominator: 1, limiterEnabled: true }
+        : current;
+      const rearmJournal = {
+        version: 1,
+        route: rollbackRoute,
+        baseline,
+        underlay: current,
+        expected: current,
+        pending: sameState(current, target) ? null : { from: current, to: target },
+      };
+      await saveBaseAndJournal(nextBase, rearmJournal);
+      let applied = { ok: true, observed: current };
+      if (!sameState(current, target)) applied = await writeCap(current, target.limit, { automatic: false });
+      if (!applied.ok) {
+        // An interrupted/conflicting manual re-arm must never turn the
+        // outside-owned state into automatic restore authority.
+        const observed = await readRawState(rollbackRoute);
+        await saveBaseAndJournal(previousBase, {
+          ...originalExternalJournal,
+          expected: observed ?? originalExternalJournal.expected,
+          pending: null,
+          externalChange: true,
+        }, previousPendingBaseDisable, previousPendingBaseDisableExpected);
+        status = 'external-change';
+        message = applied.error ?? 'The external frame-limit change was preserved.';
+        return { handled: false, ok: false, error: message, rollback };
+      }
+      await saveJournal({ ...rearmJournal, expected: applied.observed, pending: null });
+      policySource = policy.source;
+      status = policy.source ?? (hasPolicy() ? 'ready' : 'disabled');
+      message = null;
+      return {
+        handled: true,
+        ok: true,
+        source: rollbackRoute?.source,
+        frameLimit: nextBase,
+        perControl: { frameLimit: { ok: true, source: rollbackRoute?.source } },
+        rollback,
+      };
     }
     if (journal && (journal.externalChange || !current || !sameState(current, journal.expected))) {
       if (current) {
@@ -1219,6 +1348,8 @@ export function createArcSleepController({
     syncAdaptiveSampler();
     policyState = createArcSleepPolicyState(settings);
     if (journal?.externalChange) {
+      await refreshRtssAvailability({ force: true });
+      resetPausedDiagnostics();
       status = 'external-change';
       message = `The ${limiterName()} frame limit changed outside Arc Power; change the Graphics FPS Limit to re-enable Arc Sleep control.`;
       return;

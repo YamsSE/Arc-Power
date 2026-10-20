@@ -21,6 +21,7 @@ function harness({
   shutdownTimeoutMs = 5000,
   samplerLease = null,
   routeReadPending = null,
+  igclFrameLimiter = null,
 } = {}) {
   let saved = {
     arcSleep: settings,
@@ -34,6 +35,8 @@ function harness({
   let failNextFrameLimitApply = failNextApply;
   let externalizeBeforeApply = null;
   let observedFpsCalls = 0;
+  let rtssReadCalls = 0;
+  let rtssWriteCalls = 0;
   const saveHistory = [];
   const store = {
     async loadSettings() { return structuredClone(saved); },
@@ -44,13 +47,16 @@ function harness({
   };
   const rtssFrameLimiter = {
     async getFrameLimit() {
+      rtssReadCalls += 1;
       if (routeReadPending) await routeReadPending;
       return isUnavailable ? { ok: false, errorCode: 'unavailable' } : { ok: true, ...current };
     },
     async getFrameLimitOwnership() {
+      rtssReadCalls += 1;
       return isUnavailable ? { ok: false, errorCode: 'unavailable' } : { ok: true, state: { ...current }, underlay: { ...initialUnderlay } };
     },
     async applyFrameLimit({ enabled, value, expectedState }) {
+      rtssWriteCalls += 1;
       if (isUnavailable) return { ok: false, used: false, available: false, errorCode: 'unavailable' };
       if (externalizeBeforeApply) {
         current = { ...externalizeBeforeApply({ enabled, value, current: { ...current } }) };
@@ -67,6 +73,7 @@ function harness({
       return { ok: true, used: true, restoreToken: { expectedLimit: current.limit, expectedDenominator: current.denominator, expectedEnabled: current.limiterEnabled } };
     },
     async restoreFrameLimitState({ expectedState, state: target }) {
+      rtssWriteCalls += 1;
       if (isUnavailable) return { ok: false, used: false, errorCode: 'unavailable' };
       if (!sameState(current, expectedState)) return { ok: false, used: false, conflict: true, errorCode: 'external-change' };
       if (failNextRestorePartially) {
@@ -83,11 +90,12 @@ function harness({
   const createController = () => createArcSleepController({
       store,
       rtssFrameLimiter,
+      igclFrameLimiter,
       getIdleSeconds: () => idleSeconds,
       getLoadSignals: async () => loadSignals,
       getObservedFps: async () => { observedFpsCalls += 1; return observedFps; },
       acquireAdaptiveSampler: samplerLease ?? (() => null),
-      now,
+      now: () => now(),
       rtssOperationTimeoutMs,
       shutdownTimeoutMs,
       setIntervalFn: () => ({ unref() {} }),
@@ -106,6 +114,8 @@ function harness({
     setLoadSignals: (value) => { loadSignals = value; },
     setObservedFps: (value) => { observedFps = value; },
     observedFpsCalls: () => observedFpsCalls,
+    rtssReadCalls: () => rtssReadCalls,
+    rtssWriteCalls: () => rtssWriteCalls,
     setNow: (value) => { now = () => value; },
     setUnavailable: (value) => { isUnavailable = value; },
     setExternalizeBeforeApply: (callback) => { externalizeBeforeApply = callback; },
@@ -113,6 +123,49 @@ function harness({
     failNextRestorePartially: () => { failNextRestorePartially = true; },
     savedSettings: () => structuredClone(saved),
     saveHistory,
+  };
+}
+
+function igclHarness(initialState, { deviceKey = 'intel:b580:display-0', unavailable = false } = {}) {
+  let current = { ...initialState };
+  let isUnavailable = unavailable;
+  let readCalls = 0;
+  let applyCalls = 0;
+  let restoreCalls = 0;
+  const route = {
+    async getFrameLimit(requestedKey) {
+      readCalls += 1;
+      if (isUnavailable || requestedKey !== deviceKey) return { ok: false, error: 'IGCL target unavailable' };
+      return { ok: true, ...current, deviceKey, deviceName: 'Intel Arc B580', liveChange: true, frameLimitRange: { min: 1, max: 1000, step: 1 } };
+    },
+    async applyFrameLimit({ deviceKey: requestedKey, enabled, value, expectedState }) {
+      applyCalls += 1;
+      if (isUnavailable) return { ok: false, used: false, unavailable: true, errorCode: 'unavailable' };
+      if (requestedKey !== deviceKey || !sameState(current, expectedState)) {
+        return { ok: false, used: false, conflict: true, errorCode: 'external-change', error: 'IGCL state changed outside Arc Power' };
+      }
+      current = enabled
+        ? { limit: value, denominator: current.denominator ?? 1, limiterEnabled: true }
+        : { ...current, limiterEnabled: false };
+      return { ok: true, used: true, observedState: { ...current } };
+    },
+    async restoreFrameLimitState({ deviceKey: requestedKey, expectedState, state }) {
+      restoreCalls += 1;
+      if (isUnavailable) return { ok: false, errorCode: 'unavailable' };
+      if (requestedKey !== deviceKey || !sameState(current, expectedState)) {
+        return { ok: false, conflict: true, errorCode: 'external-change' };
+      }
+      current = { ...state };
+      return { ok: true, observedState: { ...current } };
+    },
+  };
+  return {
+    route,
+    read: () => ({ ...current }),
+    readCalls: () => readCalls,
+    setUnavailable: (value) => { isUnavailable = value; },
+    applyCalls: () => applyCalls,
+    restoreCalls: () => restoreCalls,
   };
 }
 
@@ -602,6 +655,227 @@ test('RTSS outage keeps an existing recovery journal for retry', async (t) => {
   assert.equal(h.controller.getSnapshot().status, 'recovery-pending');
 });
 
+test('external IGCL journal reports RTSS availability without resuming or changing either limiter', async (t) => {
+  const h = harness({
+    settings: { idleEnabled: true, adaptiveEnabled: true },
+    state: { limit: 144, denominator: 1, limiterEnabled: true },
+    underlay: { limit: 0, denominator: 1, limiterEnabled: false },
+  });
+  const savedJournal = {
+    version: 1,
+    baseline: { limit: 120, denominator: 1, limiterEnabled: true },
+    underlay: { limit: 0, denominator: 1, limiterEnabled: false },
+    expected: { limit: 120, denominator: 1, limiterEnabled: true },
+    route: { source: 'igcl', deviceKey: 'intel:b580:display-0' },
+    pending: null,
+    externalChange: true,
+  };
+  await h.store.saveArcSleepState({ arcSleepJournal: savedJournal });
+  t.after(() => h.controller.stop());
+
+  await h.controller.start();
+  const started = h.controller.getSnapshot();
+  assert.equal(started.status, 'external-change');
+  assert.equal(started.rtssAvailable, true, 'RTSS capability is probed independently of the protected IGCL route');
+  assert.equal(started.activeLimiter, null, 'the probe does not claim RTSS as the active ownership route');
+  assert.equal(started.diagnostics.fpsStatus, 'gpu-unavailable', 'paused policy does not claim Load Adaptive is disabled');
+  assert.deepEqual(h.savedSettings().arcSleepJournal, savedJournal, 'the external-change journal remains byte-for-byte intact');
+  assert.deepEqual(h.readState(), { limit: 144, denominator: 1, limiterEnabled: true });
+  assert.equal(h.rtssWriteCalls(), 0, 'availability probing performs no RTSS writes');
+  assert.equal(h.observedFpsCalls(), 0, 'paused adaptive policy does not advance the FPS policy');
+
+  await h.controller.tick();
+  assert.equal(h.rtssReadCalls(), 1, 'availability is cached across ordinary one-second controller ticks');
+  h.setNow(15000);
+  await h.controller.tick();
+  assert.equal(h.rtssReadCalls(), 2, 'the provider probe refreshes after the bounded cache interval');
+  assert.equal(h.rtssWriteCalls(), 0);
+  assert.deepEqual(h.savedSettings().arcSleepJournal, savedJournal);
+});
+
+test('a paused RTSS journal refreshes availability when RTSS stops', async (t) => {
+  const h = harness({ settings: { idleEnabled: true }, idleSeconds: 600 });
+  h.setNow(10000);
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+  h.setState({ limit: 77, denominator: 1, limiterEnabled: true });
+  await h.controller.tick();
+  assert.equal(h.controller.getSnapshot().status, 'external-change');
+  assert.equal(h.controller.getSnapshot().rtssAvailable, true);
+  const writes = h.rtssWriteCalls();
+  h.setUnavailable(true);
+  h.setNow(20000);
+  await h.controller.tick();
+  assert.equal(h.controller.getSnapshot().rtssAvailable, false, 'the paused RTSS route is not proof RTSS is still running');
+  assert.equal(h.rtssWriteCalls(), writes);
+});
+
+test('manual Base FPS Apply re-arms an external IGCL journal on IGCL before the next tick selects RTSS', async (t) => {
+  const deviceKey = 'intel:b580:display-0';
+  const igcl = igclHarness({ limit: 77, denominator: 1, limiterEnabled: true }, { deviceKey });
+  const h = harness({
+    state: { limit: 144, denominator: 1, limiterEnabled: true },
+    underlay: { limit: 0, denominator: 1, limiterEnabled: false },
+    igclFrameLimiter: igcl.route,
+  });
+  const journal = {
+    version: 1,
+    baseline: { limit: 60, denominator: 1, limiterEnabled: true },
+    underlay: { limit: 0, denominator: 1, limiterEnabled: false },
+    expected: { limit: 120, denominator: 1, limiterEnabled: true },
+    route: { source: 'igcl', deviceKey },
+    pending: null,
+    externalChange: true,
+  };
+  await h.store.saveArcSleepState({ arcSleepJournal: journal });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+  assert.equal(igcl.readCalls(), 0, 'automatic polling does not inspect a latched provider');
+  assert.equal(igcl.applyCalls(), 0, 'automatic polling does not touch the latched provider');
+
+  const applied = await h.controller.withTransaction((transaction) => transaction.setBaseFrameLimit({ enabled: true, value: 90 }));
+  assert.equal(applied.handled, true);
+  assert.equal(applied.source, 'igcl');
+  assert.deepEqual(igcl.read(), { limit: 90, denominator: 1, limiterEnabled: true });
+  assert.deepEqual(h.savedSettings().arcSleepJournal, {
+    version: 1,
+    baseline: { limit: 90, denominator: 1, limiterEnabled: true },
+    underlay: { limit: 77, denominator: 1, limiterEnabled: true },
+    expected: { limit: 90, denominator: 1, limiterEnabled: true },
+    route: { source: 'igcl', deviceKey },
+    pending: null,
+  });
+  assert.equal(igcl.applyCalls(), 1);
+  assert.equal(h.rtssWriteCalls(), 0, 'the explicit re-arm does not migrate to newly available RTSS');
+
+  await h.controller.tick();
+  assert.equal(h.controller.getSnapshot().activeLimiter, 'rtss');
+  assert.equal(igcl.restoreCalls(), 0, 'handoff recognizes the manually requested cap as the new baseline');
+  assert.deepEqual(igcl.read(), { limit: 90, denominator: 1, limiterEnabled: true });
+  assert.deepEqual(h.readState(), { limit: 90, denominator: 1, limiterEnabled: true });
+  assert.equal(h.savedSettings().arcSleepJournal, null);
+});
+
+test('manual Base FPS Off Apply disables the verified IGCL route without restoring its old baseline', async (t) => {
+  const deviceKey = 'intel:b580:display-0';
+  const igcl = igclHarness({ limit: 77, denominator: 1, limiterEnabled: true }, { deviceKey });
+  const h = harness({ igclFrameLimiter: igcl.route });
+  const outsideRtssCap = { limit: 144, denominator: 1, limiterEnabled: true };
+  h.setState(outsideRtssCap);
+  const journal = {
+    version: 1,
+    baseline: { limit: 60, denominator: 1, limiterEnabled: true },
+    underlay: { limit: 0, denominator: 1, limiterEnabled: false },
+    expected: { limit: 120, denominator: 1, limiterEnabled: true },
+    route: { source: 'igcl', deviceKey },
+    pending: null,
+    externalChange: true,
+  };
+  await h.store.saveArcSleepState({ arcSleepJournal: journal });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+
+  const applied = await h.controller.withTransaction((transaction) => transaction.setBaseFrameLimit({ enabled: false, value: 60 }));
+  assert.equal(applied.handled, true);
+  assert.equal(applied.source, 'igcl');
+  assert.deepEqual(igcl.read(), { limit: 77, denominator: 1, limiterEnabled: false });
+  assert.equal(igcl.applyCalls(), 1);
+  assert.equal(h.rtssWriteCalls(), 0);
+  assert.equal(h.savedSettings().arcSleepFrameLimitBase.enabled, false);
+  assert.equal(h.savedSettings().arcSleepJournal, null);
+  await h.controller.tick();
+  assert.deepEqual(h.readState(), outsideRtssCap, 'a one-provider Off action must preserve an outside-owned RTSS cap');
+  assert.equal(h.rtssWriteCalls(), 0);
+  assert.equal(h.controller.getSnapshot().activeLimiter, 'rtss');
+  assert.equal(h.controller.getSnapshot().effectiveCapFps, 144, 'show the actual cap even though Arc Sleep base is Off');
+});
+
+test('combined Graphics failure rolls a same-route re-arm back to the outside-owned IGCL state and journal', async (t) => {
+  const deviceKey = 'intel:b580:display-0';
+  const igcl = igclHarness({ limit: 77, denominator: 1, limiterEnabled: true }, { deviceKey });
+  const h = harness({ igclFrameLimiter: igcl.route });
+  const journal = {
+    version: 1,
+    baseline: { limit: 60, denominator: 1, limiterEnabled: true },
+    underlay: { limit: 0, denominator: 1, limiterEnabled: false },
+    expected: { limit: 120, denominator: 1, limiterEnabled: true },
+    route: { source: 'igcl', deviceKey },
+    pending: null,
+    externalChange: true,
+  };
+  await h.store.saveArcSleepState({ arcSleepJournal: journal });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+
+  const applied = await h.controller.withTransaction((transaction) => transaction.setBaseFrameLimit({ enabled: true, value: 90 }));
+  assert.equal(applied.handled, true);
+  assert.deepEqual(igcl.read(), { limit: 90, denominator: 1, limiterEnabled: true });
+  const rollback = await applied.rollback();
+
+  assert.equal(rollback.ok, true);
+  assert.deepEqual(igcl.read(), { limit: 77, denominator: 1, limiterEnabled: true });
+  assert.deepEqual(h.savedSettings().arcSleepJournal, journal);
+  assert.deepEqual(h.savedSettings().arcSleepFrameLimitBase, { enabled: false, value: 60 });
+  assert.equal(igcl.restoreCalls(), 1);
+  assert.equal(h.rtssWriteCalls(), 0, 'rollback remains pinned to IGCL even though RTSS is available');
+});
+
+test('failed original-provider read keeps the external journal and refuses the re-arm', async (t) => {
+  const deviceKey = 'intel:b580:display-0';
+  const igcl = igclHarness({ limit: 77, denominator: 1, limiterEnabled: true }, { deviceKey, unavailable: true });
+  const h = harness({ igclFrameLimiter: igcl.route });
+  const journal = {
+    version: 1,
+    baseline: { limit: 60, denominator: 1, limiterEnabled: true },
+    underlay: { limit: 0, denominator: 1, limiterEnabled: false },
+    expected: { limit: 120, denominator: 1, limiterEnabled: true },
+    route: { source: 'igcl', deviceKey },
+    pending: null,
+    externalChange: true,
+  };
+  await h.store.saveArcSleepState({ arcSleepJournal: journal });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+
+  const result = await h.controller.withTransaction((transaction) => transaction.setBaseFrameLimit({ enabled: true, value: 90 }));
+  assert.equal(result.handled, false);
+  assert.equal(result.error.includes('cannot be checked'), true);
+  assert.deepEqual(h.savedSettings().arcSleepJournal, journal);
+  assert.equal(igcl.applyCalls(), 0);
+  assert.equal(h.rtssWriteCalls(), 0);
+  assert.equal(h.controller.getSnapshot().rtssAvailable, true);
+});
+
+test('RTSS-only Base Apply still refuses an external IGCL journal without reading or writing RTSS', async (t) => {
+  const deviceKey = 'intel:b580:display-0';
+  const igcl = igclHarness({ limit: 77, denominator: 1, limiterEnabled: true }, { deviceKey });
+  const h = harness({ igclFrameLimiter: igcl.route });
+  await h.store.saveArcSleepState({
+    arcSleepJournal: {
+      version: 1,
+      baseline: { limit: 60, denominator: 1, limiterEnabled: true },
+      underlay: { limit: 0, denominator: 1, limiterEnabled: false },
+      expected: { limit: 120, denominator: 1, limiterEnabled: true },
+      route: { source: 'igcl', deviceKey },
+      pending: null,
+      externalChange: true,
+    },
+  });
+  t.after(() => h.controller.stop());
+  await h.controller.start();
+  const rtssReadsAfterStart = h.rtssReadCalls();
+
+  const result = await h.controller.withTransaction(
+    (transaction) => transaction.setBaseFrameLimit({ enabled: true, value: 90 }, { requiredSource: 'rtss' }),
+    { requiredSource: 'rtss' },
+  );
+  assert.equal(result.handled, false);
+  assert.match(result.error, /different provider/);
+  assert.equal(h.rtssReadCalls(), rtssReadsAfterStart);
+  assert.equal(h.rtssWriteCalls(), 0);
+  assert.equal(igcl.readCalls(), 0);
+});
+
 test('disabling policy journals a partial restore so startup can finish it', async (t) => {
   const h = harness({ settings: { idleEnabled: true }, idleSeconds: 400 });
   const recovery = h.createController();
@@ -801,14 +1075,14 @@ test('shutdown wait is bounded while a stalled RTSS read keeps its recovery jour
   await h.controller.start();
   assert.ok(h.savedSettings().arcSleepJournal);
 
-  const originalGetFrameLimit = h.rtssFrameLimiter.getFrameLimit.bind(h.rtssFrameLimiter);
+  const originalGetFrameLimitOwnership = h.rtssFrameLimiter.getFrameLimitOwnership.bind(h.rtssFrameLimiter);
   let markReadStarted;
   const readStarted = new Promise((resolve) => { markReadStarted = resolve; });
   const readGate = new Promise((resolve) => { releaseRead = resolve; });
-  h.rtssFrameLimiter.getFrameLimit = async () => {
+  h.rtssFrameLimiter.getFrameLimitOwnership = async () => {
     markReadStarted();
     await readGate;
-    return originalGetFrameLimit();
+    return originalGetFrameLimitOwnership();
   };
   const tick = h.controller.tick();
   await readStarted;

@@ -11,6 +11,133 @@ const GAME = 'C:\\Games\\Palworld\\Pal\\Binaries\\Win64\\Palworld-Win64-Shipping
 const HELPER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/main/sharpening-runtime/ArcPower.ScreenSharpen.exe');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+test('production-disabled capture sharpening preserves preferences without starting the pacing-risk overlay', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-sharpening-paused-'));
+  const configPath = path.join(dir, 'postprocess-sharpening.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    global: { enabled: true, percentage: 100 },
+    games: { [GAME.toLowerCase()]: { enabled: true, percentage: 85 } },
+  }));
+  let launches = 0;
+  const service = createScreenPostprocessSharpening({
+    dir, helperPath: HELPER, allowCaptureOverlay: false,
+    detector: { async detectProcess() { return { pid: 4242, exePath: GAME }; } },
+    isGameExecutable: async () => true,
+    spawn() { launches++; throw new Error('disabled capture helper must not launch'); },
+  });
+  try {
+    const started = await service.start();
+    assert.equal(started.runtimeReady, false);
+    assert.equal(started.active, false);
+    assert.match(started.reason, /frame-pacing and input-latency regressions/);
+    assert.deepEqual(started.value, { enabled: true, percentage: 100 }, 'saved global preference is retained');
+    const game = await service.getGame(GAME);
+    assert.equal(game.runtimeReady, false);
+    assert.deepEqual(game.effective, { enabled: false, percentage: 0 }, 'saved game preference is inactive');
+    assert.deepEqual(game.override, { enabled: true, percentage: 85 }, 'saved per-game preference is retained');
+    await assert.rejects(service.setGlobal({ enabled: true, percentage: 50 }), /frame-pacing and input-latency regressions/);
+    await assert.rejects(service.setGame(GAME, { enabled: true, percentage: 50 }), /frame-pacing and input-latency regressions/);
+    assert.equal(launches, 0, 'no helper process may be started while the production gate is closed');
+  } finally {
+    await service.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sharpening verifies its own RTSS compatibility before launching the capture process', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-sharpen-compat-'));
+  let release;
+  const checked = new Promise(resolve => { release = resolve; });
+  let checks = 0;
+  let launches = 0;
+  let child;
+  const service = createScreenPostprocessSharpening({
+    dir, helperPath: HELPER, detector: { async detectProcess() { return null; } },
+    async ensureCompatibility() { checks++; return checked; },
+    spawn() { launches++; child = new FakeChild(); setTimeout(() => child.stdout.emit('data', 'READY screen-sharpen-v1\n'), 0); return child; },
+  });
+  try {
+    await service.start();
+    const enabling = service.setGlobal({ enabled: true, percentage: 50 });
+    await until(() => checks === 1, 'compatibility check did not start');
+    assert.equal(launches, 0);
+    release({ ok: true, available: false, configured: false });
+    await enabling;
+    assert.equal(launches, 1, 'a system without RTSS can still run sharpening');
+  } finally { await service.stop(); child?.kill(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('sharpening reports an RTSS helper-profile conflict instead of starting a paced overlay', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-sharpen-compat-conflict-'));
+  const service = createScreenPostprocessSharpening({
+    dir, helperPath: HELPER, detector: { async detectProcess() { return null; } },
+    async ensureCompatibility() { return { ok: false, error: 'The helper has a custom RTSS frame cap.' }; },
+    spawn() { assert.fail('unverified compatibility must not launch the helper'); },
+  });
+  try {
+    await service.start();
+    const state = await service.setGlobal({ enabled: true, percentage: 50 });
+    assert.equal(state.active, false);
+    assert.match(state.reason, /custom RTSS frame cap/);
+  } finally { await service.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('stopping sharpening during compatibility validation prevents staging or spawning', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-sharpen-compat-stop-'));
+  let release;
+  const checked = new Promise(resolve => { release = resolve; });
+  let checks = 0;
+  const service = createScreenPostprocessSharpening({
+    dir, helperPath: HELPER, detector: { async detectProcess() { return null; } },
+    async ensureCompatibility() { checks++; return checked; },
+    stageHelper() { assert.fail('stopped sharpening must not start helper staging'); },
+    spawn() { assert.fail('stopped sharpening must not launch the helper'); },
+  });
+  try {
+    await service.start();
+    const enabling = service.setGlobal({ enabled: true, percentage: 50 });
+    await until(() => checks === 1, 'compatibility check did not start');
+    await service.stop();
+    release({ ok: true });
+    await enabling;
+    await delay(20);
+    assert.equal((await service.getGlobal()).active, false);
+  } finally { release({ ok: true }); await service.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('RTSS starting later is rechecked without launching another sharpening process', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 10000 });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-sharpen-compat-later-'));
+  let result = { ok: true, available: false };
+  let checks = 0;
+  let child;
+  const service = createScreenPostprocessSharpening({
+    dir, helperPath: HELPER, detector: { async detectProcess() { return { pid: 4242, exePath: GAME }; } },
+    isGameExecutable: async () => true, pollMs: 250,
+    async ensureCompatibility() { checks++; return result; },
+    spawn() { assert.equal(child, undefined); child = new FakeChild(); setTimeout(() => child.stdout.emit('data', 'READY screen-sharpen-v1\n'), 0); return child; },
+  });
+  try {
+    await service.start();
+    await service.setGlobal({ enabled: true, percentage: 50 });
+    await delay(320);
+    assert.ok(child.stdin.writes.includes('SET 4242 50\n'));
+    result = { ok: false, error: 'RTSS helper profile conflicts with sharpening.' };
+    t.mock.timers.setTime(16000);
+    await delay(320);
+    assert.equal(checks, 2);
+    assert.ok(child.stdin.writes.includes('SET 0 0\n'), 'hide the overlay if RTSS compatibility cannot be verified');
+    assert.match((await service.getGlobal()).reason, /RTSS helper profile conflicts/);
+    await delay(320);
+    assert.equal(checks, 2, 'failure does not turn foreground polling into repeated native requests');
+    result = { ok: true, available: true, configured: true };
+    t.mock.timers.setTime(22000);
+    await delay(320);
+    assert.equal(checks, 3);
+    assert.equal(child.stdin.writes.at(-1), 'SET 4242 50\n');
+  } finally { await service.stop(); child?.kill(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 class FakeStream extends EventEmitter {
   destroyed = false;
   writes = [];

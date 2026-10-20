@@ -1,6 +1,7 @@
 import { api } from '../ipc.ts';
 import { el } from '../dom.ts';
 import { buildDropdown, type DropdownElement } from './dropdown.ts';
+import { toast } from './toast.ts';
 import type { PostprocessSharpeningGame, PostprocessSharpeningGlobal, PostprocessSharpeningValue } from '../types.ts';
 
 const safePercentage = (value: number): number => Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
@@ -13,8 +14,10 @@ const sharpeningHelp = (text: string): HTMLElement => el('details', { class: 'sh
 const makeSelect = (value: string, options: Array<{ value: string; label: string }>, onChange: (value: string) => void, ariaLabel: string): DropdownElement =>
   buildDropdown(value, options, { className: 'graphics-select sharpening-select', ariaLabel, onChange });
 
+export type GlobalSharpeningApplyState = { dirty: boolean; busy: boolean; canApply: boolean; apply: () => Promise<void> };
+
 /** App-managed screen sharpening controls, kept outside the driver's graphics apply path. */
-export function renderGlobalSharpening(): HTMLElement {
+export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningApplyState) => void, onUnmount?: () => void): HTMLElement {
   const root = el('section', { class: 'card graphics-card sharpening-card' });
   let generation = 0;
   let state: PostprocessSharpeningGlobal | null = null;
@@ -22,6 +25,17 @@ export function renderGlobalSharpening(): HTMLElement {
   let latestRuntimeStatus: { active: boolean; reason?: string } | null = null;
   let busy = false;
   let error = '';
+  let saveStatus = '';
+  let appliedValue: PostprocessSharpeningValue | null = null;
+  let applyGlobal: () => Promise<void> = async () => {};
+  const markEditing = (): void => {
+    saveStatus = '';
+    const button = root.querySelector<HTMLButtonElement>('.graphics-card-actions .btn-primary');
+    if (button && !busy) button.textContent = 'Apply';
+  };
+  const isDirty = (): boolean => !!state && !!appliedValue
+    && (draft.enabled !== appliedValue.enabled || draft.percentage !== appliedValue.percentage);
+  const notify = (): void => onStateChange?.({ dirty: isDirty(), busy, canApply: !!state && (state.runtimeReady || !draft.enabled), apply: applyGlobal });
 
   const legacyWarning = (): HTMLElement[] => {
     if (state?.legacyManifestStatus === 'unreadable') {
@@ -38,33 +52,51 @@ export function renderGlobalSharpening(): HTMLElement {
 
   const render = (): void => {
     const request = generation;
-    const slider = el('input', { type: 'range', class: 'graphics-slider', min: 0, max: 100, step: 1, value: draft.percentage, disabled: busy || !state || !draft.enabled,
+    const slider = el('input', { type: 'range', class: 'graphics-slider', min: 0, max: 100, step: 1, value: draft.percentage, disabled: busy || !state || !state.runtimeReady || !draft.enabled,
       'aria-label': 'Arc Image Sharpening strength', 'aria-valuetext': `${draft.percentage}%`, oninput: (event: Event) => {
+        markEditing();
         draft.percentage = safePercentage((event.target as HTMLInputElement).valueAsNumber);
         const text = root.querySelector<HTMLElement>('.sharpening-value');
         if (text) text.textContent = `${draft.percentage}%`;
         (event.currentTarget as HTMLInputElement).setAttribute('aria-valuetext', `${draft.percentage}%`);
+        notify();
       } });
     const sliderRow = el('div', { class: 'graphics-fps-slider-row sharpening-slider-row', hidden: !draft.enabled }, [slider, el('span', { class: 'graphics-fps-value sharpening-value', text: `${draft.percentage}%` })]);
     const select = makeSelect(draft.enabled ? 'on' : 'off', [
       { value: 'off', label: 'Arc Image Sharpening Off' },
       { value: 'on', label: 'Arc Image Sharpening On' },
     ], (value) => {
+      markEditing();
       draft.enabled = value === 'on';
       sliderRow.hidden = !draft.enabled;
-      slider.disabled = busy || !state || !draft.enabled;
+      slider.disabled = busy || !state || !state.runtimeReady || !draft.enabled;
+      const applyButton = root.querySelector<HTMLButtonElement>('.graphics-card-actions .btn-primary');
+      if (applyButton) applyButton.disabled = busy || !state || (!state.runtimeReady && draft.enabled);
+      notify();
     }, 'Arc Image Sharpening');
     select.disabled = busy || !state;
     const apply = async (): Promise<void> => {
       if (busy || !state) return;
-      busy = true; error = ''; render();
+      if (!state.runtimeReady && draft.enabled) return;
+      const request = generation;
+      busy = true; error = ''; saveStatus = ''; render(); notify();
       try {
-        state = await api.postprocessSharpeningSet({ enabled: draft.enabled, percentage: draft.percentage });
+        const next = await api.postprocessSharpeningSet({ enabled: draft.enabled, percentage: draft.percentage });
+        if (request !== generation || !root.isConnected) return;
+        state = next;
         if (latestRuntimeStatus) state = { ...state, active: latestRuntimeStatus.active, reason: latestRuntimeStatus.reason };
         draft = { ...state.value };
-      } catch (err) { error = err instanceof Error ? err.message : String(err); }
-      finally { busy = false; if (request === generation && root.isConnected) render(); }
+        appliedValue = { ...state.value };
+        saveStatus = state.reason ? 'Saved' : 'Applied';
+        if (state.reason) toast('warn', 'Arc Image Sharpening saved', state.reason);
+        else toast('success', 'Arc Image Sharpening saved', 'Runtime status shows whether sharpening is active.');
+      } catch (err) {
+        if (request !== generation || !root.isConnected) return;
+        error = err instanceof Error ? err.message : String(err);
+        toast('error', 'Arc Image Sharpening failed', error);
+      } finally { if (request === generation) { busy = false; if (root.isConnected) { render(); notify(); } } }
     };
+    applyGlobal = apply;
     root.replaceChildren(
       el('div', { class: 'sharpening-card-heading' }, [
         el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Arc Image Sharpening' }), el('p', { class: 'card-note', text: 'Sharpens the foreground game on an Intel Arc display.' })]),
@@ -75,8 +107,8 @@ export function renderGlobalSharpening(): HTMLElement {
       el('p', { class: 'sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading sharpening settings…' }),
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),
       el('div', { class: 'graphics-card-actions' }, [
-        el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : 'Apply', disabled: busy || !state, onclick: () => void apply() }),
-        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { draft = { enabled: false, percentage: 50 }; render(); } }),
+        el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : saveStatus || 'Apply', disabled: busy || !state || (!state.runtimeReady && draft.enabled), onclick: () => void apply() }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { saveStatus = ''; draft = { enabled: false, percentage: 50 }; render(); notify(); } }),
       ]),
     );
   };
@@ -94,14 +126,16 @@ export function renderGlobalSharpening(): HTMLElement {
   void api.postprocessSharpeningGet().then((value) => {
     if (request !== generation || !root.isConnected) return;
     state = latestRuntimeStatus ? { ...value, ...latestRuntimeStatus } : value;
-    draft = { ...value.value }; render();
+    draft = { ...value.value }; appliedValue = { ...value.value }; render(); notify();
   }).catch((err: unknown) => {
     if (request !== generation || !root.isConnected) return;
     error = err instanceof Error ? err.message : String(err); render();
   });
   const detachObserver = new MutationObserver(() => {
     if (root.isConnected) return;
+    generation += 1;
     unsubscribeStatus();
+    onUnmount?.();
     detachObserver.disconnect();
   });
   detachObserver.observe(document.body, { childList: true, subtree: true });
@@ -116,6 +150,12 @@ export function renderGameSharpening(exePath: string): HTMLElement {
   let useGlobal = true;
   let busy = false;
   let error = '';
+  let saveStatus = '';
+  const markEditing = (): void => {
+    saveStatus = '';
+    const button = root.querySelector<HTMLButtonElement>('.graphics-card-actions .btn-primary');
+    if (button && !busy) button.textContent = 'Apply';
+  };
 
   const legacyWarning = (): HTMLElement[] => {
     if (state?.legacyManifestStatus === 'unreadable') return [el('p', { class: 'profile-capability-note', text: 'The previous game-folder sharpening manifest could not be checked. Older integrations may remain; this build does not change game files.' })];
@@ -137,19 +177,28 @@ export function renderGameSharpening(exePath: string): HTMLElement {
   const mutate = async (value: PostprocessSharpeningValue | null): Promise<void> => {
     if (busy) return;
     const request = generation;
-    busy = true; error = ''; render();
+    busy = true; error = ''; saveStatus = ''; render();
     try {
-      state = await api.postprocessSharpeningGameSet(exePath, value);
+      const next = await api.postprocessSharpeningGameSet(exePath, value);
+      if (request !== generation || !root.isConnected) return;
+      state = next;
       useGlobal = state.override === null;
       draft = { ...(state.override ?? state.globalValue) };
-    } catch (err) { error = err instanceof Error ? err.message : String(err); }
-    finally { busy = false; if (request === generation && root.isConnected) render(); }
+      saveStatus = state.reason ? 'Saved' : 'Applied';
+      if (state.reason) toast('warn', 'Per-game sharpening saved', state.reason);
+      else toast('success', 'Per-game sharpening saved', 'Runtime status shows whether sharpening is active.');
+    } catch (err) {
+      if (request !== generation || !root.isConnected) return;
+      error = err instanceof Error ? err.message : String(err);
+      toast('error', 'Per-game sharpening failed', error);
+    } finally { if (request === generation) { busy = false; if (root.isConnected) render(); } }
   };
   const render = (): void => {
     const globalValue = state?.globalValue ?? { enabled: false, percentage: 50 };
     const shownValue = useGlobal ? globalValue : draft;
-    const slider = el('input', { class: 'graphics-slider', type: 'range', min: 0, max: 100, step: 1, value: shownValue.percentage, disabled: busy || !state || useGlobal || !draft.enabled,
+    const slider = el('input', { class: 'graphics-slider', type: 'range', min: 0, max: 100, step: 1, value: shownValue.percentage, disabled: busy || !state || state.runtimeReady === false || useGlobal || !draft.enabled,
       'aria-label': 'Per-game Arc Image Sharpening strength', 'aria-valuetext': `${shownValue.percentage}%`, oninput: (event: Event) => {
+        markEditing();
         draft.percentage = safePercentage((event.target as HTMLInputElement).valueAsNumber);
         const label = root.querySelector<HTMLElement>('.sharpening-game-value'); if (label) label.textContent = `${draft.percentage}%`;
         (event.currentTarget as HTMLInputElement).setAttribute('aria-valuetext', `${draft.percentage}%`);
@@ -160,12 +209,15 @@ export function renderGameSharpening(exePath: string): HTMLElement {
       { value: 'off', label: 'Arc Image Sharpening Off' },
       { value: 'on', label: 'Arc Image Sharpening On' },
     ], (value) => {
+      markEditing();
       useGlobal = value === 'global';
       if (!useGlobal) draft.enabled = value === 'on';
       sliderRow.hidden = useGlobal || !draft.enabled;
-      slider.disabled = busy || !state || useGlobal || !draft.enabled;
+      slider.disabled = busy || !state || state.runtimeReady === false || useGlobal || !draft.enabled;
       const shown = useGlobal ? globalValue : draft;
       const label = root.querySelector<HTMLElement>('.sharpening-game-value'); if (label) label.textContent = `${shown.percentage}%`;
+      const applyButton = root.querySelector<HTMLButtonElement>('.graphics-card-actions .btn-primary');
+      if (applyButton) applyButton.disabled = busy || !state || (state.runtimeReady === false && !useGlobal && draft.enabled);
     }, 'Per-game Arc Image Sharpening');
     select.disabled = busy || !state;
     root.replaceChildren(
@@ -174,16 +226,23 @@ export function renderGameSharpening(exePath: string): HTMLElement {
         el('div', { class: 'sharpening-card-control' }, [select, sliderRow]),
       ]),
       sharpeningHelp('Per-game sharpening applies while this recognized game is the foreground window on a display connected to Intel Arc. The global Arc Image Sharpening switch in Graphics must be on. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game.'),
+      ...(state && !state.globalValue.enabled ? [el('p', { class: 'profile-capability-note', text: 'Global Arc Image Sharpening is off. This per-game override remains saved and will be inactive until the global switch is on.' })] : []),
       ...legacyWarning(),
       ...(state?.reason ? [el('p', { class: 'text-error', text: state.reason })] : []),
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),
       ...(!state ? [el('p', { class: 'profile-capability-note', text: 'Loading game sharpening…' })] : []),
       el('div', { class: 'graphics-card-actions' }, [
-        el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : 'Apply', disabled: busy || !state, onclick: () => void mutate(useGlobal ? null : { ...draft }) }),
-        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { useGlobal = true; draft = { ...globalValue }; render(); } }),
+        el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : saveStatus || 'Apply', disabled: busy || !state || (state.runtimeReady === false && !useGlobal && draft.enabled), onclick: () => void mutate(useGlobal ? null : { ...draft }) }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { saveStatus = ''; useGlobal = true; draft = { ...globalValue }; render(); } }),
       ]),
     );
   };
   render(); void load();
+  const detachObserver = new MutationObserver(() => {
+    if (root.isConnected) return;
+    generation += 1;
+    detachObserver.disconnect();
+  });
+  detachObserver.observe(document.body, { childList: true, subtree: true });
   return root;
 }

@@ -18,6 +18,7 @@ const methods = new Set([
   'applyFrameLimit',
   'restoreFrameLimit',
   'restoreFrameLimitState',
+  'ensureScreenSharpeningCompatibility',
 ]);
 
 const handleLine = (line) => {

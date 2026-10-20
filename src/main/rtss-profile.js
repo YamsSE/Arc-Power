@@ -19,6 +19,9 @@ const UINT32_SIZE = 4;
 const PROFILE_DLL_NAMES = Object.freeze(['RTSSHooks64.dll', 'RTSSHooks.dll']);
 const RTSS_FRAME_LIMIT_PROPERTY = 'FramerateLimit';
 const RTSS_FRAME_LIMIT_DENOMINATOR_PROPERTY = 'FramerateLimitDenominator';
+const SHARPENING_COMPATIBILITY_PROFILE = 'ArcPower.ScreenSharpen.exe';
+const RTSS_PROFILE_ENUM_INITIAL_BYTES = 4096;
+const RTSS_PROFILE_ENUM_MAX_BYTES = 1024 * 1024;
 
 function profileDllPaths(executablePath) {
   if (typeof executablePath !== 'string' || executablePath.trim().length === 0) return [];
@@ -70,13 +73,29 @@ function profileNameOf(executablePath) {
 function enumerateProfiles(api) {
   if (typeof api?.enumProfiles !== 'function') return null;
   try {
-    const required = Number(api.enumProfiles(null, 0));
-    if (!Number.isInteger(required) || required < 0 || required > 1024 * 1024) return null;
-    if (required === 0) return new Set();
-    const buffer = Buffer.alloc(required);
-    api.enumProfiles(buffer, required);
-    const text = buffer.toString('utf8').replaceAll('\0', '');
-    return new Set(text.split(',').map((name) => name.trim().toLowerCase()).filter(Boolean));
+    let capacity = RTSS_PROFILE_ENUM_INITIAL_BYTES;
+    for (let attempt = 0; attempt < 9; attempt += 1) {
+      // RTSS SDK versions do not guarantee that EnumProfiles accepts a null
+      // pointer for a size query. Always pass writable storage, including on
+      // the first call, and retry only when its returned required size exceeds
+      // the supplied capacity.
+      const buffer = Buffer.alloc(capacity);
+      const reported = Number(api.enumProfiles(buffer, capacity));
+      if (!Number.isInteger(reported) || reported < 0 || reported > RTSS_PROFILE_ENUM_MAX_BYTES) return null;
+      if (reported > capacity) {
+        capacity = reported;
+        continue;
+      }
+      // A zeroed buffer is safely empty when the API reports no entries. For
+      // nonempty results, require a terminator so a truncated list is never
+      // mistaken for a complete profile inventory.
+      if (reported === 0) return new Set();
+      const terminator = buffer.subarray(0, Math.min(reported, capacity)).indexOf(0);
+      if (terminator < 0) return null;
+      const text = buffer.toString('utf8', 0, terminator);
+      return new Set(text.split(',').map((name) => name.trim().toLowerCase()).filter(Boolean));
+    }
+    return null;
   } catch {
     return null;
   }
@@ -1129,6 +1148,83 @@ export function createRtssProfileController({
     return next;
   };
 
+  const ensureScreenSharpeningCompatibilityNow = async () => {
+    if (platform !== 'win32') {
+      return { ok: true, available: false, configured: false, error: null };
+    }
+    try {
+      if (typeof isRunning === 'function' && await isRunning() !== true) {
+        return { ok: true, available: false, configured: false, error: null };
+      }
+    } catch {
+      return { ok: true, available: false, configured: false, error: null };
+    }
+
+    const api = bindings ?? await resolveBindings();
+    if (!api) {
+      return { ok: false, available: true, configured: false, error: 'RTSS profile API is unavailable' };
+    }
+    const profiles = enumerateProfiles(api);
+    if (!(profiles instanceof Set)) {
+      return { ok: false, available: true, configured: false, error: 'RTSS profiles could not be enumerated safely' };
+    }
+    const profileKey = SHARPENING_COMPATIBILITY_PROFILE.toLowerCase();
+    try {
+      if (profiles.has(profileKey)) {
+        api.loadProfile(SHARPENING_COMPATIBILITY_PROFILE);
+        const limit = readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY);
+        if (limit === 0) return { ok: true, available: true, configured: true, profile: SHARPENING_COMPATIBILITY_PROFILE };
+        return {
+          ok: false,
+          available: true,
+          configured: false,
+          conflict: true,
+          error: `RTSS profile ${SHARPENING_COMPATIBILITY_PROFILE} already exists with a nonzero or unreadable frame limit; it was left unchanged`,
+        };
+      }
+
+      // A new per-game profile inherits the current global properties. Only
+      // FramerateLimit is changed; the global profile and limiter flags are
+      // never written by this compatibility operation.
+      api.loadProfile(RTSS_GLOBAL_PROFILE);
+      if (!writeProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY, 0)) {
+        return { ok: false, available: true, configured: false, error: 'RTSS sharpening compatibility frame limit could not be set' };
+      }
+      // EnumProfiles and SaveProfile are not atomic. Recheck immediately
+      // before saving so a concurrently created custom profile is preserved.
+      const beforeSave = enumerateProfiles(api);
+      if (!(beforeSave instanceof Set)) {
+        return { ok: false, available: true, configured: false, error: 'RTSS profiles could not be rechecked safely before saving' };
+      }
+      if (beforeSave.has(profileKey)) {
+        return { ok: false, available: true, configured: false, conflict: true, error: `RTSS profile ${SHARPENING_COMPATIBILITY_PROFILE} appeared during setup; no profile was saved` };
+      }
+      api.saveProfile(SHARPENING_COMPATIBILITY_PROFILE);
+      api.updateProfiles();
+      const afterSave = enumerateProfiles(api);
+      if (!(afterSave instanceof Set) || !afterSave.has(profileKey)) {
+        return { ok: false, available: true, configured: false, error: 'RTSS sharpening compatibility profile could not be verified after saving' };
+      }
+      api.loadProfile(SHARPENING_COMPATIBILITY_PROFILE);
+      const savedLimit = readProfileProperty(api, RTSS_FRAME_LIMIT_PROPERTY);
+      if (savedLimit !== 0) {
+        return { ok: false, available: true, configured: false, error: 'RTSS sharpening compatibility profile read-back did not confirm FramerateLimit=0' };
+      }
+      return { ok: true, available: true, configured: true, profile: SHARPENING_COMPATIBILITY_PROFILE };
+    } catch (cause) {
+      return { ok: false, available: true, configured: false, error: cause instanceof Error ? cause.message : String(cause) };
+    } finally {
+      // Keep RTSS's profile cursor on the global profile for other operations.
+      try { api.loadProfile(RTSS_GLOBAL_PROFILE); } catch { /* Best-effort cursor reset. */ }
+    }
+  };
+
+  const ensureScreenSharpeningCompatibility = () => {
+    const next = queue.catch(() => {}).then(() => ensureScreenSharpeningCompatibilityNow());
+    queue = next.catch(() => {});
+    return next;
+  };
+
   return {
     apply,
     getFrameLimit,
@@ -1136,6 +1232,7 @@ export function createRtssProfileController({
     applyFrameLimit,
     restoreFrameLimit,
     restoreFrameLimitState,
+    ensureScreenSharpeningCompatibility,
     getState: () => cloneState({ ...state, dllPath: loadedPath }),
   };
 }

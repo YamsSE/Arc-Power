@@ -5,8 +5,10 @@
 
 import { spawn as childProcessSpawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 
 export const RTSS_PROFILE_REQUEST_TIMEOUT_MS = 15000;
+const MAX_STDERR_TAIL_BYTES = 2048;
 
 const initialState = () => ({
   available: false,
@@ -31,6 +33,9 @@ const unavailable = (method, message) => {
   }
   if (method === 'restoreFrameLimitState') {
     return { ok: false, errorCode: 'unavailable', source: 'rtss', error: message };
+  }
+  if (method === 'ensureScreenSharpeningCompatibility') {
+    return { ok: false, available: false, configured: false, error: message };
   }
   return { ok: false, used: false, available: false, errorCode: 'unavailable', source: 'rtss', error: message };
 };
@@ -61,31 +66,46 @@ export function createRtssProfileHelperProxy({
   let queue = Promise.resolve();
   let pending = null;
   let stdoutBuffer = '';
+  let stderrTail = Buffer.alloc(0);
 
-  const markTerminal = (reason) => {
+  const markTerminal = (reason, { logFailure = true } = {}) => {
     if (terminalReason) return;
-    terminalReason = reason;
-    cachedState = { ...initialState(), error: reason };
+    const stderrText = stderrTail.toString('utf8').trim();
+    const diagnostic = logFailure && stderrText ? `${reason}; stderr tail: ${stderrText}` : reason;
+    terminalReason = diagnostic;
+    cachedState = { ...initialState(), error: diagnostic };
     const active = pending;
     pending = null;
     if (active?.timer) clearTimeout(active.timer);
-    if (active) active.resolve(unavailable(active.method, reason));
+    if (active) active.resolve(unavailable(active.method, diagnostic));
     try { child?.stdin?.end?.(); } catch { /* best effort */ }
     try { child?.kill?.(); } catch { /* best effort */ }
     child = null;
-    try { log(`RTSS profile worker disabled for this session: ${reason}`); } catch { /* logging is best effort */ }
+    if (logFailure) {
+      try { log(`RTSS profile worker disabled for this session: ${diagnostic}`); } catch { /* logging is best effort */ }
+    }
   };
 
   const ensureChild = () => {
     if (terminalReason) return null;
     if (child) return child;
     try {
+      // This worker is terminal on its first failure, so this capture belongs
+      // to one child for the lifetime of the proxy.
+      stderrTail = Buffer.alloc(0);
       const proc = spawnFn(execPath, [entryPath], {
         env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
         windowsHide: true,
-        stdio: ['pipe', 'pipe', 'ignore'],
+        stdio: ['pipe', 'pipe', 'pipe'],
+        // Use a real, stable directory even when the launcher inherited an
+        // unavailable working directory. The script itself may be in app.asar.
+        cwd: path.dirname(execPath),
       });
       child = proc;
+      proc.stderr?.on?.('data', (chunk) => {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+        stderrTail = Buffer.concat([stderrTail, bytes]).subarray(-MAX_STDERR_TAIL_BYTES);
+      });
       proc.stdout?.on?.('data', (chunk) => {
         stdoutBuffer += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
         for (;;) {
@@ -160,12 +180,13 @@ export function createRtssProfileHelperProxy({
     applyFrameLimit: (options = {}) => call('applyFrameLimit', options),
     restoreFrameLimit: (restoreToken = null) => call('restoreFrameLimit', restoreToken),
     restoreFrameLimitState: (options = {}) => call('restoreFrameLimitState', options),
+    ensureScreenSharpeningCompatibility: () => call('ensureScreenSharpeningCompatibility', {}),
     // This API is intentionally synchronous. The parent only reports the
     // most recent state received from the isolated controller.
     getState: () => ({ ...cachedState }),
     // Kill is synchronous and bounded even if a Koffi call is stuck. The
     // pending request is resolved unavailable and future calls are rejected.
-    close: () => markTerminal('RTSS profile worker closed during app shutdown'),
+    close: () => markTerminal('RTSS profile worker closed during app shutdown', { logFailure: false }),
     isTerminal: () => terminalReason !== null,
   };
 }

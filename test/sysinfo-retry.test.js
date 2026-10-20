@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { collectSysinfo, isDegradedSysinfo, resetSysinfoCache } from '../src/main/sysinfo.js';
+import { applyDriverReBar, collectSysinfo, createDriverReBar, isDegradedSysinfo, resetSysinfoCache } from '../src/main/sysinfo.js';
 
 const RICH_CIM = JSON.stringify({
   cpu: { Name: 'Intel(R) Core(TM) i7-5775C CPU', NumberOfCores: 4, NumberOfLogicalProcessors: 8, MaxClockSpeed: 3300, Manufacturer: 'GenuineIntel' },
@@ -128,4 +128,84 @@ test('a later single-GPU CIM response does not remove another observed GPU', asy
   } finally {
     resetSysinfoCache();
   }
+});
+
+const rebarArc = (id, domain, bus) => ({
+  id,
+  pciVendorId: '0x00008086',
+  pciDeviceId: '0x000056a0',
+  bdf: { domain, bus, device: 0, function: 0 },
+});
+
+test('ReBAR query rejects a sole same-model candidate in a different PCI domain', async () => {
+  const queried = [];
+  const read = createDriverReBar({
+    listDevices: async () => [rebarArc(0, 0, 3)],
+    pciProperties: async (id) => {
+      queried.push(id);
+      return { resizableBarEnabled: true };
+    },
+  }, rebarArc(1, 1, 11));
+
+  assert.equal(await read(), null);
+  assert.deepEqual(queried, []);
+});
+
+test('ReBAR merge leaves a same-model controller in another PCI domain unknown', () => {
+  const sysinfo = {
+    videoControllers: [{
+      name: 'Intel(R) Arc(TM) A770 Graphics',
+      pciVendorId: '0x00008086',
+      pciDeviceId: '0x000056a0',
+      locationPath: '0000:03:00.0',
+      rebarActive: null,
+    }],
+  };
+
+  const result = applyDriverReBar(sysinfo, true, {
+    ...rebarArc(1, 1, 11),
+  });
+  assert.strictEqual(result, sysinfo);
+  assert.equal(result.videoControllers[0].rebarActive, null);
+});
+
+test('ReBAR full-CIM selection rejects a same-model controller from another PCI domain', async () => {
+  const queried = [];
+  const target = {
+    videoControllers: [{
+      name: 'Intel(R) Arc(TM) A770 Graphics',
+      pciVendorId: '0x00008086',
+      pciDeviceId: '0x000056a0',
+      locationPath: '0000:03:00.0',
+      rebarActive: null,
+    }],
+    cpu: {},
+    ram: {},
+    baseboard: {},
+    laptop: false,
+  };
+  const read = createDriverReBar({
+    listDevices: async () => [rebarArc(1, 1, 3)],
+    pciProperties: async (id) => {
+      queried.push(id);
+      return { resizableBarEnabled: true };
+    },
+  }, target);
+
+  assert.equal(await read(), null);
+  assert.deepEqual(queried, []);
+});
+
+test('ReBAR merge prefers a unique PNP identity over duplicate PCI-pair matches', () => {
+  const pnpDeviceId = 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000002';
+  const sysinfo = {
+    videoControllers: [
+      { pnpDeviceId: 'PCI\\VEN_8086&DEV_56A0&SUBSYS_00000001', rebarActive: null },
+      { pnpDeviceId, rebarActive: null },
+    ],
+  };
+
+  const result = applyDriverReBar(sysinfo, true, { pnpDeviceId });
+  assert.equal(result.videoControllers[0].rebarActive, null);
+  assert.equal(result.videoControllers[1].rebarActive, true);
 });

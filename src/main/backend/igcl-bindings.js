@@ -497,14 +497,13 @@ const ctl_voltage_frequency_point_t = koffi.struct('ctl_voltage_frequency_point_
   Frequency: 'uint32',
 }); // 8 bytes, align 4
 
-// M4-D2 (driver ReBAR state): ctlPciGetProperties structs, transcribed
-// from the IGCL SDK ctl_api.h. LIVE-VERIFIED against the DriverStore runtime
-// on the A770 (2026-08-07): this driver build's ctl_pci_speed_t has NO
-// Version field ({ Size, gen, width, maxBandwidth } = 20 bytes) � the current
-// docs' header adds Version (24 bytes). The resizable-bar flags therefore
-// sit at offset 52/53 in this driver build (the docs' 56/57). The decoder
-// reads the LIVE offsets (52/53) and the size assertion matches the driver
-// build (64 bytes either way).
+// M4-D2 (driver ReBAR state): ctlPciGetProperties structs, transcribed from
+// Intel's public IGCL v171+ ctl_api.h. ctl_pci_speed_t includes Version and
+// occupies 24 bytes under MSVC x64; ctl_pci_properties_t is 64 bytes, with
+// resizable_bar_supported/enabled at offsets 56/57. An earlier comment
+// incorrectly assumed omitting the nested Version would move these flags to
+// 52/53; x64 alignment of maxBandwidth keeps the nested struct at 24 bytes.
+// The decoder uses the public-header offsets below.
 const ctl_pci_address_t = koffi.struct('ctl_pci_address_t', {
   Size: 'uint32',
   Version: 'uint8',
@@ -802,9 +801,8 @@ const EXPECTED_SIZES = {
   ctl_power_telemetry_t: 1024,
   ctl_power_telemetry_v2_t: 1016,
   ctl_voltage_frequency_point_t: 8,
-  // M4-D2 (driver ReBAR state): ctl_pci_address_t 24, ctl_pci_speed_t 20
-  // (koffi/MSVC 8-aligns the tail � the DRIVER's real layout is 20 bytes
-  // without the tail pad, which is why the flags sit at 52/53), properties 64.
+  // M4-D2 (driver ReBAR state): ctl_pci_address_t 24, ctl_pci_speed_t 24,
+  // and ctl_pci_properties_t 64 under the public IGCL/MSVC x64 layout.
   ctl_pci_address_t: 24,
   ctl_pci_speed_t: 24,
   ctl_pci_properties_t: 64,
@@ -1431,12 +1429,10 @@ export function decodeVfCurve(buf, numPoints) {
 }
 
 /**
- * M4-D2: decode a ctl_pci_properties_t buffer into plain JS. The
- * resizable-bar flags are read at the LIVE offsets 52/53 (this driver
- * build's ctl_pci_speed_t has no Version field � 20 bytes; the docs'
- * current header would place them at 56/57). Also reads the BDF + link
- * capability for the PCIe truth (bus/gen/width sanity: the A770 live probe
- * reported bus 3, gen 4, width 16, maxBandwidth 31.5 GB/s).
+ * M4-D2: decode a ctl_pci_properties_t buffer into plain JS using the public
+ * IGCL layout: BDF at 16..28, maxSpeed fields at 40..55, and ReBAR flags at
+ * 56/57. The current B580 DriverStore read also returned the expected
+ * gen/width and true/true ReBAR flags at these offsets.
  * @param {unknown} buf koffi buffer of 64+ bytes
  * @returns {{ domain: number, bus: number, device: number, function: number, gen: number, width: number, maxBandwidth: number, resizableBarSupported: boolean, resizableBarEnabled: boolean }}
  */
@@ -1444,7 +1440,7 @@ export function decodePciProperties(buf) {
   // koffi decode quirk (live-verified): single-byte/primitive decodes with
   // an offset on a call-passed buffer drift by -4; the WHOLE-ARRAY decode
   // (koffi.decode(buf, 0, 'uint8[64]')) is byte-accurate. Parse the array
-  // in plain JS at the docs/IGCL offsets (live-verified on the A770):
+  // in plain JS at the public IGCL offsets (also checked against a live B580):
   // domain@16, bus@20, device@24, function@28; speed struct @32:
   // Size@32, Version@36, gen@40, width@44, maxBandwidth@48 (31.5 GB/s =
   // PCIe 4.0 x16 ✓); resizable_bar_supported@56, enabled@57.

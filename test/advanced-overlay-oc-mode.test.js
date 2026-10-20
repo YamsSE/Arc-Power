@@ -58,6 +58,21 @@ test('Advanced Overlay carries the selected mode from capability snapshots', () 
   assert.match(overlay, /ocMode: payload\.caps\.ocMode === 'advanced' \|\| payload\.caps\.ocMode === 'stock'/);
 });
 
+test('Advanced Overlay Global Graphics includes app-managed Arc Image Sharpening', () => {
+  assert.match(overlay, /buildOverlaySharpeningCard\(\)/);
+  assert.match(overlay, /dataset: \{ control: 'postprocessSharpening' \}/);
+  assert.match(overlay, /api\.postprocessSharpeningGet\(\)/);
+  assert.match(overlay, /api\.postprocessSharpeningSet\(\{ enabled: draft\.enabled, percentage: draft\.percentage \}\)/);
+  assert.match(overlay, /text: 'Arc Image Sharpening'/);
+  assert.match(overlay, /'aria-label': 'Arc Image Sharpening strength'/);
+  assert.match(overlay, /min: 0, max: 100, step: 1/);
+  assert.match(overlay, /'Applying…'/);
+  assert.match(overlay, /'Applied'/);
+  assert.match(overlay, /sharpening settings read timed out/);
+  assert.match(overlay, /if \(token !== request \|\| !card\.isConnected\) return/);
+  assert.match(overlay, /buildOverlaySharpeningCard\(\),\s*graphicsActions/);
+});
+
 test('OC mode readback is broadcast to both renderer tuning surfaces', () => {
   assert.match(app, /ocMode: payload\.caps\.ocMode === 'advanced' \|\| payload\.caps\.ocMode === 'stock'/);
   assert.match(app, /api\.onOcModeUpdated\(/);

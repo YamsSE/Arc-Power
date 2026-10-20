@@ -4,6 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, _gameProfiles, backend) {
+  const makeGate = () => {
+    let release;
+    let signalStarted;
+    const promise = new Promise((resolve) => { release = resolve; });
+    const started = new Promise((resolve) => { signalStarted = resolve; });
+    return { promise, started, release, signalStarted };
+  };
   win.webContents.on('console-message', (event) => {
     process.stdout.write(`[postprocess-sharpening-ui] renderer console ${event.level} ${event.sourceId}:${event.lineNumber}: ${event.message}\n`);
   });
@@ -20,10 +27,33 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     if (!option) throw new Error('Missing sharpening mode value: ' + ${JSON.stringify(value)});
     option.click();
   })()`);
+  const chooseGraphicsMode = async (label, value) => js(`(() => {
+    const control = document.querySelector('.graphics-stack [role="combobox"][aria-label=' + JSON.stringify(${JSON.stringify(label)}) + ']');
+    if (!control) throw new Error('Missing graphics mode: ' + ${JSON.stringify(label)});
+    control.click();
+    const option = control.options.find((item) => item.dataset.value === ${JSON.stringify(value)});
+    if (!option) throw new Error('Missing graphics mode value: ' + ${JSON.stringify(value)});
+    option.click();
+  })()`);
   const applyCard = async () => js(`Array.from(document.querySelectorAll('.sharpening-card .graphics-card-actions button')).find((button) => button.textContent.trim() === 'Apply')?.click()`);
   let legacyGraphicsWrites = 0;
+  let driverWriteBaseline = 0;
   const originalSetGraphicsSettings = backend.setGraphicsSettings;
+  const originalGetGraphicsSettings = backend.getGraphicsSettings;
+  const originalSetGlobal = postprocessSharpening.setGlobal;
   const originalGetGlobal = postprocessSharpening.getGlobal;
+  let failNextGlobalSet = false;
+  let holdNextGlobalSet = false;
+  let releaseGlobalSet;
+  let signalGlobalSetStarted;
+  const globalSetGate = new Promise((resolve) => { releaseGlobalSet = resolve; });
+  const globalSetStarted = new Promise((resolve) => { signalGlobalSetStarted = resolve; });
+  let failCombinedGlobalSet = false;
+  let holdCombinedGlobalSet = false;
+  let combinedGlobalSetGate = makeGate();
+  let holdGraphicsSet = false;
+  let graphicsSetGate = makeGate();
+  let failNextGraphicsGet = false;
   let holdInitialGlobalRead = false;
   let releaseInitialGlobalRead;
   let signalInitialGlobalReadStarted;
@@ -37,9 +67,36 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     }
     return originalGetGlobal.apply(this, args);
   };
+  postprocessSharpening.setGlobal = async function(...args) {
+    if (failNextGlobalSet) { failNextGlobalSet = false; throw new Error('Mock screen-sharpening write failed.'); }
+    if (holdCombinedGlobalSet) {
+      holdCombinedGlobalSet = false;
+      combinedGlobalSetGate.signalStarted();
+      await combinedGlobalSetGate.promise;
+      if (failCombinedGlobalSet) { failCombinedGlobalSet = false; throw new Error('Mock combined screen-sharpening write failed.'); }
+    }
+    if (holdNextGlobalSet) {
+      holdNextGlobalSet = false;
+      signalGlobalSetStarted();
+      await globalSetGate;
+    }
+    return originalSetGlobal.apply(this, args);
+  };
   backend.setGraphicsSettings = async function(...args) {
     legacyGraphicsWrites += 1;
+    if (holdGraphicsSet) {
+      holdGraphicsSet = false;
+      graphicsSetGate.signalStarted();
+      await graphicsSetGate.promise;
+    }
     return originalSetGraphicsSettings.apply(this, args);
+  };
+  backend.getGraphicsSettings = async function(...args) {
+    if (failNextGraphicsGet) {
+      failNextGraphicsGet = false;
+      throw new Error('Mock graphics capabilities read failed.');
+    }
+    return originalGetGraphicsSettings.apply(this, args);
   };
   const waitFor = async (expression, message) => {
     for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -62,6 +119,7 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
 
   try {
     await waitFor(`document.getElementById('page')?.textContent?.includes('Active device') && document.getElementById('page')?.textContent?.includes('Dashboard')`, 'Mock renderer did not finish startup');
+    await waitFor(`(async () => !!document.querySelector('.gpu-header-gpu-pill') && Number.isInteger((await window.arcPower.deviceGet()).deviceId))()`, 'Mock renderer did not select its B580 device');
     await js(`window.arcPower.waiverAccept(0)`);
     holdInitialGlobalRead = true;
     await js(`location.hash = '#/graphics'`);
@@ -73,7 +131,17 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     await pause();
     releaseInitialGlobalRead();
     await waitFor(`location.hash === '#/graphics' && document.getElementById('page')?.textContent?.includes('Arc Image Sharpening') && !!document.querySelector('.sharpening-card input[aria-label="Arc Image Sharpening strength"]')`, 'Graphics page or global sharpening control did not render');
+    assert.equal(await js(`document.querySelector('.graphics-page-hero')?.textContent?.includes('No GPU available')`), false, 'Combined graphics verification requires the selected B580 device');
     await waitFor(`document.querySelector('.sharpening-runtime-status')?.textContent?.includes('Sharpening is active')`, 'A runtime status event delivered before the initial settings read was lost');
+
+    // Establish the supported driver's accepted baseline first. The shared
+    // Graphics Apply can be dirty against an empty applied reference on first
+    // load, which would otherwise make a screen-card click combined by design.
+    if (await js(`document.querySelector('.floating-apply')?.hidden === false`)) {
+      await js(`document.querySelector('.floating-apply')?.click()`);
+      await waitFor(`document.querySelector('.floating-apply')?.hidden === true`, 'Initial driver baseline did not settle');
+    }
+    driverWriteBaseline = legacyGraphicsWrites;
 
     const initialGlobal = await postprocessSharpening.getGlobal();
     assert.deepEqual(initialGlobal.value, { enabled: false, percentage: 50 });
@@ -92,6 +160,29 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     assert.match(globalHelp, /exclusive fullscreen capture can vary/i);
     await screenshot('global-sharpening-initial.png', '.sharpening-card');
 
+    // The Graphics-level Apply also owns screen-only drafts, without routing
+    // the screen value through the legacy driver graphics IPC.
+    await chooseMode('Arc Image Sharpening', 'on');
+    await waitFor(`document.querySelector('.floating-apply')?.hidden === false`, 'Screen-only sharpening draft did not surface the Graphics Apply button');
+    failNextGlobalSet = true;
+    await js(`document.querySelector('.floating-apply')?.click()`);
+    await waitFor(`Array.from(document.querySelectorAll('.toast-message')).some((node) => node.textContent.includes('Mock screen-sharpening write failed'))`, 'Failed global apply did not surface its reason');
+    assert.equal(await js(`document.querySelector('.floating-apply')?.hidden`), false, 'Failed screen-only draft disappeared from Graphics Apply');
+    holdNextGlobalSet = true;
+    await js(`document.querySelector('.floating-apply')?.click()`);
+    await Promise.race([globalSetStarted, new Promise((_, reject) => setTimeout(() => reject(new Error('Global sharpening apply did not enter the busy state')), 3000))]);
+    assert.equal(await js(`document.querySelector('.floating-apply')?.disabled`), true, 'Graphics Apply stayed clickable while sharpening was busy');
+    assert.equal(await js(`document.querySelector('.floating-apply')?.textContent`), 'Applying…', 'Graphics Apply did not show its busy label');
+    releaseGlobalSet();
+    await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => state.value.enabled === true && state.value.percentage === 50)`, 'Graphics Apply did not save the screen-only sharpening draft');
+    await waitFor(`document.querySelector('.floating-apply')?.hidden === true`, 'Graphics Apply did not hide after the sharpening draft was saved');
+    await waitFor(`document.querySelector('.sharpening-card:not(.sharpening-game-card) .graphics-card-actions .btn-primary')?.textContent === 'Applied'`, 'Global sharpening card did not show inline Applied feedback');
+    await waitFor(`Array.from(document.querySelectorAll('.toast-title')).some((node) => node.textContent.includes('Arc Image Sharpening saved'))`, 'Global sharpening did not show save feedback');
+    assert.equal(legacyGraphicsWrites, driverWriteBaseline, 'Screen-only Graphics Apply routed a write through legacy graphics settings');
+    await chooseMode('Arc Image Sharpening', 'off');
+    await applyCard();
+    await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => state.value.enabled === false)`, 'Global card Apply did not restore the off baseline');
+
     // Slider edits remain drafts until Apply is clicked.
     assert.equal(await js(`document.querySelector('.sharpening-card .card-title')?.textContent`), 'Arc Image Sharpening');
     await chooseMode('Arc Image Sharpening', 'on');
@@ -100,7 +191,7 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     assert.equal((await postprocessSharpening.getGlobal()).value.percentage, 50, 'Editing the global slider applied without user action');
     await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => state.value.enabled === true && state.value.percentage === 0)`, 'Global 0% setting did not Apply');
-    assert.equal(legacyGraphicsWrites, 0, 'Global sharpening Apply routed a write to the legacy graphics backend');
+    assert.equal(legacyGraphicsWrites, driverWriteBaseline, 'Global sharpening Apply routed a write to the legacy graphics backend');
     await js(`location.hash = '#/dashboard'`);
     await pause();
     await js(`location.hash = '#/graphics'`);
@@ -110,7 +201,63 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => state.value.percentage === 100)`, 'Global 100% did not Apply');
     assert.deepEqual((await postprocessSharpening.getGlobal()).value, { enabled: true, percentage: 100 });
-    assert.equal(legacyGraphicsWrites, 0, 'Global sharpening Apply routed a write to the legacy graphics backend');
+    assert.equal(legacyGraphicsWrites, driverWriteBaseline, 'Global sharpening Apply routed a write to the legacy graphics backend');
+
+    // Combined driver + screen Apply is gated so the graphics self-push
+    // occurs while the screen card is still in flight. The card node must
+    // survive renderCards(), and view changes remain blocked until both
+    // independent APIs settle.
+    await chooseMode('Arc Image Sharpening', 'off');
+    await chooseGraphicsMode('Low Latency Mode', 'on');
+    await waitFor(`!document.querySelector('.floating-apply')?.hidden`, 'Combined driver and sharpening drafts did not expose Graphics Apply');
+    await js(`window.__sharpCardBeforeCombined = document.querySelector('.sharpening-card')`);
+    holdCombinedGlobalSet = true;
+    holdGraphicsSet = true;
+    await js(`document.querySelector('.floating-apply')?.click()`);
+    await Promise.all([
+      Promise.race([combinedGlobalSetGate.started, new Promise((_, reject) => setTimeout(() => reject(new Error('Combined sharpening API did not start')), 3000))]),
+      Promise.race([graphicsSetGate.started, new Promise((_, reject) => setTimeout(() => reject(new Error('Combined graphics API did not start')), 3000))]),
+    ]);
+    assert.equal(await js(`document.querySelector('.floating-apply')?.disabled`), true, 'Combined Apply stayed enabled while busy');
+    assert.equal(await js(`document.querySelector('.floating-apply')?.textContent`), 'Applying…', 'Combined Apply did not show Applying');
+    assert.equal(await js(`Array.from(document.querySelectorAll('.graphics-view-btn')).every((button) => button.disabled)`), true, 'Graphics view switches were not blocked while Apply was busy');
+    await js(`document.querySelector('.graphics-view-btn[data-view="display"]')?.click()`);
+    assert.equal(await js(`document.querySelector('.graphics-view-btn[data-view="settings"]')?.classList.contains('active')`), true, 'Graphics view switched during Apply');
+    graphicsSetGate.release();
+    await waitFor(`window.arcPower.graphicsGet(0).then((state) => state.values.lowLatency === 'on')`, 'Driver half of combined Apply did not complete');
+    assert.equal(await js(`document.querySelector('.sharpening-card') === window.__sharpCardBeforeCombined`), true, 'Driver self-push replaced the in-flight sharpening card');
+    combinedGlobalSetGate.release();
+    await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => state.value.enabled === false)`, 'Screen half of combined Apply did not complete');
+    await waitFor(`document.querySelector('.floating-apply')?.hidden === true`, 'Combined Apply did not clear both successful drafts');
+    await waitFor(`Array.from(document.querySelectorAll('.graphics-view-btn')).every((button) => !button.disabled)`, 'Graphics view buttons remained disabled after Apply');
+
+    // A screen failure after the driver self-push keeps its draft and error
+    // feedback attached to the preserved card, with shared Apply available.
+    await chooseMode('Arc Image Sharpening', 'on');
+    await js(`(() => { const input = document.querySelector('.sharpening-card input[aria-label="Arc Image Sharpening strength"]'); input.value = '75'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await chooseGraphicsMode('Low Latency Mode', 'off');
+    combinedGlobalSetGate = makeGate();
+    graphicsSetGate = makeGate();
+    failCombinedGlobalSet = true;
+    holdCombinedGlobalSet = true;
+    holdGraphicsSet = true;
+    await js(`window.__sharpCardBeforeFailure = document.querySelector('.sharpening-card'); document.querySelector('.floating-apply')?.click()`);
+    await Promise.all([
+      Promise.race([combinedGlobalSetGate.started, new Promise((_, reject) => setTimeout(() => reject(new Error('Combined failure sharpening API did not start')), 3000))]),
+      Promise.race([graphicsSetGate.started, new Promise((_, reject) => setTimeout(() => reject(new Error('Combined failure graphics API did not start')), 3000))]),
+    ]);
+    graphicsSetGate.release();
+    await waitFor(`window.arcPower.graphicsGet(0).then((state) => state.values.lowLatency === 'off')`, 'Driver half of combined failure scenario did not self-push');
+    assert.equal(await js(`document.querySelector('.sharpening-card') === window.__sharpCardBeforeFailure`), true, 'Driver self-push replaced sharpening card before failed result');
+    combinedGlobalSetGate.release();
+    await waitFor(`Array.from(document.querySelectorAll('.toast-message')).some((node) => node.textContent.includes('Mock combined screen-sharpening write failed'))`, 'Combined screen failure reason was lost');
+    assert.equal(await js(`document.querySelector('.sharpening-card') === window.__sharpCardBeforeFailure`), true, 'Failed sharpening card was replaced after self-push');
+    assert.equal(await js(`document.querySelector('.floating-apply')?.hidden`), false, 'Failed combined screen draft disappeared from shared Apply');
+    assert.equal(await js(`document.querySelector('.sharpening-card .text-error')?.textContent?.includes('Mock combined screen-sharpening write failed')`), true, 'Inline sharpening failure feedback was lost');
+    await applyCard();
+    await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => state.value.enabled === true && state.value.percentage === 75)`, 'Retry after combined screen failure did not save the draft');
+    driverWriteBaseline = legacyGraphicsWrites;
+
     postprocessSharpening.setRuntimeStatusForTest({ active: true, reason: null });
     await waitFor(`document.querySelector('.sharpening-runtime-status')?.textContent?.includes('Sharpening is active')`, 'Global sharpening runtime status did not update to active');
     postprocessSharpening.setRuntimeStatusForTest({ active: false, reason: 'Screen capture is unavailable.' });
@@ -132,7 +279,7 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     await waitFor(`document.querySelector('.page-title')?.textContent === 'Profiles' && !!document.querySelector('.sharpening-card input[aria-label="Per-game Arc Image Sharpening strength"]')`, 'Per-game sharpening slider did not render');
     let gameState = await postprocessSharpening.getGame(game.exePath);
     assert.equal(gameState.override, null, 'Fresh game profile should inherit the global value');
-    assert.deepEqual(gameState.effective, { enabled: true, percentage: 100 });
+    assert.deepEqual(gameState.effective, { enabled: true, percentage: 75 });
     assert.equal(await js(`document.querySelector('.sharpening-card input[aria-label="Per-game Arc Image Sharpening strength"]')?.min`), '0');
     assert.equal(await js(`document.querySelector('.sharpening-card input[aria-label="Per-game Arc Image Sharpening strength"]')?.max`), '100');
     assert.equal(await js(`document.querySelector('.sharpening-card input[aria-label="Per-game Arc Image Sharpening strength"]')?.step`), '1');
@@ -151,33 +298,54 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     await js(`(() => { const input = document.querySelector('.sharpening-card input[aria-label="Per-game Arc Image Sharpening strength"]'); input.value = '0'; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGameGet(${JSON.stringify(game.exePath)}).then((state) => state.override?.percentage === 0)`, 'Per-game 0% override did not Apply');
+    await waitFor(`document.querySelector('.sharpening-game-card .graphics-card-actions .btn-primary')?.textContent === 'Applied'`, 'Per-game sharpening card did not show inline Applied feedback');
+    await waitFor(`Array.from(document.querySelectorAll('.toast-title')).some((node) => node.textContent.includes('Per-game sharpening saved'))`, 'Per-game sharpening did not show save feedback');
     await chooseMode('Per-game Arc Image Sharpening', 'off');
     await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGameGet(${JSON.stringify(game.exePath)}).then((state) => state.override?.enabled === false && state.override?.percentage === 0)`, 'Disabling the override lost its 0% strength');
     await chooseMode('Per-game Arc Image Sharpening', 'on');
     await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGameGet(${JSON.stringify(game.exePath)}).then((state) => state.override?.enabled === true && state.override?.percentage === 0)`, 'Re-enabling the override lost its 0% strength');
-    assert.deepEqual((await postprocessSharpening.getGlobal()).value, { enabled: true, percentage: 100 }, 'Per-game override changed global sharpening');
+    assert.deepEqual((await postprocessSharpening.getGlobal()).value, { enabled: true, percentage: 75 }, 'Per-game override changed global sharpening');
     await screenshot('game-sharpening-override-0.png', '.sharpening-card');
     await js(`Array.from(document.querySelectorAll('.sharpening-card .graphics-card-actions button')).find((button) => button.textContent.trim() === 'Reset to default')?.click()`);
     assert.notEqual((await postprocessSharpening.getGame(game.exePath)).override, null, 'Per-game reset applied before Apply');
     await applyCard();
-    await waitFor(`window.arcPower.postprocessSharpeningGameGet(${JSON.stringify(game.exePath)}).then((state) => state.override === null && state.effective.percentage === 100)`, 'Returning to global inheritance did not clear the override');
+    await waitFor(`window.arcPower.postprocessSharpeningGameGet(${JSON.stringify(game.exePath)}).then((state) => state.override === null && state.effective.percentage === 75)`, 'Returning to global inheritance did not clear the override');
     gameState = await postprocessSharpening.getGame(game.exePath);
     assert.equal(gameState.override, null);
 
     await js(`location.hash = '#/graphics'`);
     await waitFor(`location.hash === '#/graphics' && document.getElementById('page')?.textContent?.includes('Arc Image Sharpening') && !!document.querySelector('.sharpening-card')`, 'Graphics page did not reopen');
-    assert.deepEqual((await postprocessSharpening.getGlobal()).value, { enabled: true, percentage: 100 });
+    assert.deepEqual((await postprocessSharpening.getGlobal()).value, { enabled: true, percentage: 75 });
     await js(`Array.from(document.querySelectorAll('.sharpening-card .graphics-card-actions button')).find((button) => button.textContent.trim() === 'Reset to default')?.click()`);
-    assert.deepEqual((await postprocessSharpening.getGlobal()).value, { enabled: true, percentage: 100 }, 'Global reset applied before Apply');
+    assert.deepEqual((await postprocessSharpening.getGlobal()).value, { enabled: true, percentage: 75 }, 'Global reset applied before Apply');
     await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => !state.value.enabled && state.value.percentage === 50)`, 'Global reset did not restore defaults on Apply');
-    assert.equal(legacyGraphicsWrites, 0, 'Sharpening UI routed changes to driver graphics settings');
+    assert.equal(legacyGraphicsWrites, driverWriteBaseline, 'Sharpening UI routed changes to driver graphics settings');
+
+    // A failed graphics capability read still leaves the independent screen
+    // sharpening path editable through the shared Graphics Apply control.
+    await js(`location.hash = '#/dashboard'`);
+    await pause();
+    failNextGraphicsGet = true;
+    await js(`location.hash = '#/graphics'`);
+    await waitFor(`document.querySelector('.text-error')?.textContent?.includes('Mock graphics capabilities read failed') && !!document.querySelector('.sharpening-card')`, 'Graphics read failure did not retain the screen sharpening card');
+    await chooseMode('Arc Image Sharpening', 'on');
+    await waitFor(`document.querySelector('.floating-apply')?.hidden === false`, 'Graphics read failure path did not expose screen-only Apply');
+    await js(`document.querySelector('.floating-apply')?.click()`);
+    await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => state.value.enabled)`, 'Screen sharpening did not save after graphics capability read failure');
+    await waitFor(`document.querySelector('.floating-apply')?.hidden === true`, 'Screen-only Apply remained visible after save in graphics read failure path');
+    assert.equal(legacyGraphicsWrites, driverWriteBaseline, 'Graphics read failure path routed screen sharpening through driver graphics settings');
+    await js(`Array.from(document.querySelectorAll('.sharpening-card .graphics-card-actions button')).find((button) => button.textContent.trim() === 'Reset to default')?.click()`);
+    await applyCard();
+    await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => !state.value.enabled && state.value.percentage === 50)`, 'Graphics read failure fixture cleanup did not restore screen defaults');
     process.stdout.write('[postprocess-sharpening-ui] PASS: global and per-game Arc Image Sharpening controls\n');
   } finally {
     releaseInitialGlobalRead();
     postprocessSharpening.getGlobal = originalGetGlobal;
+    postprocessSharpening.setGlobal = originalSetGlobal;
     backend.setGraphicsSettings = originalSetGraphicsSettings;
+    backend.getGraphicsSettings = originalGetGraphicsSettings;
   }
 }

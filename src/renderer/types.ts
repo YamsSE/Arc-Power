@@ -1532,6 +1532,7 @@ export interface PostprocessSharpeningGame {
   effective: PostprocessSharpeningValue;
   globalValue: PostprocessSharpeningValue;
   override: PostprocessSharpeningValue | null;
+  runtimeReady?: boolean;
   reason?: string | null;
   legacyIntegration?: { exePath: string; mode: 'direct' | 'optiscaler' } | null;
   legacyManifestStatus?: 'clear' | 'found' | 'unreadable';

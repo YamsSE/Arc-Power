@@ -1,8 +1,11 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
+#include <dxgi1_3.h>
+#include <dxgi1_4.h>
 #include <dwmapi.h>
 #include <d3dcompiler.h>
+#include <dcomp.h>
 #include <winrt/base.h>
 #include <wrl/client.h>
 #include <atomic>
@@ -33,6 +36,9 @@ VOut VS(uint id : SV_VertexID) {
 }
 float4 PS(VOut i) : SV_Target {
   float4 c=image.Sample(samp,i.uv);
+  // Desktop Duplication's alpha is not a window-opacity contract. The
+  // composition visual replaces the captured image and must stay opaque.
+  c.a=1.0;
   if(amount<=0.0) return c;
   float3 n=image.Sample(samp,i.uv+float2(0,-invSize.y)).rgb;
   float3 s=image.Sample(samp,i.uv+float2(0, invSize.y)).rgb;
@@ -122,18 +128,26 @@ struct Runtime {
   HWND overlay{};
   bool overlayVisible{};
   ComPtr<IDXGISwapChain> swapChain;
+  ComPtr<IDXGISwapChain2> pacedSwapChain;
+  HANDLE frameLatencyHandle{};
+  ComPtr<IDCompositionDevice> compositionDevice;
+  ComPtr<IDCompositionTarget> compositionTarget;
+  ComPtr<IDCompositionVisual> compositionVisual;
   ComPtr<ID3D11RenderTargetView> backBufferRtv;
   ComPtr<ID3D11Texture2D> cropTexture;
   ComPtr<ID3D11ShaderResourceView> cropSrv;
   DXGI_FORMAT cropFormat{DXGI_FORMAT_UNKNOWN};
   UINT width{};
   UINT height{};
+  bool presentationSlotReady{};
 
   void initializeDevice(HWND target) {
     ComPtr<IDXGIFactory1> factory;
     HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
     if (FAILED(hr)) throw hresult_error(hr, L"CreateDXGIFactory1 failed");
     const HMONITOR targetMonitor = MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST);
+    bool intelOutputFound = false;
+    HRESULT deviceCreationError = S_OK;
     for (UINT index = 0; ; ++index) {
       ComPtr<IDXGIAdapter1> candidate;
       hr = factory->EnumAdapters1(index, &candidate);
@@ -142,8 +156,6 @@ struct Runtime {
       DXGI_ADAPTER_DESC1 desc{};
       candidate->GetDesc1(&desc);
       if (desc.VendorId != 0x8086) continue;
-      std::wstring adapterName(desc.Description);
-      if (adapterName.find(L"Arc") == std::wstring::npos && adapterName.find(L"ARC") == std::wstring::npos) continue;
       ComPtr<IDXGIOutput> matchedOutput;
       for (UINT outputIndex = 0; ; ++outputIndex) {
         ComPtr<IDXGIOutput> candidateOutput;
@@ -151,9 +163,11 @@ struct Runtime {
         if (outputHr == DXGI_ERROR_NOT_FOUND) break;
         if (FAILED(outputHr)) throw hresult_error(outputHr, L"Enumerate adapter outputs failed");
         DXGI_OUTPUT_DESC outputDesc{};
-        if (SUCCEEDED(candidateOutput->GetDesc(&outputDesc)) && outputDesc.Monitor == targetMonitor) {
+        if (SUCCEEDED(candidateOutput->GetDesc(&outputDesc))
+            && outputDesc.AttachedToDesktop && outputDesc.Monitor == targetMonitor) {
           matchedOutput = candidateOutput;
           outputBounds = outputDesc.DesktopCoordinates;
+          intelOutputFound = true;
           break;
         }
       }
@@ -163,12 +177,37 @@ struct Runtime {
           D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
           &device, &feature, &context);
       if (SUCCEEDED(hr)) { adapter = candidate; output = matchedOutput; break; }
+      deviceCreationError = hr;
+      device.Reset(); context.Reset();
     }
-    if (!device || !adapter || !output) throw hresult_error(E_NOINTERFACE, L"The foreground monitor is not connected to a usable Intel GPU output");
+    if (!device || !adapter || !output) {
+      if (!intelOutputFound) throw hresult_error(E_NOINTERFACE, L"No attached Intel DXGI output matches the foreground window monitor");
+      throw hresult_error(FAILED(deviceCreationError) ? deviceCreationError : E_FAIL,
+          L"An Intel adapter owns the foreground monitor output, but D3D11CreateDevice failed");
+    }
+    ComPtr<IDXGIDevice1> latencyDevice;
+    if (SUCCEEDED(device.As(&latencyDevice))) {
+      const HRESULT latencyHr = latencyDevice->SetMaximumFrameLatency(1);
+      if (FAILED(latencyHr)) warning("SetMaximumFrameLatency(1) failed (HRESULT " + std::to_string(static_cast<unsigned long>(latencyHr)) + ")");
+    }
     ComPtr<IDXGIOutput1> output1;
     if (FAILED(hr = output.As(&output1))) throw hresult_error(hr, L"Query IDXGIOutput1 failed");
     if (FAILED(hr = output1->DuplicateOutput(device.Get(), &duplication)))
       throw hresult_error(hr, L"Create Desktop Duplication for the Intel output failed");
+    DXGI_ADAPTER_DESC1 selectedAdapter{};
+    DXGI_OUTPUT_DESC selectedOutput{};
+    if (FAILED(hr = adapter->GetDesc1(&selectedAdapter))) throw hresult_error(hr, L"Read selected Intel adapter identity failed");
+    if (FAILED(hr = output->GetDesc(&selectedOutput))) throw hresult_error(hr, L"Read selected Intel output identity failed");
+    std::string outputName;
+    for (const wchar_t character : selectedOutput.DeviceName) {
+      if (character == L'\0') break;
+      outputName.push_back(character >= 0 && character <= 0x7f ? static_cast<char>(character) : '?');
+    }
+    std::ostringstream outputInfo;
+    outputInfo << "INFO Desktop Duplication active adapter=Intel device=0x" << std::hex << selectedAdapter.DeviceId
+      << " output=" << outputName
+      << " monitor=0x" << std::uppercase << reinterpret_cast<uintptr_t>(selectedOutput.Monitor);
+    statusLine(outputInfo.str());
 
     ComPtr<ID3DBlob> vs, ps, errors;
     hr = D3DCompile(kShader, sizeof(kShader)-1, "ArcPowerScreenSharpen", nullptr, nullptr,
@@ -191,6 +230,7 @@ struct Runtime {
   }
 
   void resetGraphics() noexcept {
+    destroyOverlay();
     cropSrv.Reset(); cropTexture.Reset(); cropFormat = DXGI_FORMAT_UNKNOWN; backBufferRtv.Reset();
     duplication.Reset(); output.Reset(); adapter.Reset();
     sampler.Reset(); rasterizer.Reset(); constants.Reset(); pixelShader.Reset(); vertexShader.Reset();
@@ -204,10 +244,17 @@ struct Runtime {
   }
 
   void createOverlay(const RECT& bounds, HWND target) {
+    presentationSlotReady = false;
     if (bounds.right <= bounds.left || bounds.bottom <= bounds.top) throw hresult_error(E_INVALIDARG, L"Invalid DWM window bounds");
     if (!usesMonitor(target)) throw hresult_error(E_NOINTERFACE, L"Foreground window is not on the duplicated Intel output");
-    width = static_cast<UINT>(bounds.right - bounds.left);
-    height = static_cast<UINT>(bounds.bottom - bounds.top);
+    const LONG boundsWidth = bounds.right - bounds.left;
+    const LONG boundsHeight = bounds.bottom - bounds.top;
+    if (boundsWidth <= 0 || boundsHeight <= 0
+        || static_cast<UINT>(boundsWidth) > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION
+        || static_cast<UINT>(boundsHeight) > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+      throw hresult_error(E_INVALIDARG, L"Foreground bounds exceed supported D3D11 texture dimensions");
+    width = static_cast<UINT>(boundsWidth);
+    height = static_cast<UINT>(boundsHeight);
     overlay = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW,
         kOverlayClass, L"", WS_POPUP, bounds.left, bounds.top, static_cast<int>(width), static_cast<int>(height),
         nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -222,9 +269,11 @@ struct Runtime {
     DWORD affinity{};
     if (!GetWindowDisplayAffinity(overlay, &affinity) || affinity != WDA_EXCLUDEFROMCAPTURE)
       throw hresult_error(HRESULT_FROM_WIN32(GetLastError()), L"Overlay capture exclusion could not be verified");
-    DXGI_SWAP_CHAIN_DESC sd{}; sd.BufferCount = 2; sd.BufferDesc.Width = width; sd.BufferDesc.Height = height;
-    sd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    sd.OutputWindow = overlay; sd.SampleDesc.Count = 1; sd.Windowed = TRUE; sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    DXGI_SWAP_CHAIN_DESC1 sd{}; sd.Width = width; sd.Height = height;
+    sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM; sd.Stereo = FALSE; sd.SampleDesc.Count = 1;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sd.BufferCount = 2;
+    sd.Scaling = DXGI_SCALING_STRETCH; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    sd.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED; sd.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     ComPtr<IDXGIDevice> dxgiDevice;
     HRESULT hr = device.As(&dxgiDevice);
     if (FAILED(hr)) throw hresult_error(hr, L"Query IDXGIDevice failed");
@@ -232,7 +281,26 @@ struct Runtime {
     if (FAILED(hr = dxgiDevice->GetAdapter(&baseAdapter))) throw hresult_error(hr, L"GetAdapter failed");
     ComPtr<IDXGIFactory> parentFactory;
     if (FAILED(hr = baseAdapter->GetParent(IID_PPV_ARGS(&parentFactory)))) throw hresult_error(hr, L"GetParent factory failed");
-    if (FAILED(hr = parentFactory->CreateSwapChain(device.Get(), &sd, &swapChain))) throw hresult_error(hr, L"CreateSwapChain failed");
+    ComPtr<IDXGIFactory2> factory2;
+    if (FAILED(hr = parentFactory.As(&factory2))) throw hresult_error(hr, L"Query IDXGIFactory2 failed; composition flip model is unavailable");
+    ComPtr<IDXGISwapChain1> flipChain;
+    if (FAILED(hr = factory2->CreateSwapChainForComposition(device.Get(), &sd, nullptr, &flipChain)))
+      throw hresult_error(hr, L"CreateSwapChainForComposition failed; no fallback was attempted");
+    if (FAILED(hr = flipChain.As(&swapChain))) throw hresult_error(hr, L"Query composition flip swapchain failed");
+    if (FAILED(hr = flipChain.As(&pacedSwapChain))) throw hresult_error(hr, L"Query IDXGISwapChain2 for waitable pacing failed");
+    if (FAILED(hr = pacedSwapChain->SetMaximumFrameLatency(1))) throw hresult_error(hr, L"SetMaximumFrameLatency(1) failed");
+    frameLatencyHandle = pacedSwapChain->GetFrameLatencyWaitableObject();
+    if (!frameLatencyHandle) throw hresult_error(E_HANDLE, L"GetFrameLatencyWaitableObject returned a null handle");
+    ComPtr<IDXGIDevice> compositionDxgiDevice;
+    if (FAILED(hr = device.As(&compositionDxgiDevice))) throw hresult_error(hr, L"Query IDXGIDevice for DirectComposition failed");
+    if (FAILED(hr = DCompositionCreateDevice(compositionDxgiDevice.Get(), IID_PPV_ARGS(&compositionDevice))))
+      throw hresult_error(hr, L"DCompositionCreateDevice failed");
+    if (FAILED(hr = compositionDevice->CreateTargetForHwnd(overlay, TRUE, &compositionTarget)))
+      throw hresult_error(hr, L"CreateTargetForHwnd layered overlay failed");
+    if (FAILED(hr = compositionDevice->CreateVisual(&compositionVisual))) throw hresult_error(hr, L"CreateVisual failed");
+    if (FAILED(hr = compositionVisual->SetContent(flipChain.Get()))) throw hresult_error(hr, L"SetContent swapchain failed");
+    if (FAILED(hr = compositionTarget->SetRoot(compositionVisual.Get()))) throw hresult_error(hr, L"SetRoot visual failed");
+    if (FAILED(hr = compositionDevice->Commit())) throw hresult_error(hr, L"DirectComposition Commit failed");
     ComPtr<ID3D11Texture2D> backBuffer;
     if (FAILED(hr = swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer)))) throw hresult_error(hr, L"GetBuffer failed");
     if (FAILED(hr = device->CreateRenderTargetView(backBuffer.Get(), nullptr, &backBufferRtv))) throw hresult_error(hr, L"CreateRenderTargetView failed");
@@ -246,15 +314,33 @@ struct Runtime {
     overlayVisible = true;
   }
 
+  void concealOverlay() noexcept {
+    if (overlay && overlayVisible) ShowWindow(overlay, SW_HIDE);
+    overlayVisible = false;
+  }
+
   void destroyOverlay() noexcept {
+    presentationSlotReady = false;
+    if (context) {
+      context->OMSetRenderTargets(0, nullptr, nullptr);
+      ID3D11ShaderResourceView* nullView = nullptr;
+      context->PSSetShaderResources(0, 1, &nullView);
+      context->ClearState();
+      context->Flush();
+    }
     backBufferRtv.Reset(); cropSrv.Reset(); cropTexture.Reset(); cropFormat = DXGI_FORMAT_UNKNOWN;
-    swapChain.Reset();
+    if (compositionTarget) { (void)compositionTarget->SetRoot(nullptr); }
+    if (compositionVisual) { (void)compositionVisual->SetContent(nullptr); }
+    if (compositionDevice) (void)compositionDevice->Commit();
+    compositionTarget.Reset(); compositionVisual.Reset(); compositionDevice.Reset();
+    if (frameLatencyHandle) { CloseHandle(frameLatencyHandle); frameLatencyHandle = nullptr; }
+    pacedSwapChain.Reset(); swapChain.Reset();
     if (overlay) DestroyWindow(overlay);
     overlay = nullptr; overlayVisible = false; width = height = 0;
   }
 
-  void render(ID3D11Texture2D* source, UINT sourceWidth, UINT sourceHeight, int percent) {
-    if (!swapChain || !overlay || !backBufferRtv || !cropSrv) return;
+  bool render(ID3D11Texture2D* source, UINT sourceWidth, UINT sourceHeight, int percent) {
+    if (!swapChain || !overlay || !backBufferRtv || !cropSrv) return false;
     HRESULT hr;
     D3D11_TEXTURE2D_DESC sourceDesc{}; source->GetDesc(&sourceDesc);
     D3D11_VIEWPORT vp{0,0,static_cast<float>(width),static_cast<float>(height),0,1};
@@ -266,9 +352,23 @@ struct Runtime {
     context->UpdateSubresource(constants.Get(), 0, nullptr, params, 0, 0); context->PSSetConstantBuffers(0, 1, constants.GetAddressOf());
     context->IASetInputLayout(nullptr); context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); context->Draw(3, 0);
     ID3D11ShaderResourceView* nullView = nullptr; context->PSSetShaderResources(0, 1, &nullView);
-    hr = swapChain->Present(1, 0);
+    hr = swapChain->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+    if (hr == DXGI_ERROR_WAS_STILL_DRAWING) return false;
     if (FAILED(hr)) throw hresult_error(hr, L"Present overlay failed");
+    presentationSlotReady = false;
+    return true;
   }
+};
+
+struct DuplicationFrame {
+  IDXGIOutputDuplication* output{};
+  bool acquired{true};
+  HRESULT release() noexcept {
+    if (!acquired || !output) return S_OK;
+    acquired = false;
+    return output->ReleaseFrame();
+  }
+  ~DuplicationFrame() { (void)release(); }
 };
 
 HWND matchingForeground(DWORD pid) {
@@ -304,9 +404,15 @@ void run() {
   bool activeAnnounced = false;
   auto nextForegroundCheck = std::chrono::steady_clock::time_point::min();
   RECT lastBounds{};
+  auto nextDeviceRetry = std::chrono::steady_clock::time_point::min();
+  int deviceRetryMs = 500;
 
   auto hideOverlay = [&]() {
     runtime.destroyOverlay();
+    if (activeAnnounced) { statusLine("IDLE"); activeAnnounced = false; }
+  };
+  auto concealOverlay = [&]() {
+    runtime.concealOverlay();
     if (activeAnnounced) { statusLine("IDLE"); activeAnnounced = false; }
   };
   auto resetActive = [&]() {
@@ -317,14 +423,20 @@ void run() {
     while (!g_stop.load()) {
       pumpMessages();
       Command incoming = currentCommand();
-      if (incoming.revision != seenRevision) { command = incoming; seenRevision = incoming.revision; resetActive(); }
+      if (incoming.revision != seenRevision) {
+        command = incoming; seenRevision = incoming.revision; resetActive();
+        deviceRetryMs = 500; nextDeviceRetry = std::chrono::steady_clock::time_point::min();
+      }
       if (command.percent <= 0 || command.pid == 0) { resetActive(); runtime.resetGraphics(); lastBounds = {}; std::this_thread::sleep_for(std::chrono::milliseconds(40)); continue; }
 
       auto now = std::chrono::steady_clock::now();
       if (now >= nextForegroundCheck) {
         nextForegroundCheck = now + std::chrono::milliseconds(100);
         HWND foreground = matchingForeground(command.pid);
-        if (foreground != activeWindow) { resetActive(); activeWindow = foreground; }
+        if (foreground != activeWindow) {
+          resetActive(); activeWindow = foreground;
+          deviceRetryMs = 500; nextDeviceRetry = std::chrono::steady_clock::time_point::min();
+        }
       }
       if (!activeWindow) {
         hideOverlay();
@@ -333,10 +445,16 @@ void run() {
       }
       try {
         if (!runtime.usesMonitor(activeWindow)) {
+          if (now < nextDeviceRetry) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+          }
           hideOverlay();
           runtime.resetGraphics();
           runtime.initializeDevice(activeWindow);
-          statusLine("INFO Desktop Duplication active on Intel Arc output; pointer shape may be composed by Windows separately");
+          deviceRetryMs = 500;
+          nextDeviceRetry = std::chrono::steady_clock::time_point::min();
+          statusLine("INFO Desktop Duplication selected Intel output; DirectComposition flip-sequential overlay ready");
         }
         RECT windowBounds = visibleBounds(activeWindow);
         RECT clipped{
@@ -355,6 +473,14 @@ void run() {
           runtime.createOverlay(clipped, activeWindow);
           lastBounds = clipped;
         }
+        if (!runtime.frameLatencyHandle) throw hresult_error(E_HANDLE, L"Waitable swapchain frame-latency handle is unavailable");
+        if (!runtime.presentationSlotReady) {
+          const DWORD pacingWait = WaitForSingleObject(runtime.frameLatencyHandle, 50);
+          if (pacingWait == WAIT_TIMEOUT) continue;
+          if (pacingWait != WAIT_OBJECT_0)
+            throw hresult_error(HRESULT_FROM_WIN32(GetLastError()), L"Waiting for swapchain frame latency failed");
+          runtime.presentationSlotReady = true;
+        }
         DXGI_OUTDUPL_FRAME_INFO frameInfo{};
         ComPtr<IDXGIResource> resource;
         HRESULT acquireHr = runtime.duplication->AcquireNextFrame(100, &frameInfo, &resource);
@@ -366,6 +492,11 @@ void run() {
           continue;
         }
         if (FAILED(acquireHr)) throw hresult_error(acquireHr, L"AcquireNextFrame failed");
+        DuplicationFrame acquiredFrame{runtime.duplication.Get()};
+        if (frameInfo.LastPresentTime.QuadPart == 0 && frameInfo.AccumulatedFrames == 0) {
+          (void)acquiredFrame.release();
+          continue; // Pointer-only update; the game image did not change.
+        }
         bool processingFailed = false;
         try {
           ComPtr<ID3D11Texture2D> desktop;
@@ -394,20 +525,39 @@ void run() {
           }
           D3D11_BOX box{left, top, 0, left + cropWidth, top + cropHeight, 1};
           runtime.context->CopySubresourceRegion(runtime.cropTexture.Get(), 0, 0, 0, 0, desktop.Get(), 0, &box);
-          runtime.render(runtime.cropTexture.Get(), cropWidth, cropHeight, command.percent);
-          runtime.showOverlay();
+          // The active target and monitor can change while a frame is copied.
+          // Discard that old image instead of briefly painting it over another window.
+          if (matchingForeground(command.pid) != activeWindow || !runtime.usesMonitor(activeWindow)) {
+            concealOverlay();
+            continue;
+          }
+          if (runtime.render(runtime.cropTexture.Get(), cropWidth, cropHeight, command.percent)) {
+            runtime.showOverlay();
+          }
+          // Retain the desktop surface through submission, then release just
+          // before the next acquisition to avoid redundant desktop copies.
+          const HRESULT releaseHr = acquiredFrame.release();
+          if (FAILED(releaseHr)) throw hresult_error(releaseHr, L"Release duplicated frame after rendering failed");
           if (!activeAnnounced && runtime.overlayVisible) { statusLine("ACTIVE " + std::to_string(command.pid)); activeAnnounced = true; }
         } catch (const hresult_error& e) {
           warning("desktop frame processing failed (HRESULT " + std::to_string(static_cast<unsigned long>(e.code().value)) + "): " + to_string(e.message()));
           hideOverlay(); lastBounds = {};
           processingFailed = true;
         }
-        runtime.duplication->ReleaseFrame();
+        (void)acquiredFrame.release();
         if (processingFailed) std::this_thread::sleep_for(std::chrono::milliseconds(500));
       } catch (const hresult_error& e) {
+        // The game can close or lose focus during DXGI initialization. A
+        // stale HWND is not evidence that its monitor lacks an Intel output.
+        if (matchingForeground(command.pid) != activeWindow) {
+          hideOverlay(); runtime.resetGraphics(); lastBounds = {};
+          continue;
+        }
         warning("Desktop Duplication setup failed (HRESULT " + std::to_string(static_cast<unsigned long>(e.code().value)) + "): " + to_string(e.message()));
         hideOverlay(); runtime.resetGraphics(); lastBounds = {};
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        nextDeviceRetry = std::chrono::steady_clock::now() + std::chrono::milliseconds(deviceRetryMs);
+        deviceRetryMs = (std::min)(deviceRetryMs * 2, 8000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
       }
     }
   } catch (...) {

@@ -3390,7 +3390,7 @@ export class IgclBackend {
    * @param {number} deviceId
    * @returns {Promise<import('./backend.interface.js').GraphicsState>}
    */
-  async getGraphicsSettings(deviceId) {
+  async getGraphicsSettings(deviceId, { includeLegacySharpening = true } = {}) {
     try {
       const lib = this._libOrThrow();
       const dev = await this._device(deviceId);
@@ -3464,7 +3464,7 @@ export class IgclBackend {
       let sharpeningRange = null;
       let sharpeningPerAppSupport = false;
       let sharpeningLiveChange = false;
-      if (this._sharpening && dev.luid) {
+      if (includeLegacySharpening && this._sharpening && dev.luid) {
         try {
           const state = await this._sharpening.run({ action: 'read', luid: dev.luid });
           if (state?.ok === true && state.supported === true) {
