@@ -34,6 +34,9 @@ const unavailable = (method, message) => {
   if (method === 'restoreFrameLimitState') {
     return { ok: false, errorCode: 'unavailable', source: 'rtss', error: message };
   }
+  if (method === 'ensureScreenSharpeningCompatibility') {
+    return { ok: false, available: false, configured: false, error: message };
+  }
   return { ok: false, used: false, available: false, errorCode: 'unavailable', source: 'rtss', error: message };
 };
 
@@ -177,6 +180,7 @@ export function createRtssProfileHelperProxy({
     applyFrameLimit: (options = {}) => call('applyFrameLimit', options),
     restoreFrameLimit: (restoreToken = null) => call('restoreFrameLimit', restoreToken),
     restoreFrameLimitState: (options = {}) => call('restoreFrameLimitState', options),
+    ensureScreenSharpeningCompatibility: () => call('ensureScreenSharpeningCompatibility', {}),
     // This API is intentionally synchronous. The parent only reports the
     // most recent state received from the isolated controller.
     getState: () => ({ ...cachedState }),

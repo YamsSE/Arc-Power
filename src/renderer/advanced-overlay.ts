@@ -43,7 +43,7 @@ import { buildDropdown, closeDropdownMenus, type DropdownElement } from './compo
 import { ensureWaiver } from './components/waiver-dialog.ts';
 import { Store } from './router.ts';
 import type { PageContext } from './router.ts';
-import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, OcMode, RecordingCaptureTarget, RecordingCaptureTargets, RecordingEngineState, RecordingResolution, RecordingSettings, RecordingSettingsPatch, StreamScene, StreamStatus, TelemetrySample, VoltageOffsetRead } from './types.ts';
+import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, OcMode, PostprocessSharpeningGlobal, PostprocessSharpeningValue, RecordingCaptureTarget, RecordingCaptureTargets, RecordingEngineState, RecordingResolution, RecordingSettings, RecordingSettingsPatch, StreamScene, StreamStatus, TelemetrySample, VoltageOffsetRead } from './types.ts';
 import {
   snapToRange,
   normalizedPosition,
@@ -1902,6 +1902,118 @@ let graphicsApplyBtn: HTMLButtonElement | null = null;
 // imply that they are available on every adapter.
 const GRAPHICS_CONTROLS = ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency'];
 
+function buildOverlaySharpeningCard(): HTMLElement {
+  const card = el('section', { class: 'card graphics-card sharpening-card', dataset: { control: 'postprocessSharpening' } });
+  let state: PostprocessSharpeningGlobal | null = null;
+  let draft: PostprocessSharpeningValue = { enabled: false, percentage: 50 };
+  let applied: PostprocessSharpeningValue | null = null;
+  let busy = false;
+  let error = '';
+  let feedback = '';
+  let request = 0;
+  const isDirty = (): boolean => !!applied && (draft.enabled !== applied.enabled || draft.percentage !== applied.percentage);
+  const runtimeStatusText = (): string => state?.reason
+    ?? (state?.active ? 'Sharpening is active on the foreground game.'
+      : state?.runtimeReady ? 'Included with Arc Power · Applies only to recognized games.'
+        : 'Sharpening is unavailable on this system.');
+  const render = (): void => {
+    const slider = el('input', {
+      type: 'range', class: 'graphics-slider', min: 0, max: 100, step: 1, value: draft.percentage,
+      disabled: busy || !state || !draft.enabled, 'aria-label': 'Arc Image Sharpening strength',
+      oninput: (event: Event) => {
+        draft.percentage = Math.max(0, Math.min(100, Math.round((event.target as HTMLInputElement).valueAsNumber)));
+        feedback = '';
+        const value = card.querySelector<HTMLElement>('.sharpening-value');
+        if (value) value.textContent = `${draft.percentage}%`;
+        refresh();
+      },
+    });
+    const sliderRow = el('div', { class: 'graphics-fps-slider-row sharpening-slider-row', hidden: !draft.enabled }, [
+      slider, el('span', { class: 'graphics-fps-value sharpening-value', text: `${draft.percentage}%` }),
+    ]);
+    const enabled = buildDropdown(draft.enabled ? 'on' : 'off', [
+      { value: 'off', label: 'Off' }, { value: 'on', label: 'On' },
+    ], {
+      className: 'graphics-select graphics-toggle', ariaLabel: 'Arc Image Sharpening',
+      onChange: (value) => {
+        draft.enabled = value === 'on';
+        sliderRow.hidden = !draft.enabled;
+        slider.disabled = busy || !state || !draft.enabled;
+        feedback = '';
+        refresh();
+      },
+    });
+    enabled.disabled = busy || !state;
+    const apply = el('button', {
+      class: 'chip chip-btn oc-chip-apply', text: busy ? 'Applying…' : (feedback || 'Apply'),
+      disabled: busy || !state || !isDirty(),
+      onclick: () => void save(),
+    });
+    const header = el('div', { class: 'graphics-card-head' }, [
+      el('h2', { class: 'card-title', text: 'Arc Image Sharpening' }),
+      el('span', { class: 'oc-meta-spacer' }),
+      ...(feedback ? [el('span', { class: 'chip oc-chip-status chip-ok', text: feedback })] : []),
+      apply,
+    ]);
+    card.replaceChildren(
+      header,
+      el('div', { class: 'graphics-fps-row' }, [el('div', { class: 'graphics-control' }, [enabled]), sliderRow]),
+      el('p', { class: 'sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading sharpening settings…' }),
+      ...(error ? [el('p', { class: 'text-error', text: error })] : []),
+      ...(!state && error ? [el('button', { class: 'btn btn-ghost btn-sm', text: 'Retry', disabled: busy, onclick: () => void load() })] : []),
+    );
+  };
+  const refresh = (): void => {
+    const button = card.querySelector<HTMLButtonElement>('.oc-chip-apply');
+    if (button) button.disabled = busy || !state || !isDirty();
+  };
+  const save = async (): Promise<void> => {
+    if (!state || busy || !isDirty()) return;
+    const token = request;
+    busy = true; error = ''; feedback = ''; render();
+    try {
+      const next = await api.postprocessSharpeningSet({ enabled: draft.enabled, percentage: draft.percentage });
+      if (token !== request || !card.isConnected) return;
+      state = next;
+      draft = { ...next.value };
+      applied = { ...next.value };
+      feedback = next.reason ? 'Saved' : 'Applied';
+    } catch (err) {
+      if (token !== request || !card.isConnected) return;
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (token === request && card.isConnected) { busy = false; render(); }
+    }
+  };
+  const load = async (): Promise<void> => {
+    const token = ++request;
+    let timeoutHandle: number | null = null;
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timeoutHandle = window.setTimeout(() => reject(new Error('sharpening settings read timed out')), GRAPHICS_LOAD_TIMEOUT_MS);
+      });
+      const current = await Promise.race([api.postprocessSharpeningGet(), timeout]);
+      if (token !== request || !card.isConnected) return;
+      state = current; draft = { ...current.value }; applied = { ...current.value }; error = ''; render();
+    } catch (err) {
+      if (token !== request || !card.isConnected) return;
+      error = err instanceof Error ? err.message : String(err);
+      render();
+    } finally {
+      if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
+    }
+  };
+  render();
+  void load();
+  const observer = new MutationObserver(() => {
+    if (card.isConnected) return;
+    request += 1;
+    observer.disconnect();
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  return card;
+}
+
 function renderGraphicsCards(view: HTMLElement): void {
   const initialState = graphicsState;
   if (!initialState) return;
@@ -2160,6 +2272,7 @@ function renderGraphicsCards(view: HTMLElement): void {
       buildDropdownCard('flipMode'),
       buildFrameLimitCard(),
       buildDropdownCard('lowLatency'),
+      buildOverlaySharpeningCard(),
       graphicsActions,
     ]),
   );

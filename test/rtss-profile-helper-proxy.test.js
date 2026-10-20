@@ -62,6 +62,18 @@ test('RTSS helper proxy sends one request at a time and passes fresh runtime sta
   assert.deepEqual(await second, { ok: true, limit: 90 });
 });
 
+test('RTSS helper proxy routes fixed-target sharpening compatibility without caller-supplied profile arguments', async () => {
+  const { proxy, child } = makeProxy();
+  const pending = proxy.ensureScreenSharpeningCompatibility();
+  await tick();
+  assert.equal(child.stdin.writes.length, 1);
+  assert.equal(child.stdin.writes[0].method, 'ensureScreenSharpeningCompatibility');
+  assert.deepEqual(child.stdin.writes[0].args, {});
+  const result = { ok: true, available: true, configured: true, profile: 'ArcPower.ScreenSharpen.exe' };
+  child.respond(0, result);
+  assert.deepEqual(await pending, result);
+});
+
 test('RTSS helper starts from the real executable directory for packaged app.asar launches', async () => {
   const child = new FakeChild();
   let options;

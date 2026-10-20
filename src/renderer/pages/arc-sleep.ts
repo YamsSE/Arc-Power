@@ -253,11 +253,12 @@ export const arcSleepPage: Page = {
       try { state = await withTimeout(api.arcSleepStateGet(), 'Runtime status check'); }
       catch (error) { failure = error instanceof Error ? error.message : String(error); }
       if (!alive() || request !== snapshotRevision) return;
-      rtss.textContent = !state ? 'Unavailable' : state.activeLimiter === 'rtss' ? 'RTSS' : state.activeLimiter === 'igcl' ? 'IGCL' : 'Unavailable';
-      rtss.title = state?.activeLimiter === 'igcl' ? state.limiterDeviceName || 'Selected Intel GPU driver' : state?.activeLimiter === 'rtss' ? 'RTSS global frame limiter' : 'No frame limiter available';
+      const controlPaused = state?.status === 'external-change' || state?.status === 'recovery-pending';
+      rtss.textContent = !state ? 'Unavailable' : controlPaused && state.rtssAvailable ? 'RTSS · Paused' : state.activeLimiter === 'rtss' && state.rtssAvailable ? 'RTSS' : state.activeLimiter === 'igcl' ? 'IGCL' : 'Unavailable';
+      rtss.title = controlPaused && state?.rtssAvailable ? 'RTSS is available. Arc Sleep is paused while the saved FPS limiter state is protected.' : state?.activeLimiter === 'igcl' ? state.limiterDeviceName || 'Selected Intel GPU driver' : state?.activeLimiter === 'rtss' && state.rtssAvailable ? 'RTSS global frame limiter' : 'No frame limiter available';
       const cap = (value: number | null): string => value == null ? 'Off' : `${value} FPS`;
       base.textContent = !state || (state.activeLimiter == null && state.baseFrameLimit == null) ? 'Unavailable' : cap(state.baseCapFps);
-      effective.textContent = !state || state.activeLimiter == null
+      effective.textContent = controlPaused ? 'Paused' : !state || state.activeLimiter == null
         ? 'Unavailable'
         : state.effectiveCapFps == null && state.policy == null && state.baseCapFps == null && state.currentFrameLimitFps == null
           ? 'Off'
@@ -265,7 +266,11 @@ export const arcSleepPage: Page = {
       const labels: Record<ArcSleepSnapshot['status'], string> = { disabled: 'Arc Sleep is disabled.', ready: 'Ready for input inactivity or GPU load changes.', idle: 'Idle Cap is active.', adaptive: 'Load Adaptive is active.', 'rtss-unavailable': 'The RTSS frame limiter is unavailable.', 'limiter-unavailable': 'RTSS and the selected GPU driver frame limiter are unavailable.', 'igcl-static-only': 'IGCL can store a Base FPS Cap, but this driver does not report live changes for running games.', 'elevation-required': 'Arc Power needs administrator access to change the IGCL frame limit automatically.', 'external-change': 'The frame limit changed externally. Arc Sleep released control.', 'recovery-pending': 'Restoring the previous frame limit…', error: 'Arc Sleep encountered an error.' };
       status.textContent = state?.status === 'adaptive' && state.effectiveCapFps == null ? 'Load Adaptive is waiting for fresh telemetry from the selected GPU.' : state?.message || (state ? labels[state.status] : failure ? `${failure}. Check the FPS limiter and reopen Arc Sleep to retry.` : 'Runtime status is temporarily unavailable.');
       const live = state?.diagnostics;
-      if (!state || !live) {
+      if (controlPaused) {
+        diagnostics.textContent = state?.status === 'external-change'
+          ? 'Automatic FPS adjustment is paused to preserve a frame limit changed outside Arc Power. Apply the Base FPS Cap to resume control.'
+          : 'Automatic FPS adjustment is paused until the previous frame limit can be safely restored.';
+      } else if (!state || !live) {
         diagnostics.textContent = state ? 'Live FPS adjustment diagnostics are unavailable in this runtime.' : 'Live GPU and RTSS readings are temporarily unavailable.';
       } else {
         const readings = [live.gpuUtilPct == null ? 'GPU utilization unavailable' : `GPU ${live.gpuUtilPct.toFixed(1)}%`];
@@ -277,7 +282,7 @@ export const arcSleepPage: Page = {
         const inFineRecoveryBand = live.gpuUtilPct !== null
           && live.gpuUtilPct < settings.adaptiveTargetLoadPct - 2;
         const guidance: Record<NonNullable<ArcSleepSnapshot['diagnostics']>['fpsStatus'], string> = {
-          disabled: 'Enable Load Adaptive to read live FPS.',
+          disabled: settings.adaptiveEnabled ? 'Load Adaptive is waiting for a fresh GPU reading.' : 'Enable Load Adaptive to read live FPS.',
           'gpu-unavailable': 'Load Adaptive cannot currently read selected-GPU utilization.',
           'idle-priority': 'Idle Cap has priority; live-FPS adjustment is paused.',
           'below-trigger': belowFastRecoveryThreshold
@@ -346,6 +351,7 @@ export const arcSleepPage: Page = {
           settings = { ...defaults, ...result.settings.arcSleep };
           latestAcceptedSettings = { ...settings };
           paintSettings();
+          void refresh();
           return true;
         } catch (error) {
           if (!alive() || revision !== 0) return false;
@@ -359,6 +365,7 @@ export const arcSleepPage: Page = {
       if (previousSavePending && latestAcceptedSettings) {
         settings = { ...latestAcceptedSettings };
         paintSettings();
+        void refresh();
         saveState.textContent = 'Previous save pending; it may still apply.';
         controls.forEach(input => { input.disabled = false; });
         // Once the serialized queue settles, reload persisted state unless this visit has edits.

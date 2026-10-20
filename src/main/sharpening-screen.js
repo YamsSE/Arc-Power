@@ -10,7 +10,7 @@ const DEFAULT = Object.freeze({ enabled: false, percentage: 50 });
 const SETTINGS = 'postprocess-sharpening.json';
 const SOURCE_HELPER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'sharpening-runtime', 'ArcPower.ScreenSharpen.exe');
 // Pin the bundled native executable before spawning it from an elevated Portable.
-const HELPER_SHA256 = '07C2BBA90F5B6215C906316ECBCE4FB6D046DBB48E7D9A7161BFD16A6E3990C3';
+const HELPER_SHA256 = 'B47DB786043CBC3A95AE7903F81C00B70353D9C0B5E623F13D3F7377CDA5FB2D';
 
 function helperIntegrity(helperPath) {
   try {
@@ -61,10 +61,11 @@ function readSettings(file) {
 }
 
 /** Game-scoped screen sharpening. The native helper owns capture and compositing. */
-export function createScreenPostprocessSharpening({ dir, detector, isGameExecutable = async () => false, helperPath = SOURCE_HELPER, spawn = nodeSpawn, stageHelper = null, pollMs = 1000 } = {}) {
+export function createScreenPostprocessSharpening({ dir, detector, isGameExecutable = async () => false, helperPath = SOURCE_HELPER, spawn = nodeSpawn, stageHelper = null, ensureCompatibility = null, pollMs = 1000 } = {}) {
   if (typeof dir !== 'string' || !path.isAbsolute(dir)) throw new TypeError('An absolute AppData directory is required.');
   if (!detector || typeof detector.detectProcess !== 'function') throw new TypeError('A foreground process detector is required.');
   if (typeof isGameExecutable !== 'function') throw new TypeError('A game catalog lookup is required.');
+  if (ensureCompatibility !== null && typeof ensureCompatibility !== 'function') throw new TypeError('The sharpening compatibility check must be a function.');
   const configPath = path.join(dir, SETTINGS);
   let settings = { global: { ...DEFAULT }, games: {} };
   let settingsError = null;
@@ -86,6 +87,14 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
   const stagedHelpers = new Map();
   const statusListeners = new Set();
   let publishedStatus = null;
+  let nextCompatibilityCheckAt = 0;
+  let compatibilityFailure = null;
+
+  const checkCompatibility = async () => {
+    if (!ensureCompatibility) return;
+    const result = await ensureCompatibility();
+    if (result?.ok !== true) throw new Error(result?.error || 'RTSS compatibility could not be verified for Arc Image Sharpening.');
+  };
 
   const runtimeStatus = () => ({ active: ready && overlayActive, reason: reason ?? null });
   const publishStatus = () => {
@@ -194,6 +203,15 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
       polling = true;
       const token = generation;
       try {
+        if (ensureCompatibility && Date.now() >= nextCompatibilityCheckAt) {
+          // RTSS can start later. Keep its limiter off this helper's separate
+          // presentation path without changing any game or global FPS cap.
+          try { await checkCompatibility(); compatibilityFailure = null; }
+          catch (error) { compatibilityFailure = error; }
+          nextCompatibilityCheckAt = Date.now() + 5000;
+        }
+        if (token !== generation || stopped || !ready || !settings.global.enabled) return;
+        if (compatibilityFailure) throw compatibilityFailure;
         const identity = await detector.detectProcess();
         if (token !== generation || stopped || !ready || !settings.global.enabled) return;
         const pid = Number.isInteger(identity?.pid) && identity.pid > 0 ? identity.pid : 0;
@@ -210,7 +228,8 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
         const value = game ? effectiveFor(exePath) : { enabled: false, percentage: 0 };
         writeCommand(`SET ${value.enabled ? pid : 0} ${value.enabled ? value.percentage : 0}`);
       } catch (error) {
-        reason = `Unable to detect the foreground process: ${error?.message ?? String(error)}`;
+        if (token !== generation || stopped) return;
+        reason = `Screen sharpening is paused: ${error?.message ?? String(error)}`;
         publishStatus();
         writeCommand('SET 0 0');
       } finally {
@@ -253,6 +272,13 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
     let staged = null;
     void (async () => {
       try {
+        await checkCompatibility();
+        if (startupGeneration !== generation || stopped || !settings.global.enabled || resolved) {
+          settleStartupPromise(false);
+          return;
+        }
+        compatibilityFailure = null;
+        nextCompatibilityCheckAt = Date.now() + 5000;
         staged = stageHelper ? await stageHelper(helperPath, HELPER_SHA256) : null;
         const launchPath = staged?.path ?? helperPath;
         if (!launchPath || (stageHelper && !helperIntegrity(launchPath))) {

@@ -2708,6 +2708,7 @@ async function main() {
     : createScreenPostprocessSharpening({ dir: store.dir, detector: sharpeningDetector,
       isGameExecutable: isSharpeningGameExecutable,
       helperPath: sharpeningHelperPath,
+      ensureCompatibility: () => rtssProfile.ensureScreenSharpeningCompatibility(),
       stageHelper: app.isPackaged && process.platform === 'win32' ? stageScreenSharpeningHelper : null });
   // The desktop capture helper is activated only after the foreground
   // detector exists, and only when the persisted global setting is enabled.
