@@ -118,12 +118,22 @@ export function sharpeningReadMatchesRequest(read, request, detail) {
     && read.percentage === detail.intRange.default;
 }
 
+// The bundled 2023 runtime is only a compatibility fallback when the current
+// runtime could not establish a context for the requested physical adapter.
+// Once the current runtime matched that adapter, its capability result is
+// authoritative; an older DLL must not override an explicit lack of support.
+export function shouldTryLegacySharpeningFallback(currentAdapterMatched) {
+  return currentAdapterMatched !== true;
+}
+
 async function main(request, canContinue) {
   if (!canContinue()) return { ok: false, errorCode: 'cancelled', message: 'The sharpening request expired or its parent disconnected.' };
   const dlls = [{ path: findIgclDll(), legacy: false },
     { path: resolveLegacySharpeningDllPath(oldIgclDllPath()), legacy: true }];
   const failures = [];
+  let currentAdapterMatched = false;
   for (const candidate of dlls) {
+    if (candidate.legacy && !shouldTryLegacySharpeningFallback(currentAdapterMatched)) break;
     if (!candidate.path) continue;
     let lib;
     let api = null;
@@ -150,6 +160,7 @@ async function main(request, canContinue) {
       api = koffi.decode(apiBuffer, 0, 'void*');
       if (!api) throw new Error('IGCL returned a null API handle');
       const handle = enumerate(lib, api, request.luid, candidate.legacy ? 0 : 3);
+      if (!candidate.legacy) currentAdapterMatched = true;
       const detail = capabilities(lib, handle);
       if (!validateSharpeningCapability(detail)) {
         failures.push('sharpening is not advertised with an integer 0-100 range');

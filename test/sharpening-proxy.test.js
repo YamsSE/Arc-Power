@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createSharpeningProxy } from '../src/main/sharpening-proxy.js';
 import { validateSharpeningRequest, sharpeningGuardIsLive } from '../src/main/sharpening-contract.js';
-import { runSharpeningHelperRequest, validateSharpeningCapability, matchUniqueLuid, interpretSharpeningRead, isParentProcessAlive, resolveLegacySharpeningDllPath, sharpeningReadMatchesRequest } from '../src/main/sharpening-helper-entry.js';
+import { runSharpeningHelperRequest, validateSharpeningCapability, matchUniqueLuid, interpretSharpeningRead, isParentProcessAlive, resolveLegacySharpeningDllPath, sharpeningReadMatchesRequest, shouldTryLegacySharpeningFallback } from '../src/main/sharpening-helper-entry.js';
 import { CTL_3D_FEATURE, CTL_PROPERTY_VALUE_TYPE, CTL_RESULT } from '../src/main/backend/igcl-bindings.js';
 
 const base = { action: 'read', luid: '9ebf000000000000', deadlineAt: Date.now() + 5000 };
@@ -82,6 +82,15 @@ test('legacy sharpening DLL path resolves out of app.asar when oldIgclDllPath re
     'C:\\ArcPower\\resources\\app.asar.unpacked\\src\\main\\backend\\igcl2023\\IntelControlLib.dll');
   assert.equal(resolveLegacySharpeningDllPath('C:\\ArcPower\\resources\\app.asar.unpacked\\src\\main\\backend\\igcl2023\\IntelControlLib.dll'),
     'C:\\ArcPower\\resources\\app.asar.unpacked\\src\\main\\backend\\igcl2023\\IntelControlLib.dll');
+});
+
+test('legacy sharpening fallback is reserved for when current IGCL did not match the adapter', () => {
+  // A current runtime that matched this adapter but lacks a usable sharpening
+  // range (including per-app support) must fail closed without the old DLL.
+  assert.equal(shouldTryLegacySharpeningFallback(true), false);
+  // If the current DLL is missing, cannot initialize, or cannot resolve the
+  // requested adapter, the bundled runtime remains an eligible fallback.
+  assert.equal(shouldTryLegacySharpeningFallback(false), true);
 });
 
 test('request guard denies cancellation, missing or mismatched tokens, and accepts a live matching token', () => {
