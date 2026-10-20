@@ -75,6 +75,10 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     await waitFor(`!!document.querySelector('.asr-card [aria-label="Arc Super Resolution"]')`, 'Arc Super Resolution control did not render');
     const asrHelp = await js(`document.querySelector('.asr-card .sharpening-help')?.textContent ?? ''`);
     assert.match(asrHelp, /Lanczos spatial filter/);
+    assert.match(asrHelp, /captures that smaller window/i);
+    assert.match(asrHelp, /display-filling borderless window has no smaller window image to capture/i);
+    assert.match(asrHelp, /exclusive fullscreen can switch the active display mode to the game resolution/i);
+    assert.match(asrHelp, /exclusive fullscreen.*does not restore the monitor’s native output mode/i);
     assert.match(asrHelp, /raw-input or DirectInput/);
     await waitFor(`location.hash === '#/graphics' && document.getElementById('page')?.textContent?.includes('Arc Image Sharpening') && !!document.querySelector('.sharpening-card input[aria-label="Arc Image Sharpening strength"]')`, 'Graphics page or global sharpening control did not render');
     await waitFor(`document.querySelector('.sharpening-card .sharpening-runtime-status')?.textContent?.includes('Sharpening is active')`, 'A runtime status event delivered before the initial settings read was lost');
