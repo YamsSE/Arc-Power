@@ -12,10 +12,13 @@
 #include <cstdio>
 #include <iostream>
 #include <mutex>
+#include <condition_variable>
+#include <deque>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -90,8 +93,104 @@ struct MouseForwardState {
   LPARAM lastClientPoint{};
 };
 MouseForwardState g_mouse;
-
 enum MouseButton : unsigned { kLeft = 1, kRight = 2, kMiddle = 4, kX1 = 8, kX2 = 16 };
+
+struct MouseEvent { HWND target{}; UINT message{}; WPARAM wparam{}; LPARAM lparam{}; bool releaseAll{}; };
+class MouseDispatcher {
+ public:
+  MouseDispatcher() : worker_([this] { dispatch(); }) {}
+  ~MouseDispatcher() { stop(); }
+  void enqueue(MouseEvent event) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) return;
+    if (event.message == WM_MOUSEMOVE && !events_.empty()) {
+      const auto& last = events_.back();
+      if (last.message == WM_MOUSEMOVE && last.target == event.target && last.wparam == event.wparam) {
+        events_.back() = event;
+        ready_.notify_one();
+        return;
+      }
+    }
+    events_.push_back(event);
+    ready_.notify_one();
+  }
+  void clearAndRelease(HWND target, LPARAM point) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!stopping_ && target) {
+      events_.erase(std::remove_if(events_.begin(), events_.end(), [&](const MouseEvent& event) { return event.target == target; }), events_.end());
+      events_.push_back({target, 0, 0, point, true});
+      ready_.notify_one();
+    }
+  }
+  void stop() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      events_.erase(std::remove_if(events_.begin(), events_.end(), [](const MouseEvent& event) { return !event.releaseAll; }), events_.end());
+      std::deque<MouseEvent> releases;
+      for (auto it = events_.rbegin(); it != events_.rend(); ++it) {
+        const bool alreadyQueued = std::any_of(releases.begin(), releases.end(), [&](const MouseEvent& candidate) { return candidate.target == it->target; });
+        if (!alreadyQueued) releases.push_front(*it);
+      }
+      events_.swap(releases);
+      stopping_ = true; ready_.notify_one();
+    }
+    if (worker_.joinable()) worker_.join();
+  }
+ private:
+  void dispatch() {
+    for (;;) {
+      MouseEvent event;
+      {
+        std::unique_lock<std::mutex> lock(mutex_);
+        ready_.wait(lock, [&] { return stopping_ || !events_.empty(); });
+        if (events_.empty() && stopping_) return;
+        event = events_.front(); events_.pop_front();
+      }
+      if (!IsWindow(event.target)) continue;
+      if (event.releaseAll) {
+        unsigned held{};
+        { std::lock_guard<std::mutex> lock(mutex_); held = heldButtons_[event.target]; }
+        releaseButton(event.target, held, WM_LBUTTONUP, 0, event.lparam, kLeft);
+        releaseButton(event.target, held, WM_RBUTTONUP, 0, event.lparam, kRight);
+        releaseButton(event.target, held, WM_MBUTTONUP, 0, event.lparam, kMiddle);
+        releaseButton(event.target, held, WM_XBUTTONUP, MAKEWPARAM(0, XBUTTON1), event.lparam, kX1);
+        releaseButton(event.target, held, WM_XBUTTONUP, MAKEWPARAM(0, XBUTTON2), event.lparam, kX2);
+        continue;
+      }
+      DWORD_PTR ignored{};
+      const bool delivered = SendMessageTimeoutW(event.target, event.message, event.wparam, event.lparam,
+          SMTO_ABORTIFHUNG | SMTO_BLOCK, 50, &ignored) != FALSE;
+      const unsigned button = buttonFor(event.message, event.wparam);
+      if (button) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (event.message == WM_LBUTTONDOWN || event.message == WM_RBUTTONDOWN || event.message == WM_MBUTTONDOWN || event.message == WM_XBUTTONDOWN)
+          heldButtons_[event.target] |= button;
+        else if (delivered) heldButtons_[event.target] &= ~button;
+      }
+      if (!delivered && GetLastError() == ERROR_ACCESS_DENIED) warning("game rejected forwarded mouse input; input compatibility is not guaranteed");
+    }
+  }
+  static unsigned buttonFor(UINT message, WPARAM wparam) {
+    if (message == WM_LBUTTONDOWN || message == WM_LBUTTONUP) return kLeft;
+    if (message == WM_RBUTTONDOWN || message == WM_RBUTTONUP) return kRight;
+    if (message == WM_MBUTTONDOWN || message == WM_MBUTTONUP) return kMiddle;
+    if (message == WM_XBUTTONDOWN || message == WM_XBUTTONUP) return GET_XBUTTON_WPARAM(wparam) == XBUTTON1 ? kX1 : kX2;
+    return 0;
+  }
+  void releaseButton(HWND target, unsigned held, UINT message, WPARAM keys, LPARAM point, unsigned button) {
+    if (!(held & button)) return;
+    DWORD_PTR ignored{};
+    const bool delivered = SendMessageTimeoutW(target, message, keys, point, SMTO_ABORTIFHUNG | SMTO_BLOCK, 50, &ignored) != FALSE;
+    if (delivered) { std::lock_guard<std::mutex> lock(mutex_); heldButtons_[target] &= ~button; }
+  }
+  std::mutex mutex_;
+  std::condition_variable ready_;
+  std::deque<MouseEvent> events_;
+  std::unordered_map<HWND, unsigned> heldButtons_;
+  bool stopping_{};
+  std::thread worker_;
+};
+MouseDispatcher g_mouseDispatcher;
 
 bool mapOverlayPoint(HWND hwnd, LPARAM lparam, LPARAM& mapped, bool clampPoint = false) {
   if (!g_mouse.game || g_mouse.viewport.right <= g_mouse.viewport.left || g_mouse.viewport.bottom <= g_mouse.viewport.top ||
@@ -129,26 +228,13 @@ void forwardMouse(HWND overlay, UINT message, WPARAM wparam, LPARAM lparam, bool
     mapped = MAKELPARAM(static_cast<SHORT>(targetPoint.x), static_cast<SHORT>(targetPoint.y));
   } else if (!mapOverlayPoint(overlay, lparam, mapped, clampPoint)) return;
   g_mouse.lastClientPoint = mapped;
-  DWORD_PTR ignored{};
-  if (!SendMessageTimeoutW(g_mouse.game, message, wparam, mapped, SMTO_ABORTIFHUNG | SMTO_BLOCK, 50, &ignored)) {
-    if (GetLastError() == ERROR_ACCESS_DENIED) warning("game rejected forwarded mouse input; input compatibility is not guaranteed");
-  }
+  g_mouseDispatcher.enqueue({g_mouse.game, message, wparam, mapped});
 }
 
 void clearMouseForwarding(HWND overlay) {
   if (!overlay) return;
-  const unsigned buttons = g_mouse.buttons;
   g_mouse.buttons = 0;
-  auto release = [](UINT message, WPARAM keys) {
-    if (!g_mouse.game || !IsWindow(g_mouse.game)) return;
-    DWORD_PTR ignored{};
-    SendMessageTimeoutW(g_mouse.game, message, keys, g_mouse.lastClientPoint, SMTO_ABORTIFHUNG | SMTO_BLOCK, 50, &ignored);
-  };
-  if (buttons & kLeft) release(WM_LBUTTONUP, 0);
-  if (buttons & kRight) release(WM_RBUTTONUP, 0);
-  if (buttons & kMiddle) release(WM_MBUTTONUP, 0);
-  if (buttons & kX1) release(WM_XBUTTONUP, MAKEWPARAM(0, XBUTTON1));
-  if (buttons & kX2) release(WM_XBUTTONUP, MAKEWPARAM(0, XBUTTON2));
+  g_mouseDispatcher.clearAndRelease(g_mouse.game, g_mouse.lastClientPoint);
   if (GetCapture() == overlay) ReleaseCapture();
   g_mouse.game = nullptr; g_mouse.viewport = {}; g_mouse.sourceWidth = g_mouse.sourceHeight = 0;
 }
@@ -260,6 +346,18 @@ void pumpMessages() {
   }
 }
 
+void waitForMessages(DWORD timeoutMs) {
+  MsgWaitForMultipleObjects(0, nullptr, FALSE, (std::min<DWORD>)(timeoutMs, 2), QS_ALLINPUT);
+}
+
+void messageAwareDelay(DWORD durationMs) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(durationMs);
+  while (!g_stop.load() && std::chrono::steady_clock::now() < deadline) {
+    waitForMessages(2);
+    pumpMessages();
+  }
+}
+
 bool rectEqual(const RECT& a, const RECT& b) {
   return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
 }
@@ -277,6 +375,7 @@ struct Runtime {
   ComPtr<IDXGIOutput> output;
   ComPtr<IDXGIOutputDuplication> duplication;
   RECT outputBounds{};
+  DXGI_MODE_ROTATION outputRotation{DXGI_MODE_ROTATION_UNSPECIFIED};
   HWND overlay{};
   bool overlayVisible{};
   ComPtr<IDXGISwapChain> swapChain;
@@ -295,6 +394,10 @@ struct Runtime {
   RECT viewport{};
   UINT sourceWidth{};
   UINT sourceHeight{};
+  RECT sourceBounds{};
+  bool hasSourceBounds{};
+  bool sourceRefreshPending{};
+  bool presentationPending{};
   bool asrMode{};
   RECT hitRegion{};
   bool hitRegionApplied{};
@@ -324,6 +427,7 @@ struct Runtime {
         if (SUCCEEDED(candidateOutput->GetDesc(&outputDesc)) && outputDesc.Monitor == targetMonitor) {
           matchedOutput = candidateOutput;
           outputBounds = outputDesc.DesktopCoordinates;
+          outputRotation = outputDesc.Rotation;
           break;
         }
       }
@@ -335,6 +439,8 @@ struct Runtime {
       if (SUCCEEDED(hr)) { adapter = candidate; output = matchedOutput; break; }
     }
     if (!device || !adapter || !output) throw hresult_error(E_NOINTERFACE, L"The foreground monitor is not connected to a usable Intel GPU output");
+    ComPtr<IDXGIDevice1> latencyDevice;
+    if (SUCCEEDED(device.As(&latencyDevice))) latencyDevice->SetMaximumFrameLatency(1);
     ComPtr<IDXGIOutput1> output1;
     if (FAILED(hr = output.As(&output1))) throw hresult_error(hr, L"Query IDXGIOutput1 failed");
     if (FAILED(hr = output1->DuplicateOutput(device.Get(), &duplication)))
@@ -370,13 +476,28 @@ struct Runtime {
     duplication.Reset(); output.Reset(); adapter.Reset();
     horizontalSrv.Reset(); horizontalRtv.Reset(); horizontalTexture.Reset(); scaledSrv.Reset(); scaledRtv.Reset(); scaledTexture.Reset();
     sampler.Reset(); rasterizer.Reset(); constants.Reset(); lanczosPixelShader.Reset(); pixelShader.Reset(); vertexShader.Reset();
-    context.Reset(); device.Reset(); outputBounds = {};
+    context.Reset(); device.Reset(); outputBounds = {}; outputRotation = DXGI_MODE_ROTATION_UNSPECIFIED;
+    sourceBounds = {}; hasSourceBounds = false;
+    sourceRefreshPending = presentationPending = false;
+  }
+
+  bool updateSourceGeometry(const RECT& bounds) {
+    if (hasSourceBounds && rectEqual(sourceBounds, bounds)) return false;
+    sourceBounds = bounds; hasSourceBounds = true;
+    sourceRefreshPending = true;
+    presentationPending = false;
+    cropSrv.Reset(); cropTexture.Reset(); cropFormat = DXGI_FORMAT_UNKNOWN;
+    sourceWidth = sourceHeight = 0;
+    horizontalSrv.Reset(); horizontalRtv.Reset(); horizontalTexture.Reset();
+    scaledSrv.Reset(); scaledRtv.Reset(); scaledTexture.Reset();
+    return true;
   }
 
   bool usesMonitor(HWND target) const {
     if (!output || !target) return false;
     DXGI_OUTPUT_DESC desc{};
-    return SUCCEEDED(output->GetDesc(&desc)) && desc.Monitor == MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST);
+    return SUCCEEDED(output->GetDesc(&desc)) && desc.Monitor == MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST) &&
+        rectEqual(desc.DesktopCoordinates, outputBounds) && desc.Rotation == outputRotation;
   }
 
   void createOverlay(const RECT& bounds, HWND target, bool asr) {
@@ -423,6 +544,14 @@ struct Runtime {
     overlayVisible = true;
   }
 
+  bool presentOverlay() {
+    if (!swapChain) return false;
+    const HRESULT hr = swapChain->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+    if (hr == DXGI_ERROR_WAS_STILL_DRAWING) return false;
+    if (FAILED(hr)) throw hresult_error(hr, L"Present overlay failed");
+    return true;
+  }
+
   void destroyOverlay() noexcept {
     clearMouseForwarding(overlay);
     backBufferRtv.Reset(); cropSrv.Reset(); cropTexture.Reset(); cropFormat = DXGI_FORMAT_UNKNOWN;
@@ -430,6 +559,7 @@ struct Runtime {
     swapChain.Reset();
     if (overlay) DestroyWindow(overlay);
     overlay = nullptr; overlayVisible = false; width = height = sourceWidth = sourceHeight = 0; viewport = {}; hitRegion = {}; hitRegionApplied = false; asrMode = false;
+    sourceRefreshPending = true; presentationPending = false;
   }
 
   // Keep side bars out of the window shape so desktop/taskbar hit testing passes through there.
@@ -445,9 +575,8 @@ struct Runtime {
     hitRegionApplied = true;
   }
 
-  void render(ID3D11Texture2D* source, UINT sourceWidth, UINT sourceHeight, int percent) {
-    if (!swapChain || !overlay || !backBufferRtv || !cropSrv) return;
-    HRESULT hr;
+  bool render(ID3D11Texture2D* source, UINT sourceWidth, UINT sourceHeight, int percent) {
+    if (!swapChain || !overlay || !backBufferRtv || !cropSrv) return false;
     D3D11_TEXTURE2D_DESC sourceDesc{}; source->GetDesc(&sourceDesc);
     D3D11_VIEWPORT vp{0,0,static_cast<float>(width),static_cast<float>(height),0,1};
     context->RSSetState(rasterizer.Get()); context->RSSetViewports(1, &vp);
@@ -458,15 +587,14 @@ struct Runtime {
     context->UpdateSubresource(constants.Get(), 0, nullptr, params, 0, 0); context->PSSetConstantBuffers(0, 1, constants.GetAddressOf());
     context->IASetInputLayout(nullptr); context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); context->Draw(3, 0);
     ID3D11ShaderResourceView* nullView = nullptr; context->PSSetShaderResources(0, 1, &nullView);
-    hr = swapChain->Present(1, 0);
-    if (FAILED(hr)) throw hresult_error(hr, L"Present overlay failed");
+    return presentOverlay();
   }
 
-  void renderASR(ID3D11Texture2D* source, UINT inputWidth, UINT inputHeight) {
-    if (!swapChain || !overlay || !backBufferRtv || !cropSrv || !inputWidth || !inputHeight) return;
+  bool renderASR(ID3D11Texture2D* source, UINT inputWidth, UINT inputHeight) {
+    if (!swapChain || !overlay || !backBufferRtv || !cropSrv || !inputWidth || !inputHeight) return false;
     const UINT targetWidth = static_cast<UINT>(viewport.right - viewport.left);
     const UINT targetHeight = static_cast<UINT>(viewport.bottom - viewport.top);
-    if (!targetWidth || !targetHeight) return;
+    if (!targetWidth || !targetHeight) return false;
     HRESULT hr;
     D3D11_TEXTURE2D_DESC textureDesc{};
     if (horizontalTexture) horizontalTexture->GetDesc(&textureDesc);
@@ -514,8 +642,7 @@ struct Runtime {
     const float sharpenParams[4]{1.0f / targetWidth, 1.0f / targetHeight, 0, 0};
     context->UpdateSubresource(constants.Get(), 0, nullptr, sharpenParams, 0, 0); context->Draw(3, 0);
     context->PSSetShaderResources(0, 1, &nullView);
-    hr = swapChain->Present(1, 0);
-    if (FAILED(hr)) throw hresult_error(hr, L"Present ASR overlay failed");
+    return presentOverlay();
   }
 };
 
@@ -547,14 +674,16 @@ RECT clientScreenBounds(HWND target) {
   return RECT{topLeft.x, topLeft.y, bottomRight.x, bottomRight.y};
 }
 
-void run() {
+void run(bool readCommandInput = true) {
   Runtime runtime;
   WNDCLASSW wc{}; wc.lpfnWndProc = overlayProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = kOverlayClass;
   if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
     throw hresult_error(HRESULT_FROM_WIN32(GetLastError()), L"RegisterClassW failed");
   statusLine("READY screen-sharpen-v1");
-  std::thread inputThread(readCommands);
-  inputThread.detach();
+  if (readCommandInput) {
+    std::thread inputThread(readCommands);
+    inputThread.detach();
+  }
   Command command{};
   unsigned long long seenRevision = 0;
   HWND activeWindow = nullptr;
@@ -575,7 +704,7 @@ void run() {
       pumpMessages();
       Command incoming = currentCommand();
       if (incoming.revision != seenRevision) { command = incoming; seenRevision = incoming.revision; resetActive(); }
-      if ((!command.asr && command.percent <= 0) || command.pid == 0) { resetActive(); runtime.resetGraphics(); lastBounds = {}; std::this_thread::sleep_for(std::chrono::milliseconds(40)); continue; }
+      if ((!command.asr && command.percent <= 0) || command.pid == 0) { resetActive(); runtime.resetGraphics(); lastBounds = {}; messageAwareDelay(40); continue; }
 
       auto now = std::chrono::steady_clock::now();
       if (now >= nextForegroundCheck) {
@@ -586,7 +715,7 @@ void run() {
       if (!activeWindow) {
         hideOverlay();
         runtime.resetGraphics(); lastBounds = {};
-        std::this_thread::sleep_for(std::chrono::milliseconds(100)); continue;
+        messageAwareDelay(100); continue;
       }
       try {
         if (!runtime.usesMonitor(activeWindow)) {
@@ -610,15 +739,16 @@ void run() {
             !rectEqual(clipped, cropBounds))) {
           hideOverlay(); lastBounds = {};
           warning("ASR requires a client area smaller than and fully contained within the output; waiting for an eligible windowed game");
-          std::this_thread::sleep_for(std::chrono::milliseconds(250));
+          messageAwareDelay(250);
           continue;
         }
         if (clipped.right <= clipped.left || clipped.bottom <= clipped.top) {
           hideOverlay();
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          messageAwareDelay(100);
           continue;
         }
         RECT overlayBounds = command.asr ? runtime.outputBounds : clipped;
+        runtime.updateSourceGeometry(cropBounds);
         if (!runtime.overlay || !rectEqual(overlayBounds, lastBounds) || runtime.asrMode != command.asr) {
           hideOverlay();
           runtime.createOverlay(overlayBounds, activeWindow, command.asr);
@@ -639,16 +769,43 @@ void run() {
         }
         DXGI_OUTDUPL_FRAME_INFO frameInfo{};
         ComPtr<IDXGIResource> resource;
-        HRESULT acquireHr = runtime.duplication->AcquireNextFrame(100, &frameInfo, &resource);
-        if (acquireHr == DXGI_ERROR_WAIT_TIMEOUT) continue;
+        HRESULT acquireHr = runtime.duplication->AcquireNextFrame(0, &frameInfo, &resource);
+        if (acquireHr == DXGI_ERROR_WAIT_TIMEOUT) {
+          if (runtime.presentationPending) {
+            const bool presented = runtime.presentOverlay();
+            runtime.presentationPending = !presented;
+            if (presented) {
+              runtime.showOverlay();
+              if (!activeAnnounced && runtime.overlayVisible) { statusLine("ACTIVE " + std::to_string(command.pid) + (command.asr ? " ASR" : "")); activeAnnounced = true; }
+            }
+          }
+          waitForMessages(2); continue;
+        }
         if (acquireHr == DXGI_ERROR_ACCESS_LOST) {
           warning("Desktop Duplication access was lost; releasing output and retrying shortly");
           hideOverlay(); runtime.resetGraphics(); lastBounds = {};
-          std::this_thread::sleep_for(std::chrono::milliseconds(500));
+          messageAwareDelay(500);
           continue;
         }
         if (FAILED(acquireHr)) throw hresult_error(acquireHr, L"AcquireNextFrame failed");
+        struct FrameRelease {
+          IDXGIOutputDuplication* duplication;
+          void release() { if (duplication) { duplication->ReleaseFrame(); duplication = nullptr; } }
+          ~FrameRelease() { release(); }
+        } frameRelease{runtime.duplication.Get()};
+        if (frameInfo.LastPresentTime.QuadPart == 0 && !runtime.sourceRefreshPending) {
+          if (runtime.presentationPending) {
+            const bool presented = runtime.presentOverlay();
+            runtime.presentationPending = !presented;
+            if (presented) {
+              runtime.showOverlay();
+              if (!activeAnnounced && runtime.overlayVisible) { statusLine("ACTIVE " + std::to_string(command.pid) + (command.asr ? " ASR" : "")); activeAnnounced = true; }
+            }
+          }
+          continue;
+        }
         bool processingFailed = false;
+        bool presented = false;
         try {
           ComPtr<ID3D11Texture2D> desktop;
           HRESULT hr = resource.As(&desktop);
@@ -675,21 +832,23 @@ void run() {
           }
           D3D11_BOX box{left, top, 0, left + cropWidth, top + cropHeight, 1};
           runtime.context->CopySubresourceRegion(runtime.cropTexture.Get(), 0, 0, 0, 0, desktop.Get(), 0, &box);
-          if (command.asr) runtime.renderASR(runtime.cropTexture.Get(), cropWidth, cropHeight);
-          else runtime.render(runtime.cropTexture.Get(), cropWidth, cropHeight, command.percent);
-          runtime.showOverlay();
-          if (!activeAnnounced && runtime.overlayVisible) { statusLine("ACTIVE " + std::to_string(command.pid) + (command.asr ? " ASR" : "")); activeAnnounced = true; }
+          runtime.sourceRefreshPending = false;
+          if (command.asr) presented = runtime.renderASR(runtime.cropTexture.Get(), cropWidth, cropHeight);
+          else presented = runtime.render(runtime.cropTexture.Get(), cropWidth, cropHeight, command.percent);
+          runtime.presentationPending = !presented;
+          if (presented) runtime.showOverlay();
+          if (presented && !activeAnnounced && runtime.overlayVisible) { statusLine("ACTIVE " + std::to_string(command.pid) + (command.asr ? " ASR" : "")); activeAnnounced = true; }
         } catch (const hresult_error& e) {
           warning("desktop frame processing failed (HRESULT " + std::to_string(static_cast<unsigned long>(e.code().value)) + "): " + to_string(e.message()));
           hideOverlay(); lastBounds = {};
           processingFailed = true;
         }
-        runtime.duplication->ReleaseFrame();
-        if (processingFailed) std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        frameRelease.release();
+        if (processingFailed) messageAwareDelay(500);
       } catch (const hresult_error& e) {
         warning("Desktop Duplication setup failed (HRESULT " + std::to_string(static_cast<unsigned long>(e.code().value)) + "): " + to_string(e.message()));
         hideOverlay(); runtime.resetGraphics(); lastBounds = {};
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        messageAwareDelay(500);
       }
     }
   } catch (...) {
@@ -697,6 +856,7 @@ void run() {
     throw;
   }
   resetActive();
+  g_mouseDispatcher.stop();
 }
 
 } // namespace

@@ -24,6 +24,8 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
   let legacyGraphicsWrites = 0;
   const originalSetGraphicsSettings = backend.setGraphicsSettings;
   const originalGetGlobal = postprocessSharpening.getGlobal;
+  const originalSetAsr = postprocessSharpening.setAsr;
+  let releaseAsrSave = () => {};
   let holdInitialGlobalRead = false;
   let releaseInitialGlobalRead;
   let signalInitialGlobalReadStarted;
@@ -181,13 +183,45 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     assert.deepEqual((await postprocessSharpening.getGlobal()).value, { enabled: true, percentage: 100 }, 'Global reset applied before Apply');
     await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => !state.value.enabled && state.value.percentage === 50)`, 'Global reset did not restore defaults on Apply');
+    let signalAsrSaveStarted;
+    const asrSaveStarted = new Promise((resolve) => { signalAsrSaveStarted = resolve; });
+    const asrSaveGate = new Promise((resolve) => { releaseAsrSave = resolve; });
+    postprocessSharpening.setAsr = async function(...args) {
+      signalAsrSaveStarted();
+      await asrSaveGate;
+      return originalSetAsr.apply(this, args);
+    };
     await js(`(() => { const control = document.querySelector('.asr-card [role="combobox"][aria-label="Arc Super Resolution"]'); control.click(); control.options.find((item) => item.dataset.value === 'on').click(); })()`);
-    await js(`Array.from(document.querySelectorAll('.asr-card .graphics-card-actions button')).find((button) => button.textContent.trim() === 'Apply')?.click()`);
+    await js(`document.querySelector('.asr-card .asr-apply')?.click()`);
+    await Promise.race([asrSaveStarted, new Promise((_, reject) => setTimeout(() => reject(new Error('ASR save did not start')), 3000))]);
+    assert.equal(await js(`document.querySelector('.asr-card .asr-apply')?.textContent`), 'Applying…');
+    assert.equal(await js(`document.querySelector('.asr-card .asr-apply')?.disabled`), true);
+    assert.equal(await js(`document.querySelector('.asr-card [role="combobox"]')?.disabled`), true);
+    assert.equal(await js(`Array.from(document.querySelectorAll('.asr-card .graphics-card-actions button')).every(button => button.disabled)`), true);
+    releaseAsrSave();
     await waitFor(`window.arcPower.arcSuperResolutionGet().then((state) => state.value.enabled)`, 'Arc Super Resolution toggle did not persist');
+    await waitFor(`document.querySelector('.asr-card .asr-apply')?.textContent === 'Applied' && !!Array.from(document.querySelectorAll('.toast-success')).find(item => item.textContent.includes('Arc Super Resolution preference saved') && item.textContent.includes('Waiting for a recognized game'))`, 'ASR save did not show Applied and an honest waiting toast');
+    postprocessSharpening.setRuntimeStatusForTest({ active: false, mode: 'asr', reason: 'Synthetic capture warning' });
+    await waitFor(`document.querySelector('.asr-card .sharpening-runtime-status')?.textContent === 'Synthetic capture warning'`, 'ASR runtime warning was not displayed');
+    postprocessSharpening.setRuntimeStatusForTest({ active: false, reason: null });
+    await waitFor(`document.querySelector('.asr-card .sharpening-runtime-status')?.textContent?.includes('Waiting for a recognized game')`, 'ASR retained a stale warning after recovery');
+    postprocessSharpening.setAsr = async () => { throw new Error('Synthetic ASR save failure'); };
+    await js(`(() => { const control = document.querySelector('.asr-card [role="combobox"]'); control.click(); control.options.find(item => item.dataset.value === 'off').click(); })()`);
+    assert.equal(await js(`document.querySelector('.asr-card .asr-apply')?.textContent`), 'Apply');
+    await js(`document.querySelector('.asr-card .asr-apply')?.click()`);
+    await waitFor(`document.querySelector('.asr-card .asr-apply')?.textContent === 'Apply' && !document.querySelector('.asr-card .asr-apply')?.disabled && document.querySelector('.asr-card .text-error')?.textContent.includes('Synthetic ASR save failure') && !!Array.from(document.querySelectorAll('.toast-error')).find(item => item.textContent.includes('Arc Super Resolution apply failed'))`, 'ASR save failure did not restore controls and show both error feedback paths');
+    assert.equal((await postprocessSharpening.getAsr()).value.enabled, true, 'Failed save changed the ASR preference');
+    postprocessSharpening.setAsr = originalSetAsr;
+    await js(`Array.from(document.querySelectorAll('.asr-card .graphics-card-actions button')).find(button => button.textContent === 'Reset to default')?.click()`);
+    assert.equal(await js(`document.querySelector('.asr-card .asr-apply')?.textContent`), 'Apply');
+    await js(`document.querySelector('.asr-card .asr-apply')?.click()`);
+    await waitFor(`document.querySelector('.asr-card .asr-apply')?.textContent === 'Applied' && window.arcPower.arcSuperResolutionGet().then(state => !state.value.enabled)`, 'ASR did not recover after a failed save');
     assert.equal(legacyGraphicsWrites, 0, 'Sharpening UI routed changes to driver graphics settings');
     process.stdout.write('[postprocess-sharpening-ui] PASS: global and per-game sharpening plus Arc Super Resolution controls\n');
   } finally {
     releaseInitialGlobalRead();
+    releaseAsrSave();
+    postprocessSharpening.setAsr = originalSetAsr;
     postprocessSharpening.getGlobal = originalGetGlobal;
     backend.setGraphicsSettings = originalSetGraphicsSettings;
   }

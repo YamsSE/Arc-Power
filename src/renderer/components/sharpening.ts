@@ -1,5 +1,6 @@
 import { api } from '../ipc.ts';
 import { el } from '../dom.ts';
+import { toast } from './toast.ts';
 import { buildDropdown, type DropdownElement } from './dropdown.ts';
 import type { ArcSuperResolutionState, ArcSuperResolutionValue, PostprocessSharpeningGame, PostprocessSharpeningGlobal, PostprocessSharpeningValue } from '../types.ts';
 
@@ -116,6 +117,7 @@ export function renderArcSuperResolution(): HTMLElement {
   let draft: ArcSuperResolutionValue = { enabled: false };
   let latestStatus: { active: boolean; reason?: string; mode?: 'asr' | 'sharpening' } | null = null;
   let busy = false;
+  let applied = false;
   let error = '';
 
   const runtimeStatusText = (): string => {
@@ -131,7 +133,12 @@ export function renderArcSuperResolution(): HTMLElement {
     const select = makeSelect(draft.enabled ? 'on' : 'off', [
       { value: 'off', label: 'Arc Super Resolution Off' },
       { value: 'on', label: 'Arc Super Resolution On' },
-    ], (value) => { draft.enabled = value === 'on'; }, 'Arc Super Resolution');
+    ], (value) => {
+      draft.enabled = value === 'on';
+      applied = false;
+      const button = root.querySelector<HTMLButtonElement>('.asr-apply');
+      if (button) button.textContent = 'Apply';
+    }, 'Arc Super Resolution');
     select.disabled = busy || !state;
     const apply = async (): Promise<void> => {
       if (busy || !state) return;
@@ -140,7 +147,15 @@ export function renderArcSuperResolution(): HTMLElement {
         state = await api.arcSuperResolutionSet({ enabled: draft.enabled });
         if (latestStatus) state = { ...state, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason };
         draft = { ...state.value };
-      } catch (err) { error = err instanceof Error ? err.message : String(err); }
+        applied = true;
+        toast('success', 'Arc Super Resolution preference saved', state.value.enabled
+          ? (state.active ? 'ASR is active on the foreground game.' : runtimeStatusText())
+          : 'Arc Super Resolution is turned off.');
+      } catch (err) {
+        applied = false;
+        error = err instanceof Error ? err.message : String(err);
+        toast('error', 'Arc Super Resolution apply failed', error);
+      }
       finally { busy = false; if (request === generation && root.isConnected) render(); }
     };
     root.replaceChildren(
@@ -155,8 +170,8 @@ export function renderArcSuperResolution(): HTMLElement {
       el('p', { class: 'sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading Arc Super Resolution settings…' }),
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),
       el('div', { class: 'graphics-card-actions' }, [
-        el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : 'Apply', disabled: busy || !state, onclick: () => void apply() }),
-        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { draft = { enabled: false }; render(); } }),
+        el('button', { class: 'btn btn-primary btn-sm asr-apply', text: busy ? 'Applying…' : applied ? 'Applied' : 'Apply', disabled: busy || !state, onclick: () => void apply() }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { draft = { enabled: false }; applied = false; render(); } }),
       ]),
     );
   };
@@ -167,14 +182,14 @@ export function renderArcSuperResolution(): HTMLElement {
     if (!root.isConnected || typeof status?.active !== 'boolean') return;
     latestStatus = { active: status.active, mode: status.mode, reason: typeof status.reason === 'string' ? status.reason : undefined };
     if (state) {
-      state = { ...state, active: latestStatus.active && latestStatus.mode === 'asr', ...(latestStatus.reason ? { reason: latestStatus.reason } : {}) };
+      state = { ...state, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason };
       const note = root.querySelector<HTMLElement>('.sharpening-runtime-status');
       if (note) note.textContent = runtimeStatusText();
     }
   });
   void api.arcSuperResolutionGet().then((value) => {
     if (request !== generation || !root.isConnected) return;
-    state = latestStatus ? { ...value, active: latestStatus.active && latestStatus.mode === 'asr', ...(latestStatus.reason ? { reason: latestStatus.reason } : {}) } : value;
+    state = latestStatus ? { ...value, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason } : value;
     draft = { ...value.value }; render();
   }).catch((err: unknown) => {
     if (request !== generation || !root.isConnected) return;
