@@ -2,12 +2,12 @@ import { api } from '../ipc.ts';
 import { el } from '../dom.ts';
 import { toast } from './toast.ts';
 import { buildDropdown, type DropdownElement } from './dropdown.ts';
-import type { ArcSuperResolutionState, ArcSuperResolutionValue, PostprocessSharpeningGame, PostprocessSharpeningGlobal, PostprocessSharpeningValue } from '../types.ts';
+import type { ArcSuperResolutionGame, ArcSuperResolutionState, ArcSuperResolutionValue, PostprocessSharpeningGame, PostprocessSharpeningGlobal, PostprocessSharpeningValue } from '../types.ts';
 
 const safePercentage = (value: number): number => Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
 
-const sharpeningHelp = (text: string): HTMLElement => el('details', { class: 'sharpening-help' }, [
-  el('summary', { text: 'How sharpening works' }),
+const sharpeningHelp = (text: string, label = 'How sharpening works'): HTMLElement => el('details', { class: 'sharpening-help' }, [
+  el('summary', { text: label }),
   el('p', { class: 'card-note', text }),
 ]);
 
@@ -219,7 +219,7 @@ export function renderArcSuperResolution(): HTMLElement {
         applied = true;
         toast('success', 'Arc Super Resolution preference saved', state.value.enabled
           ? (state.active ? 'ASR is active on the foreground game.' : runtimeStatusText())
-          : 'Arc Super Resolution is turned off.');
+          : 'The global ASR default is Off. Per-game overrides still apply.');
       } catch (err) {
         applied = false;
         error = err instanceof Error ? err.message : String(err);
@@ -240,7 +240,7 @@ export function renderArcSuperResolution(): HTMLElement {
         ]),
         el('div', { class: 'sharpening-card-control' }, [select]),
       ]),
-      sharpeningHelp('Run a recognized game in a smaller window while the desktop remains at its native resolution. Arc Power fits that game window to the display and passes native input through to the game. A display-filling borderless window has no smaller image to scale. Exclusive fullscreen may change the active display mode. ASR is limited to recognized games and does not guarantee compatibility with every game. ASR and Arc Image Sharpening are independent; both may be enabled together.'),
+      sharpeningHelp('Run a recognized game in a smaller window while the desktop remains at its native resolution. Arc Power fits that game window to the display and passes native input through to the game. A display-filling borderless window has no smaller image to scale. Exclusive fullscreen may change the active display mode. ASR is limited to recognized games and does not guarantee compatibility with every game. Per-game On or Off overrides this global default. ASR and Arc Image Sharpening are independent; both may be enabled together.', 'How Scaling Works'),
       el('p', { class: 'sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading Arc Super Resolution settings…' }),
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),
       ...(externalChange ? [el('p', { class: 'settings-sync-status', text: 'Saved settings changed in the other window. Your draft is preserved; Apply will overwrite that change.' })] : []),
@@ -294,6 +294,75 @@ export function renderArcSuperResolution(): HTMLElement {
     detachObserver.disconnect();
   });
   detachObserver.observe(document.body, { childList: true, subtree: true });
+  return root;
+}
+
+export function renderGameArcSuperResolution(exePath: string): HTMLElement {
+  const root = el('section', { class: 'card graphics-card asr-game-card' });
+  let state: ArcSuperResolutionGame | null = null;
+  let choice = 'global';
+  let busy = false, saved = false, error = '', generation = 0;
+  const load = async (): Promise<void> => {
+    const request = ++generation;
+    try {
+      const next = await api.arcSuperResolutionGameGet(exePath);
+      if (request !== generation || !root.isConnected) return;
+      state = next; choice = next.override === null ? 'global' : next.override.enabled ? 'on' : 'off'; error = '';
+    } catch (err) { if (request === generation) error = err instanceof Error ? err.message : String(err); }
+    if (request === generation && root.isConnected) render();
+  };
+  const apply = async (): Promise<void> => {
+    if (busy || !state) return;
+    const request = generation;
+    busy = true; saved = false; error = ''; render();
+    try {
+      const next = await api.arcSuperResolutionGameSet(exePath, choice === 'global' ? null : { enabled: choice === 'on' });
+      if (request !== generation || !root.isConnected) return;
+      state = next; saved = true;
+      toast('success', 'Per-game ASR saved', next.effective.enabled
+        ? 'ASR will enlarge this recognized game while it runs in a smaller foreground window.'
+        : 'ASR is off for this game.');
+    } catch (err) {
+      if (request !== generation || !root.isConnected) return;
+      error = err instanceof Error ? err.message : String(err);
+      toast('error', 'Per-game ASR apply failed', error);
+    } finally { if (request === generation) { busy = false; if (root.isConnected) render(); } }
+  };
+  const render = (): void => {
+    const select = makeSelect(choice, [
+      { value: 'global', label: `Use global (${state?.globalValue.enabled ? 'On' : 'Off'})` },
+      { value: 'off', label: 'Arc Super Resolution Off' },
+      { value: 'on', label: 'Arc Super Resolution On' },
+    ], value => { choice = value; saved = false; const button = root.querySelector<HTMLButtonElement>('.asr-game-apply'); if (button) button.textContent = 'Apply'; }, 'Per-game Arc Super Resolution');
+    select.disabled = busy || !state;
+    root.replaceChildren(
+      el('div', { class: 'sharpening-card-heading' }, [
+        el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Arc Super Resolution (ASR)' }), el('p', { class: 'card-note', text: 'Choose whether to enlarge this game’s smaller window.' })]),
+        el('div', { class: 'sharpening-card-control' }, [select]),
+      ]),
+      sharpeningHelp('Run this recognized game in Windowed mode at a resolution smaller than your display. On enables ASR for this game even when the global default is Off; Off excludes it even when the global default is On. Use global inherits the Graphics setting. No Arc Power launch is required for ASR. Sharpening is independent and may run at the same time.', 'How Scaling Works'),
+      ...(state?.reason ? [el('p', { class: 'text-error', text: state.reason })] : []),
+      ...(error ? [el('p', { class: 'text-error', text: error })] : []),
+      ...(!state && !error ? [el('p', { class: 'profile-capability-note', text: 'Loading game scaling settings…' })] : []),
+      el('div', { class: 'graphics-card-actions' }, [
+        el('button', { class: 'btn btn-primary btn-sm asr-game-apply', text: busy ? 'Applying…' : saved ? 'Saved' : 'Apply', disabled: busy || !state || state.runtimeReady === false, onclick: () => void apply() }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { choice = 'global'; saved = false; render(); } }),
+        ...(!state && error ? [el('button', { class: 'btn btn-ghost btn-sm', text: 'Retry', onclick: () => void load() })] : []),
+      ]),
+    );
+  };
+  const unsubscribe = api.onPostprocessGlobalSettingsUpdated(update => {
+    if (!root.isConnected || !state || update.kind !== 'asr') return;
+    state = { ...state, globalValue: { ...update.state.value },
+      effective: state.override ?? { ...update.state.value } };
+    render();
+  });
+  render(); void load();
+  const observer = new MutationObserver(() => {
+    if (root.isConnected) return;
+    generation++; unsubscribe(); observer.disconnect();
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
   return root;
 }
 

@@ -1524,6 +1524,13 @@ export interface ArcSuperResolutionState {
   active: boolean;
   reason?: string | null;
 }
+export interface ArcSuperResolutionGame {
+  globalValue: ArcSuperResolutionValue;
+  override: ArcSuperResolutionValue | null;
+  effective: ArcSuperResolutionValue;
+  runtimeReady: boolean;
+  reason?: string | null;
+}
 export interface PostprocessSharpeningGlobal {
   value: PostprocessSharpeningValue;
   overrideCount: number;

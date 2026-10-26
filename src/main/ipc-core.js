@@ -3231,6 +3231,15 @@ export function createIpcHandlers({
       assertNoPayload(args, 'arc-super-resolution:set');
       return postprocessService().setAsr(asrPostprocessValue(value));
     },
+    'arc-super-resolution:game-get': async (exePath, ...args) => {
+      assertNoPayload(args, 'arc-super-resolution:game-get');
+      return postprocessService().getAsrGame(await postprocessTarget(exePath));
+    },
+    'arc-super-resolution:game-set': async (exePath, override, ...args) => {
+      assertNoPayload(args, 'arc-super-resolution:game-set');
+      const value = override === null ? null : asrPostprocessValue(override);
+      return postprocessService().setAsrGame(await postprocessTarget(exePath), value);
+    },
     'health': async () => collectHealth(backend),
 
     'intel-driver-update-check': async (...args) => {

@@ -77,6 +77,19 @@ test('screen sharpening IPC rejects malformed values, invalid executable paths a
   await assert.rejects(handlers['postprocess-sharpening:game-set'](EXE, null, {}), /takes no payload/);
 });
 
+test('ASR game IPC supports inheritance and rejects invalid values, paths and extra payloads', async () => {
+  const { handlers } = fixture();
+  assert.equal((await handlers['arc-super-resolution:game-get'](EXE)).override, null);
+  const on = await handlers['arc-super-resolution:game-set'](EXE, { enabled: true });
+  assert.deepEqual(on.effective, { enabled: true });
+  assert.equal((await handlers['arc-super-resolution:get']()).value.enabled, false);
+  assert.equal((await handlers['arc-super-resolution:game-set'](EXE, null)).override, null);
+  await assert.rejects(handlers['arc-super-resolution:game-get']('relative.exe'), /valid game executable/);
+  await assert.rejects(handlers['arc-super-resolution:game-get'](EXE, {}), /takes no payload/);
+  await assert.rejects(handlers['arc-super-resolution:game-set'](EXE, { enabled: true }, {}), /takes no payload/);
+  await assert.rejects(handlers['arc-super-resolution:game-set'](EXE, { enabled: true, extra: true }), /enabled flag/);
+});
+
 test('managed game launch IPC validates its executable and rejects extra payloads', async () => {
   const { handlers, service } = fixture();
   const launches = [];

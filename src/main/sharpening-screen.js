@@ -60,7 +60,7 @@ function readSettings(file) {
     else throw error;
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)
-    || Object.keys(raw).some((key) => !['global', 'games', 'asr'].includes(key))) throw new Error('Screen post-processing settings file is invalid.');
+    || Object.keys(raw).some((key) => !['global', 'games', 'asr', 'asrGames'].includes(key))) throw new Error('Screen post-processing settings file is invalid.');
   const global = validateValue(raw.global ?? DEFAULT);
   const asr = validateAsrValue(raw.asr ?? DEFAULT_ASR);
   const games = raw.games ?? {};
@@ -70,7 +70,14 @@ function readSettings(file) {
     if (canonicalExePath(key) !== key) throw new Error('Sharpening game override identity is invalid.');
     cleanGames[key] = validateValue(value);
   }
-  return { global, games: cleanGames, asr };
+  const asrGames = raw.asrGames ?? {};
+  if (!asrGames || typeof asrGames !== 'object' || Array.isArray(asrGames)) throw new Error('ASR game overrides are invalid.');
+  const cleanAsrGames = {};
+  for (const [key, value] of Object.entries(asrGames)) {
+    if (canonicalExePath(key) !== key) throw new Error('ASR game override identity is invalid.');
+    cleanAsrGames[key] = validateAsrValue(value);
+  }
+  return { global, games: cleanGames, asr, asrGames: cleanAsrGames };
 }
 
 const MAX_FILETIME = 18_446_744_073_709_551_615n;
@@ -88,7 +95,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
   if (createManagedRuntime !== null && typeof createManagedRuntime !== 'function') throw new TypeError('A managed runtime factory is required.');
   const sharpeningAllowed = captureOverlayAllowed || createManagedRuntime !== null;
   let managedRuntime = null;
-  let settings = { global: { ...DEFAULT }, games: {}, asr: { ...DEFAULT_ASR } };
+  let settings = { global: { ...DEFAULT }, games: {}, asr: { ...DEFAULT_ASR }, asrGames: {} };
   let settingsError = null;
   try { settings = readSettings(configPath); }
   catch (error) { settingsError = error; }
@@ -128,7 +135,11 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
       ...(asrActive ? { mode: 'asr' } : sharpeningActive ? { mode: 'sharpening' } : {}) };
   };
   const sharpeningEnabled = () => captureOverlayAllowed && settings.global.enabled;
-  const asrEnabled = () => asrCaptureAllowed && settings.asr.enabled;
+  const asrEnabled = () => asrCaptureAllowed && (settings.asr.enabled || Object.values(settings.asrGames).some((value) => value.enabled));
+  const effectiveAsrFor = (exePath) => {
+    const key = canonicalExePath(exePath);
+    return { enabled: asrCaptureAllowed && (settings.asrGames[key]?.enabled ?? settings.asr.enabled) };
+  };
   const runtimeEnabled = () => sharpeningEnabled() || asrEnabled();
   const activeMode = () => asrEnabled() ? 'asr' : sharpeningEnabled() ? 'sharpening' : null;
   const idleCommand = () => activeMode() === 'asr' ? 'ASR 0' : 'SET 0 0';
@@ -189,6 +200,13 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
     active: ready && overlayActive && overlayMode === 'asr',
     ...(!asrCaptureAllowed ? { reason: SCREEN_ASR_PAUSED_REASON } : reason ? { reason } : {}),
   });
+  const asrGameState = (exePath) => {
+    const key = canonicalExePath(exePath);
+    const override = settings.asrGames[key] ?? null;
+    return { globalValue: { ...settings.asr }, override: override ? { ...override } : null,
+      effective: effectiveAsrFor(exePath), runtimeReady: asrCaptureAllowed && helperIntegrity(helperPath),
+      ...(!asrCaptureAllowed ? { reason: SCREEN_ASR_PAUSED_REASON } : {}) };
+  };
   const gameState = (exePath) => {
     const key = canonicalExePath(exePath);
     const override = key ? settings.games[key] ?? null : null;
@@ -280,7 +298,7 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
         }
         if (token !== generation || stopped || !ready || !runtimeEnabled() || mode !== activeMode()) return;
         if (mode === 'asr') {
-          writeCommand(`ASR ${game && creationFiletime !== null ? `${pid} ${creationFiletime}` : '0'}`);
+          writeCommand(`ASR ${game && effectiveAsrFor(exePath).enabled && creationFiletime !== null ? `${pid} ${creationFiletime}` : '0'}`);
         } else {
           const value = game ? effectiveFor(exePath) : { enabled: false, percentage: 0 };
           writeCommand(`SET ${value.enabled ? pid : 0} ${value.enabled ? value.percentage : 0}`);
@@ -470,6 +488,25 @@ export function createScreenPostprocessSharpening({ dir, detector, isGameExecuta
     },
     async getGlobal() { return globalState(); },
     async getAsr() { return asrState(); },
+    async getAsrGame(exePath) { return asrGameState(exePath); },
+    async setAsrGame(exePath, override) {
+      const key = canonicalExePath(exePath);
+      if (!key) throw new Error('Choose a valid game executable.');
+      const next = override === null ? null : validateAsrValue(override);
+      if (!asrCaptureAllowed && next?.enabled) throw new Error(SCREEN_ASR_PAUSED_REASON);
+      const asrGames = { ...settings.asrGames };
+      if (next === null) delete asrGames[key]; else asrGames[key] = next;
+      persist({ ...settings, asrGames });
+      if (ready) { generation++; writeCommand('ASR 0'); }
+      if (!runtimeEnabled()) {
+        generation++;
+        if (timer) clearTimeout(timer);
+        timer = null; stopHelper('ASR 0');
+      } else if (started && !child) await startHelper();
+      else if (started && child && !ready) await (helperStartup ?? Promise.resolve(false));
+      else schedulePoll();
+      return asrGameState(key);
+    },
     subscribeStatus(listener) {
       if (typeof listener !== 'function') throw new TypeError('A sharpening status listener is required.');
       statusListeners.add(listener);
