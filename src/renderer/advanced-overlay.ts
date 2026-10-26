@@ -43,7 +43,7 @@ import { buildDropdown, closeDropdownMenus, type DropdownElement } from './compo
 import { ensureWaiver } from './components/waiver-dialog.ts';
 import { Store } from './router.ts';
 import type { PageContext } from './router.ts';
-import type { Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, OcMode, RecordingCaptureTarget, RecordingCaptureTargets, RecordingEngineState, RecordingResolution, RecordingSettings, RecordingSettingsPatch, StreamScene, StreamStatus, TelemetrySample, VoltageOffsetRead } from './types.ts';
+import type { ArcSuperResolutionState, ArcSuperResolutionValue, Capabilities, DeviceInfo, DeviceState, GraphicsSettings, GraphicsState, OcMode, PostprocessGlobalSettingsUpdate, PostprocessSharpeningGlobal, PostprocessSharpeningValue, RecordingCaptureTarget, RecordingCaptureTargets, RecordingEngineState, RecordingResolution, RecordingSettings, RecordingSettingsPatch, StreamScene, StreamStatus, TelemetrySample, VoltageOffsetRead } from './types.ts';
 import {
   snapToRange,
   normalizedPosition,
@@ -1902,6 +1902,272 @@ let graphicsApplyBtn: HTMLButtonElement | null = null;
 // imply that they are available on every adapter.
 const GRAPHICS_CONTROLS = ['frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency'];
 
+function buildOverlaySharpeningCard(): HTMLElement {
+  const card = el('section', { class: 'card graphics-card sharpening-card', dataset: { control: 'postprocessSharpening' } });
+  let state: PostprocessSharpeningGlobal | null = null;
+  let draft: PostprocessSharpeningValue = { enabled: false, percentage: 50 };
+  let applied: PostprocessSharpeningValue | null = null;
+  let busy = false;
+  let error = '';
+  let feedback = '';
+  let request = 0;
+  const isDirty = (): boolean => !!applied && (draft.enabled !== applied.enabled || draft.percentage !== applied.percentage);
+  let externalChange = false;
+  let settingsRevision = 0;
+  let latestPush: PostprocessGlobalSettingsUpdate | null = null;
+  let pendingPush: PostprocessGlobalSettingsUpdate | null = null;
+  const reconcilePush = (update: PostprocessGlobalSettingsUpdate): void => {
+    if (update.kind !== 'sharpening' || update.revision <= Math.max(settingsRevision, pendingPush?.revision ?? 0)) return;
+    latestPush = update;
+    if (busy) { pendingPush = update; return; }
+    settingsRevision = update.revision;
+    const dirty = isDirty();
+    const changedSavedValue = !!applied && (update.state.value.enabled !== applied.enabled || update.state.value.percentage !== applied.percentage);
+    const draftMatchesSaved = draft.enabled === update.state.value.enabled && draft.percentage === update.state.value.percentage;
+    state = update.state;
+    applied = { ...update.state.value };
+    if (!dirty || draftMatchesSaved) { draft = { ...update.state.value }; externalChange = false; feedback = 'Applied'; }
+    else if (changedSavedValue) externalChange = true;
+    render();
+  };
+  const runtimeStatusText = (): string => state?.reason
+    ?? (state?.active ? 'Sharpening is active on the foreground game.'
+      : state?.runtimeReady ? 'Included with Arc Power · Applies only to recognized games.'
+        : 'Sharpening is unavailable on this system.');
+  const render = (): void => {
+    const slider = el('input', {
+      type: 'range', class: 'graphics-slider', min: 0, max: 100, step: 1, value: draft.percentage,
+      disabled: busy || !state || !state.runtimeReady || !draft.enabled, 'aria-label': 'Arc Image Sharpening strength',
+      oninput: (event: Event) => {
+        draft.percentage = Math.max(0, Math.min(100, Math.round((event.target as HTMLInputElement).valueAsNumber)));
+        if (applied && draft.enabled === applied.enabled && draft.percentage === applied.percentage) externalChange = false;
+        feedback = '';
+        const value = card.querySelector<HTMLElement>('.sharpening-value');
+        if (value) value.textContent = `${draft.percentage}%`;
+        refresh();
+      },
+    });
+    const sliderRow = el('div', { class: 'graphics-fps-slider-row sharpening-slider-row', hidden: !draft.enabled }, [
+      slider, el('span', { class: 'graphics-fps-value sharpening-value', text: `${draft.percentage}%` }),
+    ]);
+    const enabled = buildDropdown(draft.enabled ? 'on' : 'off', [
+      { value: 'off', label: 'Off' }, { value: 'on', label: 'On' },
+    ], {
+      className: 'graphics-select graphics-toggle', ariaLabel: 'Arc Image Sharpening',
+      onChange: (value) => {
+        draft.enabled = value === 'on';
+        if (applied && draft.enabled === applied.enabled && draft.percentage === applied.percentage) externalChange = false;
+        sliderRow.hidden = !draft.enabled;
+        slider.disabled = busy || !state || !state.runtimeReady || !draft.enabled;
+        feedback = '';
+        refresh();
+      },
+    });
+    enabled.disabled = busy || !state;
+    const apply = el('button', {
+      class: 'chip chip-btn oc-chip-apply', text: busy ? 'Applying…' : (feedback || 'Apply'),
+      disabled: busy || !state || !isDirty() || (!state.runtimeReady && draft.enabled),
+      onclick: () => void save(),
+    });
+    const header = el('div', { class: 'graphics-card-head' }, [
+      el('h2', { class: 'card-title', text: 'Arc Image Sharpening' }),
+      el('span', { class: 'oc-meta-spacer' }),
+      ...(feedback ? [el('span', { class: 'chip oc-chip-status chip-ok', text: feedback })] : []),
+      apply,
+    ]);
+    card.replaceChildren(
+      header,
+      el('div', { class: 'graphics-fps-row' }, [el('div', { class: 'graphics-control' }, [enabled]), sliderRow]),
+      el('p', { class: 'sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading sharpening settings…' }),
+      ...(error ? [el('p', { class: 'text-error', text: error })] : []),
+      ...(externalChange ? [el('p', { class: 'settings-sync-status', text: 'Saved settings changed in the other window. Your draft is preserved; Apply will overwrite that change.' })] : []),
+      ...(!state && error ? [el('button', { class: 'btn btn-ghost btn-sm', text: 'Retry', disabled: busy, onclick: () => void load() })] : []),
+    );
+  };
+  const refresh = (): void => {
+    const button = card.querySelector<HTMLButtonElement>('.oc-chip-apply');
+    if (button) button.disabled = busy || !state || !isDirty() || (!state.runtimeReady && draft.enabled);
+  };
+  const save = async (): Promise<void> => {
+    if (!state || busy || !isDirty()) return;
+    const token = request;
+    busy = true; error = ''; feedback = ''; render();
+    try {
+      const next = await api.postprocessSharpeningSet({ enabled: draft.enabled, percentage: draft.percentage });
+      if (token !== request || !card.isConnected) return;
+      state = next;
+      draft = { ...next.value };
+      applied = { ...next.value };
+      feedback = next.reason ? 'Saved' : 'Applied';
+      externalChange = false;
+    } catch (err) {
+      if (token !== request || !card.isConnected) return;
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (token === request && card.isConnected) {
+        busy = false;
+        const update = pendingPush; pendingPush = null;
+        if (update) reconcilePush(update);
+        render();
+      }
+    }
+  };
+  const load = async (): Promise<void> => {
+    const token = ++request;
+    let timeoutHandle: number | null = null;
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timeoutHandle = window.setTimeout(() => reject(new Error('sharpening settings read timed out')), GRAPHICS_LOAD_TIMEOUT_MS);
+      });
+      const current = await Promise.race([api.postprocessSharpeningGet(), timeout]);
+      if (token !== request || !card.isConnected) return;
+      if (latestPush?.kind === 'sharpening') {
+        state = latestPush.state; draft = { ...latestPush.state.value }; applied = { ...latestPush.state.value };
+      } else { state = current; draft = { ...current.value }; applied = { ...current.value }; }
+      error = ''; render();
+    } catch (err) {
+      if (token !== request || !card.isConnected) return;
+      error = err instanceof Error ? err.message : String(err);
+      render();
+    } finally {
+      if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
+    }
+  };
+  render();
+  const unsubscribeSettings = api.onPostprocessGlobalSettingsUpdated(reconcilePush);
+  const unsubscribeStatus = api.onPostprocessSharpeningStatus((status) => {
+    if (!card.isConnected || typeof status?.active !== 'boolean') return;
+    if (state) state = { ...state, active: status.sharpeningActive ?? (status.active && status.mode !== 'asr'),
+      reason: typeof status.sharpeningActive === 'boolean' ? status.sharpeningReason : status.reason };
+    const note = card.querySelector<HTMLElement>('.sharpening-runtime-status');
+    if (note && state) note.textContent = runtimeStatusText();
+  });
+  void load();
+  const observer = new MutationObserver(() => {
+    if (card.isConnected) return;
+    request += 1;
+    unsubscribeSettings();
+    unsubscribeStatus();
+    observer.disconnect();
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  return card;
+}
+
+function buildOverlayAsrCard(): HTMLElement {
+  const card = el('section', { class: 'card graphics-card asr-card', dataset: { control: 'arcSuperResolution' } });
+  let state: ArcSuperResolutionState | null = null;
+  let draft: ArcSuperResolutionValue = { enabled: false };
+  let applied = false;
+  let busy = false;
+  let error = '';
+  let request = 0;
+  let settingsRevision = 0;
+  let externalChange = false;
+  let pendingPush: Extract<PostprocessGlobalSettingsUpdate, { kind: 'asr' }> | null = null;
+  let latestStatus: { active: boolean; reason?: string; mode?: 'asr' | 'sharpening' } | null = null;
+  const runtimeStatusText = (): string => state?.reason
+    ?? (state?.active ? 'Arc Super Resolution is active on the foreground game.'
+      : state?.runtimeReady ? 'Waiting for a recognized game running in a smaller window on an Intel Arc display.'
+        : 'Arc Super Resolution is unavailable on this system.');
+  const render = (): void => {
+    const enabled = buildDropdown(draft.enabled ? 'on' : 'off', [
+      { value: 'off', label: 'Off' }, { value: 'on', label: 'On' },
+    ], {
+      className: 'graphics-select graphics-toggle', ariaLabel: 'Arc Super Resolution',
+      onChange: (value) => { draft.enabled = value === 'on'; applied = false; error = ''; render(); },
+    });
+    enabled.disabled = busy || !state;
+    card.replaceChildren(
+      el('div', { class: 'graphics-card-head' }, [
+        el('h2', { class: 'card-title', text: 'Arc Super Resolution (ASR)' }),
+        el('span', { class: 'oc-meta-spacer' }),
+        el('button', { class: 'chip chip-btn oc-chip-apply asr-apply', text: busy ? 'Applying…' : applied ? 'Applied' : 'Apply', disabled: busy || !state || applied || (draft.enabled && !state.runtimeReady), onclick: () => void save() }),
+      ]),
+      el('div', { class: 'graphics-fps-row' }, [el('div', { class: 'graphics-control' }, [enabled])]),
+      el('p', { class: 'sharpening-runtime-status asr-runtime-status', text: state ? runtimeStatusText() : 'Loading Arc Super Resolution settings…' }),
+      ...(error ? [el('p', { class: 'text-error', text: error })] : []),
+      ...(externalChange ? [el('p', { class: 'settings-sync-status', text: 'Saved settings changed in the other window. Your draft is preserved; Apply will overwrite that change.' })] : []),
+      ...(!state && error ? [el('button', { class: 'btn btn-ghost btn-sm asr-retry', text: 'Retry', disabled: busy, onclick: () => void load() })] : []),
+    );
+  };
+  const save = async (): Promise<void> => {
+    if (!state || busy || (draft.enabled && !state.runtimeReady)) return;
+    const token = request;
+    busy = true; error = ''; applied = false; render();
+    try {
+      state = await api.arcSuperResolutionSet({ enabled: draft.enabled });
+      if (token !== request || !card.isConnected) return;
+      if (latestStatus) state = { ...state, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason };
+      draft = { ...state.value };
+      applied = true;
+      if (draft.enabled && !state.runtimeReady) {
+        applied = false;
+        error = state.reason ?? 'Arc Super Resolution runtime is unavailable; the setting was not applied.';
+        toast('error', 'Arc Super Resolution was not applied', error);
+      } else {
+        toast('success', 'Arc Super Resolution preference saved', draft.enabled ? runtimeStatusText() : 'Arc Super Resolution is turned off.');
+      }
+    } catch (err) {
+      if (token !== request || !card.isConnected) return;
+      error = err instanceof Error ? err.message : String(err);
+      toast('error', 'Arc Super Resolution apply failed', error);
+    } finally {
+      if (token === request && card.isConnected) { busy = false; render(); }
+      const update = pendingPush; pendingPush = null;
+      if (update && card.isConnected) reconcilePush(update);
+    }
+  };
+  const load = async (): Promise<void> => {
+    const token = ++request;
+    try {
+      const current = await api.arcSuperResolutionGet();
+      if (token !== request || !card.isConnected) return;
+      if (settingsRevision > 0) return;
+      state = latestStatus ? { ...current, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason } : current;
+      draft = { ...current.value }; applied = false;
+      error = ''; render();
+    } catch (err) {
+      if (token !== request || !card.isConnected) return;
+      error = err instanceof Error ? err.message : String(err); render();
+    }
+  };
+  const reconcilePush = (update: PostprocessGlobalSettingsUpdate): void => {
+    if (!card.isConnected || update.kind !== 'asr' || update.revision <= Math.max(settingsRevision, pendingPush?.revision ?? 0)) return;
+    if (busy) { pendingPush = update; return; }
+    settingsRevision = update.revision;
+    const dirty = !!state && draft.enabled !== state.value.enabled;
+    const changed = !!state && update.state.value.enabled !== state.value.enabled;
+    const draftMatchesSaved = draft.enabled === update.state.value.enabled;
+    state = latestStatus ? { ...update.state, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason } : update.state;
+    if (!dirty || draftMatchesSaved) { draft = { ...update.state.value }; applied = true; externalChange = false; }
+    else if (changed) { applied = false; externalChange = true; }
+    render();
+  };
+  const unsubscribeSettings = api.onPostprocessGlobalSettingsUpdated(reconcilePush);
+  const unsubscribeStatus = api.onPostprocessSharpeningStatus((status) => {
+    if (!card.isConnected || typeof status?.active !== 'boolean') return;
+    const independent = typeof status.asrActive === 'boolean';
+    const reason = independent ? status.asrReason : status.reason;
+    latestStatus = { active: status.asrActive ?? status.active, mode: independent ? 'asr' : status.mode, reason: typeof reason === 'string' ? reason : undefined };
+    if (!state) return;
+    state = { ...state, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason };
+    const note = card.querySelector<HTMLElement>('.asr-runtime-status');
+    if (note) note.textContent = runtimeStatusText();
+  });
+  render();
+  void load();
+  const observer = new MutationObserver(() => {
+    if (card.isConnected) return;
+    request += 1;
+    unsubscribeSettings();
+    unsubscribeStatus();
+    observer.disconnect();
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  return card;
+}
+
 function renderGraphicsCards(view: HTMLElement): void {
   const initialState = graphicsState;
   if (!initialState) return;
@@ -2160,6 +2426,8 @@ function renderGraphicsCards(view: HTMLElement): void {
       buildDropdownCard('flipMode'),
       buildFrameLimitCard(),
       buildDropdownCard('lowLatency'),
+      buildOverlaySharpeningCard(),
+      buildOverlayAsrCard(),
       graphicsActions,
     ]),
   );

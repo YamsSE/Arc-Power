@@ -20,6 +20,7 @@ import { createArcSleepIGCLLimiter } from './arc-sleep-igcl-limiter.js';
 import { createFanResumeController } from './fan-resume-controller.js';
 import { createFanResumeStore } from './store/fan-resume-store.js';
 import path from 'node:path';
+import { isAuthorizedRestrictedRendererIpc } from './restricted-renderer-ipc.js';
 
 /**
  * Register every whitelisted handler on ipcMain. Returns a teardown that
@@ -340,8 +341,9 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     previousRecordingState = enrichedState;
   });
   const unsubscribePostprocessSharpeningStatus = postprocessSharpening?.subscribeStatus?.((status) => {
-    const win = getWindow();
-    if (win && !win.isDestroyed()) win.webContents.send(POSTPROCESS_SHARPENING_STATUS_CHANNEL, status);
+    for (const win of [getWindow(), getAdvancedOverlayWindow()]) {
+      if (win && !win.isDestroyed()) win.webContents.send(POSTPROCESS_SHARPENING_STATUS_CHANNEL, status);
+    }
   });
   // The foreground detector is absent in mock/ui-verify mode. In the real
   // product it gives Game Profiles the same executable identity used by the
@@ -385,12 +387,13 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
   // has already changed the same physical GPU.
   let ocModeSetQueue = Promise.resolve();
   let nextOcModeRevision = 0;
+  let globalSharpeningRevision = 0;
+  let globalAsrRevision = 0;
   for (const [channel, fn] of Object.entries(handlers)) {
     const isMaintenanceChannel = channel === 'app:maintenance-restart' || channel === 'app:clear-cache-restart';
     const invokeHandler = async (event, ...args) => {
-      if (channel === 'device-selection-push' || channel.startsWith('update:') || channel.startsWith('postprocess-sharpening:') || channel.startsWith('fan-resume:')) {
-        const win = getWindow();
-        if (!win || win.isDestroyed() || event.sender !== win.webContents) {
+      if (channel === 'device-selection-push' || channel.startsWith('update:') || channel.startsWith('postprocess-sharpening:') || channel.startsWith('arc-super-resolution:') || channel.startsWith('fan-resume:')) {
+        if (!isAuthorizedRestrictedRendererIpc(channel, event, { getWindow, getAdvancedOverlayWindow })) {
           throw new Error(`${channel} is restricted to the main renderer`);
         }
       }
@@ -446,6 +449,14 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
           error: null,
           state: recordingEngine?.getState?.() ?? null,
         });
+      }
+      if (channel === 'postprocess-sharpening:set' || channel === 'arc-super-resolution:set') {
+        const kind = channel === 'postprocess-sharpening:set' ? 'sharpening' : 'asr';
+        const revision = kind === 'sharpening' ? ++globalSharpeningRevision : ++globalAsrRevision;
+        const payload = { kind, revision, state: out };
+        for (const target of [getWindow(), getAdvancedOverlayWindow?.()]) {
+          if (target && !target.isDestroyed()) target.webContents.send('postprocess-global-settings:updated', payload);
+        }
       }
       // M3-C-E: a Stock/Advanced mode change invalidates the selected
       // adapter's capability ranges. The initiating renderer refreshes its

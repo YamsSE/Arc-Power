@@ -847,7 +847,7 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
       if (d.synthetic || typeof backend.getExtendedTemperatureLimitC !== 'function') return null;
       return backend.getExtendedTemperatureLimitC(d.backendId);
     },
-    async getGraphicsSettings(id) { const d = await route(id); return d.synthetic ? { supported: { frameGen: false, flipModes: false, frameLimit: false, lowLatency: false }, supportedOptions: { frameGen: [], flipModes: [], lowLatency: [] }, frameLimitRange: null, values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null } } : backend.getGraphicsSettings(d.backendId); },
+    async getGraphicsSettings(id, options = {}) { const d = await route(id); return d.synthetic ? { supported: { frameGen: false, flipModes: false, frameLimit: false, lowLatency: false }, supportedOptions: { frameGen: [], flipModes: [], lowLatency: [] }, frameLimitRange: null, values: { frameGenOverride: null, flipMode: null, frameLimit: null, lowLatency: null } } : backend.getGraphicsSettings(d.backendId, options); },
     async setGraphicsSettings(id, settings) { const d = await route(id); return d.synthetic ? unsupportedResult(settings) : backend.setGraphicsSettings((await writeTarget(id)).backendId, settings); },
     async getGameProfileCapabilities(id, exePath) {
       const d = await route(id);

@@ -6,7 +6,8 @@ import {
   D3DKMT_QUERYSTATISTICS_SIZE,
   d3dkmtUtilPctOf,
 } from '../src/main/d3dkmt-gpu-util.js';
-import { createSysStats } from '../src/main/sys-stats.js';
+import { createCpuUtilReader, CPU_UTIL_IDLE_OFF, CPU_UTIL_KERNEL_OFF, CPU_UTIL_USER_OFF, FILETIME_SIZE, createSysStats } from '../src/main/sys-stats.js';
+import koffi from 'koffi';
 
 test('D3DKMT x64 offsets match the installed Windows SDK layout', () => {
   assert.equal(D3DKMT_QUERYSTATISTICS_SIZE, 0x328);
@@ -212,6 +213,33 @@ test('sys-stats keeps native sampling live while a slow PDH fallback is in fligh
     await new Promise((resolve) => setTimeout(resolve, 20));
     stats.stopSlowLane(1);
   }
+});
+
+test('CPU utilization reader uses a GC-owned FILETIME buffer and preserves delta semantics over repeated reads', async () => {
+  let calls = 0;
+  const reader = createCpuUtilReader({ load: () => ({ func: () => (idlePtrBuffer, kernelPtr, userPtr) => {
+    assert.ok(Buffer.isBuffer(idlePtrBuffer));
+    assert.equal(idlePtrBuffer.byteLength, FILETIME_SIZE * 3);
+    const base = koffi.address(idlePtrBuffer);
+    assert.equal(kernelPtr, base + BigInt(CPU_UTIL_KERNEL_OFF));
+    assert.equal(userPtr, base + BigInt(CPU_UTIL_USER_OFF));
+    calls += 1;
+    koffi.encode(idlePtrBuffer, CPU_UTIL_IDLE_OFF, 'uint64', BigInt(calls * 20));
+    koffi.encode(idlePtrBuffer, CPU_UTIL_KERNEL_OFF, 'uint64', BigInt(1000 + calls * 100));
+    koffi.encode(idlePtrBuffer, CPU_UTIL_USER_OFF, 'uint64', BigInt(2000 + calls * 200));
+    return 1;
+  } }) });
+  assert.equal(await reader.read(), null, 'first sample establishes a baseline');
+  for (let i = 0; i < 40; i += 1) {
+    assert.ok(Math.abs((await reader.read()) - (280 / 300 * 100)) < 1e-9);
+  }
+  assert.equal(calls, 41);
+
+  const failed = createCpuUtilReader({ load: () => ({ func: () => (buffer) => {
+    assert.ok(Buffer.isBuffer(buffer));
+    return 0;
+  } }) });
+  assert.equal(await failed.read(), null, 'native FALSE remains an honest null result');
 });
 
 test('a late PDH fallback cannot overwrite a newer native utilization sample', async () => {

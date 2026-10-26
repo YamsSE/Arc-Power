@@ -3390,7 +3390,7 @@ export class IgclBackend {
    * @param {number} deviceId
    * @returns {Promise<import('./backend.interface.js').GraphicsState>}
    */
-  async getGraphicsSettings(deviceId) {
+  async getGraphicsSettings(deviceId, { includeLegacySharpening = true } = {}) {
     try {
       const lib = this._libOrThrow();
       const dev = await this._device(deviceId);
@@ -3464,7 +3464,7 @@ export class IgclBackend {
       let sharpeningRange = null;
       let sharpeningPerAppSupport = false;
       let sharpeningLiveChange = false;
-      if (this._sharpening && dev.luid) {
+      if (includeLegacySharpening && this._sharpening && dev.luid) {
         try {
           const state = await this._sharpening.run({ action: 'read', luid: dev.luid });
           if (state?.ok === true && state.supported === true) {
@@ -6927,18 +6927,18 @@ export class IgclBackend {
     let result;
     if (hasV2) {
       telemetryType = 'ctl_power_telemetry_v2_t';
-      telBuf = koffi.alloc(telemetryType, 1);
+      telBuf = Buffer.alloc(koffi.sizeof(telemetryType));
       koffi.encode(telBuf, telemetryType, { Size: koffi.sizeof(telemetryType), Version: 1 });
       result = lib.ctlPowerTelemetryGetV2(dev.handle, telBuf);
       if (isPowerTelemetryV2CompatibilityError(result) && hasV1) {
         telemetryType = 'ctl_power_telemetry_t';
-        telBuf = koffi.alloc(telemetryType, 1);
+        telBuf = Buffer.alloc(koffi.sizeof(telemetryType));
         koffi.encode(telBuf, telemetryType, { Size: koffi.sizeof(telemetryType), Version: 1 });
         result = lib.ctlPowerTelemetryGet(dev.handle, telBuf);
       }
     } else {
       telemetryType = 'ctl_power_telemetry_t';
-      telBuf = koffi.alloc(telemetryType, 1);
+      telBuf = Buffer.alloc(koffi.sizeof(telemetryType));
       koffi.encode(telBuf, telemetryType, { Size: koffi.sizeof(telemetryType), Version: 1 });
       result = lib.ctlPowerTelemetryGet(dev.handle, telBuf);
     }
@@ -7107,7 +7107,7 @@ export class IgclBackend {
       // Phase 1: the count probe (the ctlEnumerateDevices pattern). The
       // handles pointer is optional in the header; pass null for the
       // ABI-defined count-then-fill call.
-      const countBuf = koffi.alloc('uint32', 1);
+      const countBuf = Buffer.alloc(koffi.sizeof('uint32'));
       koffi.encode(countBuf, 0, 'uint32', 0);
       let result = lib.ctlEnumTemperatureSensors(dev.handle, countBuf, null);
       if (result !== CTL_RESULT.SUCCESS) return undefined;
@@ -7118,14 +7118,14 @@ export class IgclBackend {
         return undefined;
       }
       // Phase 2: the fill - an array of opaque sensor handles.
-      const handlesBuf = koffi.alloc('void*', count);
+      const handlesBuf = Buffer.alloc(koffi.sizeof('void*') * count);
       result = lib.ctlEnumTemperatureSensors(dev.handle, countBuf, handlesBuf);
       if (result !== CTL_RESULT.SUCCESS) return undefined;
       // Prefer the GPU-domain sensor (type 1); fall back to the first.
       let pick = -1;
       if (!this._isUnavailable(lib.ctlTemperatureGetProperties)) {
         for (let i = 0; i < count; i++) {
-          const propBuf = koffi.alloc('ctl_temp_properties_t', 1);
+          const propBuf = Buffer.alloc(koffi.sizeof('ctl_temp_properties_t'));
           koffi.encode(propBuf, 'ctl_temp_properties_t', { Size: koffi.sizeof('ctl_temp_properties_t'), Version: 0 });
           const handle = koffi.decode(handlesBuf, i * 8, 'void*');
           if (lib.ctlTemperatureGetProperties(handle, propBuf) === CTL_RESULT.SUCCESS) {
@@ -7136,7 +7136,7 @@ export class IgclBackend {
       }
       if (pick < 0 && count > 0) pick = 0;
       const sensorHandle = koffi.decode(handlesBuf, pick * 8, 'void*');
-      const tempBuf = koffi.alloc('double', 1);
+      const tempBuf = Buffer.alloc(koffi.sizeof('double'));
       result = lib.ctlTemperatureGetState(sensorHandle, tempBuf);
       if (result !== CTL_RESULT.SUCCESS) return undefined;
       const temp = koffi.decode(tempBuf, 0, 'double');

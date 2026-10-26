@@ -688,6 +688,66 @@ function samePciPair(left, right) {
   return Boolean(a && b && a.vendor === b.vendor && a.device === b.device);
 }
 
+function pciBdfOf(value) {
+  const raw = value?.bdf ?? value?.pciBdf ?? value?.location ?? value?.locationInfo ?? value?.locationPath;
+  let domain = 0;
+  let bus;
+  let device;
+  let fn;
+  if (typeof raw === 'string') {
+    const bdf = raw.trim().match(/^(?:([0-9a-f]{1,4}):)?([0-9a-f]{1,2}):([0-9a-f]{1,2})\.([0-7])$/i);
+    if (bdf) {
+      domain = Number.parseInt(bdf[1] ?? '0', 16);
+      bus = Number.parseInt(bdf[2], 16);
+      device = Number.parseInt(bdf[3], 16);
+      fn = Number.parseInt(bdf[4], 10);
+    } else {
+      const location = raw.match(/\bbus\s*(\d+)\s*,?\s*device\s*(\d+)\s*,?\s*function\s*(\d+)/i);
+      if (!location) return null;
+      bus = Number(location[1]);
+      device = Number(location[2]);
+      fn = Number(location[3]);
+    }
+  } else if (raw && typeof raw === 'object') {
+    domain = Number(raw.domain ?? raw.segment ?? 0);
+    bus = Number(raw.bus);
+    device = Number(raw.device);
+    fn = Number(raw.function ?? raw.func ?? 0);
+  } else {
+    return null;
+  }
+  if (![domain, bus, device, fn].every(Number.isInteger)
+    || domain < 0 || bus < 0 || device < 0 || fn < 0
+    || domain > 0xffff || bus > 0xff || device > 0x1f || fn > 7
+    || (domain === 0 && bus === 0 && device === 0 && fn === 0)) return null;
+  return `${domain.toString(16).padStart(4, '0')}:${bus.toString(16).padStart(2, '0')}:${device.toString(16).padStart(2, '0')}.${fn}`;
+}
+
+function samePciBdf(left, right) {
+  const a = pciBdfOf(left);
+  const b = pciBdfOf(right);
+  return Boolean(a && b && a === b);
+}
+
+function pciPairCompatible(left, right) {
+  const a = pciPairOf(left);
+  const b = pciPairOf(right);
+  return !a || !b || equalPciPair(a, b);
+}
+
+function pciBdfCompatible(left, right) {
+  const a = pciBdfOf(left);
+  const b = pciBdfOf(right);
+  // Keep the PCI-pair fallback for callers whose OS or driver identity omits
+  // location data, but never let a same-model adapter in another slot/domain
+  // stand in for an identity that has a known BDF.
+  return !a || !b || a === b;
+}
+
+function pciIdentityCompatible(left, right) {
+  return pciPairCompatible(left, right) && pciBdfCompatible(left, right);
+}
+
 function explicitPciPairOf(value) {
   const vendor = String(value?.pciVendorId ?? value?.osController?.pciVendorId ?? '').replace(/^0x/i, '').slice(-4);
   const device = String(value?.pciDeviceId ?? value?.osController?.pciDeviceId ?? '').replace(/^0x/i, '').slice(-4);
@@ -787,10 +847,17 @@ export function applyDriverReBar(sysinfo, driverEnabled, target = null) {
         .filter(({ controller }) => typeof controller?.pnpDeviceId === 'string'
           && controller.pnpDeviceId.trim().toUpperCase() === wanted.pnpDeviceId.trim().toUpperCase())
       : [];
+    const bdfMatches = controllers.map((controller, i) => ({ controller, i }))
+      .filter(({ controller }) => samePciBdf(controller, wanted));
     const pairMatches = controllers.map((controller, i) => ({ controller, i }))
       .filter(({ controller }) => samePciPair(controller, wanted));
-    const matches = exactPnp.length > 0 ? exactPnp : pairMatches;
-    if (matches.length !== 1) return sysinfo;
+    // PNP is strongest when unique. Raw IGCL rows do not carry Windows PNP
+    // IDs, so use their PCI BDF to disambiguate same-model controllers before
+    // falling back to a vendor/device pair.
+    const matches = exactPnp.length === 1 ? exactPnp
+      : bdfMatches.length > 0 ? bdfMatches
+        : exactPnp.length > 1 ? exactPnp : pairMatches;
+    if (matches.length !== 1 || !pciIdentityCompatible(matches[0].controller, wanted)) return sysinfo;
     index = matches[0].i;
   }
   return {
@@ -831,14 +898,34 @@ export function createDriverReBar(backend, target = null) {
             // querying a later adapter.
             const selected = devices[0];
             const selectedPair = pciPairOf(selected);
-            if (!selectedPair) return null;
-            const targetMatches = requestedTarget.videoControllers.filter((controller) => samePciPair(controller, selected));
-            const rawMatches = devices.filter((device) => samePciPair(device, selected));
-            if (targetMatches.length !== 1 || rawMatches.length !== 1) return null;
+            const selectedBdf = pciBdfOf(selected);
+            if (!selectedPair && !selectedBdf) return null;
+            const targetBdfMatches = selectedBdf
+              ? requestedTarget.videoControllers.filter((controller) => samePciBdf(controller, selected))
+              : [];
+            const targetMatches = targetBdfMatches.length > 0 ? targetBdfMatches
+              : selectedPair
+                ? requestedTarget.videoControllers.filter((controller) => samePciPair(controller, selected))
+                : [];
+            const rawBdfMatches = selectedBdf ? devices.filter((device) => samePciBdf(device, selected)) : [];
+            const rawMatches = rawBdfMatches.length > 0 ? rawBdfMatches
+              : selectedPair ? devices.filter((device) => samePciPair(device, selected)) : [];
+            if (targetMatches.length !== 1 || rawMatches.length !== 1
+              || !pciIdentityCompatible(targetMatches[0], selected)) return null;
             candidates = rawMatches;
-          } else if (wanted && pciPairOf(wanted)) {
-            candidates = devices.filter((device) => samePciPair(device, wanted));
-            if (candidates.length !== 1) return null;
+          } else if (wanted) {
+            const wantedBdf = pciBdfOf(wanted);
+            const bdfMatches = wantedBdf ? devices.filter((device) => samePciBdf(device, wanted)) : [];
+            if (bdfMatches.length > 1) return null;
+            if (bdfMatches.length === 1) {
+              if (!pciIdentityCompatible(bdfMatches[0], wanted)) return null;
+              candidates = bdfMatches;
+            } else if (pciPairOf(wanted)) {
+              candidates = devices.filter((device) => samePciPair(device, wanted));
+              if (candidates.length !== 1 || !pciIdentityCompatible(candidates[0], wanted)) return null;
+            } else {
+              return null;
+            }
           } else if (Array.isArray(requestedTarget?.videoControllers)) {
             const controllerPairs = requestedTarget.videoControllers.filter((controller) => pciPairOf(controller));
             candidates = devices.filter((device) => controllerPairs.some((controller) => samePciPair(device, controller)));

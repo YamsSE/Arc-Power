@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRtssProfileController } from '../src/main/rtss-profile.js';
 
-function makeController({ deleteWorks = true, includeGameProfile = true, failDenominatorWrite = false, initialFlags = 0, discardUnsavedOnLoad = false } = {}) {
+function makeController({ deleteWorks = true, includeGameProfile = true, failDenominatorWrite = false, initialFlags = 0, discardUnsavedOnLoad = false, unterminatedProfiles = false } = {}) {
   const profiles = new Map(includeGameProfile ? [['game.exe', { limit: 60, denominator: 1 }]] : []);
   let currentProfile = '';
   let workingProfile = null;
   let flags = initialFlags;
   let profileWriteCalls = 0;
   let denominatorWriteCalls = 0;
+  const enumCalls = [];
   const functions = {
     LoadProfile(name) {
       currentProfile = name.toLowerCase();
@@ -52,7 +53,9 @@ function makeController({ deleteWorks = true, includeGameProfile = true, failDen
       return flags;
     },
     EnumProfiles(buffer, size) {
-      const text = [...profiles.keys()].join(',') + (profiles.size > 0 ? '\0' : '');
+      assert.ok(Buffer.isBuffer(buffer), 'EnumProfiles must always receive writable storage');
+      enumCalls.push(size);
+      const text = [...profiles.keys()].join(',') + (profiles.size > 0 && !unterminatedProfiles ? '\0' : '');
       const bytes = Buffer.byteLength(text);
       if (!buffer || size === 0) return bytes;
       Buffer.from(text, 'utf8').copy(buffer, 0, 0, Math.min(size, bytes));
@@ -72,6 +75,7 @@ function makeController({ deleteWorks = true, includeGameProfile = true, failDen
     get flags() { return flags; },
     get profileWriteCalls() { return profileWriteCalls; },
     get denominatorWriteCalls() { return denominatorWriteCalls; },
+    enumCalls,
   };
 }
 
@@ -338,7 +342,14 @@ test('RTSS recovery can retain the enabled Graphics cap for a later owned cleanu
   assert.equal(retained.ownershipRetained, true);
   assert.deepEqual(fixture.profiles.get(''), { limit: 90, denominator: 1 });
 
-  const released = await fixture.controller.applyFrameLimit({ enabled: false });
+  // Owned cleanup restores the saved underlay. Explicit Graphics Off uses a
+  // different operation and intentionally clears the cap instead.
+  const ownership = await fixture.controller.getFrameLimitOwnership();
+  assert.deepEqual(ownership.underlay, { limit: 40, denominator: 3, limiterEnabled: true });
+  const released = await fixture.controller.restoreFrameLimitState({
+    expectedState: ownership.state,
+    state: ownership.underlay,
+  });
   assert.equal(released.ok, true);
   assert.deepEqual(fixture.profiles.get(''), { limit: 40, denominator: 3 });
   assert.equal(fixture.flags & 4, 0);
@@ -367,4 +378,135 @@ test('RTSS global ownership reports exact current state and pre-cap underlay', a
   });
   assert.equal(disabled.ok, true);
   assert.deepEqual(disabled.observedState, unowned.disableState);
+});
+
+function makeSharpeningCompatibilityController({ running = true, enumerationFails = false, readBackFails = false, createRace = false, unterminatedProfiles = false } = {}) {
+  const profiles = new Map([['', { FramerateLimit: 60, AppDetectionLevel: 2 }], ['game.exe', { FramerateLimit: 75, AppDetectionLevel: 3 }]]);
+  let current = '';
+  let working = { ...profiles.get('') };
+  const writes = [];
+  let flagCalls = 0;
+  const enumCalls = [];
+  const functions = {
+    LoadProfile(name) {
+      current = String(name).toLowerCase();
+      working = { ...(profiles.get(current) ?? profiles.get('')) };
+    },
+    SaveProfile(name) { profiles.set(String(name).toLowerCase(), { ...working }); },
+    GetProfileProperty(name, buffer) {
+      if (readBackFails && current === 'arcpower.screensharpen.exe' && name === 'FramerateLimit') return false;
+      const value = working[name];
+      if (!Number.isInteger(value)) return false;
+      buffer.writeUInt32LE(value >>> 0, 0);
+      return true;
+    },
+    SetProfileProperty(name, buffer) {
+      writes.push({ profile: current, property: name, value: buffer.readUInt32LE(0) });
+      working[name] = buffer.readUInt32LE(0);
+      return true;
+    },
+    UpdateProfiles() {},
+    SetFlags() { flagCalls += 1; return 0; },
+    EnumProfiles(buffer, size) {
+      assert.ok(Buffer.isBuffer(buffer), 'EnumProfiles must always receive writable storage');
+      enumCalls.push(size);
+      if (enumerationFails) return 0xFFFFFFFF;
+      if (createRace && enumCalls.length > 1 && profiles.has('arcpower.screensharpen.exe') === false) {
+        profiles.set('arcpower.screensharpen.exe', { FramerateLimit: 90, AppDetectionLevel: 5 });
+      }
+      const text = [...profiles.keys()].filter(Boolean).join(',') + (unterminatedProfiles ? '' : '\0');
+      const bytes = Buffer.byteLength(text);
+      if (!buffer || size === 0) return bytes;
+      Buffer.from(text, 'utf8').copy(buffer, 0, 0, Math.min(size, bytes));
+      return bytes;
+    },
+  };
+  const controller = createRtssProfileController({
+    platform: 'win32', executablePath: 'C:\\Program Files\\RTSS\\RTSS.exe',
+    isRunning: async () => running, exists: () => true,
+    load: () => ({ func: (name) => functions[name] }),
+  });
+  return { controller, profiles, writes, enumCalls, get flagCalls() { return flagCalls; } };
+}
+
+test('RTSS sharpening compatibility creates a fixed per-game profile without global or limiter-flag writes', async () => {
+  const fixture = makeSharpeningCompatibilityController();
+  const globalBefore = { ...fixture.profiles.get('') };
+  const result = await fixture.controller.ensureScreenSharpeningCompatibility();
+  assert.deepEqual(result, { ok: true, available: true, configured: true, profile: 'ArcPower.ScreenSharpen.exe' });
+  assert.deepEqual(fixture.profiles.get(''), globalBefore);
+  assert.deepEqual(fixture.profiles.get('arcpower.screensharpen.exe'), { FramerateLimit: 0, AppDetectionLevel: 2 });
+  assert.deepEqual(fixture.writes, [{ profile: '', property: 'FramerateLimit', value: 0 }]);
+  assert.equal(fixture.flagCalls, 0);
+});
+
+test('RTSS sharpening compatibility is idempotent for its existing zero-cap profile', async () => {
+  const fixture = makeSharpeningCompatibilityController();
+  fixture.profiles.set('arcpower.screensharpen.exe', { FramerateLimit: 0, AppDetectionLevel: 7 });
+  const before = new Map([...fixture.profiles].map(([name, profile]) => [name, { ...profile }]));
+  const result = await fixture.controller.ensureScreenSharpeningCompatibility();
+  assert.equal(result.ok, true);
+  assert.equal(result.configured, true);
+  assert.deepEqual(fixture.profiles, before);
+  assert.deepEqual(fixture.writes, []);
+});
+
+test('RTSS sharpening compatibility preserves a conflicting existing profile', async () => {
+  const fixture = makeSharpeningCompatibilityController();
+  fixture.profiles.set('arcpower.screensharpen.exe', { FramerateLimit: 90, AppDetectionLevel: 7 });
+  const before = { ...fixture.profiles.get('arcpower.screensharpen.exe') };
+  const result = await fixture.controller.ensureScreenSharpeningCompatibility();
+  assert.equal(result.ok, false);
+  assert.equal(result.conflict, true);
+  assert.match(result.error, /nonzero or unreadable frame limit/i);
+  assert.deepEqual(fixture.profiles.get('arcpower.screensharpen.exe'), before);
+  assert.deepEqual(fixture.writes, []);
+});
+
+test('RTSS sharpening compatibility requires enumeration and catches a concurrent profile creation', async () => {
+  const unavailable = makeSharpeningCompatibilityController({ enumerationFails: true });
+  const result = await unavailable.controller.ensureScreenSharpeningCompatibility();
+  assert.equal(result.ok, false);
+  assert.match(result.error, /enumerated safely/i);
+  assert.equal(unavailable.profiles.has('arcpower.screensharpen.exe'), false);
+
+  const raced = makeSharpeningCompatibilityController({ createRace: true });
+  const raceResult = await raced.controller.ensureScreenSharpeningCompatibility();
+  assert.equal(raceResult.ok, false);
+  assert.equal(raceResult.conflict, true);
+  assert.deepEqual(raced.profiles.get('arcpower.screensharpen.exe'), { FramerateLimit: 90, AppDetectionLevel: 5 });
+});
+
+test('RTSS profile enumeration retries with larger writable buffers', async () => {
+  const fixture = makeController({ includeGameProfile: false });
+  fixture.profiles.set('', { limit: 60, denominator: 1 });
+  for (let index = 0; index < 500; index += 1) fixture.profiles.set(`game-${index.toString().padStart(4, '0')}-${'x'.repeat(8)}.exe`, { limit: 0, denominator: 1 });
+  const result = await fixture.controller.restoreFrameLimitState({
+    expectedState: { limit: 60, denominator: 1, limiterEnabled: true },
+    state: { limit: 30, denominator: 1, limiterEnabled: false },
+  });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.ok(fixture.enumCalls.length >= 2);
+  assert.equal(fixture.enumCalls[0], 4096);
+  assert.ok(fixture.enumCalls[1] > fixture.enumCalls[0]);
+
+});
+
+test('RTSS profile enumeration fails closed when the returned profile list is unterminated', async () => {
+  const fixture = makeSharpeningCompatibilityController({ unterminatedProfiles: true });
+  const result = await fixture.controller.ensureScreenSharpeningCompatibility();
+  assert.equal(result.ok, false);
+  assert.match(result.error, /enumerated safely/i);
+  assert.equal(fixture.profiles.has('arcpower.screensharpen.exe'), false);
+});
+
+test('RTSS sharpening compatibility reports read-back failure and unavailable RTSS honestly', async () => {
+  const failedRead = makeSharpeningCompatibilityController({ readBackFails: true });
+  const failedResult = await failedRead.controller.ensureScreenSharpeningCompatibility();
+  assert.equal(failedResult.ok, false);
+  assert.match(failedResult.error, /read-back/i);
+
+  const stopped = makeSharpeningCompatibilityController({ running: false });
+  assert.deepEqual(await stopped.controller.ensureScreenSharpeningCompatibility(), { ok: true, available: false, configured: false, error: null });
+  assert.equal(stopped.writes.length, 0);
 });

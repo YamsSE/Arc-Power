@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { acquireRtssLaunchLease, createRtssStartup, createMockRtssStartup, findRunningRtssImagePath, isTrustedRtssExecutablePath, launchRtss, resolveRtssExecutablePath, RTSS_STARTUP_KEY, RTSS_STARTUP_VALUE_NAME } from '../src/main/rtss-startup.js';
+import { acquireRtssLaunchLease, createNativeProcessInspection, createRtssStartup, createMockRtssStartup, findRunningRtssImagePath, isTrustedRtssExecutablePath, launchRtss, resolveRtssExecutablePath, RTSS_STARTUP_KEY, RTSS_STARTUP_VALUE_NAME } from '../src/main/rtss-startup.js';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
 import { createMockStartup } from '../src/main/startup.js';
+import koffi from 'koffi';
+import { createForegroundApiDetector } from '../src/main/foreground-api.js';
 
 const RTSS = 'C:\\Program Files (x86)\\RivaTuner Statistics Server\\RTSS.exe';
 
@@ -70,6 +72,55 @@ test('native RTSS process inspection rejects the unsigned invalid snapshot senti
   assert.deepEqual(calls, []);
 });
 
+test('native RTSS inspection uses GC-owned buffers for repeated process and image-path queries', () => {
+  const calls = { entries: 0, paths: 0, closes: 0 };
+  const positions = new WeakMap();
+  const writeEntry = (snapshot, entry, index) => {
+    assert.ok(Buffer.isBuffer(entry));
+    calls.entries += 1;
+    positions.set(snapshot, index);
+    koffi.encode(entry, 0, 'uint32', 568);
+    koffi.encode(entry, 8, 'uint32', index + 1);
+    const imageName = index === 299 ? 'RTSS.exe' : `game-${index}.exe`;
+    for (let i = 0; i < imageName.length; i += 1) koffi.encode(entry, 44 + i * 2, 'uint16', imageName.charCodeAt(i));
+    koffi.encode(entry, 44 + imageName.length * 2, 'uint16', 0);
+  };
+  const kernel32 = { func(name) {
+    if (name === 'CreateToolhelp32Snapshot') return () => ({});
+    if (name === 'Process32FirstW') return (snapshot, entry) => {
+      writeEntry(snapshot, entry, 0);
+      return 1;
+    };
+    if (name === 'Process32NextW') return (snapshot, entry) => {
+      const index = (positions.get(snapshot) ?? 0) + 1;
+      if (index >= 300) return 0;
+      writeEntry(snapshot, entry, index);
+      return 1;
+    };
+    if (name === 'OpenProcess') return () => ({});
+    if (name === 'QueryFullProcessImageNameW') return (_handle, _flags, buffer, length) => {
+      assert.ok(Buffer.isBuffer(buffer));
+      assert.ok(Buffer.isBuffer(length));
+      calls.paths += 1;
+      const image = RTSS;
+      for (let i = 0; i < image.length; i += 1) koffi.encode(buffer, i * 2, 'uint16', image.charCodeAt(i));
+      koffi.encode(length, 0, 'uint32', image.length);
+      return 1;
+    };
+    if (name === 'CloseHandle') return () => { calls.closes += 1; return 1; };
+    if (name === 'GetLastError') return () => 18;
+    if (name === 'SetLastError') return () => {};
+    throw new Error(`unexpected native function ${name}`);
+  } };
+  const inspection = createNativeProcessInspection({ platform: 'win32', load: () => kernel32 });
+  for (let i = 0; i < 1000; i += 1) {
+    assert.equal(findRunningRtssImagePath(inspection), RTSS);
+  }
+  assert.equal(calls.entries, 300000);
+  assert.equal(calls.paths, 1000);
+  assert.equal(calls.closes, 2000, 'process and snapshot handles close on each successful inspection');
+});
+
 function fakeRegistry({ value = null, exists = true } = {}) {
   const calls = [];
   const execFileAsync = async (cmd, args) => {
@@ -134,7 +185,7 @@ test('immediate RTSS launch skips an already-running process and missing paths h
   assert.deepEqual(running, { started: false, alreadyRunning: true, executablePath: RTSS, reason: 'already-running' });
   const missing = await launchRtss({
     platform: 'win32',
-    env: {},
+    env: { 'ProgramFiles(x86)': 'C:\\Program Files (x86)' },
     exists: () => false,
     getRunningProcessImagePath: async () => null,
     spawnProcess: () => { spawns += 1; },
@@ -292,6 +343,82 @@ test('RTSS adapter can remove a custom-path registration after the process exits
   assert.equal(removed.valueExists, false);
 });
 
+test('RTSS runtime reads cache an absent registration probe while checking running state fresh', async () => {
+  const fake = fakeRegistry({ value: null });
+  let running = false;
+  const startup = createRtssStartup({
+    platform: 'win32',
+    env: {},
+    exists: () => false,
+    getRunningProcessImagePath: async () => running ? RTSS : null,
+    execFileAsync: fake.execFileAsync,
+  });
+  assert.deepEqual(await startup.getRuntime(), { executablePath: null, isRunning: false });
+  running = true;
+  assert.deepEqual(await startup.getRuntime(), { executablePath: null, isRunning: true });
+  assert.equal(fake.calls.filter((call) => call.args[0] === 'query').length, 1);
+});
+
+test('RTSS runtime learns a newly started default or custom-path process and follows path changes', async () => {
+  const custom = 'D:\\Tools\\RTSS\\RTSS.exe';
+  let running = null;
+  const fake = fakeRegistry({ value: null });
+  const startup = createRtssStartup({
+    platform: 'win32',
+    env: {},
+    exists: (filePath) => filePath === custom,
+    getRunningProcessImagePath: async () => running,
+    execFileAsync: fake.execFileAsync,
+  });
+  assert.deepEqual(await startup.getRuntime(), { executablePath: null, isRunning: false });
+  running = custom;
+  assert.deepEqual(await startup.getRuntime(), { executablePath: custom, isRunning: true });
+  running = null;
+  assert.deepEqual(await startup.getRuntime(), { executablePath: custom, isRunning: false });
+  assert.equal(fake.calls.filter((call) => call.args[0] === 'query').length, 1);
+});
+
+test('RTSS runtime rediscovers a default installation that appears after startup without per-poll registry queries', async () => {
+  let installed = false;
+  let now = 1_000;
+  const fake = fakeRegistry({ value: null });
+  const startup = createRtssStartup({
+    platform: 'win32',
+    env: { 'ProgramFiles(x86)': 'C:\\Program Files (x86)' },
+    exists: () => installed,
+    getRunningProcessImagePath: async () => null,
+    execFileAsync: fake.execFileAsync,
+    now: () => now,
+  });
+  assert.deepEqual(await startup.getRuntime(), { executablePath: null, isRunning: false });
+  installed = true;
+  for (let i = 0; i < 5; i += 1) await startup.getRuntime();
+  assert.equal(fake.calls.filter((call) => call.args[0] === 'query').length, 1);
+  now += 30_000;
+  assert.deepEqual(await startup.getRuntime(), { executablePath: RTSS, isRunning: false });
+  assert.equal(fake.calls.filter((call) => call.args[0] === 'query').length, 1);
+});
+
+test('RTSS runtime reuses a custom registered executable while settings get remains fresh', async () => {
+  const custom = 'D:\\Tools\\RTSS\\RTSS.exe';
+  const fake = fakeRegistry({ value: `"${custom}"` });
+  let running = false;
+  const startup = createRtssStartup({
+    platform: 'win32',
+    env: {},
+    exists: (filePath) => filePath === custom,
+    getRunningProcessImagePath: async () => running ? custom : null,
+    execFileAsync: fake.execFileAsync,
+  });
+  assert.deepEqual(await startup.getRuntime(), { executablePath: custom, isRunning: false });
+  running = true;
+  assert.deepEqual(await startup.getRuntime(), { executablePath: custom, isRunning: true });
+  assert.equal(fake.calls.filter((call) => call.args[0] === 'query').length, 1);
+  await startup.get();
+  await startup.get();
+  assert.equal(fake.calls.filter((call) => call.args[0] === 'query').length, 3);
+});
+
 test('RTSS adapter exposes process availability separately from an installed path', async () => {
   const startup = createRtssStartup({
     platform: 'win32',
@@ -381,4 +508,61 @@ test('mock RTSS startup is independent from Arc Power startup adapter', async ()
   const startup = createMockRtssStartup({ available: false });
   await assert.rejects(() => startup.set(true), /RTSS\.exe was not found/);
   assert.equal((await startup.get()).registered, false);
+});
+
+test('foreground process-path adapter uses GC-owned buffers over repeated synchronous native queries', async () => {
+  const calls = { paths: 0, closes: 0 };
+  const processPath = 'C:\\Games\\sample.exe';
+  const libraries = {
+    'user32.dll': { func(name) {
+      if (name === 'GetForegroundWindow') return () => ({ hwnd: true });
+      if (name === 'GetWindowThreadProcessId') return (_hwnd, pid) => {
+        assert.ok(Buffer.isBuffer(pid));
+        koffi.encode(pid, 0, 'uint32', 314);
+        return 1;
+      };
+      throw new Error(`unexpected user32 function ${name}`);
+    } },
+    'kernel32.dll': { func(name) {
+      if (name === 'OpenProcess') return () => ({ process: true });
+      if (name === 'QueryFullProcessImageNameW') return (_handle, _flags, buffer, length) => {
+        assert.ok(Buffer.isBuffer(buffer));
+        assert.ok(Buffer.isBuffer(length));
+        calls.paths += 1;
+        for (let i = 0; i < processPath.length; i += 1) koffi.encode(buffer, i * 2, 'uint16', processPath.charCodeAt(i));
+        koffi.encode(length, 0, 'uint32', processPath.length);
+        return 1;
+      };
+      if (name === 'CloseHandle') return () => { calls.closes += 1; return 1; };
+      return () => 0;
+    } },
+    'psapi.dll': { func() { return () => 0; } },
+  };
+  const detector = createForegroundApiDetector({ load: (name) => libraries[name] });
+  for (let i = 0; i < 5; i += 1) {
+    assert.deepEqual(await detector.detectProcess(), { pid: 314, exePath: processPath });
+  }
+  assert.equal(calls.paths, 5);
+  assert.equal(calls.closes, 5);
+});
+
+test('foreground process-path adapter closes its native handle when the query fails', async () => {
+  let closes = 0;
+  const libraries = {
+    'user32.dll': { func(name) {
+      if (name === 'GetForegroundWindow') return () => ({ hwnd: true });
+      if (name === 'GetWindowThreadProcessId') return (_hwnd, pid) => { koffi.encode(pid, 0, 'uint32', 314); return 1; };
+      throw new Error(`unexpected user32 function ${name}`);
+    } },
+    'kernel32.dll': { func(name) {
+      if (name === 'OpenProcess') return () => ({ process: true });
+      if (name === 'QueryFullProcessImageNameW') return () => 0;
+      if (name === 'CloseHandle') return () => { closes += 1; return 1; };
+      return () => 0;
+    } },
+    'psapi.dll': { func() { return () => 0; } },
+  };
+  const detector = createForegroundApiDetector({ load: (name) => libraries[name] });
+  assert.equal(await detector.detectProcess(), null);
+  assert.equal(closes, 1);
 });

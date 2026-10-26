@@ -56,8 +56,9 @@
 //    is NOT in this mode) - the in-flight dispatch completes, the
 //    connection's buffered queue is dropped. It exits on the M23
 //    SHUTDOWN OP (the app's full close - an EXPLICIT request, honored even
-//    with connections open: the { ok: true } ack is written FIRST, then
-//    the graceful finish(0) exits the helper - the parent's reap path),
+//    with connections open: it stops accepting, drains in-flight work,
+//    writes the { ok: true } ack, closes remaining connections, and exits
+//    through the parent's reap path),
 //    on the IDLE TIMEOUT (round-2 S1: the timer is ARMED ONLY WHILE NO
 //    CONNECTION IS OPEN - cancelled on every connection-open, re-armed at
 //    the full value on every connection-close; a HELD-OPEN connection
@@ -159,6 +160,10 @@ export const SYSMAN_PIPE_NAME = '\\\\.\\pipe\\arcpower-sysman';
  */
 export const HELPER_IDLE_MS = 30000;
 export const HELPER_IDLE_MS_ENV = 'RID_SYSMAN_HELPER_IDLE_MS';
+// A graceful shutdown drains in-flight Sysman work, but a native or async
+// consumer can stall forever. Bound that drain so a full app close cannot
+// leave the detached helper waiting after the parent drops its pipe.
+export const HELPER_SHUTDOWN_DRAIN_MS = 2000;
 
 /**
  * M17o THE AUTO-UPGRADE INTENT FILE (the proxy's not-ready set verdict
@@ -436,6 +441,7 @@ async function writeOut(outPath, payload, id) {
  *   log?: (s: string) => void,          // default: the file writer (round-1 S3)
  *   logFilePath?: string,               // the helper's log file (default %TEMP%\arcpower-sysman-helper.log)
  *   idleMs?: number,                    // the idle timeout (default: the RID override ?? 30000 = the M23 crash-backstop; an EXPLICIT 0 = NEVER - the M17o never-dying arm; any positive value arms the exit timer)
+ *   shutdownDrainMs?: number,           // maximum graceful shutdown drain before forcing helper exit (default: 2000)
  *   pipeName?: string,                  // the named pipe (default \\.\pipe\arcpower-sysman)
  *   netModule?: typeof import('node:net'),  // the injectable net seam
  * }} deps
@@ -449,6 +455,7 @@ export function runSysmanHelperPipeMode({
   log,
   logFilePath,
   idleMs = idleMsFromEnv() ?? HELPER_IDLE_MS,
+  shutdownDrainMs = HELPER_SHUTDOWN_DRAIN_MS,
   pipeName = SYSMAN_PIPE_NAME,
   netModule = net,
 }) {
@@ -460,23 +467,30 @@ export function runSysmanHelperPipeMode({
   let initTs = null;        // the init timestamp (the same-helper assertion)
   let inFlight = false;     // a dispatch in progress (globally serialized)
   let settled = false;
+  let stopping = false;
+  let pumpTask = Promise.resolve();
+  let pumpRunning = false;
+  let initTask = Promise.resolve();
   let resolveExit = () => {};
   const done = new Promise((r) => { resolveExit = r; });
   /** @type {Map<import('node:net').Socket, { sock: import('node:net').Socket, queue: object[], readySent: boolean }>} */
   const conns = new Map();
   let idleTimer = null;
+  let shutdownTimer = null;
   let server = null;
 
   const finish = (code) => {
     if (settled) return;
     settled = true;
     try { if (idleTimer) clearTimeout(idleTimer); } catch { /* best effort */ }
+    try { if (shutdownTimer) clearTimeout(shutdownTimer); } catch { /* best effort */ }
     try { server?.close(); } catch { /* best effort */ }
     helperLog(`helper exiting (code ${code})`);
     resolveExit(code);
   };
 
   const armIdleTimer = () => {
+    if (stopping || settled) return;
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = null;
     if (conns.size > 0) return; // a HELD-OPEN connection - never armed
@@ -488,6 +502,7 @@ export function runSysmanHelperPipeMode({
     if (idleMs > 0) {
       idleTimer = setTimeout(() => {
         idleTimer = null;
+        if (stopping || settled) return;
         if (conns.size > 0) return; // a connection opened while the timer was pending
         helperLog(`idle timer fired (${idleMs} ms without connections) - exiting 0`);
         finish(0);
@@ -569,15 +584,21 @@ export function runSysmanHelperPipeMode({
    * line and the response shapes never collide: the ready line carries
    * ONLY 'type'; no response shape carries one.
    */
+  const writeLine = (sock, body) => new Promise((resolve) => {
+    let done = false;
+    const cleanup = () => { sock.removeListener('close', onClose); sock.removeListener('error', onError); };
+    const settle = (ok) => { if (done) return; done = true; cleanup(); resolve(ok); };
+    const onClose = () => settle(false);
+    const onError = () => settle(false);
+    if (sock.destroyed) { settle(false); return; }
+    sock.once('close', onClose);
+    sock.once('error', onError);
+    try { sock.write(`${JSON.stringify(body)}\n`, (err) => settle(!err)); } catch { settle(false); }
+  });
+
   const respond = (sock, id, payload) => {
     const body = typeof id === 'string' && id !== '' ? { id, ...payload } : payload;
-    try {
-      sock.write(`${JSON.stringify(body)}\n`);
-      return true;
-    } catch (err) {
-      helperLog(`response write failed: ${err.message} (the connection is gone)`);
-      return false;
-    }
+    return writeLine(sock, body);
   };
 
   /**
@@ -586,7 +607,7 @@ export function runSysmanHelperPipeMode({
    * guarantee holds by construction even on a write failure).
    */
   const sendReady = (conn) => {
-    if (conn.readySent || settled) return true;
+    if (conn.readySent || settled || stopping) return true;
     conn.readySent = true;
     try {
       conn.sock.write(`${JSON.stringify({ type: 'ready' })}\n`);
@@ -611,27 +632,36 @@ export function runSysmanHelperPipeMode({
     return null;
   };
 
-  const pump = async () => {
-    while (!settled && consumer && !inFlight) {
-      const entry = nextRequest();
-      if (!entry) break;
-      inFlight = true;
-      const { conn, req } = entry;
-      try {
-        const { payload } = await dispatchRequest(req, consumer, helperLog);
-        const wrote = respond(conn.sock, req?.id, payload);
-        helperLog(`response id=${String(req?.id ?? '<none>')} op=${String(req?.op)} ok=${payload?.ok === true}${wrote ? '' : ' (write failed - the connection is gone)'}`);
-      } catch (err) {
-        // Defensive - dispatchRequest never throws (every path is caught).
-        respond(conn.sock, req?.id, { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) });
-      } finally {
-        inFlight = false;
+  const pump = () => {
+    if (pumpRunning) return pumpTask;
+    pumpRunning = true;
+    const task = (async () => {
+      while (!settled && !stopping && consumer && !inFlight) {
+        const entry = nextRequest();
+        if (!entry) break;
+        inFlight = true;
+        const { conn, req } = entry;
+        try {
+          const { payload } = await dispatchRequest(req, consumer, helperLog);
+          const wrote = await respond(conn.sock, req?.id, payload);
+          helperLog(`response id=${String(req?.id ?? '<none>')} op=${String(req?.op)} ok=${payload?.ok === true}${wrote ? '' : ' (write failed - the connection is gone)'}`);
+        } catch (err) {
+          // Defensive - dispatchRequest never throws (every path is caught).
+          await respond(conn.sock, req?.id, { ok: false, errorCode: 'io-failed', message: err instanceof Error ? err.message : String(err) });
+        } finally {
+          inFlight = false;
+        }
       }
-    }
+    })();
+    const wrappedTask = task.finally(() => {
+      if (pumpTask === wrappedTask) pumpRunning = false;
+    });
+    pumpTask = wrappedTask;
+    return wrappedTask;
   };
 
   server = netModule.createServer((sock) => {
-    if (settled) {
+    if (stopping || settled) {
       sock.destroy();
       return;
     }
@@ -648,7 +678,7 @@ export function runSysmanHelperPipeMode({
     if (consumer) sendReady(conn);
     const rl = readline.createInterface({ input: sock });
     rl.on('line', (line) => {
-      if (settled || !conns.has(sock)) return;
+      if (settled || stopping || !conns.has(sock)) return;
       let req = null;
       try {
         req = JSON.parse(line);
@@ -666,24 +696,44 @@ export function runSysmanHelperPipeMode({
       // THE M23 CHANGE 1 SHUTDOWN OP (the app full-close reap): SPECIAL-
       // CASED in the pipe scope - an EXPLICIT request, honored even with
       // connections open (it is NOT the idle timer, which stays
-      // connection-gated). The { ok: true } ack is written FIRST so the
-      // proxy's awaited call resolves BEFORE the socket dies, then the
-      // GRACEFUL finish(0) (the existing teardown: close server/sockets,
-      // resolve the exit) exits the helper. dispatchRequest is shared
+      // connection-gated). Stop accepting immediately and drain the init,
+      // active dispatch, and response write before the { ok: true } ack.
+      // Once the ack callback completes, close remaining sockets so queued
+      // proxy requests settle on EOF. dispatchRequest is shared
       // with the one-shot form and has NO finish access - the shutdown
       // never rides it (the one-shot's exit stays covered by its returned
       // exitCode path). The op is consumed EVEN while the global init is
       // pending (settled guards the init-loop + the ready sweep), so a
       // full close never leaves an orphan helper behind a slow init.
       if (req.op === 'shutdown') {
-        respond(sock, req?.id, { ok: true });
+        if (stopping) return;
+        stopping = true;
+        if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+        shutdownTimer = setTimeout(() => {
+          helperLog(`shutdown drain exceeded ${shutdownDrainMs} ms - closing remaining connections and forcing exit 1`);
+          for (const activeConn of conns.values()) {
+            try { activeConn.sock.destroy(); } catch { /* best effort */ }
+          }
+          finish(1);
+        }, shutdownDrainMs);
+        try { server.close(); } catch { /* best effort */ }
+        for (const activeConn of conns.values()) activeConn.queue.length = 0;
         helperLog(`shutdown op received (id=${String(req?.id ?? '<none>')}) - finishing 0`);
-        finish(0);
+        void (async () => {
+          await initTask;
+          await pumpTask;
+          const ackWrite = respond(sock, req?.id, { ok: true });
+          await ackWrite;
+          for (const activeConn of conns.values()) {
+            try { activeConn.sock.destroy(); } catch { /* best effort */ }
+          }
+          finish(0);
+        })();
         return;
       }
       conn.queue.push(req);
       helperLog(`request id=${String(req?.id ?? '<none>')} op=${String(req?.op)} (queued)`);
-      pump();
+      pumpTask = pump();
     });
     sock.on('close', () => {
       try { rl.close(); } catch { /* best effort */ }
@@ -739,11 +789,13 @@ export function runSysmanHelperPipeMode({
       // target for later requests.
       probe = await candidate.readLimits(null, { probe: true });
     } catch (err) {
+      if (stopping) return;
       if (settled) return; // a bind conflict resolved mid-probe - the exit stays 0
       helperLog(`ze init failed on the first attempt (${err instanceof Error ? err.message : String(err)}) - exiting ${HELPER_INIT_FAILED_EXIT_CODE} (the in-process retry is gone: the next warm() spawns a FRESH helper process, whose init lands on attempt 1)`);
       finish(HELPER_INIT_FAILED_EXIT_CODE);
       return;
     }
+    if (stopping) return;
     // THE SETTLE-CHECK ORDER (N3 pinned): FIRST the settled guard - a bind
     // conflict (EADDRINUSE) that resolved mid-probe must keep the exit 0.
     if (settled) return;
@@ -758,13 +810,13 @@ export function runSysmanHelperPipeMode({
       // ready path is crash-free by contract).
       await consumeAutoUpgradeIntent();
       for (const conn of conns.values()) sendReady(conn);
-      pump();
+      pumpTask = pump();
       return;
     }
     helperLog(`ze init failed on the first attempt (the consumer returned no limits) - exiting ${HELPER_INIT_FAILED_EXIT_CODE} (the in-process retry is gone: the next warm() spawns a FRESH helper process, whose init lands on attempt 1)`);
     finish(HELPER_INIT_FAILED_EXIT_CODE);
   };
-  initLoop().catch((err) => helperLog(`the init failed: ${err instanceof Error ? err.message : String(err)}`));
+  initTask = initLoop().catch((err) => helperLog(`the init failed: ${err instanceof Error ? err.message : String(err)}`));
 
   // THE IDLE TIMER: armed at start (no connection is open yet).
   armIdleTimer();

@@ -75,7 +75,7 @@ export function createArcSleepIGCLLimiter({ backend, store, applyRunner, isEleva
     }
     let state;
     try {
-      state = await backend.getGraphicsSettings(target.deviceId);
+      state = await backend.getGraphicsSettings(target.deviceId, { includeLegacySharpening: false });
     } catch (error) {
       return { ok: false, available: false, errorCode: 'unavailable', error: error instanceof Error ? error.message : String(error) };
     }

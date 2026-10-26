@@ -1,7 +1,13 @@
 diff --git a/ReShade.vcxproj b/ReShade.vcxproj
-index 1948e3e..9a1d689 100644
+index 1948e3e..15025d6 100644
 --- a/ReShade.vcxproj
 +++ b/ReShade.vcxproj
+@@ -1,4 +1,4 @@
+-﻿<?xml version="1.0" encoding="utf-8"?>
++<?xml version="1.0" encoding="utf-8"?>
+ <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+   <ItemGroup Label="ProjectConfigurations">
+     <ProjectConfiguration Include="Debug|Win32">
 @@ -89,7 +89,6 @@
    <ImportGroup Label="PropertySheets">
      <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -28,7 +34,15 @@ index 1948e3e..9a1d689 100644
        <DisableSpecificWarnings>6387;26812;28251;%(DisableSpecificWarnings)</DisableSpecificWarnings>
        <ObjectFileName>$(IntDir)%(RelativeDir)</ObjectFileName>
        <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-@@ -526,15 +525,6 @@
+@@ -317,6 +316,7 @@
+       <EnableCOMDATFolding>false</EnableCOMDATFolding>
+       <OptimizeReferences>true</OptimizeReferences>
+       <AdditionalLibraryDirectories>$(TargetDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
++      <AdditionalDependencies>Advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <ModuleDefinitionFile>res\exports.def</ModuleDefinitionFile>
+       <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+       <DelayLoadDLLs>D3DCompiler_47.dll;WinMM.dll;XInput9_1_0.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+@@ -526,15 +526,6 @@
      </ProjectReference>
    </ItemGroup>
    <ItemGroup>
@@ -44,7 +58,7 @@ index 1948e3e..9a1d689 100644
      <ClCompile Include="source\addon.cpp" />
      <ClCompile Include="source\addon_manager.cpp" />
      <ClCompile Include="source\d2d1\d2d1.cpp" />
-@@ -568,10 +558,8 @@
+@@ -568,10 +559,8 @@
      <ClCompile Include="source\d3d12\d3d12.cpp" />
      <ClCompile Include="source\d3d12\d3d12_command_list.cpp" />
      <ClCompile Include="source\d3d12\d3d12_command_queue.cpp" />
@@ -55,7 +69,7 @@ index 1948e3e..9a1d689 100644
      <ClCompile Include="source\d3d12\d3d12_extensions.cpp" />
      <ClCompile Include="source\d3d12\d3d12_impl_command_list.cpp" />
      <ClCompile Include="source\d3d12\d3d12_impl_command_list_immediate.cpp" />
-@@ -716,10 +704,8 @@
+@@ -716,10 +705,8 @@
      <ClInclude Include="source\d3d11\d3d11_resource_call_vtable.inl" />
      <ClInclude Include="source\d3d12\d3d12_command_list.hpp" />
      <ClInclude Include="source\d3d12\d3d12_command_queue.hpp" />
@@ -66,13 +80,16 @@ index 1948e3e..9a1d689 100644
      <ClInclude Include="source\d3d12\d3d12_extensions.hpp" />
      <ClInclude Include="source\d3d12\d3d12_impl_command_list.hpp" />
      <ClInclude Include="source\d3d12\d3d12_impl_command_list_immediate.hpp" />
-@@ -842,4 +828,4 @@
+@@ -842,4 +829,7 @@
      </CustomBuild>
    </ItemGroup>
    <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 -</Project>
 \ No newline at end of file
 +</Project>
++
++
++
 diff --git a/source/d3d12/d3d12_command_queue.cpp b/source/d3d12/d3d12_command_queue.cpp
 index 2b5073e..fd0ab60 100644
 --- a/source/d3d12/d3d12_command_queue.cpp
@@ -310,11 +327,169 @@ index 05e27d9..a42e592 100644
 -	};
  }
 +
+diff --git a/source/effect_preprocessor.cpp b/source/effect_preprocessor.cpp
+index 626d718..371cbda 100644
+--- a/source/effect_preprocessor.cpp
++++ b/source/effect_preprocessor.cpp
+@@ -68,7 +68,13 @@ static bool read_file(const std::filesystem::path &path, std::string &file_data)
+ #ifndef _WIN32
+ 	FILE *const file = fopen(path.c_str(), "rb");
+ #else
+-	FILE *const file = _wfsopen(path.c_str(), L"rb", SH_DENYWR);
++	// Injected runtimes inherit the game's manifest, which may not opt in to
++	// long paths. Explicit extended paths also support Unicode source folders.
++	std::wstring file_path = std::filesystem::absolute(path).lexically_normal().native();
++	if (file_path.compare(0, 4, L"\\\\?\\") != 0)
++		file_path = file_path.compare(0, 2, L"\\\\") == 0
++			? L"\\\\?\\UNC\\" + file_path.substr(2) : L"\\\\?\\" + file_path;
++	FILE *const file = _wfsopen(file_path.c_str(), L"rb", SH_DENYWR);
+ #endif
+ 	if (file == nullptr)
+ 		return false;
+@@ -139,7 +145,10 @@ bool reshadefx::preprocessor::append_file(const std::filesystem::path &path)
+ {
+ 	std::string source_code;
+ 	if (!read_file(path, source_code))
++	{
++		_errors += path.u8string() + ": preprocessor error: failed to read source file\n";
+ 		return false;
++	}
+ 
+ 	return append_string(std::move(source_code), path);
+ }
+diff --git a/source/managed_sharpening_control.hpp b/source/managed_sharpening_control.hpp
+new file mode 100644
+index 0000000..89efcd8
+--- /dev/null
++++ b/source/managed_sharpening_control.hpp
+@@ -0,0 +1,114 @@
++#pragma once
++// Private Arc Power controlled-runtime prototype. Not production code.
++#include <windows.h>
++#include <sddl.h>
++#include <atomic>
++#include <cstdint>
++#include <thread>
++#include <string>
++#include <vector>
++
++namespace reshade::managed_sharpening
++{
++#pragma pack(push, 1)
++struct request { uint32_t magic; uint16_t version; uint16_t size; uint32_t operation; uint32_t revision; uint32_t percent; uint32_t enabled; };
++struct reply { uint32_t magic; uint16_t version; uint16_t size; uint32_t status; uint32_t accepted_revision; uint32_t applied_revision; };
++struct acknowledgment { uint32_t magic; uint16_t version; uint16_t size; uint32_t revision; };
++#pragma pack(pop)
++static constexpr uint32_t kMagic = 0x43505341; // ASPC
++static std::atomic<uint64_t> desired { 0 }; // revision[31:0], enabled[32], percent[39:33]
++static std::atomic<uint32_t> applied { 0 };
++static std::atomic<bool> started { false };
++static std::wstring pipe_name;
++
++inline uint64_t snapshot() { return desired.load(std::memory_order_acquire); }
++inline uint32_t revision(uint64_t value) { return static_cast<uint32_t>(value); }
++inline uint32_t percent(uint64_t value) { return static_cast<uint32_t>((value >> 33) & 0x7f); }
++inline bool enabled(uint64_t value) { return ((value >> 32) & 1) != 0; }
++inline uint32_t applied_revision() { return applied.load(std::memory_order_acquire); }
++
++inline bool bounded_read(HANDLE pipe, void *buffer, DWORD length)
++{
++    auto *bytes = static_cast<uint8_t *>(buffer); DWORD total = 0; const ULONGLONG deadline = GetTickCount64() + 2000;
++    while (total < length && GetTickCount64() < deadline) {
++        DWORD got = 0;
++        if (ReadFile(pipe, bytes + total, length - total, &got, nullptr)) { total += got; continue; }
++        const DWORD e = GetLastError(); if (e != ERROR_NO_DATA && e != ERROR_PIPE_LISTENING) return false;
++        Sleep(5);
++    }
++    return total == length;
++}
++inline bool bounded_write(HANDLE pipe, const void *buffer, DWORD length)
++{
++    const auto *bytes = static_cast<const uint8_t *>(buffer); DWORD total = 0; const ULONGLONG deadline = GetTickCount64() + 2000;
++    while (total < length && GetTickCount64() < deadline) {
++        DWORD wrote = 0;
++        if (WriteFile(pipe, bytes + total, length - total, &wrote, nullptr)) { total += wrote; continue; }
++        const DWORD e = GetLastError(); if (e != ERROR_NO_DATA && e != ERROR_PIPE_LISTENING) return false;
++        Sleep(5);
++    }
++    return total == length;
++}
++inline void listener()
++{
++    HANDLE token = nullptr; if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return;
++    DWORD bytes = 0; GetTokenInformation(token, TokenUser, nullptr, 0, &bytes);
++    std::vector<uint8_t> token_user(bytes);
++    if (!bytes || !GetTokenInformation(token, TokenUser, token_user.data(), bytes, &bytes)) { CloseHandle(token); return; }
++    LPWSTR sid = nullptr;
++    if (!ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER *>(token_user.data())->User.Sid, &sid)) { CloseHandle(token); return; }
++    std::wstring sddl = L"D:P(A;;GA;;;" + std::wstring(sid) + L")(A;;GA;;;SY)";
++    LocalFree(sid); CloseHandle(token);
++    PSECURITY_DESCRIPTOR descriptor = nullptr;
++    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr)) return;
++    SECURITY_ATTRIBUTES sa { sizeof(sa), descriptor, FALSE };
++    DWORD own_session = 0; ProcessIdToSessionId(GetCurrentProcessId(), &own_session);
++    for (;;) {
++        HANDLE pipe = CreateNamedPipeW(pipe_name.c_str(), PIPE_ACCESS_DUPLEX,
++            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
++            1, sizeof(reply), sizeof(request), 0, &sa);
++        if (pipe == INVALID_HANDLE_VALUE) { Sleep(1000); continue; }
++        const ULONGLONG connect_deadline = GetTickCount64() + 2000;
++        bool connected = false;
++        while (GetTickCount64() < connect_deadline) {
++            if (ConnectNamedPipe(pipe, nullptr)) { connected = true; break; }
++            const DWORD e = GetLastError(); if (e == ERROR_PIPE_CONNECTED) { connected = true; break; }
++            if (e != ERROR_PIPE_LISTENING && e != ERROR_NO_DATA) break;
++            Sleep(5);
++        }
++        if (connected) {
++            DWORD client_pid = 0, client_session = 0; request in {};
++            const bool valid_client = GetNamedPipeClientProcessId(pipe, &client_pid) && client_pid &&
++                ProcessIdToSessionId(client_pid, &client_session) && client_session == own_session;
++            if (valid_client && bounded_read(pipe, &in, sizeof(in)) && in.magic == kMagic && in.version == 1 && in.size == sizeof(request)) {
++                uint64_t current = snapshot();
++                reply out { kMagic, 1, sizeof(reply), 1, revision(current), applied_revision() };
++                if (in.operation == 1 && in.percent <= 100 && in.enabled <= 1 && in.revision > revision(current)) {
++                    const uint64_t next = static_cast<uint64_t>(in.revision) |
++                        (static_cast<uint64_t>(in.enabled) << 32) | (static_cast<uint64_t>(in.percent) << 33);
++                    desired.store(next, std::memory_order_release);
++                    out.status = 0; out.accepted_revision = in.revision;
++                } else if (in.operation == 2) out.status = 0;
++                else out.status = 2;
++                out.applied_revision = applied_revision();
++                if (bounded_write(pipe, &out, sizeof(out))) {
++                    acknowledgment ack{};
++                    const bool received_ack = bounded_read(pipe, &ack, sizeof(ack)) && ack.magic == kMagic &&
++                        ack.version == 1 && ack.size == sizeof(ack) && ack.revision == out.accepted_revision;
++                    (void)received_ack;
++                }
++            }
++            DisconnectNamedPipe(pipe);
++        }
++        CloseHandle(pipe);
++    }
++}
++inline void start()
++{
++    bool expected = false; if (!started.compare_exchange_strong(expected, true)) return;
++    pipe_name = L"\\\\.\\pipe\\ArcPower.ManagedSharpening.v1." + std::to_wstring(GetCurrentProcessId());
++    std::thread(listener).detach();
++}
++}
++
++
 diff --git a/source/runtime.cpp b/source/runtime.cpp
-index 9ad4b62..867df86 100644
+index 9ad4b62..6c4d28a 100644
 --- a/source/runtime.cpp
 +++ b/source/runtime.cpp
-@@ -335,7 +335,9 @@ reshade::runtime::runtime(api::swapchain *swapchain, api::command_queue *graphic
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include "runtime.hpp"
++#include "managed_sharpening_control.hpp"
+ #include "runtime_internal.hpp"
+ #include "effect_parser.hpp"
+ #include "effect_codegen.hpp"
+@@ -335,7 +336,9 @@ reshade::runtime::runtime(api::swapchain *swapchain, api::command_queue *graphic
  	else
  		log::message(log::level::info, "Running on %s.", device_description);
  
@@ -324,7 +499,55 @@ index 9ad4b62..867df86 100644
  
  	// Default shortcut PrtScrn
  	_screenshot_key_data[0] = 0x2C;
-@@ -1076,6 +1078,9 @@ void reshade::runtime::load_config()
+@@ -567,6 +570,9 @@ bool reshade::runtime::on_init()
+ 	_frame_count = 0;
+ 
+ 	_is_initialized = true;
++#if defined(ARC_POWER_MANAGED)
++	managed_sharpening::start();
++#endif
+ 	_last_reload_time = std::chrono::high_resolution_clock::now(); // Intentionally set to current time, so that duration to last reload is valid even when there is no reload on init
+ 
+ 	_preset_save_successful = true;
+@@ -627,6 +633,9 @@ exit_failure:
+ }
+ void reshade::runtime::on_reset()
+ {
++#if defined(ARC_POWER_MANAGED)
++	_managed_sharpening_applied_revision = 0;
++#endif
+ 	if (_is_initialized)
+ 		// Update initialization state immediately, so that any effect loading still in progress can abort early
+ 		_is_initialized = false;
+@@ -729,6 +738,27 @@ void reshade::runtime::on_present()
+ 
+ 	update_effects();
+ 
++#if defined(ARC_POWER_MANAGED)
++	if (!is_loading())
++	{
++		const uint64_t control = managed_sharpening::snapshot();
++		const uint32_t control_revision = managed_sharpening::revision(control);
++		if (control_revision != 0 && control_revision != _managed_sharpening_applied_revision)
++		{
++			const auto uniform = find_uniform_variable("ArcPowerSharpen.fx", "Sharpness");
++			const auto technique = find_technique("ArcPowerSharpen.fx", "ArcPowerSharpen");
++			if (uniform.handle != 0 && technique.handle != 0)
++			{
++				const float value = static_cast<float>(managed_sharpening::percent(control)) / 100.0f;
++				set_uniform_value_float(uniform, &value, 1, 0);
++				set_technique_state(technique, managed_sharpening::enabled(control));
++				_managed_sharpening_applied_revision = control_revision;
++			managed_sharpening::applied.store(control_revision, std::memory_order_release);
++			}
++		}
++	}
++#endif
++
+ 	_current_time = std::chrono::system_clock::now();
+ 
+ 	if (_should_save_screenshot && _screenshot_save_before && _effects_enabled && !_effects_rendered_this_frame)
+@@ -1076,6 +1106,9 @@ void reshade::runtime::load_config()
  }
  void reshade::runtime::save_config() const
  {
@@ -334,7 +557,7 @@ index 9ad4b62..867df86 100644
  	ini_file &config = ini_file::load_cache(_config_path);
  
  	config.set("INPUT", "ForceShortcutModifiers", _force_shortcut_modifiers);
-@@ -1136,6 +1141,7 @@ void reshade::runtime::save_config() const
+@@ -1136,6 +1169,7 @@ void reshade::runtime::save_config() const
  #if RESHADE_GUI
  	save_config_gui(config);
  #endif
@@ -342,7 +565,7 @@ index 9ad4b62..867df86 100644
  }
  
  void reshade::runtime::load_current_preset()
-@@ -1327,6 +1333,9 @@ void reshade::runtime::load_current_preset()
+@@ -1327,6 +1361,9 @@ void reshade::runtime::load_current_preset()
  }
  void reshade::runtime::save_current_preset(ini_file &preset) const
  {
@@ -352,7 +575,7 @@ index 9ad4b62..867df86 100644
  	assert(!_is_in_preset_transition);
  
  	// Build list of active techniques and effects
-@@ -1422,6 +1431,7 @@ void reshade::runtime::save_current_preset(ini_file &preset) const
+@@ -1422,6 +1459,7 @@ void reshade::runtime::save_current_preset(ini_file &preset) const
  			}
  		}
  	}
@@ -360,3 +583,42 @@ index 9ad4b62..867df86 100644
  }
  
  bool reshade::runtime::switch_to_next_preset(std::filesystem::path filter_path, bool reversed)
+@@ -3472,6 +3510,9 @@ bool reshade::runtime::reload_effect(size_t effect_index)
+ }
+ void reshade::runtime::reload_effects(bool force_load_all)
+ {
++#if defined(ARC_POWER_MANAGED)
++	_managed_sharpening_applied_revision = 0;
++#endif
+ 	// Clear out any previous effects
+ 	destroy_effects();
+ 
+@@ -5268,3 +5309,9 @@ bool reshade::runtime::get_texture_data(api::resource resource, api::resource_us
+ 
+ 	return mapped_data.data != nullptr;
+ }
++
++
++
++
++
++
+diff --git a/source/runtime.hpp b/source/runtime.hpp
+index 5c204b2..fa1d01b 100644
+--- a/source/runtime.hpp
++++ b/source/runtime.hpp
+@@ -257,6 +257,9 @@ namespace reshade
+ 		static unsigned int s_latest_version[3];
+ 
+ 		bool _is_initialized = false;
++#if defined(ARC_POWER_MANAGED)
++		uint32_t _managed_sharpening_applied_revision = 0;
++#endif
+ 		bool _preset_is_incomplete = false;
+ 		bool _preset_save_successful = true;
+ 		std::filesystem::path _config_path;
+@@ -535,3 +538,4 @@ namespace reshade
+ 	template <> void runtime::set_uniform_value<int32_t>(uniform &variable, const int32_t *values, size_t count, size_t array_index);
+ 	template <> void runtime::set_uniform_value<uint32_t>(uniform &variable, const uint32_t *values, size_t count, size_t array_index);
+ }
++

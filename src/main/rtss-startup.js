@@ -64,20 +64,20 @@ function validNativeHandle(handle, addressOf = (value) => koffi.address(value)) 
   }
 }
 
-function readWideString(buffer, start, maxChars) {
+function readWideString(buffer, start, maxChars, koffiMod = koffi) {
   let value = '';
   for (let i = 0; i < maxChars; i += 1) {
-    const code = koffi.decode(buffer, start + i * 2, 'uint16');
+    const code = koffiMod.decode(buffer, start + i * 2, 'uint16');
     if (code === 0) break;
     value += String.fromCharCode(code);
   }
   return value;
 }
 
-function createNativeProcessInspection() {
-  if (process.platform !== 'win32') return null;
+export function createNativeProcessInspection({ platform = process.platform, load = (name) => koffi.load(name), koffiMod = koffi } = {}) {
+  if (platform !== 'win32') return null;
   try {
-    const kernel32 = koffi.load('kernel32.dll');
+    const kernel32 = load('kernel32.dll');
     const pointerSize = process.arch === 'ia32' ? 4 : 8;
     const imageOffset = pointerSize === 8 ? 44 : 36;
     const entrySize = pointerSize === 8 ? 568 : 556;
@@ -92,12 +92,12 @@ function createNativeProcessInspection() {
       setLastError: kernel32.func('SetLastError', 'void', ['uint32']),
     };
     const readEntry = (entry) => ({
-      pid: koffi.decode(entry, 8, 'uint32'),
-      imageName: readWideString(entry, imageOffset, 260),
+      pid: koffiMod.decode(entry, 8, 'uint32'),
+      imageName: readWideString(entry, imageOffset, 260, koffiMod),
     });
     const getEntry = (fn, snapshot) => {
-      const entry = koffi.alloc('uint8', entrySize);
-      koffi.encode(entry, 0, 'uint32', entrySize);
+      const entry = Buffer.alloc(entrySize);
+      koffiMod.encode(entry, 0, 'uint32', entrySize);
       if (fn(snapshot, entry) === 0) return null;
       return readEntry(entry);
     };
@@ -111,11 +111,11 @@ function createNativeProcessInspection() {
       },
       openProcess: (pid) => api.open(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid),
       queryImagePath: (handle) => {
-        const buffer = koffi.alloc('uint16', 32768);
-        const length = koffi.alloc('uint32', 1);
-        koffi.encode(length, 0, 'uint32', 32768);
+        const buffer = Buffer.alloc(32768 * 2);
+        const length = Buffer.alloc(4);
+        koffiMod.encode(length, 0, 'uint32', 32768);
         if (api.query(handle, 0, buffer, length) === 0) return null;
-        return readWideString(buffer, 0, Math.min(koffi.decode(length, 0, 'uint32'), 32767));
+        return readWideString(buffer, 0, Math.min(koffiMod.decode(length, 0, 'uint32'), 32767), koffiMod);
       },
       closeHandle: api.close,
     };
@@ -428,9 +428,63 @@ export function createRtssStartup({
   exists = existsSync,
   execFileAsync = defaultExecFile,
   getRunningProcessImagePath,
+  now = Date.now,
 } = {}) {
   const getRunningImage = getRunningProcessImagePath ?? defaultRunningRtssImagePath;
   const resolve = () => resolveRtssExecutablePath({ platform, env, exists, getRunningProcessImagePath: getRunningImage });
+  // Profile-helper requests can arrive every frame-limit poll. Keep runtime
+  // discovery independent from the explicit settings read, which must always
+  // query HKCU so the UI sees external registration changes immediately.
+  let runtimeExecutablePath = null;
+  let runtimePathResolved = false;
+  let runtimeRegistrationPath = null;
+  let runtimeRegistrationExpiresAt = 0;
+  const runtimeRegistrationTtlMs = 30_000;
+  let runtimeDiscoveryExpiresAt = 0;
+  const rememberRuntimePath = (filePath) => {
+    runtimeExecutablePath = typeof filePath === 'string' && filePath ? filePath : null;
+    runtimePathResolved = true;
+  };
+  const runtimePath = async () => {
+    if (platform !== 'win32') return null;
+    // The running image is authoritative and can appear/change after Arc
+    // Power starts. Probe it on every runtime read; this avoids freezing an
+    // initial "not found" result for the lifetime of the app.
+    try {
+      const running = await getRunningImage();
+      if (isRtssProcessImage(running)) {
+        try {
+          if (exists(running)) {
+            runtimeExecutablePath = running.trim();
+            runtimePathResolved = true;
+            runtimeDiscoveryExpiresAt = now() + runtimeRegistrationTtlMs;
+            return runtimeExecutablePath;
+          }
+        } catch { /* continue with cached and installed paths */ }
+      }
+    } catch { /* process inspection can be temporarily unavailable */ }
+    if (runtimeExecutablePath) {
+      try {
+        if (exists(runtimeExecutablePath)) return runtimeExecutablePath;
+      } catch { /* stale cached path: rediscover below */ }
+      runtimeExecutablePath = null;
+      runtimePathResolved = false;
+    }
+    if (!runtimePathResolved || now() >= runtimeDiscoveryExpiresAt) {
+      rememberRuntimePath(await resolve());
+      runtimeDiscoveryExpiresAt = now() + runtimeRegistrationTtlMs;
+    }
+    if (!runtimeExecutablePath && now() >= runtimeRegistrationExpiresAt) {
+      runtimeRegistrationExpiresAt = now() + runtimeRegistrationTtlMs;
+      try { runtimeRegistrationPath = unquoteRunValue(await query()); } catch { runtimeRegistrationPath = null; }
+    }
+    if (!runtimeExecutablePath && /(?:^|[\\/])RTSS\.exe$/i.test(runtimeRegistrationPath ?? '')) {
+      try {
+        if (exists(runtimeRegistrationPath)) rememberRuntimePath(runtimeRegistrationPath);
+      } catch { /* stale registration remains unavailable */ }
+    }
+    return runtimeExecutablePath;
+  };
   const query = async () => {
     if (platform !== 'win32') return null;
     try {
@@ -454,6 +508,9 @@ export function createRtssStartup({
         if (exists(registeredPath)) executablePath = registeredPath;
       } catch { /* stale registration remains visible through valueExists */ }
     }
+    runtimeRegistrationPath = registeredPath || null;
+    runtimeRegistrationExpiresAt = now() + runtimeRegistrationTtlMs;
+    rememberRuntimePath(executablePath);
     return {
       capable: platform === 'win32' && executablePath !== null,
       executablePath,
@@ -466,6 +523,14 @@ export function createRtssStartup({
   return {
     registrationMode: 'run',
     get,
+    async getRuntime() {
+      const executablePath = await runtimePath();
+      let isRunning = false;
+      if (platform === 'win32') {
+        try { isRunning = isRtssProcessImage(await getRunningImage()); } catch { /* current probe unavailable */ }
+      }
+      return { executablePath, isRunning };
+    },
     async isRunning() {
       if (platform !== 'win32') return false;
       try {

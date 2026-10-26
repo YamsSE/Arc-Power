@@ -13,8 +13,8 @@
 // per-process state after a failed init never recovers - a FRESH PROCESS is
 // required per retry). The helper therefore EXITS 77 on a failed init, and
 // THIS proxy HEALS: it schedules an ensureConnected() respawn (5 s later)
-// from every helper-death trigger (the socket drop + the spawned child's
-// 0/77 exit), one-shot per trigger; after 30 consecutive heal-spawn deaths
+// from every helper-death trigger (the socket drop + any spawned-child
+// exit/error), one-shot per trigger; after 30 consecutive heal-spawn deaths
 // the heal CONTINUES at the 30 s backoff cadence (M17o4 - the session
 // recovers whenever the machine quiets; the next warm() returns the fast
 // cadence).
@@ -49,16 +49,15 @@
 //     (round-1 S2): connect once + keep; the socket 'close' drops the
 //     connection + resets the ready state + the next call reconnects. THE
 //     DETACHED SPAWNED CHILD's 'exit' (incl. the EADDRINUSE loser of a bind
-//     race - an existing helper is alive) is a DEBUG-LOG EVENT, NEVER a
-//     socket drop: the child's death surfaces as the socket's 'close' (the
-//     server side gone) - the proxy never tears down a live socket because
-//     its spawned child happened to exit. M17o2/M17o4 THE HEAL: every
-//     socket drop + the own child's 0/77 exit SCHEDULE an
+//     race - an existing helper is alive) is logged and can schedule a
+//     connect-first heal, NEVER a socket drop: the proxy never tears down a
+//     live socket because its spawned child happened to exit. M17o2/M17o4
+//     THE HEAL: every socket drop + the own child's exit/error SCHEDULE an
 //     ensureConnected() respawn (5 s later, unref'd, one-shot) - the
 //     fresh-process retry; after the cap (30 consecutive heal-spawn
 //     deaths, ANY exit code) the heal CONTINUES at the 30 s backoff
 //     cadence - never a hot heal loop, the session recovers whenever the
-//     machine quiets (the next warm() returns the fast cadence);
+//     machine quiets (the ready signal returns the cadence to fast);
 //   - THE CONNECT PATH (round-1 S2) - the warm()'s eager connect: a live
 //     machine-level helper (left by a previous app session) is REUSED with
 //     NO spawn (the M17m reuse shape); when the connect fails (no helper
@@ -161,6 +160,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { randomUUID } from 'node:crypto';
 import { spawn as childProcessSpawn } from 'node:child_process';
 import { sweepStaleWorkerFiles } from '../elevated-apply.js';
@@ -202,8 +202,8 @@ export const CONNECT_RETRY_CAP_MS = 30000;
 // respawn HELPER_RESPAWN_DELAY_MS after a helper death - from the TOP of
 // handleDrop (BEFORE the stale-guard, so the nulled-socket drops - the
 // write-failure + protocol-error paths - still heal via the socket's
-// 'close') AND from the own spawned child's 0/77 exit. The timer is
-// unref()d + ONE-SHOT (a failed heal is never re-armed); the fire-time
+// 'close') AND from the own spawned child's exit/error. The timer is
+// unref()d; a failed heal re-arms after a shared connecting attempt clears; the fire-time
 // guard is ensureConnected's own socket check + the connecting latch (an
 // over-eager heal is a no-op reconnect).
 // M17o4 THE RECOVERY HORIZON: HELPER_RESPAWN_DELAY_MS is the 5 s FAST
@@ -224,13 +224,16 @@ export const HELPER_RESPAWN_DELAY_MS = 5000;
 // - a heal loop against a permanently dying helper must not respawn at
 // the fast cadence; the request path stays instant-not-ready meanwhile -
 // the M17n contract untouched). The counter increments PAST the cap and
-// resets on ANY successful socket landing AND on warm() - the socket-
-// landing reset returns the cadence to fast (the next app session; no
-// decay clause - nothing exists to exercise it post-cap).
+// resets only when the helper sends its ready signal - a connected pipe
+// alone does not prove successful Sysman initialization.
 export const MAX_CONSECUTIVE_HEAL_SPAWNS = 30;
 // M17o4 THE POST-CAP BACKOFF DELAY: the heal's slow cadence after the
 // cap (one unref'd timer per trigger - never a hot loop).
 export const HEAL_BACKOFF_DELAY_MS = 30000;
+// Stop automatic helper respawns after repeated native failures in one app
+// session. A restart clears this in-memory breaker.
+export const HELPER_FAILURE_WINDOW_MS = 5 * 60 * 1000;
+export const MAX_HELPER_FAILURES_IN_WINDOW = 3;
 // M23 CHANGE 2 THE SHUTDOWN BOUND (ms): the best-effort, bounded
 // shutdown handshake - the op's ack-or-close wait. ~1 s covers the
 // helper's ack write + the socket teardown; the idle backstop (the
@@ -273,6 +276,11 @@ const defaultConnect = (pipeName) => new Promise((resolve, reject) => {
  *   healDelayMs?: number,          // M17o2 the heal respawn delay (default HELPER_RESPAWN_DELAY_MS - 5 s; the test seam)
  *   maxConsecutiveHealSpawns?: number,  // M17o4 the heal cap (default MAX_CONSECUTIVE_HEAL_SPAWNS - 30; the test seam - the heals continue at the backoff cadence after it)
  *   healBackoffDelayMs?: number,   // M17o4 the post-cap backoff delay (default HEAL_BACKOFF_DELAY_MS - 30 s; the test seam)
+ *   setTimeoutFn?: (fn: Function, ms: number) => object, // heal timer seam
+ *   clearTimeoutFn?: (timer: object) => void,
+ *   nowFn?: () => number,
+ *   helperFailureWindowMs?: number,
+ *   maxHelperFailuresInWindow?: number,
  *   shutdownBoundMs?: number,      // M23 the shutdown handshake bound (default ~1 s; the test seam)
  *   sleep?: (ms: number) => Promise<void>,  // the retry-interval sleep seam
  *   debugLogPath?: () => string,   // the debug file (default %TEMP%\arcpower-sysman-debug.log)
@@ -295,6 +303,11 @@ export function createSysmanHelperProxy({
   healDelayMs = HELPER_RESPAWN_DELAY_MS,
   maxConsecutiveHealSpawns = MAX_CONSECUTIVE_HEAL_SPAWNS, // M17o4 the heal cap (the backoff engages at >= it)
   healBackoffDelayMs = HEAL_BACKOFF_DELAY_MS, // M17o4 the post-cap slow cadence
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
+  nowFn = () => performance.now(),
+  helperFailureWindowMs = HELPER_FAILURE_WINDOW_MS,
+  maxHelperFailuresInWindow = MAX_HELPER_FAILURES_IN_WINDOW,
   shutdownBoundMs = HELPER_SHUTDOWN_BOUND_MS, // M23 the shutdown handshake bound (~1 s; the test seam)
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   debugLogPath = () => path.join(os.tmpdir(), 'arcpower-sysman-debug.log'),
@@ -325,6 +338,8 @@ export function createSysmanHelperProxy({
   let pumping = false;  // the pump re-entrancy guard
   /** @type {number | null} */
   let spawnedPid = null; // the last detached child's pid (the connect-event evidence)
+  /** @type {object | null} */
+  let spawnedChild = null; // only this proxy's child may be force-terminated on explicit shutdown timeout
   // M17k (round-1 N3): the IN-FLIGHT connect latch - the connect promise
   // shared by every concurrent ensureConnected caller (a warm() racing the
   // first request's lazy connect or a reconnect). Without it the racers
@@ -333,10 +348,20 @@ export function createSysmanHelperProxy({
   // connect leaves the next call free to re-attempt.
   let connecting = null;
   // M17o2 THE HEAL state: the pending respawn timer (null = none) + the
-  // consecutive heal-spawn death counter (the cap - r2-S2/r3-N1). The
-  // counter resets on ANY successful socket landing AND on warm().
+  // consecutive heal-spawn death counter (the cap - r2-S2/r3-N1). It resets
+  // only after the current connection receives the helper's ready signal.
   let healTimer = null;
   let consecutiveHealSpawns = 0;
+  const recentAbnormalFailures = [];
+  const reportedChildFailures = new WeakSet();
+  let recoveryReason = null;
+  if (typeof nowFn !== 'function') throw new TypeError('nowFn must be a function');
+  if (!Number.isInteger(helperFailureWindowMs) || helperFailureWindowMs <= 0) {
+    throw new TypeError('helperFailureWindowMs must be a positive finite integer');
+  }
+  if (!Number.isInteger(maxHelperFailuresInWindow) || maxHelperFailuresInWindow <= 0) {
+    throw new TypeError('maxHelperFailuresInWindow must be a positive finite integer');
+  }
   // M23 CHANGE 2 (the full-close reap): THE SHUTDOWN FLAG. Set BEFORE the
   // shutdown op is sent - it gates scheduleHeal ITSELF (the single heal-
   // schedule site), so NEITHER trigger can respawn a helper after an
@@ -347,42 +372,69 @@ export function createSysmanHelperProxy({
   // intentional close a dead-end: no respawn, no reconnect, no orphan.
   let shuttingDown = false;
 
+  const openFailureBreaker = (reason) => {
+    if (recoveryReason) return;
+    recoveryReason = reason;
+    if (healTimer) {
+      try { clearTimeoutFn(healTimer); } catch { /* best effort */ }
+      healTimer = null;
+    }
+    debugLog({ ts: Date.now(), event: 'recovery-stopped', reason });
+    log(`sysman helper recovery stopped: ${reason}`);
+  };
+
+  const recordAbnormalChildFailure = (proc, reason) => {
+    if (!proc || typeof proc !== 'object' || reportedChildFailures.has(proc)) return;
+    reportedChildFailures.add(proc);
+    const now = nowFn();
+    while (recentAbnormalFailures.length && now - recentAbnormalFailures[0] > helperFailureWindowMs) {
+      recentAbnormalFailures.shift();
+    }
+    recentAbnormalFailures.push(now);
+    if (recentAbnormalFailures.length >= maxHelperFailuresInWindow) {
+      openFailureBreaker(`the helper had ${recentAbnormalFailures.length} abnormal child failures within ${helperFailureWindowMs} ms; automatic recovery is stopped for this app session (${reason})`);
+    }
+  };
+
   /**
    * M17o2 THE HEAL SCHEDULE (the single schedule site): a helper death
    * (the socket drop via the TOP of handleDrop - BEFORE the stale-guard,
    * so the nulled-socket drops still land here through the socket's
-   * 'close' - or the own spawned child's 0/77 exit) schedules ONE
+   * 'close' - or the own spawned child's exit/error) schedules ONE
    * ensureConnected() respawn after HELPER_RESPAWN_DELAY_MS. There is NO
    * socket-gate at schedule time (unconditional scheduling is safe by
    * design): the guard moves to FIRE time - the callback calls
    * ensureConnected(), whose socket-first check + connecting latch make an
    * over-eager heal a no-op reconnect (never a double-spawn). The timer is
-   * unref()d + ONE-SHOT (a failed heal is never re-armed - no retry loop
-   * of its own; the next trigger schedules a fresh heal).
+   * unref()d. If a heal shares a connecting attempt that fails, it re-arms
+   * after the connect latch clears, using the same bounded/backoff cadence.
    * M17o4 THE POST-CAP BACKOFF: the DELAY SELECTION - once
    * consecutiveHealSpawns reaches maxConsecutiveHealSpawns (the cap), the
    * heal CONTINUES at the slow healBackoffDelayMs cadence instead of the
-   * fast healDelayMs (checked here - the one site; the heal NEVER stops:
-   * the horizon guess is removed entirely, the session recovers whenever
-   * the machine quiets; the socket-landing / warm() counter reset returns
-   * the cadence to fast).
+   * fast healDelayMs (checked here - the one site; healing continues until
+   * shutdown or the session crash-loop breaker opens; otherwise the ready
+   * signal resets the counter and returns the cadence to fast).
    * M23 CHANGE 2: the SHUTDOWN GATE lives HERE - the ONE scheduleHeal
    * site. When shuttingDown is set (the intentional full close), the heal
    * is a DEAD-END: BOTH trigger sites (handleDrop's socket 'close' AND
-   * handleChildEvent's spawned-child exit 0 - the graceful shutdown's own
+   * handleChildEvent's spawned-child exit/error - the graceful shutdown's own
    * exit) funnel through this gate and can never respawn. No heal timer,
    * no reconnect, no orphan helper 5 s later.
    */
   const scheduleHeal = (reason) => {
-    if (shuttingDown) return; // M23: the intentional close is a dead-end - never respawn
+    if (shuttingDown || recoveryReason) return; // shutdown and circuit-breaker are dead ends
     if (healTimer) return; // one pending heal (the same death's socket close + child exit land in quick succession)
-    healTimer = setTimeout(() => {
+    healTimer = setTimeoutFn(() => {
       healTimer = null;
       // THE FIRE-TIME GUARD: ensureConnected's socket check + the
       // connecting latch (a heal racing a warm shares the latch - never a
-      // double-spawn). A failed heal degrades silently (the not-ready
-      // verdicts cover the calls; a later trigger schedules afresh).
-      ensureConnected({ healSpawn: true }).catch(() => { /* best effort */ });
+      // double-spawn). A failed heal re-arms below after ensureConnected
+      // clears the connecting latch.
+      ensureConnected({ healSpawn: true }).then((result) => {
+        if (!result?.ok && !shuttingDown) scheduleHeal('the heal connection attempt failed');
+      }).catch(() => {
+        if (!shuttingDown) scheduleHeal('the heal connection attempt failed');
+      });
     }, consecutiveHealSpawns >= maxConsecutiveHealSpawns ? healBackoffDelayMs : healDelayMs);
     try { healTimer.unref?.(); } catch { /* best effort */ }
     debugLog({ ts: Date.now(), event: 'heal', reason });
@@ -467,27 +519,35 @@ export function createSysmanHelperProxy({
 
   /**
    * M17m THE DETACHED SPAWNED CHILD's lifecycle (round-1 S2): the child's
-   * 'error'/'exit' events are DEBUG-LOG EVENTS, NEVER a socket drop - incl.
+   * 'error'/'exit' events are NEVER a socket drop - incl.
    * the EADDRINUSE loser of a bind race (the loser exits 0 because the
    * existing helper is alive; the connect-retry loop then connects to the
-   * EXISTING helper). The child's death surfaces as the socket's 'close'
-   * (the server side gone) - the socket-keyed drop handles it.
+   * EXISTING helper). A dead server side can surface as the socket's
+   * 'close' too, but child events also heal independently.
    * M17o2 THE HEAL TRIGGERS: (a) EVERY heal-driven spawn's death (the
    * healSpawn flag on the child) increments consecutiveHealSpawns -
-   * ANY exit code (r2-S2); (b) the own child's 0/77 exit SCHEDULES the
-   * heal (77 = the fresh-process init retry; 0 = the EADDRINUSE loser -
-   * there the fire is an over-eager no-op while the existing helper's
-   * socket is live, the connect-first shape).
+   * ANY exit code (r2-S2); (b) every own-child exit/error SCHEDULES the
+   * connect-first heal (an EADDRINUSE loser remains a no-op while an
+   * existing helper's socket is live).
    */
   const handleChildEvent = (event, proc, reason, code, signal) => {
     debugLog({ ts: Date.now(), event, pid: proc?.pid ?? null, reason, code, signal });
     if (event === 'child-exit') {
+      if (spawnedChild === proc) spawnedChild = null;
       if (proc?.healSpawn) consecutiveHealSpawns += 1; // EVERY heal-driven spawn death counts, regardless of the exit code
+      if (!shuttingDown && (code !== 0 || signal)) {
+        // Exit 77 is the known one-shot initialization failure. It keeps its
+        // existing retry behavior but does not count toward the crash loop.
+        if (code !== 77 || signal) recordAbnormalChildFailure(proc, `exit code ${code ?? 'unknown'}${signal ? `, signal ${signal}` : ''}`);
+      }
       // M23: the graceful shutdown exits the helper with code 0 - BOTH
       // exit codes are gated by shuttingDown here (for clarity) AND at the
       // single scheduleHeal site, so the reap's own child-exit can never
       // respawn.
-      if (!shuttingDown && (code === 0 || code === 77)) scheduleHeal(`the spawned helper exited (code ${code})`);
+      if (!shuttingDown) scheduleHeal(`the spawned helper exited (code ${code ?? 'unknown'}${signal ? `, signal ${signal}` : ''})`);
+    } else if (event === 'child-error' && !shuttingDown) {
+      recordAbnormalChildFailure(proc, `child error: ${reason ?? 'unknown error'}`);
+      scheduleHeal(`the spawned helper errored (${reason ?? 'unknown error'})`);
     }
   };
 
@@ -514,8 +574,9 @@ export function createSysmanHelperProxy({
         finishPending(null, 'protocol error: the sysman helper emitted a non-JSON line');
       }
       if (socket) {
-        // The broken connection is dropped (never a kill - the detached
-        // helper is not the proxy's to kill; a disconnect never exits it).
+        // An ordinary broken connection is dropped without killing a
+        // detached helper; only the explicit full-close timeout may reap
+        // the child this proxy itself spawned.
         try { socket.destroy(); } catch { /* best effort */ }
         socket = null;
         // M17l/M17n (round-1 S3): the dropped connection's ready state
@@ -536,6 +597,7 @@ export function createSysmanHelperProxy({
     // refusal).
     if (parsed.type === 'ready') {
       ready = true;
+      consecutiveHealSpawns = 0; // successful Sysman initialization restores the fast heal cadence
       debugLog({ ts: Date.now(), event: 'ready' });
       return;
     }
@@ -611,14 +673,18 @@ export function createSysmanHelperProxy({
    * packaged (appPath null): the entry is the app.asar's INTERNAL path
    * under resourcesPath (process.resourcesPath - the electron's node
    * resolves the .asar paths; the asarUnpacked koffi redirect rides
-   * along). The env merge `{ ...process.env, ELECTRON_RUN_AS_NODE: '1' }`
-   * preserves the parent's env (the RID_* overrides + the elevation
-   * token).
+   * along). The child env preserves the parent's other values and elevation
+   * token while removing inherited ZES_ENABLE_SYSMAN from the dedicated
+   * helper. This isolates its zesInit path from the app's legacy setting;
+   * the parent env is not modified.
    * M17o2: a HEAL-driven spawn flags the child (proc.healSpawn) - the
    * cap counter counts that flag's deaths (the r2-S2 rule, ANY exit code).
    * @returns {Promise<{ ok: boolean, pid?: number | null, reason?: string }>}
    */
   const spawnDetachedHelper = async ({ healSpawn = false } = {}) => {
+    if (shuttingDown || recoveryReason) {
+      return { ok: false, reason: recoveryReason ?? 'the sysman helper proxy is shutting down' };
+    }
     try {
       // M17o3 the entry path: dev-tree = the real src file (appPath set);
       // packaged = the app.asar's internal path (appPath null - the
@@ -628,15 +694,26 @@ export function createSysmanHelperProxy({
       const entry = appPath
         ? path.join(appPath, 'src', 'main', 'sysman', 'helper-entry.js')
         : path.join(resourcesPath ?? '', 'app.asar', 'src', 'main', 'sysman', 'helper-entry.js');
+      const childEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
+      const legacySysmanFlagKey = Object.keys(childEnv).find((key) => key.toUpperCase() === 'ZES_ENABLE_SYSMAN');
+      const inheritedLegacySysmanFlag = legacySysmanFlagKey !== undefined;
+      if (legacySysmanFlagKey !== undefined) delete childEnv[legacySysmanFlagKey];
       const opts = {
         detached: true,
         windowsHide: true,
         stdio: 'ignore',
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, // M17o3: the helper runs as PLAIN NODE, never the electron EXE
+        env: childEnv, // M17o3: the helper runs as PLAIN NODE, never the electron EXE
       };
       if (appPath) opts.cwd = appPath; // the dev-tree cwd stays the app dir
+      // No await between this gate and spawn(): breaker opening and spawn
+      // cannot race on the event loop across the actual spawn boundary.
+      if (shuttingDown || recoveryReason) {
+        return { ok: false, reason: recoveryReason ?? 'the sysman helper proxy is shutting down' };
+      }
+      debugLog({ ts: Date.now(), event: 'child-spawn', inheritedLegacySysmanFlag });
       const proc = await spawn(execPath, [entry, '--sysman-helper-pipe'], opts);
       if (healSpawn) proc.healSpawn = true; // M17o2 the heal-cap flag (r3-N1)
+      spawnedChild = proc;
       attachChild(proc);
       spawnedPid = proc.pid ?? null;
       return { ok: true, pid: proc.pid ?? null };
@@ -663,15 +740,17 @@ export function createSysmanHelperProxy({
    * the latch clears in the finally, so a failed connect leaves the next
    * warm free to re-attempt. M17o2 THE HEAL: the heal's fire-time call
    * rides this same path with { healSpawn: true } - its spawn carries the
-   * heal flag (the r2-S2 cap counter) and ANY successful socket landing
-   * (heal or warm) resets the consecutive-heal-spawn counter.
+    * heal flag (the r2-S2 cap counter); only the helper's ready signal
+    * resets the consecutive-heal-spawn counter.
    * @returns {Promise<{ ok: boolean, reason?: string }>}
    */
   const ensureConnected = async ({ healSpawn = false } = {}) => {
     if (socket) return { ok: true };
+    if (recoveryReason) return { ok: false, reason: recoveryReason };
     if (connecting) return connecting;
     connecting = (async () => {
       if (socket) return { ok: true }; // a connect landed while we were waiting
+      if (recoveryReason) return { ok: false, reason: recoveryReason };
       const dir = tempDir();
       try {
         if (!swept) {
@@ -682,6 +761,7 @@ export function createSysmanHelperProxy({
         log(`pre-connect sweep failed: ${err.message}`);
         return { ok: false, reason: `the sysman helper could not be started (the leftover sweep failed: ${err.message})` };
       }
+      if (shuttingDown) return { ok: false, reason: 'the sysman helper proxy is shutting down' };
       const isReconnect = connects > 0;
       // M17m THE BOUNDED CONNECT-RETRY LOOP (round-1 S2): the first connect
       // attempt can fail (no helper alive yet - ECONNREFUSED/ENOENT); the
@@ -694,15 +774,20 @@ export function createSysmanHelperProxy({
       let spawned = false;
       let lastReason = 'the connection was not accepted';
       while (Date.now() < deadline) {
+        if (recoveryReason) return { ok: false, reason: recoveryReason };
         let sock = null;
         try {
           sock = await connectFn(pipeName);
         } catch (err) {
           lastReason = err instanceof Error ? err.message : String(err);
         }
+        if (shuttingDown) {
+          try { sock?.destroy?.(); } catch { /* best effort */ }
+          return { ok: false, reason: 'the sysman helper proxy is shutting down' };
+        }
+        if (recoveryReason && !sock) return { ok: false, reason: recoveryReason };
         if (sock) {
           connects += 1;
-          consecutiveHealSpawns = 0; // M17o2: ANY successful socket landing resets the heal counter (M17o4: the cadence returns to fast)
           debugLog({ ts: Date.now(), event: isReconnect ? 'reconnect' : 'connect', pid: spawnedPid, spawnError: null });
           attachSocket(sock);
           socket = sock;
@@ -710,6 +795,7 @@ export function createSysmanHelperProxy({
         }
         if (!spawned) {
           spawned = true;
+          if (shuttingDown) return { ok: false, reason: 'the sysman helper proxy is shutting down' };
           const s = await spawnDetachedHelper({ healSpawn });
           if (!s.ok) {
             debugLog({ ts: Date.now(), event: isReconnect ? 'reconnect' : 'connect', pid: null, spawnError: s.reason });
@@ -717,6 +803,7 @@ export function createSysmanHelperProxy({
           }
         }
         await sleep(connectRetryIntervalMs);
+        if (recoveryReason) return { ok: false, reason: recoveryReason };
       }
       debugLog({ ts: Date.now(), event: isReconnect ? 'reconnect' : 'connect', pid: spawnedPid, spawnError: `no connection within ${connectRetryCapMs} ms (${lastReason})` });
       return { ok: false, reason: `the sysman helper did not accept a connection within ${connectRetryCapMs} ms (${lastReason})` };
@@ -866,14 +953,6 @@ export function createSysmanHelperProxy({
      * @returns {Promise<void>}
      */
     async warm() {
-      // M17o2/M17o4 THE COUNTER RESET + THE CADENCE RETURN (r3-N1): warm()
-      // resets the consecutive-heal-spawn counter - the next app session's
-      // boot warm restores the FAST heal cadence even after the backoff
-      // phase (the heal itself NEVER stopped - M17o4: after the cap it
-      // continued at the slow cadence; the reset returns it to fast;
-      // stated plainly, no decay clause - nothing exists to exercise it
-      // post-cap).
-      consecutiveHealSpawns = 0;
       await ensureConnected().catch(() => { /* a warm failure degrades silently - the not-ready verdicts cover the calls */ });
     },
     /**
@@ -887,7 +966,6 @@ export function createSysmanHelperProxy({
     async warmUntilReady(timeoutMs = CONNECT_RETRY_CAP_MS) {
       const boundedTimeout = Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : CONNECT_RETRY_CAP_MS;
       const deadline = Date.now() + boundedTimeout;
-      consecutiveHealSpawns = 0;
       while (Date.now() <= deadline) {
         if (ready && socket !== null) return true;
         const remaining = deadline - Date.now();
@@ -914,10 +992,12 @@ export function createSysmanHelperProxy({
      * (code 0)`), which fires handleChildEvent - the heal is gated by the
      * shuttingDown flag (set BEFORE the send), so the reap's own exit can
      * NEVER respawn an orphan helper ~5 s later.
-     * Bounded (~1 s - shutdownBoundMs): a busy/dropped helper resolves the
-     * bound instead of the ack; the helper-side idle backstop (the 30 s
-     * crash-backstop default / the 0 explicit arm) covers the downstream
-     * reap. Idempotent (a second call is a no-op) + NEVER throws - the
+     * Bounded (~1 s - shutdownBoundMs): if the ack doesn't arrive, this
+     * proxy terminates only the detached child it spawned (never a helper
+     * reused from another process). The helper has its own drain watchdog
+     * for asynchronous stalls; this parent-side reap also covers a native
+     * call blocking the helper's event loop. Idempotent (a second call is
+     * a no-op) + NEVER throws - the
      * full-close path is fire-and-forget in the window branch and
      * bounded-awaited in the worker/boot-apply branches.
      * @returns {Promise<void>}
@@ -929,7 +1009,7 @@ export function createSysmanHelperProxy({
       // fire a respawn from a trigger that raced the flag (the scheduleHeal
       // gate already swallows it - this makes the dead-end absolute).
       if (healTimer) {
-        try { clearTimeout(healTimer); } catch { /* best effort */ }
+        try { clearTimeoutFn(healTimer); } catch { /* best effort */ }
         healTimer = null;
       }
       const sock = socket;
@@ -940,26 +1020,42 @@ export function createSysmanHelperProxy({
         released = true;
         try { sock.destroy(); } catch { /* best effort */ }
       };
+      let shutdownTimer = null;
       try {
         // THE BOUND: the ack-or-close may never arrive (a dropped write / a
-        // busy helper). The bound RACES the enqueue, force-resolves
+        // busy helper). A cancellable deadline races the enqueue, resolves
         // whatever is in flight (no dangling 30 s pending timeout), and
-        // resolves the handshake; the helper-side idle backstop covers the
-        // reap of a helper that never saw the op.
-        await Promise.race([
-          enqueue({ op: 'shutdown' }), // the ack { id, ok: true } OR the socket close resolves it
-          sleep(shutdownBoundMs).then(() => {
-            if (pending) finishPending(null, 'the sysman helper did not acknowledge the shutdown within the bound');
-            while (queue.length > 0) {
-              const call = queue.shift();
-              call.resolve({ out: null, reason: 'the sysman helper did not acknowledge the shutdown within the bound' });
-            }
+        // only reaps an owned child when the deadline actually wins.
+        const outcome = await Promise.race([
+          enqueue({ op: 'shutdown' }).then(() => ({ timedOut: false })), // the ack OR socket close resolves it
+          new Promise((resolve) => {
+            shutdownTimer = setTimeout(() => resolve({ timedOut: true }), shutdownBoundMs);
           }),
         ]);
-        debugLog({ ts: Date.now(), event: 'resp', op: 'shutdown', spawnError: null, out: { ok: true } });
+        if (outcome.timedOut) {
+          if (pending) finishPending(null, 'the sysman helper did not acknowledge the shutdown within the bound');
+          while (queue.length > 0) {
+            const call = queue.shift();
+            call.resolve({ out: null, reason: 'the sysman helper did not acknowledge the shutdown within the bound' });
+          }
+          const child = spawnedChild;
+          if (child && child.exitCode == null && child.signalCode == null && typeof child.kill === 'function') {
+            try {
+              const sent = child.kill();
+              debugLog({ ts: Date.now(), event: 'child-terminate', pid: child.pid ?? null, reason: 'shutdown-timeout', sent });
+              if (!sent) log('the spawned sysman helper did not accept termination after the shutdown timeout');
+            } catch (err) {
+              log(`the spawned sysman helper could not be terminated after the shutdown timeout: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+          debugLog({ ts: Date.now(), event: 'resp', op: 'shutdown', spawnError: 'the helper did not acknowledge within the shutdown bound', out: null });
+        } else {
+          debugLog({ ts: Date.now(), event: 'resp', op: 'shutdown', spawnError: null, out: { ok: true } });
+        }
       } catch (err) {
         log(`shutdown failed: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
+        if (shutdownTimer) clearTimeout(shutdownTimer);
         release();
       }
     },

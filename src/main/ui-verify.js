@@ -9851,7 +9851,7 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
 // @param {object|null} [backend] the mock backend - optional; when passed the
 //   apply-settings payloads are recorded so the M22-safe payload pins can
 //   assert the exact shape (NO gpuLock key on offset/reset applies).
-export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store, hotkeyProbe, backend = null) {
+export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store, hotkeyProbe, backend = null, postprocessSharpening = null) {
   const log = (s) => console.log(`[ui-verify] ${s}`);
   const steps = [];
   const step = (n, msg) => {
@@ -10497,8 +10497,8 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
   // waiver anywhere).
   await ojs(`document.querySelector('.adv-tab[data-tab="graphics"]').click()`);
   await sleep(250);
-  if (!(await waitFor(panelWin, `document.querySelectorAll('.graphics-card').length === 4`, 10000))) {
-    fail(`M23: the panel Graphics tab did not render four cards (got ${await ojs(`document.querySelectorAll('.graphics-card').length`)} - page='${(await ojs(`(document.getElementById('adv-content')?.textContent ?? '').slice(0, 160)`)).slice(0, 160)}')`);
+  if (!(await waitFor(panelWin, `document.querySelectorAll('.graphics-card').length === 6`, 10000))) {
+    fail(`M23: the panel Graphics tab did not render six cards (four driver cards plus sharpening and ASR; got ${await ojs(`document.querySelectorAll('.graphics-card').length`)} - page='${(await ojs(`(document.getElementById('adv-content')?.textContent ?? '').slice(0, 160)`)).slice(0, 160)}')`);
   }
   const advancedGraphicsText = await ojs(`document.getElementById('adv-content')?.textContent ?? ''`);
   if (advancedGraphicsText.includes('Endurance Gaming') || advancedGraphicsText.includes('Shared GPU/NPU Memory Override')) {
@@ -10508,7 +10508,60 @@ export async function runAdvancedOverlayVerify(win, advancedOverlayHandle, store
     fail('M23: a panel Graphics card shows the unsupported state (the mock supports all four)');
   }
   const advancedGraphicsMenus = await ojs(`document.querySelectorAll('.graphics-select[role="combobox"]').length`);
-  if (advancedGraphicsMenus !== 4) fail(`M179: every Advanced Overlay Graphics dropdown must be renderer-owned (got ${advancedGraphicsMenus})`);
+  if (advancedGraphicsMenus !== 6) fail(`M179: every Advanced Overlay Graphics dropdown must be renderer-owned (got ${advancedGraphicsMenus})`);
+
+  // Global sharpening and ASR use the same services as the main Graphics
+  // surface. Exercise the panel's real controls and verify the main window
+  // reads the resulting mock state through its own preload API.
+  const sharpCard = `.graphics-card[data-control="postprocessSharpening"]`;
+  if (!(await waitFor(panelWin, `!!document.querySelector('${sharpCard} .oc-chip-apply')`, 8000))) fail('M23: global Arc Image Sharpening card did not render');
+  const initialSharp = await ojs(`window.arcPower.postprocessSharpeningGet()`);
+  if (initialSharp.value.enabled !== false || initialSharp.value.percentage !== 50) fail(`M23: mock global sharpening did not load its default state: ${JSON.stringify(initialSharp.value)}`);
+  await ojs(`(() => { const d = document.querySelector('${sharpCard} [aria-label="Arc Image Sharpening"]'); d.click(); d.options.find(o => o.dataset.value === 'on').click(); })()`);
+  await ojs(`(() => { const s = document.querySelector('${sharpCard} [aria-label="Arc Image Sharpening strength"]'); s.value = '63'; s.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('${sharpCard} .oc-chip-apply').click(); })()`);
+  if (!(await waitFor(panelWin, `window.arcPower.postprocessSharpeningGet().then(s => s.value.enabled && s.value.percentage === 63)`, 8000))) fail('M23: Advanced Overlay global sharpening did not save its enabled 63% setting');
+  const sharedSharp = await js(`window.arcPower.postprocessSharpeningGet()`);
+  if (sharedSharp.value.enabled !== true || sharedSharp.value.percentage !== 63) fail(`M23: main Graphics did not read the Advanced Overlay global sharpening setting: ${JSON.stringify(sharedSharp.value)}`);
+  step('m23-overlay-sharpening', 'Advanced Overlay read and applied global Arc Image Sharpening at 63%; main Graphics preload read back the shared value');
+
+  const asrCard = `.graphics-card[data-control="arcSuperResolution"]`;
+  if (!(await waitFor(panelWin, `!!document.querySelector('${asrCard} .asr-apply')`, 8000))) fail('M23: global Arc Super Resolution card did not render');
+  const initialAsr = await ojs(`window.arcPower.arcSuperResolutionGet()`);
+  if (initialAsr.value.enabled !== false) fail(`M23: mock global ASR did not load its default-off state: ${JSON.stringify(initialAsr.value)}`);
+  if (!(await waitFor(panelWin, `document.querySelector('${asrCard} .asr-runtime-status')?.textContent.includes('Waiting for a recognized game')`, 5000))) fail('M23: ready ASR did not report the honest waiting state');
+  await ojs(`(() => { const d = document.querySelector('${asrCard} [aria-label="Arc Super Resolution"]'); d.click(); d.options.find(o => o.dataset.value === 'on').click(); document.querySelector('${asrCard} .asr-apply').click(); })()`);
+  if (!(await waitFor(panelWin, `document.querySelector('${asrCard} .asr-apply')?.textContent.trim() === 'Applied' && window.arcPower.arcSuperResolutionGet().then(s => s.value.enabled)`, 8000))) fail('M23: Advanced Overlay ASR did not show Applied after a successful global save');
+  const sharedAsr = await js(`window.arcPower.arcSuperResolutionGet()`);
+  if (sharedAsr.value.enabled !== true) fail(`M23: main Graphics did not read the Advanced Overlay ASR setting: ${JSON.stringify(sharedAsr.value)}`);
+  step('m23-overlay-asr', 'Advanced Overlay read and applied global ASR; main Graphics preload read back the shared enabled preference');
+
+  if (postprocessSharpening) {
+    const originalGetAsr = postprocessSharpening.getAsr;
+    const originalSetAsr = postprocessSharpening.setAsr;
+    const savedAsr = await postprocessSharpening.getAsr();
+    try {
+      postprocessSharpening.setAsr = async (value) => {
+        if (value.enabled) throw new Error('Synthetic Advanced Overlay ASR save failure');
+        return originalSetAsr.call(postprocessSharpening, value);
+      };
+      await ojs(`(() => { const d = document.querySelector('${asrCard} [aria-label="Arc Super Resolution"]'); d.click(); d.options.find(o => o.dataset.value === 'off').click(); })()`);
+      await ojs(`document.querySelector('${asrCard} .asr-apply').click()`);
+      if (!(await waitFor(panelWin, `window.arcPower.arcSuperResolutionGet().then(s => !s.value.enabled)`, 8000))) fail('M23: ASR mock did not return to off before the rejection test');
+      await ojs(`(() => { const d = document.querySelector('${asrCard} [aria-label="Arc Super Resolution"]'); d.click(); d.options.find(o => o.dataset.value === 'on').click(); })()`);
+      await ojs(`document.querySelector('${asrCard} .asr-apply').click()`);
+      if (!(await waitFor(panelWin, `document.querySelector('${asrCard} .text-error')?.textContent.includes('Synthetic Advanced Overlay ASR save failure') && document.querySelector('${asrCard} .asr-apply')?.textContent.trim() !== 'Applied'`, 8000))) fail('M23: rejected ASR save was reported as applied instead of showing inline error');
+      postprocessSharpening.getAsr = async () => ({ ...savedAsr, value: { enabled: false }, runtimeReady: false, active: false, reason: 'Mock ASR runtime gate is closed.' });
+      await ojs(`document.querySelector('.adv-tab[data-tab="recording"]').click()`);
+      await ojs(`document.querySelector('.adv-tab[data-tab="graphics"]').click()`);
+      if (!(await waitFor(panelWin, `document.querySelector('${asrCard} .asr-runtime-status')?.textContent === 'Mock ASR runtime gate is closed.' && document.querySelector('${asrCard} .asr-apply')?.disabled === true`, 8000))) fail('M23: gated ASR state did not show its reason and disable the enabled apply');
+      step('m23-overlay-asr-gate-errors', 'Advanced Overlay reports a rejected ASR write inline and shows the runtime gate reason with enabled apply disabled');
+    } finally {
+      postprocessSharpening.getAsr = originalGetAsr;
+      postprocessSharpening.setAsr = originalSetAsr;
+      await originalSetAsr.call(postprocessSharpening, { enabled: false });
+    }
+    await postprocessSharpening.setGlobal({ enabled: false, percentage: 50 });
+  }
   const graphicsSel = `document.querySelector('.graphics-select[data-graphics-select="flipMode"]')`;
   await ojs(`(() => {
     const s = ${graphicsSel};

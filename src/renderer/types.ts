@@ -1514,12 +1514,23 @@ export interface PostprocessSharpeningValue {
   enabled: boolean;
   percentage: number;
 }
+export interface ArcSuperResolutionValue {
+  enabled: boolean;
+}
+export interface ArcSuperResolutionState {
+  value: ArcSuperResolutionValue;
+  runtimeReady: boolean;
+  requiresRestart: false;
+  active: boolean;
+  reason?: string | null;
+}
 export interface PostprocessSharpeningGlobal {
   value: PostprocessSharpeningValue;
   overrideCount: number;
   runtimeReady: boolean;
-  provider: 'screen';
-  requiresRestart: false;
+  provider: 'screen' | 'managed';
+  requiresRestart: boolean;
+  launchSupported?: boolean;
   active?: boolean;
   reason?: string | null;
   legacyIntegrations?: Array<{ exePath: string; mode: 'direct' | 'optiscaler' }>;
@@ -1527,11 +1538,17 @@ export interface PostprocessSharpeningGlobal {
   legacyManifestStatus?: 'clear' | 'found' | 'unreadable';
   legacyManifestReason?: string;
 }
+export type PostprocessGlobalSettingsUpdate =
+  | { kind: 'sharpening'; revision: number; state: PostprocessSharpeningGlobal }
+  | { kind: 'asr'; revision: number; state: ArcSuperResolutionState };
 export interface PostprocessSharpeningGame {
   value: PostprocessSharpeningValue;
   effective: PostprocessSharpeningValue;
   globalValue: PostprocessSharpeningValue;
   override: PostprocessSharpeningValue | null;
+  runtimeReady?: boolean;
+  provider?: 'screen' | 'managed';
+  launchSupported?: boolean;
   reason?: string | null;
   legacyIntegration?: { exePath: string; mode: 'direct' | 'optiscaler' } | null;
   legacyManifestStatus?: 'clear' | 'found' | 'unreadable';

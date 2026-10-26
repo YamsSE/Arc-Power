@@ -60,6 +60,7 @@ import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS
 import { GameProfileStore } from './store/game-profile-store.js';
 import { createSharpeningGameLookup } from './sharpening-game-eligibility.js';
 import { createScreenPostprocessSharpening } from './sharpening-screen.js';
+import { createProductionManagedSharpening } from './managed-sharpening-runtime.js';
 import { stageScreenSharpeningHelper } from './sharpening-helper-stage.js';
 import { createMockPostprocessSharpening } from './sharpening-postprocess-mock.js';
 import { RecordingStore } from './store/recording-store.js';
@@ -2550,6 +2551,11 @@ async function main() {
           : path.join(__dirname, 'rtss-profile-helper-entry.js'),
         getRuntime: async () => {
           try {
+            if (typeof rtssStartup.getRuntime === 'function') {
+              return await rtssStartup.getRuntime();
+            }
+            // Compatibility for injected startup adapters predating the
+            // runtime-only read seam.
             const startupState = await rtssStartup.get();
             return {
               executablePath: startupState?.executablePath ?? null,
@@ -2561,6 +2567,7 @@ async function main() {
             return { executablePath: null, isRunning: false };
           }
         },
+        log: (message) => console.warn(`[rtss] ${message}`),
       });
   // The product telemetry HUD is rendered by RTSS itself. Keep the FPS lane
   // mutable because the foreground/process ownership seam is created after
@@ -2702,9 +2709,13 @@ async function main() {
     : createScreenPostprocessSharpening({ dir: store.dir, detector: sharpeningDetector,
       isGameExecutable: isSharpeningGameExecutable,
       helperPath: sharpeningHelperPath,
-      stageHelper: app.isPackaged && process.platform === 'win32' ? stageScreenSharpeningHelper : null });
-  // The desktop capture helper is activated only after the foreground
-  // detector exists, and only when the persisted global setting is enabled.
+      ensureCompatibility: () => rtssProfile.ensureScreenSharpeningCompatibility(),
+      stageHelper: app.isPackaged && process.platform === 'win32' ? stageScreenSharpeningHelper : null,
+      allowCaptureOverlay: false,
+      allowAsrCapture: true,
+      createManagedRuntime: (policy) => createProductionManagedSharpening({ ...policy, dir: store.dir,
+        detector: sharpeningDetector, isGameExecutable: isSharpeningGameExecutable }) });
+  // Sharpening runs inside explicitly launched games; ASR owns its independent thumbnail path.
   void postprocessSharpening.start().catch((error) => console.error(`[sharpening] ${error.message}`));
   // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in
   // bytes - total - avail - the Memory row's source). THE DETERMINISM
@@ -4497,6 +4508,12 @@ async function main() {
       if (win.webContents.isLoading()) win.webContents.once('did-finish-load', resolve);
       else resolve();
     });
+    if (process.env.RID_MOCK_ADV_OVERLAY_SETTINGS_VERIFY === '1') {
+      const { verifyAdvancedOverlayGlobalSettingsUi } = await import('../../test/advanced-overlay-global-settings-ui.js');
+      await verifyAdvancedOverlayGlobalSettingsUi(win, advancedOverlayHandle, postprocessSharpening);
+      app.exit(0);
+      return;
+    }
     // Focused rendered Chromium regression for global and per-game
     // sharpening. The mock backend is mandatory in --ui-verify; this early
     // branch bypasses every unrelated full ui-verify flow.
@@ -4611,7 +4628,7 @@ async function main() {
       // (never a real registration). The mock backend is passed so the
       // M22-safe payload pins can record the apply-settings payloads (the
       // NO-gpuLock-key shape assertions).
-      await runAdvancedOverlayVerify(win, advancedOverlayHandle, store, advancedOverlayHotkeyProbe, backend);
+      await runAdvancedOverlayVerify(win, advancedOverlayHandle, store, advancedOverlayHotkeyProbe, backend, postprocessSharpening);
     } else {
       // M4-D: the window-ops probe rides along - run 2 pins the title-bar
       // buttons via getWindowOpCounts. M4-H: the open-external probe rides

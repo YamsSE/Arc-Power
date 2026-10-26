@@ -3175,7 +3175,7 @@ export function createIpcHandlers({
   };
 
   const postprocessService = () => {
-    if (!postprocessSharpening) throw new Error('Image sharpening is unavailable in this session.');
+    if (!postprocessSharpening) throw new Error('Screen post-processing is unavailable in this session.');
     return postprocessSharpening;
   };
   const postprocessValue = (value) => {
@@ -3186,6 +3186,14 @@ export function createIpcHandlers({
       throw new Error('Sharpening requires an enabled flag and a whole percentage from 0 to 100.');
     }
     return { enabled: value.enabled, percentage: value.percentage };
+  };
+  const asrPostprocessValue = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).some((key) => key !== 'enabled')
+      || typeof value.enabled !== 'boolean') {
+      throw new Error('Arc Super Resolution requires an enabled flag.');
+    }
+    return { enabled: value.enabled };
   };
   const postprocessTarget = async (value) => {
     const exePath = canonicalExePath(value);
@@ -3210,6 +3218,18 @@ export function createIpcHandlers({
       assertNoPayload(args, 'postprocess-sharpening:game-set');
       const value = override === null ? null : postprocessValue(override);
       return postprocessService().setGame(await postprocessTarget(exePath), value);
+    },
+    'postprocess-sharpening:launch-game': async (exePath, ...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:launch-game');
+      return postprocessService().launchGame(await postprocessTarget(exePath));
+    },
+    'arc-super-resolution:get': async (...args) => {
+      assertNoPayload(args, 'arc-super-resolution:get');
+      return postprocessService().getAsr();
+    },
+    'arc-super-resolution:set': async (value, ...args) => {
+      assertNoPayload(args, 'arc-super-resolution:set');
+      return postprocessService().setAsr(asrPostprocessValue(value));
     },
     'health': async () => collectHealth(backend),
 

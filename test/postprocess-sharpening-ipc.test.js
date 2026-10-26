@@ -48,6 +48,20 @@ test('screen sharpening IPC exposes global and per-game settings without setup r
   assert.equal(f.nativeCalls(), 0, 'screen sharpening must not route through legacy driver graphics settings');
 });
 
+test('Arc Super Resolution IPC persists an isolated toggle and never calls driver graphics settings', async () => {
+  const f = fixture();
+  assert.deepEqual((await f.handlers['arc-super-resolution:get']()).value, { enabled: false });
+  const enabled = await f.handlers['arc-super-resolution:set']({ enabled: true });
+  assert.deepEqual(enabled.value, { enabled: true });
+  assert.equal(enabled.provider, undefined);
+  assert.deepEqual((await f.handlers['arc-super-resolution:get']()).value, { enabled: true });
+  await assert.rejects(f.handlers['arc-super-resolution:set']({ enabled: true, method: 'xess' }), /enabled flag/);
+  await assert.rejects(f.handlers['arc-super-resolution:set']({ enabled: 1 }), /enabled flag/);
+  await assert.rejects(f.handlers['arc-super-resolution:get'](1), /takes no payload/);
+  await assert.rejects(f.handlers['arc-super-resolution:set']({ enabled: false }, {}), /takes no payload/);
+  assert.equal(f.nativeCalls(), 0, "ASR must remain outside the driver's graphics apply path");
+});
+
 test('screen sharpening IPC rejects malformed values, invalid executable paths and extra arguments', async () => {
   const { handlers } = fixture();
   for (const value of [null, {}, [], { enabled: 1, percentage: 50 }, { enabled: true, percentage: 0.5 },
@@ -61,4 +75,16 @@ test('screen sharpening IPC rejects malformed values, invalid executable paths a
   await assert.rejects(handlers['postprocess-sharpening:set']({ enabled: false, percentage: 0 }, {}), /takes no payload/);
   await assert.rejects(handlers['postprocess-sharpening:game-get'](EXE, {}), /takes no payload/);
   await assert.rejects(handlers['postprocess-sharpening:game-set'](EXE, null, {}), /takes no payload/);
+});
+
+test('managed game launch IPC validates its executable and rejects extra payloads', async () => {
+  const { handlers, service } = fixture();
+  const launches = [];
+  service.launchGame = async exePath => { launches.push(exePath); return { pid: 123, exePath }; };
+  const result = await handlers['postprocess-sharpening:launch-game'](EXE.toUpperCase());
+  assert.equal(result.pid, 123);
+  assert.deepEqual(launches, [EXE]);
+  await assert.rejects(handlers['postprocess-sharpening:launch-game']('relative.exe'), /valid game executable/);
+  await assert.rejects(handlers['postprocess-sharpening:launch-game'](EXE, { args: ['unexpected'] }), /takes no payload/);
+  assert.equal(launches.length, 1);
 });

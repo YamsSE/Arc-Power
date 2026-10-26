@@ -4482,3 +4482,45 @@ input[type="number"] {
   .settings-root .settings-card { padding: 16px; }
   .settings-root .maintenance-row { align-items: stretch; flex-direction: column; }
 }
+
+/* Subtle interaction motion: keep feedback local to controls so live pages
+   and telemetry do not animate when their contents refresh. */
+.sidebar-link,
+.shared-dropdown,
+.shared-dropdown-option,
+.chip-btn,
+.btn,
+.recording-tab {
+  transition-property: background, border-color, color, transform;
+  transition-duration: 140ms;
+  transition-timing-function: cubic-bezier(.2, .7, .2, 1);
+}
+
+.shared-dropdown { transition: background-color 140ms cubic-bezier(.2, .7, .2, 1), border-color 140ms cubic-bezier(.2, .7, .2, 1); }
+.shared-dropdown-option { transition: background-color 140ms cubic-bezier(.2, .7, .2, 1), color 140ms cubic-bezier(.2, .7, .2, 1); }
+.shared-dropdown-menu { animation: shared-dropdown-menu-in 150ms cubic-bezier(.2, .7, .2, 1) both; }
+@keyframes shared-dropdown-menu-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.btn:active:not(:disabled),
+.chip-btn:active:not(:disabled),
+.recording-tab:active,
+.sidebar-link:active { transform: translateY(1px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-link,
+  .shared-dropdown,
+  .shared-dropdown-option,
+  .chip-btn,
+  .btn,
+  .recording-tab {
+    transition: none;
+  }
+  .btn:active:not(:disabled),
+  .chip-btn:active:not(:disabled),
+  .recording-tab:active,
+  .sidebar-link:active { transform: none; }
+  .shared-dropdown-menu { animation: none; }
+  .toast { animation: none; }
+}

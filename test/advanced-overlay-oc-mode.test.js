@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createIpcHandlers } from '../src/main/ipc-core.js';
+import { isAuthorizedRestrictedRendererIpc } from '../src/main/restricted-renderer-ipc.js';
 import { deviceGateThresholds, extendedRangesFor, ocModeRefusal, splitByRuntime, OC_MODE_ADVANCED } from '../src/main/apply-routing.js';
 
 const overlay = fs.readFileSync(
@@ -56,6 +57,73 @@ test('Advanced Overlay carries the selected mode from capability snapshots', () 
   assert.match(overlay, /ocMode: pushed\.caps\.ocMode === 'advanced' \? 'advanced' : 'stock'/);
   assert.match(overlay, /ocMode: caps\?\.ocMode === 'advanced' \? 'advanced' : 'stock'/);
   assert.match(overlay, /ocMode: payload\.caps\.ocMode === 'advanced' \|\| payload\.caps\.ocMode === 'stock'/);
+});
+
+test('Advanced Overlay Global Graphics includes app-managed Arc Image Sharpening', () => {
+  assert.match(overlay, /buildOverlaySharpeningCard\(\)/);
+  assert.match(overlay, /dataset: \{ control: 'postprocessSharpening' \}/);
+  assert.match(overlay, /api\.postprocessSharpeningGet\(\)/);
+  assert.match(overlay, /api\.postprocessSharpeningSet\(\{ enabled: draft\.enabled, percentage: draft\.percentage \}\)/);
+  assert.match(overlay, /text: 'Arc Image Sharpening'/);
+  assert.match(overlay, /'aria-label': 'Arc Image Sharpening strength'/);
+  assert.match(overlay, /min: 0, max: 100, step: 1/);
+  assert.match(overlay, /'Applying…'/);
+  assert.match(overlay, /'Applied'/);
+  assert.match(overlay, /sharpening settings read timed out/);
+  assert.match(overlay, /if \(token !== request \|\| !card\.isConnected\) return/);
+  assert.match(overlay, /buildOverlaySharpeningCard\(\),\s*buildOverlayAsrCard\(\),\s*graphicsActions/);
+});
+
+test('Advanced Overlay global sharpening and ASR IPC authorization is sender and main-frame scoped', () => {
+  assert.match(ipc, /isAuthorizedRestrictedRendererIpc\(channel, event, \{ getWindow, getAdvancedOverlayWindow \}\)/);
+  const mainFrame = {};
+  const overlayFrame = {};
+  const mainWebContents = { mainFrame };
+  const overlayWebContents = { mainFrame: overlayFrame };
+  const mainWindow = { webContents: mainWebContents, isDestroyed: () => false };
+  const overlayWindow = { webContents: overlayWebContents, isDestroyed: () => false };
+  const context = { getWindow: () => mainWindow, getAdvancedOverlayWindow: () => overlayWindow };
+  const mainEvent = { sender: mainWebContents, senderFrame: mainFrame };
+  const overlayEvent = { sender: overlayWebContents, senderFrame: overlayFrame };
+  for (const channel of ['postprocess-sharpening:get', 'postprocess-sharpening:set', 'arc-super-resolution:get', 'arc-super-resolution:set']) {
+    assert.equal(isAuthorizedRestrictedRendererIpc(channel, overlayEvent, context), true, channel);
+    assert.equal(isAuthorizedRestrictedRendererIpc(channel, mainEvent, context), true, `main ${channel}`);
+  }
+  assert.equal(isAuthorizedRestrictedRendererIpc('postprocess-sharpening:game-get', overlayEvent, context), false, 'overlay per-game read');
+  assert.equal(isAuthorizedRestrictedRendererIpc('postprocess-sharpening:game-set', overlayEvent, context), false, 'overlay per-game write');
+  assert.equal(isAuthorizedRestrictedRendererIpc('device-selection-push', overlayEvent, context), false, 'overlay other restricted channel');
+  assert.equal(isAuthorizedRestrictedRendererIpc('arc-super-resolution:get', { sender: {}, senderFrame: overlayFrame }, context), false, 'untrusted sender');
+  assert.equal(isAuthorizedRestrictedRendererIpc('arc-super-resolution:get', { sender: overlayWebContents, senderFrame: {} }, context), false, 'overlay subframe');
+  assert.equal(isAuthorizedRestrictedRendererIpc('arc-super-resolution:get', overlayEvent, { ...context, getAdvancedOverlayWindow: () => ({ ...overlayWindow, isDestroyed: () => true }) }), false, 'destroyed overlay');
+  assert.match(ipc, /channel\.startsWith\('arc-super-resolution:'\)/);
+});
+
+test('Advanced Overlay Graphics exposes honest, retryable ASR global settings controls', () => {
+  assert.match(overlay, /buildOverlayAsrCard\(\)/);
+  assert.match(overlay, /dataset: \{ control: 'arcSuperResolution' \}/);
+  assert.match(overlay, /api\.arcSuperResolutionGet\(\)/);
+  assert.match(overlay, /api\.arcSuperResolutionSet\(\{ enabled: draft\.enabled \}\)/);
+  assert.match(overlay, /ariaLabel: 'Arc Super Resolution'/);
+  assert.match(overlay, /'Applying…'/);
+  assert.match(overlay, /applied \? 'Applied'/);
+  assert.match(overlay, /state\?\.active \? 'Arc Super Resolution is active/);
+  assert.match(overlay, /Waiting for a recognized game running in a smaller window/);
+  assert.match(overlay, /Arc Super Resolution runtime is unavailable; the setting was not applied/);
+  assert.match(overlay, /class: 'btn btn-ghost btn-sm asr-retry'/);
+});
+
+test('global settings pushes win initial GET races and survive in-flight saves', () => {
+  const mainSharpening = fs.readFileSync(fileURLToPath(new URL('../src/renderer/components/sharpening.ts', import.meta.url)), 'utf8');
+  assert.match(mainSharpening, /if \(settingsRevision > 0\) return/);
+  assert.match(mainSharpening, /draftMatchesSaved/);
+  assert.match(mainSharpening, /disabled: busy \|\| !state \|\| \(draft\.enabled && !state\.runtimeReady\)/);
+  assert.match(overlay, /Math\.max\(settingsRevision, pendingPush\?\.revision \?\? 0\)/);
+  assert.match(overlay, /if \(busy\) \{ pendingPush = update; return; \}/);
+  assert.match(overlay, /if \(update && card\.isConnected\) reconcilePush\(update\)/);
+  assert.match(overlay, /draftMatchesSaved/);
+  assert.match(mainSharpening, /if \(update\) reconcilePush\(update\)/);
+  assert.match(overlay, /api\.onPostprocessSharpeningStatus\(/);
+  assert.match(overlay, /unsubscribeStatus\(\)/);
 });
 
 test('OC mode readback is broadcast to both renderer tuning surfaces', () => {

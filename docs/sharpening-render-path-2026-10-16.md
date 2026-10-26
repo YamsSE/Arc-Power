@@ -21,6 +21,40 @@ Arc Power now has a native DXGI Desktop Duplication helper under test. It captur
 - Runtime active, idle, and error changes are pushed back to the Graphics card while it is open, so the displayed status follows helper transitions instead of relying on the initial settings read.
 - Crop textures, shader resource views, and the overlay render target view are now reused across frames and recreated when the size/format or device changes. Idle/non-game transitions release the overlay, duplication session, and device. The native helper is compiled with `/O2`. These reduce avoidable allocations and idle work; the remaining capture/composition cost and game FPS impact still need matched in-game measurements.
 
+## Output matching and latency follow-up — 19 October 2026
+
+The native output selector no longer filters Intel adapters by a case-sensitive
+"Arc" substring in the marketing name. It selects an attached Intel DXGI output
+whose `HMONITOR` matches the foreground window's monitor, then creates the D3D11
+device from that adapter. No output match, D3D device creation failure, and
+Desktop Duplication failure now report distinct stages; the D3D HRESULT is
+preserved. Repeated setup failures back off from 500 ms to 8 seconds instead of
+retrying device enumeration twice per second indefinitely.
+
+The capture loop skips pointer-only updates, retains the duplicated frame through
+render submission and releases it before the next acquisition, requests a one-frame
+maximum device queue, and uses nonblocking presentation. A late overlay frame is
+dropped instead of waiting for VSync or being queued. This removes avoidable
+frame-hold and queue waits. It cannot remove the display-composition delay
+inherent in capturing a presented desktop image and showing it again in an
+overlay, so it does not promise driver-native input-to-photon latency.
+
+On the available B580, the updated native selection path was compiled and run
+against the current foreground monitor: Intel device `0xe20b`, attached output
+`\\.\DISPLAY1`, `DuplicateOutput` succeeded, and `initializeDevice` passed. This
+does not reproduce the reported failure on the other user's driver 9030. The
+baseline failed because the old generic HRESULT `0x80004002` is only emitted
+when no candidate survives the adapter-name/output/device selection; it does
+not identify which stage rejected that machine. The current machine did not
+show the warning.
+
+An earlier controlled artifact-only probe with full-frame readback measured
+45.6 captures/s, 11.6 ms median and 16.3 ms p95 capture-to-present submission.
+That diagnostic measurement is not comparable to the shipping path and does
+not establish the updated helper's input lag or game frametimes. Those need a
+matched foreground game/fixture A/B run; the active foreground window was left
+untouched during this follow-up.
+
 ## Controlled tests
 
 An artifact-only prototype previously verified B580 monitor capture, shader output differences at 100%, click-through behavior, and capture exclusion. With diagnostic full-frame readback on every frame, an animated 60-frame fixture delivered 45.6 capture frames per second, with 11.6 ms median capture-to-present submission time and 16.3 ms p95. Those measurements are not from the final bundled helper and should not be treated as product performance.

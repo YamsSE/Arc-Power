@@ -269,6 +269,7 @@ export function createForegroundApiDetector(deps = {}) {
   //   'getWindowThreadProcessId' (hwnd) -> the pid (number) | null
   //   'openProcess' (pid) -> the process handle (opaque) | null
   //   'getProcessImagePath' (handle) -> the executable path (string) | null
+  //   'getProcessCreationTime' (handle) -> nonzero decimal FILETIME string | null
   //   'enumProcessModules' (handle) -> the module base names (string[])
   //     or the M17b { name, path } pairs | null
   //   'closeHandle' (handle) -> void
@@ -403,7 +404,35 @@ export function createForegroundApiDetector(deps = {}) {
     }
   };
 
-  return { detect, detectPid, detectProcess };
+  /**
+   * Reads path and creation time from one retained process handle to guard
+   * against PID reuse. The FILETIME stays decimal text to preserve precision.
+   * @returns {Promise<{ pid: number, exePath: string, creationFiletime: string } | null>}
+   */
+  const detectProcessIdentity = async () => {
+    try {
+      const hwnd = probe('getForegroundWindow');
+      if (!hwnd) return null;
+      const pid = probe('getWindowThreadProcessId', hwnd);
+      if (!Number.isInteger(pid) || pid <= 0) return null;
+      const handle = probe('openProcess', pid);
+      if (!handle) return null;
+      try {
+        const exePath = probe('getProcessImagePath', handle);
+        const creationFiletime = probe('getProcessCreationTime', handle);
+        if (typeof exePath !== 'string' || exePath.length === 0
+          || typeof creationFiletime !== 'string' || !/^[1-9]\d*$/.test(creationFiletime)) return null;
+        if (BigInt(creationFiletime) > 18_446_744_073_709_551_615n) return null;
+        return { pid, exePath, creationFiletime };
+      } finally {
+        try { probe('closeHandle', handle); } catch { /* best effort */ }
+      }
+    } catch {
+      return null;
+    }
+  };
+
+  return { detect, detectPid, detectProcess, detectProcessIdentity };
 }
 
 /**
@@ -416,10 +445,13 @@ export function createForegroundApiDetector(deps = {}) {
  */
 function defaultProbe(load) {
   let funcs = null;
+  let kernel32Lib = null;
+  let getProcessTimes = null;
+  const getKernel32 = () => (kernel32Lib ??= load('kernel32.dll'));
   const getFuncs = () => {
     if (funcs !== null) return funcs;
     const user32 = load('user32.dll');
-    const kernel32 = load('kernel32.dll');
+    const kernel32 = getKernel32();
     const psapi = load('psapi.dll');
     funcs = {
       getForegroundWindow: user32.func('GetForegroundWindow', 'void*', []),
@@ -444,7 +476,7 @@ function defaultProbe(load) {
       case 'getForegroundWindow':
         return f.getForegroundWindow();
       case 'getWindowThreadProcessId': {
-        const pidBuf = koffi.alloc('uint32', 1);
+        const pidBuf = Buffer.alloc(4);
         const threadId = f.getWindowThreadProcessId(args[0], pidBuf);
         if (threadId === 0) return null; // GetWindowThreadProcessId failed
         return koffi.decode(pidBuf, 0, 'uint32');
@@ -452,8 +484,8 @@ function defaultProbe(load) {
       case 'openProcess':
         return f.openProcess(PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, args[0]);
       case 'getProcessImagePath': {
-        const pathBuf = koffi.alloc('uint16', PROCESS_PATH_BUFFER_WCHARS);
-        const lengthBuf = koffi.alloc('uint32', 1);
+        const pathBuf = Buffer.alloc(PROCESS_PATH_BUFFER_WCHARS * 2);
+        const lengthBuf = Buffer.alloc(4);
         koffi.encode(lengthBuf, 0, 'uint32', PROCESS_PATH_BUFFER_WCHARS);
         const ok = f.queryFullProcessImageNameW(args[0], 0, pathBuf, lengthBuf);
         if (ok === 0) return null;
@@ -461,6 +493,19 @@ function defaultProbe(load) {
         let exePath = '';
         for (let i = 0; i < length; i++) exePath += String.fromCharCode(koffi.decode(pathBuf, i * 2, 'uint16'));
         return exePath || null;
+      }
+      case 'getProcessCreationTime': {
+        if (getProcessTimes === null) {
+          getProcessTimes = getKernel32().func('GetProcessTimes', 'int32', ['void*', 'void*', 'void*', 'void*', 'void*']);
+        }
+        const creationTime = Buffer.alloc(8);
+        const exitTime = Buffer.alloc(8);
+        const kernelTime = Buffer.alloc(8);
+        const userTime = Buffer.alloc(8);
+        const ok = getProcessTimes(args[0], creationTime, exitTime, kernelTime, userTime);
+        if (ok === 0) return null;
+        const value = creationTime.readBigUInt64LE(0);
+        return value > 0n ? value.toString(10) : null;
       }
       case 'enumProcessModules': {
         // One generous call (the plan's shape). FALSE -> null (the
@@ -470,8 +515,8 @@ function defaultProbe(load) {
         // (M17b 2d-3a: the ICD check needs the path only to identify the
         // ICD DLL NAME - the vendor ICD names are the check, not their
         // location; the pairs also feed the run-A icdNames hook).
-        const buf = koffi.alloc('void*', MODULE_LIST_SLOTS);
-        const neededBuf = koffi.alloc('uint32', 1);
+        const buf = Buffer.alloc(MODULE_LIST_SLOTS * 8);
+        const neededBuf = Buffer.alloc(4);
         const ok = f.enumProcessModulesEx(
           args[0],
           buf,
@@ -482,8 +527,8 @@ function defaultProbe(load) {
         if (ok === 0) return null;
         const needed = koffi.decode(neededBuf, 0, 'uint32');
         const count = Math.min(Math.floor(needed / 8), MODULE_LIST_SLOTS);
-        const nameBuf = koffi.alloc('uint16', MODULE_NAME_BUFFER_WCHARS);
-        const pathBuf = koffi.alloc('uint16', MODULE_PATH_BUFFER_WCHARS);
+        const nameBuf = Buffer.alloc(MODULE_NAME_BUFFER_WCHARS * 2);
+        const pathBuf = Buffer.alloc(MODULE_PATH_BUFFER_WCHARS * 2);
         const modules = [];
         for (let i = 0; i < count; i++) {
           const modulePtr = koffi.decode(buf, i * 8, 'void*');
@@ -522,7 +567,7 @@ function defaultProbe(load) {
         } catch { invalid = true; }
         if (invalid) return null;
         try {
-          const entry = koffi.alloc('uint8', PROCESSENTRY32W_SIZE);
+          const entry = Buffer.alloc(PROCESSENTRY32W_SIZE);
           koffi.encode(entry, 0, 'uint32', PROCESSENTRY32W_SIZE); // dwSize
           const out = [];
           let ok = f.process32FirstW(snap, entry);

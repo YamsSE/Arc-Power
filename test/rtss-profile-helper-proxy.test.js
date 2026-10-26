@@ -7,6 +7,7 @@ class FakeChild extends EventEmitter {
   constructor() {
     super();
     this.stdout = new EventEmitter();
+    this.stderr = new EventEmitter();
     this.stdin = {
       writes: [],
       write: (line) => { this.stdin.writes.push(JSON.parse(line)); },
@@ -25,16 +26,18 @@ class FakeChild extends EventEmitter {
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-function makeProxy({ timeoutMs = 1000, getRuntime } = {}) {
+function makeProxy({ timeoutMs = 1000, getRuntime, log } = {}) {
   const child = new FakeChild();
   let spawnCount = 0;
+  let spawnOptions = null;
   const proxy = createRtssProfileHelperProxy({
     entryPath: 'C:\\ArcPower\\rtss-profile-helper-entry.js',
     getRuntime: getRuntime ?? (async () => ({ executablePath: 'C:\\RTSS\\RTSS.exe', isRunning: true })),
-    spawnFn: () => { spawnCount += 1; return child; },
+    spawnFn: (_execPath, _args, options) => { spawnCount += 1; spawnOptions = options; return child; },
     timeoutMs,
+    log,
   });
-  return { proxy, child, get spawnCount() { return spawnCount; } };
+  return { proxy, child, get spawnCount() { return spawnCount; }, get spawnOptions() { return spawnOptions; } };
 }
 
 test('RTSS helper proxy sends one request at a time and passes fresh runtime state', async () => {
@@ -59,16 +62,50 @@ test('RTSS helper proxy sends one request at a time and passes fresh runtime sta
   assert.deepEqual(await second, { ok: true, limit: 90 });
 });
 
+test('RTSS helper proxy routes fixed-target sharpening compatibility without caller-supplied profile arguments', async () => {
+  const { proxy, child } = makeProxy();
+  const pending = proxy.ensureScreenSharpeningCompatibility();
+  await tick();
+  assert.equal(child.stdin.writes.length, 1);
+  assert.equal(child.stdin.writes[0].method, 'ensureScreenSharpeningCompatibility');
+  assert.deepEqual(child.stdin.writes[0].args, {});
+  const result = { ok: true, available: true, configured: true, profile: 'ArcPower.ScreenSharpen.exe' };
+  child.respond(0, result);
+  assert.deepEqual(await pending, result);
+});
+
+test('RTSS helper starts from the real executable directory for packaged app.asar launches', async () => {
+  const child = new FakeChild();
+  let options;
+  const proxy = createRtssProfileHelperProxy({
+    entryPath: 'C:\\Program Files\\Arc Power\\resources\\app.asar\\src\\main\\rtss-profile-helper-entry.js',
+    execPath: 'C:\\Program Files\\Arc Power\\Arc Power.exe',
+    spawnFn: (_execPath, _args, spawnOptions) => { options = spawnOptions; return child; },
+    getRuntime: async () => ({ executablePath: null, isRunning: false }),
+  });
+  const read = proxy.getFrameLimit();
+  await tick();
+  assert.equal(options.cwd, 'C:\\Program Files\\Arc Power');
+  child.respond(0, { ok: false });
+  await read;
+  proxy.close();
+});
+
 test('RTSS helper timeout kills worker, resolves callers, and never respawns or sends later calls', async () => {
-  const fixture = makeProxy({ timeoutMs: 15 });
+  const logs = [];
+  const fixture = makeProxy({ timeoutMs: 15, log: (message) => logs.push(message) });
   const { proxy, child } = fixture;
   const first = proxy.applyFrameLimit({ enabled: true, value: 120 });
   await tick();
+  child.stderr.emit('data', Buffer.from('native helper initialization failed: missing RTSSHooks.dll\n'));
   const firstResult = await first;
   assert.equal(firstResult.ok, false);
   assert.equal(firstResult.source, 'rtss');
   assert.equal(firstResult.errorCode, 'unavailable');
   assert.match(firstResult.error, /timed out/i);
+  assert.match(firstResult.error, /missing RTSSHooks.dll/i);
+  assert.match(proxy.getState().error, /missing RTSSHooks.dll/i);
+  assert.match(logs[0], /missing RTSSHooks.dll/i);
   assert.equal(child.killed, true);
 
   const restoreResult = await proxy.restoreFrameLimitState({ expectedState: {}, state: {} });
@@ -89,6 +126,7 @@ test('unexpected RTSS helper exit resolves active and queued calls and disables 
   const queued = proxy.getFrameLimitOwnership();
   await tick();
   assert.equal(child.stdin.writes.length, 1);
+  child.stderr.emit('data', Buffer.from('failed to load RTSSHooks64.dll'));
   child.emit('exit', 1, null);
 
   const activeResult = await active;
@@ -99,9 +137,23 @@ test('unexpected RTSS helper exit resolves active and queued calls and disables 
   assert.equal(queuedResult.ok, false);
   assert.equal(queuedResult.errorCode, 'unavailable');
   assert.match(proxy.getState().error, /exited unexpectedly/i);
+  assert.match(activeResult.error, /RTSSHooks64.dll/i);
   assert.equal((await proxy.applyFrameLimit({ enabled: false })).ok, false);
   assert.equal(fixture.spawnCount, 1);
   assert.equal(child.stdin.writes.length, 1);
+});
+
+test('RTSS helper keeps only the final 2 KiB of stderr and reports it on failure', async () => {
+  const fixture = makeProxy();
+  const { proxy, child } = fixture;
+  const pending = proxy.getFrameLimit();
+  await tick();
+  child.stderr.emit('data', Buffer.from(`${'x'.repeat(4096)}tail diagnostic`));
+  child.emit('exit', 1, null);
+  const result = await pending;
+  assert.equal(result.ok, false);
+  assert.match(result.error, /tail diagnostic/);
+  assert.equal(Buffer.byteLength(proxy.getState().error.split('stderr tail: ')[1]), 2048);
 });
 
 test('RTSS helper getState returns the latest cached child state synchronously', async () => {
@@ -126,11 +178,13 @@ test('RTSS helper close kills a hung worker without waiting and is terminal', as
   const { proxy, child } = fixture;
   const pending = proxy.restoreFrameLimit('restore-token');
   await tick();
+  child.stderr.emit('data', Buffer.from('normal shutdown'));
   proxy.close();
   const result = await pending;
   assert.equal(result.ok, false);
   assert.equal(child.killed, true);
   assert.equal(proxy.isTerminal(), true);
+  assert.doesNotMatch(result.error, /stderr tail:/);
   assert.equal((await proxy.getFrameLimit()).ok, false);
   assert.equal(fixture.spawnCount, 1);
 });
