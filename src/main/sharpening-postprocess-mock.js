@@ -6,6 +6,12 @@ export function createMockPostprocessSharpening() {
   let asrValue = { enabled: false };
   let runtimeStatus = { active: false, reason: null };
   const games = new Map();
+  const asrGames = new Map();
+  const asrGame = (exePath) => {
+    const override = asrGames.get(canonicalExePath(exePath)) ?? null;
+    return { globalValue: { ...asrValue }, override: override ? { ...override } : null,
+      effective: { ...(override ?? asrValue) }, runtimeReady: true };
+  };
   const statusListeners = new Set();
   const publishStatus = () => {
     for (const listener of statusListeners) listener({ ...runtimeStatus });
@@ -31,6 +37,13 @@ export function createMockPostprocessSharpening() {
     async stop() { return global(); },
     async getGlobal() { return global(); },
     async getAsr() { return asr(); },
+    async getAsrGame(exePath) { return asrGame(exePath); },
+    async setAsrGame(exePath, override) {
+      const key = canonicalExePath(exePath);
+      if (!key) throw new Error('Choose a valid game executable.');
+      if (override === null) asrGames.delete(key); else asrGames.set(key, { ...override });
+      return asrGame(key);
+    },
     subscribeStatus(listener) {
       statusListeners.add(listener);
       listener({ ...runtimeStatus });

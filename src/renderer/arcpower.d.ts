@@ -25,6 +25,7 @@ import type {
   GraphicsState,
   ArcSuperResolutionValue,
   ArcSuperResolutionState,
+  ArcSuperResolutionGame,
   PostprocessSharpeningValue,
   PostprocessSharpeningGlobal,
   PostprocessSharpeningGame,
@@ -149,6 +150,8 @@ export interface ArcPowerApi {
   postprocessSharpeningLaunchGame(exePath: string): Promise<{ pid: number; exePath: string; creationFiletime: string; sharpeningPending: boolean }>;
   arcSuperResolutionGet(): Promise<ArcSuperResolutionState>;
   arcSuperResolutionSet(value: ArcSuperResolutionValue): Promise<ArcSuperResolutionState>;
+  arcSuperResolutionGameGet(exePath: string): Promise<ArcSuperResolutionGame>;
+  arcSuperResolutionGameSet(exePath: string, override: ArcSuperResolutionValue | null): Promise<ArcSuperResolutionGame>;
   onPostprocessGlobalSettingsUpdated(callback: (update: PostprocessGlobalSettingsUpdate) => void): () => void;
   onPostprocessSharpeningStatus(callback: (status: { active: boolean; reason: string | null; mode?: 'asr' | 'sharpening'; sharpeningActive?: boolean; asrActive?: boolean; sharpeningReason?: string | null; asrReason?: string | null }) => void): () => void;
   /** M10b (the Graphics "Display" view): the display-output read (never

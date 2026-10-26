@@ -2106,7 +2106,7 @@ function buildOverlayAsrCard(): HTMLElement {
         error = state.reason ?? 'Arc Super Resolution runtime is unavailable; the setting was not applied.';
         toast('error', 'Arc Super Resolution was not applied', error);
       } else {
-        toast('success', 'Arc Super Resolution preference saved', draft.enabled ? runtimeStatusText() : 'Arc Super Resolution is turned off.');
+        toast('success', 'Arc Super Resolution preference saved', draft.enabled ? runtimeStatusText() : 'The global ASR default is Off. Per-game overrides still apply.');
       }
     } catch (err) {
       if (token !== request || !card.isConnected) return;

@@ -333,6 +333,19 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     // Disable global inheritance, then apply a 0% override and verify it does
     // not mutate the global setting. Re-enabling inheritance restores global.
     assert.equal(await js(`document.querySelector('.sharpening-game-card .card-title')?.textContent`), 'Arc Image Sharpening');
+    await waitFor(`!!document.querySelector('.asr-game-card [role="combobox"]') && !document.querySelector('.asr-game-apply')?.disabled`, 'Per-game ASR card did not load');
+    assert.equal(await js(`document.querySelector('.asr-game-card summary')?.textContent`), 'How Scaling Works');
+    await screenshot('game-asr-inherited-global.png', '.asr-game-card');
+    const chooseGameAsr = async value => js(`(() => { const control = document.querySelector('.asr-game-card [role="combobox"]'); control.click(); control.options.find(item => item.dataset.value === ${JSON.stringify(value)}).click(); })()`);
+    await chooseGameAsr('on');
+    assert.equal((await postprocessSharpening.getAsrGame(game.exePath)).override, null, 'ASR selection saved without Apply');
+    await js(`document.querySelector('.asr-game-apply').click()`);
+    await waitFor(`window.arcPower.arcSuperResolutionGameGet(${JSON.stringify(game.exePath)}).then(state => state.override?.enabled === true) && document.querySelector('.asr-game-apply')?.textContent === 'Saved'`, 'Per-game ASR On did not save');
+    assert.equal((await postprocessSharpening.getAsr()).value.enabled, false, 'Per-game ASR changed the global default');
+    await chooseGameAsr('off'); await js(`document.querySelector('.asr-game-apply').click()`);
+    await waitFor(`window.arcPower.arcSuperResolutionGameGet(${JSON.stringify(game.exePath)}).then(state => state.override?.enabled === false)`, 'Per-game ASR Off did not save');
+    await chooseGameAsr('global'); await js(`document.querySelector('.asr-game-apply').click()`);
+    await waitFor(`window.arcPower.arcSuperResolutionGameGet(${JSON.stringify(game.exePath)}).then(state => state.override === null)`, 'Per-game ASR inheritance did not restore');
     await chooseMode('Per-game Arc Image Sharpening', 'on');
     assert.equal((await postprocessSharpening.getGame(game.exePath)).override, null, 'Changing inheritance applied without Apply');
     await waitFor(`document.querySelector('.sharpening-card input[aria-label="Per-game Arc Image Sharpening strength"]')?.disabled === false`, 'Per-game override controls did not enable');
@@ -415,7 +428,8 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     await js(`document.querySelector('.asr-card .asr-apply')?.click()`);
     await waitFor(`document.querySelector('.asr-card .asr-apply')?.textContent === 'Applied' && window.arcPower.arcSuperResolutionGet().then(state => !state.value.enabled)`, 'ASR did not recover after a failed save');
     assert.equal(legacyGraphicsWrites, driverWriteBaseline, 'Sharpening UI routed changes to driver graphics settings');
-    process.stdout.write('[postprocess-sharpening-ui] PASS: global and per-game sharpening plus Arc Super Resolution controls\n');
+    assert.equal(await js(`document.querySelector('.asr-card summary')?.textContent`), 'How Scaling Works');
+    process.stdout.write('[postprocess-sharpening-ui] PASS: global and per-game sharpening and ASR controls\n');
   } finally {
     releaseInitialGlobalRead();
     releaseAsrSave();
