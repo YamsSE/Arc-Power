@@ -42,6 +42,11 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
   const originalGetGraphicsSettings = backend.getGraphicsSettings;
   const originalSetGlobal = postprocessSharpening.setGlobal;
   const originalGetGlobal = postprocessSharpening.getGlobal;
+  const screenPauseReason = 'Arc Image Sharpening is paused because the desktop capture overlay causes game frame-pacing and input-latency regressions. A safe native game-sharpening path is not available on the current Intel driver.';
+  let forcePausedStateForTest = false;
+  const withPausedScreenState = (state) => forcePausedStateForTest
+    ? { ...state, runtimeReady: false, reason: screenPauseReason }
+    : state;
   let failNextGlobalSet = false;
   let holdNextGlobalSet = false;
   let releaseGlobalSet;
@@ -54,6 +59,8 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
   let holdGraphicsSet = false;
   let graphicsSetGate = makeGate();
   let failNextGraphicsGet = false;
+  const originalSetAsr = postprocessSharpening.setAsr;
+  let releaseAsrSave = () => {};
   let holdInitialGlobalRead = false;
   let releaseInitialGlobalRead;
   let signalInitialGlobalReadStarted;
@@ -65,7 +72,7 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
       signalInitialGlobalReadStarted();
       await initialGlobalReadGate;
     }
-    return originalGetGlobal.apply(this, args);
+    return withPausedScreenState(await originalGetGlobal.apply(this, args));
   };
   postprocessSharpening.setGlobal = async function(...args) {
     if (failNextGlobalSet) { failNextGlobalSet = false; throw new Error('Mock screen-sharpening write failed.'); }
@@ -80,7 +87,7 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
       signalGlobalSetStarted();
       await globalSetGate;
     }
-    return originalSetGlobal.apply(this, args);
+    return withPausedScreenState(await originalSetGlobal.apply(this, args));
   };
   backend.setGraphicsSettings = async function(...args) {
     legacyGraphicsWrites += 1;
@@ -103,7 +110,7 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
       if (await js(expression)) return;
       await pause();
     }
-    assert.fail(`${message}; state=${JSON.stringify(await js(`(async () => ({ hash: location.hash, title: document.querySelector('.page-title')?.textContent ?? null, page: (document.getElementById('page')?.textContent ?? '').slice(0, 500), catalog: await window.arcPower.gameCatalogList().catch((error) => String(error)) }))()`))}`);
+    assert.fail(`${message}; state=${JSON.stringify(await js(`(async () => ({ hash: location.hash, title: document.querySelector('.page-title')?.textContent ?? null, runtimeStatus: document.querySelector('.sharpening-card .sharpening-runtime-status')?.textContent ?? null, page: (document.getElementById('page')?.textContent ?? '').slice(0, 500), catalog: await window.arcPower.gameCatalogList().catch((error) => String(error)) }))()`))}`);
   };
   const screenshot = async (name, selector) => {
     const directory = path.resolve('.codex/task-artifacts/sharpening-card-layout');
@@ -122,17 +129,51 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     await waitFor(`(async () => !!document.querySelector('.gpu-header-gpu-pill') && Number.isInteger((await window.arcPower.deviceGet()).deviceId))()`, 'Mock renderer did not select its B580 device');
     await js(`window.arcPower.waiverAccept(0)`);
     holdInitialGlobalRead = true;
+    forcePausedStateForTest = true;
     await js(`location.hash = '#/graphics'`);
     await Promise.race([
       initialGlobalReadStarted,
       new Promise((_, reject) => setTimeout(() => reject(new Error('Initial sharpening settings read did not start')), 3000)),
     ]);
-    postprocessSharpening.setRuntimeStatusForTest({ active: true, reason: null });
+    postprocessSharpening.setRuntimeStatusForTest({ active: true, mode: 'sharpening', reason: null });
     await pause();
     releaseInitialGlobalRead();
+    await waitFor(`!!document.querySelector('.asr-card [aria-label="Arc Super Resolution"]')`, 'Arc Super Resolution control did not render');
+    const asrHelp = await js(`document.querySelector('.asr-card .sharpening-help')?.textContent ?? ''`);
+    assert.match(asrHelp, /smaller window while the desktop remains at its native resolution/i);
+    assert.match(asrHelp, /fits that game window to the display and passes native input through/i);
+    assert.match(asrHelp, /display-filling borderless window has no smaller image to scale/i);
+    assert.match(asrHelp, /exclusive fullscreen may change the active display mode/i);
+    assert.doesNotMatch(asrHelp, /Lanczos|captures? that smaller window|raw-input|DirectInput|mapped to the smaller window/i);
     await waitFor(`location.hash === '#/graphics' && document.getElementById('page')?.textContent?.includes('Arc Image Sharpening') && !!document.querySelector('.sharpening-card input[aria-label="Arc Image Sharpening strength"]')`, 'Graphics page or global sharpening control did not render');
     assert.equal(await js(`document.querySelector('.graphics-page-hero')?.textContent?.includes('No GPU available')`), false, 'Combined graphics verification requires the selected B580 device');
-    await waitFor(`document.querySelector('.sharpening-runtime-status')?.textContent?.includes('Sharpening is active')`, 'A runtime status event delivered before the initial settings read was lost');
+    await waitFor(`document.querySelector('.sharpening-card .sharpening-runtime-status')?.textContent === ${JSON.stringify(screenPauseReason)}`, 'Initial screen-sharpening pause reason was lost when an earlier runtime event was merged');
+    for (const status of [
+      { active: true, mode: 'asr', reason: null },
+      { active: false, mode: 'asr', reason: 'Synthetic ASR capture fault' },
+      { active: false, mode: 'asr', reason: null },
+    ]) {
+      postprocessSharpening.setRuntimeStatusForTest(status);
+      await waitFor(`document.querySelector('.sharpening-card .sharpening-runtime-status')?.textContent === ${JSON.stringify(screenPauseReason)}`, 'ASR runtime status replaced the global screen-sharpening pause explanation');
+    }
+    await applyCard();
+    await waitFor(`document.querySelector('.sharpening-card .sharpening-runtime-status')?.textContent === ${JSON.stringify(screenPauseReason)}`, 'Apply response or settings push replaced the global screen-sharpening pause explanation');
+    forcePausedStateForTest = false;
+    postprocessSharpening.setRuntimeStatusForTest({ active: true, mode: 'sharpening', reason: null });
+    await js(`location.hash = '#/dashboard'`);
+    await pause();
+    await js(`location.hash = '#/graphics'`);
+    await waitFor(`document.querySelector('.sharpening-card .sharpening-runtime-status')?.textContent?.includes('Applies only to recognized games')`, 'Global screen-sharpening status did not recover to idle after the paused settings state');
+    if (process.env.RID_MOCK_POSTPROCESS_RENDERER_PROOF === '1') {
+      postprocessSharpening.setRuntimeStatusForTest({ active: true, mode: 'sharpening', reason: null });
+      await waitFor(`document.querySelector('.sharpening-card .sharpening-runtime-status')?.textContent?.includes('Sharpening is active')`, 'Global sharpening runtime status did not update to active');
+      postprocessSharpening.setRuntimeStatusForTest({ active: false, mode: 'sharpening', reason: 'Screen capture is unavailable.' });
+      await waitFor(`document.querySelector('.sharpening-card .sharpening-runtime-status')?.textContent === 'Screen capture is unavailable.'`, 'Global sharpening runtime error did not reach Graphics');
+      postprocessSharpening.setRuntimeStatusForTest({ active: false, mode: 'sharpening', reason: null });
+      await waitFor(`document.querySelector('.sharpening-card .sharpening-runtime-status')?.textContent?.includes('Applies only to recognized games')`, 'Global sharpening runtime status did not recover to idle');
+      process.stdout.write('[postprocess-sharpening-ui] PASS: paused screen-sharpening reason survives initial read, ASR status, settings push, and Apply response\n');
+      return;
+    }
 
     // Establish the supported driver's accepted baseline first. The shared
     // Graphics Apply can be dirty against an empty applied reference on first
@@ -259,11 +300,11 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     driverWriteBaseline = legacyGraphicsWrites;
 
     postprocessSharpening.setRuntimeStatusForTest({ active: true, reason: null });
-    await waitFor(`document.querySelector('.sharpening-runtime-status')?.textContent?.includes('Sharpening is active')`, 'Global sharpening runtime status did not update to active');
+    await waitFor(`document.querySelector('.sharpening-card .sharpening-runtime-status')?.textContent?.includes('Sharpening is active')`, 'Global sharpening runtime status did not update to active');
     postprocessSharpening.setRuntimeStatusForTest({ active: false, reason: 'Screen capture is unavailable.' });
-    await waitFor(`document.querySelector('.sharpening-runtime-status')?.textContent === 'Screen capture is unavailable.'`, 'Global sharpening runtime error did not reach Graphics');
+    await waitFor(`document.querySelector('.sharpening-card .sharpening-runtime-status')?.textContent === 'Screen capture is unavailable.'`, 'Global sharpening runtime error did not reach Graphics');
     postprocessSharpening.setRuntimeStatusForTest({ active: false, reason: null });
-    await waitFor(`document.querySelector('.sharpening-runtime-status')?.textContent?.includes('Applies only to recognized games')`, 'Global sharpening runtime status did not recover to idle');
+    await waitFor(`document.querySelector('.sharpening-card .sharpening-runtime-status')?.textContent?.includes('Applies only to recognized games')`, 'Global sharpening runtime status did not recover to idle');
     await screenshot('global-sharpening-100.png', '.sharpening-card');
 
     // A game profile has an override slider immediately; no setup action is
@@ -340,9 +381,45 @@ export async function verifyPostprocessSharpeningUi(win, postprocessSharpening, 
     await js(`Array.from(document.querySelectorAll('.sharpening-card .graphics-card-actions button')).find((button) => button.textContent.trim() === 'Reset to default')?.click()`);
     await applyCard();
     await waitFor(`window.arcPower.postprocessSharpeningGet().then((state) => !state.value.enabled && state.value.percentage === 50)`, 'Graphics read failure fixture cleanup did not restore screen defaults');
-    process.stdout.write('[postprocess-sharpening-ui] PASS: global and per-game Arc Image Sharpening controls\n');
+    let signalAsrSaveStarted;
+    const asrSaveStarted = new Promise((resolve) => { signalAsrSaveStarted = resolve; });
+    const asrSaveGate = new Promise((resolve) => { releaseAsrSave = resolve; });
+    postprocessSharpening.setAsr = async function(...args) {
+      signalAsrSaveStarted();
+      await asrSaveGate;
+      return originalSetAsr.apply(this, args);
+    };
+    await js(`(() => { const control = document.querySelector('.asr-card [role="combobox"][aria-label="Arc Super Resolution"]'); control.click(); control.options.find((item) => item.dataset.value === 'on').click(); })()`);
+    await js(`document.querySelector('.asr-card .asr-apply')?.click()`);
+    await Promise.race([asrSaveStarted, new Promise((_, reject) => setTimeout(() => reject(new Error('ASR save did not start')), 3000))]);
+    assert.equal(await js(`document.querySelector('.asr-card .asr-apply')?.textContent`), 'Applying…');
+    assert.equal(await js(`document.querySelector('.asr-card .asr-apply')?.disabled`), true);
+    assert.equal(await js(`document.querySelector('.asr-card [role="combobox"]')?.disabled`), true);
+    assert.equal(await js(`Array.from(document.querySelectorAll('.asr-card .graphics-card-actions button')).every(button => button.disabled)`), true);
+    releaseAsrSave();
+    await waitFor(`window.arcPower.arcSuperResolutionGet().then((state) => state.value.enabled)`, 'Arc Super Resolution toggle did not persist');
+    await waitFor(`document.querySelector('.asr-card .asr-apply')?.textContent === 'Applied' && !!Array.from(document.querySelectorAll('.toast-success')).find(item => item.textContent.includes('Arc Super Resolution preference saved') && item.textContent.includes('Waiting for a recognized game'))`, 'ASR save did not show Applied and an honest waiting toast');
+    postprocessSharpening.setRuntimeStatusForTest({ active: false, mode: 'asr', reason: 'Synthetic capture warning' });
+    await waitFor(`document.querySelector('.asr-card .sharpening-runtime-status')?.textContent === 'Synthetic capture warning'`, 'ASR runtime warning was not displayed');
+    postprocessSharpening.setRuntimeStatusForTest({ active: false, reason: null });
+    await waitFor(`document.querySelector('.asr-card .sharpening-runtime-status')?.textContent?.includes('Waiting for a recognized game')`, 'ASR retained a stale warning after recovery');
+    postprocessSharpening.setAsr = async () => { throw new Error('Synthetic ASR save failure'); };
+    await js(`(() => { const control = document.querySelector('.asr-card [role="combobox"]'); control.click(); control.options.find(item => item.dataset.value === 'off').click(); })()`);
+    assert.equal(await js(`document.querySelector('.asr-card .asr-apply')?.textContent`), 'Apply');
+    await js(`document.querySelector('.asr-card .asr-apply')?.click()`);
+    await waitFor(`document.querySelector('.asr-card .asr-apply')?.textContent === 'Apply' && !document.querySelector('.asr-card .asr-apply')?.disabled && document.querySelector('.asr-card .text-error')?.textContent.includes('Synthetic ASR save failure') && !!Array.from(document.querySelectorAll('.toast-error')).find(item => item.textContent.includes('Arc Super Resolution apply failed'))`, 'ASR save failure did not restore controls and show both error feedback paths');
+    assert.equal((await postprocessSharpening.getAsr()).value.enabled, true, 'Failed save changed the ASR preference');
+    postprocessSharpening.setAsr = originalSetAsr;
+    await js(`Array.from(document.querySelectorAll('.asr-card .graphics-card-actions button')).find(button => button.textContent === 'Reset to default')?.click()`);
+    assert.equal(await js(`document.querySelector('.asr-card .asr-apply')?.textContent`), 'Apply');
+    await js(`document.querySelector('.asr-card .asr-apply')?.click()`);
+    await waitFor(`document.querySelector('.asr-card .asr-apply')?.textContent === 'Applied' && window.arcPower.arcSuperResolutionGet().then(state => !state.value.enabled)`, 'ASR did not recover after a failed save');
+    assert.equal(legacyGraphicsWrites, driverWriteBaseline, 'Sharpening UI routed changes to driver graphics settings');
+    process.stdout.write('[postprocess-sharpening-ui] PASS: global and per-game sharpening plus Arc Super Resolution controls\n');
   } finally {
     releaseInitialGlobalRead();
+    releaseAsrSave();
+    postprocessSharpening.setAsr = originalSetAsr;
     postprocessSharpening.getGlobal = originalGetGlobal;
     postprocessSharpening.setGlobal = originalSetGlobal;
     backend.setGraphicsSettings = originalSetGraphicsSettings;

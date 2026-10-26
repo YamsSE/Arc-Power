@@ -64,20 +64,20 @@ function validNativeHandle(handle, addressOf = (value) => koffi.address(value)) 
   }
 }
 
-function readWideString(buffer, start, maxChars) {
+function readWideString(buffer, start, maxChars, koffiMod = koffi) {
   let value = '';
   for (let i = 0; i < maxChars; i += 1) {
-    const code = koffi.decode(buffer, start + i * 2, 'uint16');
+    const code = koffiMod.decode(buffer, start + i * 2, 'uint16');
     if (code === 0) break;
     value += String.fromCharCode(code);
   }
   return value;
 }
 
-function createNativeProcessInspection() {
-  if (process.platform !== 'win32') return null;
+export function createNativeProcessInspection({ platform = process.platform, load = (name) => koffi.load(name), koffiMod = koffi } = {}) {
+  if (platform !== 'win32') return null;
   try {
-    const kernel32 = koffi.load('kernel32.dll');
+    const kernel32 = load('kernel32.dll');
     const pointerSize = process.arch === 'ia32' ? 4 : 8;
     const imageOffset = pointerSize === 8 ? 44 : 36;
     const entrySize = pointerSize === 8 ? 568 : 556;
@@ -92,12 +92,12 @@ function createNativeProcessInspection() {
       setLastError: kernel32.func('SetLastError', 'void', ['uint32']),
     };
     const readEntry = (entry) => ({
-      pid: koffi.decode(entry, 8, 'uint32'),
-      imageName: readWideString(entry, imageOffset, 260),
+      pid: koffiMod.decode(entry, 8, 'uint32'),
+      imageName: readWideString(entry, imageOffset, 260, koffiMod),
     });
     const getEntry = (fn, snapshot) => {
-      const entry = koffi.alloc('uint8', entrySize);
-      koffi.encode(entry, 0, 'uint32', entrySize);
+      const entry = Buffer.alloc(entrySize);
+      koffiMod.encode(entry, 0, 'uint32', entrySize);
       if (fn(snapshot, entry) === 0) return null;
       return readEntry(entry);
     };
@@ -111,11 +111,11 @@ function createNativeProcessInspection() {
       },
       openProcess: (pid) => api.open(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid),
       queryImagePath: (handle) => {
-        const buffer = koffi.alloc('uint16', 32768);
-        const length = koffi.alloc('uint32', 1);
-        koffi.encode(length, 0, 'uint32', 32768);
+        const buffer = Buffer.alloc(32768 * 2);
+        const length = Buffer.alloc(4);
+        koffiMod.encode(length, 0, 'uint32', 32768);
         if (api.query(handle, 0, buffer, length) === 0) return null;
-        return readWideString(buffer, 0, Math.min(koffi.decode(length, 0, 'uint32'), 32767));
+        return readWideString(buffer, 0, Math.min(koffiMod.decode(length, 0, 'uint32'), 32767), koffiMod);
       },
       closeHandle: api.close,
     };

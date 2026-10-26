@@ -9,6 +9,7 @@ import { createScreenPostprocessSharpening } from '../src/main/sharpening-screen
 
 const GAME = 'C:\\Games\\Palworld\\Pal\\Binaries\\Win64\\Palworld-Win64-Shipping.exe';
 const HELPER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/main/sharpening-runtime/ArcPower.ScreenSharpen.exe');
+const CREATION_FILETIME = '132537600000000000';
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test('production-disabled capture sharpening preserves preferences without starting the pacing-risk overlay', async () => {
@@ -17,6 +18,7 @@ test('production-disabled capture sharpening preserves preferences without start
   fs.writeFileSync(configPath, JSON.stringify({
     global: { enabled: true, percentage: 100 },
     games: { [GAME.toLowerCase()]: { enabled: true, percentage: 85 } },
+    asr: { enabled: true },
   }));
   let launches = 0;
   const service = createScreenPostprocessSharpening({
@@ -35,9 +37,16 @@ test('production-disabled capture sharpening preserves preferences without start
     assert.equal(game.runtimeReady, false);
     assert.deepEqual(game.effective, { enabled: false, percentage: 0 }, 'saved game preference is inactive');
     assert.deepEqual(game.override, { enabled: true, percentage: 85 }, 'saved per-game preference is retained');
+    assert.deepEqual((await service.getAsr()).value, { enabled: true }, 'saved ASR preference is retained');
+    await assert.rejects(service.setAsr({ enabled: true }), /Arc Super Resolution is paused/);
     await assert.rejects(service.setGlobal({ enabled: true, percentage: 50 }), /frame-pacing and input-latency regressions/);
     await assert.rejects(service.setGame(GAME, { enabled: true, percentage: 50 }), /frame-pacing and input-latency regressions/);
     assert.equal(launches, 0, 'no helper process may be started while the production gate is closed');
+    assert.deepEqual(JSON.parse(fs.readFileSync(configPath, 'utf8')), {
+      global: { enabled: true, percentage: 100 },
+      games: { [GAME.toLowerCase()]: { enabled: true, percentage: 85 } },
+      asr: { enabled: true },
+    }, 'rejected writes preserve all saved sharpening and ASR preferences');
   } finally {
     await service.stop();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -220,7 +229,7 @@ test('screen sharpening service starts without capture consent, selects, overrid
     assert.equal(commands[0], 'SET 4242 74');
 
     children[0].stdout.emit('data', 'ACTIVE 4242\n');
-    assert.deepEqual(statuses.at(-1), { active: true, reason: null }, 'helper ACTIVE transitions are published without polling the settings API');
+    assert.deepEqual(statuses.at(-1), { active: true, reason: null, mode: 'sharpening' }, 'helper ACTIVE transitions include the active screen-processing mode without polling the settings API');
     assert.equal((await service.getGlobal()).active, true, 'ACTIVE from the helper should be reflected in service state');
 
     foreground = { pid: 4242, exePath: GAME };
@@ -307,6 +316,184 @@ test('screen sharpening clears the target for desktop apps and fails closed when
       child.exitCode ??= 0;
       child.stdin.destroyed = true;
     }
+    await service.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Arc Super Resolution shares the protected helper without changing sharpening settings', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-power-asr-screen-'));
+  const commands = [];
+  const children = [];
+  let compatibilityChecks = 0;
+  const catalogChecks = [];
+  let foreground = { pid: 4242, exePath: GAME };
+  const service = createScreenPostprocessSharpening({
+    dir,
+    helperPath: HELPER,
+    allowAsrCapture: true,
+    allowCaptureOverlay: false,
+    ensureCompatibility() { compatibilityChecks++; throw new Error('RTSS compatibility must not be checked for ASR'); },
+    detector: { async detectProcess() { return { ...foreground, creationFiletime: CREATION_FILETIME }; } },
+    isGameExecutable: async (exePath) => { catalogChecks.push(exePath); return exePath.toLowerCase() === GAME.toLowerCase(); },
+    spawn() {
+      const child = new FakeChild();
+      children.push(child);
+      child.stdin.write = (value) => { child.stdin.writes.push(String(value)); commands.push(String(value).trim()); return true; };
+      setTimeout(() => child.stdout.emit('data', 'READY screen-sharpen-v1\n'), 0);
+      return child;
+    },
+    pollMs: 250,
+  });
+  const statuses = [];
+  const unsubscribe = service.subscribeStatus((status) => statuses.push(status));
+  try {
+    await service.start();
+    assert.equal(children.length, 0);
+    assert.equal((await service.getAsr()).reason, undefined, 'ASR must not show the legacy sharpening pause reason');
+    const enabled = await service.setAsr({ enabled: true });
+    assert.deepEqual(enabled.value, { enabled: true });
+    assert.equal(children.length, 1, 'ASR starts the same integrity-pinned helper');
+    await until(() => commands.includes(`ASR 4242 ${CREATION_FILETIME}`), 'recognized foreground game instance was not selected for ASR');
+    children[0].stdout.emit('data', 'ACTIVE 4242 ASR\n');
+    assert.equal((await service.getAsr()).active, true);
+    assert.equal((await service.getGlobal()).active, false, 'ASR must not be reported as sharpening');
+    assert.equal(statuses.at(-1).mode, 'asr');
+    assert.equal(compatibilityChecks, 0, 'ASR startup and polling bypass the RTSS compatibility/profile path');
+
+    foreground = { pid: 4343, exePath: 'C:\\Program Files\\ChatGPT\\ChatGPT.exe' };
+    await until(() => commands.at(-1) === 'ASR 0', 'unrecognized foreground applications were not cleared');
+    assert.deepEqual(catalogChecks, [GAME, 'C:\\Program Files\\ChatGPT\\ChatGPT.exe'], 'ASR target selection remains limited to catalog games');
+    assert.deepEqual((await service.getGlobal()).value, { enabled: false, percentage: 50 }, 'ASR did not alter sharpening values');
+
+    await service.setAsr({ enabled: false });
+    assert.ok(commands.includes('ASR 0'), 'disabling ASR clears the native target using ASR idle');
+    assert.ok(commands.includes('STOP'), 'the helper stops when both spatial scaling and sharpening are off');
+    assert.equal((await service.getAsr()).active, false);
+    assert.equal(compatibilityChecks, 0, 'no RTSS compatibility retries occur while ASR is used');
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'postprocess-sharpening.json'), 'utf8'));
+    assert.deepEqual(saved.asr, { enabled: false });
+  } finally {
+    unsubscribe();
+    for (const child of children) {
+      child.exitCode ??= 0;
+      child.stdin.destroyed = true;
+    }
+    await service.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sharpening and ASR capture gates are independent and reject stale helper modes', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-screen-independent-gates-'));
+  const commands = [];
+  const children = [];
+  let legacyIdentityCalls = 0;
+  const service = createScreenPostprocessSharpening({
+    dir, helperPath: HELPER, allowAsrCapture: true, allowCaptureOverlay: false,
+    detector: {
+      async detectProcess() { legacyIdentityCalls++; return { pid: 1111, exePath: 'C:\\Apps\\Desktop.exe', creationFiletime: CREATION_FILETIME }; },
+      async detectProcessIdentity() { return { pid: 4242, exePath: GAME, creationFiletime: CREATION_FILETIME }; },
+    },
+    isGameExecutable: async () => true,
+    spawn() {
+      const child = new FakeChild();
+      children.push(child);
+      child.stdin.write = (value) => { child.stdin.writes.push(String(value)); commands.push(String(value).trim()); return true; };
+      setTimeout(() => child.stdout.emit('data', 'READY screen-sharpen-v1\n'), 0);
+      return child;
+    },
+    pollMs: 250,
+  });
+  try {
+    await service.start();
+    await assert.rejects(service.setGlobal({ enabled: true, percentage: 50 }), /frame-pacing and input-latency regressions/);
+    await assert.rejects(service.setGame(GAME, { enabled: true, percentage: 50 }), /frame-pacing and input-latency regressions/);
+    const asr = await service.setAsr({ enabled: true });
+    assert.deepEqual(asr.value, { enabled: true });
+    assert.match((await service.getGlobal()).reason, /frame-pacing and input-latency regressions/, 'sharpening UI retains its own paused-state reason while ASR is enabled');
+    assert.match((await service.getGame(GAME)).reason, /frame-pacing and input-latency regressions/, 'per-game sharpening UI retains its own paused-state reason while ASR is enabled');
+    assert.equal((await service.getAsr()).reason, undefined, 'the ASR card does not inherit the sharpening pause reason');
+    await until(() => commands.includes(`ASR 4242 ${CREATION_FILETIME}`), 'ASR-enabled gate did not select the recognized game instance');
+    assert.equal(legacyIdentityCalls, 0, 'ASR prefers the extended detector method when it is available');
+    children[0].stdout.emit('data', 'ACTIVE 4242\n');
+    assert.equal((await service.getAsr()).active, false, 'late sharpening ACTIVE cannot activate in ASR mode');
+    assert.ok(commands.includes('ASR 0'), 'unexpected sharpening ACTIVE is cleared using the allowed mode');
+    children[0].stdout.emit('data', 'ACTIVE 4242 ASR\n');
+    assert.equal((await service.getAsr()).active, true, 'the independently enabled ASR mode can activate');
+    assert.equal(children.length, 1);
+  } finally {
+    for (const child of children) { child.exitCode ??= 0; child.stdin.destroyed = true; }
+    await service.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ASR requires a nonzero decimal process creation FILETIME and never emits a bare PID', async () => {
+  for (const creationFiletime of [undefined, null, '0', '-12', '1.5', '18446744073709551616', 132537600000000000]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-asr-invalid-creation-'));
+    const commands = [];
+    const child = new FakeChild();
+    const service = createScreenPostprocessSharpening({
+      dir, helperPath: HELPER, allowCaptureOverlay: false, allowAsrCapture: true,
+      detector: { async detectProcess() { return { pid: 4242, exePath: GAME, ...(creationFiletime === undefined ? {} : { creationFiletime }) }; } },
+      isGameExecutable: async () => true,
+      spawn() {
+        child.stdin.write = (value) => { child.stdin.writes.push(String(value)); commands.push(String(value).trim()); return true; };
+        setTimeout(() => child.stdout.emit('data', 'READY screen-sharpen-v1\n'), 0);
+        return child;
+      },
+      pollMs: 250,
+    });
+    try {
+      await service.start();
+      await service.setAsr({ enabled: true });
+      await until(() => commands.includes('ASR 0'), `invalid creation FILETIME ${String(creationFiletime)} did not fail closed`);
+      assert.equal(commands.some((command) => /^ASR\s+\d+\s+\d+$/.test(command)), false, 'invalid process identity must never become an active PID command');
+    } finally {
+      child.exitCode ??= 0;
+      child.stdin.destroyed = true;
+      await service.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('late ASR identity from an old generation cannot restore the foreground target', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-asr-stale-identity-'));
+  const commands = [];
+  const child = new FakeChild();
+  let resolveIdentity;
+  let identityRequested = false;
+  const service = createScreenPostprocessSharpening({
+    dir, helperPath: HELPER, allowCaptureOverlay: false, allowAsrCapture: true,
+    detector: {
+      async detectProcessIdentity() {
+        identityRequested = true;
+        return new Promise((resolve) => { resolveIdentity = resolve; });
+      },
+    },
+    isGameExecutable: async () => true,
+    spawn() {
+      child.stdin.write = (value) => { child.stdin.writes.push(String(value)); commands.push(String(value).trim()); return true; };
+      setTimeout(() => child.stdout.emit('data', 'READY screen-sharpen-v1\n'), 0);
+      return child;
+    },
+    pollMs: 250,
+  });
+  try {
+    await service.start();
+    await service.setAsr({ enabled: true });
+    await until(() => identityRequested, 'ASR identity request did not begin');
+    await service.setAsr({ enabled: false });
+    resolveIdentity({ pid: 4242, exePath: GAME, creationFiletime: CREATION_FILETIME });
+    await delay(30);
+    assert.equal(commands.some((command) => command.startsWith(`ASR 4242 `)), false, 'stale identity resolution must not restore a target after ASR was disabled');
+    assert.ok(commands.includes('ASR 0'));
+    assert.ok(commands.includes('STOP'));
+  } finally {
+    child.exitCode ??= 0;
+    child.stdin.destroyed = true;
     await service.stop();
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -2710,9 +2710,9 @@ async function main() {
       helperPath: sharpeningHelperPath,
       ensureCompatibility: () => rtssProfile.ensureScreenSharpeningCompatibility(),
       stageHelper: app.isPackaged && process.platform === 'win32' ? stageScreenSharpeningHelper : null,
-      allowCaptureOverlay: false });
-  // The capture overlay is paused because it causes frame-pacing and input-
-  // latency regressions. A future native/in-game provider can re-enable it.
+      allowCaptureOverlay: false,
+      allowAsrCapture: true });
+  // Arc Image Sharpening remains paused because its capture overlay causes frame-pacing and input-latency regressions.
   void postprocessSharpening.start().catch((error) => console.error(`[sharpening] ${error.message}`));
   // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in
   // bytes - total - avail - the Memory row's source). THE DETERMINISM
@@ -4505,6 +4505,12 @@ async function main() {
       if (win.webContents.isLoading()) win.webContents.once('did-finish-load', resolve);
       else resolve();
     });
+    if (process.env.RID_MOCK_ADV_OVERLAY_SETTINGS_VERIFY === '1') {
+      const { verifyAdvancedOverlayGlobalSettingsUi } = await import('../../test/advanced-overlay-global-settings-ui.js');
+      await verifyAdvancedOverlayGlobalSettingsUi(win, advancedOverlayHandle, postprocessSharpening);
+      app.exit(0);
+      return;
+    }
     // Focused rendered Chromium regression for global and per-game
     // sharpening. The mock backend is mandatory in --ui-verify; this early
     // branch bypasses every unrelated full ui-verify flow.
@@ -4619,7 +4625,7 @@ async function main() {
       // (never a real registration). The mock backend is passed so the
       // M22-safe payload pins can record the apply-settings payloads (the
       // NO-gpuLock-key shape assertions).
-      await runAdvancedOverlayVerify(win, advancedOverlayHandle, store, advancedOverlayHotkeyProbe, backend);
+      await runAdvancedOverlayVerify(win, advancedOverlayHandle, store, advancedOverlayHotkeyProbe, backend, postprocessSharpening);
     } else {
       // M4-D: the window-ops probe rides along - run 2 pins the title-bar
       // buttons via getWindowOpCounts. M4-H: the open-external probe rides

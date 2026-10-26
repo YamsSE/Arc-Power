@@ -121,10 +121,73 @@ export function buildDropdown(
       option.setAttribute('aria-selected', index === selected ? 'true' : 'false');
       option.classList.toggle('is-active', index === active && openDropdown?.root === root);
     });
-    optionNodes[active]?.scrollIntoView({ block: 'nearest' });
+    const activeOption = optionNodes[active];
+    if (activeOption && menu.contains(activeOption)) {
+      const optionRect = activeOption.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      if (optionRect.top < menuRect.top) menu.scrollTop -= menuRect.top - optionRect.top;
+      else if (optionRect.bottom > menuRect.bottom) menu.scrollTop += optionRect.bottom - menuRect.bottom;
+    }
+  };
+
+  let repositionFrame: number | null = null;
+  let resizeObserver: ResizeObserver | null = null;
+  let anchorObserver: MutationObserver | null = null;
+  const positionMenu = (): void => {
+    repositionFrame = null;
+    if (openDropdown?.root !== root || menu.hidden) return;
+    if (!root.isConnected) { close(false); return; }
+    const rect = root.getBoundingClientRect();
+    let visibleLeft = 0;
+    let visibleTop = 0;
+    let visibleRight = window.innerWidth;
+    let visibleBottom = window.innerHeight;
+    for (let ancestor = root.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor);
+      if (!/(auto|scroll|hidden|clip)/.test(`${style.overflow}${style.overflowX}${style.overflowY}`)) continue;
+      const bounds = ancestor.getBoundingClientRect();
+      visibleLeft = Math.max(visibleLeft, bounds.left);
+      visibleTop = Math.max(visibleTop, bounds.top);
+      visibleRight = Math.min(visibleRight, bounds.right);
+      visibleBottom = Math.min(visibleBottom, bounds.bottom);
+    }
+    if (rect.bottom <= visibleTop || rect.top >= visibleBottom
+      || rect.right <= visibleLeft || rect.left >= visibleRight) {
+      close(false);
+      return;
+    }
+    const margin = 8;
+    const gap = 4;
+    const left = Math.max(margin, Math.min(rect.left, window.innerWidth - Math.max(rect.width, 160) - margin));
+    const width = Math.max(rect.width, 160);
+    // The portal escapes card and scrollport clipping. Only the browser
+    // viewport limits popup space; ancestor bounds above are for deciding
+    // whether the anchor itself is still visible.
+    const below = Math.max(0, window.innerHeight - rect.bottom - margin - gap);
+    const above = Math.max(0, rect.top - margin - gap);
+    const natural = Math.min(320, menu.scrollHeight);
+    const placeBelow = below >= natural || (below >= above);
+    const available = Math.max(1, Math.min(320, placeBelow ? below : above));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${placeBelow ? rect.bottom + gap : Math.max(margin, rect.top - Math.min(natural, available) - gap)}px`;
+    menu.style.minWidth = `${Math.min(width, window.innerWidth - margin * 2)}px`;
+    menu.style.maxHeight = `${available}px`;
+  };
+  const schedulePosition = (): void => {
+    if (repositionFrame === null && openDropdown?.root === root) {
+      repositionFrame = requestAnimationFrame(positionMenu);
+    }
   };
 
   const close = (restoreFocus = false): void => {
+    if (repositionFrame !== null) cancelAnimationFrame(repositionFrame);
+    repositionFrame = null;
+    resizeObserver?.disconnect();
+    resizeObserver = null;
+    anchorObserver?.disconnect();
+    anchorObserver = null;
+    document.removeEventListener('scroll', schedulePosition, true);
+    window.removeEventListener('resize', schedulePosition);
     if (focusoutTimer !== null) {
       window.clearTimeout(focusoutTimer);
       focusoutTimer = null;
@@ -146,15 +209,6 @@ export function buildDropdown(
       focusoutTimer = null;
     }
     if (openDropdown && openDropdown.root !== root) openDropdown.close(false);
-    const rect = root.getBoundingClientRect();
-    const estimatedHeight = Math.min(320, sourceOptions.length * 30 + 8);
-    const roomBelow = window.innerHeight - rect.bottom - 8;
-    const top = roomBelow >= estimatedHeight
-      ? rect.bottom + 4
-      : Math.max(8, rect.top - estimatedHeight - 4);
-    menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - Math.max(rect.width, 160) - 8))}px`;
-    menu.style.top = `${top}px`;
-    menu.style.minWidth = `${Math.max(rect.width, 160)}px`;
     document.body.append(menu);
     menu.hidden = false;
     root.setAttribute('aria-expanded', 'true');
@@ -164,6 +218,18 @@ export function buildDropdown(
       : selected;
     if (active < 0) active = selected;
     openDropdown = { root, menu, close };
+    document.addEventListener('scroll', schedulePosition, true);
+    window.addEventListener('resize', schedulePosition);
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(schedulePosition);
+      resizeObserver.observe(root);
+      resizeObserver.observe(menu);
+    }
+    if (typeof MutationObserver !== 'undefined') {
+      anchorObserver = new MutationObserver(() => { if (!root.isConnected) close(false); });
+      anchorObserver.observe(document.documentElement, { childList: true, subtree: true });
+    }
+    positionMenu();
     updateValue();
     root.focus();
   };

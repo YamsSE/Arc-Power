@@ -593,7 +593,7 @@ export function createCpuUtilReader(deps = {}) {
       // address arithmetic - the same single-buffer style as the
       // memory-util MEMORYSTATUSEX; each FILETIME must be its own
       // pointer, kernel32 writes at the start of each).
-      const buf = koffi.alloc('uint8', FILETIME_SIZE * 3);
+      const buf = Buffer.alloc(FILETIME_SIZE * 3);
       const base = koffi.address(buf);
       const ok = fn(buf, base + BigInt(CPU_UTIL_KERNEL_OFF), base + BigInt(CPU_UTIL_USER_OFF));
       if (!ok) return null; // GetSystemTimes returned FALSE

@@ -19,7 +19,6 @@ import { findZeLoaderDll, loadSysman, zeOk, describeZeResult, enumerateHandles }
 // is enum-FIRST (see ensure() below), so a loader without the enum symbol
 // must degrade honestly (the missing-exports reason), never throw.
 const REQUIRED_EXPORTS = [
-  'zeInit', 'zeDriverGet', 'zeDeviceGet',
   'zesInit', 'zesDriverGet', 'zesDeviceGet',
   'zesDeviceEnumPowerDomains', 'zesDeviceGetCardPowerDomain',
   'zesPowerGetLimits', 'zesPowerSetLimits',
@@ -126,6 +125,8 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       degradeReason = 'ze_loader.dll not found - the PL2 read-out stays \'-\' (the honest degrade)';
       return null;
     }
+    log(`Sysman loader selected: ${dllPath}`);
+    log('Sysman initialization mode: standalone zesInit(0)');
     let lib;
     try {
       lib = load(dllPath);
@@ -139,30 +140,10 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       return null;
     }
     try {
-      // The ze/zes init chain (the M2b probe pattern). The ze list is kept
-      // for loader/device readiness, while the Sysman list below is routed
-      // by each adapter's own PCI/BDF properties rather than by ordinal.
-      let r = lib.zeInit(0);
-      if (!zeOk(r)) throw new Error(`zeInit: ${describeZeResult(r)}`);
-      const zeDriverCountBuf = koffi.alloc('uint32', 1);
-      r = lib.zeDriverGet(zeDriverCountBuf, null);
-      if (!zeOk(r)) throw new Error(`zeDriverGet count: ${describeZeResult(r)}`);
-      const zeDriverCount = koffi.decode(zeDriverCountBuf, 'uint32');
-      if (zeDriverCount === 0) throw new Error('no ze drivers');
-      const zeDriversBuf = koffi.alloc('void*', zeDriverCount);
-      r = lib.zeDriverGet(zeDriverCountBuf, zeDriversBuf);
-      if (!zeOk(r)) throw new Error(`zeDriverGet fill: ${describeZeResult(r)}`);
-      const zeDriver = koffi.decode(zeDriversBuf, 0, 'void*');
-      const zeCountBuf = koffi.alloc('uint32', 1);
-      r = lib.zeDeviceGet(zeDriver, zeCountBuf, null);
-      if (!zeOk(r)) throw new Error(`zeDeviceGet count: ${describeZeResult(r)}`);
-      const zeDevCount = koffi.decode(zeCountBuf, 'uint32');
-      if (zeDevCount === 0) throw new Error('no ze devices');
-      const zeDevBuf = koffi.alloc('void*', zeDevCount);
-      r = lib.zeDeviceGet(zeDriver, zeCountBuf, zeDevBuf);
-      if (!zeOk(r)) throw new Error(`zeDeviceGet fill: ${describeZeResult(r)}`);
-
-      r = lib.zesInit(0);
+      // Core zeInit can activate legacy Sysman when ZES_ENABLE_SYSMAN is
+      // inherited; mixing that legacy context with standalone zesInit is
+      // unsupported (https://github.com/intel/compute-runtime/blob/master/programmers-guide/SYSMAN.md).
+      let r = lib.zesInit(0);
       if (!zeOk(r)) throw new Error(`zesInit: ${describeZeResult(r)}`);
       const zesDriverCountBuf = koffi.alloc('uint32', 1);
       r = lib.zesDriverGet(zesDriverCountBuf, null);
@@ -283,6 +264,7 @@ export function createSysmanPowerLimits({ findLoader = findZeLoaderDll, load = l
       }
       if (devices.length === 0) throw new Error('no usable power or frequency domain on any Sysman device');
       ready = { lib, devices };
+      log(`Sysman standalone readiness: ${zesDriverCount} driver(s), ${zesDevCount} device(s), ${devices.length} usable device context(s)`);
       return ready;
     } catch (err) {
       degradeReason = err instanceof Error ? err.message : String(err);

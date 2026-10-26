@@ -1514,6 +1514,16 @@ export interface PostprocessSharpeningValue {
   enabled: boolean;
   percentage: number;
 }
+export interface ArcSuperResolutionValue {
+  enabled: boolean;
+}
+export interface ArcSuperResolutionState {
+  value: ArcSuperResolutionValue;
+  runtimeReady: boolean;
+  requiresRestart: false;
+  active: boolean;
+  reason?: string | null;
+}
 export interface PostprocessSharpeningGlobal {
   value: PostprocessSharpeningValue;
   overrideCount: number;
@@ -1527,6 +1537,9 @@ export interface PostprocessSharpeningGlobal {
   legacyManifestStatus?: 'clear' | 'found' | 'unreadable';
   legacyManifestReason?: string;
 }
+export type PostprocessGlobalSettingsUpdate =
+  | { kind: 'sharpening'; revision: number; state: PostprocessSharpeningGlobal }
+  | { kind: 'asr'; revision: number; state: ArcSuperResolutionState };
 export interface PostprocessSharpeningGame {
   value: PostprocessSharpeningValue;
   effective: PostprocessSharpeningValue;

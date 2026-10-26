@@ -107,3 +107,109 @@ test('IGCL Graphics reads skip the legacy helper only when explicitly requested 
   assert.equal(legacyReads, 1, 'limiter reads do not spawn the legacy sharpening helper');
   assert.equal(frameLimitReadAttempts, 2, 'each call performs a fresh native frame-limit read');
 });
+
+function writeTelemetry(buffer, type, timestamp = 12) {
+  const item = (value, units) => ({ bSupported: true, units, type: 9, value });
+  koffi.encode(buffer, type, {
+    Size: koffi.sizeof(type),
+    Version: 1,
+    timeStamp: item(timestamp, 7),
+    gpuCurrentClockFrequency: item(1750, 0),
+    gpuCurrentTemperature: item(61, 5),
+  });
+}
+
+test('IGCL raw telemetry uses GC-owned native buffers on V2 success, V1 fallback, and error', async () => {
+  let v2Calls = 0;
+  const successfulV2 = new IgclBackend({ lib: {
+    ctlPowerTelemetryGetV2(_device, buffer) {
+      assert.ok(Buffer.isBuffer(buffer));
+      v2Calls += 1;
+      writeTelemetry(buffer, 'ctl_power_telemetry_v2_t');
+      return CTL_RESULT.SUCCESS;
+    },
+  } });
+  successfulV2._device = async () => ({ handle: {}, integrated: false, mobile: false });
+  for (let i = 0; i < 40; i += 1) {
+    const sample = await successfulV2.sampleRawTelemetry(7);
+    assert.equal(sample.gpuClockMhz, 1750);
+    assert.equal(sample.tempC, 61);
+    assert.equal(sample.t, 12);
+  }
+  assert.equal(v2Calls, 40);
+
+  let fallbackV1Calls = 0;
+  const fallback = new IgclBackend({ lib: {
+    ctlPowerTelemetryGetV2(_device, buffer) {
+      assert.ok(Buffer.isBuffer(buffer));
+      return CTL_RESULT.ERROR_NOT_AVAILABLE;
+    },
+    ctlPowerTelemetryGet(_device, buffer) {
+      assert.ok(Buffer.isBuffer(buffer));
+      fallbackV1Calls += 1;
+      writeTelemetry(buffer, 'ctl_power_telemetry_t', 13);
+      return CTL_RESULT.SUCCESS;
+    },
+  } });
+  fallback._device = async () => ({ handle: {}, integrated: false, mobile: false });
+  const fallbackSample = await fallback.sampleRawTelemetry(7);
+  assert.equal(fallbackSample.gpuClockMhz, 1750);
+  assert.equal(fallbackSample.tempC, 61);
+  assert.equal(fallbackSample.t, 13);
+  assert.equal(fallbackV1Calls, 1);
+
+  const failed = new IgclBackend({ lib: {
+    ctlPowerTelemetryGetV2(_device, buffer) {
+      assert.ok(Buffer.isBuffer(buffer));
+      return CTL_RESULT.ERROR_DEVICE_LOST;
+    },
+  } });
+  failed._device = async () => ({ handle: {}, integrated: false, mobile: false });
+  await assert.rejects(() => failed.sampleRawTelemetry(7), /ctlPowerTelemetryGetV2 failed/);
+});
+
+test('IGCL temperature sensor enumeration uses GC-owned buffers and preserves first-sensor fallback and error results', () => {
+  let propertyCalls = 0;
+  let temperatureCalls = 0;
+  const backend = new IgclBackend({ lib: {
+    ctlEnumTemperatureSensors(_device, countBuffer, handlesBuffer) {
+      assert.ok(Buffer.isBuffer(countBuffer));
+      if (handlesBuffer === null) {
+        koffi.encode(countBuffer, 0, 'uint32', 2);
+        return CTL_RESULT.SUCCESS;
+      }
+      assert.ok(Buffer.isBuffer(handlesBuffer));
+      assert.equal(handlesBuffer.byteLength, koffi.sizeof('void*') * 2);
+      koffi.encode(handlesBuffer, 0, 'void*', 0x1111n);
+      koffi.encode(handlesBuffer, koffi.sizeof('void*'), 'void*', 0x2222n);
+      return CTL_RESULT.SUCCESS;
+    },
+    ctlTemperatureGetProperties(_handle, propertiesBuffer) {
+      assert.ok(Buffer.isBuffer(propertiesBuffer));
+      propertyCalls += 1;
+      return CTL_RESULT.ERROR_NOT_AVAILABLE;
+    },
+    ctlTemperatureGetState(handle, temperatureBuffer) {
+      assert.ok(Buffer.isBuffer(temperatureBuffer));
+      temperatureCalls += 1;
+      assert.equal(koffi.address(handle), 0x1111n, 'when GPU-domain classification is unavailable, retain the first-sensor fallback');
+      koffi.encode(temperatureBuffer, 0, 'double', 62.5);
+      return CTL_RESULT.SUCCESS;
+    },
+  } });
+  for (let i = 0; i < 40; i += 1) {
+    assert.equal(backend._temperatureSensorTempC({ handle: {} }, 7), 62.5);
+  }
+  assert.equal(propertyCalls, 80);
+  assert.equal(temperatureCalls, 40);
+
+  const failed = new IgclBackend({ lib: {
+    ctlEnumTemperatureSensors(_device, countBuffer, handlesBuffer) {
+      assert.ok(Buffer.isBuffer(countBuffer));
+      if (handlesBuffer === null) koffi.encode(countBuffer, 0, 'uint32', 1);
+      return handlesBuffer === null ? CTL_RESULT.SUCCESS : CTL_RESULT.ERROR_DEVICE_LOST;
+    },
+    ctlTemperatureGetState() { assert.fail('state must not be read after failed enumeration'); },
+  } });
+  assert.equal(failed._temperatureSensorTempC({ handle: {} }, 8), undefined);
+});

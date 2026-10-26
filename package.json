@@ -1,6 +1,6 @@
 {
     "name":  "arc-power",
-    "version":  "1.2.4",
+    "version":  "1.2.5",
     "license":  "GPL-2.0-only",
     "private":  true,
     "description":  "Arc Power",
@@ -38,6 +38,10 @@
                                 "!src/main/sharpening-runtime/build.log",
                                 "!src/main/sharpening-runtime/ArcPower.ScreenSharpen.cpp",
                                 "!src/main/sharpening-runtime/build-screen-sharpen.ps1",
+                                "!src/main/sharpening-runtime/managed-control-client.cpp",
+                                "!src/main/sharpening-runtime/managed-control-client.README.md",
+                                "!src/main/sharpening-runtime/build-managed-control-client.ps1",
+                                "!src/main/managed-sharpening-control.js",
                                 "!src/main/sharpening-runtime/*.obj",
                                 "!src/main/shaders/ArcPowerSharpen.fx",
                                 "!src/main/backend/presentmon/**",

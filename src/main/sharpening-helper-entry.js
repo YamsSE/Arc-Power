@@ -57,6 +57,14 @@ export function validateSharpeningCapability(detail) {
     && (range.default - range.min) % range.step === 0);
 }
 
+export function describeSharpeningCapability(detail) {
+  if (!detail) return 'the driver did not report the 3D sharpening feature';
+  const range = detail.intRange;
+  const rangeText = range && ['min', 'max', 'step', 'default'].every((key) => Number.isInteger(range[key]))
+    ? `range=${range.min}..${range.max}, step=${range.step}, default=${range.default}` : 'no valid integer range';
+  return `sharpening is not advertised with an integer 0-100 range (${rangeText}; valueType=${detail.valueType}; perApp=${detail.perAppSupport === true}; liveChange=${detail.liveChange === true})`;
+}
+
 export function matchUniqueLuid(handles, luidOf, expectedLuid) {
   const matches = handles.filter((handle) => luidOf(handle)?.toLowerCase() === expectedLuid.toLowerCase());
   if (matches.length !== 1) throw new Error(matches.length ? 'adapter identity matched more than once' : 'the requested physical adapter was not found by LUID');
@@ -163,7 +171,7 @@ async function main(request, canContinue) {
       if (!candidate.legacy) currentAdapterMatched = true;
       const detail = capabilities(lib, handle);
       if (!validateSharpeningCapability(detail)) {
-        failures.push('sharpening is not advertised with an integer 0-100 range');
+        failures.push(describeSharpeningCapability(detail));
         continue;
       }
       if (request.applicationName && detail.perAppSupport !== true) {

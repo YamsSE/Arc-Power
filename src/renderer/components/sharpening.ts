@@ -1,8 +1,8 @@
 import { api } from '../ipc.ts';
 import { el } from '../dom.ts';
-import { buildDropdown, type DropdownElement } from './dropdown.ts';
 import { toast } from './toast.ts';
-import type { PostprocessSharpeningGame, PostprocessSharpeningGlobal, PostprocessSharpeningValue } from '../types.ts';
+import { buildDropdown, type DropdownElement } from './dropdown.ts';
+import type { ArcSuperResolutionState, ArcSuperResolutionValue, PostprocessSharpeningGame, PostprocessSharpeningGlobal, PostprocessSharpeningValue } from '../types.ts';
 
 const safePercentage = (value: number): number => Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
 
@@ -22,12 +22,23 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
   let generation = 0;
   let state: PostprocessSharpeningGlobal | null = null;
   let draft: PostprocessSharpeningValue = { enabled: false, percentage: 50 };
-  let latestRuntimeStatus: { active: boolean; reason?: string } | null = null;
+  let latestRuntimeStatus: { active: boolean; reason?: string; mode?: 'asr' | 'sharpening' } | null = null;
   let busy = false;
   let error = '';
   let saveStatus = '';
   let appliedValue: PostprocessSharpeningValue | null = null;
+  let settingsRevision = 0;
+  let externalChange = false;
   let applyGlobal: () => Promise<void> = async () => {};
+  const mergeRuntimeStatus = (base: PostprocessSharpeningGlobal): PostprocessSharpeningGlobal => {
+    if (!latestRuntimeStatus) return base;
+    // An unavailable screen-sharpening runtime can carry a mode-specific
+    // pause explanation. ASR status events describe the separate ASR path and
+    // must never replace that explanation (or supply a global warning).
+    if (!base.runtimeReady) return { ...base, active: false, reason: base.reason };
+    if (latestRuntimeStatus.mode === 'asr') return { ...base, active: false, reason: undefined };
+    return { ...base, active: latestRuntimeStatus.active, reason: latestRuntimeStatus.reason };
+  };
   const markEditing = (): void => {
     saveStatus = '';
     const button = root.querySelector<HTMLButtonElement>('.graphics-card-actions .btn-primary');
@@ -83,10 +94,10 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
       try {
         const next = await api.postprocessSharpeningSet({ enabled: draft.enabled, percentage: draft.percentage });
         if (request !== generation || !root.isConnected) return;
-        state = next;
-        if (latestRuntimeStatus) state = { ...state, active: latestRuntimeStatus.active, reason: latestRuntimeStatus.reason };
+        state = mergeRuntimeStatus(next);
         draft = { ...state.value };
         appliedValue = { ...state.value };
+        externalChange = false;
         saveStatus = state.reason ? 'Saved' : 'Applied';
         if (state.reason) toast('warn', 'Arc Image Sharpening saved', state.reason);
         else toast('success', 'Arc Image Sharpening saved', 'Runtime status shows whether sharpening is active.');
@@ -106,9 +117,10 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
       ...legacyWarning(),
       el('p', { class: 'sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading sharpening settings…' }),
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),
+      ...(externalChange ? [el('p', { class: 'settings-sync-status', text: 'Saved settings changed in the other window. Your draft is preserved; Apply will overwrite that change.' })] : []),
       el('div', { class: 'graphics-card-actions' }, [
         el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : saveStatus || 'Apply', disabled: busy || !state || (!state.runtimeReady && draft.enabled), onclick: () => void apply() }),
-        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { saveStatus = ''; draft = { enabled: false, percentage: 50 }; render(); notify(); } }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { saveStatus = ''; externalChange = false; draft = { enabled: false, percentage: 50 }; render(); notify(); } }),
       ]),
     );
   };
@@ -116,17 +128,31 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
   const request = ++generation;
   const unsubscribeStatus = api.onPostprocessSharpeningStatus((status) => {
     if (!root.isConnected || typeof status?.active !== 'boolean') return;
-    latestRuntimeStatus = { active: status.active, reason: typeof status.reason === 'string' ? status.reason : undefined };
+    latestRuntimeStatus = { active: status.active && status.mode !== 'asr', mode: status.mode, reason: typeof status.reason === 'string' ? status.reason : undefined };
     if (state) {
-      state = { ...state, ...latestRuntimeStatus };
+      state = mergeRuntimeStatus(state);
       const note = root.querySelector<HTMLElement>('.sharpening-runtime-status');
       if (note) note.textContent = runtimeStatusText();
     }
   });
+  const unsubscribeSettings = api.onPostprocessGlobalSettingsUpdated((update) => {
+    if (!root.isConnected || update.kind !== 'sharpening' || update.revision <= settingsRevision) return;
+    settingsRevision = update.revision;
+    const dirty = isDirty();
+    const changed = !!appliedValue && (update.state.value.enabled !== appliedValue.enabled || update.state.value.percentage !== appliedValue.percentage);
+    state = mergeRuntimeStatus(update.state);
+    appliedValue = { ...update.state.value };
+    const draftMatchesSaved = draft.enabled === update.state.value.enabled && draft.percentage === update.state.value.percentage;
+    if (!dirty || draftMatchesSaved) { draft = { ...update.state.value }; externalChange = false; saveStatus = 'Applied'; }
+    else if (changed) externalChange = true;
+    render(); notify();
+  });
   void api.postprocessSharpeningGet().then((value) => {
     if (request !== generation || !root.isConnected) return;
-    state = latestRuntimeStatus ? { ...value, ...latestRuntimeStatus } : value;
-    draft = { ...value.value }; appliedValue = { ...value.value }; render(); notify();
+    if (settingsRevision > 0) return;
+    state = mergeRuntimeStatus(value);
+    draft = { ...value.value }; appliedValue = { ...value.value };
+    render(); notify();
   }).catch((err: unknown) => {
     if (request !== generation || !root.isConnected) return;
     error = err instanceof Error ? err.message : String(err); render();
@@ -135,7 +161,129 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
     if (root.isConnected) return;
     generation += 1;
     unsubscribeStatus();
+    unsubscribeSettings();
     onUnmount?.();
+    detachObserver.disconnect();
+  });
+  detachObserver.observe(document.body, { childList: true, subtree: true });
+  return root;
+}
+
+/** Spatial window-to-display upscaling; it does not call XeSS or driver graphics settings. */
+export function renderArcSuperResolution(): HTMLElement {
+  const root = el('section', { class: 'card graphics-card asr-card' });
+  let generation = 0;
+  let state: ArcSuperResolutionState | null = null;
+  let draft: ArcSuperResolutionValue = { enabled: false };
+  let latestStatus: { active: boolean; reason?: string; mode?: 'asr' | 'sharpening' } | null = null;
+  let busy = false;
+  let applied = false;
+  let error = '';
+  let settingsRevision = 0;
+  let externalChange = false;
+  let pendingPush: import('../types.ts').PostprocessGlobalSettingsUpdate | null = null;
+
+  const runtimeStatusText = (): string => {
+    if (state?.reason) return state.reason;
+    if (state?.active) return 'Arc Super Resolution is active on the foreground game.';
+    return state?.runtimeReady
+      ? 'Waiting for a recognized game running in a smaller window on an Intel Arc display.'
+      : 'Arc Super Resolution is unavailable on this system.';
+  };
+
+  const render = (): void => {
+    const request = generation;
+    const select = makeSelect(draft.enabled ? 'on' : 'off', [
+      { value: 'off', label: 'Arc Super Resolution Off' },
+      { value: 'on', label: 'Arc Super Resolution On' },
+    ], (value) => {
+      draft.enabled = value === 'on';
+      applied = false;
+      const button = root.querySelector<HTMLButtonElement>('.asr-apply');
+      if (button) button.textContent = 'Apply';
+    }, 'Arc Super Resolution');
+    select.disabled = busy || !state;
+    const apply = async (): Promise<void> => {
+      if (busy || !state) return;
+      if (draft.enabled && !state.runtimeReady) return;
+      busy = true; error = ''; render();
+      try {
+        state = await api.arcSuperResolutionSet({ enabled: draft.enabled });
+        if (latestStatus) state = { ...state, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason };
+        draft = { ...state.value };
+        applied = true;
+        toast('success', 'Arc Super Resolution preference saved', state.value.enabled
+          ? (state.active ? 'ASR is active on the foreground game.' : runtimeStatusText())
+          : 'Arc Super Resolution is turned off.');
+      } catch (err) {
+        applied = false;
+        error = err instanceof Error ? err.message : String(err);
+        toast('error', 'Arc Super Resolution apply failed', error);
+      }
+      finally {
+        busy = false;
+        const update = pendingPush; pendingPush = null;
+        if (update) reconcilePush(update);
+        if (request === generation && root.isConnected) render();
+      }
+    };
+    root.replaceChildren(
+      el('div', { class: 'sharpening-card-heading' }, [
+        el('div', { class: 'sharpening-card-copy' }, [
+          el('h2', { class: 'card-title', text: 'Arc Super Resolution (ASR)' }),
+          el('p', { class: 'card-note', text: 'Spatially scales a smaller game window to the monitor’s desktop resolution.' }),
+        ]),
+        el('div', { class: 'sharpening-card-control' }, [select]),
+      ]),
+      sharpeningHelp('Run a recognized game in a smaller window while the desktop remains at its native resolution. Arc Power fits that game window to the display and passes native input through to the game. A display-filling borderless window has no smaller image to scale. Exclusive fullscreen may change the active display mode. ASR is limited to recognized games and does not guarantee compatibility with every game. ASR takes priority over Arc Image Sharpening while enabled; turning ASR off restores the sharpening setting.'),
+      el('p', { class: 'sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading Arc Super Resolution settings…' }),
+      ...(error ? [el('p', { class: 'text-error', text: error })] : []),
+      ...(externalChange ? [el('p', { class: 'settings-sync-status', text: 'Saved settings changed in the other window. Your draft is preserved; Apply will overwrite that change.' })] : []),
+      el('div', { class: 'graphics-card-actions' }, [
+        el('button', { class: 'btn btn-primary btn-sm asr-apply', text: busy ? 'Applying…' : applied ? 'Applied' : 'Apply', disabled: busy || !state || (draft.enabled && !state.runtimeReady), onclick: () => void apply() }),
+        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { draft = { enabled: false }; applied = false; externalChange = false; render(); } }),
+      ]),
+    );
+  };
+
+  render();
+  const request = ++generation;
+  const unsubscribeStatus = api.onPostprocessSharpeningStatus((status) => {
+    if (!root.isConnected || typeof status?.active !== 'boolean') return;
+    latestStatus = { active: status.active, mode: status.mode, reason: typeof status.reason === 'string' ? status.reason : undefined };
+    if (state) {
+      state = { ...state, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason };
+      const note = root.querySelector<HTMLElement>('.sharpening-runtime-status');
+      if (note) note.textContent = runtimeStatusText();
+    }
+  });
+  const reconcilePush = (update: import('../types.ts').PostprocessGlobalSettingsUpdate): void => {
+    if (!root.isConnected || update.kind !== 'asr' || update.revision <= settingsRevision) return;
+    if (pendingPush && update.revision <= pendingPush.revision) return;
+    if (busy) { pendingPush = update; return; }
+    settingsRevision = update.revision;
+    const dirty = !!state && draft.enabled !== state.value.enabled;
+    const changed = !!state && update.state.value.enabled !== state.value.enabled;
+    state = latestStatus ? { ...update.state, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason } : update.state;
+    const draftMatchesSaved = draft.enabled === update.state.value.enabled;
+    if (!dirty || draftMatchesSaved) { draft = { ...update.state.value }; applied = true; externalChange = false; }
+    else if (changed) { applied = false; externalChange = true; }
+    render();
+  };
+  const unsubscribeSettings = api.onPostprocessGlobalSettingsUpdated(reconcilePush);
+  void api.arcSuperResolutionGet().then((value) => {
+    if (request !== generation || !root.isConnected) return;
+    if (settingsRevision > 0) return;
+    state = latestStatus ? { ...value, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason } : value;
+    draft = { ...value.value }; render();
+  }).catch((err: unknown) => {
+    if (request !== generation || !root.isConnected) return;
+    error = err instanceof Error ? err.message : String(err); render();
+  });
+  const detachObserver = new MutationObserver(() => {
+    if (root.isConnected) return;
+    unsubscribeStatus();
+    unsubscribeSettings();
     detachObserver.disconnect();
   });
   detachObserver.observe(document.body, { childList: true, subtree: true });

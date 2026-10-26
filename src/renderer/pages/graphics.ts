@@ -46,7 +46,7 @@ import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { applyFailureText, CONTROL_LABELS, errorMessage } from '../pure/errors.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
-import { renderGlobalSharpening } from '../components/sharpening.ts';
+import { renderArcSuperResolution, renderGlobalSharpening } from '../components/sharpening.ts';
 import { activeDeviceLabel } from '../pure/device.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { chipState } from '../pure/chip.ts';
@@ -707,7 +707,7 @@ export const graphicsPage: Page = {
     // the Tuning-style 'No GPU available.' guard.
     if (s.deviceId === null) {
       const sharpening = createScreenOnlySharpening();
-      container.append(el('p', { class: 'page-subtitle', text: 'No GPU available for driver graphics settings.' }), sharpening.apply, sharpening.card);
+      container.append(el('p', { class: 'page-subtitle', text: 'No GPU available for driver graphics settings.' }), renderArcSuperResolution(), sharpening.apply, sharpening.card);
       return;
     }
 
@@ -840,6 +840,7 @@ async function renderSettingsView(view: HTMLElement, ctx: PageContext, generatio
     const sharpening = createScreenOnlySharpening();
     view.append(
       el('p', { class: 'text-error', text: `Graphics settings unavailable: ${err instanceof Error ? err.message : String(err)}` }),
+      renderArcSuperResolution(),
       sharpening.apply,
       sharpening.card,
     );
@@ -1425,6 +1426,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     el('div', { class: 'card-stack graphics-stack' }, [
       ...mobileCards,
       sharpeningCard,
+      renderArcSuperResolution(),
       ...(!battlemage ? [prebuiltShaderCard] : []),
       buildDropdownCard('frameGenOverride'),
       buildDropdownCard('flipMode'),

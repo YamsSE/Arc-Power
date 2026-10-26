@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createSharpeningProxy } from '../src/main/sharpening-proxy.js';
 import { validateSharpeningRequest, sharpeningGuardIsLive } from '../src/main/sharpening-contract.js';
-import { runSharpeningHelperRequest, validateSharpeningCapability, matchUniqueLuid, interpretSharpeningRead, isParentProcessAlive, resolveLegacySharpeningDllPath, sharpeningReadMatchesRequest, shouldTryLegacySharpeningFallback } from '../src/main/sharpening-helper-entry.js';
+import { runSharpeningHelperRequest, validateSharpeningCapability, describeSharpeningCapability, matchUniqueLuid, interpretSharpeningRead, isParentProcessAlive, resolveLegacySharpeningDllPath, sharpeningReadMatchesRequest, shouldTryLegacySharpeningFallback } from '../src/main/sharpening-helper-entry.js';
 import { CTL_3D_FEATURE, CTL_PROPERTY_VALUE_TYPE, CTL_RESULT } from '../src/main/backend/igcl-bindings.js';
 
 const base = { action: 'read', luid: '9ebf000000000000', deadlineAt: Date.now() + 5000 };
@@ -44,6 +44,11 @@ test('OS parent liveness remains independent from IPC event delivery', () => {
   assert.equal(isParentProcessAlive(42, () => { const error = new Error('denied'); error.code = 'EPERM'; throw error; }), true);
   assert.equal(isParentProcessAlive(42, () => { const error = new Error('gone'); error.code = 'ESRCH'; throw error; }), false);
   assert.equal(isParentProcessAlive(0, () => {}), false);
+});
+
+test('driver capability failures preserve the exact advertised range and application scope', () => {
+  assert.equal(describeSharpeningCapability(null), 'the driver did not report the 3D sharpening feature');
+  assert.match(describeSharpeningCapability({ valueType: 4, intRange: { min: 0, max: 10, step: 2, default: 4 }, perAppSupport: true, liveChange: true }), /range=0\.\.10, step=2, default=4; valueType=4; perApp=true; liveChange=true/);
 });
 
 test('identity resolution requires exactly one LUID match', () => {

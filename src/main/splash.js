@@ -5,6 +5,7 @@ import { BrowserWindow } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFatalSplashFallback } from './startup-update.js';
+import { getSplashPresentation } from './splash-presentation.js';
 import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,6 +50,12 @@ export function createStartupSplash({ onFatalLoad = null } = {}) {
     },
   });
   applyWindowIconLifecycle(splash);
+  const presentation = getSplashPresentation(splash);
+  splash.once('ready-to-show', () => {
+    if (!splash.isDestroyed()) splash.showInactive();
+    presentation.windowReady();
+  });
+  splash.once('closed', () => presentation.close());
 
   const fatalSplashFallback = createFatalSplashFallback({
     onFailure: onFatalLoad,
@@ -57,9 +64,6 @@ export function createStartupSplash({ onFatalLoad = null } = {}) {
   void splash.loadFile(path.join(__dirname, '..', 'renderer', 'splash.html')).catch(fatalSplashFallback);
   splash.webContents.once('did-fail-load', fatalSplashFallback);
   splash.webContents.once('render-process-gone', fatalSplashFallback);
-  splash.once('ready-to-show', () => {
-    if (!splash.isDestroyed()) splash.showInactive();
-  });
   return splash;
 }
 
@@ -70,12 +74,15 @@ export function createStartupSplash({ onFatalLoad = null } = {}) {
 export function attachStartupUpdateStatus(splash, coordinator) {
   let loaded = false;
   let latest = coordinator.latest();
+  const presentation = getSplashPresentation(splash);
   const publish = (payload) => {
     latest = payload;
+    presentation.setStatus(payload);
     if (loaded) publishStartupUpdateStatus(splash, payload);
   };
   splash.webContents.once('did-finish-load', () => {
     loaded = true;
+    presentation.contentReady();
     publishStartupUpdateStatus(splash, latest);
   });
   const unsubscribe = coordinator.subscribe(publish);

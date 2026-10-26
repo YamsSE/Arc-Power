@@ -1336,3 +1336,41 @@ select:focus-visible {
   font-size: 13.5px;
   padding: 10px 18px;
 }
+
+/* Match the main window's restrained control feedback without animating
+   cards or content that can refresh while the overlay is open. */
+.adv-tab,
+.shared-dropdown,
+.shared-dropdown-option,
+.chip-btn,
+.btn {
+  transition-property: background, border-color, color, transform;
+  transition-duration: 140ms;
+  transition-timing-function: cubic-bezier(.2, .7, .2, 1);
+}
+
+.shared-dropdown { transition: background-color 140ms cubic-bezier(.2, .7, .2, 1), border-color 140ms cubic-bezier(.2, .7, .2, 1); }
+.shared-dropdown-option { transition: background-color 140ms cubic-bezier(.2, .7, .2, 1), color 140ms cubic-bezier(.2, .7, .2, 1); }
+.shared-dropdown-menu { animation: shared-dropdown-menu-in 150ms cubic-bezier(.2, .7, .2, 1) both; }
+@keyframes shared-dropdown-menu-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.btn:active:not(:disabled),
+.chip-btn:active:not(:disabled),
+.adv-tab:active { transform: translateY(1px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .adv-tab,
+  .shared-dropdown,
+  .shared-dropdown-option,
+  .chip-btn,
+  .btn {
+    transition: none;
+  }
+  .btn:active:not(:disabled),
+  .chip-btn:active:not(:disabled),
+  .adv-tab:active { transform: none; }
+  .shared-dropdown-menu,
+  .toast { animation: none; }
+}
