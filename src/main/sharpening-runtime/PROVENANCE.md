@@ -12,6 +12,12 @@
 
 This is a locally rebuilt, x64 managed runtime for Arc Power's own preset/effect controls. Release has `RESHADE_ADDON=0`, no ReShade GUI/localization, and defines `ARC_POWER_MANAGED=1`. The managed macro makes ReShade's `save_config` and `save_current_preset` no-ops so the owned configuration and preset do not get rewritten, and skips ReShade's automatic update check so the runtime does not make an update request. Upstream D3D12On7 props, implementation units, wrappers, and interface paths are excluded; standard DX12 remains compiled. The two upstream example built-in add-ons are excluded. This variant is for the Arc Power Windows 10/11 app path and does not include the D3D12On7/Windows 7 route.
 
+The controlled variant adds a same-user, same-session per-process named pipe.
+Its setting is read on the game's render thread, where it changes only the
+`ArcPowerSharpen` technique and its 0–100 strength uniform. It performs no
+desktop capture or independent overlay presentation. The separate ASR helper
+continues to own thumbnail scaling and input topology.
+
 These modifications are recorded in `source-build-local.patch`; the build helper applies it to a clean checkout pinned at the commit above.
 
 ## Rebuild
@@ -24,13 +30,13 @@ These modifications are recorded in `source-build-local.patch`; the build helper
 
 The helper accepts `-SourceDir`, `-PythonDir`, and `-MSBuildPath` for alternate local tool/source locations. It also supports `-BuildOnly -SourceDir <path>` to copy an existing build without compiling; this mode requires the exact recorded patch to already be applied, verified with `git apply --reverse --check` and an exact comparison of the tracked working diff. Python packages and command shims are stored in the task-artifact `rebuild-tools` directory beside the source checkout, outside the packaged source tree.
 
-The tested build used MSBuild `17.14.51`, MSVC `14.44.35207`, Windows SDK `10.0.26100`, and the bundled Python `3.12` runtime. The helper installs glad's pinned requirements into `rebuild-tools/python-site` beside the source checkout via `pip`; glad downloads Khronos XML companion headers during code generation, so a network connection is required for a clean build. No runtime installer binary was used. The rebuilt DLL has no `WININET.dll`, `InternetOpen`, or `InternetOpenUrl` imports.
+The tested build used MSBuild `17.14.60`, MSVC `14.44.35207`, Windows SDK `10.0.26100`, and the bundled Python `3.12` runtime. The helper installs glad's pinned requirements into `rebuild-tools/python-site` beside the source checkout via `pip`; glad downloads Khronos XML companion headers during code generation, so a network connection is required for a clean build. No runtime installer binary was used. The rebuilt DLL has no `WININET.dll`, `InternetOpen`, or `InternetOpenUrl` imports.
 
 ## Current artifact
 
-- `ArcPower.ReShade64.dll`: x64 Release; 3,771,392 bytes
-- SHA-256: `6BC058489A00CC3A6CE72425A7FBE491AA4F4C1CD169B752AF9E08261CCB9C13`
-- Runtime integrity pin: update `src/main/sharpening-runtime.js` deliberately if a future rebuilt DLL has a different SHA-256; this helper does not modify the pin.
+- `ArcPower.ReShade64.dll`: x64 Release; 3,774,464 bytes
+- SHA-256: `EFC04FE58F8544A3AB839FC759A2382A3259708FED7B1F59FC5A84C0C6AD5759`
+- Runtime integrity pins: `src/main/managed-sharpening-runtime.js`; update deliberately after rebuilding and validation.
 - Build transcript: `build.log`
-- Patch SHA-256: `163036DD205B7BBF508AC3F87E87F325CB9970E7097E1D0129BE918A4FDF3247`
+- Patch SHA-256: `841F4F0174DBD4321EEE3F57A351426E150E8CFB52BA4027AB4FBC209ACA8753`
 - Build helper: `build-source-runtime.ps1`

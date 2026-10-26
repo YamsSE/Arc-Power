@@ -1,3 +1,5 @@
+[CmdletBinding()]
+param([switch]$UpdateBundled)
 $ErrorActionPreference = 'Stop'
 $sourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoDir = (Resolve-Path -LiteralPath (Join-Path $sourceDir '..\..\..')).Path
@@ -14,6 +16,7 @@ $process = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/s', '/c'
 $process.WaitForExit()
 if ($process.ExitCode -ne 0) { Get-Content -LiteralPath (Join-Path $artifactDir 'managed-control-client-build.log'); throw "Managed control client compile failed with exit code $($process.ExitCode)." }
 if (-not (Test-Path -LiteralPath $output)) { throw "Native compiler did not create: $output" }
+if ($UpdateBundled) { Copy-Item -LiteralPath $output -Destination (Join-Path $sourceDir 'ArcPower.ManagedSharpeningControl.exe') -Force }
 $artifact = Get-Item -LiteralPath $output
 Write-Output "Built $($artifact.FullName)"
 Write-Output "Bytes: $($artifact.Length)"

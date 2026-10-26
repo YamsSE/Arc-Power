@@ -1,11 +1,13 @@
 # Managed sharpening control client
 
-This is a private native client component. It does not inject into or launch a
-game and is not wired into Arc Power. The bridge communicates only with the
+This is Arc Power's private native shader-control client. Game launch is owned
+by the separate normal-user launcher. The bridge communicates only with the
 fixed per-process named pipe `\\.\pipe\ArcPower.ManagedSharpening.v1.<PID>`.
 
 Build with `build-managed-control-client.ps1`. The executable is written under
-the ignored `.codex/task-artifacts/managed-control-bridge/` directory.
+the ignored `.codex/task-artifacts/managed-control-bridge/` directory. Use
+`-UpdateBundled` deliberately to replace the bundled executable, then update
+its integrity pin in `managed-sharpening-runtime.js` after validation.
 
 Run `managed-control-client.exe --serve` to read bounded ASCII commands from
 stdin. Each line is at most 256 bytes and has exactly one of these forms:

@@ -60,6 +60,7 @@ import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS
 import { GameProfileStore } from './store/game-profile-store.js';
 import { createSharpeningGameLookup } from './sharpening-game-eligibility.js';
 import { createScreenPostprocessSharpening } from './sharpening-screen.js';
+import { createProductionManagedSharpening } from './managed-sharpening-runtime.js';
 import { stageScreenSharpeningHelper } from './sharpening-helper-stage.js';
 import { createMockPostprocessSharpening } from './sharpening-postprocess-mock.js';
 import { RecordingStore } from './store/recording-store.js';
@@ -2711,8 +2712,10 @@ async function main() {
       ensureCompatibility: () => rtssProfile.ensureScreenSharpeningCompatibility(),
       stageHelper: app.isPackaged && process.platform === 'win32' ? stageScreenSharpeningHelper : null,
       allowCaptureOverlay: false,
-      allowAsrCapture: true });
-  // Arc Image Sharpening remains paused because its capture overlay causes frame-pacing and input-latency regressions.
+      allowAsrCapture: true,
+      createManagedRuntime: (policy) => createProductionManagedSharpening({ ...policy, dir: store.dir,
+        detector: sharpeningDetector, isGameExecutable: isSharpeningGameExecutable }) });
+  // Sharpening runs inside explicitly launched games; ASR owns its independent thumbnail path.
   void postprocessSharpening.start().catch((error) => console.error(`[sharpening] ${error.message}`));
   // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in
   // bytes - total - avail - the Memory row's source). THE DETERMINISM

@@ -76,3 +76,15 @@ test('screen sharpening IPC rejects malformed values, invalid executable paths a
   await assert.rejects(handlers['postprocess-sharpening:game-get'](EXE, {}), /takes no payload/);
   await assert.rejects(handlers['postprocess-sharpening:game-set'](EXE, null, {}), /takes no payload/);
 });
+
+test('managed game launch IPC validates its executable and rejects extra payloads', async () => {
+  const { handlers, service } = fixture();
+  const launches = [];
+  service.launchGame = async exePath => { launches.push(exePath); return { pid: 123, exePath }; };
+  const result = await handlers['postprocess-sharpening:launch-game'](EXE.toUpperCase());
+  assert.equal(result.pid, 123);
+  assert.deepEqual(launches, [EXE]);
+  await assert.rejects(handlers['postprocess-sharpening:launch-game']('relative.exe'), /valid game executable/);
+  await assert.rejects(handlers['postprocess-sharpening:launch-game'](EXE, { args: ['unexpected'] }), /takes no payload/);
+  assert.equal(launches.length, 1);
+});

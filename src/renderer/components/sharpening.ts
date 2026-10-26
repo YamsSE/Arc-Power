@@ -113,7 +113,9 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
         el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Arc Image Sharpening' }), el('p', { class: 'card-note', text: 'Sharpens the foreground game on an Intel Arc display.' })]),
         el('div', { class: 'sharpening-card-control' }, [select, sliderRow]),
       ]),
-      sharpeningHelp('Sharpens only the foreground game on a display connected to Intel Arc while Arc Power is open. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game. No capture prompt, setup download, or game-folder files are used.'),
+      sharpeningHelp(state?.provider === 'managed'
+        ? 'Launch the game from Game Profiles to attach the bundled sharpening runtime before graphics starts. Strength changes then apply live inside the game. Arc Image Sharpening works independently of ASR, and both may be enabled together. No download or game-folder files are required.'
+        : 'Sharpens only the foreground game on a display connected to Intel Arc while Arc Power is open. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game. No capture prompt, setup download, or game-folder files are used.'),
       ...legacyWarning(),
       el('p', { class: 'sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading sharpening settings…' }),
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),
@@ -128,7 +130,10 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
   const request = ++generation;
   const unsubscribeStatus = api.onPostprocessSharpeningStatus((status) => {
     if (!root.isConnected || typeof status?.active !== 'boolean') return;
-    latestRuntimeStatus = { active: status.active && status.mode !== 'asr', mode: status.mode, reason: typeof status.reason === 'string' ? status.reason : undefined };
+    const independent = typeof status.sharpeningActive === 'boolean';
+    const reason = independent ? status.sharpeningReason : status.reason;
+    latestRuntimeStatus = { active: status.sharpeningActive ?? (status.active && status.mode !== 'asr'),
+      mode: independent ? 'sharpening' : status.mode, reason: typeof reason === 'string' ? reason : undefined };
     if (state) {
       state = mergeRuntimeStatus(state);
       const note = root.querySelector<HTMLElement>('.sharpening-runtime-status');
@@ -235,7 +240,7 @@ export function renderArcSuperResolution(): HTMLElement {
         ]),
         el('div', { class: 'sharpening-card-control' }, [select]),
       ]),
-      sharpeningHelp('Run a recognized game in a smaller window while the desktop remains at its native resolution. Arc Power fits that game window to the display and passes native input through to the game. A display-filling borderless window has no smaller image to scale. Exclusive fullscreen may change the active display mode. ASR is limited to recognized games and does not guarantee compatibility with every game. ASR takes priority over Arc Image Sharpening while enabled; turning ASR off restores the sharpening setting.'),
+      sharpeningHelp('Run a recognized game in a smaller window while the desktop remains at its native resolution. Arc Power fits that game window to the display and passes native input through to the game. A display-filling borderless window has no smaller image to scale. Exclusive fullscreen may change the active display mode. ASR is limited to recognized games and does not guarantee compatibility with every game. ASR and Arc Image Sharpening are independent; both may be enabled together.'),
       el('p', { class: 'sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading Arc Super Resolution settings…' }),
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),
       ...(externalChange ? [el('p', { class: 'settings-sync-status', text: 'Saved settings changed in the other window. Your draft is preserved; Apply will overwrite that change.' })] : []),
@@ -250,7 +255,9 @@ export function renderArcSuperResolution(): HTMLElement {
   const request = ++generation;
   const unsubscribeStatus = api.onPostprocessSharpeningStatus((status) => {
     if (!root.isConnected || typeof status?.active !== 'boolean') return;
-    latestStatus = { active: status.active, mode: status.mode, reason: typeof status.reason === 'string' ? status.reason : undefined };
+    const independent = typeof status.asrActive === 'boolean';
+    const reason = independent ? status.asrReason : status.reason;
+    latestStatus = { active: status.asrActive ?? status.active, mode: independent ? 'asr' : status.mode, reason: typeof reason === 'string' ? reason : undefined };
     if (state) {
       state = { ...state, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason };
       const note = root.querySelector<HTMLElement>('.sharpening-runtime-status');
@@ -341,6 +348,25 @@ export function renderGameSharpening(exePath: string): HTMLElement {
       toast('error', 'Per-game sharpening failed', error);
     } finally { if (request === generation) { busy = false; if (root.isConnected) render(); } }
   };
+  const launchGame = async (): Promise<void> => {
+    if (busy) return;
+    const request = generation;
+    busy = true; error = ''; render();
+    try {
+      state = await api.postprocessSharpeningGameSet(exePath, useGlobal ? null : { ...draft });
+      if (request !== generation || !root.isConnected) return;
+      const launched = await api.postprocessSharpeningLaunchGame(exePath);
+      if (request !== generation || !root.isConnected) return;
+      toast('success', 'Game started', `Sharpening controls are attaching to the game (PID ${launched.pid}).`);
+      const next = await api.postprocessSharpeningGameGet(exePath);
+      if (request !== generation || !root.isConnected) return;
+      state = next;
+    } catch (err) {
+      if (request !== generation || !root.isConnected) return;
+      error = err instanceof Error ? err.message : String(err);
+      toast('error', 'Game launch failed', error);
+    } finally { if (request === generation) { busy = false; if (root.isConnected) render(); } }
+  };
   const render = (): void => {
     const globalValue = state?.globalValue ?? { enabled: false, percentage: 50 };
     const shownValue = useGlobal ? globalValue : draft;
@@ -373,7 +399,9 @@ export function renderGameSharpening(exePath: string): HTMLElement {
         el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Arc Image Sharpening' }), el('p', { class: 'card-note', text: 'Set a sharpening override for this game.' })]),
         el('div', { class: 'sharpening-card-control' }, [select, sliderRow]),
       ]),
-      sharpeningHelp('Per-game sharpening applies while this recognized game is the foreground window on a display connected to Intel Arc. The global Arc Image Sharpening switch in Graphics must be on. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game.'),
+      sharpeningHelp(state?.provider === 'managed'
+        ? 'Use Launch game below to start this game with the bundled sharpening runtime. Strength changes apply inside the game after launch. The global Arc Image Sharpening switch must be on. ASR is independent and can run at the same time.'
+        : 'Per-game sharpening applies while this recognized game is the foreground window on a display connected to Intel Arc. The global Arc Image Sharpening switch in Graphics must be on. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game.'),
       ...(state && !state.globalValue.enabled ? [el('p', { class: 'profile-capability-note', text: 'Global Arc Image Sharpening is off. This per-game override remains saved and will be inactive until the global switch is on.' })] : []),
       ...legacyWarning(),
       ...(state?.reason ? [el('p', { class: 'text-error', text: state.reason })] : []),
@@ -382,6 +410,7 @@ export function renderGameSharpening(exePath: string): HTMLElement {
       el('div', { class: 'graphics-card-actions' }, [
         el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : saveStatus || 'Apply', disabled: busy || !state || (state.runtimeReady === false && !useGlobal && draft.enabled), onclick: () => void mutate(useGlobal ? null : { ...draft }) }),
         el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { saveStatus = ''; useGlobal = true; draft = { ...globalValue }; render(); } }),
+        ...(state?.launchSupported ? [el('button', { class: 'btn btn-ghost btn-sm sharpening-launch-game', text: busy ? 'Working…' : 'Launch game', disabled: busy, onclick: () => void launchGame() })] : []),
       ]),
     );
   };

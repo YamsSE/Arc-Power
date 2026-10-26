@@ -36,7 +36,7 @@ function validateWindowsDirectory(windowsDirectory) {
   return powershellPath;
 }
 
-async function createProtectedDirectory(execFileAsyncImpl, powershellPath) {
+async function createProtectedDirectory(execFileAsyncImpl, powershellPath, userReadExecute) {
   const id = randomUUID();
   const script = `
 $ErrorActionPreference = 'Stop'
@@ -47,19 +47,25 @@ $directory = [IO.Path]::Combine($base, 'ArcPower-ScreenSharpen-' + $suffix)
 if ([IO.Directory]::Exists($directory) -or [IO.File]::Exists($directory)) { throw 'The protected runtime directory already exists.' }
 $admins = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $system = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$includeUserReadExecute = ${userReadExecute ? '$true' : '$false'}
+$userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$userRights = [Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [Security.AccessControl.FileSystemRights]::Synchronize
 $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
 $acl = [Security.AccessControl.DirectorySecurity]::new()
 $acl.SetAccessRuleProtection($true, $false)
 $acl.SetOwner($admins)
 $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($admins, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
 $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($system, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+if ($includeUserReadExecute) { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($userSid, $userRights, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)) }
 [IO.Directory]::CreateDirectory($directory, $acl) | Out-Null
-$actual = Get-Acl -LiteralPath $directory
+$actual = [IO.Directory]::GetAccessControl($directory)
 if (-not $actual.AreAccessRulesProtected -or $actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $admins.Value) { throw 'The protected runtime owner or ACL could not be verified.' }
 $rules = $actual.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
-if ($rules.Count -ne 2) { throw 'The protected runtime ACL contains unexpected entries.' }
+if ($rules.Count -ne $(if ($includeUserReadExecute) { 3 } else { 2 })) { throw 'The protected runtime ACL contains unexpected entries.' }
 foreach ($rule in $rules) {
-  if ($rule.IsInherited -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or $rule.InheritanceFlags -ne $inherit -or $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None -or $rule.IdentityReference.Value -notin @($admins.Value, $system.Value)) { throw 'The protected runtime ACL is not restricted to Administrators and SYSTEM.' }
+  $expectedRights = if ($includeUserReadExecute -and $rule.IdentityReference.Value -eq $userSid.Value) { $userRights } else { [Security.AccessControl.FileSystemRights]::FullControl }
+  $allowedSids = if ($includeUserReadExecute) { @($admins.Value, $system.Value, $userSid.Value) } else { @($admins.Value, $system.Value) }
+  if ($rule.IsInherited -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $rule.FileSystemRights -ne $expectedRights -or $rule.InheritanceFlags -ne $inherit -or $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None -or $rule.IdentityReference.Value -notin $allowedSids) { throw 'The protected runtime ACL contains unexpected permissions.' }
 }
 Write-Output $base
 Write-Output $directory
@@ -85,16 +91,20 @@ export async function stageScreenSharpeningHelper(sourcePath, expectedSha256, {
   fsApi = fs,
   execFileAsyncImpl = execFileAsync,
   getWindowsDirectory = querySystemWindowsDirectory,
+  fileName = 'ArcPower.ScreenSharpen.exe',
+  userReadExecute = false,
 } = {}) {
   if (platform !== 'win32') throw new Error('Protected screen sharpening helper staging is available only on Windows.');
+  if (!['ArcPower.ScreenSharpen.exe', 'ArcPower.GameSharpening.exe', 'ArcPower.ManagedSharpeningControl.exe'].includes(fileName)
+    || typeof userReadExecute !== 'boolean') throw new Error('Invalid protected runtime helper identity.');
   const source = fsApi.readFileSync(sourcePath);
   const sourceHash = createHash('sha256').update(source).digest('hex').toUpperCase();
   if (sourceHash !== String(expectedSha256).toUpperCase()) throw new Error('The bundled screen sharpening helper failed its integrity check.');
 
   const windowsDirectory = getWindowsDirectory({ platform });
   const powershellPath = validateWindowsDirectory(windowsDirectory);
-  const directory = await createProtectedDirectory(execFileAsyncImpl, powershellPath);
-  const stagedPath = path.win32.join(directory, 'ArcPower.ScreenSharpen.exe');
+  const directory = await createProtectedDirectory(execFileAsyncImpl, powershellPath, userReadExecute);
+  const stagedPath = path.win32.join(directory, fileName);
   try {
     fsApi.writeFileSync(stagedPath, source, { flag: 'wx' });
     const stat = fsApi.lstatSync(stagedPath);

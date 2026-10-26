@@ -38,7 +38,9 @@ export function createMockPostprocessSharpening() {
     },
     setRuntimeStatusForTest(status) {
       runtimeStatus = { active: status.active === true, reason: typeof status.reason === 'string' ? status.reason : null,
-        ...(status.mode === 'asr' || status.mode === 'sharpening' ? { mode: status.mode } : {}) };
+        ...(status.mode === 'asr' || status.mode === 'sharpening' ? { mode: status.mode } : {}),
+        ...(typeof status.sharpeningActive === 'boolean' ? { sharpeningActive: status.sharpeningActive, sharpeningReason: status.sharpeningReason ?? null } : {}),
+        ...(typeof status.asrActive === 'boolean' ? { asrActive: status.asrActive, asrReason: status.asrReason ?? null } : {}) };
       publishStatus();
     },
     async setGlobal(next) { value = { ...next }; return global(); },

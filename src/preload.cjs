@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   postprocessSharpeningSet: (value) => ipcRenderer.invoke('postprocess-sharpening:set', value),
   postprocessSharpeningGameGet: (exePath) => ipcRenderer.invoke('postprocess-sharpening:game-get', exePath),
   postprocessSharpeningGameSet: (exePath, override) => ipcRenderer.invoke('postprocess-sharpening:game-set', exePath, override),
+  postprocessSharpeningLaunchGame: (exePath) => ipcRenderer.invoke('postprocess-sharpening:launch-game', exePath),
   arcSuperResolutionGet: () => ipcRenderer.invoke('arc-super-resolution:get'),
   arcSuperResolutionSet: (value) => ipcRenderer.invoke('arc-super-resolution:set', value),
   onPostprocessGlobalSettingsUpdated: (callback) => {

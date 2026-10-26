@@ -3219,6 +3219,10 @@ export function createIpcHandlers({
       const value = override === null ? null : postprocessValue(override);
       return postprocessService().setGame(await postprocessTarget(exePath), value);
     },
+    'postprocess-sharpening:launch-game': async (exePath, ...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:launch-game');
+      return postprocessService().launchGame(await postprocessTarget(exePath));
+    },
     'arc-super-resolution:get': async (...args) => {
       assertNoPayload(args, 'arc-super-resolution:get');
       return postprocessService().getAsr();

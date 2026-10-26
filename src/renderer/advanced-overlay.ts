@@ -2037,7 +2037,8 @@ function buildOverlaySharpeningCard(): HTMLElement {
   const unsubscribeSettings = api.onPostprocessGlobalSettingsUpdated(reconcilePush);
   const unsubscribeStatus = api.onPostprocessSharpeningStatus((status) => {
     if (!card.isConnected || typeof status?.active !== 'boolean') return;
-    if (state) state = { ...state, active: status.active && status.mode !== 'asr', reason: status.reason };
+    if (state) state = { ...state, active: status.sharpeningActive ?? (status.active && status.mode !== 'asr'),
+      reason: typeof status.sharpeningActive === 'boolean' ? status.sharpeningReason : status.reason };
     const note = card.querySelector<HTMLElement>('.sharpening-runtime-status');
     if (note && state) note.textContent = runtimeStatusText();
   });
@@ -2146,7 +2147,9 @@ function buildOverlayAsrCard(): HTMLElement {
   const unsubscribeSettings = api.onPostprocessGlobalSettingsUpdated(reconcilePush);
   const unsubscribeStatus = api.onPostprocessSharpeningStatus((status) => {
     if (!card.isConnected || typeof status?.active !== 'boolean') return;
-    latestStatus = { active: status.active, mode: status.mode, reason: typeof status.reason === 'string' ? status.reason : undefined };
+    const independent = typeof status.asrActive === 'boolean';
+    const reason = independent ? status.asrReason : status.reason;
+    latestStatus = { active: status.asrActive ?? status.active, mode: independent ? 'asr' : status.mode, reason: typeof reason === 'string' ? reason : undefined };
     if (!state) return;
     state = { ...state, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason };
     const note = card.querySelector<HTMLElement>('.asr-runtime-status');

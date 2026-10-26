@@ -78,7 +78,19 @@ static bool io(HANDLE pipe, bool write, void *data, DWORD size) {
 static bool transact(DWORD pid, uint64_t creation, bool set, uint32_t revision, uint32_t enabled, uint32_t percent, Reply &out) {
     HANDLE target = nullptr; if (!target_process(pid, creation, target)) return false;
     std::wstring name = L"\\\\.\\pipe\\ArcPower.ManagedSharpening.v1." + std::to_wstring(pid);
-    HANDLE pipe = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+    HANDLE pipe = INVALID_HANDLE_VALUE;
+    const ULONGLONG openDeadline = GetTickCount64() + 500;
+    // The server retires each connection after its acknowledgement. A fast
+    // QUERY followed by SET can arrive during that short handoff; retry only
+    // opening the pipe, never a request whose delivery is already possible.
+    do {
+        pipe = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+        if (pipe != INVALID_HANDLE_VALUE) break;
+        const DWORD error = GetLastError();
+        if ((error != ERROR_PIPE_BUSY && error != ERROR_FILE_NOT_FOUND) || !still_same(target, pid, creation)) break;
+        if (error == ERROR_PIPE_BUSY) WaitNamedPipeW(name.c_str(), 20);
+        Sleep(5);
+    } while (GetTickCount64() < openDeadline);
     bool ok = pipe != INVALID_HANDLE_VALUE;
     ULONG serverPid = 0;
     if (ok) ok = GetNamedPipeServerProcessId(pipe, &serverPid) && serverPid == pid && still_same(target, pid, creation);

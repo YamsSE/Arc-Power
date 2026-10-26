@@ -1528,8 +1528,9 @@ export interface PostprocessSharpeningGlobal {
   value: PostprocessSharpeningValue;
   overrideCount: number;
   runtimeReady: boolean;
-  provider: 'screen';
-  requiresRestart: false;
+  provider: 'screen' | 'managed';
+  requiresRestart: boolean;
+  launchSupported?: boolean;
   active?: boolean;
   reason?: string | null;
   legacyIntegrations?: Array<{ exePath: string; mode: 'direct' | 'optiscaler' }>;
@@ -1546,6 +1547,8 @@ export interface PostprocessSharpeningGame {
   globalValue: PostprocessSharpeningValue;
   override: PostprocessSharpeningValue | null;
   runtimeReady?: boolean;
+  provider?: 'screen' | 'managed';
+  launchSupported?: boolean;
   reason?: string | null;
   legacyIntegration?: { exePath: string; mode: 'direct' | 'optiscaler' } | null;
   legacyManifestStatus?: 'clear' | 'found' | 'unreadable';

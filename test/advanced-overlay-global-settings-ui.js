@@ -28,6 +28,12 @@ export async function verifyAdvancedOverlayGlobalSettingsUi(win, advancedOverlay
   assert(first.value.enabled === false && first.value.percentage === 50, `unexpected initial sharpening state: ${JSON.stringify(first.value)}`);
   assert(firstAsr.value.enabled === false, `ASR must default off: ${JSON.stringify(firstAsr.value)}`);
 
+  postprocessSharpening.setRuntimeStatusForTest({ active: true, mode: 'asr', sharpeningActive: true, asrActive: true, sharpeningReason: null, asrReason: null });
+  await waitFor(`document.querySelector('${sharp} .sharpening-runtime-status')?.textContent.includes('Sharpening is active') && document.querySelector('${asr} .asr-runtime-status')?.textContent.includes('Arc Super Resolution is active')`, 'Concurrent ASR and sharpening did not show both independent active states');
+  postprocessSharpening.setRuntimeStatusForTest({ active: true, mode: 'sharpening', sharpeningActive: true, asrActive: false, sharpeningReason: null, asrReason: 'Synthetic ASR-only failure' });
+  await waitFor(`document.querySelector('${sharp} .sharpening-runtime-status')?.textContent.includes('Sharpening is active') && document.querySelector('${asr} .asr-runtime-status')?.textContent.includes('Synthetic ASR-only failure')`, 'ASR-only failure incorrectly replaced sharpening status');
+  postprocessSharpening.setRuntimeStatusForTest({ active: false, reason: null });
+
   await panelJs(`(() => { const d = document.querySelector('${sharp} [aria-label="Arc Image Sharpening"]'); d.click(); d.options.find(o => o.dataset.value === 'on').click(); })()`);
   await panelJs(`(() => { const slider = document.querySelector('${sharp} [aria-label="Arc Image Sharpening strength"]'); slider.value = '63'; slider.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('${sharp} .oc-chip-apply').click(); })()`);
   await waitFor(`window.arcPower.postprocessSharpeningGet().then(s => s.value.enabled && s.value.percentage === 63)`, 'Advanced Overlay did not save global sharpening at 63%');
