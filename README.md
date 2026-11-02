@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="https://discord.gg/nXAjasHy6e"><img src="https://api.iconify.design/simple-icons/discord.svg?color=%235865F2" alt="Join the Arc Power Discord" title="Join the Arc Power Discord" width="22" height="22"></a>
+  <a href="https://t.me/hwretard"><img src="https://api.iconify.design/simple-icons/telegram.svg?color=%2326A5E4" alt="Join the Telegram group" title="Join the Telegram group" width="22" height="22"></a>
 </p>
 
 # Arc Power Ver. 1.2.5
@@ -104,6 +105,7 @@ For diagnostics, enable Log to file in Settings. Telemetry logs are saved in you
 - [Download Arc Power](https://github.com/YamsSE/Arc-Power/releases)
 - [Feature and safety details](docs/features.md)
 - [Website](https://yamsse.github.io/Arc-Power/)
+- [Telegram group](https://t.me/hwretard)
 - [License](LICENSE)
 - [Third-party notices](THIRD_PARTY_NOTICES.txt)
 
