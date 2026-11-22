@@ -32,12 +32,12 @@ import { dashboardSparklinePaths, nearestDashboardTelemetryPoint } from '../pure
 
 /** M4-D2 (§6): the "Cores / clock" bundled row's LIVE half - the current
  *  CPU frequency from the telemetry tick, ALWAYS in GHz with 1 decimal
- *  (" / @ 4.3 GHz" - the leading separator joins the static cores/threads
+ *  (" @ 4.3 GHz" joins the static cores/threads
  *  half); a null/non-finite/<= 0 sample -> honest '-' (never a fake number,
  *  matching the Monitoring tile's ghzFreq contract). */
 function liveFreqRowText(sample: TelemetrySample | null): string {
   const text = ghzFreqText(sample?.cpuFreqMhz);
-  return text === '-' ? ' / @ - GHz' : ` / @ ${text}`;
+  return text === '-' ? ' @ - GHz' : ` @ ${text}`;
 }
 
 /** M17c: the Board partner row value - '<AIB vendor> (<model>)' from the

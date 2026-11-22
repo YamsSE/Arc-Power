@@ -66,12 +66,47 @@ fn known_paths() -> Vec<PathBuf> {
     }
     roots.into_iter().map(|root| root.join("RivaTuner Statistics Server").join(RTSS_EXE)).filter(|path| path.is_file()).collect()
 }
-fn running_image() -> Option<String> {
-    let output = command("tasklist", &["/FI", "IMAGENAME eq RTSS.exe", "/FO", "CSV", "/NH"]).ok()?;
-    if !output.status.success() { return None; }
-    let stdout = text(&output.stdout);
-    stdout.lines().find(|line| line.to_ascii_lowercase().contains("rtss.exe")).map(|_| String::new())
+#[cfg(windows)]
+fn running_image() -> Option<Option<String>> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE { return None; }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut found = None;
+        let mut next = Process32FirstW(snapshot, &mut entry);
+        while next != 0 {
+            let end = entry.szExeFile.iter().position(|value| *value == 0).unwrap_or(entry.szExeFile.len());
+            if String::from_utf16_lossy(&entry.szExeFile[..end]).eq_ignore_ascii_case(RTSS_EXE) {
+                found = Some(None);
+                let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID);
+                if !process.is_null() {
+                    let mut path = vec![0u16; 32768];
+                    let mut length = path.len() as u32;
+                    let ok = QueryFullProcessImageNameW(process, 0, path.as_mut_ptr(), &mut length);
+                    CloseHandle(process);
+                    if ok != 0 {
+                        found = Some(Some(String::from_utf16_lossy(&path[..length as usize])));
+                        break;
+                    }
+                }
+            }
+            next = Process32NextW(snapshot, &mut entry);
+        }
+        CloseHandle(snapshot);
+        found
+    }
 }
+
+#[cfg(not(windows))]
+fn running_image() -> Option<Option<String>> { None }
 
 pub fn is_running() -> bool { running_image().is_some() }
 pub fn executable_path() -> Option<String> {
@@ -79,6 +114,7 @@ pub fn executable_path() -> Option<String> {
     resolve_executable(registration.as_deref())
 }
 fn resolve_executable(registered: Option<&str>) -> Option<String> {
+    if let Some(path) = running_image().flatten().filter(|path| Path::new(path).is_file()) { return Some(path); }
     if let Some(path) = known_paths().into_iter().next() { return Some(path.to_string_lossy().into_owned()); }
     if let Some(path) = registry_install_path() { return Some(path); }
     if let Some(path) = registered.filter(|path| path.to_ascii_lowercase().ends_with(&RTSS_EXE.to_ascii_lowercase()) && Path::new(path).is_file()) {

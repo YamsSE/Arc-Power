@@ -45,7 +45,7 @@ impl RecordingHub {
     pub fn new(app: AppHandle, host_events: mpsc::SyncSender<(String, String, Value)>, store: Arc<NativeStore>, enabled: bool) -> Arc<Self> {
         let settings = super::services::recording_settings(&store).unwrap_or_else(|_| contract::normalize_recording_settings(None));
         let meta = Arc::new(Mutex::new(Meta {
-            memory_saving: settings.get("memorySavingMode").and_then(Value::as_bool) == Some(true),
+            memory_saving: profile_memory_saving(),
             hotkeys: json!({"registered":{},"conflicts":{},"error":null}),
         }));
         let emit_meta = meta.clone();
@@ -118,6 +118,12 @@ impl RecordingHub {
                             eprintln!("[recording] Instant Replay auto-start failed: {}", error.message);
                         }
                     }
+                }
+                // Memory saving may have been enabled while probing. Release
+                // an idle child after the probe completes in that case.
+                if profile_memory_saving() {
+                    hub.update_demand();
+                    let _ = hub.engine.shutdown_if_idle(&hub.store, true);
                 }
             }).ok();
         }
@@ -207,11 +213,10 @@ impl RecordingHub {
     /// `memorySavingMode`. Reads the authoritative store rather than trusting a
     /// pushed cache, then refreshes the engine demand and the state envelope.
     pub fn on_settings_saved(&self) {
-        let Ok(settings) = self.settings() else { return; };
-        let memory_saving = settings.get("memorySavingMode").and_then(Value::as_bool) == Some(true);
+        let memory_saving = profile_memory_saving();
         if let Ok(mut meta) = self.meta.lock() { meta.memory_saving = memory_saving; }
-        if memory_saving { let _ = self.engine.shutdown_if_idle(&self.store, true); }
         self.update_demand();
+        if memory_saving { let _ = self.engine.shutdown_if_idle(&self.store, true); }
         self.emit_current_state();
     }
 
@@ -256,8 +261,9 @@ impl RecordingHub {
     }
 
     fn release(&self) -> Result<Value, String> {
-        let leases = self.leases.load(Ordering::SeqCst).saturating_sub(1);
-        self.leases.store(leases, Ordering::SeqCst);
+        let _ = self.leases.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |leases| {
+            Some(leases.saturating_sub(1))
+        });
         self.update_demand();
         if self.memory_saving() {
             let _ = self.engine.shutdown_if_idle(&self.store, true);
@@ -283,16 +289,16 @@ impl RecordingHub {
             std::fs::create_dir_all(location).map_err(|error| error.to_string())?;
         }
         let settings = self.store_result("recording-save-settings", json!([patch]))?;
-        let memory_saving = settings.get("memorySavingMode").and_then(Value::as_bool) == Some(true);
+        let memory_saving = profile_memory_saving();
         if let Ok(mut meta) = self.meta.lock() { meta.memory_saving = memory_saving; }
         let reserved = reserved_accelerators(&self.store);
         let hotkeys = if self.enabled { self.hotkeys.reload(&settings, &reserved) }
             else { self.meta.lock().map(|meta| meta.hotkeys.clone()).unwrap_or_else(|_| json!({"registered":{},"conflicts":{},"error":null})) };
         self.set_hotkey_state(hotkeys.clone());
+        self.update_demand();
         if memory_saving {
             let _ = self.engine.shutdown_if_idle(&self.store, true);
         }
-        self.update_demand();
         let _ = self.emit_channel("recording:settings", json!([settings.clone()]));
         self.emit_current_state();
         Ok(json!({"settings":settings,"hotkeys":hotkeys}))

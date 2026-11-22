@@ -175,6 +175,19 @@ impl TelemetryHub {
         wire::encode_json(&Value::Null)
     }
 
+    pub fn set_rtss_overlay_targets(&self, app: &AppHandle, store: &NativeStore, device_keys: Vec<Value>, force: bool) {
+        const OWNER: &str = "native-rtss";
+        let unchanged = self.owners.lock().map(|owners| {
+            owners.get(OWNER).map_or(device_keys.is_empty(), |previous| *previous == device_keys)
+        }).unwrap_or(true);
+        if unchanged && !force { return; }
+        if let Ok(args) = wire::encode_json(&json!([{"owner":OWNER,"deviceKeys":device_keys}])) {
+            if let Err(error) = self.overlay_start(&args, app, store) {
+                eprintln!("[overlay] could not update RTSS telemetry targets: {error}");
+            }
+        }
+    }
+
     fn overlay_start(&self, args: &Value, app: &AppHandle, store: &NativeStore) -> Result<Value, String> {
         let items = args_array(args)?;
         if items.len() != 1 { return Err("overlay-telemetry-start expects one request".into()); }
