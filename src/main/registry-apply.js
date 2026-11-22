@@ -32,7 +32,7 @@
 // refresh after an apply honestly reflects the "written" values.
 
 import { execFile as nodeExecFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { isDeepStrictEqual, promisify } from 'node:util';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -115,10 +115,11 @@ function psSingleQuote(s) {
  * @param {import('./registry-catalog.js').RegistryEntry} entry
  * @param {'enable'|'disable'|'revert'} action
  * @param {string} outPath absolute path of the JSON result file
+ * @param {import('./registry-catalog.js').RegistryApplyStep[]} [selectedSteps=entry.apply.actions[action]]
  * @returns {string}
  */
-export function buildRegApplyScript(entry, action, outPath) {
-  const steps = entry.apply.actions[action];
+export function buildRegApplyScript(entry, action, outPath, selectedSteps = entry.apply.actions[action]) {
+  const steps = selectedSteps;
   const lines = [
     `$reg = 'C:\\Windows\\System32\\reg.exe'`,
     `$out = '${psSingleQuote(outPath)}'`,
@@ -256,6 +257,7 @@ async function unlinkIfExists(filePath) {
  *   timeoutMs?: number,   // launcher bound (default REG_APPLY_TIMEOUT_MS)
  *   graceMs?: number,     // result-file poll window after a timeout (default REG_APPLY_GRACE_MS)
  *   isElevated?: () => boolean,  // M3-C-B: in-process elevation probe (default false = dev fallback)
+ *   planApply?: (entryId: string, action: 'enable'|'disable'|'revert') => Promise<unknown>, // private native descriptor selection
  * }} [deps]
  */
 export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
@@ -276,6 +278,19 @@ export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
   const timeoutMs = deps.timeoutMs ?? REG_APPLY_TIMEOUT_MS;
   const graceMs = deps.graceMs ?? REG_APPLY_GRACE_MS;
   const isElevated = deps.isElevated ?? (() => false);
+  const planApply = deps.planApply ?? null;
+
+  function resolveNativePlan(plan, entry, action, expectedSteps) {
+    const keys = plan && typeof plan === 'object' && !Array.isArray(plan) ? Object.keys(plan).sort() : [];
+    if (keys.length !== 3 || keys[0] !== 'action' || keys[1] !== 'entry' || keys[2] !== 'steps'
+      || plan.action !== action
+      || !isDeepStrictEqual(plan.entry, entry)
+      || !Array.isArray(plan.steps)
+      || !isDeepStrictEqual(plan.steps, expectedSteps)) {
+      throw new Error('registry-apply: native plan is invalid');
+    }
+    return { entry: plan.entry, steps: plan.steps };
+  }
 
   /**
    * M3-C-B direct path: the process is ALREADY elevated - run the reg
@@ -322,10 +337,19 @@ export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
       if (!entry.apply?.applyable || !entry.apply.actions?.[action]) {
         throw new Error(`registry-apply: '${entryId}' is read-only (no ${action} commands)`);
       }
-      const steps = entry.apply.actions[action];
-      if (isElevated()) return applyDirect(entry, action, steps);
+      let selectedEntry = entry;
+      let steps = entry.apply.actions[action];
+      if (planApply) {
+        // Native owns descriptor selection in normal Tauri runs. Cross-check
+        // the full metadata and ordered steps against Electron's shared
+        // catalog before allowing any process launch, and let transport
+        // errors propagate without falling back to a local write plan.
+        const plan = await planApply(entryId, action);
+        ({ entry: selectedEntry, steps } = resolveNativePlan(plan, entry, action, steps));
+      }
+      if (isElevated()) return applyDirect(selectedEntry, action, steps);
       const outPath = path.join(tmpdir(), `arcpower-reg-${randomUUID()}.json`);
-      const script = buildRegApplyScript(entry, action, outPath);
+      const script = buildRegApplyScript(selectedEntry, action, outPath, steps);
       log(`[registry-apply] ${entryId} ${action}: ${steps.length} step(s) via elevated PowerShell`);
       let executed = null;
       let canceled = false;
@@ -343,7 +367,7 @@ export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
         if (!executed) {
           // Script "succeeded" but produced no readable result - a defensive
           // honest failure, never a silent success claim.
-          return assembleResult(entry, action, steps, null, false);
+          return assembleResult(selectedEntry, action, steps, null, false);
         }
       } catch (err) {
         executed = await readOutFile(outPath);
@@ -371,7 +395,7 @@ export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
         await unlinkIfExists(outPath);
       }
       const cancelMessage = canceled && timedOut ? REG_APPLY_TIMEOUT_ERROR : undefined;
-      return assembleResult(entry, action, steps, executed, canceled, cancelMessage);
+      return assembleResult(selectedEntry, action, steps, executed, canceled, cancelMessage);
     },
   };
 }

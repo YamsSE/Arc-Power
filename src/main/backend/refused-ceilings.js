@@ -8,8 +8,8 @@
 // merge applies the degraded maxes so the slider/caps never re-expose a
 // value the driver refused.
 //
-// The store lives in the PARENT-side backend (a module-level Map<deviceId,
-// Map<control, ceiling>>): the renderer's caps come from the parent process
+// The store lives in the PARENT-side backend (a module-level Map<physical
+// PCI/BDF key, Map<control, ceiling>>): the renderer's caps come from the parent process
 // backend, and in the packaged app the real apply path is the short-lived
 // elevated self-worker whose module state evaporates - so the PARENT records
 // from the WORKER's result envelope (the refusal map at
@@ -24,10 +24,105 @@
 // read, covering BOTH the cache-hit and cold paths) + the apply paths. This
 // module ships the recording + merge primitives and their unit tests only.
 
-/** A store: Map<deviceId, Map<control, number>> where the number is the
- *  DEGRADED ceiling (the exposed max) of that control for that device. */
+import { deviceHardwareKey } from './units.js';
+
+const generationByStore = new WeakMap();
+
+/** A store: Map<physical PCI/BDF key, Map<control, number>> where the number
+ *  is the DEGRADED ceiling (the exposed max) of that control for that device. */
 export function createRefusedCeilingStore() {
-  return new Map();
+  const store = new Map();
+  generationByStore.set(store, 0);
+  return store;
+}
+
+function advanceGeneration(store) {
+  const current = generationByStore.get(store) ?? 0;
+  if (current < Number.MAX_SAFE_INTEGER) generationByStore.set(store, current + 1);
+}
+
+/** Version the authoritative volatile ceiling contents for cross-host snapshots. */
+export function refusalCacheGeneration(store) {
+  return store instanceof Map ? generationByStore.get(store) ?? 0 : 0;
+}
+
+function validCanonicalPciId(value) {
+  if (typeof value !== 'string' || !/^0x[0-9a-f]{8}$/.test(value)) return null;
+  const number = Number.parseInt(value.slice(2), 16);
+  return number > 0 && number <= 0xffff ? value : null;
+}
+
+function bdfPartsOf(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if ((Object.hasOwn(value, 'domain') && value.domain !== 0)
+    || (Object.hasOwn(value, 'segment') && value.segment !== 0)) return null;
+  const bus = value.bus;
+  const device = value.device;
+  const fn = value.function;
+  if (!Number.isInteger(bus) || bus < 0 || bus > 255
+    || !Number.isInteger(device) || device < 0 || device > 31
+    || !Number.isInteger(fn) || fn < 0 || fn > 7
+    || (bus === 0 && device === 0 && fn === 0)) return null;
+  return { bus, device, function: fn };
+}
+
+/**
+ * Return a strict canonical PCI/BDF key. `deviceHardwareKey` is the shared
+ * formatter; validate the already-canonical row inputs first so missing or
+ * malformed proof never degrades to its `-1` BDF form.
+ */
+export function refusalCacheDeviceKey(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+  const pciVendorId = validCanonicalPciId(row.pciVendorId);
+  const pciDeviceId = validCanonicalPciId(row.pciDeviceId);
+  const bdf = bdfPartsOf(row.bdf);
+  if (!pciVendorId || !pciDeviceId || !bdf) return null;
+  const key = deviceHardwareKey({ ...row, pciVendorId, pciDeviceId, bdf });
+  return /^pci:0x[0-9a-f]{8}:0x[0-9a-f]{8}@[0-9]+:[0-9]+\.[0-9]+$/.test(key)
+    ? key
+    : null;
+}
+
+function luidOf(row) {
+  return row?.osLuid ?? row?.osController?.luid ?? row?.luid ?? null;
+}
+
+function isCanonicalLuid(value) {
+  return typeof value === 'string'
+    && /^0x[0-9a-f]{8}:0x[0-9a-f]{8}$/.test(value)
+    && value !== '0x00000000:0x00000000';
+}
+
+/** Resolve the selected physical identity against a fresh writable inventory. */
+export function resolveFreshWritableRefusalTarget(selected, inventory) {
+  if (!selected || selected.writable !== true || !Array.isArray(inventory)) return null;
+  const key = refusalCacheDeviceKey(selected);
+  if (!key) return null;
+  const expectedLuid = luidOf(selected);
+  if (expectedLuid !== null && !isCanonicalLuid(expectedLuid)) return null;
+  const writableRows = inventory.flatMap((row, index) => (
+    row?.writable === true ? [{ row, index }] : []
+  ));
+  const seenKeys = new Set();
+  const seenLuids = new Set();
+  const matches = [];
+  for (const { row, index } of writableRows) {
+    const rowKey = refusalCacheDeviceKey(row);
+    if (!rowKey || seenKeys.has(rowKey)) return null;
+    seenKeys.add(rowKey);
+    const luid = luidOf(row);
+    if (luid !== null) {
+      if (!isCanonicalLuid(luid) || seenLuids.has(luid)) return null;
+      seenLuids.add(luid);
+    }
+    if (rowKey === key) matches.push({ index, key: rowKey, luid });
+  }
+  if (matches.length !== 1) return null;
+  const match = matches[0];
+  if (expectedLuid !== null && expectedLuid !== undefined
+    && (match.luid === null || match.luid === undefined
+      || JSON.stringify(match.luid) !== JSON.stringify(expectedLuid))) return null;
+  return { index: match.index, key };
 }
 
 function deviceMapOf(store, deviceId, create) {
@@ -47,25 +142,27 @@ function deviceMapOf(store, deviceId, create) {
  * from the attempted value and the normal one-step snap.
  */
 export function recordCapabilityCeiling(store, deviceId, control, ceiling, range) {
-  if (typeof control !== 'string' || control.length === 0) return;
-  if (typeof ceiling !== 'number' || !Number.isFinite(ceiling)) return;
-  if (!range || typeof range !== 'object') return;
+  if (typeof control !== 'string' || control.length === 0) return false;
+  if (typeof ceiling !== 'number' || !Number.isFinite(ceiling)) return false;
+  if (!range || typeof range !== 'object') return false;
   const min = range.min;
   const max = range.max;
   const step = range.step;
   if (typeof min !== 'number' || !Number.isFinite(min)
     || typeof max !== 'number' || !Number.isFinite(max)
     || typeof step !== 'number' || !Number.isFinite(step) || step <= 0
-    || max < min || ceiling < min || ceiling > max) return;
+    || max < min || ceiling < min || ceiling > max) return false;
   const gridIndex = (ceiling - min) / step;
   const nearestGridIndex = Math.round(gridIndex);
   const tolerance = Number.EPSILON * 256 * Math.max(1, Math.abs(gridIndex), Math.abs(nearestGridIndex));
-  if (!Number.isFinite(gridIndex) || Math.abs(gridIndex - nearestGridIndex) > tolerance) return;
+  if (!Number.isFinite(gridIndex) || Math.abs(gridIndex - nearestGridIndex) > tolerance) return false;
   const deviceMap = deviceMapOf(store, deviceId, true);
-  if (!deviceMap) return;
+  if (!deviceMap) return false;
   const existing = deviceMap.get(control);
-  if (existing !== undefined && existing <= ceiling) return;
+  if (existing !== undefined && existing <= ceiling) return true;
   deviceMap.set(control, ceiling);
+  advanceGeneration(store);
+  return true;
 }
 
 /**
@@ -83,22 +180,24 @@ export function recordCapabilityCeiling(store, deviceId, control, ceiling, range
  *   range (the step is the snap quantum; the min the floor)
  */
 export function recordRefusal(store, deviceId, control, refusedValue, range) {
-  if (typeof refusedValue !== 'number' || !Number.isFinite(refusedValue)) return;
-  if (!range || typeof range !== 'object') return;
+  if (typeof refusedValue !== 'number' || !Number.isFinite(refusedValue)) return false;
+  if (!range || typeof range !== 'object') return false;
   const step = range.step;
   const min = range.min;
-  if (typeof step !== 'number' || !Number.isFinite(step) || step <= 0) return;
-  if (typeof min !== 'number' || !Number.isFinite(min)) return;
+  if (typeof step !== 'number' || !Number.isFinite(step) || step <= 0) return false;
+  if (typeof min !== 'number' || !Number.isFinite(min)) return false;
   const ceiling = refusedValue - step;
-  if (!Number.isFinite(ceiling) || ceiling < min) return; // nothing to degrade below the floor
+  if (!Number.isFinite(ceiling) || ceiling < min) return false; // nothing to degrade below the floor
   // Float-drift guard: 0.235 - 0.001 = 0.23399999999999998 - round the
   // ceiling to the 9th decimal (beyond the canonical-unit precision).
   const snapped = Math.round(ceiling * 1e9) / 1e9;
   const deviceMap = deviceMapOf(store, deviceId, true);
-  if (!deviceMap) return;
+  if (!deviceMap) return false;
   const existing = deviceMap.get(control);
-  if (existing !== undefined && existing <= snapped) return;
+  if (existing !== undefined && existing <= snapped) return true;
   deviceMap.set(control, snapped);
+  advanceGeneration(store);
+  return true;
 }
 
 /**
@@ -121,22 +220,25 @@ export function recordRefusal(store, deviceId, control, refusedValue, range) {
  *   the snap - absent per-control ranges skip that control)
  */
 export function recordRefusalEnvelope(store, deviceId, perControl, settings, ranges) {
-  if (!perControl || typeof perControl !== 'object' || Array.isArray(perControl)) return;
-  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return;
+  const recorded = {};
+  if (!perControl || typeof perControl !== 'object' || Array.isArray(perControl)) return recorded;
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return recorded;
   const rangeTable = ranges && typeof ranges === 'object' ? ranges : {};
   for (const [control, result] of Object.entries(perControl)) {
     if (!result || typeof result !== 'object' || result.ok !== false || result.errorCode !== 'out-of-range') continue;
     const range = rangeTable[control];
     if (Object.prototype.hasOwnProperty.call(result, 'capabilityCeiling')) {
       if (typeof result.capabilityCeiling === 'number' && Number.isFinite(result.capabilityCeiling)) {
-        recordCapabilityCeiling(store, deviceId, control, result.capabilityCeiling, range);
+        recorded[control] = recordCapabilityCeiling(store, deviceId, control, result.capabilityCeiling, range);
+      } else {
+        recorded[control] = false;
       }
       continue;
     }
     const value = settings[control];
-    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
-    recordRefusal(store, deviceId, control, value, range);
+    recorded[control] = recordRefusal(store, deviceId, control, value, range);
   }
+  return recorded;
 }
 
 /**

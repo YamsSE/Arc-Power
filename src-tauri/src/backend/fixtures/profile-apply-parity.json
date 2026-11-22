@@ -1,0 +1,1905 @@
+{
+  "source": "src/main/ipc-core.js apply-settings (unmodified) via src/main/apply-routing.js executeApply over a fake backend seam",
+  "channel": "apply-settings",
+  "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+  "physicalTarget": {
+    "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+    "pciVendorId": "0x00008086",
+    "pciDeviceId": "0x0000e20b",
+    "bdf": {
+      "bus": 3,
+      "device": 0,
+      "function": 0
+    },
+    "luid": "0x00000001:0x00000002"
+  },
+  "currentState": {
+    "deviceId": 0,
+    "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+    "tempLimitC": 90,
+    "powerLimitW": 200,
+    "gpuFreqOffsetMhz": 0,
+    "gpuVoltOffsetV": 0,
+    "waiverAccepted": true
+  },
+  "initialSettings": "{\n  \"schemaVersion\": 3,\n  \"waiverAccepted\": true,\n  \"ocOnBoot\": false,\n  \"activeProfileId\": \"p1\",\n  \"ocMode\": \"advanced\",\n  \"advancedModeAccepted\": true,\n  \"startWithWindows\": false,\n  \"startMinimized\": true,\n  \"closeToTray\": true,\n  \"monitorLogToFile\": true,\n  \"deviceId\": 0,\n  \"deviceKey\": \"pci:0x00008086:0x0000e20b@3:0.0\",\n  \"theme\": \"midnight\",\n  \"overlayEnabled\": true,\n  \"overlayHotkeyLetter\": \"O\",\n  \"overlayPosition\": \"top-right\",\n  \"overlayScale\": 1.5,\n  \"overlayColor\": \"#123456\",\n  \"overlayTemperatureUnit\": \"C\",\n  \"overlayStats\": [\n    \"fps\"\n  ],\n  \"overlayBgEnabled\": true,\n  \"overlayBgColor\": \"#000000\",\n  \"overlayBgOpacity\": 0.75,\n  \"overlayTheme\": \"arc\",\n  \"overlayRecordingPill\": true,\n  \"recordingToastsEnabled\": true,\n  \"advancedOverlayEnabled\": true,\n  \"advancedOverlayHotkeyLetter\": \"P\",\n  \"advancedOverlayPosition\": \"left\",\n  \"monitorLogMetrics\": [\n    \"fps\"\n  ],\n  \"rtssOnBoot\": true,\n  \"arcSleep\": {\n    \"idleEnabled\": true,\n    \"adaptiveEnabled\": false,\n    \"idleAfterSeconds\": 600,\n    \"idleFps\": 45,\n    \"adaptiveMinFps\": 75,\n    \"adaptiveMaxFps\": 180,\n    \"adaptiveTargetLoadPct\": 90\n  }\n}",
+  "values": [
+    {
+      "t": "array",
+      "v": [
+        {
+          "t": "number",
+          "v": 0
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "powerLimitW",
+              {
+                "t": "number",
+                "v": 240
+              }
+            ],
+            [
+              "gpuFreqOffsetMhz",
+              {
+                "t": "number",
+                "v": 10
+              }
+            ]
+          ]
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "profileApply",
+              {
+                "t": "boolean",
+                "v": true
+              }
+            ],
+            [
+              "expectedTarget",
+              {
+                "t": "object",
+                "v": [
+                  [
+                    "deviceKey",
+                    {
+                      "t": "string",
+                      "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                    }
+                  ],
+                  [
+                    "physicalTarget",
+                    {
+                      "t": "object",
+                      "v": [
+                        [
+                          "deviceKey",
+                          {
+                            "t": "string",
+                            "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                          }
+                        ],
+                        [
+                          "pciVendorId",
+                          {
+                            "t": "string",
+                            "v": "0x00008086"
+                          }
+                        ],
+                        [
+                          "pciDeviceId",
+                          {
+                            "t": "string",
+                            "v": "0x0000e20b"
+                          }
+                        ],
+                        [
+                          "bdf",
+                          {
+                            "t": "object",
+                            "v": [
+                              [
+                                "bus",
+                                {
+                                  "t": "number",
+                                  "v": 3
+                                }
+                              ],
+                              [
+                                "device",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ],
+                              [
+                                "function",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ]
+                            ]
+                          }
+                        ],
+                        [
+                          "luid",
+                          {
+                            "t": "string",
+                            "v": "0x00000001:0x00000002"
+                          }
+                        ]
+                      ]
+                    }
+                  ]
+                ]
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "result": {
+        "ok": true,
+        "perControl": {
+          "powerLimitW": {
+            "ok": true,
+            "readBackEqual": true,
+            "silentNoop": false
+          },
+          "gpuFreqOffsetMhz": {
+            "ok": true,
+            "readBackEqual": true,
+            "silentNoop": false
+          }
+        },
+        "pl2Note": {
+          "landed": true,
+          "valueW": 240
+        }
+      },
+      "state": {
+        "deviceId": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+        "tempLimitC": 90,
+        "powerLimitW": 200,
+        "gpuFreqOffsetMhz": 0,
+        "gpuVoltOffsetV": 0,
+        "waiverAccepted": true
+      }
+    },
+    [
+      "result",
+      "state"
+    ],
+    {
+      "powerLimitW": {
+        "ok": true,
+        "readBackEqual": true,
+        "silentNoop": false
+      },
+      "gpuFreqOffsetMhz": {
+        "ok": true,
+        "readBackEqual": true,
+        "silentNoop": false
+      }
+    },
+    [
+      "powerLimitW",
+      "gpuFreqOffsetMhz"
+    ],
+    {
+      "deviceId": 0,
+      "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+      "tempLimitC": 90,
+      "powerLimitW": 200,
+      "gpuFreqOffsetMhz": 0,
+      "gpuVoltOffsetV": 0,
+      "waiverAccepted": true
+    },
+    {
+      "deviceId": 0,
+      "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+      "deviceName": "Intel Arc B580 Graphics",
+      "pciDeviceId": "0x0000e20b",
+      "pciVendorId": "0x00008086",
+      "aibVendor": null,
+      "aibModel": null,
+      "ocMode": "advanced",
+      "overclockingSupported": true,
+      "waiverAccepted": true,
+      "extendedRanges": true,
+      "extendedControls": {
+        "powerLimitW": true,
+        "tempLimitC": true
+      },
+      "vfCurveRange": {
+        "voltageMinV": 0.4,
+        "voltageMaxV": 1.5,
+        "freqMinMhz": 0,
+        "freqMaxMhz": 4300,
+        "voltageStepV": 0.001,
+        "frequencyStepMhz": 1,
+        "maxPoints": 32
+      },
+      "ranges": {
+        "powerLimitW": {
+          "units": "W",
+          "min": 0,
+          "max": 315,
+          "step": 1,
+          "default": 130
+        },
+        "tempLimitC": {
+          "units": "C",
+          "min": 50,
+          "max": 115,
+          "step": 1,
+          "default": 90
+        },
+        "gpuFreqOffsetMhz": {
+          "units": "MHz",
+          "min": -100,
+          "max": 200,
+          "step": 10
+        },
+        "gpuVoltOffsetV": {
+          "units": "V",
+          "min": -0.5,
+          "max": 0.5,
+          "step": 0.001
+        }
+      },
+      "learnedCeilings": {}
+    },
+    {
+      "t": "array",
+      "v": [
+        {
+          "t": "number",
+          "v": 0
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "tempLimitC",
+              {
+                "t": "number",
+                "v": 108
+              }
+            ],
+            [
+              "powerLimitW",
+              {
+                "t": "number",
+                "v": 240
+              }
+            ]
+          ]
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "profileApply",
+              {
+                "t": "boolean",
+                "v": true
+              }
+            ],
+            [
+              "expectedTarget",
+              {
+                "t": "object",
+                "v": [
+                  [
+                    "deviceKey",
+                    {
+                      "t": "string",
+                      "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                    }
+                  ],
+                  [
+                    "physicalTarget",
+                    {
+                      "t": "object",
+                      "v": [
+                        [
+                          "deviceKey",
+                          {
+                            "t": "string",
+                            "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                          }
+                        ],
+                        [
+                          "pciVendorId",
+                          {
+                            "t": "string",
+                            "v": "0x00008086"
+                          }
+                        ],
+                        [
+                          "pciDeviceId",
+                          {
+                            "t": "string",
+                            "v": "0x0000e20b"
+                          }
+                        ],
+                        [
+                          "bdf",
+                          {
+                            "t": "object",
+                            "v": [
+                              [
+                                "bus",
+                                {
+                                  "t": "number",
+                                  "v": 3
+                                }
+                              ],
+                              [
+                                "device",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ],
+                              [
+                                "function",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ]
+                            ]
+                          }
+                        ],
+                        [
+                          "luid",
+                          {
+                            "t": "string",
+                            "v": "0x00000001:0x00000002"
+                          }
+                        ]
+                      ]
+                    }
+                  ]
+                ]
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "result": {
+        "ok": false,
+        "perControl": {
+          "powerLimitW": {
+            "ok": true,
+            "readBackEqual": true,
+            "silentNoop": false
+          },
+          "tempLimitC": {
+            "ok": false,
+            "errorCode": "out-of-range",
+            "capabilityCeiling": 107,
+            "message": "temperature limit 108 °C exceeds the effective capability ceiling of 107 °C. Nothing was changed."
+          }
+        },
+        "pl2Note": {
+          "landed": true,
+          "valueW": 240
+        }
+      },
+      "state": {
+        "deviceId": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+        "tempLimitC": 90,
+        "powerLimitW": 200,
+        "gpuFreqOffsetMhz": 0,
+        "gpuVoltOffsetV": 0,
+        "waiverAccepted": true
+      },
+      "capabilityCeilingRefused": true,
+      "capabilityCeilingPartial": true
+    },
+    [
+      "result",
+      "state",
+      "capabilityCeilingRefused",
+      "capabilityCeilingPartial"
+    ],
+    {
+      "powerLimitW": {
+        "ok": true,
+        "readBackEqual": true,
+        "silentNoop": false
+      },
+      "tempLimitC": {
+        "ok": false,
+        "errorCode": "out-of-range",
+        "capabilityCeiling": 107,
+        "message": "temperature limit 108 °C exceeds the effective capability ceiling of 107 °C. Nothing was changed."
+      }
+    },
+    [
+      "powerLimitW",
+      "tempLimitC"
+    ],
+    {
+      "deviceId": 0,
+      "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+      "deviceName": "Intel Arc B580 Graphics",
+      "pciDeviceId": "0x0000e20b",
+      "pciVendorId": "0x00008086",
+      "aibVendor": null,
+      "aibModel": null,
+      "ocMode": "advanced",
+      "overclockingSupported": true,
+      "waiverAccepted": true,
+      "extendedRanges": true,
+      "extendedControls": {
+        "powerLimitW": true,
+        "tempLimitC": true
+      },
+      "vfCurveRange": {
+        "voltageMinV": 0.4,
+        "voltageMaxV": 1.5,
+        "freqMinMhz": 0,
+        "freqMaxMhz": 4300,
+        "voltageStepV": 0.001,
+        "frequencyStepMhz": 1,
+        "maxPoints": 32
+      },
+      "ranges": {
+        "powerLimitW": {
+          "units": "W",
+          "min": 0,
+          "max": 315,
+          "step": 1,
+          "default": 130
+        },
+        "tempLimitC": {
+          "units": "C",
+          "min": 50,
+          "max": 115,
+          "step": 1,
+          "default": 90
+        },
+        "gpuFreqOffsetMhz": {
+          "units": "MHz",
+          "min": -100,
+          "max": 200,
+          "step": 10
+        },
+        "gpuVoltOffsetV": {
+          "units": "V",
+          "min": -0.5,
+          "max": 0.5,
+          "step": 0.001
+        }
+      },
+      "learnedCeilings": {
+        "tempLimitC": 107
+      }
+    },
+    {
+      "t": "array",
+      "v": [
+        {
+          "t": "number",
+          "v": 0
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "tempLimitC",
+              {
+                "t": "number",
+                "v": 110
+              }
+            ]
+          ]
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "profileApply",
+              {
+                "t": "boolean",
+                "v": true
+              }
+            ],
+            [
+              "expectedTarget",
+              {
+                "t": "object",
+                "v": [
+                  [
+                    "deviceKey",
+                    {
+                      "t": "string",
+                      "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                    }
+                  ],
+                  [
+                    "physicalTarget",
+                    {
+                      "t": "object",
+                      "v": [
+                        [
+                          "deviceKey",
+                          {
+                            "t": "string",
+                            "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                          }
+                        ],
+                        [
+                          "pciVendorId",
+                          {
+                            "t": "string",
+                            "v": "0x00008086"
+                          }
+                        ],
+                        [
+                          "pciDeviceId",
+                          {
+                            "t": "string",
+                            "v": "0x0000e20b"
+                          }
+                        ],
+                        [
+                          "bdf",
+                          {
+                            "t": "object",
+                            "v": [
+                              [
+                                "bus",
+                                {
+                                  "t": "number",
+                                  "v": 3
+                                }
+                              ],
+                              [
+                                "device",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ],
+                              [
+                                "function",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ]
+                            ]
+                          }
+                        ],
+                        [
+                          "luid",
+                          {
+                            "t": "string",
+                            "v": "0x00000001:0x00000002"
+                          }
+                        ]
+                      ]
+                    }
+                  ]
+                ]
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "result": {
+        "ok": false,
+        "perControl": {
+          "tempLimitC": {
+            "ok": false,
+            "errorCode": "out-of-range",
+            "capabilityCeiling": 107,
+            "message": "temperature limit 110 °C exceeds the effective capability ceiling of 107 °C. Nothing was changed."
+          }
+        }
+      },
+      "state": {
+        "deviceId": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+        "tempLimitC": 90,
+        "powerLimitW": 200,
+        "gpuFreqOffsetMhz": 0,
+        "gpuVoltOffsetV": 0,
+        "waiverAccepted": true
+      },
+      "capabilityCeilingRefused": true
+    },
+    [
+      "result",
+      "state",
+      "capabilityCeilingRefused"
+    ],
+    {
+      "tempLimitC": {
+        "ok": false,
+        "errorCode": "out-of-range",
+        "capabilityCeiling": 107,
+        "message": "temperature limit 110 °C exceeds the effective capability ceiling of 107 °C. Nothing was changed."
+      }
+    },
+    [
+      "tempLimitC"
+    ],
+    {
+      "t": "array",
+      "v": [
+        {
+          "t": "number",
+          "v": 0
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "tempLimitC",
+              {
+                "t": "number",
+                "v": 88
+              }
+            ],
+            [
+              "powerLimitW",
+              {
+                "t": "number",
+                "v": 240
+              }
+            ]
+          ]
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "profileApply",
+              {
+                "t": "boolean",
+                "v": true
+              }
+            ],
+            [
+              "expectedTarget",
+              {
+                "t": "object",
+                "v": [
+                  [
+                    "deviceKey",
+                    {
+                      "t": "string",
+                      "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                    }
+                  ],
+                  [
+                    "physicalTarget",
+                    {
+                      "t": "object",
+                      "v": [
+                        [
+                          "deviceKey",
+                          {
+                            "t": "string",
+                            "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                          }
+                        ],
+                        [
+                          "pciVendorId",
+                          {
+                            "t": "string",
+                            "v": "0x00008086"
+                          }
+                        ],
+                        [
+                          "pciDeviceId",
+                          {
+                            "t": "string",
+                            "v": "0x0000e20b"
+                          }
+                        ],
+                        [
+                          "bdf",
+                          {
+                            "t": "object",
+                            "v": [
+                              [
+                                "bus",
+                                {
+                                  "t": "number",
+                                  "v": 3
+                                }
+                              ],
+                              [
+                                "device",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ],
+                              [
+                                "function",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ]
+                            ]
+                          }
+                        ],
+                        [
+                          "luid",
+                          {
+                            "t": "string",
+                            "v": "0x00000001:0x00000002"
+                          }
+                        ]
+                      ]
+                    }
+                  ]
+                ]
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "result": {
+        "ok": false,
+        "perControl": {
+          "tempLimitC": {
+            "ok": false,
+            "errorCode": "refusal-cache-unavailable",
+            "message": "The temperature refusal cache is unavailable after a driver refusal could not be recorded. Restart Arc Power before applying a temperature limit."
+          },
+          "powerLimitW": {
+            "ok": false,
+            "errorCode": "refusal-cache-unavailable",
+            "message": "The temperature refusal cache is unavailable after a driver refusal could not be recorded. Restart Arc Power before applying a temperature limit."
+          }
+        }
+      },
+      "state": {
+        "deviceId": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+        "tempLimitC": 90,
+        "powerLimitW": 200,
+        "gpuFreqOffsetMhz": 0,
+        "gpuVoltOffsetV": 0,
+        "waiverAccepted": true
+      },
+      "temperatureRefusalCacheUnavailable": true
+    },
+    [
+      "result",
+      "state",
+      "temperatureRefusalCacheUnavailable"
+    ],
+    {
+      "tempLimitC": {
+        "ok": false,
+        "errorCode": "refusal-cache-unavailable",
+        "message": "The temperature refusal cache is unavailable after a driver refusal could not be recorded. Restart Arc Power before applying a temperature limit."
+      },
+      "powerLimitW": {
+        "ok": false,
+        "errorCode": "refusal-cache-unavailable",
+        "message": "The temperature refusal cache is unavailable after a driver refusal could not be recorded. Restart Arc Power before applying a temperature limit."
+      }
+    },
+    [
+      "tempLimitC",
+      "powerLimitW"
+    ],
+    {
+      "t": "array",
+      "v": [
+        {
+          "t": "number",
+          "v": 0
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "tempLimitC",
+              {
+                "t": "number",
+                "v": 90
+              }
+            ],
+            [
+              "powerLimitW",
+              {
+                "t": "number",
+                "v": 240
+              }
+            ]
+          ]
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "profileApply",
+              {
+                "t": "boolean",
+                "v": true
+              }
+            ],
+            [
+              "expectedTarget",
+              {
+                "t": "object",
+                "v": [
+                  [
+                    "deviceKey",
+                    {
+                      "t": "string",
+                      "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                    }
+                  ],
+                  [
+                    "physicalTarget",
+                    {
+                      "t": "object",
+                      "v": [
+                        [
+                          "deviceKey",
+                          {
+                            "t": "string",
+                            "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                          }
+                        ],
+                        [
+                          "pciVendorId",
+                          {
+                            "t": "string",
+                            "v": "0x00008086"
+                          }
+                        ],
+                        [
+                          "pciDeviceId",
+                          {
+                            "t": "string",
+                            "v": "0x0000e20b"
+                          }
+                        ],
+                        [
+                          "bdf",
+                          {
+                            "t": "object",
+                            "v": [
+                              [
+                                "bus",
+                                {
+                                  "t": "number",
+                                  "v": 3
+                                }
+                              ],
+                              [
+                                "device",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ],
+                              [
+                                "function",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ]
+                            ]
+                          }
+                        ],
+                        [
+                          "luid",
+                          {
+                            "t": "string",
+                            "v": "0x00000001:0x00000002"
+                          }
+                        ]
+                      ]
+                    }
+                  ]
+                ]
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "result": {
+        "ok": true,
+        "perControl": {
+          "powerLimitW": {
+            "ok": true,
+            "readBackEqual": true,
+            "silentNoop": false
+          },
+          "tempLimitC": {
+            "ok": true,
+            "readBackEqual": true
+          }
+        },
+        "pl2Note": {
+          "landed": true,
+          "valueW": 240
+        }
+      },
+      "state": {
+        "deviceId": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+        "tempLimitC": 90,
+        "powerLimitW": 200,
+        "gpuFreqOffsetMhz": 0,
+        "gpuVoltOffsetV": 0,
+        "waiverAccepted": true,
+        "tempLimitCReadBackUnavailable": false,
+        "tempLimitCReadBackSource": "native"
+      }
+    },
+    {
+      "powerLimitW": {
+        "ok": true,
+        "readBackEqual": true,
+        "silentNoop": false
+      },
+      "tempLimitC": {
+        "ok": true,
+        "readBackEqual": true
+      }
+    },
+    {
+      "deviceId": 0,
+      "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+      "tempLimitC": 90,
+      "powerLimitW": 200,
+      "gpuFreqOffsetMhz": 0,
+      "gpuVoltOffsetV": 0,
+      "waiverAccepted": true,
+      "tempLimitCReadBackUnavailable": false,
+      "tempLimitCReadBackSource": "native"
+    },
+    {
+      "t": "array",
+      "v": [
+        {
+          "t": "number",
+          "v": 0
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "powerLimitW",
+              {
+                "t": "number",
+                "v": 240
+              }
+            ]
+          ]
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "profileApply",
+              {
+                "t": "boolean",
+                "v": true
+              }
+            ],
+            [
+              "expectedTarget",
+              {
+                "t": "object",
+                "v": [
+                  [
+                    "deviceKey",
+                    {
+                      "t": "string",
+                      "v": ""
+                    }
+                  ],
+                  [
+                    "physicalTarget",
+                    {
+                      "t": "object",
+                      "v": [
+                        [
+                          "deviceKey",
+                          {
+                            "t": "string",
+                            "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                          }
+                        ],
+                        [
+                          "pciVendorId",
+                          {
+                            "t": "string",
+                            "v": "0x00008086"
+                          }
+                        ],
+                        [
+                          "pciDeviceId",
+                          {
+                            "t": "string",
+                            "v": "0x0000e20b"
+                          }
+                        ],
+                        [
+                          "bdf",
+                          {
+                            "t": "object",
+                            "v": [
+                              [
+                                "bus",
+                                {
+                                  "t": "number",
+                                  "v": 3
+                                }
+                              ],
+                              [
+                                "device",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ],
+                              [
+                                "function",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ]
+                            ]
+                          }
+                        ],
+                        [
+                          "luid",
+                          {
+                            "t": "string",
+                            "v": "0x00000001:0x00000002"
+                          }
+                        ]
+                      ]
+                    }
+                  ]
+                ]
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    null,
+    {
+      "t": "array",
+      "v": [
+        {
+          "t": "number",
+          "v": 0
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "powerLimitW",
+              {
+                "t": "number",
+                "v": 240
+              }
+            ]
+          ]
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "profileApply",
+              {
+                "t": "boolean",
+                "v": true
+              }
+            ],
+            [
+              "expectedTarget",
+              {
+                "t": "object",
+                "v": [
+                  [
+                    "deviceKey",
+                    {
+                      "t": "string",
+                      "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                    }
+                  ]
+                ]
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "t": "array",
+      "v": [
+        {
+          "t": "number",
+          "v": 0
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "vfCurve",
+              {
+                "t": "array",
+                "v": [
+                  {
+                    "t": "object",
+                    "v": [
+                      [
+                        "voltageV",
+                        {
+                          "t": "number",
+                          "v": 0.8
+                        }
+                      ],
+                      [
+                        "freqMhz",
+                        {
+                          "t": "number",
+                          "v": 2000
+                        }
+                      ]
+                    ]
+                  },
+                  {
+                    "t": "object",
+                    "v": [
+                      [
+                        "voltageV",
+                        {
+                          "t": "number",
+                          "v": 1
+                        }
+                      ],
+                      [
+                        "freqMhz",
+                        {
+                          "t": "number",
+                          "v": 2500
+                        }
+                      ]
+                    ]
+                  }
+                ]
+              }
+            ]
+          ]
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "profileApply",
+              {
+                "t": "boolean",
+                "v": true
+              }
+            ],
+            [
+              "expectedTarget",
+              {
+                "t": "object",
+                "v": [
+                  [
+                    "deviceKey",
+                    {
+                      "t": "string",
+                      "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                    }
+                  ],
+                  [
+                    "physicalTarget",
+                    {
+                      "t": "object",
+                      "v": [
+                        [
+                          "deviceKey",
+                          {
+                            "t": "string",
+                            "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                          }
+                        ],
+                        [
+                          "pciVendorId",
+                          {
+                            "t": "string",
+                            "v": "0x00008086"
+                          }
+                        ],
+                        [
+                          "pciDeviceId",
+                          {
+                            "t": "string",
+                            "v": "0x0000e20b"
+                          }
+                        ],
+                        [
+                          "bdf",
+                          {
+                            "t": "object",
+                            "v": [
+                              [
+                                "bus",
+                                {
+                                  "t": "number",
+                                  "v": 3
+                                }
+                              ],
+                              [
+                                "device",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ],
+                              [
+                                "function",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ]
+                            ]
+                          }
+                        ],
+                        [
+                          "luid",
+                          {
+                            "t": "string",
+                            "v": "0x00000001:0x00000002"
+                          }
+                        ]
+                      ]
+                    }
+                  ]
+                ]
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "result": {
+        "ok": true,
+        "perControl": {
+          "vfCurve": {
+            "ok": true,
+            "readBackEqual": true,
+            "silentNoop": false
+          }
+        },
+        "pl2Note": null
+      },
+      "state": {
+        "deviceId": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+        "tempLimitC": 90,
+        "powerLimitW": 200,
+        "gpuFreqOffsetMhz": 0,
+        "gpuVoltOffsetV": 0,
+        "waiverAccepted": true
+      }
+    },
+    {
+      "vfCurve": {
+        "ok": true,
+        "readBackEqual": true,
+        "silentNoop": false
+      }
+    },
+    [
+      "vfCurve"
+    ],
+    {
+      "t": "array",
+      "v": [
+        {
+          "t": "number",
+          "v": 0
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "vfCurveProfileStock",
+              {
+                "t": "boolean",
+                "v": true
+              }
+            ]
+          ]
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "profileApply",
+              {
+                "t": "boolean",
+                "v": true
+              }
+            ],
+            [
+              "expectedTarget",
+              {
+                "t": "object",
+                "v": [
+                  [
+                    "deviceKey",
+                    {
+                      "t": "string",
+                      "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                    }
+                  ],
+                  [
+                    "physicalTarget",
+                    {
+                      "t": "object",
+                      "v": [
+                        [
+                          "deviceKey",
+                          {
+                            "t": "string",
+                            "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                          }
+                        ],
+                        [
+                          "pciVendorId",
+                          {
+                            "t": "string",
+                            "v": "0x00008086"
+                          }
+                        ],
+                        [
+                          "pciDeviceId",
+                          {
+                            "t": "string",
+                            "v": "0x0000e20b"
+                          }
+                        ],
+                        [
+                          "bdf",
+                          {
+                            "t": "object",
+                            "v": [
+                              [
+                                "bus",
+                                {
+                                  "t": "number",
+                                  "v": 3
+                                }
+                              ],
+                              [
+                                "device",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ],
+                              [
+                                "function",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ]
+                            ]
+                          }
+                        ],
+                        [
+                          "luid",
+                          {
+                            "t": "string",
+                            "v": "0x00000001:0x00000002"
+                          }
+                        ]
+                      ]
+                    }
+                  ]
+                ]
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "result": {
+        "ok": false,
+        "perControl": {
+          "vfCurve": {
+            "ok": false,
+            "errorCode": "readback-unverified",
+            "message": "The driver STOCK VF curve could not be read and verified. No profile settings were written."
+          }
+        }
+      },
+      "state": {
+        "deviceId": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+        "tempLimitC": 90,
+        "powerLimitW": 200,
+        "gpuFreqOffsetMhz": 0,
+        "gpuVoltOffsetV": 0,
+        "waiverAccepted": true
+      }
+    },
+    {
+      "vfCurve": {
+        "ok": false,
+        "errorCode": "readback-unverified",
+        "message": "The driver STOCK VF curve could not be read and verified. No profile settings were written."
+      }
+    },
+    {
+      "t": "array",
+      "v": [
+        {
+          "t": "number",
+          "v": 0
+        },
+        {
+          "t": "object",
+          "v": []
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "profileApply",
+              {
+                "t": "boolean",
+                "v": true
+              }
+            ],
+            [
+              "expectedTarget",
+              {
+                "t": "object",
+                "v": [
+                  [
+                    "deviceKey",
+                    {
+                      "t": "string",
+                      "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                    }
+                  ],
+                  [
+                    "physicalTarget",
+                    {
+                      "t": "object",
+                      "v": [
+                        [
+                          "deviceKey",
+                          {
+                            "t": "string",
+                            "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                          }
+                        ],
+                        [
+                          "pciVendorId",
+                          {
+                            "t": "string",
+                            "v": "0x00008086"
+                          }
+                        ],
+                        [
+                          "pciDeviceId",
+                          {
+                            "t": "string",
+                            "v": "0x0000e20b"
+                          }
+                        ],
+                        [
+                          "bdf",
+                          {
+                            "t": "object",
+                            "v": [
+                              [
+                                "bus",
+                                {
+                                  "t": "number",
+                                  "v": 3
+                                }
+                              ],
+                              [
+                                "device",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ],
+                              [
+                                "function",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ]
+                            ]
+                          }
+                        ],
+                        [
+                          "luid",
+                          {
+                            "t": "string",
+                            "v": "0x00000001:0x00000002"
+                          }
+                        ]
+                      ]
+                    }
+                  ]
+                ]
+              }
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "result": {
+        "ok": true,
+        "perControl": {},
+        "pl2Note": null
+      },
+      "state": {
+        "deviceId": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+        "tempLimitC": 90,
+        "powerLimitW": 200,
+        "gpuFreqOffsetMhz": 0,
+        "gpuVoltOffsetV": 0,
+        "waiverAccepted": true
+      }
+    },
+    {},
+    [],
+    {
+      "t": "array",
+      "v": [
+        {
+          "t": "number",
+          "v": 0
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "powerLimitW",
+              {
+                "t": "string",
+                "v": "240"
+              }
+            ]
+          ]
+        },
+        {
+          "t": "object",
+          "v": [
+            [
+              "profileApply",
+              {
+                "t": "boolean",
+                "v": true
+              }
+            ],
+            [
+              "expectedTarget",
+              {
+                "t": "object",
+                "v": [
+                  [
+                    "deviceKey",
+                    {
+                      "t": "string",
+                      "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                    }
+                  ],
+                  [
+                    "physicalTarget",
+                    {
+                      "t": "object",
+                      "v": [
+                        [
+                          "deviceKey",
+                          {
+                            "t": "string",
+                            "v": "pci:0x00008086:0x0000e20b@3:0.0"
+                          }
+                        ],
+                        [
+                          "pciVendorId",
+                          {
+                            "t": "string",
+                            "v": "0x00008086"
+                          }
+                        ],
+                        [
+                          "pciDeviceId",
+                          {
+                            "t": "string",
+                            "v": "0x0000e20b"
+                          }
+                        ],
+                        [
+                          "bdf",
+                          {
+                            "t": "object",
+                            "v": [
+                              [
+                                "bus",
+                                {
+                                  "t": "number",
+                                  "v": 3
+                                }
+                              ],
+                              [
+                                "device",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ],
+                              [
+                                "function",
+                                {
+                                  "t": "number",
+                                  "v": 0
+                                }
+                              ]
+                            ]
+                          }
+                        ],
+                        [
+                          "luid",
+                          {
+                            "t": "string",
+                            "v": "0x00000001:0x00000002"
+                          }
+                        ]
+                      ]
+                    }
+                  ]
+                ]
+              }
+            ]
+          ]
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "name": "plain multi-control profile applies fully",
+      "deviceId": 0,
+      "wire": 0,
+      "delegate": false,
+      "error": null,
+      "expectedReply": 1,
+      "expectedReplyKeys": 2,
+      "expectedPerControl": 3,
+      "expectedPerControlKeys": 4,
+      "expectedState": 5,
+      "caps": 6,
+      "cacheFailure": null,
+      "route": "native",
+      "lease": null
+    },
+    {
+      "name": "learned temperature ceiling refuses tempLimitC while the other controls apply",
+      "deviceId": 0,
+      "wire": 7,
+      "delegate": false,
+      "error": null,
+      "expectedReply": 8,
+      "expectedReplyKeys": 9,
+      "expectedPerControl": 10,
+      "expectedPerControlKeys": 11,
+      "expectedState": 5,
+      "caps": 12,
+      "cacheFailure": null,
+      "route": "lease",
+      "lease": "granted"
+    },
+    {
+      "name": "temperature-only profile above the learned ceiling is refused wholesale",
+      "deviceId": 0,
+      "wire": 13,
+      "delegate": false,
+      "error": null,
+      "expectedReply": 14,
+      "expectedReplyKeys": 15,
+      "expectedPerControl": 16,
+      "expectedPerControlKeys": 17,
+      "expectedState": 5,
+      "caps": 12,
+      "cacheFailure": null,
+      "route": "lease",
+      "lease": "granted"
+    },
+    {
+      "name": "temperature profile apply refuses every control while the refusal cache is unavailable",
+      "deviceId": 0,
+      "wire": 18,
+      "delegate": false,
+      "error": null,
+      "expectedReply": 19,
+      "expectedReplyKeys": 20,
+      "expectedPerControl": 21,
+      "expectedPerControlKeys": 22,
+      "expectedState": 5,
+      "caps": 6,
+      "cacheFailure": "The temperature refusal cache is unavailable after a driver refusal could not be recorded. Restart Arc Power before applying a temperature limit.",
+      "route": "lease",
+      "lease": "granted"
+    },
+    {
+      "name": "temperature-bearing profile apply with a granted native lease",
+      "deviceId": 0,
+      "wire": 23,
+      "delegate": false,
+      "error": null,
+      "expectedReply": 24,
+      "expectedReplyKeys": 2,
+      "expectedPerControl": 25,
+      "expectedPerControlKeys": 11,
+      "expectedState": 26,
+      "caps": 6,
+      "cacheFailure": null,
+      "route": "lease",
+      "lease": "granted"
+    },
+    {
+      "name": "temperature-bearing profile apply with a declined native lease falls back to the handler",
+      "deviceId": 0,
+      "wire": 23,
+      "delegate": true,
+      "error": null,
+      "expectedReply": 24,
+      "expectedReplyKeys": 2,
+      "expectedPerControl": 25,
+      "expectedPerControlKeys": 11,
+      "expectedState": 26,
+      "caps": 6,
+      "cacheFailure": null,
+      "route": "lease",
+      "lease": "declined"
+    },
+    {
+      "name": "profile apply without a valid renderer target proof fails closed",
+      "deviceId": 0,
+      "wire": 27,
+      "delegate": true,
+      "error": "apply-settings: expected target requires a stable GPU key and physical proof",
+      "expectedReply": 28,
+      "expectedReplyKeys": 28,
+      "expectedPerControl": 28,
+      "expectedPerControlKeys": 28,
+      "expectedState": 28,
+      "caps": 28,
+      "cacheFailure": null,
+      "route": "delegate",
+      "lease": null
+    },
+    {
+      "name": "profile apply without any physical target proof fails closed",
+      "deviceId": 0,
+      "wire": 29,
+      "delegate": true,
+      "error": "apply-settings: expected target requires a stable GPU key and physical proof",
+      "expectedReply": 28,
+      "expectedReplyKeys": 28,
+      "expectedPerControl": 28,
+      "expectedPerControlKeys": 28,
+      "expectedState": 28,
+      "caps": 28,
+      "cacheFailure": null,
+      "route": "delegate",
+      "lease": null
+    },
+    {
+      "name": "profile apply with a vfCurve payload delegates to the compatibility handler",
+      "deviceId": 0,
+      "wire": 30,
+      "delegate": true,
+      "error": null,
+      "expectedReply": 31,
+      "expectedReplyKeys": 2,
+      "expectedPerControl": 32,
+      "expectedPerControlKeys": 33,
+      "expectedState": 5,
+      "caps": 6,
+      "cacheFailure": null,
+      "route": "delegate",
+      "lease": null
+    },
+    {
+      "name": "profile apply with a STOCK VF intent key delegates to the compatibility handler",
+      "deviceId": 0,
+      "wire": 34,
+      "delegate": true,
+      "error": null,
+      "expectedReply": 35,
+      "expectedReplyKeys": 2,
+      "expectedPerControl": 36,
+      "expectedPerControlKeys": 33,
+      "expectedState": 5,
+      "caps": 6,
+      "cacheFailure": null,
+      "route": "delegate",
+      "lease": null
+    },
+    {
+      "name": "empty profile payload delegates to the compatibility handler",
+      "deviceId": 0,
+      "wire": 37,
+      "delegate": true,
+      "error": null,
+      "expectedReply": 38,
+      "expectedReplyKeys": 2,
+      "expectedPerControl": 39,
+      "expectedPerControlKeys": 40,
+      "expectedState": 5,
+      "caps": 6,
+      "cacheFailure": null,
+      "route": "delegate",
+      "lease": null
+    },
+    {
+      "name": "malformed profile payload delegates to the compatibility handler",
+      "deviceId": 0,
+      "wire": 41,
+      "delegate": true,
+      "error": "powerLimitW must be a finite number",
+      "expectedReply": 28,
+      "expectedReplyKeys": 28,
+      "expectedPerControl": 28,
+      "expectedPerControlKeys": 28,
+      "expectedState": 28,
+      "caps": 28,
+      "cacheFailure": null,
+      "route": "delegate",
+      "lease": null
+    }
+  ]
+}

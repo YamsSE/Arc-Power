@@ -1,0 +1,5455 @@
+{
+  "provenance": "Original src/main/game-candidate.js; filesystem/current-exe inputs injected only",
+  "sourceSha256": "785a7b0a28fbd67697a6f1ef31abc562bd4b1b80f9577c730946e86fb7833bbd",
+  "currentExe": "C:/Codex/native.exe",
+  "files": [
+    "c:\\games\\a.exe",
+    "c:\\games\\b.exe"
+  ],
+  "pathCases": [
+    {
+      "value": null,
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": 0,
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": true,
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": [],
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": {},
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:./a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "\\a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/A.EXE",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "﻿ C:/GAMES/A.EXE  ",
+      "canonical": "c:\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe\n",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "\"C:/a.exe\"",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe ",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe/.",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe/..",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/folder/../../A.EXE",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/../../A.EXE",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/./a//b/../x.exe",
+      "canonical": "c:\\a\\x.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/folder./a.exe",
+      "canonical": "c:\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/folder /a.exe",
+      "canonical": "c:\\folder \\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe:alternate.exe",
+      "canonical": "c:\\a.exe:alternate.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a\u0000.exe",
+      "canonical": "c:\\a\u0000.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "\\\\?\\C:\\a.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "\\\\.\\C:\\a.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/c:/A/../a.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//./C:/A.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/C:a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/UNC/server/share/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//Device/Harddisk/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//gLoBaLrOoT/abc/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//DeviceExtra/share/a.exe",
+      "canonical": "\\\\deviceextra\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/a.exe",
+      "canonical": "\\\\server\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share//folder/../a.exe",
+      "canonical": "\\\\server\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/a.exe/.",
+      "canonical": "\\\\server\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/../../../a.exe",
+      "canonical": "\\\\server\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///server/share/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//./share/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/share/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/.exe/a.exe",
+      "canonical": "\\\\server\\.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/../a.exe",
+      "canonical": "\\\\server\\..\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/./a.exe",
+      "canonical": "\\\\server\\.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "K:/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/É/ΟΣ/😀.EXE",
+      "canonical": "c:\\é\\ος\\😀.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/Con.exe",
+      "canonical": "c:\\con.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "CON:/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/unins١.exe",
+      "canonical": "c:\\unins١.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/unins1.exe",
+      "canonical": "c:\\unins1.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/./A.ExE",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a/../b.exe",
+      "canonical": "c:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/../a.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe/.",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe/../b.exe",
+      "canonical": "c:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a//b\\..\\c.exe",
+      "canonical": "c:\\a\\c.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/./../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe:bad.exe",
+      "canonical": "c:\\a.exe:bad.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "c:\\a.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "c:\\./A.ExE",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "c:\\a/../b.exe",
+      "canonical": "c:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "c:\\../a.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "c:\\a.exe/.",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "c:\\a.exe/../b.exe",
+      "canonical": "c:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "c:\\a//b\\..\\c.exe",
+      "canonical": "c:\\a\\c.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "c:\\./../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "c:\\a.exe:bad.exe",
+      "canonical": "c:\\a.exe:bad.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv/share/a.exe",
+      "canonical": "\\\\srv\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv/share/./A.ExE",
+      "canonical": "\\\\srv\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv/share/a/../b.exe",
+      "canonical": "\\\\srv\\share\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv/share/../a.exe",
+      "canonical": "\\\\srv\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv/share/a.exe/.",
+      "canonical": "\\\\srv\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv/share/a.exe/../b.exe",
+      "canonical": "\\\\srv\\share\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv/share/a//b\\..\\c.exe",
+      "canonical": "\\\\srv\\share\\a\\c.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv/share/./../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//srv/share/a.exe:bad.exe",
+      "canonical": "\\\\srv\\share\\a.exe:bad.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv//share/a.exe",
+      "canonical": "\\\\srv\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv//share/./A.ExE",
+      "canonical": "\\\\srv\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv//share/a/../b.exe",
+      "canonical": "\\\\srv\\share\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv//share/../a.exe",
+      "canonical": "\\\\srv\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv//share/a.exe/.",
+      "canonical": "\\\\srv\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv//share/a.exe/../b.exe",
+      "canonical": "\\\\srv\\share\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv//share/a//b\\..\\c.exe",
+      "canonical": "\\\\srv\\share\\a\\c.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//srv//share/./../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//srv//share/a.exe:bad.exe",
+      "canonical": "\\\\srv\\share\\a.exe:bad.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/./A.ExE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/a/../b.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/../a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/a.exe/../b.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/a//b\\..\\c.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/./../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/a.exe:bad.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:./A.ExE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:a/../b.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:../a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:a.exe/../b.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:a//b\\..\\c.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:./../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:a.exe:bad.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "relative/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "relative/./A.ExE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "relative/a/../b.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "relative/../a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "relative/a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "relative/a.exe/../b.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "relative/a//b\\..\\c.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "relative/./../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "relative/a.exe:bad.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///srv/share/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///srv/share/./A.ExE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///srv/share/a/../b.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///srv/share/../a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///srv/share/a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///srv/share/a.exe/../b.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///srv/share/a//b\\..\\c.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///srv/share/./../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///srv/share/a.exe:bad.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/b.EXE\\b.EXE/b.EXE",
+      "canonical": "d:\\b.exe\\b.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\a\\////.exe",
+      "canonical": "z:\\a\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///b.EXE\\😀\\a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C: //b.EXE\\a/a.exe\\ \\a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:a/x:/.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\a\\Games//b.EXE\\x://b.EXE//.exe",
+      "canonical": "z:\\a\\games\\b.exe\\x:\\b.exe\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:a.exe/a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:😀/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///folder.//b.EXE\\a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/x://a//a//b.EXE//b.EXE",
+      "canonical": "c:\\x:\\a\\a\\b.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/a/.exe",
+      "canonical": "\\\\server\\share\\a\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/ \\a\\a.exe",
+      "canonical": "c:\\ \\a\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C: \\a.exe/.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share//b.EXE",
+      "canonical": "\\\\server\\share\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "////.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///b.EXE/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/.//x://Games/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/😀/b.EXE",
+      "canonical": "\\\\server\\share\\😀\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\..//b.EXE//a.exe\\😀/.exe",
+      "canonical": "z:\\b.exe\\a.exe\\😀\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/😀\\folder.//a/a\\a\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a.exe\\..// //folder.\\a/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/x:\\../a.exe/.",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/Games\\Games\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/Games\\😀/.exe",
+      "canonical": "\\\\server\\share\\games\\😀\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:..//.\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///x:/a.exe/.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/😀\\.\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a.exe/ \\..// //b.EXE",
+      "canonical": "d:\\a.exe\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/x:/b.EXE",
+      "canonical": "\\\\server\\share\\x:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "/// \\b.EXE//..//a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a.exe/a.exe/.",
+      "canonical": "d:\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/😀/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/ //./😀\\..// /b.EXE",
+      "canonical": "\\\\server\\share\\ \\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a//folder./ //b.EXE",
+      "canonical": "d:\\a\\folder.\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\a.exe/.exe",
+      "canonical": "z:\\a.exe\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///a/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///😀//a.exe/../b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/ \\😀/..//a.exe/.",
+      "canonical": "c:\\ \\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/\\..//folder.//a.exe/.",
+      "canonical": "\\\\server\\share\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/..\\//b.EXE\\Games//😀\\.exe",
+      "canonical": "d:\\b.exe\\games\\😀\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/\\folder.\\.exe",
+      "canonical": "\\\\server\\share\\folder.\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///a//a.exe//a//😀//a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\a.exe\\folder./a.exe/a.exe/.",
+      "canonical": "z:\\a.exe\\folder.\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///Games/.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/folder.//./ //.exe",
+      "canonical": "c:\\folder.\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/😀\\../folder.\\a.exe/b.EXE",
+      "canonical": "c:\\folder.\\a.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/😀\\\\folder.\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:a.exe//x:/a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\b.EXE/a.exe",
+      "canonical": "z:\\b.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:a.exe\\/b.EXE//a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share//a.exe/.",
+      "canonical": "\\\\server\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe\\folder.//😀/.exe",
+      "canonical": "c:\\a.exe\\folder.\\😀\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/x:/b.EXE",
+      "canonical": "d:\\x:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///a.exe//x://.//.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/../.exe",
+      "canonical": "c:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/a.exe//😀/.\\ /b.EXE",
+      "canonical": "\\\\server\\share\\a.exe\\😀\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/x://Games\\/x://.exe",
+      "canonical": "c:\\x:\\games\\x:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///folder./.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/// //Games\\a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/Games\\a/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a.exe/b.EXE",
+      "canonical": "d:\\a.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/a//😀//a.exe\\a//..\\.exe",
+      "canonical": "\\\\server\\share\\a\\😀\\a.exe\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:a\\😀//a/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/ //\\a.exe",
+      "canonical": "d:\\ \\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe\\a\\a/Games//a.exe/.",
+      "canonical": "c:\\a.exe\\a\\a\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///\\a.exe// /a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/x://folder.\\.exe",
+      "canonical": "\\\\server\\share\\x:\\folder.\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a.exe/a.exe/b.EXE",
+      "canonical": "d:\\a.exe\\a.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a\\/Games\\x://a/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/Games//a.exe/\\////a.exe/.",
+      "canonical": "\\\\server\\share\\games\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/.// //./.exe",
+      "canonical": "\\\\server\\share\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:😀/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/ /b.EXE",
+      "canonical": "c:\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share///.//.exe",
+      "canonical": "\\\\server\\share\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/.//folder./ /b.EXE",
+      "canonical": "\\\\server\\share\\folder.\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/a.exe\\ \\.exe",
+      "canonical": "\\\\server\\share\\a.exe\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\./Games/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/Games\\😀/..//a.exe/.",
+      "canonical": "d:\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\folder.\\\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/// /a/b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\😀\\x:\\b.EXE",
+      "canonical": "z:\\😀\\x:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:.././/b.EXE/a/.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/Games/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/a//Games//a/a.exe",
+      "canonical": "\\\\server\\share\\a\\games\\a\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\ //😀\\a.exe/.",
+      "canonical": "z:\\ \\😀\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/b.EXE\\Games/.exe",
+      "canonical": "c:\\b.exe\\games\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/b.EXE/b.EXE",
+      "canonical": "\\\\server\\share\\b.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:folder./b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\ \\a\\b.EXE",
+      "canonical": "z:\\ \\a\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/a//Games//x:\\a.exe/.",
+      "canonical": "\\\\server\\share\\a\\games\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:..\\./b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/.\\.//./a.exe",
+      "canonical": "\\\\server\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/b.EXE//b.EXE\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/a.exe//x:/a.exe/.",
+      "canonical": "\\\\server\\share\\a.exe\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/b.EXE\\Games//x://a.exe",
+      "canonical": "\\\\server\\share\\b.exe\\games\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\a\\..\\b.EXE",
+      "canonical": "z:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/folder.//a.exe",
+      "canonical": "c:\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a//folder.// /a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///Games//.\\a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/.//\\..\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/..\\../a.exe/.",
+      "canonical": "d:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/.// \\b.EXE",
+      "canonical": "\\\\server\\share\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/😀\\😀/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/Games\\b.EXE\\b.EXE",
+      "canonical": "c:\\games\\b.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/😀//😀\\..////a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/..//a/x://a.exe",
+      "canonical": "\\\\server\\share\\a\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:../.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/// \\ \\b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/Games/Games\\ /.//b.EXE",
+      "canonical": "\\\\server\\share\\games\\games\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/ \\x://a.exe\\../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/x:\\//folder.//a.exe\\Games\\.exe",
+      "canonical": "\\\\server\\share\\x:\\folder.\\a.exe\\games\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:Games////Games//.\\folder.\\a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/a.exe\\.////😀/.exe",
+      "canonical": "\\\\server\\share\\a.exe\\😀\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\./a.exe/.",
+      "canonical": "z:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\folder.//😀\\a.exe",
+      "canonical": "z:\\folder.\\😀\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/Games//a\\./Games/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:.//Games//./a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/folder./a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/😀//Games///a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\a.exe\\x:\\b.EXE",
+      "canonical": "z:\\a.exe\\x:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/../..\\// /.exe",
+      "canonical": "d:\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a/.exe",
+      "canonical": "c:\\a\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C: //.\\a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/x:///Games\\b.EXE",
+      "canonical": "d:\\x:\\games\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe/😀\\folder.////a.exe",
+      "canonical": "c:\\a.exe\\😀\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/Games////..//.exe",
+      "canonical": "\\\\server\\share\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/folder./a.exe",
+      "canonical": "\\\\server\\share\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share///Games///.exe",
+      "canonical": "\\\\server\\share\\games\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/x://😀\\.exe",
+      "canonical": "c:\\x:\\😀\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/x:// \\a//.\\b.EXE//x:/b.EXE",
+      "canonical": "c:\\x:\\ \\a\\b.exe\\x:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:x:///a//.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/..//../x://b.EXE",
+      "canonical": "\\\\server\\share\\x:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/ /.exe",
+      "canonical": "\\\\server\\share\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///b.EXE/a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\..\\😀\\b.EXE",
+      "canonical": "z:\\😀\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/folder.//b.EXE//b.EXE/a/b.EXE",
+      "canonical": "d:\\folder.\\b.exe\\b.exe\\a\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/Games/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/../a.exe/.",
+      "canonical": "\\\\server\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/.\\a.exe//b.EXE/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/a/a.exe",
+      "canonical": "\\\\server\\share\\a\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\a/b.EXE",
+      "canonical": "z:\\a\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/ //./..//.exe",
+      "canonical": "c:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/folder.\\./ //a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/a.exe/a.exe",
+      "canonical": "\\\\server\\share\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\ \\..//b.EXE//a.exe",
+      "canonical": "z:\\b.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\\\x:/folder.//a.exe/.",
+      "canonical": "z:\\x:\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:a.exe//😀\\.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/folder.\\ /.exe",
+      "canonical": "\\\\server\\share\\folder.\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/../a.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/./.exe",
+      "canonical": "c:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/..//b.EXE\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a//b.EXE\\\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/😀//a/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe/b.EXE",
+      "canonical": "c:\\a.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\//x://x://b.EXE",
+      "canonical": "z:\\x:\\x:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/x:\\b.EXE/a.exe\\a.exe/b.EXE",
+      "canonical": "c:\\x:\\b.exe\\a.exe\\a.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///folder./Games// //a//a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/.//b.EXE/\\ \\b.EXE",
+      "canonical": "d:\\b.exe\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///😀/😀// ///a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///a/b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///a.exe/b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C://a.exe//.\\a/a.exe",
+      "canonical": "c:\\a.exe\\a\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/a\\a/a.exe/.",
+      "canonical": "\\\\server\\share\\a\\a\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\a//..\\.exe",
+      "canonical": "z:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:Games/ //x:\\a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/x:\\.//Games//x://b.EXE",
+      "canonical": "c:\\x:\\games\\x:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:x://b.EXE\\.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:// /a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\..\\😀//a/b.EXE",
+      "canonical": "z:\\😀\\a\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\ \\😀\\a.exe",
+      "canonical": "z:\\ \\😀\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/ /x:\\..//x:\\x://Games\\b.EXE",
+      "canonical": "c:\\ \\x:\\x:\\games\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/ // //.exe",
+      "canonical": "\\\\server\\share\\ \\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/b.EXE//Games\\b.EXE",
+      "canonical": "\\\\server\\share\\b.exe\\games\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\ /x:/.exe",
+      "canonical": "z:\\ \\x:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/x:///a.exe\\x://x:/a.exe",
+      "canonical": "\\\\server\\share\\x:\\a.exe\\x:\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\/a.exe",
+      "canonical": "z:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:../.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/.\\Games\\a.exe",
+      "canonical": "c:\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a//./a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/Games//.\\.exe",
+      "canonical": "d:\\games\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe/Games/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\/b.EXE",
+      "canonical": "z:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\Games//x:\\a.exe/.",
+      "canonical": "z:\\games\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///..//..//.//\\a.exe////b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/😀/.exe",
+      "canonical": "\\\\server\\share\\😀\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:.\\.// \\a.exe//Games//b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:./a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/b.EXE/a.exe/.",
+      "canonical": "\\\\server\\share\\b.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\ \\\\.exe",
+      "canonical": "z:\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/b.EXE\\😀//a.exe\\a.exe",
+      "canonical": "c:\\b.exe\\😀\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:a.exe\\../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:..//.\\a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///\\.//.\\a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\x:/Games//x://.//a.exe",
+      "canonical": "z:\\x:\\games\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/.\\/.\\ \\.exe",
+      "canonical": "\\\\server\\share\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:folder./x:/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/😀/a.exe/.",
+      "canonical": "d:\\😀\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/Games\\x:\\a.exe",
+      "canonical": "\\\\server\\share\\games\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///a//😀\\.//x:\\a// /.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///x://Games\\a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/b.EXE/..\\folder.///b.EXE",
+      "canonical": "d:\\folder.\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/😀//folder./folder.//b.EXE",
+      "canonical": "c:\\😀\\folder.\\folder.\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a.exe//..\\b.EXE",
+      "canonical": "d:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:///a/a.exe",
+      "canonical": "d:\\a\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/x:// \\.exe",
+      "canonical": "\\\\server\\share\\x:\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\.\\a\\folder./b.EXE/.exe",
+      "canonical": "z:\\a\\folder.\\b.exe\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/b.EXE//../😀/b.EXE",
+      "canonical": "d:\\😀\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/ \\../..//a.exe/.",
+      "canonical": "d:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/a.exe/a.exe",
+      "canonical": "\\\\server\\share\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share///..//../b.EXE",
+      "canonical": "\\\\server\\share\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\ \\.//folder.//a.exe",
+      "canonical": "z:\\ \\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:///a\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/// /x:\\a//a.exe/a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:x://folder.//folder./a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/Games//..//😀/a.exe",
+      "canonical": "c:\\😀\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C://a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/Games//😀/😀\\folder.\\a.exe",
+      "canonical": "d:\\games\\😀\\😀\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/./😀/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/folder.//a/b.EXE\\a\\.exe",
+      "canonical": "c:\\folder.\\a\\b.exe\\a\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/Games\\.././/a.exe/.",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/Games/a.exe/.",
+      "canonical": "c:\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/Games///a/b.EXE",
+      "canonical": "c:\\games\\a\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\a/.exe",
+      "canonical": "z:\\a\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///a.exe/a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/folder.//.\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\a/a.exe/a.exe",
+      "canonical": "z:\\a\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/a/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C://b.EXE/./.exe",
+      "canonical": "c:\\b.exe\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\a.exe//Games/ /.exe",
+      "canonical": "z:\\a.exe\\games\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/b.EXE\\😀\\.exe",
+      "canonical": "\\\\server\\share\\b.exe\\😀\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///😀\\folder.//folder.\\a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/😀/..\\b.EXE/../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///b.EXE////.//a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "////.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\folder.// \\.exe",
+      "canonical": "z:\\folder.\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "/////\\😀\\a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/// //.//folder.\\😀\\.exe",
+      "canonical": "c:\\ \\folder.\\😀\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/b.EXE//\\a////a.exe/.",
+      "canonical": "\\\\server\\share\\b.exe\\a\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/..//x:/x://.exe",
+      "canonical": "d:\\x:\\x:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/folder.//a.exe//x://a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/ // //Games//b.EXE",
+      "canonical": "\\\\server\\share\\ \\ \\games\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/ \\b.EXE//folder.//a.exe/.",
+      "canonical": "d:\\ \\b.exe\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\folder.\\a//a.exe//a.exe/.",
+      "canonical": "z:\\folder.\\a\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/ \\..//\\ /a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/ //folder.\\/b.EXE\\/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/folder././/😀//a.exe//a.exe",
+      "canonical": "\\\\server\\share\\folder.\\😀\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "/////\\b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\a.exe/folder./a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/ \\a\\b.EXE",
+      "canonical": "\\\\server\\share\\ \\a\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/\\ /a.exe/.",
+      "canonical": "\\\\server\\share\\ \\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///😀\\x:\\.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\.\\Games\\folder.\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/\\.\\a\\a.exe",
+      "canonical": "c:\\a\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/😀\\x:\\folder.\\a.exe",
+      "canonical": "\\\\server\\share\\😀\\x:\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:a.exe//a.exe//folder.\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///😀//a//b.EXE\\a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:///folder./a.exe",
+      "canonical": "d:\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/ \\a.exe\\a.exe",
+      "canonical": "\\\\server\\share\\ \\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/\\Games/Games\\x:\\b.EXE",
+      "canonical": "c:\\games\\games\\x:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/./.\\.\\a.exe",
+      "canonical": "d:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/Games//.//folder.///a.exe",
+      "canonical": "\\\\server\\share\\games\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "/////b.EXE//a.exe//a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/./a.exe/.",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///a.exe/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/..\\a/Games/a.exe/.",
+      "canonical": "d:\\a\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share///Games\\a.exe/.",
+      "canonical": "\\\\server\\share\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:.\\// \\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/.\\/a.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:a.exe//x:/.//.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/Games\\😀/folder./a.exe",
+      "canonical": "\\\\server\\share\\games\\😀\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D://a.exe",
+      "canonical": "d:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/x:/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/😀/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:b.EXE/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/..//a.exe//a.exe//a.exe/.",
+      "canonical": "d:\\a.exe\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C: \\//folder.//a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/x:\\b.EXE\\.exe",
+      "canonical": "\\\\server\\share\\x:\\b.exe\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///😀//😀/b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///b.EXE/.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:x://a.exe/folder./a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C://Games//Games\\../b.EXE",
+      "canonical": "c:\\games\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:./Games//.//a.exe//a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/Games/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:a.exe/.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\ \\a/😀//b.EXE",
+      "canonical": "z:\\ \\a\\😀\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///folder.\\a.exe\\a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/ \\a\\b.EXE\\a.exe/.",
+      "canonical": "\\\\server\\share\\ \\a\\b.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share//.\\Games//a.exe//.exe",
+      "canonical": "\\\\server\\share\\games\\a.exe\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/b.EXE//Games\\a.exe/.",
+      "canonical": "\\\\server\\share\\b.exe\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/x:/..////a.exe/b.EXE",
+      "canonical": "\\\\server\\share\\a.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:b.EXE// //a.exe/b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:a\\ // \\..//x:/b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/Games//Games\\.exe",
+      "canonical": "\\\\server\\share\\games\\games\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/folder.\\a\\/a\\ /b.EXE",
+      "canonical": "\\\\server\\share\\folder.\\a\\a\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:../a\\ \\a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/x://Games\\😀//.//b.EXE",
+      "canonical": "\\\\server\\share\\x:\\games\\😀\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/😀\\x:/ \\./a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C: //b.EXE//../x://b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/ ////..\\./a.exe/.",
+      "canonical": "d:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/a.exe\\ /a.exe/.",
+      "canonical": "\\\\server\\share\\a.exe\\ \\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:Games////folder.\\😀\\a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/folder./a.exe\\\\a.exe",
+      "canonical": "\\\\server\\share\\folder.\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/Games//😀//a//..//a.exe",
+      "canonical": "\\\\server\\share\\games\\😀\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/x:\\\\b.EXE",
+      "canonical": "d:\\x:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/b.EXE//a.exe\\a.exe\\a.exe/.",
+      "canonical": "\\\\server\\share\\b.exe\\a.exe\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\./😀\\x:/x:\\b.EXE\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a.exe/x:/.exe",
+      "canonical": "d:\\a.exe\\x:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\x:\\a\\b.EXE",
+      "canonical": "z:\\x:\\a\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/\\ /.exe",
+      "canonical": "\\\\server\\share\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/\\a.exe//folder./a.exe",
+      "canonical": "\\\\server\\share\\a.exe\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/../a.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/.\\ ////a.exe/.",
+      "canonical": "c:\\ \\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share///a.exe//Games/a.exe",
+      "canonical": "\\\\server\\share\\a.exe\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\a// / //a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/b.EXE/b.EXE",
+      "canonical": "\\\\server\\share\\b.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/Games\\\\b.EXE",
+      "canonical": "\\\\server\\share\\games\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/// \\Games\\a.exe",
+      "canonical": "d:\\ \\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\x:/a.exe/b.EXE",
+      "canonical": "z:\\x:\\a.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/x:/.exe",
+      "canonical": "\\\\server\\share\\x:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\x:/a.exe/.",
+      "canonical": "z:\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "/// /a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:b.EXE/.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\..\\Games\\a.exe",
+      "canonical": "z:\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/😀//folder./a.exe",
+      "canonical": "d:\\😀\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/./a.exe/.",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/.\\ //x:/.exe",
+      "canonical": "c:\\ \\x:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:folder.//Games\\.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///😀//.\\folder.//folder.\\a//..\\b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/../b.EXE",
+      "canonical": "\\\\server\\share\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:😀//a.exe\\a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/folder.\\ //Games\\a.exe/.",
+      "canonical": "\\\\server\\share\\folder.\\ \\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/..\\x:///..//b.EXE",
+      "canonical": "\\\\server\\share\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/\\x:\\.exe",
+      "canonical": "\\\\server\\share\\x:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/😀//😀/b.EXE",
+      "canonical": "d:\\😀\\😀\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:..//x://..\\b.EXE\\a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/../a.exe\\x:\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/Games/ /b.EXE",
+      "canonical": "c:\\games\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///.//😀//folder.//a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///a\\\\.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/ /😀\\Games/😀//a.exe/.",
+      "canonical": "d:\\ \\😀\\games\\😀\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/😀//x:\\.exe",
+      "canonical": "\\\\server\\share\\😀\\x:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///x:/a// //Games/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/folder.//😀//..//.exe",
+      "canonical": "\\\\server\\share\\folder.\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/..\\..\\.exe",
+      "canonical": "c:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\b.EXE\\b.EXE/a.exe/.",
+      "canonical": "z:\\b.exe\\b.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/😀////\\a//b.EXE/b.EXE",
+      "canonical": "\\\\server\\share\\😀\\a\\b.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/..//Games\\a.exe",
+      "canonical": "d:\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/../b.EXE\\a\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe\\a//x:////b.EXE",
+      "canonical": "c:\\a.exe\\a\\x:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/..//a/a/a.exe",
+      "canonical": "c:\\a\\a\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a\\a/a.exe\\Games\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/a.exe\\x:/a.exe",
+      "canonical": "\\\\server\\share\\a.exe\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/x://.\\a.exe",
+      "canonical": "d:\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:b.EXE//./.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/b.EXE/b.EXE",
+      "canonical": "d:\\b.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/Games//\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/b.EXE\\b.EXE\\x:\\a.exe",
+      "canonical": "\\\\server\\share\\b.exe\\b.exe\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/b.EXE\\ /.exe",
+      "canonical": "c:\\b.exe\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/😀//Games\\a.exe/.",
+      "canonical": "\\\\server\\share\\😀\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/folder.//.//..\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\b.EXE\\ //folder.\\a.exe/.",
+      "canonical": "z:\\b.exe\\ \\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/x://folder.//folder.\\.exe",
+      "canonical": "\\\\server\\share\\x:\\folder.\\folder.\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:b.EXE/folder.//a\\a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/😀/a.exe\\Games//..//b.EXE",
+      "canonical": "c:\\😀\\a.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/folder./a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe\\folder./😀\\a.exe/a.exe",
+      "canonical": "c:\\a.exe\\folder.\\😀\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:..//folder.\\Games\\a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/.\\a.exe/b.EXE",
+      "canonical": "d:\\a.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///a.exe\\x:\\a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///a\\a.exe//a/a//a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///.\\../\\./b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///x:/\\x://Games\\a//../b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/../.exe",
+      "canonical": "\\\\server\\share\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/a.exe/a.exe/.",
+      "canonical": "\\\\server\\share\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/a/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\x://.\\a.exe",
+      "canonical": "z:\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/x:/../a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/a.exe/b.EXE",
+      "canonical": "c:\\a.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/Games/b.EXE",
+      "canonical": "c:\\games\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/x://folder./..\\a.exe/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/a.exe\\/a.exe",
+      "canonical": "\\\\server\\share\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/b.EXE\\b.EXE//b.EXE",
+      "canonical": "\\\\server\\share\\b.exe\\b.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/.//😀/folder.\\/.exe",
+      "canonical": "\\\\server\\share\\😀\\folder.\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///a.exe//Games/b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///😀//a//a.exe/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/b.EXE\\😀\\a.exe/.",
+      "canonical": "c:\\b.exe\\😀\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:Games/Games/a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/x:\\/folder.\\a.exe//./a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/////b.EXE//folder./a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/😀// //a.exe\\Games/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/x:/a.exe\\b.EXE/..\\x:/.exe",
+      "canonical": "c:\\x:\\a.exe\\x:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:a.exe\\x:/b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/ /.exe",
+      "canonical": "\\\\server\\share\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/😀\\😀\\a.exe",
+      "canonical": "\\\\server\\share\\😀\\😀\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/../..///..//.exe",
+      "canonical": "c:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/x:\\ // \\folder.\\.exe",
+      "canonical": "\\\\server\\share\\x:\\ \\ \\folder.\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share// //a\\a.exe/.",
+      "canonical": "\\\\server\\share\\ \\a\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\\\folder.//Games\\b.EXE",
+      "canonical": "z:\\folder.\\games\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/folder./b.EXE/a.exe",
+      "canonical": "\\\\server\\share\\folder.\\b.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:😀//a/x:\\ //x:/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\a.exe\\///a.exe/.",
+      "canonical": "z:\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/Games/b.EXE",
+      "canonical": "\\\\server\\share\\games\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/..\\.\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/////.\\/a/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/ //..\\b.EXE",
+      "canonical": "\\\\server\\share\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/Games//b.EXE\\./😀/a.exe",
+      "canonical": "\\\\server\\share\\games\\b.exe\\😀\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/Games/a.exe/.",
+      "canonical": "d:\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a\\Games/x:/b.EXE",
+      "canonical": "d:\\a\\games\\x:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:Games\\a//x://b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\.\\..//a.exe\\.\\a.exe/.",
+      "canonical": "z:\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/x:\\x://a.exe//😀/b.EXE",
+      "canonical": "\\\\server\\share\\x:\\x:\\a.exe\\😀\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/😀/.exe",
+      "canonical": "d:\\😀\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/😀/a.exe/.",
+      "canonical": "\\\\server\\share\\😀\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/x://..//folder./a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/b.EXE/a.exe/.",
+      "canonical": "d:\\b.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:a.exe//folder.// //a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/\\folder.\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:folder.\\Games\\\\a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/b.EXE/folder./a.exe/.",
+      "canonical": "c:\\b.exe\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\x://x:/x:\\a.exe/.exe",
+      "canonical": "z:\\x:\\x:\\x:\\a.exe\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/😀\\folder.//x:\\a.exe/.",
+      "canonical": "d:\\😀\\folder.\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///\\b.EXE\\folder.//Games/a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/a.exe///😀//.exe",
+      "canonical": "\\\\server\\share\\a.exe\\😀\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\😀// \\b.EXE",
+      "canonical": "z:\\😀\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\x:/folder.//a// /b.EXE",
+      "canonical": "z:\\x:\\folder.\\a\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C: \\Games//b.EXE//b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/b.EXE/.exe",
+      "canonical": "\\\\server\\share\\b.exe\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/Games\\ //😀\\Games\\.exe",
+      "canonical": "\\\\server\\share\\games\\ \\😀\\games\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/x://a//a// \\./b.EXE",
+      "canonical": "\\\\server\\share\\x:\\a\\a\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/a\\ //😀/Games/.exe",
+      "canonical": "\\\\server\\share\\a\\ \\😀\\games\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/..\\folder./.\\😀\\a.exe",
+      "canonical": "\\\\server\\share\\folder.\\😀\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/a.exe\\folder.\\\\.exe",
+      "canonical": "\\\\server\\share\\a.exe\\folder.\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\a.exe\\a.exe\\// \\x:\\a.exe",
+      "canonical": "z:\\a.exe\\a.exe\\ \\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C: /x://Games// \\b.EXE\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\x://..//a\\b.EXE",
+      "canonical": "z:\\a\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/folder.//a.exe\\.//a.exe/a.exe",
+      "canonical": "d:\\folder.\\a.exe\\a.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///😀/a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/..//..\\a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/\\folder./a.exe/.",
+      "canonical": "d:\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/x:/a.exe/.",
+      "canonical": "\\\\server\\share\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/b.EXE/b.EXE",
+      "canonical": "d:\\b.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D://a.exe/.",
+      "canonical": "d:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/\\\\a.exe",
+      "canonical": "d:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///./b.EXE\\a.exe/a.exe/a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/Games/a.exe/.",
+      "canonical": "\\\\server\\share\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/😀//x:\\b.EXE",
+      "canonical": "c:\\😀\\x:\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share/x:\\/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/\\😀//Games\\.\\b.EXE",
+      "canonical": "c:\\😀\\games\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/x:\\folder./a.exe",
+      "canonical": "\\\\server\\share\\x:\\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///😀/b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\Games//b.EXE//😀\\.//.\\.exe",
+      "canonical": "z:\\games\\b.exe\\😀\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:./a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\a.exe/.exe",
+      "canonical": "z:\\a.exe\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a/a.exe/.",
+      "canonical": "d:\\a\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/x:\\folder././a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///Games// /a\\b.EXE/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/x:\\😀\\Games\\.exe",
+      "canonical": "c:\\x:\\😀\\games\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/folder.//😀//../../.exe",
+      "canonical": "c:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/../a.exe",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/b.EXE\\Games//folder./.exe",
+      "canonical": "\\\\server\\share\\b.exe\\games\\folder.\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:b.EXE/.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///.\\a//😀\\b.EXE\\a.exe/.",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share//Games/a.exe",
+      "canonical": "\\\\server\\share\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/.//x://b.EXE//.exe",
+      "canonical": "c:\\x:\\b.exe\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/x:/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "/////😀//a.exe//b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server/share/Games/b.EXE",
+      "canonical": "\\\\server\\share\\games\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/ /a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///Games/.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//server////share/a.exe//b.EXE\\a.exe/.",
+      "canonical": "\\\\server\\share\\a.exe\\b.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///a/x:\\b.EXE//a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/b.EXE//😀/b.EXE\\.\\b.EXE",
+      "canonical": "d:\\b.exe\\😀\\b.exe\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/a.exe/Games/.exe",
+      "canonical": "\\\\server\\share\\a.exe\\games\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/x:/a.exe/.",
+      "canonical": "c:\\x:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C: //a/x:/a.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "///b.EXE//Games//folder.//b.EXE",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\ /a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/folder.//b.EXE\\a.exe",
+      "canonical": "c:\\folder.\\b.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "///b.EXE\\../.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\Games/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "Z:\\x:/.exe",
+      "canonical": "z:\\x:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/..\\\\b.EXE",
+      "canonical": "\\\\server\\share\\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/😀//a.exe\\x://.//.exe",
+      "canonical": "d:\\😀\\a.exe\\x:\\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "/// // /x://a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:.\\a//a//.exe",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "//?/D:/ \\folder.///a.exe",
+      "canonical": "d:\\ \\folder.\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/..//x://../a.exe",
+      "canonical": "\\\\server\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/./a.exe/.",
+      "canonical": "c:\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/a.exe// \\b.EXE",
+      "canonical": "\\\\server\\share\\a.exe\\ \\b.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server/share/Games//x:\\../Games/a.exe",
+      "canonical": "\\\\server\\share\\games\\games\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//server////share//a.exe",
+      "canonical": "\\\\server\\share\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "Z:\\b.EXE/a.exe",
+      "canonical": "z:\\b.exe\\a.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "//?/D:/a.exe/a.exe/",
+      "canonical": null,
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/ \\../ //.exe",
+      "canonical": "c:\\ \\.exe",
+      "verified": true,
+      "known": false
+    },
+    {
+      "value": "C:/uninstall.exe",
+      "canonical": "c:\\uninstall.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/uninstaller.exe",
+      "canonical": "c:\\uninstaller.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/uninstallhelper.exe",
+      "canonical": "c:\\uninstallhelper.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/unins.exe",
+      "canonical": "c:\\unins.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/unins000.exe",
+      "canonical": "c:\\unins000.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/crash.exe",
+      "canonical": "c:\\crash.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/crashreport.exe",
+      "canonical": "c:\\crashreport.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/errorreport.exe",
+      "canonical": "c:\\errorreport.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/werreport.exe",
+      "canonical": "c:\\werreport.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/update.exe",
+      "canonical": "c:\\update.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/updater.exe",
+      "canonical": "c:\\updater.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/launcher.exe",
+      "canonical": "c:\\launcher.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/bootstrapper.exe",
+      "canonical": "c:\\bootstrapper.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/setup.exe",
+      "canonical": "c:\\setup.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/install.exe",
+      "canonical": "c:\\install.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/adapter_info.exe",
+      "canonical": "c:\\adapter_info.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/adapter-info.exe",
+      "canonical": "c:\\adapter-info.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/adapterinfo.exe",
+      "canonical": "c:\\adapterinfo.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/detectarchitecture.exe",
+      "canonical": "c:\\detectarchitecture.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/directstoragecollector.exe",
+      "canonical": "c:\\directstoragecollector.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/dxinfo.exe",
+      "canonical": "c:\\dxinfo.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/storage.exe",
+      "canonical": "c:\\storage.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/storagereader.exe",
+      "canonical": "c:\\storagereader.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/systeminfo.exe",
+      "canonical": "c:\\systeminfo.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/systeminfohelper.exe",
+      "canonical": "c:\\systeminfohelper.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/systeminfosetupassistant.exe",
+      "canonical": "c:\\systeminfosetupassistant.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/LeagueClientUX.exe",
+      "canonical": "c:\\leagueclientux.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/LeagueClientUXRender.exe",
+      "canonical": "c:\\leagueclientuxrender.exe",
+      "verified": false,
+      "known": false
+    },
+    {
+      "value": "C:/chrome.exe",
+      "canonical": "c:\\chrome.exe",
+      "verified": true,
+      "known": true
+    },
+    {
+      "value": "C:/steam.exe",
+      "canonical": "c:\\steam.exe",
+      "verified": true,
+      "known": true
+    },
+    {
+      "value": "C:/game.exe",
+      "canonical": "c:\\game.exe",
+      "verified": true,
+      "known": false
+    }
+  ],
+  "likely": [
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/Unknown/game.exe",
+        "displayName": ""
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/Unknown/game.exe",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/Unknown/game.exe",
+        "displayName": "Crusader Kings III"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/Unknown/game.exe",
+        "displayName": "Minecraft"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/Unknown/game.exe",
+        "displayName": "Codex"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/Unknown/game.exe",
+        "displayName": "PEAK"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/Unknown/game.exe",
+        "displayName": "speaking"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/Unknown/game.exe",
+        "displayName": "Crusader Kings"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/Unknown/game.exe",
+        "displayName": "Aſſassin’s Creed"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/game.exe",
+        "displayName": ""
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/game.exe",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/game.exe",
+        "displayName": "Crusader Kings III"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/game.exe",
+        "displayName": "Minecraft"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/game.exe",
+        "displayName": "Codex"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/game.exe",
+        "displayName": "PEAK"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/game.exe",
+        "displayName": "speaking"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/game.exe",
+        "displayName": "Crusader Kings"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/game.exe",
+        "displayName": "Aſſassin’s Creed"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/Bin/game.exe",
+        "displayName": ""
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/Bin/game.exe",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/Bin/game.exe",
+        "displayName": "Crusader Kings III"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/Bin/game.exe",
+        "displayName": "Minecraft"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/Bin/game.exe",
+        "displayName": "Codex"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/Bin/game.exe",
+        "displayName": "PEAK"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/Bin/game.exe",
+        "displayName": "speaking"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/Bin/game.exe",
+        "displayName": "Crusader Kings"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/Bin/game.exe",
+        "displayName": "Aſſassin’s Creed"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/DirectXRedist/game.exe",
+        "displayName": ""
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/DirectXRedist/game.exe",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/DirectXRedist/game.exe",
+        "displayName": "Crusader Kings III"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/DirectXRedist/game.exe",
+        "displayName": "Minecraft"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/DirectXRedist/game.exe",
+        "displayName": "Codex"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/DirectXRedist/game.exe",
+        "displayName": "PEAK"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/DirectXRedist/game.exe",
+        "displayName": "speaking"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/DirectXRedist/game.exe",
+        "displayName": "Crusader Kings"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Epic Games/Unknown/DirectXRedist/game.exe",
+        "displayName": "Aſſassin’s Creed"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/GOG Galaxy/Games/Unknown/game.exe",
+        "displayName": ""
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/GOG Galaxy/Games/Unknown/game.exe",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/GOG Galaxy/Games/Unknown/game.exe",
+        "displayName": "Crusader Kings III"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/GOG Galaxy/Games/Unknown/game.exe",
+        "displayName": "Minecraft"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/GOG Galaxy/Games/Unknown/game.exe",
+        "displayName": "Codex"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/GOG Galaxy/Games/Unknown/game.exe",
+        "displayName": "PEAK"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/GOG Galaxy/Games/Unknown/game.exe",
+        "displayName": "speaking"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/GOG Galaxy/Games/Unknown/game.exe",
+        "displayName": "Crusader Kings"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/GOG Galaxy/Games/Unknown/game.exe",
+        "displayName": "Aſſassin’s Creed"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/XboxGames/Unknown/game.exe",
+        "displayName": ""
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/XboxGames/Unknown/game.exe",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/XboxGames/Unknown/game.exe",
+        "displayName": "Crusader Kings III"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/XboxGames/Unknown/game.exe",
+        "displayName": "Minecraft"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/XboxGames/Unknown/game.exe",
+        "displayName": "Codex"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/XboxGames/Unknown/game.exe",
+        "displayName": "PEAK"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/XboxGames/Unknown/game.exe",
+        "displayName": "speaking"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/XboxGames/Unknown/game.exe",
+        "displayName": "Crusader Kings"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/XboxGames/Unknown/game.exe",
+        "displayName": "Aſſassin’s Creed"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Riot Games/Unknown/Game/game.exe",
+        "displayName": ""
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Riot Games/Unknown/Game/game.exe",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Riot Games/Unknown/Game/game.exe",
+        "displayName": "Crusader Kings III"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Riot Games/Unknown/Game/game.exe",
+        "displayName": "Minecraft"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Riot Games/Unknown/Game/game.exe",
+        "displayName": "Codex"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Riot Games/Unknown/Game/game.exe",
+        "displayName": "PEAK"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Riot Games/Unknown/Game/game.exe",
+        "displayName": "speaking"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Riot Games/Unknown/Game/game.exe",
+        "displayName": "Crusader Kings"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Riot Games/Unknown/Game/game.exe",
+        "displayName": "Aſſassin’s Creed"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft/games/Unknown/game.exe",
+        "displayName": ""
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft/games/Unknown/game.exe",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft/games/Unknown/game.exe",
+        "displayName": "Crusader Kings III"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft/games/Unknown/game.exe",
+        "displayName": "Minecraft"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft/games/Unknown/game.exe",
+        "displayName": "Codex"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft/games/Unknown/game.exe",
+        "displayName": "PEAK"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft/games/Unknown/game.exe",
+        "displayName": "speaking"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft/games/Unknown/game.exe",
+        "displayName": "Crusader Kings"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft/games/Unknown/game.exe",
+        "displayName": "Aſſassin’s Creed"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft Game Launcher/Unknown/game.exe",
+        "displayName": ""
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft Game Launcher/Unknown/game.exe",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft Game Launcher/Unknown/game.exe",
+        "displayName": "Crusader Kings III"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft Game Launcher/Unknown/game.exe",
+        "displayName": "Minecraft"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft Game Launcher/Unknown/game.exe",
+        "displayName": "Codex"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft Game Launcher/Unknown/game.exe",
+        "displayName": "PEAK"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft Game Launcher/Unknown/game.exe",
+        "displayName": "speaking"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft Game Launcher/Unknown/game.exe",
+        "displayName": "Crusader Kings"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Ubisoft Game Launcher/Unknown/game.exe",
+        "displayName": "Aſſassin’s Creed"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Battle.net/games/Unknown/game.exe",
+        "displayName": ""
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Battle.net/games/Unknown/game.exe",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Battle.net/games/Unknown/game.exe",
+        "displayName": "Crusader Kings III"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Battle.net/games/Unknown/game.exe",
+        "displayName": "Minecraft"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Battle.net/games/Unknown/game.exe",
+        "displayName": "Codex"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Battle.net/games/Unknown/game.exe",
+        "displayName": "PEAK"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Battle.net/games/Unknown/game.exe",
+        "displayName": "speaking"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Battle.net/games/Unknown/game.exe",
+        "displayName": "Crusader Kings"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Battle.net/games/Unknown/game.exe",
+        "displayName": "Aſſassin’s Creed"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Tools/app.exe",
+        "displayName": ""
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Tools/app.exe",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Tools/app.exe",
+        "displayName": "Crusader Kings III"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Tools/app.exe",
+        "displayName": "Minecraft"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Tools/app.exe",
+        "displayName": "Codex"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Tools/app.exe",
+        "displayName": "PEAK"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Tools/app.exe",
+        "displayName": "speaking"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Tools/app.exe",
+        "displayName": "Crusader Kings"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Tools/app.exe",
+        "displayName": "Aſſassin’s Creed"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/uninstall.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/uninstaller.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/uninstallhelper.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/unins.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/unins000.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/crash.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/crashreport.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/errorreport.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/werreport.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/update.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/updater.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/launcher.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/bootstrapper.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/setup.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/install.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/adapter_info.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/adapter-info.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/adapterinfo.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/detectarchitecture.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/directstoragecollector.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/dxinfo.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/storage.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/storagereader.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/systeminfo.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/systeminfohelper.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/systeminfosetupassistant.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/LeagueClientUX.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/LeagueClientUXRender.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/chrome.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/steam.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Steamapps/Common/League of Legends/game.EXE",
+        "displayName": "League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Games/game.exe",
+        "displayName": "League of Legends",
+        "processName": " LeagueClientUX.exe "
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Riot Games/League of Legends/Game/League of Legends.exe",
+        "displayName": "Riot Client League of Legends"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Tools/game.exe",
+        "displayName": "Riot Client League of Legends"
+      },
+      "result": false
+    },
+    {
+      "raw": {
+        "exePath": "C:/Games/game.exe",
+        "displayName": null,
+        "processName": [
+          "Minecraft"
+        ]
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Games/game.exe",
+        "displayName": {},
+        "processName": "PEAK"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Tools/game.exe",
+        "displayName": "éPEAKé"
+      },
+      "result": true
+    },
+    {
+      "raw": {
+        "exePath": "C:/Tools/game.exe",
+        "displayName": "_PEAK_"
+      },
+      "result": false
+    }
+  ],
+  "validations": [
+    {
+      "value": "C:/Games/A.EXE",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": []
+      },
+      "result": "c:\\games\\a.exe"
+    },
+    {
+      "value": "C:/Games/A.EXE",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/A.EXE",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": "c:\\games\\a.exe"
+    },
+    {
+      "value": "C:/Games/A.EXE",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": []
+      },
+      "result": "c:\\games\\a.exe"
+    },
+    {
+      "value": "C:/Games/A.EXE",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/A.EXE",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": "c:\\games\\a.exe"
+    },
+    {
+      "value": "C:/games/b.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": []
+      },
+      "result": "c:\\games\\b.exe"
+    },
+    {
+      "value": "C:/games/b.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": "c:\\games\\b.exe"
+    },
+    {
+      "value": "C:/games/b.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": "c:\\games\\b.exe"
+    },
+    {
+      "value": "C:/games/b.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": []
+      },
+      "result": "c:\\games\\b.exe"
+    },
+    {
+      "value": "C:/games/b.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": "c:\\games\\b.exe"
+    },
+    {
+      "value": "C:/games/b.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": "c:\\games\\b.exe"
+    },
+    {
+      "value": "C:/games/missing.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": []
+      },
+      "result": null
+    },
+    {
+      "value": "C:/games/missing.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/games/missing.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/games/missing.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": []
+      },
+      "result": "c:\\games\\missing.exe"
+    },
+    {
+      "value": "C:/games/missing.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": "c:\\games\\missing.exe"
+    },
+    {
+      "value": "C:/games/missing.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": "c:\\games\\missing.exe"
+    },
+    {
+      "value": "C:/Codex/native.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": []
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Codex/native.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Codex/native.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Codex/native.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": []
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Codex/native.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Codex/native.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/Arc-Power.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": []
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/Arc-Power.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/Arc-Power.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/Arc-Power.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": []
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/Arc-Power.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/Arc-Power.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/ArcPower Portable.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": []
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/ArcPower Portable.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/ArcPower Portable.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/ArcPower Portable.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": []
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/ArcPower Portable.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/ArcPower Portable.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/ArcPowerX.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": []
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/ArcPowerX.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/ArcPowerX.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/ArcPowerX.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": []
+      },
+      "result": "c:\\games\\arcpowerx.exe"
+    },
+    {
+      "value": "C:/Games/ArcPowerX.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": "c:\\games\\arcpowerx.exe"
+    },
+    {
+      "value": "C:/Games/ArcPowerX.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": "c:\\games\\arcpowerx.exe"
+    },
+    {
+      "value": "C:/Games/launcher.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": []
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/launcher.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/launcher.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/launcher.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": []
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/launcher.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "C:/Games/launcher.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "//server/share/a.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": []
+      },
+      "result": null
+    },
+    {
+      "value": "//server/share/a.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "//server/share/a.exe",
+      "options": {
+        "requireExists": true,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": null
+    },
+    {
+      "value": "//server/share/a.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": []
+      },
+      "result": "\\\\server\\share\\a.exe"
+    },
+    {
+      "value": "//server/share/a.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          "c:/GAMES/a.exe"
+        ]
+      },
+      "result": "\\\\server\\share\\a.exe"
+    },
+    {
+      "value": "//server/share/a.exe",
+      "options": {
+        "requireExists": false,
+        "excludedPaths": [
+          null,
+          "bad.exe"
+        ]
+      },
+      "result": "\\\\server\\share\\a.exe"
+    }
+  ]
+}

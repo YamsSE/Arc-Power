@@ -1,8 +1,9 @@
 import { api } from '../ipc.ts';
 import { el } from '../dom.ts';
 import { toast } from './toast.ts';
+import { showRecordingHotkeyDialog } from './recording-hotkey-dialog.ts';
 import { buildDropdown, type DropdownElement } from './dropdown.ts';
-import type { ArcSuperResolutionGame, ArcSuperResolutionState, ArcSuperResolutionValue, PostprocessSharpeningGame, PostprocessSharpeningGlobal, PostprocessSharpeningValue } from '../types.ts';
+import type { ArcSuperResolutionState, ArcSuperResolutionValue, PostprocessScaleHotkeyState, PostprocessSharpeningGlobal, PostprocessSharpeningValue, PostprocessWindowSelection } from '../types.ts';
 
 const safePercentage = (value: number): number => Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
 
@@ -16,13 +17,159 @@ const makeSelect = (value: string, options: Array<{ value: string; label: string
 
 export type GlobalSharpeningApplyState = { dirty: boolean; busy: boolean; canApply: boolean; apply: () => Promise<void> };
 
+/** One global target selector shared by windowed sharpening and ASR. */
+export function renderPostprocessWindowSelector(): HTMLElement {
+  const root = el('section', { class: 'postprocess-window-panel' });
+  let selection: PostprocessWindowSelection = { phase: 'idle', secondsRemaining: 0, targetName: null };
+  let hotkey: PostprocessScaleHotkeyState | null = null;
+  let busy = false;
+  let stopping = false;
+  let hotkeyBusy = false;
+  let error = '';
+  let runtimeWarning = '';
+  let selectionRevision = 0;
+  let selectionOperation = 0;
+  const selectionText = (): string => {
+    if (selection.phase === 'countdown') return selection.secondsRemaining > 0
+      ? `Switch to your game · ${selection.secondsRemaining}s.`
+      : 'Checking the foreground window…';
+    if (selection.phase === 'selected') return `Selected: ${selection.targetName ?? 'game window'} · pauses when unfocused.`;
+    return 'Effects start on the selected game and pause when you switch away.';
+  };
+  const statusText = (): string => error || runtimeWarning || selectionText();
+  const render = (): void => {
+    const select = el('button', { class: 'btn btn-primary btn-sm postprocess-scale', text: busy || selection.phase === 'countdown' ? 'Selecting…' : 'Scale', disabled: busy || stopping || selection.phase === 'countdown', title: 'Switch to your game within five seconds after pressing Scale', onclick: () => void selectWindow() });
+    const stop = el('button', { class: 'btn btn-ghost btn-sm postprocess-stop', text: stopping ? 'Stopping…' : 'Stop', disabled: stopping || (selection.phase === 'idle' && !busy), 'aria-label': 'Stop scaling and sharpening', title: 'Stop the active scaling session or cancel selection', onclick: () => void stopWindow() });
+    const setHotkey = el('button', { class: 'btn btn-ghost btn-sm', text: hotkeyBusy ? 'Saving…' : `Hotkey: ${hotkey?.accelerator ?? 'Alt+F10'}`, disabled: hotkeyBusy, title: 'Set the global shortcut for starting and stopping Scale', onclick: () => void editHotkey() });
+    const clearHotkey = el('button', {
+      class: 'btn btn-secondary recording-hotkey-none', type: 'button', text: 'NONE',
+      disabled: hotkeyBusy || hotkey?.accelerator === 'None',
+      title: 'Turn off the Scale shortcut',
+      onClick: () => void clearScaleHotkey(),
+    });
+    root.replaceChildren(
+      el('div', { class: 'sharpening-card-heading' }, [
+        el('div', { class: 'sharpening-card-copy' }, [
+          el('h2', { class: 'card-title', text: 'Scale a game' }),
+          el('p', { class: 'card-note', text: 'Press Scale, then switch to your game within five seconds.' }),
+        ]),
+      ]),
+      el('p', { class: 'sharpening-runtime-status postprocess-window-status', text: statusText() }),
+      el('div', { class: 'graphics-card-actions' }, [select, stop, setHotkey, clearHotkey]),
+      ...(hotkey && !hotkey.registered ? [el('p', { class: 'postprocess-hotkey-warning', text: hotkey.reason || `Scale shortcut ${hotkey.accelerator} could not be registered.` })] : []),
+    );
+  };
+  const stopWindow = async (): Promise<void> => {
+    if (stopping || (selection.phase === 'idle' && !busy)) return;
+    const operation = ++selectionOperation;
+    stopping = true; error = ''; render();
+    try {
+      const result = await api.postprocessSharpeningWindowStop();
+      if (operation !== selectionOperation) return;
+      selectionRevision++;
+      selection = result.selection;
+      busy = false;
+      runtimeWarning = '';
+      toast('success', 'Scaling stopped', 'The selected game window has been released.');
+    } catch (err) {
+      if (operation !== selectionOperation) return;
+      busy = false;
+      error = err instanceof Error ? err.message : String(err);
+      toast('error', 'Could not stop scaling', error);
+    } finally {
+      if (operation === selectionOperation) {
+        stopping = false;
+        if (root.isConnected) render();
+      }
+    }
+  };
+  const selectWindow = async (): Promise<void> => {
+    if (busy || stopping || selection.phase === 'countdown') return;
+    const operation = ++selectionOperation;
+    busy = true; error = ''; render();
+    try {
+      await api.postprocessSharpeningWindowSelect();
+    } catch (err) {
+      if (operation !== selectionOperation) return;
+      error = err instanceof Error ? err.message : String(err);
+      toast('error', 'Game window selection failed', error);
+    } finally {
+      if (operation === selectionOperation) {
+        busy = false;
+        if (root.isConnected) render();
+      }
+    }
+  };
+  const clearScaleHotkey = async (): Promise<void> => {
+    if (hotkeyBusy) return;
+    hotkeyBusy = true; render();
+    try {
+      hotkey = await api.postprocessSharpeningHotkeySet('None');
+      toast('success', 'Scale hotkey disabled', 'No global shortcut starts or stops Scale now.');
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      toast('error', 'Scale hotkey could not be disabled', error);
+    } finally { hotkeyBusy = false; if (root.isConnected) render(); }
+  };
+  const editHotkey = async (): Promise<void> => {
+    const next = await showRecordingHotkeyDialog('Scale', hotkey?.accelerator ?? 'Alt+F10', { requireModifier: true });
+    if (next === null) return;
+    hotkeyBusy = true; render();
+    try {
+      hotkey = await api.postprocessSharpeningHotkeySet(next);
+      if (hotkey.registered) toast('success', 'Scale hotkey saved', `${hotkey.accelerator} starts or stops the selected window.`);
+      else toast('warn', 'Scale hotkey saved but unavailable', hotkey.reason || `Could not register ${hotkey.accelerator}.`);
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      toast('error', 'Scale hotkey could not be saved', error);
+    } finally { hotkeyBusy = false; if (root.isConnected) render(); }
+  };
+  render();
+  const initialRevision = selectionRevision;
+  void api.postprocessSharpeningGet().then((state) => {
+    if (!root.isConnected || initialRevision !== selectionRevision || !state.selection) return;
+    selection = state.selection;
+    render();
+  }).catch(() => {});
+  void api.postprocessSharpeningHotkeyGet().then((state) => {
+    if (!root.isConnected) return;
+    hotkey = state;
+    render();
+  }).catch(() => {});
+  const unsubscribe = api.onPostprocessSharpeningStatus((status) => {
+    if (!root.isConnected) return;
+    if (status.selection) {
+      selectionRevision++;
+      selection = status.selection;
+      if (selection.phase !== 'idle') error = '';
+    }
+    runtimeWarning = typeof status.reason === 'string' && status.reason.trim() ? status.reason : '';
+    const text = root.querySelector<HTMLElement>('.postprocess-window-status');
+    if (text) text.textContent = statusText();
+    const stop = root.querySelector<HTMLButtonElement>('.postprocess-stop');
+    if (stop) stop.disabled = stopping || (selection.phase === 'idle' && !busy);
+    const scale = root.querySelector<HTMLButtonElement>('.postprocess-scale');
+    if (scale) {
+      scale.disabled = busy || stopping || selection.phase === 'countdown';
+      scale.textContent = busy || selection.phase === 'countdown' ? 'Selecting…' : 'Scale';
+    }
+  });
+  const detachObserver = new MutationObserver(() => {
+    if (root.isConnected) return;
+    unsubscribe();
+    detachObserver.disconnect();
+  });
+  detachObserver.observe(document.body, { childList: true, subtree: true });
+  return root;
+}
+
 /** App-managed screen sharpening controls, kept outside the driver's graphics apply path. */
 export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningApplyState) => void, onUnmount?: () => void): HTMLElement {
-  const root = el('section', { class: 'card graphics-card sharpening-card' });
+  const root = el('section', { class: 'postprocess-feature-panel sharpening-card' });
   let generation = 0;
   let state: PostprocessSharpeningGlobal | null = null;
   let draft: PostprocessSharpeningValue = { enabled: false, percentage: 50 };
-  let latestRuntimeStatus: { active: boolean; reason?: string; mode?: 'asr' | 'sharpening' } | null = null;
+  let latestRuntimeStatus: { active: boolean; reason?: string; mode?: 'asr' | 'sharpening' | 'scale' } | null = null;
   let busy = false;
   let error = '';
   let saveStatus = '';
@@ -42,7 +189,7 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
   const markEditing = (): void => {
     saveStatus = '';
     const button = root.querySelector<HTMLButtonElement>('.graphics-card-actions .btn-primary');
-    if (button && !busy) button.textContent = 'Apply';
+    if (button && !busy) button.textContent = 'Save';
   };
   const isDirty = (): boolean => !!state && !!appliedValue
     && (draft.enabled !== appliedValue.enabled || draft.percentage !== appliedValue.percentage);
@@ -50,17 +197,14 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
 
   const legacyWarning = (): HTMLElement[] => {
     if (state?.legacyManifestStatus === 'unreadable') {
-      return [el('p', { class: 'profile-capability-note', text: `The previous game-folder sharpening manifest could not be checked (${state.legacyManifestPath ?? 'Arc Power AppData'}). Older integrations may remain. This build does not change game files.` })];
+      return [el('p', { class: 'profile-capability-note', text: 'Could not check for a previous game-folder sharpening integration.' })];
     }
     const games = state?.legacyIntegrations ?? [];
     if (!games.length) return [];
     const names = games.slice(0, 5).map((game) => game.exePath.split(/[\\/]/).pop() || game.exePath);
-    const list = `${names.join(', ')}${games.length > names.length ? `, and ${games.length - names.length} more` : ''}`;
-    return [el('p', { class: 'profile-capability-note', text: `The previous game-folder sharpening manifest still lists ${games.length} game(s): ${list}. It may affect these games while this switch is off or stack with the screen effect. This build does not change game files; remove the old integration with the previous Arc Power version while each game is closed before testing.` })];
+    const list = `${names.join(', ')}${games.length > names.length ? ` + ${games.length - names.length} more` : ''}`;
+    return [el('p', { class: 'profile-capability-note', text: `Old sharpening integration found: ${list}. Remove it with the previous release while those games are closed.` })];
   };
-  const runtimeStatusText = (): string => state?.reason
-    ?? (state?.active ? 'Sharpening is active on the foreground game.' : state?.runtimeReady ? 'Included with Arc Power · Applies only to recognized games.' : 'Sharpening is unavailable on this system.');
-
   const render = (): void => {
     const request = generation;
     const slider = el('input', { type: 'range', class: 'graphics-slider', min: 0, max: 100, step: 1, value: draft.percentage, disabled: busy || !state || !state.runtimeReady || !draft.enabled,
@@ -74,8 +218,8 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
       } });
     const sliderRow = el('div', { class: 'graphics-fps-slider-row sharpening-slider-row', hidden: !draft.enabled }, [slider, el('span', { class: 'graphics-fps-value sharpening-value', text: `${draft.percentage}%` })]);
     const select = makeSelect(draft.enabled ? 'on' : 'off', [
-      { value: 'off', label: 'Arc Image Sharpening Off' },
-      { value: 'on', label: 'Arc Image Sharpening On' },
+      { value: 'off', label: 'Off' },
+      { value: 'on', label: 'On' },
     ], (value) => {
       markEditing();
       draft.enabled = value === 'on';
@@ -98,9 +242,11 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
         draft = { ...state.value };
         appliedValue = { ...state.value };
         externalChange = false;
-        saveStatus = state.reason ? 'Saved' : 'Applied';
+        saveStatus = 'Saved';
         if (state.reason) toast('warn', 'Arc Image Sharpening saved', state.reason);
-        else toast('success', 'Arc Image Sharpening saved', 'Runtime status shows whether sharpening is active.');
+        else toast('success', 'Arc Image Sharpening saved', state.active
+          ? 'Updated on the selected window.'
+          : 'Press Scale to start it on a game.');
       } catch (err) {
         if (request !== generation || !root.isConnected) return;
         error = err instanceof Error ? err.message : String(err);
@@ -110,18 +256,15 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
     applyGlobal = apply;
     root.replaceChildren(
       el('div', { class: 'sharpening-card-heading' }, [
-        el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Arc Image Sharpening' }), el('p', { class: 'card-note', text: 'Sharpens the foreground game on an Intel Arc display.' })]),
+        el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Arc Image Sharpening' }), el('p', { class: 'card-note', text: 'Set strength for selected game windows.' })]),
         el('div', { class: 'sharpening-card-control' }, [select, sliderRow]),
       ]),
-      sharpeningHelp(state?.provider === 'managed'
-        ? 'Launch the game from Game Profiles to attach the bundled sharpening runtime before graphics starts. Strength changes then apply live inside the game. Arc Image Sharpening works independently of ASR, and both may be enabled together. No download or game-folder files are required.'
-        : 'Sharpens only the foreground game on a display connected to Intel Arc while Arc Power is open. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game. No capture prompt, setup download, or game-folder files are used.'),
+      sharpeningHelp('Starts with Scale. It can run alone or with ASR; windowed and borderless modes are recommended.'),
       ...legacyWarning(),
-      el('p', { class: 'sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading sharpening settings…' }),
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),
-      ...(externalChange ? [el('p', { class: 'settings-sync-status', text: 'Saved settings changed in the other window. Your draft is preserved; Apply will overwrite that change.' })] : []),
+      ...(externalChange ? [el('p', { class: 'settings-sync-status', text: 'Saved settings changed in the other window. Your draft is preserved; Save will overwrite that change.' })] : []),
       el('div', { class: 'graphics-card-actions' }, [
-        el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : saveStatus || 'Apply', disabled: busy || !state || (!state.runtimeReady && draft.enabled), onclick: () => void apply() }),
+      el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Saving…' : saveStatus || 'Save', disabled: busy || !state || (!state.runtimeReady && draft.enabled), onclick: () => void apply() }),
         el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { saveStatus = ''; externalChange = false; draft = { enabled: false, percentage: 50 }; render(); notify(); } }),
       ]),
     );
@@ -136,8 +279,6 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
       mode: independent ? 'sharpening' : status.mode, reason: typeof reason === 'string' ? reason : undefined };
     if (state) {
       state = mergeRuntimeStatus(state);
-      const note = root.querySelector<HTMLElement>('.sharpening-runtime-status');
-      if (note) note.textContent = runtimeStatusText();
     }
   });
   const unsubscribeSettings = api.onPostprocessGlobalSettingsUpdated((update) => {
@@ -148,7 +289,7 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
     state = mergeRuntimeStatus(update.state);
     appliedValue = { ...update.state.value };
     const draftMatchesSaved = draft.enabled === update.state.value.enabled && draft.percentage === update.state.value.percentage;
-    if (!dirty || draftMatchesSaved) { draft = { ...update.state.value }; externalChange = false; saveStatus = 'Applied'; }
+    if (!dirty || draftMatchesSaved) { draft = { ...update.state.value }; externalChange = false; saveStatus = 'Saved'; }
     else if (changed) externalChange = true;
     render(); notify();
   });
@@ -176,11 +317,11 @@ export function renderGlobalSharpening(onStateChange?: (state: GlobalSharpeningA
 
 /** Spatial window-to-display upscaling; it does not call XeSS or driver graphics settings. */
 export function renderArcSuperResolution(): HTMLElement {
-  const root = el('section', { class: 'card graphics-card asr-card' });
+  const root = el('section', { class: 'postprocess-feature-panel asr-card' });
   let generation = 0;
   let state: ArcSuperResolutionState | null = null;
   let draft: ArcSuperResolutionValue = { enabled: false };
-  let latestStatus: { active: boolean; reason?: string; mode?: 'asr' | 'sharpening' } | null = null;
+  let latestStatus: { active: boolean; reason?: string; mode?: 'asr' | 'sharpening' | 'scale' } | null = null;
   let busy = false;
   let applied = false;
   let error = '';
@@ -188,24 +329,16 @@ export function renderArcSuperResolution(): HTMLElement {
   let externalChange = false;
   let pendingPush: import('../types.ts').PostprocessGlobalSettingsUpdate | null = null;
 
-  const runtimeStatusText = (): string => {
-    if (state?.reason) return state.reason;
-    if (state?.active) return 'Arc Super Resolution is active on the foreground game.';
-    return state?.runtimeReady
-      ? 'Waiting for a recognized game running in a smaller window on an Intel Arc display.'
-      : 'Arc Super Resolution is unavailable on this system.';
-  };
-
   const render = (): void => {
     const request = generation;
     const select = makeSelect(draft.enabled ? 'on' : 'off', [
-      { value: 'off', label: 'Arc Super Resolution Off' },
-      { value: 'on', label: 'Arc Super Resolution On' },
+      { value: 'off', label: 'Off' },
+      { value: 'on', label: 'On' },
     ], (value) => {
       draft.enabled = value === 'on';
       applied = false;
       const button = root.querySelector<HTMLButtonElement>('.asr-apply');
-      if (button) button.textContent = 'Apply';
+      if (button) button.textContent = 'Save';
     }, 'Arc Super Resolution');
     select.disabled = busy || !state;
     const apply = async (): Promise<void> => {
@@ -218,8 +351,8 @@ export function renderArcSuperResolution(): HTMLElement {
         draft = { ...state.value };
         applied = true;
         toast('success', 'Arc Super Resolution preference saved', state.value.enabled
-          ? (state.active ? 'ASR is active on the foreground game.' : runtimeStatusText())
-          : 'The global ASR default is Off. Per-game overrides still apply.');
+          ? (state.active ? 'Active on the selected window.' : 'Press Scale to start it on a game.')
+          : 'The global ASR preference is Off.');
       } catch (err) {
         applied = false;
         error = err instanceof Error ? err.message : String(err);
@@ -236,16 +369,15 @@ export function renderArcSuperResolution(): HTMLElement {
       el('div', { class: 'sharpening-card-heading' }, [
         el('div', { class: 'sharpening-card-copy' }, [
           el('h2', { class: 'card-title', text: 'Arc Super Resolution (ASR)' }),
-          el('p', { class: 'card-note', text: 'Spatially scales a smaller game window to the monitor’s desktop resolution.' }),
+          el('p', { class: 'card-note', text: 'Upscale a smaller game window to your display.' }),
         ]),
         el('div', { class: 'sharpening-card-control' }, [select]),
       ]),
-      sharpeningHelp('Run a recognized game in a smaller window while the desktop remains at its native resolution. Arc Power fits that game window to the display and passes native input through to the game. A display-filling borderless window has no smaller image to scale. Exclusive fullscreen may change the active display mode. ASR is limited to recognized games and does not guarantee compatibility with every game. Per-game On or Off overrides this global default. ASR and Arc Image Sharpening are independent; both may be enabled together.', 'How Scaling Works'),
-      el('p', { class: 'sharpening-runtime-status', text: state ? runtimeStatusText() : 'Loading Arc Super Resolution settings…' }),
+      sharpeningHelp('Scale starts ASR on the selected smaller game window. It can run alone or with sharpening; windowed and borderless modes are recommended.', 'How Scaling Works'),
       ...(error ? [el('p', { class: 'text-error', text: error })] : []),
-      ...(externalChange ? [el('p', { class: 'settings-sync-status', text: 'Saved settings changed in the other window. Your draft is preserved; Apply will overwrite that change.' })] : []),
+      ...(externalChange ? [el('p', { class: 'settings-sync-status', text: 'Saved settings changed in the other window. Your draft is preserved; Save will overwrite that change.' })] : []),
       el('div', { class: 'graphics-card-actions' }, [
-        el('button', { class: 'btn btn-primary btn-sm asr-apply', text: busy ? 'Applying…' : applied ? 'Applied' : 'Apply', disabled: busy || !state || (draft.enabled && !state.runtimeReady), onclick: () => void apply() }),
+        el('button', { class: 'btn btn-primary btn-sm asr-apply', text: busy ? 'Saving…' : applied ? 'Saved' : 'Save', disabled: busy || !state || (draft.enabled && !state.runtimeReady), onclick: () => void apply() }),
         el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { draft = { enabled: false }; applied = false; externalChange = false; render(); } }),
       ]),
     );
@@ -257,11 +389,10 @@ export function renderArcSuperResolution(): HTMLElement {
     if (!root.isConnected || typeof status?.active !== 'boolean') return;
     const independent = typeof status.asrActive === 'boolean';
     const reason = independent ? status.asrReason : status.reason;
-    latestStatus = { active: status.asrActive ?? status.active, mode: independent ? 'asr' : status.mode, reason: typeof reason === 'string' ? reason : undefined };
+    const snapshot = { active: status.asrActive ?? status.active, mode: independent ? 'asr' as const : status.mode, reason: typeof reason === 'string' ? reason : undefined };
+    latestStatus = snapshot;
     if (state) {
-      state = { ...state, active: latestStatus.active && latestStatus.mode === 'asr', reason: latestStatus.reason };
-      const note = root.querySelector<HTMLElement>('.sharpening-runtime-status');
-      if (note) note.textContent = runtimeStatusText();
+      state = { ...state, active: snapshot.active && snapshot.mode === 'asr', reason: snapshot.reason };
     }
   });
   const reconcilePush = (update: import('../types.ts').PostprocessGlobalSettingsUpdate): void => {
@@ -297,196 +428,26 @@ export function renderArcSuperResolution(): HTMLElement {
   return root;
 }
 
-export function renderGameArcSuperResolution(exePath: string): HTMLElement {
-  const root = el('section', { class: 'card graphics-card asr-game-card' });
-  let state: ArcSuperResolutionGame | null = null;
-  let choice = 'global';
-  let busy = false, saved = false, error = '', generation = 0;
-  const load = async (): Promise<void> => {
-    const request = ++generation;
-    try {
-      const next = await api.arcSuperResolutionGameGet(exePath);
-      if (request !== generation || !root.isConnected) return;
-      state = next; choice = next.override === null ? 'global' : next.override.enabled ? 'on' : 'off'; error = '';
-    } catch (err) { if (request === generation) error = err instanceof Error ? err.message : String(err); }
-    if (request === generation && root.isConnected) render();
-  };
-  const apply = async (): Promise<void> => {
-    if (busy || !state) return;
-    const request = generation;
-    busy = true; saved = false; error = ''; render();
-    try {
-      const next = await api.arcSuperResolutionGameSet(exePath, choice === 'global' ? null : { enabled: choice === 'on' });
-      if (request !== generation || !root.isConnected) return;
-      state = next; saved = true;
-      toast('success', 'Per-game ASR saved', next.effective.enabled
-        ? 'ASR will enlarge this recognized game while it runs in a smaller foreground window.'
-        : 'ASR is off for this game.');
-    } catch (err) {
-      if (request !== generation || !root.isConnected) return;
-      error = err instanceof Error ? err.message : String(err);
-      toast('error', 'Per-game ASR apply failed', error);
-    } finally { if (request === generation) { busy = false; if (root.isConnected) render(); } }
-  };
-  const render = (): void => {
-    const select = makeSelect(choice, [
-      { value: 'global', label: `Use global (${state?.globalValue.enabled ? 'On' : 'Off'})` },
-      { value: 'off', label: 'Arc Super Resolution Off' },
-      { value: 'on', label: 'Arc Super Resolution On' },
-    ], value => { choice = value; saved = false; const button = root.querySelector<HTMLButtonElement>('.asr-game-apply'); if (button) button.textContent = 'Apply'; }, 'Per-game Arc Super Resolution');
-    select.disabled = busy || !state;
-    root.replaceChildren(
-      el('div', { class: 'sharpening-card-heading' }, [
-        el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Arc Super Resolution (ASR)' }), el('p', { class: 'card-note', text: 'Choose whether to enlarge this game’s smaller window.' })]),
-        el('div', { class: 'sharpening-card-control' }, [select]),
-      ]),
-      sharpeningHelp('Run this recognized game in Windowed mode at a resolution smaller than your display. On enables ASR for this game even when the global default is Off; Off excludes it even when the global default is On. Use global inherits the Graphics setting. No Arc Power launch is required for ASR. Sharpening is independent and may run at the same time.', 'How Scaling Works'),
-      ...(state?.reason ? [el('p', { class: 'text-error', text: state.reason })] : []),
-      ...(error ? [el('p', { class: 'text-error', text: error })] : []),
-      ...(!state && !error ? [el('p', { class: 'profile-capability-note', text: 'Loading game scaling settings…' })] : []),
-      el('div', { class: 'graphics-card-actions' }, [
-        el('button', { class: 'btn btn-primary btn-sm asr-game-apply', text: busy ? 'Applying…' : saved ? 'Saved' : 'Apply', disabled: busy || !state || state.runtimeReady === false, onclick: () => void apply() }),
-        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { choice = 'global'; saved = false; render(); } }),
-        ...(!state && error ? [el('button', { class: 'btn btn-ghost btn-sm', text: 'Retry', onclick: () => void load() })] : []),
-      ]),
-    );
-  };
-  const unsubscribe = api.onPostprocessGlobalSettingsUpdated(update => {
-    if (!root.isConnected || !state || update.kind !== 'asr') return;
-    state = { ...state, globalValue: { ...update.state.value },
-      effective: state.override ?? { ...update.state.value } };
-    render();
-  });
-  render(); void load();
-  const observer = new MutationObserver(() => {
-    if (root.isConnected) return;
-    generation++; unsubscribe(); observer.disconnect();
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
-  return root;
-}
-
-export function renderGameSharpening(exePath: string): HTMLElement {
-  const root = el('section', { class: 'card graphics-card sharpening-card sharpening-game-card' });
-  let generation = 0;
-  let state: PostprocessSharpeningGame | null = null;
-  let draft: PostprocessSharpeningValue = { enabled: false, percentage: 50 };
-  let useGlobal = true;
-  let busy = false;
-  let error = '';
-  let saveStatus = '';
-  const markEditing = (): void => {
-    saveStatus = '';
-    const button = root.querySelector<HTMLButtonElement>('.graphics-card-actions .btn-primary');
-    if (button && !busy) button.textContent = 'Apply';
-  };
-
-  const legacyWarning = (): HTMLElement[] => {
-    if (state?.legacyManifestStatus === 'unreadable') return [el('p', { class: 'profile-capability-note', text: 'The previous game-folder sharpening manifest could not be checked. Older integrations may remain; this build does not change game files.' })];
-    const legacy = state?.legacyIntegration;
-    if (!legacy) return [];
-    const mode = legacy.mode === 'optiscaler' ? 'OptiScaler/ReShade' : 'ReShade';
-    return [el('p', { class: 'profile-capability-note', text: `The previous Arc Power version still lists a ${mode} game-folder integration for this game. It may affect the image with this switch off or stack with screen sharpening. This build does not change game files; remove the old integration with the previous Arc Power version while the game is closed before testing.` })];
-  };
-
-  const load = async (): Promise<void> => {
-    const request = ++generation;
-    try {
-      const value = await api.postprocessSharpeningGameGet(exePath);
-      if (request !== generation || !root.isConnected) return;
-      state = value; useGlobal = value.override === null; draft = { ...(value.override ?? value.globalValue) }; error = '';
-    } catch (err) { if (request === generation) error = err instanceof Error ? err.message : String(err); }
-    if (request === generation && root.isConnected) render();
-  };
-  const mutate = async (value: PostprocessSharpeningValue | null): Promise<void> => {
-    if (busy) return;
-    const request = generation;
-    busy = true; error = ''; saveStatus = ''; render();
-    try {
-      const next = await api.postprocessSharpeningGameSet(exePath, value);
-      if (request !== generation || !root.isConnected) return;
-      state = next;
-      useGlobal = state.override === null;
-      draft = { ...(state.override ?? state.globalValue) };
-      saveStatus = state.reason ? 'Saved' : 'Applied';
-      if (state.reason) toast('warn', 'Per-game sharpening saved', state.reason);
-      else toast('success', 'Per-game sharpening saved', 'Runtime status shows whether sharpening is active.');
-    } catch (err) {
-      if (request !== generation || !root.isConnected) return;
-      error = err instanceof Error ? err.message : String(err);
-      toast('error', 'Per-game sharpening failed', error);
-    } finally { if (request === generation) { busy = false; if (root.isConnected) render(); } }
-  };
-  const launchGame = async (): Promise<void> => {
-    if (busy) return;
-    const request = generation;
-    busy = true; error = ''; render();
-    try {
-      state = await api.postprocessSharpeningGameSet(exePath, useGlobal ? null : { ...draft });
-      if (request !== generation || !root.isConnected) return;
-      const launched = await api.postprocessSharpeningLaunchGame(exePath);
-      if (request !== generation || !root.isConnected) return;
-      toast('success', 'Game started', `Sharpening controls are attaching to the game (PID ${launched.pid}).`);
-      const next = await api.postprocessSharpeningGameGet(exePath);
-      if (request !== generation || !root.isConnected) return;
-      state = next;
-    } catch (err) {
-      if (request !== generation || !root.isConnected) return;
-      error = err instanceof Error ? err.message : String(err);
-      toast('error', 'Game launch failed', error);
-    } finally { if (request === generation) { busy = false; if (root.isConnected) render(); } }
-  };
-  const render = (): void => {
-    const globalValue = state?.globalValue ?? { enabled: false, percentage: 50 };
-    const shownValue = useGlobal ? globalValue : draft;
-    const slider = el('input', { class: 'graphics-slider', type: 'range', min: 0, max: 100, step: 1, value: shownValue.percentage, disabled: busy || !state || state.runtimeReady === false || useGlobal || !draft.enabled,
-      'aria-label': 'Per-game Arc Image Sharpening strength', 'aria-valuetext': `${shownValue.percentage}%`, oninput: (event: Event) => {
-        markEditing();
-        draft.percentage = safePercentage((event.target as HTMLInputElement).valueAsNumber);
-        const label = root.querySelector<HTMLElement>('.sharpening-game-value'); if (label) label.textContent = `${draft.percentage}%`;
-        (event.currentTarget as HTMLInputElement).setAttribute('aria-valuetext', `${draft.percentage}%`);
-      } });
-    const sliderRow = el('div', { class: 'graphics-fps-slider-row sharpening-slider-row', hidden: useGlobal || !draft.enabled }, [slider, el('span', { class: 'graphics-fps-value sharpening-game-value', text: `${shownValue.percentage}%` })]);
-    const select = makeSelect(useGlobal ? 'global' : draft.enabled ? 'on' : 'off', [
-      { value: 'global', label: `Use global (${globalValue.enabled ? 'On' : 'Off'}, ${globalValue.percentage}%)` },
-      { value: 'off', label: 'Arc Image Sharpening Off' },
-      { value: 'on', label: 'Arc Image Sharpening On' },
-    ], (value) => {
-      markEditing();
-      useGlobal = value === 'global';
-      if (!useGlobal) draft.enabled = value === 'on';
-      sliderRow.hidden = useGlobal || !draft.enabled;
-      slider.disabled = busy || !state || state.runtimeReady === false || useGlobal || !draft.enabled;
-      const shown = useGlobal ? globalValue : draft;
-      const label = root.querySelector<HTMLElement>('.sharpening-game-value'); if (label) label.textContent = `${shown.percentage}%`;
-      const applyButton = root.querySelector<HTMLButtonElement>('.graphics-card-actions .btn-primary');
-      if (applyButton) applyButton.disabled = busy || !state || (state.runtimeReady === false && !useGlobal && draft.enabled);
-    }, 'Per-game Arc Image Sharpening');
-    select.disabled = busy || !state;
-    root.replaceChildren(
-      el('div', { class: 'sharpening-card-heading' }, [
-        el('div', { class: 'sharpening-card-copy' }, [el('h2', { class: 'card-title', text: 'Arc Image Sharpening' }), el('p', { class: 'card-note', text: 'Set a sharpening override for this game.' })]),
-        el('div', { class: 'sharpening-card-control' }, [select, sliderRow]),
-      ]),
-      sharpeningHelp(state?.provider === 'managed'
-        ? 'Use Launch game below to start this game with the bundled sharpening runtime. Strength changes apply inside the game after launch. The global Arc Image Sharpening switch must be on. ASR is independent and can run at the same time.'
-        : 'Per-game sharpening applies while this recognized game is the foreground window on a display connected to Intel Arc. The global Arc Image Sharpening switch in Graphics must be on. Windowed, borderless, and fullscreen game windows are eligible; exclusive fullscreen capture can vary by game.'),
-      ...(state && !state.globalValue.enabled ? [el('p', { class: 'profile-capability-note', text: 'Global Arc Image Sharpening is off. This per-game override remains saved and will be inactive until the global switch is on.' })] : []),
-      ...legacyWarning(),
-      ...(state?.reason ? [el('p', { class: 'text-error', text: state.reason })] : []),
-      ...(error ? [el('p', { class: 'text-error', text: error })] : []),
-      ...(!state ? [el('p', { class: 'profile-capability-note', text: 'Loading game sharpening…' })] : []),
-      el('div', { class: 'graphics-card-actions' }, [
-        el('button', { class: 'btn btn-primary btn-sm', text: busy ? 'Applying…' : saveStatus || 'Apply', disabled: busy || !state || (state.runtimeReady === false && !useGlobal && draft.enabled), onclick: () => void mutate(useGlobal ? null : { ...draft }) }),
-        el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to default', disabled: busy || !state, onclick: () => { saveStatus = ''; useGlobal = true; draft = { ...globalValue }; render(); } }),
-        ...(state?.launchSupported ? [el('button', { class: 'btn btn-ghost btn-sm sharpening-launch-game', text: busy ? 'Working…' : 'Launch game', disabled: busy, onclick: () => void launchGame() })] : []),
-      ]),
-    );
-  };
-  render(); void load();
+/** A single global surface for configuring, selecting, and activating screen effects. */
+export function renderScreenPostprocessCard(
+  onStateChange?: (state: GlobalSharpeningApplyState) => void,
+  onUnmount?: () => void,
+): HTMLElement {
+  const root = el('section', { class: 'card graphics-card postprocess-suite-card' }, [
+    el('header', { class: 'postprocess-suite-header' }, [
+      el('span', { class: 'postprocess-suite-eyebrow', text: 'DISPLAY EFFECTS' }),
+      el('h2', { class: 'card-title', text: 'Arc Image Scaling & Sharpening' }),
+      el('p', { class: 'card-note', text: 'Choose your effects, then press Scale to apply them to a game.' }),
+    ]),
+    el('div', { class: 'postprocess-feature-grid' }, [
+      renderGlobalSharpening(onStateChange),
+      renderArcSuperResolution(),
+    ]),
+    renderPostprocessWindowSelector(),
+  ]);
   const detachObserver = new MutationObserver(() => {
     if (root.isConnected) return;
-    generation += 1;
+    onUnmount?.();
     detachObserver.disconnect();
   });
   detachObserver.observe(document.body, { childList: true, subtree: true });

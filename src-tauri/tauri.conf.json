@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Arc Power",
+  "version": "1.3.0",
+  "identifier": "com.rid.arcpower.tauri.development",
+  "build": { "frontendDist": "../tauri-dist" },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://arc-power-media.localhost; media-src 'self' http://arc-power-media.localhost; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'",
+      "capabilities": ["main"]
+    }
+  },
+  "bundle": { "active": false, "icon": ["../build/icon.ico"] }
+}

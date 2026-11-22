@@ -1,17 +1,9 @@
-// Arc Power - M4-D: the integrated title bar wiring (frameless
-// window). The markup lives in index.html: the brand CENTERED (assets/
-// ArcPowerIcon.png on top, "Arc Power" below with "Power" in the website's blue
-// gradient + glow), the window controls (minimize / maximize-restore /
-// close) in the right cluster. This module wires the buttons to the
-// window-op IPC and keeps the max button's icon in sync with the pushed
-// window:maximized-changed state.
-//
-// M25: the titlebar-left now carries the app version + an update button
-// next to the corner icon. The version is filled from the boot-fetched
-// appVersion; the update button cycles through check -> download -> install
-// states.
+// Frameless window controls and updater flow. The title bar carries the app
+// name and window actions; app.ts places the updater control beside the
+// version in the sidebar footer.
 
 import { api } from '../ipc.ts';
+import { toast } from './toast.ts';
 
 const MAX_BTN_SEL = '.window-btn[data-op="maximize-toggle"]';
 
@@ -25,14 +17,13 @@ let downloadPercent = 0;
 let downloadedBytes = 0;
 
 function setUpdateBtn(state: UpdateState): void {
+  updateState = state;
   const btn = document.getElementById('titlebar-update-btn') as HTMLButtonElement | null;
   if (!btn) return;
   const iconCheck = btn.querySelector('.icon-update-check');
   const iconDownload = btn.querySelector('.icon-update-download');
   const iconDone = btn.querySelector('.icon-update-done');
   if (!iconCheck || !iconDownload || !iconDone) return;
-
-  updateState = state;
 
   // Hide all icons first
   (iconCheck as HTMLElement).style.display = 'none';
@@ -44,6 +35,7 @@ function setUpdateBtn(state: UpdateState): void {
   switch (state) {
     case 'idle':
       btn.style.display = '';
+      (iconCheck as HTMLElement).style.display = '';
       btn.title = 'Check for updates';
       btn.setAttribute('aria-label', 'Check for updates');
       break;
@@ -105,8 +97,10 @@ async function handleUpdateClick(): Promise<void> {
           setUpdateBtn('update-available');
         } else {
           // Keep the manual check action visible after a successful no-update
-          // result. Users can retry later without restarting the app.
+          // result. Users can retry later without restarting the app; confirm
+          // that the check succeeded so this doesn't look like a dead button.
           setUpdateBtn('idle');
+          toast('info', 'No newer release available', 'There is no published version newer than this build.');
         }
       } catch {
         setUpdateBtn('error');
@@ -151,10 +145,6 @@ export function initTitlebar(): void {
   document.querySelector('.window-btn[data-op="close"]')
     ?.addEventListener('click', () => { void api.windowClose(); });
 
-  // M25: wire the update button
-  document.getElementById('titlebar-update-btn')
-    ?.addEventListener('click', () => { void handleUpdateClick(); });
-
   api.onUpdateDownloadProgress(({ percent, downloadedBytes: bytes }) => {
     if (updateState !== 'downloading') return;
     downloadedBytes = Number.isFinite(bytes) ? Math.max(0, bytes) : downloadedBytes;
@@ -187,19 +177,16 @@ export function initTitlebar(): void {
   });
 }
 
-/**
- * M25: fill the version text in the titlebar-left. Called from app.ts
- * after the boot-fetch provides appVersion.
- */
-export function setTitlebarVersion(version: string): void {
-  const el = document.getElementById('titlebar-version');
-  if (el) el.textContent = version || '0.0.0';
+/** Attach the updater control after the sidebar has been rendered. */
+export function initUpdaterControl(button: HTMLButtonElement): void {
+  if (button.dataset.updaterWired !== 'true') {
+    button.addEventListener('click', () => { void handleUpdateClick(); });
+    button.dataset.updaterWired = 'true';
+  }
+  setUpdateBtn(updateState);
 }
 
-/**
- * M25: trigger the automatic startup update check. Called from app.ts
- * after the titlebar version is set.
- */
+/** Trigger the automatic startup update check. */
 export async function startupUpdateCheck(): Promise<void> {
   updateInfo = null;
   downloadReceipt = null;

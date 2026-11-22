@@ -1,6 +1,6 @@
 {
     "name":  "arc-power",
-    "version":  "1.2.5",
+    "version":  "1.3.0",
     "license":  "GPL-2.0-only",
     "private":  true,
     "description":  "Arc Power",
@@ -10,7 +10,6 @@
                     "node":  "\u003e=20"
                 },
     "scripts":  {
-                    "test":  "node --test",
                     "start":  "electron .",
                     "smoke":  "electron . --headless",
                     "smoke:mock":  "electron . --headless --mock",
@@ -19,7 +18,7 @@
                     "make:banner":  "electron scripts/make-banner.js",
                     "build:renderer":  "esbuild src/renderer/app.ts --bundle --outfile=src/renderer/out/app.js --format=iife --target=chrome138 && esbuild src/renderer/overlay.ts --bundle --outfile=src/renderer/out/overlay.js --format=iife --target=chrome138 && esbuild src/renderer/advanced-overlay.ts --bundle --outfile=src/renderer/out/advanced-overlay.js --format=iife --target=chrome138 && esbuild src/renderer/recording-toast.ts --bundle --outfile=src/renderer/out/recording-toast.js --format=iife --target=chrome138 && esbuild src/renderer/recording-status-pill.ts --bundle --outfile=src/renderer/out/recording-status-pill.js --format=iife --target=chrome138",
                     "typecheck":  "tsc --noEmit",
-                    "dist":  "npm run build:renderer \u0026\u0026 node build/build-dist.js"
+                    "dist":  "node scripts/build-tauri-dist.mjs"
                 },
     "build":  {
                   "appId":  "com.rid.arcpower.desktop.v5",
@@ -87,8 +86,10 @@
                             ],
                   "asarUnpack":  [
                                      "node_modules/koffi/build/koffi/win32_x64/koffi.node",
+                                     "src/main/native/ArcPower.D3D12UploadHeapQuery.exe",
                                      "src/main/backend/igcl2023/**",
                                      "src/main/sharpening-runtime/ArcPower.ScreenSharpen.exe",
+                                     "src/main/sharpening-runtime/fsr1/**",
                                      "src/main/sharpening-runtime/ArcPower.GameSharpening.exe",
                                      "src/main/sharpening-runtime/ArcPower.ManagedSharpeningControl.exe",
                                      "src/main/sharpening-runtime/ArcPower.ReShade64.dll",

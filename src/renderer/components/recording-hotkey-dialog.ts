@@ -32,7 +32,7 @@ export function showRecordingHotkeyDialog(
     const hint = el('p', {
       class: 'recording-hotkey-dialog-hint',
       text: options.requireModifier
-        ? 'Overlay shortcuts need Ctrl, Alt, or Shift. Modifiers can be combined with a letter, number, or F1–F24.'
+        ? 'This shortcut needs Ctrl, Alt, or Shift. Modifiers can be combined with a letter, number, or F1–F24.'
         : 'Press a letter, number, or F1–F24. Ctrl, Alt, and Shift can be combined.',
     });
     const onKeyDown = (event: KeyboardEvent): void => {

@@ -63,8 +63,18 @@ export function compareDriverVersions(latest: string, installed: string): number
   return 0;
 }
 
-export function intelDriverKind(gpuVendor: string | null | undefined, name: string): IntelDriverKind | null {
-  if (gpuVendor?.toLowerCase() !== 'intel') return null;
+export function intelDriverKind(
+  gpuVendor: string | null | undefined,
+  name: string,
+  pciVendorId?: string | null,
+): IntelDriverKind | null {
+  const vendor = gpuVendor?.trim().toLowerCase() ?? '';
+  const pciVendor = pciVendorId?.trim().replace(/^0x/i, '').toLowerCase() ?? '';
+  const intelByPci = pciVendor === '8086' || pciVendor.endsWith('8086');
+  // The mock (and some OS-only inventory rows) can omit gpuVendor while
+  // retaining a stable Intel PCI id. A clear Arc model name is the final
+  // fallback for older inventories that omit both vendor fields.
+  if (!intelByPci && vendor !== 'intel' && !(vendor === '' && /\barc\b/i.test(name))) return null;
   if (/\barc\s+pro\b/i.test(name)) return 'pro';
   if (/\barc\b/i.test(name)) return 'arc';
   return null;

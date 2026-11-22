@@ -1,18 +1,5 @@
-// Arc Power - Tuning page (M4-D2 §7/§8: renamed from Overclocking; the Fan
-// page merged in as a sub-view). One card per supported control (slider,
-// clamps, per-card reset), the M3-C-E OC-mode segmented toggle (Stock /
-// Advanced with the beyond-Intel disclaimer), the Advanced disclosure for
-// expert controls, and a floating Apply button anchored bottom-left that
-// appears ONLY when a setting differs from the loaded driver state (dirty)
-// and disappears when clean.
-//
-// M4-D2 (§8): the OC-mode row is a FLEX ROW - LEFT the Stock/Advanced pill
-// (unchanged), RIGHT a second segmented pill "Tuning | Fan Curve" (same
-// height, same styling) switching the page content between the tuning
-// controls and the fan curve editor (pages/fan-editor.ts - the old Fan
-// page's editor extracted into a shared module). The view persists per
-// render (module state, default 'tuning'); the old #/fan hash redirects
-// here with the fan view active (router.ts consumeFanViewRequest).
+// Arc Power - Tuning page. Supported GPU controls and fan settings share a
+// single page, with each control applying its own staged value.
 //
 // M2C-B F3 (instant apply): ONE attempt per control, zero waiting, no
 // progress UI, no cancellation, no retry note. Refusals (incl. the silent
@@ -68,7 +55,7 @@ import { api } from '../ipc.ts';
 import { snapToRange, normalizedPosition, formatControlValue, formatControlDriverValue, controlDisplay, controlDisplayRange, controlValueFromDisplay, controlValueToDisplay, isOffGrid } from '../pure/slider.ts';
 import { chipState } from '../pure/chip.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
-import { buildScalarSettings, validateSettingsPayload, isNoopApply, computeDirtyVsApplied, isControlDirtyVsApplied, isScalarDirtyVsApplied, driverSyncState, ocStateChanged, ocCapsChanged, cardSliderRange, parseGpuLockInput, formatLockPair, gpuLockToastPair, clampGpuLock, formatLockRange, fanStateSignature, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
+import { buildScalarSettings, validateSettingsPayload, isNoopApply, isControlDirtyVsApplied, isScalarDirtyVsApplied, driverSyncState, ocStateChanged, ocCapsChanged, cardSliderRange, parseGpuLockInput, formatLockPair, gpuLockToastPair, clampGpuLock, formatLockRange, fanStateSignature, GPU_LOCK_VOLT_MAX_V, GPU_LOCK_FREQ_MAX_MHZ } from '../pure/settings.ts';
 import { formatPlReadout } from '../pure/pl-readout.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { showAdvancedModeConfirm } from '../components/confirm-dialog.ts';
@@ -76,6 +63,7 @@ import { toast } from '../components/toast.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
 import { selectDevice } from '../app.ts';
 import { activeDeviceLabel } from '../pure/device.ts';
+import { gpuApplyTargetOptions } from '../pure/gpu-apply-target.ts';
 import { renderFanEditor, updateFanReadout, currentFanSignature } from './fan-editor.ts';
 import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.ts';
 import { discardVfCurveDraft, observeVfCurveSnapshot, verifiedVfCurveApplySnapshot, vfCurveEditorContextIsCurrent, vfCurveVoltageOriginShiftMv } from '../pure/vf-curve-recovery.ts';
@@ -96,7 +84,7 @@ import {
 // settingsFromState helper, reused by the "Save as Profile" card (the
 // profiles page's own create/save flows stay).
 import { activeProfileIdForGpu, captureProfileSettings, newProfileId, profileGpuIdentity, promptModal, profileMatchesGpu } from './profiles.ts';
-import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile, Settings, PowerLimitsRead, VoltageOffsetRead } from '../types.ts';
+import type { RangeInfo, Capabilities, DeviceState, OcMode, Profile, Settings, PowerLimitsRead, VoltageOffsetRead, TelemetrySample } from '../types.ts';
 
 // The pure refresh-signature helpers live in pure/settings.ts (unit-tested
 // there); this page re-exports them so the import surface stays local.
@@ -113,8 +101,6 @@ const CONTROL_ORDER = ['gpuFreqOffsetMhz', 'vramFreqOffsetGts', 'gpuVoltOffsetV'
 // the section on Alchemist (a770 has no vramFreqOffset - documented:
 // profiles can still apply gpuLock via the state machinery).
 
-export const APPLY_BTN_TEXT = 'Apply';
-export const APPLY_BTN_BUSY_TEXT = 'Applying…';
 // M2C-C first-apply elevation explanation: shown right before the UAC prompt
 // (a short toast - the prompt itself is the OS's, this explains why).
 export const ELEVATION_TOAST_TEXT = 'Administrator approval is needed to apply GPU settings.';
@@ -141,6 +127,7 @@ let applied: Record<string, number> = {};
 // V-unit read-back. Normal Alchemist rendering exposes the supported range.
 let hiddenNegativeControls = new Set<string>();
 let lastRenderedCaps: Capabilities | null = null;
+let lastRenderedOcMode: OcMode | null = null;
 let renderCaps: Capabilities | null = null;
 // M17e: the M4-B Offset/Clock mode machinery is REMOVED (freqMode /
 // baseClock / setFreqMode / the pure/clock.ts helpers died with the Clock
@@ -172,6 +159,8 @@ const chipNodes = new Map<string, HTMLElement>();
 // actually applied.
 const diffNodes = new Map<string, HTMLElement>();
 const resultNodes = new Map<string, HTMLElement>();
+let dismissResultExplanation: (() => void) | null = null;
+let resultExplanationId = 0;
 // M9: the per-card Apply button (the chip state machine) - visible ONLY
 // while that card is dirty; clicking it applies THAT card only.
 const chipApplyNodes = new Map<string, HTMLButtonElement>();
@@ -233,15 +222,26 @@ let sysmanVoltageRefreshToken = 0;
 // clamp class's value-accurate sentence vs the refused class's kept
 // sentence).
 const pl2SetByDevice = new Map<number, { landed: boolean; valueW: number; ceilingW?: number; requestedW?: number }>();
-let applyBtn: HTMLButtonElement | null = null;
-let pendingSummaryNode: HTMLElement | null = null;
+let tuningTelemetryNodes: { fan: HTMLElement; temperature: HTMLElement; power: HTMLElement } | null = null;
+let fanEditorHost: HTMLElement | null = null;
 let applying = false;
-// M4-D2 (§8): the Tuning page's sub-view - 'tuning' = the OC controls,
-// 'fan' = the fan curve editor. Module-level (persists across re-renders -
-// a caps-change re-render must not drop the fan view); default 'tuning';
-// the #/fan redirect forces 'fan' via consumeFanViewRequest at render.
-let view: 'tuning' | 'fan' = 'tuning';
 let viewContainer: HTMLElement | null = null;
+
+function updateTuningTelemetry(sample: TelemetrySample | null): void {
+  if (!tuningTelemetryNodes) return;
+  const rpm = sample?.fanRpm?.[0];
+  const temperature = sample?.tempC;
+  const power = sample?.powerW;
+  tuningTelemetryNodes.fan.textContent = Number.isFinite(rpm)
+    ? `${Math.round(rpm as number).toLocaleString('en-US')} RPM`
+    : '— RPM';
+  tuningTelemetryNodes.temperature.textContent = Number.isFinite(temperature)
+    ? `${Math.round(temperature as number)} °C`
+    : '— °C';
+  tuningTelemetryNodes.power.textContent = Number.isFinite(power)
+    ? `${Math.round(power as number)} W`
+    : '— W';
+}
 
 function editableNumber(value: number, range: RangeInfo, decimalsOverride?: number): string {
   const decimals = decimalsOverride ?? (Number.isInteger(range.step)
@@ -266,6 +266,7 @@ function controlRangeText(key: string, range: RangeInfo, deviceName: string): st
 }
 
 function resetPageState(state: DeviceState, caps: Capabilities) {
+  dismissResultExplanation?.();
   values = {};
   applied = {};
   hiddenNegativeControls = new Set<string>();
@@ -274,9 +275,8 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   renderCaps = caps;
   applying = false;
   // M17f (step-4 N1): `lockMode` is NOT reset here - it is the same
-  // module-level session state as `view` (the fan sub-view survives a
-  // full re-render too). A caps-change re-render mid-Lock-mode must keep
-  // the mode; renderView re-applies the presentation from it.
+  // module-level session state. A caps-change re-render mid-Lock-mode must
+  // keep the mode; renderTuningSurface re-applies the presentation from it.
   appliedLock = null;
   vfCurveMode = false;
   vfCurveSupported = false;
@@ -311,8 +311,8 @@ function resetPageState(state: DeviceState, caps: Capabilities) {
   sysmanRefreshToken += 1;
   sysmanVoltageRefreshToken += 1;
   sysmanLimitsNode = null;
-  applyBtn = null;
-  pendingSummaryNode = null;
+  tuningTelemetryNodes = null;
+  fanEditorHost = null;
   viewContainer = null;
 }
 
@@ -345,28 +345,88 @@ function isPendingControl(key: string): boolean {
   return chipState(key, values, applied, driverValue, true) === 'dirty';
 }
 
-function refreshPendingSummary(): void {
-  if (!pendingSummaryNode) return;
-  const curveDirty = vfCurveSupported
-    && (vfCurveMode || vfCurveNativeApplyDraft !== null)
-    && vfCurveDirty();
-  const scalarCount = Object.keys(values)
-    .filter((key) => !(vfCurveSupported && (vfCurveMode || vfCurveNativeApplyDraft !== null)
-      && ['gpuFreqOffsetMhz', 'gpuVoltOffsetV'].includes(key)))
-    .filter(isPendingControl).length;
-  const count = scalarCount + (curveDirty ? 1 : 0);
-  pendingSummaryNode.textContent = count > 0
-    ? `${count} pending ${count === 1 ? 'change' : 'changes'}`
-    : 'No pending changes';
-  pendingSummaryNode.className = `tuning-pending-summary${count > 0 ? ' has-pending' : ''}`;
-}
-
-function setCardResult(key: string, ok: boolean, text: string, warning = false): void {
+function setCardResult(key: string, ok: boolean, text: string, warning: boolean | 'neutral' = false, explanation?: string): void {
   const node = resultNodes.get(key);
   if (!node) return;
+  dismissResultExplanation?.();
   node.hidden = false;
-  node.className = `tuning-card-result ${warning ? 'text-warn' : ok ? 'result-ok' : 'result-error'}`;
+  node.className = `tuning-card-result ${warning === 'neutral' ? 'result-neutral' : warning ? 'text-warn' : ok ? 'result-ok' : 'result-error'}`;
   node.textContent = text;
+  if (key === 'gpuFreqOffsetMhz' && text.endsWith('· Adjusted by Intel')) {
+    explanation = text.startsWith('Already active')
+      ? 'This request previously produced the LIVE curve shown by Intel’s driver. That verified result is still active; no new curve write was sent.'
+      : 'Intel’s driver adjusted the requested points. The curve shows the validated LIVE values returned by the driver.';
+  }
+  if (!explanation) return;
+  const id = `tuning-result-explanation-${++resultExplanationId}`;
+  const info = el('button', { class: 'tuning-result-info', type: 'button', text: 'ⓘ', 'aria-label': 'Explain Intel curve result', 'aria-describedby': id });
+  // A top-layer app popover avoids the control surface's clipping and stays
+  // readable when the card sits at either edge of a narrow viewport.
+  const tooltip = el('span', { class: 'tuning-result-tooltip', id, role: 'tooltip', popover: 'manual', text: explanation });
+  node.append(info, tooltip);
+  let hovered = false;
+  let tooltipHovered = false;
+  let focused = false;
+  let focusFrame: number | null = null;
+  let observer: MutationObserver | null = null;
+  const dismiss = () => {
+    if (focusFrame !== null) window.cancelAnimationFrame(focusFrame);
+    focusFrame = null;
+    if (tooltip.matches(':popover-open')) tooltip.hidePopover();
+    observer?.disconnect();
+    observer = null;
+    window.removeEventListener('keydown', escape);
+    window.removeEventListener('scroll', dismiss, true);
+    window.removeEventListener('resize', dismiss);
+    window.removeEventListener('hashchange', dismiss);
+    if (dismissResultExplanation === dismiss) dismissResultExplanation = null;
+  };
+  const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') dismiss(); };
+  const show = () => {
+    if (tooltip.matches(':popover-open')) return;
+    dismissResultExplanation?.();
+    tooltip.showPopover();
+    const anchor = info.getBoundingClientRect();
+    const box = tooltip.getBoundingClientRect();
+    const left = Math.max(8, Math.min(anchor.left, window.innerWidth - box.width - 8));
+    const top = anchor.bottom + box.height + 6 <= window.innerHeight - 8
+      ? anchor.bottom + 6 : Math.max(8, anchor.top - box.height - 6);
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+    dismissResultExplanation = dismiss;
+    window.addEventListener('keydown', escape);
+    window.addEventListener('scroll', dismiss, true);
+    window.addEventListener('resize', dismiss);
+    window.addEventListener('hashchange', dismiss);
+    observer = new MutationObserver(() => { if (!info.isConnected || !info.getClientRects().length) dismiss(); });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
+  };
+  const maybeDismiss = () => {
+    // Allow the pointer to cross the small gap into the explanation itself.
+    window.setTimeout(() => { if (!hovered && !tooltipHovered && !focused) dismiss(); }, 100);
+  };
+  info.addEventListener('pointerenter', () => { hovered = true; show(); });
+  info.addEventListener('pointerleave', () => { hovered = false; maybeDismiss(); });
+  info.addEventListener('focus', () => {
+    focused = true;
+    dismissResultExplanation?.();
+    dismissResultExplanation = dismiss;
+    window.addEventListener('keydown', escape);
+    // Focus can scroll the icon into view. Let that scroll finish before
+    // opening, so its queued event cannot immediately dismiss the tooltip.
+    focusFrame = window.requestAnimationFrame(() => {
+      focusFrame = null;
+      if (focused && info.isConnected && info.getClientRects().length) show();
+    });
+  });
+  info.addEventListener('blur', () => {
+    focused = false;
+    if (focusFrame !== null) window.cancelAnimationFrame(focusFrame);
+    focusFrame = null;
+    maybeDismiss();
+  });
+  tooltip.addEventListener('pointerenter', () => { tooltipHovered = true; });
+  tooltip.addEventListener('pointerleave', () => { tooltipHovered = false; maybeDismiss(); });
 }
 
 /** M9: the shared chip state machine (pure/chip.ts) drives the per-card
@@ -597,32 +657,6 @@ function refreshCard(key: string) {
     diffNode.className = `tuning-diff${sync === 'mismatch' ? ' is-pending' : ''}${sync === 'unavailable' ? ' is-unavailable' : ''}`;
   }
   refreshChip(key);
-  updateFloating();
-}
-
-function updateFloating() {
-  refreshPendingSummary();
-  if (!applyBtn) return;
-  if (applying) return;
-  // M17e (round-2 N5)/M22: the floating apply is FORCE-HIDDEN in Lock mode -
-  // the lock card owns its apply (a slider drag in Lock mode must NOT
-  // re-enable the floating button; the per-card offset chip REFUSES while a
-  // real lock is held - the M17e-era atomic-unlock path is dead).
-  if (lockMode) {
-    applyBtn.hidden = true;
-    return;
-  }
-  const includeStagedCurveReset = vfCurveNativeApplyDraft !== null;
-  if (vfCurveSupported && (vfCurveMode || includeStagedCurveReset) && vfCurveDirty()) {
-    applyBtn.hidden = false;
-    return;
-  }
-  const scalarValues = { ...values };
-  if (vfCurveSupported && (vfCurveMode || includeStagedCurveReset)) {
-    delete scalarValues.gpuFreqOffsetMhz;
-    delete scalarValues.gpuVoltOffsetV;
-  }
-  applyBtn.hidden = !computeDirtyVsApplied(buildScalarSettings(scalarValues, { hiddenNegativeControls }), currentState as DeviceState, applied, hiddenNegativeControls);
 }
 
 export const tuningPage: Page = {
@@ -633,10 +667,11 @@ export const tuningPage: Page = {
     const caps = s.caps;
     const state = s.state;
     clear(container);
+    lastRenderedOcMode = s.ocMode;
     resetPageState(state as DeviceState, caps as Capabilities);
 
-    // M4-D2 (§8): the old #/fan hash arrives with the fan view requested.
-    if (consumeFanViewRequest()) view = 'fan';
+    // Consume any legacy #/fan deep-link so it cannot affect a later render.
+    consumeFanViewRequest();
 
     // The deviceId-null guard runs FIRST: on the no-Intel path both
     // deviceId and caps/state are null, and the honest answer is 'No GPU
@@ -723,18 +758,6 @@ export const tuningPage: Page = {
       return true;
     };
 
-    // --- floating Apply (M2b-B): bottom-left, dirty-only -------------------
-    // F3 instant apply (M2C-B): one attempt, immediate result; the button is
-    // just a trigger (a reentry guard swallows a double-click mid-apply).
-    // M2C-C: the button shows a transient "Applying…" state while an apply
-    // is pending (e.g. waiting on the UAC prompt) - disabled, no retry UI.
-    if (controls.length > 0) {
-      applyBtn = el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT });
-      applyBtn.addEventListener('click', () => {
-        if (applying) return;
-        void apply(ctx);
-      });
-    }
     const resetAllBtn = el('button', {
       class: 'btn btn-ghost btn-sm',
       text: 'Reset to default',
@@ -777,17 +800,16 @@ export const tuningPage: Page = {
           }
         }
         for (const key of controls) refreshCard(key);
-        updateFloating();
       },
     });
-    pendingSummaryNode = el('span', { class: 'tuning-pending-summary', text: 'No pending changes', 'aria-live': 'polite' });
-    const generalActions = el('div', { class: 'graphics-general-actions tuning-general-actions' }, [
-      pendingSummaryNode,
-      ...(applyBtn ? [applyBtn as Node] : []),
+    const generalActions = el('div', { class: 'graphics-general-actions tuning-general-actions is-clean' }, [
       resetAllBtn,
     ]);
     const setBusy = (busy: boolean) => {
       applying = busy;
+      cards.get('gpuFreqOffsetMhz')?.querySelectorAll<HTMLButtonElement>('.oc-vf-mode-btn').forEach((button) => {
+        button.disabled = busy;
+      });
       // M9: the per-card Apply buttons share the busy state (disabled while
       // any apply is in flight - the same reentry guard as the floating one).
       for (const b of chipApplyNodes.values()) b.disabled = busy;
@@ -795,9 +817,6 @@ export const tuningPage: Page = {
       redrawVfCurveEditor?.();
       updateVfCurveEditorNote?.();
       refreshCard('gpuFreqOffsetMhz');
-      if (!applyBtn) return;
-      applyBtn.disabled = busy;
-      applyBtn.textContent = busy ? APPLY_BTN_BUSY_TEXT : APPLY_BTN_TEXT;
     };
 
     const drawVfCurve = (svg: SVGSVGElement): void => {
@@ -969,7 +988,7 @@ export const tuningPage: Page = {
         if (accepted) input.value = String(field === 'voltage' ? vfVoltageMv(accepted.voltageV) : Math.round(accepted.freqMhz));
         updateVfCurveEditorNote?.();
         refreshChip('gpuFreqOffsetMhz');
-        updateFloating();
+        
         // Pending-status text can also change the card's layout. Preserve the
         // editor's screen position so the next field remains under the pointer.
         if (hoverReadout && editorPosition) {
@@ -1037,7 +1056,7 @@ export const tuningPage: Page = {
               redraw();
               updateVfCurveEditorNote?.();
               refreshChip('gpuFreqOffsetMhz');
-              updateFloating();
+              
             };
             const onUp = (): void => {
               window.removeEventListener('pointermove', onMove);
@@ -1188,7 +1207,7 @@ export const tuningPage: Page = {
         refreshCurveButton.disabled = true;
         refreshCurveButton.textContent = 'Reading…';
         refreshCard('gpuFreqOffsetMhz');
-        updateFloating();
+        
         updateVfCurveEditorNote?.();
         try {
           const fresh = await api.getCurrentSettings(deviceId);
@@ -1254,7 +1273,7 @@ export const tuningPage: Page = {
           ctx.store.set({ state: refreshedState });
           redrawVfCurveEditor?.();
           refreshCard('gpuFreqOffsetMhz');
-          updateFloating();
+          
           if (liveChanged) toast('success', 'VF curve refreshed', nativeStock
             ? 'The editor now shows the latest LIVE curve and STOCK reset reference.'
             : 'The editor now shows the latest LIVE curve. The driver did not provide a STOCK reset reference.');
@@ -1268,7 +1287,7 @@ export const tuningPage: Page = {
             refreshCurveButton.textContent = 'Refresh from driver';
             refreshCurveButton.disabled = vfCurveDirty();
             refreshCard('gpuFreqOffsetMhz');
-            updateFloating();
+            
             updateVfCurveEditorNote?.();
           }
         }
@@ -1281,7 +1300,7 @@ export const tuningPage: Page = {
         vfCurveNativeApplyDraft = discarded.nativeApplyDraft;
         redrawVfCurveEditor?.();
         refreshCard('gpuFreqOffsetMhz');
-        updateFloating();
+        
         void refreshCurveFromDriver();
       });
       const updateNote = (): void => {
@@ -1325,6 +1344,7 @@ export const tuningPage: Page = {
     };
 
     const setVfCurveMode = (mode: 'offset' | 'curve'): void => {
+      if (applying) return;
       vfCurveMode = mode === 'curve';
       const card = cards.get('gpuFreqOffsetMhz');
       card?.querySelector<HTMLElement>('.oc-slider-row')?.toggleAttribute('hidden', vfCurveMode);
@@ -1334,7 +1354,7 @@ export const tuningPage: Page = {
       card?.querySelector<HTMLElement>('.card-title')?.replaceChildren(document.createTextNode(vfCurveMode ? 'Voltage-Frequency Curve' : (CONTROL_LABELS.gpuFreqOffsetMhz ?? 'Core clock')));
       card?.querySelectorAll<HTMLButtonElement>('.oc-vf-mode-btn').forEach((button) => button.classList.toggle('active', button.dataset.vfMode === mode));
       refreshChip('gpuFreqOffsetMhz');
-      updateFloating();
+      
     };
 
     const buildCard = (key: string): HTMLElement => {
@@ -1408,6 +1428,7 @@ export const tuningPage: Page = {
           const live = ctx.store.get();
           const deviceId = live.deviceId;
           if (deviceId === null || !caps) return;
+          const selectedDevice = live.devices.find((device) => device.id === deviceId) ?? null;
           // M4-B step-5 F3: parse + validate FIRST - empty/whitespace fields
           // are rejected before conversion (Number('') === 0 would silently
           // apply the legal 0 V / 0 MHz pair); non-numeric fields too. M22:
@@ -1458,7 +1479,8 @@ export const tuningPage: Page = {
             // rides an offset/0/0 apply (the M22 lock-mode-switch rule).
             const { result, state: fresh } = await api.applySettings(deviceId, isOffsetReset
               ? { gpuFreqOffsetMhz: 0, gpuVoltOffsetV: 0 }
-              : { gpuLock: clamped, gpuFreqOffsetMhz: 0, gpuVoltOffsetV: 0 });
+              : { gpuLock: clamped, gpuFreqOffsetMhz: 0, gpuVoltOffsetV: 0 },
+            gpuApplyTargetOptions(selectedDevice));
             if (fresh) {
               currentState = fresh;
               ctx.store.set({ state: fresh });
@@ -1567,7 +1589,7 @@ export const tuningPage: Page = {
             refreshLockEditor();
             refreshCard('gpuFreqOffsetMhz');
             refreshCard('gpuVoltOffsetV');
-            updateFloating();
+            
             void refreshSysmanLimits(deviceId);
             const zeroOffsetResetApplied = isOffsetReset
               && result.perControl.gpuVoltOffsetV?.ok === true;
@@ -1726,7 +1748,7 @@ export const tuningPage: Page = {
                   onClick: () => setVfCurveMode('offset'),
                 }),
                 el('button', {
-                  class: 'oc-mode-btn oc-vf-mode-btn', dataset: { vfMode: 'curve' }, text: 'Voltage-Frequency Curve',
+                  class: 'oc-mode-btn oc-vf-mode-btn', dataset: { vfMode: 'curve' }, text: 'VF-Curve',
                   onClick: () => setVfCurveMode('curve'),
                 }),
               ]),
@@ -1815,6 +1837,15 @@ export const tuningPage: Page = {
         ]),
       ]);
 
+      // The Battlemage Core Clock keeps Offset / VF Curve beside its title,
+      // matching the compact control layout. Alchemist cards retain their
+      // existing Lock and curve selectors because both modes can be present.
+      if (key === 'gpuFreqOffsetMhz' && vfCurveSupported && !lockSupported) {
+        const modeRow = card.querySelector<HTMLElement>('.oc-freq-mode-row:has(.oc-vf-mode-toggle)');
+        const title = card.querySelector<HTMLElement>('.oc-card-head .card-title');
+        if (modeRow && title) title.after(modeRow);
+      }
+
       valueNodes.set(key, valueText);
       valueInputs.set(key, valueInput);
       driverNodes.set(key, card.querySelector<HTMLElement>('.oc-driver-value') as HTMLElement);
@@ -1834,7 +1865,7 @@ export const tuningPage: Page = {
     };
 
     // M17f (step-4 N1): the Lock-mode PRESENTATION re-applier - SHARED by
-    // setLockMode (the runtime toggle) and renderView (a full re-render
+    // setLockMode (the runtime toggle) and renderTuningSurface (a full re-render
     // rebuilds the surface from the CURRENT module-level lockMode - the
     // volt card + the offset slider hidden + the 'GPU Lock' title flip).
     // The M17f card-replacement toggle's three effects + the Lock-mode
@@ -1906,7 +1937,7 @@ export const tuningPage: Page = {
       applyLockPresentation();
       refreshLockEditor();
       refreshLockReadout();
-      updateFloating();
+      
     };
 
     // M4J (D): the VRAM clock editor card (Advanced section - Battlemage
@@ -1960,7 +1991,11 @@ export const tuningPage: Page = {
         }
       }
       try {
-        await api.ocModeSet(mode, deviceId, deviceKey);
+        // The setter's reply is authoritative for the mode that actually
+        // landed. A caps re-read can still derive the old mode (stale scalar
+        // fallback or a delegated get), which left the toast saying "disabled"
+        // while the segmented control switched back.
+        const setResult = await api.ocModeSet(mode, deviceId, deviceKey);
         // Mode changes invalidate both capability ranges and the live
         // read-back. Pair them from the same device before rendering.
         const [freshCaps, freshState] = await Promise.all([
@@ -1971,7 +2006,7 @@ export const tuningPage: Page = {
         const currentDevice = current.devices.find((device) => device.id === deviceId) ?? null;
         if (current.deviceId !== deviceId || currentDevice !== selectedDevice
           || currentDevice?.deviceKey !== deviceKey) return;
-        ctx.store.set({ ocMode: freshCaps.ocMode ?? mode, caps: freshCaps, state: freshState });
+        ctx.store.set({ ocMode: setResult.ocMode ?? freshCaps.ocMode ?? mode, caps: freshCaps, state: freshState });
         if (mode === 'advanced') {
           toast('info', 'Advanced OC Mode enabled', 'Extended power/temperature limits are now available.');
         } else {
@@ -2087,36 +2122,10 @@ export const tuningPage: Page = {
       });
     }
 
-    // M4-B: the label sits ABOVE the segmented control as a caption -
-    // a label inside the pill made the whole control read as a single
-    // "OC mode" button. The pill now holds only the two choices.
-    // M4-D2 (§8): the row is a FLEX ROW - the "Tuning | Fan Curve" view pill
-    // and the Stock/Advanced OC-mode pill at the SAME HEIGHT (identical
-    // label-over-toggle columns; the ui-verify pin asserts the pills'
-    // getBoundingClientRect tops are equal).
-    // M4-I (E1): the row now keeps the View/OC controls and the compact
-    // Save-as-Profile action. The focused-GPU selector moved into the hero's
-    // ACTIVE GPU rail so the adapter context and its control stay together.
-    // M4-I (E2): the Save-as-Profile action remains a COMPACT btn-sm button
-    // in the row. The old full-width Save-as-Profile CARD is REMOVED.
+    // Keep the OC mode choice for devices that support it and keep the
+    // profile action in the page toolbar. Fan editing now lives directly
+    // inside the Tuning surface, so there is no secondary view switch.
     const modeRow = el('div', { class: 'oc-mode-row' }, [
-      el('div', { class: 'oc-mode-col' }, [
-        el('span', { class: 'oc-mode-label', text: 'VIEW' }),
-        el('div', { class: 'oc-mode-toggle tuning-view-toggle', role: 'group', 'aria-label': 'Tuning view' }, [
-          el('button', {
-            class: `oc-mode-btn tuning-view-btn${view === 'tuning' ? ' active' : ''}`,
-            dataset: { view: 'tuning' },
-            text: 'Tuning',
-            onClick: () => setView('tuning'),
-          }),
-          el('button', {
-            class: `oc-mode-btn tuning-view-btn${view === 'fan' ? ' active' : ''}`,
-            dataset: { view: 'fan' },
-            text: 'Fan Curve',
-            onClick: () => setView('fan'),
-          }),
-        ]),
-      ]),
       // Battlemage has one native tuning surface, so the legacy global
       // Stock/Advanced control is hidden there. Alchemist-only and mixed
       // configurations keep the control when the focused adapter is A-series.
@@ -2137,59 +2146,43 @@ export const tuningPage: Page = {
             ]),
           ])]
         : []),
-      // M4N (C): the profile column holds the TAG ROW - the save button
-      // plus the active-profile tag (a flex row; the tag is absent while no
-      // profile is selected, so the row holds just the button - the
-      // .profile-tag-row flex keeps the button's TOP aligned with the
-      // pills' regardless of the tag, the ui-verify alignment pin).
-      ...(saveProfileBtn ? [el('div', { class: 'oc-mode-col profile-save-col' }, [
-        el('span', { class: 'oc-mode-label', text: 'Profile' }),
-        profileTagRow,
-      ])] : []),
+      el('div', { class: 'profile-save-col' }, [profileTagRow]),
     ]);
-    // M4-H (A3)/M4-I (E2): while the FAN view is active the OC-mode
-    // (Stock/Advanced) column AND the compact Save-as-Profile button of the
-    // shared mode row are HIDDEN - classes on the row + CSS (the View pill
-    // + the GPU selector stay). Applied on the INITIAL fan-view render
-    // (the #/fan redirect path - N6) AND inside setView.
-    const syncModeRowForView = (): void => {
-      modeRow.classList.toggle('fan-hides-oc-column', view === 'fan');
-      modeRow.classList.toggle('fan-hides-save-btn', view === 'fan');
-    };
-    syncModeRowForView();
 
-    // M4-D2 (§8): the view switch re-renders ONLY the sub-view container -
-    // the OC slider state (values/applied - module-level) survives the
-    // round trip and the fan editor's own module state survives too.
-    // M4-H (A3): the OC-mode column hide follows the view (N6 - the class
-    // is also applied on the INITIAL fan-view render above).
-    const setView = (v: 'tuning' | 'fan'): void => {
-      if (view === v) return;
-      view = v;
-      renderView();
-      modeRow.querySelectorAll<HTMLButtonElement>('.tuning-view-btn').forEach((b) => {
-        b.classList.toggle('active', b.dataset.view === view);
-      });
-      syncModeRowForView();
+    const metric = (key: 'fan' | 'temperature' | 'power', label: string): HTMLElement => {
+      const value = el('strong', { class: 'tuning-telemetry-value', text: '—' });
+      if (!tuningTelemetryNodes) tuningTelemetryNodes = { fan: value, temperature: value, power: value };
+      tuningTelemetryNodes[key] = value;
+      return el('div', { class: `tuning-telemetry-metric tuning-telemetry-${key}` }, [
+        el('span', { class: 'tuning-telemetry-label', text: label }),
+        value,
+      ]);
     };
-    const renderView = (): void => {
+    const telemetryStrip = el('section', { class: 'tuning-telemetry-strip', 'aria-label': 'Live GPU telemetry' }, [
+      metric('fan', 'Fan speed'),
+      metric('temperature', 'GPU temperature'),
+      metric('power', 'GPU power'),
+    ]);
+    updateTuningTelemetry(ctx.store.get().latestSample);
+
+    const renderTuningSurface = (): void => {
       if (!viewContainer) return;
       clear(viewContainer);
-      if (view === 'fan') {
-        renderFanEditor(viewContainer, ctx);
-        return;
-      }
+      const controlOrder = ['gpuFreqOffsetMhz', 'vramFreqOffsetGts', 'powerLimitW', 'gpuVoltOffsetV', 'tempLimitC'];
+      const orderedControls = controlOrder.filter((key) => controls.includes(key));
+      fanEditorHost = el('div', { class: 'tuning-fan-editor-host', 'aria-label': 'Fan tuning and hibernation settings' });
+      renderFanEditor(fanEditorHost, ctx);
       const controlSurface = el('section', { class: 'card tuning-control-surface', 'aria-label': 'Tuning Controls' }, [
         el('div', { class: 'tuning-control-heading' }, [
           el('div', {}, [
-            el('span', { class: 'arc-section-kicker', text: 'CONTROL INSPECTOR' }),
             el('h2', { class: 'card-title', text: 'Tuning Controls' }),
+            el('p', { class: 'tuning-control-description', text: 'Only controls and ranges supported by this GPU are shown.' }),
           ]),
-          el('span', { class: 'tuning-control-context', text: 'SELECTED GPU' }),
         ]),
         controls.length > 0
-          ? el('div', { class: 'card-stack oc-stack' }, controls.map(buildCard))
+          ? el('div', { class: 'card-stack oc-stack' }, orderedControls.map(buildCard))
           : el('div', { class: 'card', text: 'No overclocking controls are available on this device.' }),
+        fanEditorHost,
         generalActions,
 
         // M25: the Advanced (VRAM overclocking) section is REMOVED - VRAM
@@ -2211,7 +2204,6 @@ export const tuningPage: Page = {
       applyLockPresentation();
       refreshLockReadout();
       refreshLockEditor();
-      updateFloating();
       void refreshSysmanLimits(ctx.store.get().deviceId);
       void refreshSysmanVoltageOffset(ctx, ctx.store.get().deviceId);
     };
@@ -2230,7 +2222,8 @@ export const tuningPage: Page = {
       const live = ctx.store.get();
       const deviceId = live.deviceId;
       if (deviceId === null || !caps) return;
-      const requestedDeviceKey = live.devices.find((device) => device.id === deviceId)?.deviceKey ?? null;
+      const selectedDevice = live.devices.find((device) => device.id === deviceId) ?? null;
+      const requestedDeviceKey = selectedDevice?.deviceKey ?? null;
       const applyGeneration = vfCurvePageGeneration;
       const applyContextIsCurrent = (): boolean => {
         const current = ctx.store.get();
@@ -2304,47 +2297,48 @@ export const tuningPage: Page = {
         return;
       }
       const deviceName = caps.deviceName || 'this GPU';
-      // M3-C review F4: the waiver gate reads the LIVE store's caps, never
-      // the render-closure caps - an in-session acceptance (this session's
-      // waiver-accept) must not re-prompt on the next apply. The closure
-      // caps lag until a re-render (the post-apply store update is a
-      // content-only caps change that does not re-render the page).
-      // M17 (B50-class): OC-locked devices (overclockingSupported === false)
-      // have no waiver - the gate is skipped (uniform with every apply path;
-      // unreachable today on no-OC devices, but the guard keeps the whole
-      // waiver surface uniform).
-      const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, deviceName, live.caps?.overclockingSupported !== false);
-      if (!applyContextIsCurrent()) return;
-      if (decision === 'cancelled') {
-        toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
-        return;
-      }
-      // M4-A: an in-page acceptance patches the store caps IMMEDIATELY (not
-      // only post-apply) - the dashboard's waiver health row flips green on
-      // the next caps-change re-render, and stays green even if the apply
-      // below then fails/throws.
-      {
-        const cur = ctx.store.get();
-        if (cur.caps && cur.caps.waiverAccepted !== true) {
-          ctx.store.set({ caps: { ...cur.caps, waiverAccepted: true } });
-        }
-      }
-      // M3-C-D: no per-apply extended-range confirm - the mode gate in main
-      // is the honesty (stock refuses, advanced already warned at enable).
-      // M2C-C: a non-elevated product app delegates the apply to the
-      // elevated self-worker (one UAC prompt) - explain BEFORE the prompt.
-      // M4-D2: the distributed EXE requests administrator access; retain the
-      // worker path for development and legacy non-elevated sessions.
-      if (ctx.store.get().workerApply && !ctx.store.get().elevated) {
-        toast('info', 'Administrator approval needed', ELEVATION_TOAST_TEXT);
-      }
+      let retryAfterWaiver = false;
+      setBusy(true);
       try {
+        // M3-C review F4: the waiver gate reads the LIVE store's caps, never
+        // the render-closure caps - an in-session acceptance (this session's
+        // waiver-accept) must not re-prompt on the next apply. The closure
+        // caps lag until a re-render (the post-apply store update is a
+        // content-only caps change that does not re-render the page).
+        // M17 (B50-class): OC-locked devices (overclockingSupported === false)
+        // have no waiver - the gate is skipped (uniform with every apply path;
+        // unreachable today on no-OC devices, but the guard keeps the whole
+        // waiver surface uniform).
+        const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, deviceName, live.caps?.overclockingSupported !== false);
+        if (!applyContextIsCurrent()) return;
+        if (decision === 'cancelled') {
+          toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
+          return;
+        }
+        // M4-A: an in-page acceptance patches the store caps IMMEDIATELY (not
+        // only post-apply) - the dashboard's waiver health row flips green on
+        // the next caps-change re-render, and stays green even if the apply
+        // below then fails/throws.
+        {
+          const cur = ctx.store.get();
+          if (cur.caps && cur.caps.waiverAccepted !== true) {
+            ctx.store.set({ caps: { ...cur.caps, waiverAccepted: true } });
+          }
+        }
+        // M3-C-D: no per-apply extended-range confirm - the mode gate in main
+        // is the honesty (stock refuses, advanced already warned at enable).
+        // M2C-C: a non-elevated product app delegates the apply to the
+        // elevated self-worker (one UAC prompt) - explain BEFORE the prompt.
+        // M4-D2: the distributed EXE requests administrator access; retain the
+        // worker path for development and legacy non-elevated sessions.
+        if (ctx.store.get().workerApply && !ctx.store.get().elevated) {
+          toast('info', 'Administrator approval needed', ELEVATION_TOAST_TEXT);
+        }
         // M2b-B no-op suppression compares against the PRE-apply state: a
         // control whose value already equals the driver read-back stays
         // silent on success.
         const before = currentState;
-        setBusy(true);
-        const { result, state: fresh } = await api.applySettings(deviceId, settings);
+        const { result, state: fresh } = await api.applySettings(deviceId, settings, gpuApplyTargetOptions(selectedDevice));
         if (!applyContextIsCurrent()) return;
         // M1 risk note: IGS may change OC state - refresh after every apply.
         // M3-C-F: EVERY card refreshes from the fresh state in place (the
@@ -2352,7 +2346,7 @@ export const tuningPage: Page = {
         // M3-C review F2: only store a NON-NULL fresh state - a refusal
         // envelope's null state must never null the store's device state
         // (the page would render 'Loading device capabilities…' forever and
-        // updateFloating would throw on the null state).
+        // The refusal envelope may not contain a fresh state.
         if (fresh) {
           currentState = fresh;
           // Update our native comparison references before publishing our own
@@ -2409,16 +2403,28 @@ export const tuningPage: Page = {
             const driverAdjustedCurve = key === 'vfCurve'
               && per.errorCode === 'driver-adjusted';
             const driverKeptCurve = key === 'vfCurve' && per.errorCode === 'driver-noop';
-            toast(
-              driverAdjustedCurve || driverKeptCurve ? 'warn' : 'error',
-              driverKeptCurve ? 'Driver kept the current VF curve' : driverAdjustedCurve ? 'Driver adjusted VF curve' : `${CONTROL_LABELS[key] ?? key} failed`,
-              driverKeptCurve ? 'The driver left the LIVE curve unchanged. Your requested draft is kept; it has not been confirmed as applied.' : applyFailureText(per, key),
+            let keptNotice = 'Intel kept the current curve';
+            if (driverKeptCurve && isValidNativeVfCurve(per.readBackCurve, curveBounds)) {
+              const requested = settings.vfCurve;
+              const baseline = settings.vfCurveBaseline ?? before?.vfCurve;
+              if (requested && baseline && requested.length === baseline.length && requested.length === per.readBackCurve.length
+                && requested.every((point, index) => point.voltageV === baseline[index].voltageV)) {
+                const edited = requested.flatMap((point, index) => point.freqMhz !== baseline[index].freqMhz ? [index] : []);
+                const kept = new Set(edited.map(index => per.readBackCurve![index].freqMhz));
+                if (kept.size === 1) keptNotice = `Intel kept ${[...kept][0]} MHz`;
+              }
+            }
+            if (!driverKeptCurve) toast(
+              driverAdjustedCurve ? 'warn' : 'error',
+              driverAdjustedCurve ? 'Driver adjusted VF curve' : `${CONTROL_LABELS[key] ?? key} failed`,
+              applyFailureText(per, key),
             );
             setCardResult(
               key === 'vfCurve' ? 'gpuFreqOffsetMhz' : key,
               false,
-              driverKeptCurve ? 'Draft kept; LIVE unchanged' : driverAdjustedCurve ? 'Draft kept; LIVE differs' : 'Not applied',
-              driverKeptCurve || driverAdjustedCurve,
+              driverKeptCurve ? keptNotice : driverAdjustedCurve ? 'Draft kept; LIVE differs' : 'Not applied',
+              driverKeptCurve ? 'neutral' : driverAdjustedCurve,
+              driverKeptCurve ? 'Intel’s driver kept the current LIVE curve. Your requested draft is still editable; it has not been confirmed as applied.' : undefined,
             );
           } else {
             // B5(a): a control that applied becomes the APPLIED reference -
@@ -2459,29 +2465,25 @@ export const tuningPage: Page = {
             // switches the 8974 driver into a lock mode, it never unlocks),
             // so the offset applies can no longer reach this reference; the
             // LOCK editor's own apply path owns the appliedLock sync.
-            if (!isNoopApply(key, settings, before as DeviceState)) {
+            const adjustedVfCurve = key === 'vfCurve' && (per.normalized === true || per.alreadyActive === true);
+            if (!isNoopApply(key, settings, before as DeviceState) && !adjustedVfCurve) {
               const detail = typeof wanted === 'number' && range
                 ? formatControlValue(wanted, key, range, caps.deviceName)
                 : '';
               toast(
-                key === 'vfCurve' && per.alreadyActive === true ? 'warn' : 'success',
-                key === 'vfCurve' && per.alreadyActive === true ? 'VF curve already active (driver adjusted)' : key === 'vfCurve' && per.normalized === true
-                  ? 'VF curve applied (driver adjusted)'
-                  : `${CONTROL_LABELS[key] ?? key} applied`,
-                key === 'vfCurve' && per.alreadyActive === true ? 'This request matches a previously verified driver adjustment that is still active. The editor shows the LIVE curve.' : key === 'vfCurve' && per.normalized === true
-                  ? 'The driver adjusted the requested curve. The editor now shows the LIVE curve.'
-                  : detail,
+                'success',
+                `${CONTROL_LABELS[key] ?? key} applied`,
+                detail,
               );
             }
             setCardResult(
               key === 'vfCurve' ? 'gpuFreqOffsetMhz' : key,
               !(key === 'vfCurve' && per.alreadyActive === true),
-              key === 'vfCurve' && per.alreadyActive === true ? 'Already active (driver adjusted)' : isNoopApply(key, settings, before as DeviceState)
+              key === 'vfCurve' && per.alreadyActive === true ? 'Already active · Adjusted by Intel' : adjustedVfCurve
+                ? 'Applied · Adjusted by Intel' : isNoopApply(key, settings, before as DeviceState)
                 ? 'No change'
-                : key === 'vfCurve' && per.normalized === true
-                  ? 'Applied (driver adjusted)'
-                  : 'Applied',
-              key === 'vfCurve' && per.alreadyActive === true,
+                : 'Applied',
+              key === 'vfCurve' && per.alreadyActive === true ? 'neutral' : false,
             );
             // per.ok && no-op -> silent (M2b-B): nothing changed, no toast.
           }
@@ -2494,7 +2496,7 @@ export const tuningPage: Page = {
         for (const key of controls) refreshCard(key);
         refreshLockReadout();
         refreshLockEditor();
-        updateFloating();
+        
         // M17g: the PL2 '(set)' session state - fed ONLY from the apply
         // envelope's pl2Note (the note fires on EVERY W-unit powerLimitW
         // apply in both modes; a payload without powerLimitW never emits).
@@ -2548,7 +2550,7 @@ export const tuningPage: Page = {
               if (cur3.caps && cur3.caps.waiverAccepted !== true) {
                 ctx.store.set({ caps: { ...cur3.caps, waiverAccepted: true } });
               }
-              return apply(ctx);
+              retryAfterWaiver = true;
             }
           }
         } else {
@@ -2561,7 +2563,7 @@ export const tuningPage: Page = {
         // message (Apply requires administrator approval).
         const msg = err instanceof Error ? err.message : String(err);
         ctx.store.set({ lastApply: { ok: false, at: Date.now(), detail: msg } });
-        if (only !== undefined) setCardResult(only, false, 'Not applied');
+        if (only !== undefined) setCardResult(only === 'vfCurve' ? 'gpuFreqOffsetMhz' : only, false, 'Not applied');
         if (msg.includes('administrator approval') || msg.includes('Administrator approval')) {
           toast('error', 'Apply requires administrator approval', msg);
         } else {
@@ -2570,16 +2572,16 @@ export const tuningPage: Page = {
       } finally {
         if (applyContextIsCurrent()) {
           setBusy(false);
-          updateFloating();
+          
         }
       }
+      // Release busy before re-entering, retaining the original card scope.
+      if (retryAfterWaiver && applyContextIsCurrent()) await apply(ctx, only);
     };
 
-    const tuningSubtitle = view === 'fan'
-      ? 'Edit the fan curve or switch the fan mode. Changes apply on demand.'
-      : (controls.length === 0
-        ? 'This GPU does not expose any overclocking controls (locked or telemetry-only).'
-        : 'Values are clamped to the range reported by this GPU. Changes apply on demand - nothing is applied until you press Apply.');
+    const tuningSubtitle = controls.length === 0
+      ? 'Review live GPU telemetry and fan behavior for this device.'
+      : 'Adjust GPU limits and fan behavior. Changes apply when you choose Apply.';
     // Keep focused-GPU selection in the page hero, alongside the active
     // adapter context. The shared selector still owns stable physical-GPU
     // routing and intentionally disappears for a single-device session.
@@ -2596,61 +2598,43 @@ export const tuningPage: Page = {
       ]),
     ]);
 
-    // M4-D2 (§8): the page shell (title + subtitle + the pill row) renders
-    // once; the ACTIVE VIEW's content lives in the view container below
-    // (renderView builds it - the OC controls or the fan curve editor).
+    // The tuning controls and fan editor now share a single page surface.
     viewContainer = el('div', { class: 'tuning-view' });
     container.append(
       tuningHero,
-      // M4-A (correction): the waiver STATUS lives ONLY in the dashboard
-      // GPU Status card - this page keeps no waiver UI beyond the apply-time
-      // dialog gate (ensureWaiver above). The pill row renders for every
-      // device: the Fan Curve view must stay reachable on no-OC devices.
       el('div', { class: 'arc-page-toolbar' }, [modeRow]),
+      telemetryStrip,
       viewContainer,
     );
-    renderView();
+    renderTuningSurface();
   },
 
   onUpdate(container: HTMLElement, ctx: PageContext) {
     const s = ctx.store.get();
-    // M4-D2 (§8): the fan sub-view only tracks the RPM marker + readout on
-    // telemetry ticks (the editor's own redraw handles its content - same
-    // contract as the removed Fan page's onUpdate). Handle it BEFORE the
-    // capability-surface branch: an OC-mode refresh changes the scalar
-    // ranges, but must not rebuild an unapplied fan-curve draft.
-    if (view === 'fan') {
-      const s2 = ctx.store.get();
-      const fanSnapshotUnavailable = !s2.caps || !s2.state;
-      if (viewContainer) {
-        viewContainer.toggleAttribute('inert', fanSnapshotUnavailable);
-        viewContainer.setAttribute('aria-busy', String(fanSnapshotUnavailable));
-        viewContainer.style.opacity = fanSnapshotUnavailable ? '0.65' : '';
-      }
-      // Preserve the editor's draft while the mode-refresh readback is
-      // unavailable, but make the stale controls inert until recovery.
-      if (fanSnapshotUnavailable) return;
-      updateFanReadout(container, ctx);
-      // M24: an external fan-state push changed the store -> re-render the
-      // fan editor (the editor is rebuilt from the fresh store). The user's
-      // own apply finds them equal -> no re-render (the signature is
-      // refreshed inside applyFan BEFORE the store.set).
-      const currentSig = currentFanSignature();
-      const storeSig = fanStateSignature(s2.state);
-      if (currentSig !== null && currentSig !== storeSig && viewContainer) {
-        clear(viewContainer);
-        renderFanEditor(viewContainer, ctx);
-      }
-      return;
+    updateTuningTelemetry(s.latestSample);
+    const snapshotUnavailable = !s.caps || !s.state;
+    if (viewContainer) {
+      viewContainer.toggleAttribute('inert', snapshotUnavailable);
+      viewContainer.setAttribute('aria-busy', String(snapshotUnavailable));
+      viewContainer.style.opacity = snapshotUnavailable ? '0.65' : '';
     }
+    if (snapshotUnavailable) return;
     // M3-C-F: a mode toggle / featureset swap changed the capability
     // SURFACE - full re-render (ranges/units change; the in-place refresh
     // cannot). Content comparison: the page's own post-apply caps re-set
-    // ({ ...caps, waiverAccepted }) is NOT a surface change. The re-render
-    // keeps the current sub-view (module-level `view`).
-    if (ocCapsChanged(lastRenderedCaps, s.caps)) {
+    // ({ ...caps, waiverAccepted }) is NOT a surface change.
+    if (ocCapsChanged(lastRenderedCaps, s.caps) || lastRenderedOcMode !== s.ocMode) {
       tuningPage.render(container, ctx);
       return;
+    }
+    updateFanReadout(container, ctx);
+    // M24: preserve an in-progress curve draft on the user's own apply, but
+    // refresh the embedded editor when an external fan-state push changes it.
+    const currentSig = currentFanSignature();
+    const storeSig = fanStateSignature(s.state);
+    if (currentSig !== null && currentSig !== storeSig && fanEditorHost) {
+      renderFanEditor(fanEditorHost, ctx);
+      updateFanReadout(container, ctx);
     }
     // M3-C-F: refresh the cards IN PLACE when the store's state slot changed
     // (an apply / profile load / external state change while this page is
@@ -2699,7 +2683,7 @@ export const tuningPage: Page = {
       // semantics follow the fresh driver lock as well.
       refreshLockReadout();
       refreshLockEditor();
-      updateFloating();
+      
     }
   },
 };

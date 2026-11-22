@@ -1,0 +1,4647 @@
+{
+  "schema": 1,
+  "target": "windows-msvc-x64",
+  "source": "src/main/backend/igcl-bindings.js",
+  "sourceSha256": "3821d8b185c762ebe2c7a961637a8c1ed87e91c2787763f03e37411dc56dda3b",
+  "koffiVersion": "2.16.3",
+  "primaryHeader": {
+    "commit": "52c15725b52e372ca53a9896976cf08f47a39053",
+    "url": "https://raw.githubusercontent.com/intel/drivers.gpu.control-library/52c15725b52e372ca53a9896976cf08f47a39053/include/igcl_api.h",
+    "sha256": "8a60349ac2c5cbbc24dcfd68529881c07bff4ccc28327a4ea4221e807af37c26",
+    "auditScope": "type/function presence, function arity, __cdecl, GPU lock by-value; source legacy storage layouts remain authoritative"
+  },
+  "storageNotes": [
+    "C bool is represented by u8 to accept all native bit patterns safely.",
+    "No unions are registered in this source revision. ctl_oc_telemetry_item_t.value retains double storage for the official ctl_data_value_t union.",
+    "3D feature Value fields retain source byte-array storage for official property unions; this does not infer active union members.",
+    "Source void pointers remain raw pointers. Header-specific pointee identities are not inferred.",
+    "Definitions declare ABI only: no DLL load, function invocation, frontend exposure, initialization or hardware validation."
+  ],
+  "expectedSizes": {
+    "ctl_application_id_t": 16,
+    "ctl_init_args_t": 36,
+    "ctl_firmware_version_t": 24,
+    "ctl_device_adapter_properties_t": 320,
+    "ctl_oc_control_info_t": 48,
+    "ctl_oc_properties_t": 440,
+    "ctl_oc_vf_pair_t": 24,
+    "ctl_fan_speed_t": 16,
+    "ctl_fan_temp_speed_t": 28,
+    "ctl_fan_speed_table_t": 908,
+    "ctl_fan_properties_t": 24,
+    "ctl_fan_config_t": 936,
+    "ctl_oc_telemetry_item_t": 24,
+    "ctl_psu_info_t": 56,
+    "ctl_power_telemetry_t": 1024,
+    "ctl_power_telemetry_v2_t": 1016,
+    "ctl_voltage_frequency_point_t": 8,
+    "ctl_pci_address_t": 24,
+    "ctl_pci_speed_t": 24,
+    "ctl_pci_properties_t": 64,
+    "ctl_3d_feature_caps_t": 24,
+    "ctl_3d_feature_details_t": 72,
+    "ctl_3d_feature_getset_t": 56,
+    "ctl_temp_properties_t": 24,
+    "ctl_display_timing_t": 64,
+    "ctl_display_properties_t": 200,
+    "ctl_wire_format_t": 16,
+    "ctl_get_set_wire_format_config_t": 92,
+    "ctl_display_settings_t": 148,
+    "ctl_scaling_caps_t": 12,
+    "ctl_scaling_settings_t": 28,
+    "ctl_retro_scaling_caps_t": 12,
+    "ctl_retro_scaling_settings_t": 12,
+    "ctl_intel_arc_sync_monitor_params_t": 24,
+    "ctl_intel_arc_sync_profile_params_t": 28,
+    "ctl_panel_descriptor_access_args_t": 32,
+    "ctl_edid_management_args_t": 40
+  },
+  "types": {
+    "ctl_result_t": {
+      "name": "uint32_t",
+      "kind": "UInt32",
+      "size": 4,
+      "alignment": 4,
+      "declaration": "alias"
+    },
+    "ctl_application_id_t": {
+      "name": "ctl_application_id_t",
+      "kind": "Record",
+      "size": 16,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Data1",
+          "rustName": "Data1",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Data2",
+          "rustName": "Data2",
+          "offset": 4,
+          "type": {
+            "name": "uint16_t",
+            "kind": "UInt16",
+            "size": 2,
+            "alignment": 2
+          }
+        },
+        {
+          "name": "Data3",
+          "rustName": "Data3",
+          "offset": 6,
+          "type": {
+            "name": "uint16_t",
+            "kind": "UInt16",
+            "size": 2,
+            "alignment": 2
+          }
+        },
+        {
+          "name": "Data4",
+          "rustName": "Data4",
+          "offset": 8,
+          "type": {
+            "name": "uint8_t[8]",
+            "kind": "Array",
+            "size": 8,
+            "alignment": 1,
+            "length": 8,
+            "element": {
+              "name": "uint8_t",
+              "kind": "UInt8",
+              "size": 1,
+              "alignment": 1
+            }
+          }
+        }
+      ]
+    },
+    "ctl_init_args_t": {
+      "name": "ctl_init_args_t",
+      "kind": "Record",
+      "size": 36,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "AppVersion",
+          "rustName": "AppVersion",
+          "offset": 8,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "flags",
+          "rustName": "flags",
+          "offset": 12,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "SupportedVersion",
+          "rustName": "SupportedVersion",
+          "offset": 16,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "ApplicationUID",
+          "rustName": "ApplicationUID",
+          "offset": 20,
+          "type": {
+            "name": "ctl_application_id_t",
+            "kind": "Record",
+            "size": 16,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_firmware_version_t": {
+      "name": "ctl_firmware_version_t",
+      "kind": "Record",
+      "size": 24,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "major_version",
+          "rustName": "major_version",
+          "offset": 0,
+          "type": {
+            "name": "uint64_t",
+            "kind": "UInt64",
+            "size": 8,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "minor_version",
+          "rustName": "minor_version",
+          "offset": 8,
+          "type": {
+            "name": "uint64_t",
+            "kind": "UInt64",
+            "size": 8,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "build_number",
+          "rustName": "build_number",
+          "offset": 16,
+          "type": {
+            "name": "uint64_t",
+            "kind": "UInt64",
+            "size": 8,
+            "alignment": 8
+          }
+        }
+      ]
+    },
+    "ctl_adapter_bdf_t": {
+      "name": "ctl_adapter_bdf_t",
+      "kind": "Record",
+      "size": 3,
+      "alignment": 1,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "bus",
+          "rustName": "bus",
+          "offset": 0,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "device",
+          "rustName": "device",
+          "offset": 1,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "function",
+          "rustName": "function",
+          "offset": 2,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        }
+      ]
+    },
+    "ctl_device_adapter_properties_t": {
+      "name": "ctl_device_adapter_properties_t",
+      "kind": "Record",
+      "size": 320,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "pDeviceID",
+          "rustName": "pDeviceID",
+          "offset": 8,
+          "type": {
+            "name": "void *",
+            "kind": "Pointer",
+            "size": 8,
+            "alignment": 8,
+            "target": {
+              "name": "void",
+              "kind": "Void",
+              "size": 0,
+              "alignment": 0
+            }
+          }
+        },
+        {
+          "name": "device_id_size",
+          "rustName": "device_id_size",
+          "offset": 16,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "device_type",
+          "rustName": "device_type",
+          "offset": 20,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "supported_subfunction_flags",
+          "rustName": "supported_subfunction_flags",
+          "offset": 24,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "driver_version",
+          "rustName": "driver_version",
+          "offset": 32,
+          "type": {
+            "name": "uint64_t",
+            "kind": "UInt64",
+            "size": 8,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "firmware_version",
+          "rustName": "firmware_version",
+          "offset": 40,
+          "type": {
+            "name": "ctl_firmware_version_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "pci_vendor_id",
+          "rustName": "pci_vendor_id",
+          "offset": 64,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "pci_device_id",
+          "rustName": "pci_device_id",
+          "offset": 68,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "rev_id",
+          "rustName": "rev_id",
+          "offset": 72,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "num_eus_per_sub_slice",
+          "rustName": "num_eus_per_sub_slice",
+          "offset": 76,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "num_sub_slices_per_slice",
+          "rustName": "num_sub_slices_per_slice",
+          "offset": 80,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "num_slices",
+          "rustName": "num_slices",
+          "offset": 84,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "name",
+          "rustName": "name",
+          "offset": 88,
+          "type": {
+            "name": "char[100]",
+            "kind": "Array",
+            "size": 100,
+            "alignment": 1,
+            "length": 100,
+            "element": {
+              "name": "char",
+              "kind": "Int8",
+              "size": 1,
+              "alignment": 1
+            }
+          }
+        },
+        {
+          "name": "graphics_adapter_properties",
+          "rustName": "graphics_adapter_properties",
+          "offset": 188,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Frequency",
+          "rustName": "Frequency",
+          "offset": 192,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "pci_subsys_id",
+          "rustName": "pci_subsys_id",
+          "offset": 196,
+          "type": {
+            "name": "uint16_t",
+            "kind": "UInt16",
+            "size": 2,
+            "alignment": 2
+          }
+        },
+        {
+          "name": "pci_subsys_vendor_id",
+          "rustName": "pci_subsys_vendor_id",
+          "offset": 198,
+          "type": {
+            "name": "uint16_t",
+            "kind": "UInt16",
+            "size": 2,
+            "alignment": 2
+          }
+        },
+        {
+          "name": "adapter_bdf",
+          "rustName": "adapter_bdf",
+          "offset": 200,
+          "type": {
+            "name": "ctl_adapter_bdf_t",
+            "kind": "Record",
+            "size": 3,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "num_xe_cores",
+          "rustName": "num_xe_cores",
+          "offset": 204,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "reserved",
+          "rustName": "reserved",
+          "offset": 208,
+          "type": {
+            "name": "uint8_t[108]",
+            "kind": "Array",
+            "size": 108,
+            "alignment": 1,
+            "length": 108,
+            "element": {
+              "name": "uint8_t",
+              "kind": "UInt8",
+              "size": 1,
+              "alignment": 1
+            }
+          }
+        }
+      ]
+    },
+    "ctl_oc_control_info_t": {
+      "name": "ctl_oc_control_info_t",
+      "kind": "Record",
+      "size": 48,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "bSupported",
+          "rustName": "bSupported",
+          "offset": 0,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "bRelative",
+          "rustName": "bRelative",
+          "offset": 1,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "bReference",
+          "rustName": "bReference",
+          "offset": 2,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "units",
+          "rustName": "units",
+          "offset": 4,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "min",
+          "rustName": "min",
+          "offset": 8,
+          "type": {
+            "name": "double",
+            "kind": "Float64",
+            "size": 8,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "max",
+          "rustName": "max",
+          "offset": 16,
+          "type": {
+            "name": "double",
+            "kind": "Float64",
+            "size": 8,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "step",
+          "rustName": "step",
+          "offset": 24,
+          "type": {
+            "name": "double",
+            "kind": "Float64",
+            "size": 8,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "Default",
+          "rustName": "Default",
+          "offset": 32,
+          "type": {
+            "name": "double",
+            "kind": "Float64",
+            "size": 8,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "reference",
+          "rustName": "reference",
+          "offset": 40,
+          "type": {
+            "name": "double",
+            "kind": "Float64",
+            "size": 8,
+            "alignment": 8
+          }
+        }
+      ]
+    },
+    "ctl_oc_properties_t": {
+      "name": "ctl_oc_properties_t",
+      "kind": "Record",
+      "size": 440,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "bSupported",
+          "rustName": "bSupported",
+          "offset": 5,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "gpuFrequencyOffset",
+          "rustName": "gpuFrequencyOffset",
+          "offset": 8,
+          "type": {
+            "name": "ctl_oc_control_info_t",
+            "kind": "Record",
+            "size": 48,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuVoltageOffset",
+          "rustName": "gpuVoltageOffset",
+          "offset": 56,
+          "type": {
+            "name": "ctl_oc_control_info_t",
+            "kind": "Record",
+            "size": 48,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramFrequencyOffset",
+          "rustName": "vramFrequencyOffset",
+          "offset": 104,
+          "type": {
+            "name": "ctl_oc_control_info_t",
+            "kind": "Record",
+            "size": 48,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramVoltageOffset",
+          "rustName": "vramVoltageOffset",
+          "offset": 152,
+          "type": {
+            "name": "ctl_oc_control_info_t",
+            "kind": "Record",
+            "size": 48,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "powerLimit",
+          "rustName": "powerLimit",
+          "offset": 200,
+          "type": {
+            "name": "ctl_oc_control_info_t",
+            "kind": "Record",
+            "size": 48,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "temperatureLimit",
+          "rustName": "temperatureLimit",
+          "offset": 248,
+          "type": {
+            "name": "ctl_oc_control_info_t",
+            "kind": "Record",
+            "size": 48,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramMemSpeedLimit",
+          "rustName": "vramMemSpeedLimit",
+          "offset": 296,
+          "type": {
+            "name": "ctl_oc_control_info_t",
+            "kind": "Record",
+            "size": 48,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuVFCurveVoltageLimit",
+          "rustName": "gpuVFCurveVoltageLimit",
+          "offset": 344,
+          "type": {
+            "name": "ctl_oc_control_info_t",
+            "kind": "Record",
+            "size": 48,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuVFCurveFrequencyLimit",
+          "rustName": "gpuVFCurveFrequencyLimit",
+          "offset": 392,
+          "type": {
+            "name": "ctl_oc_control_info_t",
+            "kind": "Record",
+            "size": 48,
+            "alignment": 8
+          }
+        }
+      ]
+    },
+    "ctl_oc_vf_pair_t": {
+      "name": "ctl_oc_vf_pair_t",
+      "kind": "Record",
+      "size": 24,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "Voltage",
+          "rustName": "Voltage",
+          "offset": 8,
+          "type": {
+            "name": "double",
+            "kind": "Float64",
+            "size": 8,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "Frequency",
+          "rustName": "Frequency",
+          "offset": 16,
+          "type": {
+            "name": "double",
+            "kind": "Float64",
+            "size": 8,
+            "alignment": 8
+          }
+        }
+      ]
+    },
+    "ctl_fan_speed_t": {
+      "name": "ctl_fan_speed_t",
+      "kind": "Record",
+      "size": 16,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "speed",
+          "rustName": "speed",
+          "offset": 8,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "units",
+          "rustName": "units",
+          "offset": 12,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_fan_temp_speed_t": {
+      "name": "ctl_fan_temp_speed_t",
+      "kind": "Record",
+      "size": 28,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "temperature",
+          "rustName": "temperature",
+          "offset": 8,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "speed",
+          "rustName": "speed",
+          "offset": 12,
+          "type": {
+            "name": "ctl_fan_speed_t",
+            "kind": "Record",
+            "size": 16,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_fan_speed_table_t": {
+      "name": "ctl_fan_speed_table_t",
+      "kind": "Record",
+      "size": 908,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "numPoints",
+          "rustName": "numPoints",
+          "offset": 8,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "table",
+          "rustName": "table",
+          "offset": 12,
+          "type": {
+            "name": "ctl_fan_temp_speed_t[32]",
+            "kind": "Array",
+            "size": 896,
+            "alignment": 4,
+            "length": 32,
+            "element": {
+              "name": "ctl_fan_temp_speed_t",
+              "kind": "Record",
+              "size": 28,
+              "alignment": 4
+            }
+          }
+        }
+      ]
+    },
+    "ctl_fan_properties_t": {
+      "name": "ctl_fan_properties_t",
+      "kind": "Record",
+      "size": 24,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "canControl",
+          "rustName": "canControl",
+          "offset": 5,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "supportedModes",
+          "rustName": "supportedModes",
+          "offset": 8,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "supportedUnits",
+          "rustName": "supportedUnits",
+          "offset": 12,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "maxRPM",
+          "rustName": "maxRPM",
+          "offset": 16,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "maxPoints",
+          "rustName": "maxPoints",
+          "offset": 20,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_fan_config_t": {
+      "name": "ctl_fan_config_t",
+      "kind": "Record",
+      "size": 936,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "mode",
+          "rustName": "mode",
+          "offset": 8,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "speedFixed",
+          "rustName": "speedFixed",
+          "offset": 12,
+          "type": {
+            "name": "ctl_fan_speed_t",
+            "kind": "Record",
+            "size": 16,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "speedTable",
+          "rustName": "speedTable",
+          "offset": 28,
+          "type": {
+            "name": "ctl_fan_speed_table_t",
+            "kind": "Record",
+            "size": 908,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_oc_telemetry_item_t": {
+      "name": "ctl_oc_telemetry_item_t",
+      "kind": "Record",
+      "size": 24,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "bSupported",
+          "rustName": "bSupported",
+          "offset": 0,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "units",
+          "rustName": "units",
+          "offset": 4,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "type",
+          "rustName": "r#type",
+          "offset": 8,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "value",
+          "rustName": "value",
+          "offset": 16,
+          "type": {
+            "name": "double",
+            "kind": "Float64",
+            "size": 8,
+            "alignment": 8
+          }
+        }
+      ]
+    },
+    "ctl_psu_info_t": {
+      "name": "ctl_psu_info_t",
+      "kind": "Record",
+      "size": 56,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "bSupported",
+          "rustName": "bSupported",
+          "offset": 0,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "psuType",
+          "rustName": "psuType",
+          "offset": 4,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "energyCounter",
+          "rustName": "energyCounter",
+          "offset": 8,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "voltage",
+          "rustName": "voltage",
+          "offset": 32,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        }
+      ]
+    },
+    "ctl_power_telemetry_t": {
+      "name": "ctl_power_telemetry_t",
+      "kind": "Record",
+      "size": 1024,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "timeStamp",
+          "rustName": "timeStamp",
+          "offset": 8,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuEnergyCounter",
+          "rustName": "gpuEnergyCounter",
+          "offset": 32,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuVoltage",
+          "rustName": "gpuVoltage",
+          "offset": 56,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuCurrentClockFrequency",
+          "rustName": "gpuCurrentClockFrequency",
+          "offset": 80,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuCurrentTemperature",
+          "rustName": "gpuCurrentTemperature",
+          "offset": 104,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "globalActivityCounter",
+          "rustName": "globalActivityCounter",
+          "offset": 128,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "renderComputeActivityCounter",
+          "rustName": "renderComputeActivityCounter",
+          "offset": 152,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "mediaActivityCounter",
+          "rustName": "mediaActivityCounter",
+          "offset": 176,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuPowerLimited",
+          "rustName": "gpuPowerLimited",
+          "offset": 200,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "gpuTemperatureLimited",
+          "rustName": "gpuTemperatureLimited",
+          "offset": 201,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "gpuCurrentLimited",
+          "rustName": "gpuCurrentLimited",
+          "offset": 202,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "gpuVoltageLimited",
+          "rustName": "gpuVoltageLimited",
+          "offset": 203,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "gpuUtilizationLimited",
+          "rustName": "gpuUtilizationLimited",
+          "offset": 204,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "vramEnergyCounter",
+          "rustName": "vramEnergyCounter",
+          "offset": 208,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramVoltage",
+          "rustName": "vramVoltage",
+          "offset": 232,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramCurrentClockFrequency",
+          "rustName": "vramCurrentClockFrequency",
+          "offset": 256,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramCurrentEffectiveFrequency",
+          "rustName": "vramCurrentEffectiveFrequency",
+          "offset": 280,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramReadBandwidthCounter",
+          "rustName": "vramReadBandwidthCounter",
+          "offset": 304,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramWriteBandwidthCounter",
+          "rustName": "vramWriteBandwidthCounter",
+          "offset": 328,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramCurrentTemperature",
+          "rustName": "vramCurrentTemperature",
+          "offset": 352,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramPowerLimited",
+          "rustName": "vramPowerLimited",
+          "offset": 376,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "vramTemperatureLimited",
+          "rustName": "vramTemperatureLimited",
+          "offset": 377,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "vramCurrentLimited",
+          "rustName": "vramCurrentLimited",
+          "offset": 378,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "vramVoltageLimited",
+          "rustName": "vramVoltageLimited",
+          "offset": 379,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "vramUtilizationLimited",
+          "rustName": "vramUtilizationLimited",
+          "offset": 380,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "totalCardEnergyCounter",
+          "rustName": "totalCardEnergyCounter",
+          "offset": 384,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "psu",
+          "rustName": "psu",
+          "offset": 408,
+          "type": {
+            "name": "ctl_psu_info_t[5]",
+            "kind": "Array",
+            "size": 280,
+            "alignment": 8,
+            "length": 5,
+            "element": {
+              "name": "ctl_psu_info_t",
+              "kind": "Record",
+              "size": 56,
+              "alignment": 8
+            }
+          }
+        },
+        {
+          "name": "fanSpeed",
+          "rustName": "fanSpeed",
+          "offset": 688,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t[5]",
+            "kind": "Array",
+            "size": 120,
+            "alignment": 8,
+            "length": 5,
+            "element": {
+              "name": "ctl_oc_telemetry_item_t",
+              "kind": "Record",
+              "size": 24,
+              "alignment": 8
+            }
+          }
+        },
+        {
+          "name": "gpuVrTemp",
+          "rustName": "gpuVrTemp",
+          "offset": 808,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramVrTemp",
+          "rustName": "vramVrTemp",
+          "offset": 832,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "saVrTemp",
+          "rustName": "saVrTemp",
+          "offset": 856,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuEffectiveClock",
+          "rustName": "gpuEffectiveClock",
+          "offset": 880,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuOverVoltagePercent",
+          "rustName": "gpuOverVoltagePercent",
+          "offset": 904,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuPowerPercent",
+          "rustName": "gpuPowerPercent",
+          "offset": 928,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuTemperaturePercent",
+          "rustName": "gpuTemperaturePercent",
+          "offset": 952,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramReadBandwidth",
+          "rustName": "vramReadBandwidth",
+          "offset": 976,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramWriteBandwidth",
+          "rustName": "vramWriteBandwidth",
+          "offset": 1000,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        }
+      ]
+    },
+    "ctl_power_telemetry_v2_t": {
+      "name": "ctl_power_telemetry_v2_t",
+      "kind": "Record",
+      "size": 1016,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "timeStamp",
+          "rustName": "timeStamp",
+          "offset": 8,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuEnergyCounter",
+          "rustName": "gpuEnergyCounter",
+          "offset": 32,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuVoltage",
+          "rustName": "gpuVoltage",
+          "offset": 56,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuCurrentClockFrequency",
+          "rustName": "gpuCurrentClockFrequency",
+          "offset": 80,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuCurrentTemperature",
+          "rustName": "gpuCurrentTemperature",
+          "offset": 104,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "globalActivityCounter",
+          "rustName": "globalActivityCounter",
+          "offset": 128,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "renderComputeActivityCounter",
+          "rustName": "renderComputeActivityCounter",
+          "offset": 152,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "mediaActivityCounter",
+          "rustName": "mediaActivityCounter",
+          "offset": 176,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuPowerLimited",
+          "rustName": "gpuPowerLimited",
+          "offset": 200,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "gpuTemperatureLimited",
+          "rustName": "gpuTemperatureLimited",
+          "offset": 201,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "gpuCurrentLimited",
+          "rustName": "gpuCurrentLimited",
+          "offset": 202,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "gpuVoltageLimited",
+          "rustName": "gpuVoltageLimited",
+          "offset": 203,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "gpuUtilizationLimited",
+          "rustName": "gpuUtilizationLimited",
+          "offset": 204,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "vramEnergyCounter",
+          "rustName": "vramEnergyCounter",
+          "offset": 208,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramVoltage",
+          "rustName": "vramVoltage",
+          "offset": 232,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramCurrentClockFrequency",
+          "rustName": "vramCurrentClockFrequency",
+          "offset": 256,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramCurrentEffectiveFrequency",
+          "rustName": "vramCurrentEffectiveFrequency",
+          "offset": 280,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramReadBandwidthCounter",
+          "rustName": "vramReadBandwidthCounter",
+          "offset": 304,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramWriteBandwidthCounter",
+          "rustName": "vramWriteBandwidthCounter",
+          "offset": 328,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramCurrentTemperature",
+          "rustName": "vramCurrentTemperature",
+          "offset": 352,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "totalCardEnergyCounter",
+          "rustName": "totalCardEnergyCounter",
+          "offset": 376,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "psu",
+          "rustName": "psu",
+          "offset": 400,
+          "type": {
+            "name": "ctl_psu_info_t[5]",
+            "kind": "Array",
+            "size": 280,
+            "alignment": 8,
+            "length": 5,
+            "element": {
+              "name": "ctl_psu_info_t",
+              "kind": "Record",
+              "size": 56,
+              "alignment": 8
+            }
+          }
+        },
+        {
+          "name": "fanSpeed",
+          "rustName": "fanSpeed",
+          "offset": 680,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t[5]",
+            "kind": "Array",
+            "size": 120,
+            "alignment": 8,
+            "length": 5,
+            "element": {
+              "name": "ctl_oc_telemetry_item_t",
+              "kind": "Record",
+              "size": 24,
+              "alignment": 8
+            }
+          }
+        },
+        {
+          "name": "gpuVrTemp",
+          "rustName": "gpuVrTemp",
+          "offset": 800,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramVrTemp",
+          "rustName": "vramVrTemp",
+          "offset": 824,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "saVrTemp",
+          "rustName": "saVrTemp",
+          "offset": 848,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuEffectiveClock",
+          "rustName": "gpuEffectiveClock",
+          "offset": 872,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuOverVoltagePercent",
+          "rustName": "gpuOverVoltagePercent",
+          "offset": 896,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuPowerPercent",
+          "rustName": "gpuPowerPercent",
+          "offset": 920,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "gpuTemperaturePercent",
+          "rustName": "gpuTemperaturePercent",
+          "offset": 944,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramReadBandwidth",
+          "rustName": "vramReadBandwidth",
+          "offset": 968,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "vramWriteBandwidth",
+          "rustName": "vramWriteBandwidth",
+          "offset": 992,
+          "type": {
+            "name": "ctl_oc_telemetry_item_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        }
+      ]
+    },
+    "ctl_voltage_frequency_point_t": {
+      "name": "ctl_voltage_frequency_point_t",
+      "kind": "Record",
+      "size": 8,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Voltage",
+          "rustName": "Voltage",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Frequency",
+          "rustName": "Frequency",
+          "offset": 4,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_pci_address_t": {
+      "name": "ctl_pci_address_t",
+      "kind": "Record",
+      "size": 24,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "pad",
+          "rustName": "pad",
+          "offset": 5,
+          "type": {
+            "name": "uint8_t[3]",
+            "kind": "Array",
+            "size": 3,
+            "alignment": 1,
+            "length": 3,
+            "element": {
+              "name": "uint8_t",
+              "kind": "UInt8",
+              "size": 1,
+              "alignment": 1
+            }
+          }
+        },
+        {
+          "name": "domain",
+          "rustName": "domain",
+          "offset": 8,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "bus",
+          "rustName": "bus",
+          "offset": 12,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "device",
+          "rustName": "device",
+          "offset": 16,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "function",
+          "rustName": "function",
+          "offset": 20,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_pci_speed_t": {
+      "name": "ctl_pci_speed_t",
+      "kind": "Record",
+      "size": 24,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "pad",
+          "rustName": "pad",
+          "offset": 5,
+          "type": {
+            "name": "uint8_t[3]",
+            "kind": "Array",
+            "size": 3,
+            "alignment": 1,
+            "length": 3,
+            "element": {
+              "name": "uint8_t",
+              "kind": "UInt8",
+              "size": 1,
+              "alignment": 1
+            }
+          }
+        },
+        {
+          "name": "gen",
+          "rustName": "r#gen",
+          "offset": 8,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "width",
+          "rustName": "width",
+          "offset": 12,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "maxBandwidth",
+          "rustName": "maxBandwidth",
+          "offset": 16,
+          "type": {
+            "name": "int64_t",
+            "kind": "Int64",
+            "size": 8,
+            "alignment": 8
+          }
+        }
+      ]
+    },
+    "ctl_pci_properties_t": {
+      "name": "ctl_pci_properties_t",
+      "kind": "Record",
+      "size": 64,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "pad",
+          "rustName": "pad",
+          "offset": 5,
+          "type": {
+            "name": "uint8_t[3]",
+            "kind": "Array",
+            "size": 3,
+            "alignment": 1,
+            "length": 3,
+            "element": {
+              "name": "uint8_t",
+              "kind": "UInt8",
+              "size": 1,
+              "alignment": 1
+            }
+          }
+        },
+        {
+          "name": "address",
+          "rustName": "address",
+          "offset": 8,
+          "type": {
+            "name": "ctl_pci_address_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "maxSpeed",
+          "rustName": "maxSpeed",
+          "offset": 32,
+          "type": {
+            "name": "ctl_pci_speed_t",
+            "kind": "Record",
+            "size": 24,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "resizable_bar_supported",
+          "rustName": "resizable_bar_supported",
+          "offset": 56,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "resizable_bar_enabled",
+          "rustName": "resizable_bar_enabled",
+          "offset": 57,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "pad2",
+          "rustName": "pad2",
+          "offset": 58,
+          "type": {
+            "name": "uint8_t[6]",
+            "kind": "Array",
+            "size": 6,
+            "alignment": 1,
+            "length": 6,
+            "element": {
+              "name": "uint8_t",
+              "kind": "UInt8",
+              "size": 1,
+              "alignment": 1
+            }
+          }
+        }
+      ]
+    },
+    "ctl_3d_feature_caps_t": {
+      "name": "ctl_3d_feature_caps_t",
+      "kind": "Record",
+      "size": 24,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "NumSupportedFeatures",
+          "rustName": "NumSupportedFeatures",
+          "offset": 8,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "pFeatureDetails",
+          "rustName": "pFeatureDetails",
+          "offset": 16,
+          "type": {
+            "name": "void *",
+            "kind": "Pointer",
+            "size": 8,
+            "alignment": 8,
+            "target": {
+              "name": "void",
+              "kind": "Void",
+              "size": 0,
+              "alignment": 0
+            }
+          }
+        }
+      ]
+    },
+    "ctl_3d_feature_details_t": {
+      "name": "ctl_3d_feature_details_t",
+      "kind": "Record",
+      "size": 72,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "FeatureType",
+          "rustName": "FeatureType",
+          "offset": 0,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "ValueType",
+          "rustName": "ValueType",
+          "offset": 4,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Value",
+          "rustName": "Value",
+          "offset": 8,
+          "type": {
+            "name": "uint8_t[24]",
+            "kind": "Array",
+            "size": 24,
+            "alignment": 1,
+            "length": 24,
+            "element": {
+              "name": "uint8_t",
+              "kind": "UInt8",
+              "size": 1,
+              "alignment": 1
+            }
+          }
+        },
+        {
+          "name": "CustomValueSize",
+          "rustName": "CustomValueSize",
+          "offset": 32,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "pCustomValue",
+          "rustName": "pCustomValue",
+          "offset": 40,
+          "type": {
+            "name": "void *",
+            "kind": "Pointer",
+            "size": 8,
+            "alignment": 8,
+            "target": {
+              "name": "void",
+              "kind": "Void",
+              "size": 0,
+              "alignment": 0
+            }
+          }
+        },
+        {
+          "name": "PerAppSupport",
+          "rustName": "PerAppSupport",
+          "offset": 48,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "ConflictingFeatures",
+          "rustName": "ConflictingFeatures",
+          "offset": 56,
+          "type": {
+            "name": "int64_t",
+            "kind": "Int64",
+            "size": 8,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "FeatureMiscSupport",
+          "rustName": "FeatureMiscSupport",
+          "offset": 64,
+          "type": {
+            "name": "int16_t",
+            "kind": "Int16",
+            "size": 2,
+            "alignment": 2
+          }
+        },
+        {
+          "name": "Reserved",
+          "rustName": "Reserved",
+          "offset": 66,
+          "type": {
+            "name": "int16_t",
+            "kind": "Int16",
+            "size": 2,
+            "alignment": 2
+          }
+        },
+        {
+          "name": "Reserved1",
+          "rustName": "Reserved1",
+          "offset": 68,
+          "type": {
+            "name": "int16_t",
+            "kind": "Int16",
+            "size": 2,
+            "alignment": 2
+          }
+        },
+        {
+          "name": "Reserved2",
+          "rustName": "Reserved2",
+          "offset": 70,
+          "type": {
+            "name": "int16_t",
+            "kind": "Int16",
+            "size": 2,
+            "alignment": 2
+          }
+        }
+      ]
+    },
+    "ctl_3d_feature_getset_t": {
+      "name": "ctl_3d_feature_getset_t",
+      "kind": "Record",
+      "size": 56,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "FeatureType",
+          "rustName": "FeatureType",
+          "offset": 8,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "ApplicationName",
+          "rustName": "ApplicationName",
+          "offset": 16,
+          "type": {
+            "name": "void *",
+            "kind": "Pointer",
+            "size": 8,
+            "alignment": 8,
+            "target": {
+              "name": "void",
+              "kind": "Void",
+              "size": 0,
+              "alignment": 0
+            }
+          }
+        },
+        {
+          "name": "ApplicationNameLength",
+          "rustName": "ApplicationNameLength",
+          "offset": 24,
+          "type": {
+            "name": "int8_t",
+            "kind": "Int8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "bSet",
+          "rustName": "bSet",
+          "offset": 25,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "ValueType",
+          "rustName": "ValueType",
+          "offset": 28,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Value",
+          "rustName": "Value",
+          "offset": 32,
+          "type": {
+            "name": "uint8_t[8]",
+            "kind": "Array",
+            "size": 8,
+            "alignment": 1,
+            "length": 8,
+            "element": {
+              "name": "uint8_t",
+              "kind": "UInt8",
+              "size": 1,
+              "alignment": 1
+            }
+          }
+        },
+        {
+          "name": "CustomValueSize",
+          "rustName": "CustomValueSize",
+          "offset": 40,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "pCustomValue",
+          "rustName": "pCustomValue",
+          "offset": 48,
+          "type": {
+            "name": "void *",
+            "kind": "Pointer",
+            "size": 8,
+            "alignment": 8,
+            "target": {
+              "name": "void",
+              "kind": "Void",
+              "size": 0,
+              "alignment": 0
+            }
+          }
+        }
+      ]
+    },
+    "ctl_temp_properties_t": {
+      "name": "ctl_temp_properties_t",
+      "kind": "Record",
+      "size": 24,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "type",
+          "rustName": "r#type",
+          "offset": 8,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "maxTemperature",
+          "rustName": "maxTemperature",
+          "offset": 16,
+          "type": {
+            "name": "double",
+            "kind": "Float64",
+            "size": 8,
+            "alignment": 8
+          }
+        }
+      ]
+    },
+    "ctl_display_timing_t": {
+      "name": "ctl_display_timing_t",
+      "kind": "Record",
+      "size": 64,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "PixelClock",
+          "rustName": "PixelClock",
+          "offset": 8,
+          "type": {
+            "name": "uint64_t",
+            "kind": "UInt64",
+            "size": 8,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "HActive",
+          "rustName": "HActive",
+          "offset": 16,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "VActive",
+          "rustName": "VActive",
+          "offset": 20,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "HTotal",
+          "rustName": "HTotal",
+          "offset": 24,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "VTotal",
+          "rustName": "VTotal",
+          "offset": 28,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "HBlank",
+          "rustName": "HBlank",
+          "offset": 32,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "VBlank",
+          "rustName": "VBlank",
+          "offset": 36,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "HSync",
+          "rustName": "HSync",
+          "offset": 40,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "VSync",
+          "rustName": "VSync",
+          "offset": 44,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "RefreshRate",
+          "rustName": "RefreshRate",
+          "offset": 48,
+          "type": {
+            "name": "float",
+            "kind": "Float32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "SignalStandard",
+          "rustName": "SignalStandard",
+          "offset": 52,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "VicId",
+          "rustName": "VicId",
+          "offset": 56,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        }
+      ]
+    },
+    "ctl_display_properties_t": {
+      "name": "ctl_display_properties_t",
+      "kind": "Record",
+      "size": 200,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "Os_display_encoder_handle",
+          "rustName": "Os_display_encoder_handle",
+          "offset": 5,
+          "type": {
+            "name": "uint8_t[16]",
+            "kind": "Array",
+            "size": 16,
+            "alignment": 1,
+            "length": 16,
+            "element": {
+              "name": "uint8_t",
+              "kind": "UInt8",
+              "size": 1,
+              "alignment": 1
+            }
+          }
+        },
+        {
+          "name": "Type",
+          "rustName": "Type",
+          "offset": 24,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "AttachedDisplayMuxType",
+          "rustName": "AttachedDisplayMuxType",
+          "offset": 28,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "ProtocolConverterOutput",
+          "rustName": "ProtocolConverterOutput",
+          "offset": 32,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "SupportedSpec",
+          "rustName": "SupportedSpec",
+          "offset": 36,
+          "type": {
+            "name": "uint8_t[3]",
+            "kind": "Array",
+            "size": 3,
+            "alignment": 1,
+            "length": 3,
+            "element": {
+              "name": "uint8_t",
+              "kind": "UInt8",
+              "size": 1,
+              "alignment": 1
+            }
+          }
+        },
+        {
+          "name": "SupportedOutputBPCFlags",
+          "rustName": "SupportedOutputBPCFlags",
+          "offset": 40,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "ProtocolConverterType",
+          "rustName": "ProtocolConverterType",
+          "offset": 44,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "DisplayConfigFlags",
+          "rustName": "DisplayConfigFlags",
+          "offset": 48,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "FeatureEnabledFlags",
+          "rustName": "FeatureEnabledFlags",
+          "offset": 52,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "FeatureSupportedFlags",
+          "rustName": "FeatureSupportedFlags",
+          "offset": 56,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "AdvancedFeatureEnabledFlags",
+          "rustName": "AdvancedFeatureEnabledFlags",
+          "offset": 60,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "AdvancedFeatureSupportedFlags",
+          "rustName": "AdvancedFeatureSupportedFlags",
+          "offset": 64,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Display_Timing_Info",
+          "rustName": "Display_Timing_Info",
+          "offset": 72,
+          "type": {
+            "name": "ctl_display_timing_t",
+            "kind": "Record",
+            "size": 64,
+            "alignment": 8
+          }
+        },
+        {
+          "name": "ReservedFields",
+          "rustName": "ReservedFields",
+          "offset": 136,
+          "type": {
+            "name": "uint32_t[16]",
+            "kind": "Array",
+            "size": 64,
+            "alignment": 4,
+            "length": 16,
+            "element": {
+              "name": "uint32_t",
+              "kind": "UInt32",
+              "size": 4,
+              "alignment": 4
+            }
+          }
+        }
+      ]
+    },
+    "ctl_wire_format_t": {
+      "name": "ctl_wire_format_t",
+      "kind": "Record",
+      "size": 16,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "ColorModel",
+          "rustName": "ColorModel",
+          "offset": 8,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "ColorDepth",
+          "rustName": "ColorDepth",
+          "offset": 12,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_get_set_wire_format_config_t": {
+      "name": "ctl_get_set_wire_format_config_t",
+      "kind": "Record",
+      "size": 92,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "pad",
+          "rustName": "pad",
+          "offset": 5,
+          "type": {
+            "name": "uint8_t[3]",
+            "kind": "Array",
+            "size": 3,
+            "alignment": 1,
+            "length": 3,
+            "element": {
+              "name": "uint8_t",
+              "kind": "UInt8",
+              "size": 1,
+              "alignment": 1
+            }
+          }
+        },
+        {
+          "name": "Operation",
+          "rustName": "Operation",
+          "offset": 8,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "SupportedWireFormat",
+          "rustName": "SupportedWireFormat",
+          "offset": 12,
+          "type": {
+            "name": "ctl_wire_format_t[4]",
+            "kind": "Array",
+            "size": 64,
+            "alignment": 4,
+            "length": 4,
+            "element": {
+              "name": "ctl_wire_format_t",
+              "kind": "Record",
+              "size": 16,
+              "alignment": 4
+            }
+          }
+        },
+        {
+          "name": "WireFormat",
+          "rustName": "WireFormat",
+          "offset": 76,
+          "type": {
+            "name": "ctl_wire_format_t",
+            "kind": "Record",
+            "size": 16,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_display_settings_t": {
+      "name": "ctl_display_settings_t",
+      "kind": "Record",
+      "size": 148,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "Set",
+          "rustName": "Set",
+          "offset": 5,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "SupportedFlags",
+          "rustName": "SupportedFlags",
+          "offset": 8,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "ControllableFlags",
+          "rustName": "ControllableFlags",
+          "offset": 12,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "ValidFlags",
+          "rustName": "ValidFlags",
+          "offset": 16,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "LowLatency",
+          "rustName": "LowLatency",
+          "offset": 20,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "SourceTM",
+          "rustName": "SourceTM",
+          "offset": 24,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "ContentType",
+          "rustName": "ContentType",
+          "offset": 28,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "QuantizationRange",
+          "rustName": "QuantizationRange",
+          "offset": 32,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "SupportedPictureAR",
+          "rustName": "SupportedPictureAR",
+          "offset": 36,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "PictureAR",
+          "rustName": "PictureAR",
+          "offset": 40,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "AudioSettings",
+          "rustName": "AudioSettings",
+          "offset": 44,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Reserved",
+          "rustName": "Reserved",
+          "offset": 48,
+          "type": {
+            "name": "int32_t[25]",
+            "kind": "Array",
+            "size": 100,
+            "alignment": 4,
+            "length": 25,
+            "element": {
+              "name": "int32_t",
+              "kind": "Int32",
+              "size": 4,
+              "alignment": 4
+            }
+          }
+        }
+      ]
+    },
+    "ctl_scaling_caps_t": {
+      "name": "ctl_scaling_caps_t",
+      "kind": "Record",
+      "size": 12,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "SupportedScaling",
+          "rustName": "SupportedScaling",
+          "offset": 8,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_scaling_settings_t": {
+      "name": "ctl_scaling_settings_t",
+      "kind": "Record",
+      "size": 28,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "Enable",
+          "rustName": "Enable",
+          "offset": 5,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "ScalingType",
+          "rustName": "ScalingType",
+          "offset": 8,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "CustomScalingX",
+          "rustName": "CustomScalingX",
+          "offset": 12,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "CustomScalingY",
+          "rustName": "CustomScalingY",
+          "offset": 16,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "HardwareModeSet",
+          "rustName": "HardwareModeSet",
+          "offset": 20,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "PreferredScalingType",
+          "rustName": "PreferredScalingType",
+          "offset": 24,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_retro_scaling_caps_t": {
+      "name": "ctl_retro_scaling_caps_t",
+      "kind": "Record",
+      "size": 12,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "SupportedRetroScaling",
+          "rustName": "SupportedRetroScaling",
+          "offset": 8,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_retro_scaling_settings_t": {
+      "name": "ctl_retro_scaling_settings_t",
+      "kind": "Record",
+      "size": 12,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "Get",
+          "rustName": "Get",
+          "offset": 5,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "Enable",
+          "rustName": "Enable",
+          "offset": 6,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "RetroScalingType",
+          "rustName": "RetroScalingType",
+          "offset": 8,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_intel_arc_sync_monitor_params_t": {
+      "name": "ctl_intel_arc_sync_monitor_params_t",
+      "kind": "Record",
+      "size": 24,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "IsIntelArcSyncSupported",
+          "rustName": "IsIntelArcSyncSupported",
+          "offset": 5,
+          "type": {
+            "name": "bool",
+            "kind": "Bool",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "MinimumRefreshRateInHz",
+          "rustName": "MinimumRefreshRateInHz",
+          "offset": 8,
+          "type": {
+            "name": "float",
+            "kind": "Float32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "MaximumRefreshRateInHz",
+          "rustName": "MaximumRefreshRateInHz",
+          "offset": 12,
+          "type": {
+            "name": "float",
+            "kind": "Float32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "MaxFrameTimeIncreaseInUs",
+          "rustName": "MaxFrameTimeIncreaseInUs",
+          "offset": 16,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "MaxFrameTimeDecreaseInUs",
+          "rustName": "MaxFrameTimeDecreaseInUs",
+          "offset": 20,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_intel_arc_sync_profile_params_t": {
+      "name": "ctl_intel_arc_sync_profile_params_t",
+      "kind": "Record",
+      "size": 28,
+      "alignment": 4,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "IntelArcSyncProfile",
+          "rustName": "IntelArcSyncProfile",
+          "offset": 8,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "MaxRefreshRateInHz",
+          "rustName": "MaxRefreshRateInHz",
+          "offset": 12,
+          "type": {
+            "name": "float",
+            "kind": "Float32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "MinRefreshRateInHz",
+          "rustName": "MinRefreshRateInHz",
+          "offset": 16,
+          "type": {
+            "name": "float",
+            "kind": "Float32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "MaxFrameTimeIncreaseInUs",
+          "rustName": "MaxFrameTimeIncreaseInUs",
+          "offset": 20,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "MaxFrameTimeDecreaseInUs",
+          "rustName": "MaxFrameTimeDecreaseInUs",
+          "offset": 24,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        }
+      ]
+    },
+    "ctl_panel_descriptor_access_args_t": {
+      "name": "ctl_panel_descriptor_access_args_t",
+      "kind": "Record",
+      "size": 32,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "OpType",
+          "rustName": "OpType",
+          "offset": 8,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "BlockNumber",
+          "rustName": "BlockNumber",
+          "offset": 12,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "DescriptorDataSize",
+          "rustName": "DescriptorDataSize",
+          "offset": 16,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "pDescriptorData",
+          "rustName": "pDescriptorData",
+          "offset": 24,
+          "type": {
+            "name": "void *",
+            "kind": "Pointer",
+            "size": 8,
+            "alignment": 8,
+            "target": {
+              "name": "void",
+              "kind": "Void",
+              "size": 0,
+              "alignment": 0
+            }
+          }
+        }
+      ]
+    },
+    "ctl_edid_management_args_t": {
+      "name": "ctl_edid_management_args_t",
+      "kind": "Record",
+      "size": 40,
+      "alignment": 8,
+      "declaration": "struct",
+      "members": [
+        {
+          "name": "Size",
+          "rustName": "Size",
+          "offset": 0,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "Version",
+          "rustName": "Version",
+          "offset": 4,
+          "type": {
+            "name": "uint8_t",
+            "kind": "UInt8",
+            "size": 1,
+            "alignment": 1
+          }
+        },
+        {
+          "name": "OpType",
+          "rustName": "OpType",
+          "offset": 8,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "EdidType",
+          "rustName": "EdidType",
+          "offset": 12,
+          "type": {
+            "name": "int32_t",
+            "kind": "Int32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "EdidSize",
+          "rustName": "EdidSize",
+          "offset": 16,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        },
+        {
+          "name": "pEdidBuf",
+          "rustName": "pEdidBuf",
+          "offset": 24,
+          "type": {
+            "name": "void *",
+            "kind": "Pointer",
+            "size": 8,
+            "alignment": 8,
+            "target": {
+              "name": "void",
+              "kind": "Void",
+              "size": 0,
+              "alignment": 0
+            }
+          }
+        },
+        {
+          "name": "OutFlags",
+          "rustName": "OutFlags",
+          "offset": 32,
+          "type": {
+            "name": "uint32_t",
+            "kind": "UInt32",
+            "size": 4,
+            "alignment": 4
+          }
+        }
+      ]
+    }
+  },
+  "functions": [
+    {
+      "name": "ctlInit",
+      "result": "ctl_result_t",
+      "params": [
+        "ctl_init_args_t*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlClose",
+      "result": "ctl_result_t",
+      "params": [
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlEnumerateDevices",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "uint32*",
+        "void**"
+      ]
+    },
+    {
+      "name": "ctlGetDeviceProperties",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "ctl_device_adapter_properties_t*"
+      ]
+    },
+    {
+      "name": "ctlOverclockGetProperties",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "ctl_oc_properties_t*"
+      ]
+    },
+    {
+      "name": "ctlOverclockWaiverSet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlOverclockResetToDefault",
+      "result": "ctl_result_t",
+      "params": [
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlOverclockGpuFrequencyOffsetGet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double*"
+      ]
+    },
+    {
+      "name": "ctlOverclockGpuFrequencyOffsetSet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double"
+      ]
+    },
+    {
+      "name": "ctlOverclockGpuFrequencyOffsetGetV2",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double*"
+      ]
+    },
+    {
+      "name": "ctlOverclockGpuFrequencyOffsetSetV2",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double"
+      ]
+    },
+    {
+      "name": "ctlOverclockGpuVoltageOffsetGet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double*"
+      ]
+    },
+    {
+      "name": "ctlOverclockGpuVoltageOffsetSet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double"
+      ]
+    },
+    {
+      "name": "ctlOverclockGpuMaxVoltageOffsetGetV2",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double*"
+      ]
+    },
+    {
+      "name": "ctlOverclockGpuMaxVoltageOffsetSetV2",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double"
+      ]
+    },
+    {
+      "name": "ctlOverclockPowerLimitGet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double*"
+      ]
+    },
+    {
+      "name": "ctlOverclockPowerLimitSet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double"
+      ]
+    },
+    {
+      "name": "ctlOverclockPowerLimitGetV2",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double*"
+      ]
+    },
+    {
+      "name": "ctlOverclockPowerLimitSetV2",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double"
+      ]
+    },
+    {
+      "name": "ctlOverclockTemperatureLimitGet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double*"
+      ]
+    },
+    {
+      "name": "ctlOverclockTemperatureLimitSet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double"
+      ]
+    },
+    {
+      "name": "ctlOverclockTemperatureLimitGetV2",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double*"
+      ]
+    },
+    {
+      "name": "ctlOverclockTemperatureLimitSetV2",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double"
+      ]
+    },
+    {
+      "name": "ctlOverclockVramFrequencyOffsetGet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double*"
+      ]
+    },
+    {
+      "name": "ctlOverclockVramFrequencyOffsetSet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double"
+      ]
+    },
+    {
+      "name": "ctlOverclockVramVoltageOffsetGet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double*"
+      ]
+    },
+    {
+      "name": "ctlOverclockVramVoltageOffsetSet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double"
+      ]
+    },
+    {
+      "name": "ctlOverclockVramMemSpeedLimitGetV2",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double*"
+      ]
+    },
+    {
+      "name": "ctlOverclockVramMemSpeedLimitSetV2",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double"
+      ]
+    },
+    {
+      "name": "ctlOverclockGpuLockGet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "ctl_oc_vf_pair_t*"
+      ]
+    },
+    {
+      "name": "ctlOverclockGpuLockSet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "ctl_oc_vf_pair_t"
+      ]
+    },
+    {
+      "name": "ctlOverclockReadVFCurve",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "int32",
+        "int32",
+        "uint32*",
+        "ctl_voltage_frequency_point_t*"
+      ]
+    },
+    {
+      "name": "ctlOverclockWriteCustomVFCurve",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "uint32",
+        "ctl_voltage_frequency_point_t*"
+      ]
+    },
+    {
+      "name": "ctlEnumFans",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "uint32*",
+        "void**"
+      ]
+    },
+    {
+      "name": "ctlFanGetProperties",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "ctl_fan_properties_t*"
+      ]
+    },
+    {
+      "name": "ctlFanGetConfig",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "ctl_fan_config_t*"
+      ]
+    },
+    {
+      "name": "ctlFanGetState",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "int32",
+        "int32*"
+      ]
+    },
+    {
+      "name": "ctlFanSetFixedSpeedMode",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "ctl_fan_speed_t*"
+      ]
+    },
+    {
+      "name": "ctlFanSetSpeedTableMode",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "ctl_fan_speed_table_t*"
+      ]
+    },
+    {
+      "name": "ctlFanSetDefaultMode",
+      "result": "ctl_result_t",
+      "params": [
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlPowerTelemetryGet",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "ctl_power_telemetry_t*"
+      ]
+    },
+    {
+      "name": "ctlPowerTelemetryGetV2",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "ctl_power_telemetry_v2_t*"
+      ]
+    },
+    {
+      "name": "ctlPciGetProperties",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlGetSupported3DCapabilities",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlGetSet3DFeature",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlEnumTemperatureSensors",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "uint32*",
+        "void**"
+      ]
+    },
+    {
+      "name": "ctlTemperatureGetProperties",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "ctl_temp_properties_t*"
+      ]
+    },
+    {
+      "name": "ctlTemperatureGetState",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "double*"
+      ]
+    },
+    {
+      "name": "ctlEnumerateDisplayOutputs",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "uint32*",
+        "void**"
+      ]
+    },
+    {
+      "name": "ctlGetDisplayProperties",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlGetSetWireFormat",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlGetSetDisplaySettings",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlPixelTransformationGetConfig",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlPixelTransformationSetConfig",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlGetSupportedScalingCapability",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlGetCurrentScaling",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlSetCurrentScaling",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlGetSupportedRetroScalingCapability",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlGetSetRetroScaling",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlGetIntelArcSyncInfoForMonitor",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlGetIntelArcSyncProfile",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlSetIntelArcSyncProfile",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlGetSupportedVideoProcessingCapabilities",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlGetSetVideoProcessingFeature",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlPanelDescriptorAccess",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    },
+    {
+      "name": "ctlEdidManagement",
+      "result": "ctl_result_t",
+      "params": [
+        "void*",
+        "void*"
+      ]
+    }
+  ]
+}

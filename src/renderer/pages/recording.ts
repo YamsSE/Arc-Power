@@ -832,7 +832,7 @@ function renderQualitySettings(): HTMLElement {
     stagePatch({ rateControlQuality: value }, false);
   });
   const resolution = select(selectedResolution, RESOLUTIONS, 'Resolution', (value) => stagePatch({ resolution: value }));
-  return el('section', { class: 'recording-panel' }, [
+  return el('section', { class: 'recording-panel recording-quality-panel' }, [
     el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
       el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Video profile' }), el('h2', { class: 'recording-panel-title', text: 'Quality' })]),
       el('span', { class: 'recording-panel-badge', text: 'Applies to video and clips' }),
@@ -1485,10 +1485,14 @@ function renderApmGraph(clip: RecordingClip, durationMs: number, extraClass = ''
 }
 
 function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoElement | null, onCancel?: () => void): HTMLElement {
-  // A file's byte length is not a playback duration. Start with a safe one
-  // second range and replace it from the video's authoritative metadata.
+  // Start with a safe placeholder until video metadata or FFprobe supplies the
+  // clip duration; byte length is never treated as a time range.
   let durationMs = 1000;
+  let hasClipDuration = false;
   let job: RecordingEditorJob | null = null;
+  let exportStarting = false;
+  let exportRevision = 0;
+  let exportStatusPollInFlight = false;
   let shareDialogHandle: RecordingShareDialogHandle | null = null;
   let shareDialogJobId: string | null = null;
   const clipName = el('input', { class: 'recording-editor-clip-name', type: 'text', value: clip.fileName.replace(/\.[^.]+$/, ''), maxlength: 96, 'aria-label': 'Clip name' }) as HTMLInputElement;
@@ -1546,11 +1550,29 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
     el('span', { class: 'recording-editor-range-ruler-middle', text: '0:00' }),
     el('span', { class: 'recording-editor-range-ruler-end', text: '0:00' }),
   ]);
-  const statusLabel = el('span', { class: 'recording-editor-status', text: 'Choose a range to create a new clip or GIF.' });
+  const statusLabel = el('span', {
+    class: 'recording-editor-status',
+    text: 'Choose a range to create a new clip or GIF.',
+    role: 'status',
+    'aria-live': 'polite',
+  });
   const progress = el('progress', { class: 'recording-editor-progress', max: 100, value: 0, hidden: true, 'aria-label': 'Editor progress' }) as HTMLProgressElement;
+  const editorOutputStatus = el('div', { class: 'recording-editor-output-status' }, [progress, statusLabel]);
+  const setEditorStatus = (message: string, state: 'idle' | 'queued' | 'running' | 'ready' | 'cancelled' | 'error' = 'idle'): void => {
+    statusLabel.textContent = message;
+    statusLabel.dataset.state = state;
+    statusLabel.setAttribute('role', state === 'error' ? 'alert' : 'status');
+  };
   const cancelButton = button('Cancel', () => {
     if (job && (job.state === 'queued' || job.state === 'running')) {
-      void api.recordingEditorCancel(job.jobId).then(updateJob).catch((err) => { statusLabel.textContent = messageOf(err); });
+      const jobId = job.jobId;
+      const cancelRevision = ++exportRevision;
+      void api.recordingEditorCancel(jobId).then((next) => {
+        if (exportRevision === cancelRevision && job?.jobId === jobId) updateJob(next);
+      }).catch((err) => {
+        setEditorStatus(messageOf(err), 'error');
+        toast('error', 'Clip export failed', messageOf(err));
+      });
     }
     if (editorPollTimer !== null) {
       window.clearInterval(editorPollTimer);
@@ -1566,7 +1588,6 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
   let selectionStartMs = 0;
   let selectionEndMs = durationMs;
   let playbackMs = 0;
-  let hasVideoDuration = false;
   editor.addEventListener('click', (event) => {
     if (!audioControl.contains(event.target as Node)) {
       audioMenu.hidden = true;
@@ -1656,16 +1677,22 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
     endRange.disabled = busy;
     fps.disabled = busy;
     width.disabled = busy;
-    cancelButton.disabled = false;
+    cancelButton.disabled = busy && !(job && (job.state === 'queued' || job.state === 'running'));
   };
   const updateJob = (next: RecordingEditorJob) => {
+    const previousJob = job;
     job = next;
     progress.hidden = next.state !== 'running' && next.state !== 'queued';
     progress.value = Math.max(0, Math.min(100, next.progress));
-    if (next.state === 'error') statusLabel.textContent = next.error ?? 'The editor could not complete this export.';
-    else if (next.state === 'cancelled') statusLabel.textContent = 'Export cancelled.';
-    else if (next.state === 'ready') statusLabel.textContent = next.clip ? `Created ${next.clip.fileName}.` : `Created ${next.artifact?.fileName ?? 'GIF export'}.`;
-    else statusLabel.textContent = next.state === 'queued' ? 'Queued…' : `Rendering ${Math.round(next.progress)}%`;
+    if (next.state === 'error') {
+      const message = next.error ?? 'The editor could not complete this export.';
+      setEditorStatus(message, 'error');
+      if (previousJob?.jobId !== next.jobId || previousJob.state !== 'error') {
+        toast('error', 'Clip export failed', message);
+      }
+    } else if (next.state === 'cancelled') setEditorStatus('Export cancelled.', 'cancelled');
+    else if (next.state === 'ready') setEditorStatus(next.clip ? `Created ${next.clip.fileName}.` : `Created ${next.artifact?.fileName ?? 'GIF export'}.`, 'ready');
+    else setEditorStatus(next.state === 'queued' ? 'Queued…' : `Rendering ${Math.round(next.progress)}%`, next.state === 'queued' ? 'queued' : 'running');
     const ready = next.state === 'ready';
     setBusy(next.state === 'queued' || next.state === 'running');
     if (ready && next.clip) {
@@ -1685,18 +1712,32 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
     }
     if (next.state === 'ready' || next.state === 'cancelled' || next.state === 'error') {
       if (editorPollTimer !== null) { window.clearInterval(editorPollTimer); editorPollTimer = null; }
+      exportStarting = false;
+      exportRevision += 1;
     }
   };
   async function startJob(operation: 'trim' | 'gif'): Promise<void> {
+    if (exportStarting || (job && (job.state === 'queued' || job.state === 'running'))) return;
     const video = getVideo();
-    if (video && Number.isFinite(video.duration) && video.duration > 0) durationMs = Math.round(video.duration * 1000);
+    if (video && Number.isFinite(video.duration) && video.duration > 0) {
+      durationMs = Math.round(video.duration * 1000);
+      hasClipDuration = true;
+    }
     const range = clampRecordingEditorRange(selectionStartMs, selectionEndMs, durationMs);
     syncRangeControls(range.startMs, range.endMs);
     const { startMs, endMs } = range;
-    if (!video || !Number.isFinite(video.duration) || startMs >= endMs) {
-      statusLabel.textContent = 'Choose a valid start and end range.';
+    if (!hasClipDuration || startMs >= endMs) {
+      setEditorStatus('Clip duration is still being read. Wait a moment, then try again.', 'error');
       return;
     }
+    if (operation === 'gif' && (endMs - startMs < 1000 || endMs - startMs > 15000)) {
+      setEditorStatus('GIF exports must be between 1 and 15 seconds. Adjust the selected range and try again.', 'error');
+      return;
+    }
+    const requestRevision = ++exportRevision;
+    exportStarting = true;
+    setBusy(true);
+    setEditorStatus('Preparing export…', 'queued');
     try {
       const requestedName = normalizeRecordingEditorClipName(clipName.value);
       if (operation === 'trim') {
@@ -1710,22 +1751,43 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
         });
       }
       const next = await api.recordingEditorStart({ sourceId: clip.id, operation, startMs, endMs, outputName: requestedName, audio: audioSelection, ...(operation === 'gif' ? { fps: Number(fps.value), width: Number(width.value) } : {}) });
+      if (requestRevision !== exportRevision) return;
+      exportStarting = false;
       updateJob(next);
       if (next.state === 'queued' || next.state === 'running') {
         if (editorPollTimer !== null) window.clearInterval(editorPollTimer);
         editorPollTimer = window.setInterval(() => {
-          void api.recordingEditorStatus(next.jobId).then(updateJob).catch((err) => {
-            statusLabel.textContent = messageOf(err);
-            toast('error', 'Clip export', messageOf(err));
+          if (requestRevision !== exportRevision || exportStatusPollInFlight) return;
+          exportStatusPollInFlight = true;
+          void api.recordingEditorStatus(next.jobId).then((latest) => {
+            if (requestRevision === exportRevision && job?.jobId === next.jobId) updateJob(latest);
+          }).catch((err) => {
+            if (requestRevision !== exportRevision) return;
+            if (editorPollTimer !== null) { window.clearInterval(editorPollTimer); editorPollTimer = null; }
+            progress.hidden = true;
+            setBusy(false);
+            exportRevision += 1;
+            const message = messageOf(err);
+            setEditorStatus(message, 'error');
+            shareDialogHandle?.setError(message);
+            shareDialogHandle = null;
+            shareDialogJobId = null;
+            toast('error', 'Clip export failed', message);
+          }).finally(() => {
+            exportStatusPollInFlight = false;
           });
         }, 300);
       }
     } catch (err) {
-      statusLabel.textContent = messageOf(err);
-      shareDialogHandle?.setError(messageOf(err));
+      if (requestRevision !== exportRevision) return;
+      exportStarting = false;
+      setBusy(false);
+      const message = messageOf(err);
+      setEditorStatus(message, 'error');
+      shareDialogHandle?.setError(message);
       shareDialogHandle = null;
       shareDialogJobId = null;
-      toast('error', 'Clip export', messageOf(err));
+      toast('error', 'Clip export failed', message);
     }
   }
   startRange.addEventListener('input', () => {
@@ -1817,16 +1879,21 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
       el('div', { class: 'recording-editor-range-labels' }, [startLabel, endLabel]),
       rangeRuler,
     ]),
-    el('div', { class: 'recording-editor-gif-options' }, [el('span', { class: 'recording-editor-secondary-label', text: 'GIF export' }), el('label', {}, [el('span', { text: 'FPS' }), fps]), el('label', {}, [el('span', { text: 'Width' }), width]), gifButton]),
-    progress,
+    el('div', { class: 'recording-editor-gif-options' }, [
+      el('span', { class: 'recording-editor-secondary-label', text: 'GIF export · 1–15 seconds' }),
+      el('label', {}, [el('span', { text: 'FPS' }), fps]),
+      el('label', {}, [el('span', { text: 'Width' }), width]),
+      gifButton,
+    ]),
+    editorOutputStatus,
   );
   editor.updateDuration = (nextDurationMs: number) => {
     if (!Number.isFinite(nextDurationMs) || nextDurationMs <= 0) return;
     const previousDurationMs = durationMs;
     durationMs = Math.max(1000, Math.round(nextDurationMs));
+    hasClipDuration = true;
     syncPlaybackMarker(playbackMs);
-    if (!hasVideoDuration || (selectionStartMs === 0 && selectionEndMs === previousDurationMs)) {
-      hasVideoDuration = true;
+    if (selectionStartMs === 0 && selectionEndMs === previousDurationMs) {
       syncRangeControls(0, durationMs);
     } else {
       syncRangeControls(selectionStartMs, selectionEndMs);
@@ -1844,6 +1911,9 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
       microphone: capabilities?.microphone === true,
       mixed: capabilities?.mixed === true,
     };
+    if (Number.isFinite(capabilities?.durationMs) && Number(capabilities.durationMs) > 0) {
+      editor.updateDuration?.(Number(capabilities.durationMs));
+    }
     if (!audioEnabled(audioSelection)) audioSelection = audioCapabilities.mixed ? 'original' : 'mute';
     renderAudioMenu();
   }).catch(() => {

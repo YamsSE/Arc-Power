@@ -28,6 +28,49 @@ export const UPDATE_INSTALL_DIR_ARG = '--update-install-dir';
 // mistaking its Installer parent for another installer launch when the parent
 // query runs before Explorer reparents the detached process.
 export const INSTALLED_LAUNCH_ENV = 'ARC_POWER_INSTALLED_LAUNCH';
+export const NATIVE_INSTALL_ROOT_ENV = 'ARC_POWER_TAURI_INSTALL_ROOT';
+
+// The native host supplies this marker only while delegating setup to its
+// fixed nested compatibility executable. It cannot select an arbitrary source.
+export function resolveInstallerPayloadRoot({ execPath, nativeInstallRoot, exists = () => false, isSafePath = () => false } = {}) {
+  const executable = requireAbsolute(execPath, 'installer executable');
+  if (nativeInstallRoot === undefined) return path.dirname(executable);
+  const root = requireNonRoot(nativeInstallRoot, 'native installer root');
+  const expectedBackend = path.join(root, 'compatibility-backend', 'ArcPower.Backend.exe');
+  if (executable.toLowerCase() !== expectedBackend.toLowerCase()
+    || root.toLowerCase() !== path.dirname(path.dirname(executable)).toLowerCase()) {
+    throw new Error('Native installer root does not match the fixed compatibility backend');
+  }
+  const requiredPaths = [root, path.join(root, INSTALLED_EXECUTABLE_NAME), path.join(root, 'resources'),
+    path.dirname(expectedBackend), expectedBackend];
+  if (requiredPaths.some((target) => !exists(target) || !isSafePath(target))) {
+    throw new Error('Native installer payload is missing or contains an unsafe reparse point');
+  }
+  return root;
+}
+
+export function requiredInstallerPayloadFiles(nativeLayout = false) {
+  return [INSTALLED_EXECUTABLE_NAME, path.join('resources', 'app-icon.ico'), INSTALLED_ICON_RELATIVE_PATH,
+    ...(nativeLayout
+      ? [path.join('compatibility-backend', 'ArcPower.Backend.exe'), path.join('compatibility-backend', 'resources', 'app.asar')]
+      : [path.join('resources', 'app.asar')])];
+}
+
+export function createProductStoppedCheckScript({ currentPid, nativeSetupParentPid, nativeSetupRoot } = {}) {
+  if (!Number.isSafeInteger(currentPid) || currentPid <= 0) throw new TypeError('Invalid installer process ID');
+  let parentExclusion = '';
+  if (nativeSetupRoot !== undefined) {
+    const root = requireNonRoot(nativeSetupRoot, 'validated native setup root');
+    if (!Number.isSafeInteger(nativeSetupParentPid) || nativeSetupParentPid <= 0 || nativeSetupParentPid === currentPid) {
+      throw new TypeError('Invalid native setup parent process ID');
+    }
+    // Match both PID and full executable path from the same CIM record. The
+    // validated payload root alone never exempts another running app instance.
+    const executable = powershellLiteral(path.join(root, INSTALLED_EXECUTABLE_NAME));
+    parentExclusion = ` -and -not ($_.ProcessId -eq ${nativeSetupParentPid} -and $_.ExecutablePath -eq ${executable})`;
+  }
+  return `$ErrorActionPreference = 'Stop'; $session = (Get-Process -Id $PID).SessionId; $running = @(Get-CimInstance Win32_Process -Filter "Name='Arc Power.exe'" | Where-Object { $_.ProcessId -ne ${currentPid}${parentExclusion} -and $_.SessionId -eq $session -and $_.CommandLine -notmatch '--type=|--apply-worker|sysman.*helper|rtss-profile-helper|--headless|--gpu-diagnostics|--ui-verify' }); if ($running.Count -gt 0) { throw 'Close Arc Power from its tray menu before installing so its cache can be cleared.' }`;
+}
 
 function requireAbsolute(value, label) {
   if (typeof value !== 'string' || value.length === 0 || !path.isAbsolute(value)) {

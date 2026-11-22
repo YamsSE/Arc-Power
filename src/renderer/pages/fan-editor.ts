@@ -33,11 +33,12 @@ import {
 } from '../pure/curve.ts';
 import { buildFanSettings, validateSettingsPayload, fanStateSignature } from '../pure/settings.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
+import { gpuApplyTargetOptions } from '../pure/gpu-apply-target.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
 import { toast } from '../components/toast.ts';
 import type { DeviceState, FanMode } from '../types.ts';
 
-const MODE_NAMES: Record<string, string> = { auto: 'Auto', curve: 'Curve', fixed: 'Fixed' };
+const MODE_NAMES: Record<string, string> = { auto: 'Auto', curve: 'Manual', fixed: 'Fixed' };
 
 // M24 (Part B): the fan-state SIGNATURE - the mechanism that lets the
 // Tuning page's fan view re-render its editor when the STORE's fan fields
@@ -79,12 +80,12 @@ export function currentFanSignature(): string | null {
 // DRIVER's curve read LIVE at click time, but a canControl device that
 // fails to report a curve degrades the base to the 2-point ramp - the
 // fixed tables are the source the user remembers. The three presets:
-// 'Intel Curve' (M4-I rename of 'Driver Curve' - the chip REPLACES the old
+// 'Intel Stock' (the chip REPLACES the old
 // "Reset to driver curve" button), 'Quiet' (gentler than Intel, capped at
 // 40 %), 'Max' (steeper, capped at 70 %). The math lives in pure/curve.ts
 // fanCurvePresets (unit-tested); this module only renders the chips.
 const PRESET_DEFS: Array<{ id: string; name: string }> = [
-  { id: 'driver', name: 'Intel Curve' },
+  { id: 'driver', name: 'Intel Stock' },
   { id: 'quiet', name: 'Quiet' },
   { id: 'max', name: 'Max' },
 ];
@@ -164,8 +165,11 @@ export function renderFanEditor(container: HTMLElement, ctx: PageContext): void 
   // dialog gate (ensureWaiver in applyFan).
 
   // M2D: a fan-less device (mock iGPU featureset) has no modes, no curve,
-  // no RPM - render the honest note instead of an empty read-only view.
-  if (caps.fan.modes.length === 0) {
+  // no RPM. A device that explicitly reports canControl=true but an empty
+  // mode bitmask is NOT fan-less: the editable path below already falls back
+  // to the standard auto/curve/fixed modes (A750-class drivers can report an
+  // empty supportedModes while still accepting the table setters).
+  if (caps.fan.modes.length === 0 && canControl !== true) {
     container.append(
       el('section', { class: 'card fan-card' }, [
         el('p', { class: 'card-note', text: 'This GPU does not expose a fan (telemetry-only device).' }),
@@ -192,24 +196,23 @@ export function renderFanEditor(container: HTMLElement, ctx: PageContext): void 
     fixedPct: state.fixedFanPct ?? 50,
   };
 
-  if (!window.location.pathname.endsWith('advanced-overlay.html')) {
-    renderFanResumeCard(container, ctx);
-  }
-  renderEditor(container, ctx, editor, maxPoints);
+  const resumeRow = !window.location.pathname.endsWith('advanced-overlay.html')
+    ? renderFanResumeCard(ctx)
+    : null;
+  renderEditor(container, ctx, editor, maxPoints, resumeRow);
 }
 
-function renderFanResumeCard(container: HTMLElement, ctx: PageContext): void {
+function renderFanResumeCard(ctx: PageContext): HTMLElement | null {
   const selectedDeviceId = ctx.store.get().deviceId;
   const key = ctx.store.get().devices.find((device) => device.id === selectedDeviceId)?.deviceKey;
-  if (!key) return;
+  if (!key) return null;
   const input = el('input', { type: 'checkbox', class: 'arc-sleep-toggle', role: 'switch', 'aria-label': 'Reapply fan settings after sleep', disabled: true });
-  const message = el('p', { class: 'card-note', text: 'Arc Power reapplies the last successfully applied fan mode after Windows 10/11 sleep or hibernate. Auto uses the driver stock mode, Curve restores its custom curve, and valid Fixed mode is supported. Arc Power must stay running in the tray. Staged edits are not applied or saved.' });
-  const card = el('section', { class: 'card fan-resume-card' }, [
+  const message = el('p', { class: 'card-note', text: 'Reapplies the last fan mode saved with Apply after Windows sleep or hibernate. Auto restores driver stock; Manual restores your curve. Arc Power must stay in the tray.' });
+  const card = el('div', { class: 'fan-resume-inline' }, [
     el('div', { class: 'arc-sleep-panel-heading' }, [
       el('div', {}, [el('h2', { class: 'card-title', text: 'Arc Hibernation Fix' }), el('p', { class: 'card-note', text: 'Reapply fan settings after sleep' })]), input,
     ]), message,
   ]);
-  container.append(card);
   let pending = false;
   const isCurrentSelection = (): boolean => {
     const current = ctx.store.get();
@@ -257,6 +260,7 @@ function renderFanResumeCard(container: HTMLElement, ctx: PageContext): void {
       message.textContent = error instanceof Error ? error.message : String(error);
     }).finally(() => { pending = false; input.disabled = false; });
   });
+  return card;
 }
 
 /**
@@ -353,7 +357,7 @@ function renderReadOnly(container: HTMLElement, ctx: PageContext, points: CurveP
 // Editable editor (canControl=true - real A770 via the M3-D probe, or mock)
 // ---------------------------------------------------------------------------
 
-function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorState, maxPoints: number) {
+function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorState, maxPoints: number, resumeRow: HTMLElement | null = null) {
   const s = ctx.store.get();
   const caps = s.caps as NonNullable<typeof s.caps>;
   const modes = caps.fan.modes.length > 0 ? caps.fan.modes : ['auto', 'curve', 'fixed'];
@@ -366,6 +370,7 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
 
   const card = el('section', { class: 'card fan-card' });
   const body = el('div', { class: 'fan-body' });
+  if (resumeRow) card.append(resumeRow);
   card.append(body);
   container.append(card);
 
@@ -793,6 +798,7 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
       const maxReached = editor.points.length >= maxPoints;
 
       body.append(
+        el('p', { class: 'card-note fan-curve-help', text: 'Hover a point to inspect it; click a point to edit fan speed or temperature.' }),
         stage,
         el('div', { class: 'fan-axis' }, [
           el('span', { text: `${domain.minT} °C` }),
@@ -870,6 +876,7 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
     const deviceId = live.deviceId;
     const caps = live.caps;
     if (deviceId === null || !caps) return;
+    const selectedDevice = live.devices.find((device) => device.id === deviceId) ?? null;
     const settings = buildFanSettings(editor.mode, editor.points, editor.fixedPct);
     if (!validateSettingsPayload(settings)) {
       toast('error', 'Apply aborted', 'The settings payload failed validation - this is a bug.');
@@ -895,7 +902,7 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
       }
     }
     try {
-      const { result, state: fresh } = await api.applySettings(deviceId, settings);
+      const { result, state: fresh } = await api.applySettings(deviceId, settings, gpuApplyTargetOptions(selectedDevice));
       // M3-C review F2: only store a NON-NULL fresh state - a refusal
       // envelope's null state must never null out the store's device state.
       // M24: note the fan signature BEFORE the store.set - Store.set

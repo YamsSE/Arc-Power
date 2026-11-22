@@ -21,11 +21,16 @@ import { detectRtssInstallation, installRtss } from './rtss-install.js';
 import { launchRtss } from './rtss-startup.js';
 import { ARC_POWER_APP_USER_MODEL_ID } from './taskbar-identity.js';
 import { prepareArcPowerCacheSync } from './cache-lifecycle.js';
+import { guardMainFrameIpcHandler } from './restricted-renderer-ipc.js';
 import {
   PRODUCT_NAME,
   INSTALLED_EXECUTABLE_NAME,
   INSTALLED_ICON_RELATIVE_PATH,
   INSTALLED_LAUNCH_ENV,
+  NATIVE_INSTALL_ROOT_ENV,
+  resolveInstallerPayloadRoot,
+  requiredInstallerPayloadFiles,
+  createProductStoppedCheckScript,
   createInstallationPlan,
   createUninstallLaunchScript,
   createUninstallCleanupScript,
@@ -193,12 +198,21 @@ function windowsPaths() {
 }
 
 function payloadRoot() {
-  const root = path.dirname(process.execPath);
+  const root = installerExecutionRoot();
   const executable = path.join(root, INSTALLED_EXECUTABLE_NAME);
   if (!existsSync(executable) || !existsSync(path.join(root, 'resources'))) {
     throw new Error(`The packaged Arc Power payload is unavailable beside ${process.execPath}`);
   }
   return root;
+}
+
+function installerExecutionRoot() {
+  return resolveInstallerPayloadRoot({
+    execPath: process.execPath,
+    nativeInstallRoot: process.env[NATIVE_INSTALL_ROOT_ENV],
+    exists: existsSync,
+    isSafePath: isSafeUpdateDestination,
+  });
 }
 
 function sendProgress(win, percent, message) {
@@ -269,12 +283,7 @@ function sha256File(filePath) {
 }
 
 function verifyCopiedPayload(sourceRoot, installDir) {
-  const requiredFiles = [
-    INSTALLED_EXECUTABLE_NAME,
-    path.join('resources', 'app.asar'),
-    path.join('resources', 'app-icon.ico'),
-    INSTALLED_ICON_RELATIVE_PATH,
-  ];
+  const requiredFiles = requiredInstallerPayloadFiles(process.env[NATIVE_INSTALL_ROOT_ENV] !== undefined);
   for (const relativePath of requiredFiles) {
     const sourcePath = path.join(sourceRoot, relativePath);
     const destinationPath = path.join(installDir, relativePath);
@@ -296,6 +305,7 @@ function launchInstalledApp(executablePath, workingDirectory) {
   delete environment.PORTABLE_EXECUTABLE_FILE;
   delete environment.PORTABLE_EXECUTABLE_DIR;
   delete environment.PORTABLE_EXECUTABLE_APP_FILENAME;
+  delete environment[NATIVE_INSTALL_ROOT_ENV];
   environment[INSTALLED_LAUNCH_ENV] = '1';
   return new Promise((resolve, reject) => {
     const child = spawn(executablePath, [], {
@@ -373,7 +383,11 @@ async function installArcPower(win, options = {}) {
     // Setup has its own temporary userData. Refuse to clean product caches
     // while another UI can still be using them, including a Portable copy.
     const assertProductStopped = async () => {
-      const command = `$ErrorActionPreference = 'Stop'; $session = (Get-Process -Id $PID).SessionId; $running = @(Get-CimInstance Win32_Process -Filter "Name='Arc Power.exe'" | Where-Object { $_.ProcessId -ne ${process.pid} -and $_.SessionId -eq $session -and $_.CommandLine -notmatch '--type=|--apply-worker|sysman.*helper|rtss-profile-helper|--headless|--gpu-diagnostics|--ui-verify' }); if ($running.Count -gt 0) { throw 'Close Arc Power from its tray menu before installing so its cache can be cleared.' }`;
+      const command = createProductStoppedCheckScript({
+        currentPid: process.pid,
+        nativeSetupParentPid: process.ppid,
+        nativeSetupRoot: process.env[NATIVE_INSTALL_ROOT_ENV] !== undefined ? installerExecutionRoot() : undefined,
+      });
       try {
         await execFileAsync(powershellPath(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 });
       } catch (error) {
@@ -689,7 +703,7 @@ async function uninstallArcPower(win) {
   const paths = windowsPaths();
   const plan = createInstallationPlan({
     ...paths,
-    installDir: path.dirname(process.execPath),
+    installDir: installerExecutionRoot(),
     createDesktopShortcut: true,
     launchAfterInstall: false,
     version: app.getVersion(),
@@ -710,7 +724,7 @@ function registerInstallerIpc(win, mode) {
   const handlers = {
     'installer:state': async () => {
       const paths = windowsPaths();
-      const installDir = mode === 'uninstall' ? path.dirname(process.execPath) : resolveDefaultInstallDir(paths.localAppData);
+      const installDir = mode === 'uninstall' ? installerExecutionRoot() : resolveDefaultInstallDir(paths.localAppData);
       return {
         mode,
         version: app.getVersion(),
@@ -740,7 +754,9 @@ function registerInstallerIpc(win, mode) {
       return { ok: true };
     },
   };
-  for (const [channel, handler] of Object.entries(handlers)) ipcMain.handle(channel, handler);
+  for (const [channel, handler] of Object.entries(handlers)) {
+    ipcMain.handle(channel, guardMainFrameIpcHandler(channel, () => win, handler));
+  }
 }
 
 export async function runInstallerMode(mode = 'install') {

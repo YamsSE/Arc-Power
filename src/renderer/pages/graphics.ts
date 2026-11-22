@@ -46,7 +46,7 @@ import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { applyFailureText, CONTROL_LABELS, errorMessage } from '../pure/errors.ts';
 import { buildDeviceSelect } from '../components/device-select.ts';
-import { renderArcSuperResolution, renderGlobalSharpening } from '../components/sharpening.ts';
+import { renderScreenPostprocessCard } from '../components/sharpening.ts';
 import { activeDeviceLabel } from '../pure/device.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { chipState } from '../pure/chip.ts';
@@ -68,7 +68,9 @@ import {
 } from '../pure/graphics.ts';
 import {
   DISPLAY_BPC_OPTIONS,
+  DISPLAY_NO_DISPLAYS_MESSAGE,
   DISPLAY_WIRE_FORMAT_OPTIONS,
+  displayViewStateOf,
   isDisplayControlSupported,
   displayDriverValue,
   displaySettingValue,
@@ -81,8 +83,8 @@ import {
   scalingMethodViewOf as displayScalingMethodViewOf,
   scalingMethodOptionsForView,
   scalingModeViewOptionsForDisplay,
-  superResolutionSourceModesForDisplay,
   customScalingPreferenceOf,
+  resolveDisplayState,
   type DisplayColorRange,
   isDisplayControlDirtyVsApplied as isDisplayControlDirtyVsAppliedPure,
   selectedDisplayOf,
@@ -120,7 +122,6 @@ const DISPLAY_VRR_NOTE = 'Choose whether variable refresh rate is enabled.';
 const DISPLAY_SLIDERS_NOTE = 'IGS-style display color controls.';
 const DISPLAY_MANAGED_COLOR_NOTE = 'Values shown are Arc Power settings, starting from defaults. Applying replaces the corresponding IGS color adjustments; changes made in IGS are not read here.';
 const DISPLAY_WIRE_READONLY_NOTE = 'The driver did not report writable color-format data.';
-const DISPLAY_NO_DISPLAYS_NOTE = 'No display settings are available on this GPU.';
 
 export const CARD_TITLES: Record<string, string> = {
   enduranceGaming: 'Endurance Gaming',
@@ -296,6 +297,8 @@ const sliderRowNodes = new Map<string, HTMLElement>();
 const toggleNodes = new Map<string, DropdownElement>();
 const selectNodes = new Map<string, DropdownElement>();
 const GRAPHICS_REFRESH_KEYS = ['enduranceGaming', 'enduranceGamingMode', 'sharedMemoryOverride', 'frameGenOverride', 'flipMode', 'frameLimit', 'lowLatency', 'prebuiltShaderDownload'];
+const arcSyncDriverDefaults = new Map<string, { minHz: number; maxHz: number }>();
+let arcSyncRangeInvalid = false;
 let viewContainer: HTMLElement | null = null;
 let displayPickerHost: HTMLElement | null = null;
 let currentCtx: PageContext | null = null;
@@ -379,7 +382,7 @@ function createScreenOnlySharpening(): { apply: HTMLButtonElement; card: HTMLEle
   const apply = el('button', { class: 'btn btn-primary floating-apply', text: APPLY_BTN_TEXT, hidden: true,
     onClick: () => { if (screenSharpeningDirty && !screenSharpeningBusy && screenSharpeningCanApply) void applyScreenSharpening?.(); } });
   let card!: HTMLElement;
-  card = renderGlobalSharpening((state) => {
+  card = renderScreenPostprocessCard((state) => {
     screenSharpeningDirty = state.dirty;
     screenSharpeningBusy = state.busy;
     screenSharpeningCanApply = state.canApply;
@@ -581,11 +584,7 @@ function refreshDisplayChip(key: string) {
       : DISPLAY_COLOR_KEYS.includes(key) ? displaySettingValue(display, key) : displayDriverValue(display, key);
   const customDirty = key === 'displayScalingMethod' && displayScalingMethodDraft === 'custom'
     && !sameCustomScaling(displayDraft.scalingCustom, customScalingOf(display!));
-  const chipViewKey = key === 'superResolution' && viewKey && typeof viewKey === 'object'
-    && (viewKey as { enabled?: unknown }).enabled === false
-    ? { enabled: false }
-    : viewKey;
-  const state = customDirty ? 'dirty' : chipState(key, { [key]: chipViewKey }, { [key]: appliedKey }, driverValue, key === 'scalingMode' || key === 'displayScalingMethod'
+  const state = key === 'arcSyncRange' && arcSyncRangeInvalid ? null : customDirty ? 'dirty' : chipState(key, { [key]: viewKey }, { [key]: appliedKey }, driverValue, key === 'scalingMode' || key === 'displayScalingMethod'
     ? isDisplayControlSupported(display, 'scalingMode')
     : isDisplayControlSupported(display, key));
   const managedUnsentDefault = DISPLAY_COLOR_KEYS.includes(key)
@@ -628,13 +627,15 @@ function refreshAll() {
 
 // Every editable Display row participates in the global Apply and reset flow.
 // The capability checks keep incomplete driver read-backs out of the payload.
-const DISPLAY_APPLY_KEYS = ['scalingMode', 'displayScalingMethod', 'globalVrrMode', 'variableRefreshRate', 'quantizationRange', 'wireFormat', 'hue', 'saturation', 'brightness', 'contrast', 'superResolution'];
+const DISPLAY_APPLY_KEYS = ['scalingMode', 'displayScalingMethod', 'globalVrrMode', 'variableRefreshRate', 'arcSyncRange', 'quantizationRange', 'wireFormat', 'hue', 'saturation', 'brightness', 'contrast'];
 const DISPLAY_COLOR_KEYS = ['hue', 'saturation', 'brightness', 'contrast'];
 
 function displayHasDirtyDraft(display: DisplayState['displays'][number] | null): boolean {
   if (!display) return false;
   return DISPLAY_APPLY_KEYS.some((key) => {
-    if (key === 'scalingMode' || key === 'displayScalingMethod') return displayPayloadForControl(key, display) !== null;
+    if (key === 'scalingMode' || key === 'displayScalingMethod' || key === 'arcSyncRange') {
+      return displayPayloadForControl(key, display) !== null;
+    }
     return isDisplayControlDirtyVsAppliedPure(key, displayDraft, display, displayApplied);
   });
 }
@@ -707,7 +708,7 @@ export const graphicsPage: Page = {
     // the Tuning-style 'No GPU available.' guard.
     if (s.deviceId === null) {
       const sharpening = createScreenOnlySharpening();
-      container.append(el('p', { class: 'page-subtitle', text: 'No GPU available for driver graphics settings.' }), renderArcSuperResolution(), sharpening.apply, sharpening.card);
+      container.append(el('p', { class: 'page-subtitle', text: 'No GPU available for driver graphics settings.' }), sharpening.apply, sharpening.card);
       return;
     }
 
@@ -777,6 +778,10 @@ export const graphicsPage: Page = {
     const setGraphicsView = (v: 'settings' | 'display'): void => {
       if (graphicsView === v || displayApplyPending || applying || generalApplyBusy || screenSharpeningBusy) return;
       graphicsView = v;
+      // Both sub-views reuse the page shell. Reset the page viewport on a
+      // switch so a previously scrolled control list cannot clip the shared
+      // Graphics / Display heading at the top.
+      container.scrollTop = 0;
       renderGraphicsView();
       const heading = title.querySelector<HTMLElement>('.page-title');
       if (heading) heading.textContent = graphicsView === 'display' ? 'Display' : 'Graphics';
@@ -840,7 +845,6 @@ async function renderSettingsView(view: HTMLElement, ctx: PageContext, generatio
     const sharpening = createScreenOnlySharpening();
     view.append(
       el('p', { class: 'text-error', text: `Graphics settings unavailable: ${err instanceof Error ? err.message : String(err)}` }),
-      renderArcSuperResolution(),
       sharpening.apply,
       sharpening.card,
     );
@@ -1405,7 +1409,7 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
   const prebuiltShaderCard = buildPrebuiltShaderCard();
   const battlemage = isBattlemageGpuName(selectedDevice?.name, selectedDevice);
   let sharpeningCard!: HTMLElement;
-  sharpeningCard = reusableSharpeningCard ?? renderGlobalSharpening((state) => {
+  sharpeningCard = reusableSharpeningCard ?? renderScreenPostprocessCard((state) => {
     screenSharpeningDirty = state.dirty;
     screenSharpeningBusy = state.busy;
     screenSharpeningCanApply = state.canApply;
@@ -1426,7 +1430,6 @@ function renderCards(view: HTMLElement, ctx: PageContext) {
     el('div', { class: 'card-stack graphics-stack' }, [
       ...mobileCards,
       sharpeningCard,
-      renderArcSuperResolution(),
       ...(!battlemage ? [prebuiltShaderCard] : []),
       buildDropdownCard('frameGenOverride'),
       buildDropdownCard('flipMode'),
@@ -1459,28 +1462,9 @@ async function renderDisplayView(view: HTMLElement, ctx: PageContext, generation
   view.append(el('p', { class: 'page-subtitle', text: 'Loading display information…' }));
   let state: DisplayState | null = null;
   try {
-    const candidates = [...s.devices].sort((a, b) => {
-      const displayRank = Number(b.displayActive === true) - Number(a.displayActive === true);
-      if (displayRank !== 0) return displayRank;
-      const discreteRank = Number(a.integrated === true) - Number(b.integrated === true);
-      return discreteRank;
-    });
-    let fallback: DisplayState | null = null;
-    let foundDeviceId: number | null = null;
-    for (const candidate of candidates) {
-      const candidateState = await api.displayGet(candidate.id);
-      fallback ??= candidateState;
-      if (candidateState.displays.length > 0) {
-        state = candidateState;
-        foundDeviceId = candidate.id;
-        break;
-      }
-    }
-    if (!state) {
-      state = fallback ?? await api.displayGet(s.deviceId);
-      foundDeviceId = candidates.find((candidate) => candidate.id === s.deviceId)?.id ?? s.deviceId;
-    }
-    displayDeviceId = foundDeviceId;
+    const resolved = await resolveDisplayState(s.devices, s.deviceId, (deviceId, deviceKey) => api.displayGet(deviceId, deviceKey));
+    state = resolved.state;
+    displayDeviceId = resolved.deviceId;
   } catch (err) {
     if (!isCurrentRender()) return;
     clear(view);
@@ -1502,6 +1486,14 @@ async function renderDisplayView(view: HTMLElement, ctx: PageContext, generation
   // driver temporarily omitted a value (notably global VRR).
   setDisplayAppliedScalingBaseline();
   renderDisplayCards(view, ctx);
+}
+
+/** Re-run the Display sub-view load in place - the same fresh display:get
+ *  path the Graphics/Display view switch uses - so an unverified adapter
+ *  identity can be retried without leaving the page. */
+function retryDisplayView(view: HTMLElement, ctx: PageContext): void {
+  if (displayApplyPending || applying || !view.isConnected) return;
+  void renderDisplayView(view, ctx, ++renderGeneration);
 }
 
 /** One dropdown control row of the Display view (the M9 chip machine + the
@@ -1943,7 +1935,11 @@ function buildVariableRefreshRateRow(ctx: PageContext): HTMLElement {
     ariaLabel: 'Variable Refresh Rate',
     onChange: (value) => {
       displayDraft.variableRefreshRate = value === 'enabled';
-      refreshDisplayChip('variableRefreshRate');
+      // The Arc Sync range row is gated on the VRR switch, so its enabled
+      // state and stated reason must follow the draft immediately. Never
+      // rebuild the card list while an apply owns these nodes.
+      if (!applying && viewContainer?.isConnected) renderDisplayCards(viewContainer, ctx);
+      else refreshDisplayChip('variableRefreshRate');
     },
   });
   selectNodes.set('variableRefreshRate', select);
@@ -1967,6 +1963,165 @@ function buildVariableRefreshRateRow(ctx: PageContext): HTMLElement {
   chipNodes.set('variableRefreshRate', row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
   chipApplyNodes.set('variableRefreshRate', row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
   refreshDisplayChip('variableRefreshRate');
+  return row;
+}
+
+/** Human-readable Hz: keep integers plain and stop binary float tails. */
+function formatRefreshHz(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)));
+}
+
+/** A window the refresh inputs can show: finite and ordered, else `null`. */
+function usableRefreshWindow(
+  range: { minHz: number; maxHz: number } | null | undefined,
+): { minHz: number; maxHz: number } | null {
+  if (!range || !Number.isFinite(range.minHz) || !Number.isFinite(range.maxHz)) return null;
+  return range.minHz > 0 && range.maxHz > range.minHz ? range : null;
+}
+
+/**
+ * Why the Arc Sync range editors cannot be used, or `null` when they are live.
+ * Every gate names its real cause; the row stays visible so the reason is
+ * readable instead of the control silently disappearing.
+ */
+function arcSyncRangeDisabledReason(display: DisplayState['displays'][number] | null): string | null {
+  if (!display) return 'No display is available.';
+  const arcSync = display.arcSync;
+  if (arcSync?.supported !== true) return 'Intel Arc Sync is not supported by this display.';
+  // Absent (not `false`) means this host's display read does not project the
+  // write contract at all - the mock and delegated hosts. Say so instead of
+  // blaming the driver runtime.
+  if (arcSync.writable === undefined) {
+    return 'This host does not report an Arc Sync write contract; the custom range needs the native elevated display path.';
+  }
+  if (arcSync.writable !== true) return 'The Arc Sync profile setter is not available in this driver runtime.';
+  const bounds = arcSync.rangeBounds;
+  if (!bounds || !Number.isFinite(bounds.minHz) || !Number.isFinite(bounds.maxHz) || !(bounds.maxHz > bounds.minHz)) {
+    return 'The display did not report a complete refresh window, so no custom range can be admitted.';
+  }
+  // The draft wins: enabling VRR and setting the range in one Apply keeps the
+  // range editable in between.
+  const vrr = displayDraft.variableRefreshRate ?? display.variableRefreshRate?.value;
+  if (vrr !== true) return 'Enable Variable Refresh Rate to set a custom Arc Sync range.';
+  return null;
+}
+
+function buildArcSyncRangeRow(ctx: PageContext): HTMLElement {
+  arcSyncRangeInvalid = false;
+  const display = selectedDisplay();
+  const arcSync = display?.arcSync;
+  const bounds = arcSync?.rangeBounds ?? null;
+  const reason = arcSyncRangeDisabledReason(display);
+  const driverDefault = usableRefreshWindow(arcSync?.currentRange ?? null);
+  if (display?.displayKey && arcSync?.profile === 'recommended' && driverDefault) {
+    arcSyncDriverDefaults.set(display.displayKey, driverDefault);
+  }
+  // The editor mirrors the driver's CURRENT window, not the supported ceiling.
+  // An in-progress draft stays visible while it is being edited; a successful
+  // Apply or Reset clears the draft so the next render shows the fresh current
+  // values from the driver.
+  const currentRange = arcSync?.currentRange ?? null;
+  const driverCurrent = display?.vrrCurrentRange?.value ?? null;
+  const draftRange = displayDraft.arcSyncRange ?? null;
+  const shown = usableRefreshWindow(draftRange)
+    ?? usableRefreshWindow(currentRange)
+    ?? usableRefreshWindow(bounds)
+    ?? { minHz: 0, maxHz: 0 };
+  const currentText = currentRange
+    ? `Current: ${formatRefreshHz(currentRange.minHz)} Hz - ${formatRefreshHz(currentRange.maxHz)} Hz`
+    : driverCurrent
+      ? `Current: ${driverCurrent}`
+      : 'Driver-managed range';
+  // The window the apply path admits. `rangeBounds` is that exact window; when
+  // a host does not project it, the driver's own min/max is the best evidence.
+  // Nothing is assumed: with no usable window the line says so instead of
+  // showing a fabricated 0 Hz - 0 Hz.
+  const supportedWindow = usableRefreshWindow(bounds) ?? usableRefreshWindow(
+    arcSync?.minRefreshHz != null && arcSync.maxRefreshHz != null
+      ? { minHz: arcSync.minRefreshHz, maxHz: arcSync.maxRefreshHz }
+      : null,
+  );
+  const supportedText = supportedWindow
+    ? `Supported range: ${formatRefreshHz(supportedWindow.minHz)} Hz - ${formatRefreshHz(supportedWindow.maxHz)} Hz`
+    : 'Supported range unavailable';
+  const note = reason ?? 'Values outside the supported range are refused, never clamped.';
+  const minInput = el('input', {
+    class: 'display-number-input', type: 'number', step: 1, value: shown.minHz,
+    min: bounds?.minHz ?? 0, max: bounds?.maxHz ?? 0,
+    disabled: reason !== null, 'aria-label': 'Arc Sync minimum refresh rate',
+  }) as HTMLInputElement;
+  const maxInput = el('input', {
+    class: 'display-number-input', type: 'number', step: 1, value: shown.maxHz,
+    min: bounds?.minHz ?? 0, max: bounds?.maxHz ?? 0,
+    disabled: reason !== null, 'aria-label': 'Arc Sync maximum refresh rate',
+  }) as HTMLInputElement;
+  const validation = el('p', { class: 'card-note', hidden: true }) as HTMLParagraphElement;
+  const onEdit = (): void => {
+    if (reason !== null) return;
+    const minHz = Number(minInput.value);
+    const maxHz = Number(maxInput.value);
+    const problem = !Number.isFinite(minHz) || !Number.isFinite(maxHz) || !(minHz > 0) || !(maxHz > minHz)
+      ? 'Enter a minimum above 0 Hz and a maximum above the minimum.'
+      : bounds && (minHz < bounds.minHz || maxHz > bounds.maxHz)
+        ? `This display admits ${formatRefreshHz(bounds.minHz)} Hz - ${formatRefreshHz(bounds.maxHz)} Hz only.`
+        : null;
+    validation.hidden = problem === null;
+    validation.textContent = problem ?? '';
+    arcSyncRangeInvalid = problem !== null;
+    // Never clamp: an inadmissible edit stays visible and unsent.
+    if (problem === null) {
+      displayDraft.arcSyncRange = { minHz, maxHz };
+      // Any edit counts, even one back to the current value: clear the
+      // applied baseline so the chip offers Apply immediately.
+      (displayApplied as Record<string, unknown>).arcSyncRange = null;
+    }
+    refreshDisplayChip('arcSyncRange');
+  };
+  minInput.addEventListener('input', onEdit);
+  maxInput.addEventListener('input', onEdit);
+  const row = el('div', { class: 'display-control', dataset: { control: 'arcSyncRange' } }, [
+    el('div', { class: 'display-control-heading' }, [
+      el('h3', { class: 'display-control-title', text: 'Arc Sync Range' }),
+      el('span', { class: 'display-readonly-value', text: currentText }),
+    ]),
+    el('p', { class: 'card-note', text: note }),
+    el('div', { class: 'graphics-control display-custom-scaling-row' }, [
+      minInput,
+      el('span', { class: 'display-readonly-value', text: '-' }),
+      maxInput,
+      el('span', { class: 'display-readonly-value', text: 'Hz' }),
+    ]),
+    el('p', { class: 'card-note', text: supportedText }),
+    validation,
+    el('div', { class: 'graphics-card-actions' }, [
+      el('span', { class: 'chip oc-chip-status', hidden: true }),
+      el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'arcSyncRange'); } }),
+      el('button', { class: 'btn btn-ghost btn-sm', text: 'Restore default', disabled: reason !== null, onClick: () => {
+        // `null` is the restore request: the driver's RECOMMENDED profile with
+        // its own monitor window.
+        displayDraft.arcSyncRange = null;
+        arcSyncRangeInvalid = false;
+        // Show the window the driver will restore to, not the supported
+        // ceiling: bounds.minHz is the floor of what is admissible, not the
+        // default range. Fall back only to the last driver-owned range.
+        const restoreTo = display?.displayKey ? arcSyncDriverDefaults.get(display.displayKey) : undefined;
+        if (restoreTo) {
+          minInput.value = String(restoreTo.minHz);
+          maxInput.value = String(restoreTo.maxHz);
+        }
+        validation.hidden = true;
+        validation.textContent = '';
+        refreshDisplayChip('arcSyncRange');
+      } }),
+    ]),
+  ]);
+  // A gated row has no status/Apply surface: its chip would read "Applied"
+  // next to an explanation of why the control cannot be used.
+  if (reason === null) {
+    chipNodes.set('arcSyncRange', row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
+    chipApplyNodes.set('arcSyncRange', row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
+    refreshDisplayChip('arcSyncRange');
+  }
   return row;
 }
 
@@ -2038,74 +2193,6 @@ function buildDisplaySlider(ctx: PageContext, key: DisplayColorKey, title: strin
   return row;
 }
 
-function buildSuperResolutionRow(ctx: PageContext, display: DisplayState['displays'][number]): HTMLElement {
-  const capability = display.superResolution;
-  // Only Windows-enumerated source modes are offered here. The generated
-  // presets and driver-installed custom modes remain internal capability data.
-  const modes = superResolutionSourceModesForDisplay(display);
-  const current = capability?.currentSourceResolution;
-  const currentListed = capability?.enabled !== true || modes.some((mode) => mode.width === current?.width
-    && mode.height === current?.height && mode.refreshRate === capability?.currentSourceRefreshRate);
-  const supported = isDisplayControlSupported(display, 'superResolution') && modes.length > 0 && currentListed;
-  if (!supported) {
-    const currentText = current
-      ? `${current.width} × ${current.height}${capability?.currentSourceRefreshRate ? ` @ ${capability.currentSourceRefreshRate} Hz` : ''}`
-      : 'Not available';
-    return el('div', { class: 'display-control display-control-readonly', dataset: { control: 'superResolution' } }, [
-      el('div', { class: 'display-control-heading' }, [
-        el('h3', { class: 'display-control-title', text: 'Supernative Source Resolution' }),
-        el('span', { class: 'display-readonly-value', text: currentText }),
-      ]),
-      el('p', { class: 'card-note', text: capability?.reason ?? 'No higher Windows-listed source mode is available.' }),
-    ]);
-  }
-
-  const modeKey = (mode: { width: number; height: number; refreshRate: number }): string => `${mode.width}x${mode.height}@${mode.refreshRate}`;
-  const choices = new Map(modes.map((mode) => [modeKey(mode), mode]));
-  const draft = displayDraft.superResolution;
-  const selected = draft?.enabled
-    ? modeKey({ width: draft.width!, height: draft.height!, refreshRate: draft.refreshRate! })
-    : 'desktop';
-  const options = [{ value: 'desktop', label: 'Desktop resolution' }, ...modes.map((mode) => ({
-    value: modeKey(mode),
-    label: mode.label ?? mode.name ?? `${mode.width} × ${mode.height} @ ${mode.refreshRate} Hz`,
-  }))];
-  const select = buildDropdown(selected, options, {
-    className: 'graphics-select display-select',
-    dataset: { displaySelect: 'superResolution' },
-    ariaLabel: 'Supernative source resolution',
-    onChange: (value) => {
-      if (value === 'desktop') displayDraft.superResolution = { enabled: false };
-      else {
-        const mode = choices.get(value);
-        if (mode) displayDraft.superResolution = { enabled: true, width: mode.width, height: mode.height, refreshRate: mode.refreshRate };
-      }
-      refreshDisplayChip('superResolution');
-    },
-  });
-  selectNodes.set('superResolution', select);
-  const row = el('div', { class: 'display-control', dataset: { control: 'superResolution' } }, [
-    el('div', { class: 'display-control-heading' }, [
-      el('h3', { class: 'display-control-title', text: 'Supernative Source Resolution' }),
-      el('div', { class: 'graphics-control display-inline-control' }, [select]),
-    ]),
-    el('p', { class: 'card-note', text: 'Uses a source resolution currently listed by Windows for this display. Switching modes may flash or briefly blank the screen.' }),
-    el('div', { class: 'graphics-card-actions' }, [
-      el('span', { class: 'chip oc-chip-status', hidden: true }),
-      el('button', { class: 'chip chip-btn oc-chip-apply', hidden: true, text: 'Apply', onClick: () => { if (!applying) void applyDisplay(ctx, 'superResolution'); } }),
-      el('button', { class: 'btn btn-ghost btn-sm', text: 'Reset to desktop resolution', onClick: () => {
-        displayDraft.superResolution = { enabled: false };
-        select.value = 'desktop';
-        refreshDisplayChip('superResolution');
-      } }),
-    ]),
-  ]);
-  chipNodes.set('superResolution', row.querySelector<HTMLElement>('.oc-chip-status') as HTMLElement);
-  chipApplyNodes.set('superResolution', row.querySelector<HTMLButtonElement>('.oc-chip-apply') as HTMLButtonElement);
-  refreshDisplayChip('superResolution');
-  return row;
-}
-
 function buildDisplayModeRow(title: string, value: string, reason: string): HTMLElement {
   let mode = value.toLowerCase();
   const basic = el('button', { class: 'display-mode-btn', type: 'button', text: 'Basic' });
@@ -2153,12 +2240,27 @@ function buildDisplayGroup(key: string, title: string, children: HTMLElement[], 
 function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
   clear(view);
   const display = selectedDisplay();
-  if (!displayState || !display) {
-    // The honest no-controls state (RID_MOCK_DISPLAY_UNSUPPORTED, the
-    // multi-device iGPU, any empty display list) - never a dead control,
-    // never a crash.
+  const displayView = displayViewStateOf(displayState);
+  // The honest no-controls state - never a dead control, never a crash. Two
+  // distinct causes, two distinct messages: a GPU that genuinely exposes no
+  // display outputs (RID_MOCK_DISPLAY_UNSUPPORTED, the multi-device iGPU, the
+  // empty list) versus a read that could not verify the selected adapter's
+  // identity (a transient, retryable condition that offers the refresh path).
+  if (displayView.kind === 'identity-unavailable' || !displayState || !display) {
     if (displayPickerHost) clear(displayPickerHost);
-    view.append(el('p', { class: 'card-note display-no-displays', text: DISPLAY_NO_DISPLAYS_NOTE }));
+    const unverified = displayView.kind === 'identity-unavailable';
+    view.append(el('p', {
+      class: `card-note ${unverified ? 'display-identity-unavailable' : 'display-no-displays'}`,
+      text: unverified ? displayView.message : DISPLAY_NO_DISPLAYS_MESSAGE,
+    }));
+    if (unverified) {
+      view.append(el('button', {
+        class: 'btn btn-ghost btn-sm display-identity-retry',
+        type: 'button',
+        text: 'Retry',
+        onClick: () => retryDisplayView(view, ctx),
+      }));
+    }
     return;
   }
 
@@ -2194,7 +2296,7 @@ function renderDisplayCards(view: HTMLElement, ctx: PageContext): void {
     buildDisplayScalingMethodRow(ctx),
     buildDisplayDropdownRow(ctx, 'globalVrrMode', 'Variable Refresh Rate Mode', DISPLAY_GLOBAL_VRR_NOTE, display.supportedOptions.globalVrrModes ?? [], GLOBAL_VRR_LABELS),
     buildDisplayDropdownRow(ctx, 'variableRefreshRate', 'Variable Refresh Rate', DISPLAY_VRR_NOTE, ['enabled', 'disabled'], VARIABLE_REFRESH_RATE_LABELS),
-    buildSuperResolutionRow(ctx, display),
+    buildArcSyncRangeRow(ctx),
   ]);
 
   const color = buildDisplayGroup('color', 'Color', [
@@ -2309,6 +2411,12 @@ async function apply(ctx: PageContext, only?: string | string[]) {
       }
     }
     refreshAll();
+    // Chips alone are not enough: the visible selectors and read-outs are
+    // built from `graphicsState`, so re-render them from the apply's fresh
+    // read-back instead of waiting for a later store push or tab refresh.
+    if (graphicsView === 'settings' && viewContainer?.isConnected) {
+      renderCards(viewContainer, ctx);
+    }
   } catch (err) {
     // M2C-C: a declined/denied UAC prompt surfaces here with the honest
     // message (Apply requires administrator approval).
@@ -2405,6 +2513,13 @@ function displayPayloadForControl(only: string, display: DisplayState['displays'
           method: display.scalingMethod.value.method ?? 'integer',
         };
       }
+    }
+  } else if (only === 'arcSyncRange') {
+    // The row gate is the same one that disables the editors: a gated control
+    // never carries a payload, even if a stale draft says otherwise.
+    if (!arcSyncRangeInvalid && arcSyncRangeDisabledReason(display) === null
+      && isDisplayControlDirtyVsAppliedPure('arcSyncRange', displayDraft, display, displayApplied)) {
+      payload = { arcSyncRange: displayDraft.arcSyncRange ?? null };
     }
   } else if (isDisplayControlDirtyVsAppliedPure(only, displayDraft, display, displayApplied)) {
     let value = (displayDraft as Record<string, unknown>)[only];
@@ -2506,6 +2621,20 @@ async function applyDisplay(ctx: PageContext, only: string) {
             (displayDraft as Record<string, unknown>)[key] = readBack;
           } else if (key === 'wireFormat' && readBack && typeof readBack === 'object') {
             displayDraft.wireFormat = readBack as DisplaySettings['wireFormat'];
+          } else if (key === 'arcSyncRange') {
+            // Keep the draft equal to the value that actually landed. Clearing
+            // it made the NEXT Apply send `null` (restore defaults), which is
+            // why a second click jumped to Intel's 90-180 window.
+            const per = out.perControl.arcSyncRange as unknown as Record<string, unknown> | undefined;
+            const minHz = Number(per?.readBackMinHz ?? per?.requestedMinHz);
+            const maxHz = Number(per?.readBackMaxHz ?? per?.requestedMaxHz);
+            const landed = Number.isFinite(minHz) && Number.isFinite(maxHz)
+              ? { minHz, maxHz }
+              : null;
+            // The generic read-back is null unless the profile is `custom`;
+            // use the apply evidence so the chip matches what actually landed.
+            if (landed) (displayApplied as Record<string, unknown>).arcSyncRange = landed;
+            displayDraft.arcSyncRange = landed;
           }
         } else {
           (displayApplied as Record<string, unknown>)[key] = (payload as Record<string, unknown>)[key];
@@ -2526,6 +2655,14 @@ async function applyDisplay(ctx: PageContext, only: string) {
         if (!per.internal) toast('error', `${CONTROL_LABELS[key] ?? key} failed`, per.message ?? errorMessage(per.errorCode, key));
       }
     }
+    // A control that was sent but never reported must not look like a silent
+    // success. This is the visible decline for a host whose apply path does
+    // not implement the Arc Sync range step yet.
+    if (Object.prototype.hasOwnProperty.call(payload, 'arcSyncRange')
+      && out.perControl.arcSyncRange === undefined) {
+      toast('error', 'Arc Sync range not applied',
+        'The display apply response did not report an Arc Sync range result, so the custom refresh window was not written.');
+    }
     // Scaling Mode and Scaling Method are one IGS three-way control in the
     // UI, but the native payload uses the raw coupled fields. Keep both chip
     // baselines synchronized after either half succeeds; otherwise the
@@ -2542,7 +2679,7 @@ async function applyDisplay(ctx: PageContext, only: string) {
     const hasScalingReadback = out.perControl.scalingMode !== undefined
       || out.perControl.scalingMethod !== undefined
       || out.perControl.displayScalingMethod !== undefined;
-    if (freshDisplay && (hasScalingReadback || out.perControl.superResolution !== undefined)) {
+    if (freshDisplay && hasScalingReadback) {
       // A second selector change may have arrived while the first modeset
       // was in flight. Keep that newer intent for the queued transaction;
       // only replace an unchanged draft with native read-back.
@@ -2558,6 +2695,13 @@ async function applyDisplay(ctx: PageContext, only: string) {
         if (!preserved) syncDisplayScalingDraftFromReadback(freshDisplay);
       }
       if (graphicsView === 'display' && viewContainer?.isConnected) renderDisplayCards(viewContainer, ctx);
+    }
+    // The Arc Sync window is owned by the driver and read back by the native
+    // apply. Re-render on success so the row's "Custom: ..." header follows the
+    // fresh driver value instead of waiting for a manual tab refresh.
+    if (freshDisplay && out.perControl.arcSyncRange?.ok === true
+      && graphicsView === 'display' && viewContainer?.isConnected) {
+      renderDisplayCards(viewContainer, ctx);
     }
     for (const key of DISPLAY_APPLY_KEYS) refreshDisplayChip(key);
     updateDisplayFloating();

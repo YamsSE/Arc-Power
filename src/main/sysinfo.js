@@ -49,19 +49,13 @@ let inFlight = null;
  * memory row; the Manufacturer is the raw SPD JEDEC hex code, decoded by
  * jedecBrand in the parse; SMBIOSMemoryType is the Type-17 code the
  * dashboard's DDR5-style label derives from), Win32_VideoController
- *  (Name/AdapterRAM/PNPDeviceID), the display
- *  class registry subkeys' HardwareInformation.qwMemorySize (UInt64 bytes,
- *  keyed by MatchingDeviceId). M17p: the OS ReBAR sources are LIGHTENED -
- *  the per-controller pnputil resource spawn and the
- *  Win32_DeviceMemoryAddress/Win32_AllocatedResource cross-check are
- *  REMOVED from the query (the measured expensive tail of the ~3.1-s
- *  query). The DRIVER's BAR verdict (ctlPciGetProperties, main.js
- *  driverReBar) is the documented PRIMARY ReBAR source and now decides
- *  alone; the OS sources were only the fallback for a null driver verdict
- *  (that verdict now degrades to null - the renderer's grey pill). The
- *  JSON shape stays byte-identical: the controller rows still emit
- *  MaxBarBytes (always 0) and the payload still carries allocatedBar
- *  (always []) - the parse side is untouched.
+ *  (Name/AdapterRAM/PNPDeviceID), the display class registry subkeys'
+ *  HardwareInformation.qwMemorySize (UInt64 bytes, keyed by
+ *  MatchingDeviceId). M17p removed OS BAR fallback after measuring one
+ *  pnputil child process per GPU plus two CIM queries at ~1.5 s. The current
+ *  fallback restores only those CIM queries, joined in-memory within this
+ *  cached, one-shot collection. It does not spawn pnputil or add recurring
+ *  polling; the driver's BAR verdict remains primary.
  *  M4-D2: the PCIe-link property queries are REMOVED (the row was removed -
  *  the unpopulated 1/1 pattern made it a permanent '-' on this machine).
  *  Serialized to JSON by PowerShell itself (the parse side stays dumb). A
@@ -85,8 +79,8 @@ export function buildSysinfoScript() {
     // 24 = DDR3, 34 = DDR5 on the mock; the parse maps it, anything unknown
     // is omitted).
     // M17b: PartNumber joins the query (the ramBrandOf fallback source -
-    // a Juhor part number resolves the brand when the JEDEC decode yields
-    // nothing usable, e.g. the BIOS writing the literal string "Unknown").
+    // known vendor part numbers resolve the brand when the JEDEC decode
+    // yields no usable value, e.g. the BIOS writing the literal "Unknown").
     '$mem = Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1 Manufacturer,ConfiguredClockSpeed,SMBIOSMemoryType,PartNumber',
     // M4J (B): the Mainboard row source - Win32_BaseBoard Manufacturer +
     // Product (the M4-I Win32_CacheMemory query is REMOVED with the Cache
@@ -101,22 +95,15 @@ export function buildSysinfoScript() {
     '$pnpLocations = @{}',
     '@(Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | ForEach-Object { $loc = (Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName DEVPKEY_Device_LocationInfo -ErrorAction SilentlyContinue).Data; if ($loc) { $pnpLocations[$_.InstanceId] = $loc } }) | Out-Null',
     '$regMem = @(Get-ChildItem \'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\' | ForEach-Object { $p = Get-ItemProperty $_.PSPath; if ($p.\'HardwareInformation.qwMemorySize\' -and $p.MatchingDeviceId) { [pscustomobject]@{ PNPDeviceID = $p.MatchingDeviceId; MemoryBytes = $p.\'HardwareInformation.qwMemorySize\' } } })',
-    // M17p: the OS ReBAR sources are LIGHTENED (the measured expensive
-    // tail: the per-controller pnputil subprocess spawn - one per video
-    // controller inside the PS session - plus the
-    // Win32_DeviceMemoryAddress/Win32_AllocatedResource cross-check, the
-    // two CIM queries + the join measuring ~1.5 s of the ~3.1-s query on
-    // this box). The DRIVER's BAR verdict (ctlPciGetProperties - the
-    // documented PRIMARY source, main.js driverReBar) now decides ReBAR
-    // alone; the OS sources were only the fallback for a null driver
-    // verdict - that verdict now degrades to null (the renderer's grey
-    // pill). The JSON shape stays byte-identical: the controller rows
-    // still emit MaxBarBytes (always 0) and the payload still carries
-    // allocatedBar (always []) - the parse side is untouched (a
-    // functioning multi-GiB OS window can no longer flip the verdict).
+    // M17p measured pnputil-per-GPU plus the two CIM queries at ~1.5 s.
+    // Restore only the CIM resource fallback: both classes are queried once
+    // in this cached boot collection and joined in-memory. No pnputil child
+    // processes or recurring polling are introduced. The driver BAR verdict
+    // remains primary; this OS result is the fallback when it is unknown.
     '$vga = @($vga | ForEach-Object { [pscustomobject]@{ DeviceID = $_.DeviceID; Name = $_.Name; AdapterRAM = $_.AdapterRAM; PNPDeviceID = $_.PNPDeviceID; DriverVersion = $_.DriverVersion; CurrentHorizontalResolution = $_.CurrentHorizontalResolution; CurrentVerticalResolution = $_.CurrentVerticalResolution; LocationInfo = $pnpLocations[$_.PNPDeviceID]; MaxBarBytes = 0 } })',
-    '$barRes = @()',
-    '[pscustomobject]@{ cpu = $cpu; computerSystem = $cs; systemEnclosure = $enc; physicalMemory = $mem; baseboard = $bb; videoControllers = $vga; registryMemory = $regMem; allocatedBar = $barRes } | ConvertTo-Json -Depth 4 -Compress',
+    '$dma = @(Get-CimInstance Win32_DeviceMemoryAddress -OperationTimeoutSec 2 | ForEach-Object { [pscustomobject]@{ StartingAddress = [string]$_.StartingAddress; EndingAddress = [string]$_.EndingAddress } })',
+    '$alloc = @(Get-CimInstance Win32_AllocatedResource -OperationTimeoutSec 2 | ForEach-Object { [pscustomobject]@{ Dependent = [string]$_.Dependent; Antecedent = [string]$_.Antecedent } })',
+    '[pscustomobject]@{ cpu = $cpu; computerSystem = $cs; systemEnclosure = $enc; physicalMemory = $mem; baseboard = $bb; videoControllers = $vga; registryMemory = $regMem; allocatedBarSources = @{ allocations = $alloc; memoryRanges = $dma } } | ConvertTo-Json -Depth 4 -Compress',
   ].join('; ');
 }
 
@@ -639,19 +626,37 @@ export function jedecBrand(manufacturer) {
 // M17b: the literal SMBIOS "no brand" strings some BIOSes write into the
 // Type-17 Manufacturer string (the JEDEC decode table predates the module
 // and the board writes a plain word instead of a hex code) - case-
-// insensitive. ramBrandOf treats these as "nothing usable" and falls back
-// to the part-number heuristic.
+// insensitive. An unmapped raw hex code is also eligible for the SKU
+// fallback; a mapped JEDEC brand always takes precedence.
 const SMBIOS_UNKNOWN_BRANDS = new Set(['unknown', 'not specified', 'standard']);
+
+// Conservative, anchored module-SKU recognizers. Keep each rule tied to a
+// documented manufacturer family so an arbitrary descriptive string cannot
+// claim a brand. Extend this table only with verified module SKU examples.
+const RAM_PART_NUMBER_BRANDS = Object.freeze([
+  { brand: 'Patriot', pattern: /^(?:PSD\d{1,3}G\d{3,4}[A-Z0-9]*|PV(?:S|B)?\d{1,3}G\d{3,4}[A-Z0-9]*)$/i },
+  { brand: 'G.Skill', pattern: /^F[345]-\d{4}[A-Z0-9-]+$/i },
+  { brand: 'Corsair', pattern: /^CM(?:K|H|T|P|W|D|V|N|G|Y|L|Z|X|U|SX|SO)\d+GX[345][A-Z0-9-]*$/i },
+  { brand: 'Kingston', pattern: /^(?:KF[345]\d{2}|KVR\d{2}|KSM\d{2}|HX[345]\d{2})[A-Z0-9/._-]*$/i },
+  { brand: 'Crucial', pattern: /^CT\d+(?:K\d+)?G[345][A-Z0-9-]*$/i },
+  { brand: 'ADATA', pattern: /^AX[345]U\d{3,4}\d{1,2}G[A-Z0-9-]*$/i },
+  { brand: 'Team Group', pattern: /^TED\d{1,3}G\d{3,4}[A-Z0-9-]*$/i },
+  { brand: 'Samsung', pattern: /^M(?:378|471|391|393)[A-Z0-9-]+$/i },
+  { brand: 'Micron', pattern: /^MTA\d[A-Z0-9-]*$/i },
+  { brand: 'SK Hynix', pattern: /^HM(?:A|T)\d[A-Z0-9-]*$/i },
+  { brand: 'Juhor', pattern: /^(?:JUHOR(?:\s+DDR[345]\b.*)?|JHD[A-Z0-9-]+)$/i },
+]);
+
+const UNMAPPED_JEDEC_HEX = /^(?:0x)?[0-9a-f]{3,8}$/i;
 
 /**
  * M17b: the RAM-brand resolver with the part-number fallback. When
  * jedecBrand yields nothing usable (null / empty / the literal SMBIOS
  * unknowns 'unknown' / 'not specified' / 'standard', case-insensitive), a
- * part-number match on /juhor|^jhd/i resolves 'Juhor' (the documented
- * heuristic: the Juhor part numbers read 'JUHOR DDR4-3200 16GB', 'JHD...'
- * - the pre-JEP106-programmed modules whose BIOS decode table predates
- * the bank-8 code). NEVER applied when the JEDEC decode succeeded - a
- * decoded brand always wins (never overridden by the part number). Pure.
+ * a known part-number family resolves the module brand. The anchored SKU
+ * table covers common retail/OEM families when SMBIOS provides no brand or
+ * an unmapped JEDEC value. NEVER applied when the JEDEC decode succeeded -
+ * a decoded brand always wins (never overridden by the part number). Pure.
  * @param {unknown} manufacturer the raw CIM Manufacturer (SPD JEDEC code)
  * @param {unknown} partNumber the raw CIM PartNumber
  * @returns {string | null}
@@ -660,10 +665,14 @@ export function ramBrandOf(manufacturer, partNumber) {
   const decoded = jedecBrand(manufacturer);
   const usable = typeof decoded === 'string'
     && decoded.length > 0
-    && !SMBIOS_UNKNOWN_BRANDS.has(decoded.trim().toLowerCase());
+    && !SMBIOS_UNKNOWN_BRANDS.has(decoded.trim().toLowerCase())
+    && !UNMAPPED_JEDEC_HEX.test(decoded.trim());
   if (usable) return decoded;
-  const pn = typeof partNumber === 'string' ? partNumber : '';
-  return /juhor|^jhd/i.test(pn) ? 'Juhor' : decoded;
+  const pn = typeof partNumber === 'string' ? partNumber.trim() : '';
+  for (const entry of RAM_PART_NUMBER_BRANDS) {
+    if (entry.pattern.test(pn)) return entry.brand;
+  }
+  return decoded;
 }
 
 /**
@@ -704,6 +713,14 @@ function pciBdfOf(value) {
     } else {
       const location = raw.match(/\bbus\s*(\d+)\s*,?\s*device\s*(\d+)\s*,?\s*function\s*(\d+)/i);
       if (!location) return null;
+      // LocationInfo can include a PCI segment. Never silently treat an
+      // explicit nonzero or malformed segment as segment zero.
+      const segmentLabels = raw.match(/\b(?:segment|domain)\b/gi) ?? [];
+      if (segmentLabels.length > 0) {
+        const segment = raw.match(/\b(?:segment|domain)\s*(0x[0-9a-f]+|\d+)\b/i);
+        if (segmentLabels.length !== 1 || !segment) return null;
+        domain = Number(segment[1]);
+      }
       bus = Number(location[1]);
       device = Number(location[2]);
       fn = Number(location[3]);
@@ -830,7 +847,7 @@ function rebarTargetOf(target) {
  * @param {object|null} target raw backend identity selected for the verdict
  * @returns {object} a NEW sysinfo object with the driver verdict merged
  */
-export function applyDriverReBar(sysinfo, driverEnabled, target = null) {
+export function applyDriverReBar(sysinfo, driverEnabled, target = null, { requireBdf = false } = {}) {
   if (driverEnabled === null || driverEnabled === undefined || typeof sysinfo !== 'object' || sysinfo === null) {
     return sysinfo;
   }
@@ -840,6 +857,7 @@ export function applyDriverReBar(sysinfo, driverEnabled, target = null) {
   const controllers = sysinfo.videoControllers;
   let index = 0;
   const wanted = rebarTargetOf(target);
+  if (requireBdf && !wanted) return sysinfo;
   if (Array.isArray(target?.videoControllers) && !wanted) return sysinfo;
   if (wanted) {
     const exactPnp = typeof wanted.pnpDeviceId === 'string'
@@ -849,12 +867,16 @@ export function applyDriverReBar(sysinfo, driverEnabled, target = null) {
       : [];
     const bdfMatches = controllers.map((controller, i) => ({ controller, i }))
       .filter(({ controller }) => samePciBdf(controller, wanted));
+    // A DirectX full-VRAM result belongs to one exact PCI location. Do not
+    // attach it using a vendor/device-only or PNP-only fallback.
+    if (requireBdf && bdfMatches.length !== 1) return sysinfo;
     const pairMatches = controllers.map((controller, i) => ({ controller, i }))
       .filter(({ controller }) => samePciPair(controller, wanted));
     // PNP is strongest when unique. Raw IGCL rows do not carry Windows PNP
     // IDs, so use their PCI BDF to disambiguate same-model controllers before
     // falling back to a vendor/device pair.
-    const matches = exactPnp.length === 1 ? exactPnp
+    const matches = requireBdf ? bdfMatches
+      : exactPnp.length === 1 ? exactPnp
       : bdfMatches.length > 0 ? bdfMatches
         : exactPnp.length > 1 ? exactPnp : pairMatches;
     if (matches.length !== 1 || !pciIdentityCompatible(matches[0].controller, wanted)) return sysinfo;
@@ -962,24 +984,69 @@ export function createDriverReBar(backend, target = null) {
 
 /**
  * M4-D: the ReBAR verdict - a functioning Resizable BAR shows a
- * multi-GiB memory BAR in the device resources (the A770's non-ReBAR
- * aperture is 16 MB; with ReBAR the BAR spans the full VRAM). True when
- * the largest memory range is >= 1 GiB; false otherwise (unknown when no
- * resource info). Live-verified on this machine: 16 MB -> false (ReBAR off).
+ * multi-GiB memory BAR in the device resources. An exact-device range >=
+ * 1 GiB positively indicates active ReBAR. Smaller observations are
+ * inconclusive because WMI may omit a BAR; only the driver source can provide
+ * a definitive false.
  * @param {unknown} maxBarBytes
  * @returns {boolean|null}
  */
 export function rebarFromMaxBarBytes(maxBarBytes) {
   if (typeof maxBarBytes !== 'number' || !Number.isFinite(maxBarBytes) || maxBarBytes <= 0) return null;
-  return maxBarBytes >= 1024 * 1024 * 1024;
+  // A large exact-device BAR proves ReBAR is active. A smaller observed range
+  // is only a lower bound: WMI may omit a BAR, so it cannot prove disabled.
+  return maxBarBytes >= 1024 * 1024 * 1024 ? true : null;
+}
+
+function cimReferenceField(value, className, fieldName) {
+  if (typeof value !== 'string') return null;
+  const escapedClass = className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedField = fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = value.match(new RegExp(`${escapedClass}\\s+\\(${escapedField}\\s*=\\s*"?([^",)]*)"?\\)`, 'i'));
+  return match ? match[1].replace(/\\\\/g, '\\') : null;
+}
+
+/** Resolve Win32_AllocatedResource -> Win32_DeviceMemoryAddress associations
+ * to individual Win32_VideoController rows. Only exact controller IDs or
+ * exact PNP IDs are joined; no model/vendor fallback is allowed. */
+export function resolveAllocatedBarResources(videoControllers, sources) {
+  const allocations = Array.isArray(sources?.allocations) ? sources.allocations : [];
+  const memoryRanges = Array.isArray(sources?.memoryRanges) ? sources.memoryRanges : [];
+  return (Array.isArray(videoControllers) ? videoControllers : []).map((controller) => {
+    const controllerId = typeof controller?.DeviceID === 'string' ? controller.DeviceID.trim() : '';
+    const pnpDeviceId = typeof controller?.PNPDeviceID === 'string' ? controller.PNPDeviceID.trim() : '';
+    let maxBarBytes = 0;
+    for (const allocation of allocations) {
+      const dependent = cimReferenceField(allocation?.Dependent, 'Win32_VideoController', 'DeviceID');
+      const dependentPnp = dependent === null
+        ? cimReferenceField(allocation?.Dependent, 'Win32_PnPEntity', 'DeviceID')
+        : null;
+      const deviceMatches = dependent !== null && controllerId
+        ? dependent.toUpperCase() === controllerId.toUpperCase()
+        : dependentPnp !== null && pnpDeviceId
+          ? dependentPnp.toUpperCase() === pnpDeviceId.toUpperCase()
+          : false;
+      if (!deviceMatches) continue;
+      const startValue = cimReferenceField(allocation?.Antecedent, 'Win32_DeviceMemoryAddress', 'StartingAddress');
+      if (!startValue || !/^\d+$/.test(startValue)) continue;
+      const start = BigInt(startValue);
+      const range = memoryRanges.find((candidate) => String(candidate?.StartingAddress ?? '') === startValue);
+      const endValue = String(range?.EndingAddress ?? '');
+      if (!/^\d+$/.test(endValue)) continue;
+      const end = BigInt(endValue);
+      if (end < start) continue;
+      const size = end - start + 1n;
+      if (size > BigInt(Number.MAX_SAFE_INTEGER)) continue;
+      maxBarBytes = Math.max(maxBarBytes, Number(size));
+    }
+    return { PNPDeviceID: pnpDeviceId || null, MaxBarBytes: maxBarBytes };
+  });
 }
 
 /**
- * M4-D2 (§3): merge the allocated-resource cross-check rows into the
- * controller list - per controller, the ReBAR verdict comes from the LARGER
- * of the two sources (pnputil per-device resources and the
- * Win32_AllocatedResource -> Win32_DeviceMemoryAddress join), matched by
- * PNPDeviceID. rebarActive = any range >= 1 GiB from either source.
+ * Merge allocated-resource rows into the controller list, matched by exact
+ * PNPDeviceID. A >=1 GiB range proves active ReBAR; smaller observations
+ * remain unknown because WMI may omit a BAR.
  * @param {Array<{ pnpDeviceId: string|null, rebarActive: boolean|null }>} controllers
  * @param {Array<{ PNPDeviceID?: unknown, MaxBarBytes?: unknown }>} allocatedBar
  *   the raw parsed cross-check rows
@@ -988,7 +1055,9 @@ export function applyAllocatedBar(controllers, allocatedBar) {
   const rows = Array.isArray(allocatedBar) ? allocatedBar : [];
   return controllers.map((c) => {
     if (!c.pnpDeviceId) return c;
-    const row = rows.find((r) => typeof r?.PNPDeviceID === 'string' && r.PNPDeviceID === c.pnpDeviceId);
+    const normalizedPnp = c.pnpDeviceId.trim().toUpperCase();
+    const row = rows.find((r) => typeof r?.PNPDeviceID === 'string'
+      && r.PNPDeviceID.trim().toUpperCase() === normalizedPnp);
     const crossBytes = typeof row?.MaxBarBytes === 'number' && Number.isFinite(row.MaxBarBytes) ? row.MaxBarBytes : 0;
     const pnputilBytes = typeof c._pnputilBarBytes === 'number' && Number.isFinite(c._pnputilBarBytes) ? c._pnputilBarBytes : 0;
     return {
@@ -1057,10 +1126,9 @@ export function parseCimOutput(stdout) {
     speedMhz: num(memRaw?.ConfiguredClockSpeed),
     // M4-D2: the raw SPD JEDEC code ("0420") decodes to the brand
     // (G.Skill); a real name / unknown code passes through honestly.
-    // M17b: the part-number fallback (ramBrandOf) - a literal SMBIOS
-    // 'Unknown' manufacturer with a Juhor part number resolves 'Juhor'
-    // (the BIOS decode table predates the Juhor bank-8 code); a decoded
-    // brand always wins.
+    // M17b: the part-number fallback (ramBrandOf) - known module SKU
+    // families resolve when SMBIOS reports an unusable brand; a decoded
+    // JEDEC brand always wins.
     manufacturer: ramBrandOf(memRaw?.Manufacturer, memRaw?.PartNumber),
     // M4-H: the SMBIOS Type-17 memory-type code (24=DDR3, 34=DDR5, ... -
     // the pure ramMemoryType mapping in the renderer derives the label).
@@ -1078,6 +1146,9 @@ export function parseCimOutput(stdout) {
     pcSystemType: typeof csRaw?.PCSystemType === 'number' && Number.isFinite(csRaw.PCSystemType) ? csRaw.PCSystemType : null,
     chassisTypes: chassisRaw.filter((t) => typeof t === 'number' && Number.isFinite(t)).map((t) => Math.floor(t)),
   };
+  const allocatedBar = Array.isArray(raw?.allocatedBar)
+    ? raw.allocatedBar
+    : resolveAllocatedBarResources(vgaRaw, raw?.allocatedBarSources);
   const controllers = applyAllocatedBar(
     applyRegistryMemory(
       vgaRaw
@@ -1099,17 +1170,17 @@ export function parseCimOutput(stdout) {
             : {}),
           rebarActive: null,
           ...(typeof c?.LocationInfo === 'string' && c.LocationInfo ? { locationInfo: c.LocationInfo } : {}),
-          // M4-D2: the pnputil source rides along (merged with the
-          // allocated-resource cross-check by applyAllocatedBar).
+          // Legacy-compatible field; pnputil is not invoked. Allocated
+          // resource observations are parsed separately.
           _pnputilBarBytes: typeof c?.MaxBarBytes === 'number' && Number.isFinite(c.MaxBarBytes) ? c.MaxBarBytes : 0,
         }))
         .filter((c) => c.name !== null),
       raw?.registryMemory,
     ),
-    raw?.allocatedBar,
+    allocatedBar,
   );
-  // M4-D2: the internal pnputil byte count never surfaces (only the merged
-  // verdict does). M7b (fix 1): the payload then filters through
+  // The internal legacy byte field never surfaces. M7b (fix 1): the payload
+  // then filters through
   // isRealGpuController - only AMD/Intel/NVIDIA parts survive (a
   // "Microsoft Basic Display Adapter" / DisplayLink controller must never
   // win the dashboard/health videoControllers[0] fallbacks).

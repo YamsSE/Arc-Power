@@ -1,6 +1,7 @@
 export interface DashboardRetailAssetInput {
   name: unknown;
   gpuVendor?: unknown;
+  pciDeviceId?: unknown;
   integrated?: unknown;
   mobile?: unknown;
   aibVendor?: unknown;
@@ -46,6 +47,18 @@ function isIntelIntegratedModel(model: string): boolean {
   return /\bigpu\b|\b(?:uhd|iris)\b|\bintegrated\b|\bintel graphics\b|\barc(?:\s*\([^)]*\))?\s+graphics\b|\barc\s+b370\b/.test(model);
 }
 
+function isIntelD270(input: DashboardRetailAssetInput): boolean {
+  const model = textOf(input.name).replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+  const isIntel = textOf(input.gpuVendor) === 'intel' || model.includes('intel') || model.includes('arc');
+  return isIntel && (numberOf(input.pciDeviceId) === 0x674c || /\b(?:d270|crescent island)\b/.test(model));
+}
+
+/** Resolve the D270 label when a driver reports only a generic Intel name. */
+export function dashboardGpuDisplayName(input: DashboardRetailAssetInput): string {
+  const name = typeof input.name === 'string' ? input.name.trim() : '';
+  return isIntelD270(input) ? 'Intel GPU D270' : name || 'GPU';
+}
+
 /** Pure dashboard-only retail portrait selection. It has no Apply or device-routing side effects. */
 export function dashboardRetailAssetPath(input: DashboardRetailAssetInput): string | null {
   const model = textOf(input.name);
@@ -61,6 +74,11 @@ export function dashboardRetailAssetPath(input: DashboardRetailAssetInput): stri
   if (isAmd && input.integrated === true) return `${ASSET_ROOT}amd-radeon-igpu-chip.png`;
 
   if (isIntel) {
+    // Intel's compute runtime lists 0x674C in the Crescent Island (CRI)
+    // family; use the D270 image when the driver exposes only this PCI ID.
+    if (isIntelD270(input)) {
+      return `${ASSET_ROOT}intel-gpu-d270.png`;
+    }
     // Check the integrated flag before the broad Arc-family fallback. Intel
     // iGPU names can contain "Arc", but they must use the chip portrait.
     if (input.integrated === true || isIntelIntegratedModel(normalizedModel)) {
@@ -97,7 +115,9 @@ export function dashboardRetailAssetPath(input: DashboardRetailAssetInput): stri
   }
 
   if (/\bvega\b/.test(model)) return `${ASSET_ROOT}amd-radeon-vega-reference.png`;
-  if (/\brx\s*?(?:7|9)\d{3}\b/.test(model)) return `${ASSET_ROOT}amd-radeon-rx-7000-9000-reference.png`;
+  // The former RX 7000/9000 image depicts a Sapphire partner board. Use the
+  // neutral GPU illustration until a verified reference image is available.
+  if (/\brx\s*?(?:7|9)\d{3}\b/.test(model)) return null;
   if (/\brx\s*?[56]\d{3}\b/.test(model)) return `${ASSET_ROOT}amd-radeon-rx-5000-6000-reference.png`;
   if (/\brx\s*?[45]\d{2}\b/.test(model)) return `${ASSET_ROOT}amd-radeon-rx-480-580-reference.png`;
   if (/\br9\s*[23]\d{2}\b/.test(model)) return `${ASSET_ROOT}amd-radeon-r9-200-300-reference.png`;

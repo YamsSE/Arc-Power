@@ -114,7 +114,8 @@ export function recordingEditorTrimArguments(inputPath, outputPath, startMs, end
     '-ss', seconds(start), '-i', inputPath, '-t', seconds(end - start),
     ...(Array.isArray(audioStreamIndex) && audioStreamIndex.length === 2 && audioStreamIndex.every(Number.isInteger)
       ? ['-filter_complex', `[0:${audioStreamIndex[0]}][0:${audioStreamIndex[1]}]amix=inputs=2:duration=longest:normalize=0[clip_audio]`, '-map', '0:v:0', '-map', '[clip_audio]']
-      : Number.isInteger(audioStreamIndex) && audioStreamIndex >= 0 ? ['-map', '0:v:0', '-map', `0:${audioStreamIndex}`] : ['-map', '0']),
+      : Number.isInteger(audioStreamIndex) && audioStreamIndex >= 0 ? ['-map', '0:v:0', '-map', `0:${audioStreamIndex}`]
+        : ['-map', '0:v:0', ...(audio === 'mute' ? [] : ['-map', '0:a?'])]),
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
     ...(audio === 'mute' ? ['-an'] : ['-c:a', 'aac']),
     ...(audioStreamIndex !== null ? ['-metadata:s:a:0', `handler_name=${audio === 'system' ? 'System Audio' : audio === 'microphone' ? 'Microphone' : 'Combined Audio'}`] : []),
@@ -131,7 +132,7 @@ export function recordingEditorCopyArguments(inputPath, outputPath, startMs, end
   return [
     '-hide_banner', '-loglevel', 'error', '-nostdin',
     '-ss', seconds(start), '-i', inputPath, '-t', seconds(end - start),
-    '-map', '0', '-c', 'copy',
+    '-map', '0:v:0', '-map', '0:a?', '-c', 'copy',
     '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart',
     '-f', 'mp4', '-y', outputPath,
   ];
@@ -329,10 +330,17 @@ export function createRecordingEditorService({
 
   async function audioStreamsForPath(filePath) {
     const executable = resolveFfprobePath();
-    if (!executable) return { system: null, microphone: null, mixed: false };
-    const result = await spawnOnce(spawn, executable, ['-v', 'error', '-show_streams', '-of', 'json', '-i', filePath], PROBE_TIMEOUT_MS);
+    if (!executable) return { system: null, microphone: null, mixed: false, durationMs: null };
+    const result = await spawnOnce(spawn, executable, ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', '-i', filePath], PROBE_TIMEOUT_MS);
     if (!result.ok) throw new Error('Could not inspect recording audio');
-    try { return recordingAudioStreams(JSON.parse(result.stdout).streams); }
+    try {
+      const parsed = JSON.parse(result.stdout);
+      const duration = Number(parsed?.format?.duration);
+      return {
+        ...recordingAudioStreams(parsed?.streams),
+        durationMs: Number.isFinite(duration) && duration > 0 ? duration * 1000 : null,
+      };
+    }
     catch { throw new Error('Could not inspect recording audio'); }
   }
 

@@ -56,6 +56,17 @@ export function ghzFreq(mhz: number | null | undefined): string {
 }
 
 /**
+ * The Dashboard "Cores / Clock" live half's GHz value plus its unit
+ * ('3.0 GHz'), with the same honest '-' as the Monitoring Core Frequency
+ * tile for a null/non-finite/<= 0 reading - a zero MSR reading on MSR-less
+ * CPUs must never render '0.0 GHz'.
+ */
+export function ghzFreqText(mhz: number | null | undefined): string {
+  const value = ghzFreq(mhz);
+  return value === '-' ? '-' : `${value} GHz`;
+}
+
+/**
  * M4N (B.1): a byte count as GB with one decimal ('3.0' from 2971324416) -
  * the monitoring VRAM tile value (the M4M MiB tile's GB replacement).
  * Honest '-' for null/non-finite/<= 0.

@@ -5,12 +5,12 @@
 /** The Performance pulse keeps the most recent sixty telemetry samples. */
 export const TELEMETRY_HISTORY_POINTS = 60;
 
-/** The stock telemetry cadence (M17g) used to translate samples to seconds. */
-export const TELEMETRY_POLL_MS_DEFAULT = 400;
+/** The stock telemetry cadence used to translate samples to seconds. */
+export const TELEMETRY_POLL_MS_DEFAULT = 600;
 
 /**
  * The pulse's visible time span at the stock cadence. There are 59 intervals
- * between 60 samples; the renderer rounds this to 24 seconds for the label.
+ * between 60 samples; the renderer rounds this to 35 seconds for the label.
  */
 export const TELEMETRY_HISTORY_WINDOW_S = ((TELEMETRY_HISTORY_POINTS - 1) * TELEMETRY_POLL_MS_DEFAULT) / 1000;
 export const TELEMETRY_HISTORY_WINDOW_LABEL = `${Math.round(TELEMETRY_HISTORY_WINDOW_S)}-second`;

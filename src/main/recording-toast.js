@@ -27,7 +27,7 @@ function normalizeNotification(input) {
   return { variant, title, message, durationMs };
 }
 
-export function createRecordingToastWindow({ getAnchorWindow = () => null } = {}) {
+export function createRecordingToastWindow({ getAnchorWindow = () => null, createWindow = (options) => new BrowserWindow(options) } = {}) {
   let win = null;
   let queued = null;
   let hideTimer = null;
@@ -70,7 +70,7 @@ export function createRecordingToastWindow({ getAnchorWindow = () => null } = {}
 
   const build = () => {
     if (win && !win.isDestroyed()) return win;
-    win = new BrowserWindow({
+    win = createWindow({
       ...boundsFor(),
       icon: resolveWindowIconPath(),
       transparent: true,

@@ -59,7 +59,10 @@ export async function collectGpuReadOnlyDiagnostics(backend) {
       if (row.rebar.symbolPresent) {
         const buf = koffi.alloc('uint8', 64);
         try {
-          koffi.encode(buf, 'uint8[64]', Array(64).fill(0));
+          const initial = Array(64).fill(0);
+          initial[56] = 0xff;
+          initial[57] = 0xff;
+          koffi.encode(buf, 'uint8[64]', initial);
           koffi.encode(buf, 0, 'uint32', 64);
           koffi.encode(buf, 4, 'uint8', 0);
           const code = lib.ctlPciGetProperties(nativeDevice.handle, buf);

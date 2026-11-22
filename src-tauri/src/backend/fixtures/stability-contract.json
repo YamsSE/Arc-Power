@@ -1,0 +1,1728 @@
+{
+  "provenance": "Original stability-pure.js exports with fixed Date clock only",
+  "sourceSha256": "c74f87991ba3dace46c6d72acf137f3dbb3558686c8b04eb645a15871b3fc4c1",
+  "nowMs": 1794139200123,
+  "nowIso": "2026-11-08T12:00:00.123Z",
+  "cases": [
+    {
+      "op": "normalizeStableDeviceKey",
+      "args": [
+        null
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeStableDeviceKey",
+      "args": [
+        {}
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeStableDeviceKey",
+      "args": [
+        1
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeStableDeviceKey",
+      "args": [
+        ""
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeStableDeviceKey",
+      "args": [
+        "a"
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeStableDeviceKey",
+      "args": [
+        "ab"
+      ],
+      "result": "ab"
+    },
+    {
+      "op": "normalizeStableDeviceKey",
+      "args": [
+        "😀"
+      ],
+      "result": "😀"
+    },
+    {
+      "op": "normalizeStableDeviceKey",
+      "args": [
+        " ﻿ gpu-a  "
+      ],
+      "result": "gpu-a"
+    },
+    {
+      "op": "normalizeStableDeviceKey",
+      "args": [
+        "x"
+      ],
+      "result": "x"
+    },
+    {
+      "op": "normalizeStableDeviceKey",
+      "args": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      "result": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "op": "normalizeStableDeviceKey",
+      "args": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeStableDeviceKey",
+      "args": [
+        "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      ],
+      "result": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+    },
+    {
+      "op": "normalizeStableDeviceKey",
+      "args": [
+        "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      ],
+      "result": null
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        null
+      ],
+      "result": 250
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        null
+      ],
+      "result": 10
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        {}
+      ],
+      "result": null
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        {}
+      ],
+      "result": null
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        []
+      ],
+      "result": 250
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        []
+      ],
+      "result": 10
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        [
+          1000
+        ]
+      ],
+      "result": 1000
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        [
+          1000
+        ]
+      ],
+      "result": 900
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        [
+          "400"
+        ]
+      ],
+      "result": 400
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        [
+          "400"
+        ]
+      ],
+      "result": 400
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        [
+          1,
+          2
+        ]
+      ],
+      "result": null
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        [
+          1,
+          2
+        ]
+      ],
+      "result": null
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        true
+      ],
+      "result": 250
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        true
+      ],
+      "result": 10
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        false
+      ],
+      "result": 250
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        false
+      ],
+      "result": 10
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        ""
+      ],
+      "result": 250
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        ""
+      ],
+      "result": 10
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        " "
+      ],
+      "result": 250
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        " "
+      ],
+      "result": 10
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        "0x200"
+      ],
+      "result": 512
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        "0x200"
+      ],
+      "result": 512
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        "0b100000000"
+      ],
+      "result": 256
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        "0b100000000"
+      ],
+      "result": 256
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        "0o1000"
+      ],
+      "result": 512
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        "0o1000"
+      ],
+      "result": 512
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        "Infinity"
+      ],
+      "result": null
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        "Infinity"
+      ],
+      "result": null
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        "inf"
+      ],
+      "result": null
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        "inf"
+      ],
+      "result": null
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        "not-a-number"
+      ],
+      "result": null
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        "not-a-number"
+      ],
+      "result": null
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        -1
+      ],
+      "result": 250
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        -1
+      ],
+      "result": 10
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        0
+      ],
+      "result": 250
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        0
+      ],
+      "result": 10
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        249.5
+      ],
+      "result": 250
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        249.5
+      ],
+      "result": 250
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        250.5
+      ],
+      "result": 251
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        250.5
+      ],
+      "result": 251
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        1000
+      ],
+      "result": 1000
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        1000
+      ],
+      "result": 900
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [
+        99999
+      ],
+      "result": 2000
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [
+        99999
+      ],
+      "result": 900
+    },
+    {
+      "op": "clampCadenceMs",
+      "args": [],
+      "result": null
+    },
+    {
+      "op": "clampDurationSec",
+      "args": [],
+      "result": null
+    },
+    {
+      "op": "normalizeStabilityRequest",
+      "args": [
+        null
+      ],
+      "error": "stability request must be an object"
+    },
+    {
+      "op": "normalizeStabilityRequest",
+      "args": [
+        []
+      ],
+      "error": "stability request must be an object"
+    },
+    {
+      "op": "normalizeStabilityRequest",
+      "args": [
+        {}
+      ],
+      "error": "stability request requires a stable device key"
+    },
+    {
+      "op": "normalizeStabilityRequest",
+      "args": [
+        {
+          "deviceKey": "x",
+          "cadenceMs": 500,
+          "durationSec": 30
+        }
+      ],
+      "error": "stability request requires a stable device key"
+    },
+    {
+      "op": "normalizeStabilityRequest",
+      "args": [
+        {
+          "deviceKey": "gpu-a"
+        }
+      ],
+      "error": "stability cadence or duration is invalid"
+    },
+    {
+      "op": "normalizeStabilityRequest",
+      "args": [
+        {
+          "deviceKey": "gpu-a",
+          "cadenceMs": null,
+          "durationSec": null
+        }
+      ],
+      "result": {
+        "deviceKey": "gpu-a",
+        "cadenceMs": 250,
+        "durationSec": 10
+      }
+    },
+    {
+      "op": "normalizeStabilityRequest",
+      "args": [
+        {
+          "deviceKey": "gpu-a",
+          "cadenceMs": "400.5",
+          "durationSec": [
+            "45"
+          ]
+        }
+      ],
+      "result": {
+        "deviceKey": "gpu-a",
+        "cadenceMs": 401,
+        "durationSec": 45
+      }
+    },
+    {
+      "op": "normalizeStabilityRequest",
+      "args": [
+        {
+          "deviceKey": "gpu-a",
+          "cadenceMs": "inf",
+          "durationSec": 45
+        }
+      ],
+      "error": "stability cadence or duration is invalid"
+    },
+    {
+      "op": "normalizeTimestampMs",
+      "args": [],
+      "result": 1794139200123
+    },
+    {
+      "op": "normalizeReceiptTimestampMs",
+      "args": [],
+      "result": 1794139200123
+    },
+    {
+      "op": "normalizeTimestampMs",
+      "args": [
+        null
+      ],
+      "result": 1794139200123
+    },
+    {
+      "op": "normalizeReceiptTimestampMs",
+      "args": [
+        null
+      ],
+      "result": 1794139200123
+    },
+    {
+      "op": "normalizeTimestampMs",
+      "args": [
+        null,
+        123.4
+      ],
+      "result": 123.4
+    },
+    {
+      "op": "normalizeReceiptTimestampMs",
+      "args": [
+        null,
+        123.4
+      ],
+      "result": 123
+    },
+    {
+      "op": "normalizeTimestampMs",
+      "args": [
+        "10",
+        99.5
+      ],
+      "result": 99.5
+    },
+    {
+      "op": "normalizeReceiptTimestampMs",
+      "args": [
+        "10",
+        99.5
+      ],
+      "result": 100
+    },
+    {
+      "op": "normalizeTimestampMs",
+      "args": [
+        0
+      ],
+      "result": 0
+    },
+    {
+      "op": "normalizeReceiptTimestampMs",
+      "args": [
+        0
+      ],
+      "result": 0
+    },
+    {
+      "op": "normalizeTimestampMs",
+      "args": [
+        1
+      ],
+      "result": 1000
+    },
+    {
+      "op": "normalizeReceiptTimestampMs",
+      "args": [
+        1
+      ],
+      "result": 1
+    },
+    {
+      "op": "normalizeTimestampMs",
+      "args": [
+        -1.5
+      ],
+      "result": -1
+    },
+    {
+      "op": "normalizeReceiptTimestampMs",
+      "args": [
+        -1.5
+      ],
+      "result": -1
+    },
+    {
+      "op": "normalizeTimestampMs",
+      "args": [
+        1000.1234
+      ],
+      "result": 1000123
+    },
+    {
+      "op": "normalizeReceiptTimestampMs",
+      "args": [
+        1000.1234
+      ],
+      "result": 1000
+    },
+    {
+      "op": "normalizeTimestampMs",
+      "args": [
+        999999999999
+      ],
+      "result": 999999999999000
+    },
+    {
+      "op": "normalizeReceiptTimestampMs",
+      "args": [
+        999999999999
+      ],
+      "result": 999999999999
+    },
+    {
+      "op": "normalizeTimestampMs",
+      "args": [
+        1000000000000
+      ],
+      "result": 1000000000000
+    },
+    {
+      "op": "normalizeReceiptTimestampMs",
+      "args": [
+        1000000000000
+      ],
+      "result": 1000000000000
+    },
+    {
+      "op": "normalizeTimestampMs",
+      "args": [
+        1000000000000.4
+      ],
+      "result": 1000000000000
+    },
+    {
+      "op": "normalizeReceiptTimestampMs",
+      "args": [
+        1000000000000.4
+      ],
+      "result": 1000000000000
+    },
+    {
+      "op": "normalizeTimestampMs",
+      "args": [
+        null,
+        "bad"
+      ],
+      "result": 1794139200123
+    },
+    {
+      "op": "normalizeReceiptTimestampMs",
+      "args": [
+        null,
+        "bad"
+      ],
+      "result": 1794139200123
+    },
+    {
+      "op": "normalizeStabilitySample",
+      "args": [
+        null,
+        1234.5
+      ],
+      "result": {
+        "sampledAtMs": 1235,
+        "receivedAtMs": 1235,
+        "sourceTimestampMs": 1234.5,
+        "sample": {
+          "utilPct": null,
+          "temperatureC": null,
+          "powerW": null
+        },
+        "utilPct": null,
+        "temperatureC": null,
+        "powerW": null,
+        "fps": null,
+        "present": false,
+        "foreground": false,
+        "readError": null,
+        "driverError": false
+      }
+    },
+    {
+      "op": "normalizeStabilitySample",
+      "args": [
+        5,
+        1234.5
+      ],
+      "result": {
+        "sampledAtMs": 1235,
+        "receivedAtMs": 1235,
+        "sourceTimestampMs": 1234.5,
+        "sample": {
+          "utilPct": null,
+          "temperatureC": null,
+          "powerW": null
+        },
+        "utilPct": null,
+        "temperatureC": null,
+        "powerW": null,
+        "fps": null,
+        "present": false,
+        "foreground": false,
+        "readError": null,
+        "driverError": false
+      }
+    },
+    {
+      "op": "normalizeStabilitySample",
+      "args": [
+        [],
+        1234.5
+      ],
+      "result": {
+        "sampledAtMs": 1235,
+        "receivedAtMs": 1235,
+        "sourceTimestampMs": 1234.5,
+        "sample": {
+          "utilPct": null,
+          "temperatureC": null,
+          "powerW": null
+        },
+        "utilPct": null,
+        "temperatureC": null,
+        "powerW": null,
+        "fps": null,
+        "present": false,
+        "foreground": false,
+        "readError": null,
+        "driverError": false
+      }
+    },
+    {
+      "op": "normalizeStabilitySample",
+      "args": [
+        {},
+        1234.5
+      ],
+      "result": {
+        "sampledAtMs": 1235,
+        "receivedAtMs": 1235,
+        "sourceTimestampMs": 1234.5,
+        "sample": {
+          "utilPct": null,
+          "temperatureC": null,
+          "powerW": null
+        },
+        "utilPct": null,
+        "temperatureC": null,
+        "powerW": null,
+        "fps": null,
+        "present": false,
+        "foreground": false,
+        "readError": null,
+        "driverError": false
+      }
+    },
+    {
+      "op": "normalizeStabilitySample",
+      "args": [
+        {
+          "tMs": 1700000000,
+          "utilPct": 80,
+          "tempC": 60,
+          "powerW": 200
+        },
+        1234.5
+      ],
+      "result": {
+        "sampledAtMs": 1235,
+        "receivedAtMs": 1235,
+        "sourceTimestampMs": 1700000000000,
+        "sample": {
+          "tMs": 1700000000,
+          "utilPct": 80,
+          "tempC": 60,
+          "powerW": 200,
+          "temperatureC": 60
+        },
+        "utilPct": 80,
+        "temperatureC": 60,
+        "powerW": 200,
+        "fps": null,
+        "present": false,
+        "foreground": false,
+        "readError": null,
+        "driverError": false
+      }
+    },
+    {
+      "op": "normalizeStabilitySample",
+      "args": [
+        {
+          "sample": {
+            "tMs": null,
+            "t": 1700000000.25,
+            "utilPct": "80",
+            "gpuUtilPct": 77,
+            "tempC": null,
+            "temperatureC": 61,
+            "powerW": "x",
+            "power": 190,
+            "driverError": true
+          },
+          "receivedAtMs": 12.5,
+          "fpsSample": {
+            "fps": 30
+          },
+          "foregroundProcess": {
+            "pid": 7
+          },
+          "readError": "read failed"
+        },
+        1234.5
+      ],
+      "result": {
+        "sampledAtMs": 13,
+        "receivedAtMs": 13,
+        "sourceTimestampMs": 1700000000250,
+        "sample": {
+          "tMs": null,
+          "t": 1700000000.25,
+          "utilPct": 77,
+          "gpuUtilPct": 77,
+          "tempC": null,
+          "temperatureC": 61,
+          "powerW": 190,
+          "power": 190,
+          "driverError": true
+        },
+        "utilPct": 77,
+        "temperatureC": 61,
+        "powerW": 190,
+        "fps": 30,
+        "present": true,
+        "foreground": true,
+        "readError": "read failed",
+        "driverError": true
+      }
+    },
+    {
+      "op": "normalizeStabilitySample",
+      "args": [
+        {
+          "sample": {
+            "timestamp": 1700000000000,
+            "temperature": 70
+          },
+          "sampledAtMs": 20,
+          "fpsSample": {
+            "fps": "60"
+          },
+          "foregroundProcess": {
+            "pid": 0,
+            "exePath": ""
+          },
+          "driverError": 1
+        },
+        1234.5
+      ],
+      "result": {
+        "sampledAtMs": 20,
+        "receivedAtMs": 20,
+        "sourceTimestampMs": 1700000000000,
+        "sample": {
+          "timestamp": 1700000000000,
+          "temperature": 70,
+          "utilPct": null,
+          "temperatureC": 70,
+          "powerW": null
+        },
+        "utilPct": null,
+        "temperatureC": 70,
+        "powerW": null,
+        "fps": null,
+        "present": false,
+        "foreground": false,
+        "readError": null,
+        "driverError": false
+      }
+    },
+    {
+      "op": "normalizeStabilitySample",
+      "args": [
+        {
+          "sample": [
+            1,
+            2
+          ],
+          "fpsSample": {
+            "fps": 29.9
+          },
+          "foregroundProcess": {
+            "exePath": []
+          }
+        },
+        1234.5
+      ],
+      "result": {
+        "sampledAtMs": 1235,
+        "receivedAtMs": 1235,
+        "sourceTimestampMs": 1234.5,
+        "sample": {
+          "0": 1,
+          "1": 2,
+          "utilPct": null,
+          "temperatureC": null,
+          "powerW": null
+        },
+        "utilPct": null,
+        "temperatureC": null,
+        "powerW": null,
+        "fps": 29.9,
+        "present": false,
+        "foreground": true,
+        "readError": null,
+        "driverError": false
+      }
+    },
+    {
+      "op": "normalizeStabilitySample",
+      "args": [
+        {
+          "sample": {
+            "tMs": 0,
+            "t": 123,
+            "utilPct": -10,
+            "tempC": 500,
+            "powerW": -1
+          },
+          "readError": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀"
+        },
+        1234.5
+      ],
+      "rustRefusal": true
+    },
+    {
+      "op": "normalizeStabilitySample",
+      "args": [
+        {
+          "sample": {
+            "tMs": -1.5
+          },
+          "readError": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        },
+        1234.5
+      ],
+      "result": {
+        "sampledAtMs": 1235,
+        "receivedAtMs": 1235,
+        "sourceTimestampMs": -1,
+        "sample": {
+          "tMs": -1.5,
+          "utilPct": null,
+          "temperatureC": null,
+          "powerW": null
+        },
+        "utilPct": null,
+        "temperatureC": null,
+        "powerW": null,
+        "fps": null,
+        "present": false,
+        "foreground": false,
+        "readError": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "driverError": false
+      }
+    },
+    {
+      "op": "workloadEvidenceOf",
+      "args": [
+        {}
+      ],
+      "result": false
+    },
+    {
+      "op": "workloadEvidenceOf",
+      "args": [
+        {
+          "sampleCount": 0,
+          "workloadActive": true,
+          "utilEvidenceCount": 1
+        }
+      ],
+      "result": false
+    },
+    {
+      "op": "workloadEvidenceOf",
+      "args": [
+        {
+          "sampleCount": 1,
+          "workloadActive": true,
+          "utilEvidenceCount": 0
+        }
+      ],
+      "result": false
+    },
+    {
+      "op": "workloadEvidenceOf",
+      "args": [
+        {
+          "sampleCount": 1,
+          "workloadActive": true,
+          "utilEvidenceCount": 1
+        }
+      ],
+      "result": true
+    },
+    {
+      "op": "workloadEvidenceOf",
+      "args": [
+        {
+          "sampleCount": "10",
+          "foregroundCount": "1",
+          "presentEvidenceCount": 8
+        }
+      ],
+      "result": true
+    },
+    {
+      "op": "workloadEvidenceOf",
+      "args": [
+        {
+          "sampleCount": 10,
+          "foregroundCount": 1,
+          "utilEvidenceCount": 7
+        }
+      ],
+      "result": false
+    },
+    {
+      "op": "workloadEvidenceOf",
+      "args": [
+        {
+          "sampleCount": "Infinity",
+          "foregroundCount": 1,
+          "utilEvidenceCount": "Infinity"
+        }
+      ],
+      "result": true
+    },
+    {
+      "op": "classifyStabilityRun",
+      "args": [
+        {}
+      ],
+      "result": {
+        "outcome": "unavailable",
+        "workloadEvidence": false,
+        "freshSampleCount": 0,
+        "sampleCount": 0,
+        "freshRatio": 0,
+        "missingMetrics": [],
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "classifyStabilityRun",
+      "args": [
+        {
+          "sampleCount": 0,
+          "cancelled": true
+        }
+      ],
+      "result": {
+        "outcome": "cancelled",
+        "workloadEvidence": false,
+        "freshSampleCount": 0,
+        "sampleCount": 0,
+        "freshRatio": 0,
+        "missingMetrics": [],
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "classifyStabilityRun",
+      "args": [
+        {
+          "sampleCount": 10
+        }
+      ],
+      "result": {
+        "outcome": "no-workload",
+        "workloadEvidence": false,
+        "freshSampleCount": 10,
+        "sampleCount": 10,
+        "freshRatio": 1,
+        "missingMetrics": [],
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "classifyStabilityRun",
+      "args": [
+        {
+          "sampleCount": 10,
+          "workloadEvidence": true
+        }
+      ],
+      "result": {
+        "outcome": "passed",
+        "workloadEvidence": true,
+        "freshSampleCount": 10,
+        "sampleCount": 10,
+        "freshRatio": 1,
+        "missingMetrics": [],
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "classifyStabilityRun",
+      "args": [
+        {
+          "sampleCount": 10,
+          "workloadEvidence": true,
+          "freshSampleCount": 7
+        }
+      ],
+      "result": {
+        "outcome": "warning",
+        "workloadEvidence": true,
+        "freshSampleCount": 7,
+        "sampleCount": 10,
+        "freshRatio": 0.7,
+        "missingMetrics": [],
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "classifyStabilityRun",
+      "args": [
+        {
+          "sampleCount": 10,
+          "workloadEvidence": true,
+          "missingSampleCount": 1
+        }
+      ],
+      "result": {
+        "outcome": "warning",
+        "workloadEvidence": true,
+        "freshSampleCount": 9,
+        "sampleCount": 10,
+        "freshRatio": 0.9,
+        "missingMetrics": [],
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "classifyStabilityRun",
+      "args": [
+        {
+          "sampleCount": 10,
+          "workloadEvidence": true,
+          "driverErrorCount": "1"
+        }
+      ],
+      "result": {
+        "outcome": "warning",
+        "workloadEvidence": true,
+        "freshSampleCount": 10,
+        "sampleCount": 10,
+        "freshRatio": 1,
+        "missingMetrics": [],
+        "thresholdBreaches": 0,
+        "driverErrorCount": 1,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "classifyStabilityRun",
+      "args": [
+        {
+          "sampleCount": 10,
+          "workloadEvidence": true,
+          "thresholdBreaches": 1
+        }
+      ],
+      "result": {
+        "outcome": "warning",
+        "workloadEvidence": true,
+        "freshSampleCount": 10,
+        "sampleCount": 10,
+        "freshRatio": 1,
+        "missingMetrics": [],
+        "thresholdBreaches": 1,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "classifyStabilityRun",
+      "args": [
+        {
+          "sampleCount": 10,
+          "workloadEvidence": true,
+          "wheaErrorCount": 1
+        }
+      ],
+      "result": {
+        "outcome": "warning",
+        "workloadEvidence": true,
+        "freshSampleCount": 10,
+        "sampleCount": 10,
+        "freshRatio": 1,
+        "missingMetrics": [],
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 1
+      }
+    },
+    {
+      "op": "classifyStabilityRun",
+      "args": [
+        {
+          "sampleCount": "Infinity",
+          "missingMetricsCount": "Infinity",
+          "workloadEvidence": true
+        }
+      ],
+      "result": {
+        "outcome": "warning",
+        "workloadEvidence": true,
+        "freshSampleCount": 0,
+        "sampleCount": null,
+        "freshRatio": 0,
+        "missingMetrics": [],
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "classifyStabilityRun",
+      "args": [
+        {
+          "sampleCount": 5,
+          "outcomeHint": "cancelled"
+        }
+      ],
+      "result": {
+        "outcome": "cancelled",
+        "workloadEvidence": false,
+        "freshSampleCount": 5,
+        "sampleCount": 5,
+        "freshRatio": 1,
+        "missingMetrics": [],
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "classifyStabilityRun",
+      "args": [
+        {
+          "sampleCount": 5,
+          "outcomeHint": "unavailable"
+        }
+      ],
+      "result": {
+        "outcome": "unavailable",
+        "workloadEvidence": false,
+        "freshSampleCount": 5,
+        "sampleCount": 5,
+        "freshRatio": 1,
+        "missingMetrics": [],
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "classifyStabilityRun",
+      "args": [
+        {
+          "sampleCount": 10,
+          "foregroundCount": 1,
+          "presentEvidenceCount": 8,
+          "missingMetrics": [
+            "x",
+            "x",
+            1,
+            null,
+            {},
+            [],
+            [
+              1,
+              2
+            ]
+          ]
+        }
+      ],
+      "result": {
+        "outcome": "passed",
+        "workloadEvidence": true,
+        "freshSampleCount": 10,
+        "sampleCount": 10,
+        "freshRatio": 1,
+        "missingMetrics": [
+          "x",
+          "1",
+          "null",
+          "[object Object]",
+          "",
+          "1,2"
+        ],
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "normalizeStabilityReport",
+      "args": [
+        null
+      ],
+      "error": "Cannot read properties of null (reading 'target')"
+    },
+    {
+      "op": "normalizeStabilityReport",
+      "args": [
+        {}
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeStabilityReport",
+      "args": [
+        {
+          "deviceKey": "gpu-a"
+        }
+      ],
+      "result": {
+        "runId": "stability-1794139200123",
+        "target": {
+          "deviceKey": "gpu-a",
+          "name": null,
+          "id": null
+        },
+        "settingsSnapshot": {},
+        "sampleCount": 0,
+        "missingMetrics": [],
+        "workloadEvidence": false,
+        "outcome": "unavailable",
+        "effectiveCadenceMs": 250,
+        "effectiveDurationSec": 10,
+        "startedAt": "2026-11-08T12:00:00.123Z",
+        "endedAt": "2026-11-08T12:00:00.123Z",
+        "reason": null,
+        "freshSampleCount": 0,
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "normalizeStabilityReport",
+      "args": [
+        {
+          "deviceKey": "😀"
+        }
+      ],
+      "result": {
+        "runId": "stability-1794139200123",
+        "target": {
+          "deviceKey": "😀",
+          "name": null,
+          "id": null
+        },
+        "settingsSnapshot": {},
+        "sampleCount": 0,
+        "missingMetrics": [],
+        "workloadEvidence": false,
+        "outcome": "unavailable",
+        "effectiveCadenceMs": 250,
+        "effectiveDurationSec": 10,
+        "startedAt": "2026-11-08T12:00:00.123Z",
+        "endedAt": "2026-11-08T12:00:00.123Z",
+        "reason": null,
+        "freshSampleCount": 0,
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "normalizeStabilityReport",
+      "args": [
+        {
+          "deviceKey": "gpu-a",
+          "runId": "",
+          "sampleCount": "0x20",
+          "freshSampleCount": 3.5,
+          "thresholdBreaches": -1,
+          "driverErrorCount": 1.5,
+          "wheaErrorCount": "2",
+          "missingMetrics": [
+            "x",
+            "x",
+            null,
+            {},
+            [],
+            [
+              "a",
+              null
+            ]
+          ],
+          "outcome": "passed",
+          "workloadEvidence": true,
+          "settingsSnapshot": [
+            1,
+            {
+              "x": 2
+            }
+          ]
+        }
+      ],
+      "result": {
+        "runId": "",
+        "target": {
+          "deviceKey": "gpu-a",
+          "name": null,
+          "id": null
+        },
+        "settingsSnapshot": {
+          "0": 1,
+          "1": {
+            "x": 2
+          }
+        },
+        "sampleCount": 32,
+        "missingMetrics": [
+          "x",
+          "null",
+          "[object Object]",
+          "",
+          "a,"
+        ],
+        "workloadEvidence": true,
+        "outcome": "passed",
+        "effectiveCadenceMs": 250,
+        "effectiveDurationSec": 10,
+        "startedAt": "2026-11-08T12:00:00.123Z",
+        "endedAt": "2026-11-08T12:00:00.123Z",
+        "reason": null,
+        "freshSampleCount": 4,
+        "thresholdBreaches": 0,
+        "driverErrorCount": 2,
+        "wheaErrorCount": 2
+      }
+    },
+    {
+      "op": "normalizeStabilityReport",
+      "args": [
+        {
+          "deviceKey": "fallback",
+          "target": {
+            "deviceKey": null,
+            "name": "name",
+            "id": 2
+          },
+          "effectiveCadenceMs": null,
+          "effectiveDurationSec": null,
+          "startedAt": "",
+          "endedAt": "",
+          "reason": "reason"
+        }
+      ],
+      "result": {
+        "runId": "stability-1794139200123",
+        "target": {
+          "deviceKey": "fallback",
+          "name": "name",
+          "id": 2
+        },
+        "settingsSnapshot": {},
+        "sampleCount": 0,
+        "missingMetrics": [],
+        "workloadEvidence": false,
+        "outcome": "unavailable",
+        "effectiveCadenceMs": 250,
+        "effectiveDurationSec": 10,
+        "startedAt": "",
+        "endedAt": "",
+        "reason": "reason",
+        "freshSampleCount": 0,
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "normalizeStabilityReport",
+      "args": [
+        {
+          "deviceKey": "fallback",
+          "target": {
+            "deviceKey": "x",
+            "name": "bad",
+            "id": "2"
+          }
+        }
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeStabilityReport",
+      "args": [
+        {
+          "target": {
+            "deviceKey": "gpu-a",
+            "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀"
+          },
+          "runId": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      ],
+      "rustRefusal": true
+    },
+    {
+      "op": "normalizeStabilityReport",
+      "args": [
+        {
+          "target": {
+            "deviceKey": "gpu-a",
+            "name": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+          },
+          "reason": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀"
+        }
+      ],
+      "rustRefusal": true
+    },
+    {
+      "op": "normalizeStabilityReport",
+      "args": [
+        {
+          "deviceKey": "gpu-a",
+          "missingMetrics": [
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀"
+          ]
+        }
+      ],
+      "rustRefusal": true
+    },
+    {
+      "op": "normalizeStabilityReport",
+      "args": [
+        {
+          "deviceKey": "gpu-a",
+          "sampleCount": "Infinity",
+          "freshSampleCount": "Infinity",
+          "driverErrorCount": "Infinity",
+          "effectiveCadenceMs": "bad",
+          "effectiveDurationSec": 9999,
+          "reason": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      ],
+      "result": {
+        "runId": "stability-1794139200123",
+        "target": {
+          "deviceKey": "gpu-a",
+          "name": null,
+          "id": null
+        },
+        "settingsSnapshot": {},
+        "sampleCount": 100000,
+        "missingMetrics": [],
+        "workloadEvidence": false,
+        "outcome": "unavailable",
+        "effectiveCadenceMs": 250,
+        "effectiveDurationSec": 900,
+        "startedAt": "2026-11-08T12:00:00.123Z",
+        "endedAt": "2026-11-08T12:00:00.123Z",
+        "reason": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "freshSampleCount": null,
+        "thresholdBreaches": 0,
+        "driverErrorCount": null,
+        "wheaErrorCount": 0
+      }
+    },
+    {
+      "op": "normalizeStabilityReport",
+      "args": [
+        {
+          "deviceKey": "gpu-a",
+          "missingMetrics": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39
+          ],
+          "target": {
+            "deviceKey": "gpu-a",
+            "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "id": 1.5
+          }
+        }
+      ],
+      "result": {
+        "runId": "stability-1794139200123",
+        "target": {
+          "deviceKey": "gpu-a",
+          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "id": null
+        },
+        "settingsSnapshot": {},
+        "sampleCount": 0,
+        "missingMetrics": [
+          "0",
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9",
+          "10",
+          "11",
+          "12",
+          "13",
+          "14",
+          "15",
+          "16",
+          "17",
+          "18",
+          "19",
+          "20",
+          "21",
+          "22",
+          "23",
+          "24",
+          "25",
+          "26",
+          "27",
+          "28",
+          "29",
+          "30",
+          "31"
+        ],
+        "workloadEvidence": false,
+        "outcome": "unavailable",
+        "effectiveCadenceMs": 250,
+        "effectiveDurationSec": 10,
+        "startedAt": "2026-11-08T12:00:00.123Z",
+        "endedAt": "2026-11-08T12:00:00.123Z",
+        "reason": null,
+        "freshSampleCount": 0,
+        "thresholdBreaches": 0,
+        "driverErrorCount": 0,
+        "wheaErrorCount": 0
+      }
+    }
+  ]
+}

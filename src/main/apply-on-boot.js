@@ -34,6 +34,7 @@
 import { TRAY_BALLOON_TITLE, trayBalloonForOutcome } from './tray.js';
 import { executeApply, withCapabilityFlags, ocModeRefusal, extendedUnavailableRefusal, extendedRangesFor, tempCapabilityRefusal, tempCapabilityPerControl, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODE_ADVANCED } from './apply-routing.js';
 import { physicalTargetOf, pnpParts } from './gpu-inventory.js';
+import { readWindowsPnpLocationSnapshot, resolvePnpDeviceByLiveLocation } from './windows-pnp-location.js';
 // M17c (step-4 N2): the clamp helper for the REFUSAL RECORDING - the
 // in-process executeApply clamps profile.settings against
 // extendedRangesFor(caps) internally; the recording must use the SAME
@@ -45,6 +46,8 @@ import { sameVfCurve, rebaseVfCurveToReference } from '../renderer/pure/vf-curve
 import { deviceHardwareKey } from './backend/units.js';
 import { isBattlemageGpuName } from '../renderer/pure/hardware-icons.ts';
 import { normalizeBattlemageProfileSettings } from '../renderer/pure/profile-compat.ts';
+import { withBrokerApplyTransaction } from './apply-lock.js';
+import { markTemperatureRefusalCacheUnavailable, recordApplyRefusalsSafely, temperatureRefusalCacheFailure, TEMPERATURE_REFUSAL_CACHE_UNAVAILABLE_MESSAGE } from './apply-refusal-cache-state.js';
 
 function stableTargetMatchesKey(target, expectedKey) {
   if (typeof expectedKey !== 'string' || expectedKey.length === 0) return true;
@@ -102,6 +105,12 @@ const NON_RECONCILABLE_APPLY_ERRORS = new Set([
 
 const STARTUP_APPLY_RETRY_DELAY_MS = 500;
 const TRANSIENT_STARTUP_APPLY_ERRORS = new Set(['not-ready', 'busy', 'timed-out']);
+const APPLY_CONFIGURATION_REFUSALS = new Set(['unsupported', 'out-of-range']);
+
+function hasOnlyConfigurationRefusals(result) {
+  const failures = Object.values(result?.perControl ?? {}).filter((per) => per?.ok !== true);
+  return failures.length > 0 && failures.every((per) => APPLY_CONFIGURATION_REFUSALS.has(per?.errorCode));
+}
 
 /**
  * Startup can race the driver/KMD coming out of session initialization. Retry
@@ -228,8 +237,8 @@ export function reconcileAppliedProfileResult(result, settings, state, { sysmanP
  * by durable PCI/BDF identity and legacy numeric-only settings fall back to
  * the sorted preferred device.
  */
-export async function resolveApplyDeviceId(backend, store, explicitDeviceId = null, explicitDeviceKey = undefined) {
-  const devices = await backend.listDevices();
+export async function resolveApplyDeviceId(backend, store, explicitDeviceId = null, explicitDeviceKey = undefined, { getPnpLocationSnapshot = readWindowsPnpLocationSnapshot } = {}) {
+  let devices = await backend.listDevices();
   if (devices.length === 0) return null;
   const ids = new Set(devices.map((d) => d.id));
   let settings = null;
@@ -241,37 +250,38 @@ export async function resolveApplyDeviceId(backend, store, explicitDeviceId = nu
   const key = typeof explicitDeviceKey === 'string'
     ? explicitDeviceKey
     : (typeof settings?.deviceKey === 'string' ? settings.deviceKey : null);
+  const writableIdentityRow = (device) => device?.synthetic !== true
+    && device?.backendKind !== 'os'
+    && device?.identityAmbiguous !== true;
   if (key) {
-    const exactMatches = devices.filter((d) => (d.deviceKey ?? deviceHardwareKey(d)) === key);
-    if (exactMatches.length === 1) return exactMatches[0].id;
+    let exactMatches = devices.filter((d) => (d.deviceKey ?? deviceHardwareKey(d)) === key
+      || d.deviceKeys?.includes?.(key));
+    // OS identity enrichment can settle just after the initial backend pass.
+    // Re-enumerate once before declaring the saved boot target stale; never
+    // convert a miss into an ordinal fallback.
+    if (exactMatches.length === 0) {
+      try {
+        const refreshed = await backend.listDevices();
+        if (Array.isArray(refreshed)) {
+          devices = refreshed;
+          exactMatches = devices.filter((d) => (d.deviceKey ?? deviceHardwareKey(d)) === key
+            || d.deviceKeys?.includes?.(key));
+        }
+      } catch { /* keep the first snapshot and fail closed below */ }
+    }
+    if (exactMatches.length === 1) return writableIdentityRow(exactMatches[0]) ? exactMatches[0].id : undefined;
     // An exact durable key is only safe when it identifies one current row.
     // Duplicate rows can occur during a raw/PNP refresh; never let the first
     // enumeration entry win merely because it happened to come first.
     if (exactMatches.length > 1) return undefined;
   }
-  // M45: a raw boot backend may expose PCI/BDF rows while the persisted
-  // inventory key is PNP-first. Reconcile only a unique writable row with
-  // the same PNP vendor/device/subsystem proof; never use enumeration order.
+  // Raw boot backends expose PCI/BDF rows while settings may be PNP-first.
+  // Require an exact live Windows PNP-instance to BDF bridge; VID/DID/SUBSYS
+  // equality alone cannot distinguish a replaced device in the same model.
   if (key) {
-    const pnp = pnpParts(key);
-    if (pnp) {
-      const normalizePciId = (value) => {
-        const text = typeof value === 'number' && Number.isInteger(value)
-          ? value.toString(16)
-          : typeof value === 'string' ? value.trim().replace(/^0x/i, '') : '';
-        return /^[0-9a-f]{1,8}$/i.test(text) ? `0x${text.toLowerCase().slice(-4).padStart(4, '0')}` : null;
-      };
-      const candidates = devices.filter((device) => device.synthetic !== true
-        && device.backendKind !== 'os'
-        && device.identityAmbiguous !== true
-        && normalizePciId(device.pciVendorId) === pnp.ven
-        && normalizePciId(device.pciDeviceId) === pnp.dev
-        && (!pnp.subsys || pnp.subsys === '00000000'
-          || (normalizePciId(device.pciSubsysVendorId) === `0x${pnp.subsys.slice(4).toLowerCase()}`
-            && normalizePciId(device.pciSubsysId) === `0x${pnp.subsys.slice(0, 4).toLowerCase()}`)));
-      if (candidates.length === 1) return candidates[0].id;
-      // A persisted subsystem-bearing PNP key requires exact subsystem proof;
-      // missing or mismatched raw fields are stale, never a fallback target.
+    if (pnpParts(key)) {
+      const { device } = resolvePnpDeviceByLiveLocation(key, devices, await getPnpLocationSnapshot());
+      if (device && writableIdentityRow(device)) return device.id;
       return undefined;
     }
   }
@@ -311,7 +321,11 @@ export async function resolveApplyDeviceId(backend, store, explicitDeviceId = nu
  *   state?: unknown,
  * }>}
  */
-export async function applyProfile({ backend, store, profileId, deviceId = null, deviceKey = undefined, log = () => {}, requireOcOnBoot = false, oldIgcl = null, applyRunner = null, skipDefaultsFallback = false, sysmanPowerLimits = null }) {
+export async function applyProfile(options) {
+  return withBrokerApplyTransaction(() => applyProfileUnlocked(options), { label: 'apply-profile' });
+}
+
+async function applyProfileUnlocked({ backend, store, profileId, deviceId = null, deviceKey = undefined, log = () => {}, requireOcOnBoot = false, oldIgcl = null, applyRunner = null, skipDefaultsFallback = false, sysmanPowerLimits = null, getPnpLocationSnapshot = readWindowsPnpLocationSnapshot, getFreshPnpLocationSnapshot = () => readWindowsPnpLocationSnapshot({ fresh: true }) }) {
   const settings = await store.loadSettings();
   if (requireOcOnBoot && settings.ocOnBoot !== true) {
     return { applied: false, reason: 'Start-at-boot is disabled' };
@@ -325,6 +339,21 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   if (!profile) {
     return { applied: false, reason: `profile '${profileId}' not found` };
   }
+  if (Number.isFinite(profile.settings?.tempLimitC) && temperatureRefusalCacheFailure(backend)) {
+    const perControl = Object.fromEntries(Object.keys(profile.settings).map((key) => [key, {
+      ok: false,
+      errorCode: 'refusal-cache-unavailable',
+      message: TEMPERATURE_REFUSAL_CACHE_UNAVAILABLE_MESSAGE,
+    }]));
+    return {
+      applied: false,
+      reason: TEMPERATURE_REFUSAL_CACHE_UNAVAILABLE_MESSAGE,
+      result: { ok: false, perControl },
+      state: null,
+      fallbackSkipped: true,
+      temperatureRefusalCacheUnavailable: true,
+    };
+  }
   const profileDeviceKey = typeof profile.deviceKey === 'string' && profile.deviceKey.length > 0
     ? profile.deviceKey
     : null;
@@ -332,7 +361,7 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
 
   let targetDeviceId;
   try {
-    targetDeviceId = await resolveApplyDeviceId(backend, store, deviceId, requestedDeviceKey ?? settings.deviceKey);
+    targetDeviceId = await resolveApplyDeviceId(backend, store, deviceId, requestedDeviceKey ?? settings.deviceKey, { getPnpLocationSnapshot });
   } catch (err) {
     return { applied: false, reason: `device enumeration failed: ${err.message}` };
   }
@@ -493,6 +522,29 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   const routedProfileSettings = capabilityControls.length > 0
     ? Object.fromEntries(Object.entries(normalizedProfileSettings).filter(([key]) => !capabilityControls.includes(key)))
     : normalizedProfileSettings;
+  // Revalidate raw PNP-bridged targets before either reporting an already-
+  // applied no-op or performing a profile write/retry. IGCL listDevices may
+  // return its process-cached enumeration; the Windows PNP query bypasses its
+  // short cache and verifies the currently present full PNP instance.
+  const durableTargetKey = requestedDeviceKey ?? settings.deviceKey;
+  const requiresPnpBridge = typeof durableTargetKey === 'string' && pnpParts(durableTargetKey)
+    && targetDeviceKey !== durableTargetKey;
+  const rawPnpTargetIsCurrent = async () => {
+    if (!requiresPnpBridge) return true;
+    try {
+      const [currentDevices, freshSnapshot] = await Promise.all([
+        backend.listDevices(),
+        getFreshPnpLocationSnapshot(),
+      ]);
+      const { device: currentTarget } = resolvePnpDeviceByLiveLocation(durableTargetKey, currentDevices, freshSnapshot);
+      return Boolean(currentTarget && currentTarget.id === deviceId_);
+    } catch {
+      return false;
+    }
+  };
+  if (!await rawPnpTargetIsCurrent()) {
+    return { applied: false, reason: 'stale GPU target: the persisted device is no longer enumerated' };
+  }
   // A startup apply often runs against a driver that already retained the
   // profile's live values. Do not repeat a native write merely to verify what
   // is already true; this avoids a false boot notification on drivers whose
@@ -527,15 +579,14 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     });
   };
 
-  const recordRefusals = (result) => {
-    if (!result || typeof result !== 'object') return;
-    if (result.ocModeRefused === true || result.extendedUnavailable === true) return;
-    try {
-      const attempted = result.refused ?? clampSettings(profile.settings, extendedRangesFor(caps));
-      backend.recordApplyRefusals?.(deviceId_, result, attempted);
-    } catch {
-      // a store failure must never break the apply flow
-    }
+  const recordRefusals = async (envelope) => {
+    const attempted = envelope?.refused ?? envelope?.result?.refused
+      ?? clampSettings(profile.settings, extendedRangesFor(caps));
+    await recordApplyRefusalsSafely(backend, deviceId_, envelope, attempted, {
+      ranges: caps?.ranges ?? null,
+      deviceKey: targetDeviceKey,
+      physicalTarget: physicalTargetOf(resolvedTarget),
+    });
   };
   const attempt = async (waiverAccepted) => {
     if (capabilityRefusal && Object.keys(routedProfileSettings).length === 0) {
@@ -555,27 +606,34 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
       // profileApply:true so the worker skips the STOCK gate (the profile
       // is the user's own deliberate state) while keeping the ceiling
       // refusal (>315 W never silently clamps).
-      const out = withCapabilityRefusal(await applyRunner.apply({
-        deviceId: deviceId_,
-        deviceKey: targetDeviceKey,
-        physicalTarget: physicalTargetOf(resolvedTarget),
-        settings: routedProfileSettings,
-        profileName: profile.name,
-        waiverAccepted,
-        // M17d (Run D): the runner request carries the APPLY MODE (the same
-        // value ocModeRefusal received here - OC_MODE_ADVANCED: a profile
-        // applies as saved, so its W/C values route through the V1 runtime
-        // per the V1-call pin; the interactive slider gate never applies to
-        // profile applies).
-        ocMode: OC_MODE_ADVANCED,
-        profileApply: true,
-        // M17c (step-4 N6): the parent-resolved limits-key rides the worker
-        // request - the worker's gate thresholds must match the parent's
-        // (the worker's own caps decode the subsystem only; the parent's
-        // finalized caps carry the laptop branch).
-        limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null },
-      }));
-      if (out.extendedUnavailable !== true && out.extendedUnavailablePartial !== true) recordRefusals(out.result);
+      let workerResult;
+      try {
+        workerResult = await applyRunner.apply({
+          deviceId: deviceId_,
+          deviceKey: targetDeviceKey,
+          physicalTarget: physicalTargetOf(resolvedTarget),
+          settings: routedProfileSettings,
+          profileName: profile.name,
+          waiverAccepted,
+          // M17d (Run D): the runner request carries the APPLY MODE (the same
+          // value ocModeRefusal received here - OC_MODE_ADVANCED: a profile
+          // applies as saved, so its W/C values route through the V1 runtime
+          // per the V1-call pin; the interactive slider gate never applies to
+          // profile applies).
+          ocMode: OC_MODE_ADVANCED,
+          profileApply: true,
+          // M17c (step-4 N6): the parent-resolved limits-key rides the worker
+          // request - the worker's gate thresholds must match the parent's
+          // (the worker's own caps decode the subsystem only; the parent's
+          // finalized caps carry the laptop branch).
+          limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null },
+        });
+      } catch (error) {
+        if (Number.isFinite(routedProfileSettings?.tempLimitC)) await markTemperatureRefusalCacheUnavailable(backend, error);
+        throw error;
+      }
+      const out = withCapabilityRefusal(workerResult);
+      await recordRefusals(out);
       return out;
     }
     // M4O: opts.profileApply:true - executeApply clamps against the
@@ -586,8 +644,15 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     // M17d (Run D): ocMode: OC_MODE_ADVANCED - the same mode ocModeRefusal
     // received above, threaded into the split (the V1-call pin: a profile's
     // W/C values route through the bundled 2023 runtime's V1 setters).
-    const out = withCapabilityRefusal(await executeApply({ backend, oldIgcl, deviceId: deviceId_, deviceKey: targetDeviceKey, physicalTarget: physicalTargetOf(resolvedTarget), settings: routedProfileSettings, log, opts: { profileApply: true, waiverAccepted }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits }));
-    if (out.extendedUnavailable !== true && out.extendedUnavailablePartial !== true) recordRefusals(out.result);
+    let applied;
+    try {
+      applied = await executeApply({ backend, oldIgcl, deviceId: deviceId_, deviceKey: targetDeviceKey, physicalTarget: physicalTargetOf(resolvedTarget), settings: routedProfileSettings, log, opts: { profileApply: true, waiverAccepted }, ocMode: OC_MODE_ADVANCED, sysmanPowerLimits });
+    } catch (error) {
+      if (Number.isFinite(routedProfileSettings?.tempLimitC)) await markTemperatureRefusalCacheUnavailable(backend, error);
+      throw error;
+    }
+    const out = withCapabilityRefusal(applied);
+    await recordRefusals(out);
     return out;
   };
   const profileResultOf = (out) => {
@@ -623,6 +688,9 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     // (never a fake success). Exactly one retry - a second waiver-not-set
     // lands in the defaults restore below, never an endless loop.
     if (!result.ok && hasWaiverNotSet(result) && settings.waiverAccepted === true) {
+      if (!await rawPnpTargetIsCurrent()) {
+        return { applied: false, reason: 'stale GPU target: the persisted device is no longer enumerated' };
+      }
       log('[apply-on-boot] apply answered waiver-not-set with a persisted acceptance - silently re-setting the driver waiver and retrying ONCE');
       try {
         if (applyRunner?.needsWorker?.()) {
@@ -646,6 +714,9 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
     if (!result.ok && shouldRetryStartupApply(result)) {
       log(`[apply-on-boot] transient driver initialization result - waiting ${STARTUP_APPLY_RETRY_DELAY_MS} ms and retrying ONCE`);
       await new Promise((resolve) => setTimeout(resolve, STARTUP_APPLY_RETRY_DELAY_MS));
+      if (!await rawPnpTargetIsCurrent()) {
+        return { applied: false, reason: 'stale GPU target: the persisted device is no longer enumerated' };
+      }
       try {
         out = await attempt(effectiveWaiverAccepted);
         result = profileResultOf(out);
@@ -683,6 +754,23 @@ export async function applyProfile({ backend, store, profileId, deviceId = null,
   if (result.ok === true) {
     log(`[apply-on-boot] applied and read-back verified: ${JSON.stringify(result.perControl)}`);
     return { applied: true, result, state };
+  }
+
+  // A per-control capability/range refusal is a configuration outcome, not
+  // evidence that the adapter needs a global reset. This includes mixed
+  // results where other requested controls already landed. If a true hardware
+  // failure is also present, retain the existing reset behavior below.
+  if (!skipDefaultsFallback && !extendedUnavailable && !capabilityCeilingRefused
+    && hasOnlyConfigurationRefusals(result)) {
+    log('[apply-on-boot] configuration refusal - defaults-restore fallback SKIPPED so supported controls remain landed');
+    return {
+      applied: false,
+      reason: 'profile contains unsupported or out-of-range controls',
+      result,
+      state,
+      fallbackSkipped: true,
+      configurationRefused: true,
+    };
   }
 
   // Failure -> defaults, never a silent partial apply. Reached either by a
@@ -817,7 +905,7 @@ export async function applyProfileOnBoot({ backend, store, profileId, deviceId =
  *   state?: unknown,
  * }>}
  */
-export async function applyProfileBoot({ backend, store, profileId, deviceId = null, deviceKey = undefined, log = () => {}, oldIgcl = null, sysmanPowerLimits = null }) {
+export async function applyProfileBoot({ backend, store, profileId, deviceId = null, deviceKey = undefined, log = () => {}, oldIgcl = null, sysmanPowerLimits = null, getPnpLocationSnapshot = readWindowsPnpLocationSnapshot, getFreshPnpLocationSnapshot = () => readWindowsPnpLocationSnapshot({ fresh: true }) }) {
   return applyProfile({
     backend, store, profileId, deviceId, deviceKey, log,
     requireOcOnBoot: true,
@@ -825,7 +913,22 @@ export async function applyProfileBoot({ backend, store, profileId, deviceId = n
     applyRunner: null,
     skipDefaultsFallback: true,
     sysmanPowerLimits,
+    getPnpLocationSnapshot,
+    getFreshPnpLocationSnapshot,
   });
+}
+
+// A stale target is rejected before any hardware write. Only that outcome is
+// eligible for one retry after the OS identity snapshot has settled. Check the
+// current boot intent again so a deferred lookup cannot revive an old profile.
+export async function retryBootAfterIdentity({ outcome, waitForIdentity, isStillActive, apply }) {
+  if (!['stale GPU target: the persisted device is no longer enumerated', 'no devices enumerated'].includes(outcome?.reason)) return outcome;
+  try {
+    if (!await waitForIdentity() || !await isStillActive()) return outcome;
+  } catch {
+    return outcome;
+  }
+  return apply();
 }
 
 /**

@@ -2,7 +2,7 @@
 // the telemetry IPC push. FPS, CPU, system memory, and every physical GPU get
 // their own independently collapsible readout panel; GPU history remains in
 // one rolling Canvas trend per signal and per adapter with the same 60-sample
-// pulse window as Dashboard (about 24 seconds at the stock 400 ms cadence).
+// pulse window as Dashboard (about 35 seconds at the stock 600 ms cadence).
 // Trend cards start collapsed so the page stays dense on entry.
 // FPS comes from the fps-poll IPC channel (the ETW/PresentMon lane first -
 // the foreground program's per-frame present stream; the DXGI
@@ -22,13 +22,13 @@ import { el, clear } from '../dom.ts';
 import type { AppState, Page, PageContext } from '../router.ts';
 import { consumeOverlayViewRequest } from '../router.ts';
 import { api } from '../ipc.ts';
-import type { DeviceInfo, FpsSample, TelemetrySample } from '../types.ts';
+import type { DeviceInfo, FpsSample, StabilityThreshold, TelemetrySample } from '../types.ts';
 import { getMonitorLogMetrics, getMonitorLogToFile, setLatestFpsSample, setMonitorLogMetrics, setMonitorLogToFile } from '../log-state.ts';
 import { ghzFreq } from '../pure/sysinfo.ts';
 import { formatGpuMemoryGb, gpuMemoryLabel } from '../pure/gpu-memory.ts';
 import { chipLabelGpu } from '../pure/chip-label.ts';
 import { deviceHardwareKey, stripVramSuffix } from '../pure/device.ts';
-import { dashboardGpuOrder } from '../pure/dashboard.ts';
+import { dashboardGpuOrder, gpuSectionLabel } from '../pure/dashboard.ts';
 import { renderOverlaySettings } from './overlay-settings.ts';
 import {
   upsertSeriesPoint,
@@ -50,8 +50,10 @@ import {
   TELEMETRY_HISTORY_POINTS,
   TELEMETRY_HISTORY_WINDOW_LABEL,
   TELEMETRY_HISTORY_WINDOW_S,
+  TELEMETRY_POLL_MS_DEFAULT,
   TELEMETRY_PULSE_COLORS,
 } from '../pure/telemetry-visuals.ts';
+import { STABILITY_CADENCE_DEFAULT_MS, stabilityDialogOutcome } from '../pure/stability-outcome.ts';
 
 const FPS_POLL_MS = 1000;
 // M4-D2 (plan-review M5): the PresentMon mention is gone - the FPS source is
@@ -941,7 +943,7 @@ function renderTrackingPanel(state: AppState): HTMLElement {
     { key: 'system-memory', title: 'System Memory', subtitle: 'RAM' },
   ];
   dashboardGpuOrder(state.devices).forEach((device, index) => {
-    const label = `GPU ${index + 1}`;
+    const label = gpuSectionLabel(index, state.devices.length);
     const badge = shortGpuName(device);
     groups.push({ key: `gpu-${device.id}`, title: label, subtitle: badge });
     groups.push({ key: `gpu-memory-${device.id}`, title: `${label} Memory`, subtitle: badge });
@@ -983,20 +985,45 @@ function renderTrackingPanel(state: AppState): HTMLElement {
     logButton,
     el('div', { class: 'telemetry-sampling-row' }, [
       el('span', { text: 'Sampling interval' }),
-      el('strong', { text: '1 s' }),
+      el('strong', { text: `${(TELEMETRY_POLL_MS_DEFAULT / 1000).toFixed(1)} s` }),
     ]),
     el('div', { class: 'telemetry-tracking-label', text: 'Metrics to log' }),
     list,
   ]);
 }
 
-function stabilityOutcomeLabel(outcome: string | null | undefined): string {
-  if (outcome === 'passed') return 'Passed';
-  if (outcome === 'warning') return 'Warning';
-  if (outcome === 'no-workload') return 'No workload detected';
-  if (outcome === 'unavailable') return 'Unavailable';
-  if (outcome === 'cancelled') return 'Cancelled';
+function stabilityOutcomeLabel(outcome: string | null | undefined, sampleCount = 0, thresholdBreaches = 0): string {
+  if (!outcome) return 'Ready';
+  const mapped = stabilityDialogOutcome(outcome, sampleCount, thresholdBreaches);
+  if (mapped === 'passed') return 'Passed';
+  if (mapped === 'warning') return 'Warning';
+  if (mapped === 'failed') return 'Failed';
+  if (mapped === 'aborted') return 'Aborted';
+  if (mapped === 'cancelled') return 'Cancelled';
+  if (mapped === 'no-workload') return 'No workload detected';
+  if (mapped === 'unavailable') return 'Unavailable';
   return 'Ready';
+}
+
+function stabilityThresholdText(thresholds: StabilityThreshold[] | null | undefined): string {
+  return (thresholds ?? []).map(({ metric, value, limit }) => {
+    const label = metric === 'tempC' ? 'GPU temp' : metric === 'powerW' ? 'Power' : metric;
+    const unit = metric === 'tempC' ? '°C' : metric === 'powerW' ? 'W' : '';
+    const observed = Number.isInteger(value) ? String(value) : Number(value).toFixed(1);
+    const threshold = Number.isInteger(limit) ? String(limit) : Number(limit).toFixed(1);
+    return `${label} ${observed}${unit ? ` ${unit}` : ''} > ${threshold}${unit ? ` ${unit}` : ''}`;
+  }).join(' · ');
+}
+
+function stabilityThresholdFallbackText(
+  fallbacks: string[] | null | undefined,
+  limits: { powerW?: number; currentTempC?: number } | null | undefined,
+): string {
+  return (fallbacks ?? []).map((metric) => {
+    if (metric === 'powerW') return `Fallback power threshold ${limits?.powerW ?? '—'} W`;
+    if (metric === 'currentTempC') return `Fallback GPU temperature threshold ${limits?.currentTempC ?? '—'} °C`;
+    return `Fallback ${metric} threshold`;
+  }).join(' · ');
 }
 
 function stressMetricText(value: number | null | undefined): string {
@@ -1004,7 +1031,19 @@ function stressMetricText(value: number | null | undefined): string {
 }
 
 function stressVramText(bytes: number | null | undefined): string {
-  return Number.isFinite(bytes) ? `${Math.round(Number(bytes) / 1e9).toLocaleString('en-US')} GB` : '—';
+  return Number.isFinite(bytes) ? (Number(bytes) / 1e9).toFixed(1) : '—';
+}
+
+function stressVramAllocationText(bytes: number | null | undefined, roundDown: boolean): string {
+  if (!Number.isFinite(bytes)) return '—';
+  const gigabytes = Number(bytes) / 1e9;
+  return (roundDown ? Math.floor(gigabytes * 10) / 10 : gigabytes).toFixed(1);
+}
+
+function stressVramTargetText(bytes: number | null | undefined): string {
+  if (!Number.isFinite(bytes)) return '—';
+  const gigabytes = Number(bytes) / 1e9;
+  return Number.isInteger(gigabytes) ? String(gigabytes) : gigabytes.toFixed(1);
 }
 
 function stressMetricFill(key: string, value: number | null | undefined, limits: Record<string, number>): number {
@@ -1014,41 +1053,86 @@ function stressMetricFill(key: string, value: number | null | undefined, limits:
   return Math.max(0, Math.min(100, (Number(value) / limit) * 100));
 }
 
+function stressDurationText(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
 function renderStabilityStressDialog(): HTMLElement {
-  const metric = (label: string, key: string, unit: string) => el('div', { class: 'stability-stress-metric' }, [
-    el('div', { class: 'stability-stress-metric-label', text: label }),
-    el('div', { class: 'stability-stress-metric-value' }, [
-      el('span', { dataset: { stabilityStressValue: key }, text: '—' }),
-      el('small', { text: unit }),
+  const metric = (label: string, key: string, unit: string, meter = false) => el('div', {
+    class: 'sd-stat',
+    dataset: { stabilityStressStat: key, stabilityStressMeter: meter ? 'true' : 'false' },
+  }, [
+    el('span', { class: 'sd-label', text: label }),
+    el('span', { class: 'sd-value is-empty', dataset: { stabilityStressValue: key } }, [
+      el('b', { class: 'sd-num', text: '—' }),
+      el('small', { class: 'sd-unit', text: unit }),
+      key === 'vramUsedBytes' ? el('small', { class: 'sd-cap', dataset: { stabilityStressCap: 'true' }, hidden: true }) : null,
     ]),
-    el('div', { class: 'stability-stress-spark', dataset: { stabilityStressSpark: key } }),
+  ]);
+  const metricGroup = (title: string, className: string, metrics: HTMLElement[]) => el('section', {
+    class: `sd-group ${className}`.trim(),
+  }, [
+    el('h3', { class: 'sd-group-label', text: title }),
+    el('div', { class: `sd-stats sd-stats-${metrics.length}` }, metrics),
   ]);
   const dialog = el('section', {
-    class: 'stability-stress-dialog',
+    class: 'modal stress-dialog',
     role: 'dialog',
     'aria-modal': 'false',
-    'aria-label': 'Arc Power stability test',
+    'aria-label': 'Arc Power stress test',
     hidden: true,
     dataset: { stabilityStressDialog: 'true', dismissed: 'false' },
   }, [
-    el('header', { class: 'stability-stress-header' }, [
-      el('div', { class: 'stability-stress-title', dataset: { stabilityStressTitle: 'true' }, text: 'Stress Test' }),
-      el('button', { class: 'stability-stress-close', type: 'button', title: 'Close results', 'aria-label': 'Close stability test results', dataset: { stabilityStressClose: 'true' }, text: '×' }),
+    el('header', { class: 'sd-head' }, [
+      el('div', {}, [
+        el('h2', { class: 'sd-title', text: 'Stress Test' }),
+        el('p', { class: 'sd-device', dataset: { stabilityStressDevice: 'true' }, text: 'Selected GPU' }),
+      ]),
+      el('button', { class: 'sd-close', type: 'button', title: 'Close', 'aria-label': 'Close stress test', dataset: { stabilityStressClose: 'true' }, text: '×' }),
     ]),
-    el('div', { class: 'stability-stress-grid' }, [
-      metric('GPU Clock Speed', 'gpuClockMhz', 'MHz'),
-      metric('VRAM Clock Speed', 'vramClockMhz', 'MHz'),
-      metric('Power Consumption', 'powerW', 'W'),
-      metric('Fan Speed', 'fanRpm', 'RPM'),
-      metric('VRAM Temperature', 'vramTempC', '°C'),
-      metric('Current Temperature', 'currentTempC', '°C'),
-      metric('GPU Utilization', 'gpuUtilPct', '%'),
-      metric('VRAM In Use', 'vramUsedBytes', ''),
+    el('div', { class: 'sd-status', dataset: { stabilityStressStatus: 'true', outcome: 'ready' } }, [
+      el('span', { class: 'status-dot status-unknown', dataset: { stabilityStressDot: 'true' } }),
+      el('span', { class: 'sd-verdict', dataset: { stabilityStressVerdict: 'true' }, text: 'Ready' }),
+      el('span', { class: 'sd-status-sep' }),
+      el('span', { class: 'sd-status-detail', dataset: { stabilityStressDetail: 'true' }, text: 'WHEA: not started' }),
+      el('span', { class: 'sd-status-time', dataset: { stabilityStressTime: 'true' }, hidden: true }),
     ]),
-    el('div', { class: 'stability-stress-footer' }, [
-      el('div', { class: 'stability-stress-result', dataset: { stabilityStressResult: 'true' }, text: 'Starting stress test' }),
-      el('div', { class: 'stability-stress-whea', dataset: { stabilityStressWhea: 'true' }, text: 'WHEA check starting…' }),
-      el('button', { class: 'btn btn-danger stability-stress-stop', type: 'button', dataset: { stabilityStressStop: 'true' }, text: 'Stop Testing' }),
+    el('div', { class: 'sd-body' }, [
+      el('div', { class: 'sd-row-split' }, [
+        metricGroup('GPU', '', [
+          metric('Core clock', 'gpuClockMhz', 'MHz'),
+          metric('Utilization', 'gpuUtilPct', '%', true),
+        ]),
+        metricGroup('Memory', 'sd-group-divided', [
+          metric('VRAM clock', 'vramClockMhz', 'MHz'),
+          metric('VRAM load', 'vramUsedBytes', 'GB', true),
+        ]),
+      ]),
+      el('div', { class: 'sd-body-divider' }),
+      metricGroup('Power & cooling', '', [
+        metric('Power', 'powerW', 'W'),
+        metric('Fan', 'fanRpm', 'RPM'),
+        metric('GPU temp', 'currentTempC', '°C'),
+        metric('VRAM temp', 'vramTempC', '°C'),
+      ]),
+      el('p', { class: 'sd-note', dataset: { stabilityStressNote: 'true' } }),
+    ]),
+    el('footer', { class: 'sd-foot' }, [
+      el('div', { class: 'sd-foot-info', dataset: { stabilityStressFootInfo: 'true' } }, [
+        el('label', { class: 'sd-field', dataset: { stabilityStressDurationField: 'true' } }, [
+          el('span', { class: 'sd-field-label', text: 'Duration' }),
+          el('select', { class: 'sd-select', 'aria-label': 'Test duration', dataset: { stabilityStressDuration: 'true' } }, [
+            el('option', { value: '30', text: '0:30' }),
+            el('option', { value: '60', text: '1:00' }),
+            el('option', { value: '300', text: '5:00' }),
+            el('option', { value: '600', text: '10:00' }),
+          ]),
+        ]),
+        el('span', { class: 'sd-foot-text', dataset: { stabilityStressFootText: 'true' }, hidden: true }),
+      ]),
+      el('div', { class: 'sd-foot-actions' }, [
+        el('button', { class: 'btn btn-primary', type: 'button', dataset: { stabilityStressAction: 'true' }, text: 'Start stress test' }),
+      ]),
     ]),
   ]);
   return dialog;
@@ -1057,45 +1141,60 @@ function renderStabilityStressDialog(): HTMLElement {
 function updateStabilityStressDialog(root: HTMLElement, state: AppState): void {
   const dialog = root.querySelector<HTMLElement>('[data-stability-stress-dialog]');
   const run = state.stabilityRun;
-  if (!dialog || !run) return;
-  const active = run.state === 'running';
+  if (!dialog) return;
+  const active = run?.state === 'running';
+  // A retained run in the app store must not open this dialog just because
+  // Monitoring was entered or refreshed. Each rendered dialog starts closed;
+  // the explicit Start Test action opts this instance in.
+  if (dialog.dataset.requested !== 'true') { dialog.hidden = true; return; }
   // The dialog node is rebuilt on every tab entry. Reapply the dismissal to
   // the same completed run before rendering its result so navigation cannot
   // reopen a test the user already closed.
-  if (dismissedStabilityRunId === run.runId && !active) {
+  if (run && dismissedStabilityRunId === run.runId && !active) {
     dialog.dataset.dismissed = 'true';
     dialog.hidden = true;
     return;
   }
-  if (active) dialog.dataset.dismissed = 'false';
   if (dialog.dataset.dismissed === 'true' && !active) { dialog.hidden = true; return; }
   dialog.hidden = false;
-  const title = dialog.querySelector<HTMLElement>('[data-stability-stress-title]');
-  const result = dialog.querySelector<HTMLElement>('[data-stability-stress-result]');
-  const stop = dialog.querySelector<HTMLButtonElement>('[data-stability-stress-stop]');
+  const action = dialog.querySelector<HTMLButtonElement>('[data-stability-stress-action]');
   const close = dialog.querySelector<HTMLButtonElement>('[data-stability-stress-close]');
-  const metrics = run.metrics ?? null;
-  const targetName = run.target?.name ?? 'Selected GPU';
-  if (title) title.textContent = `Stress Test — ${targetName}`;
-  const startMs = Date.parse(run.startedAt);
-  const endMs = run.endedAt ? Date.parse(run.endedAt) : Date.now();
-  const elapsed = Number.isFinite(startMs) ? Math.max(0, Math.floor((endMs - startMs) / 1000)) : 0;
-  if (result) result.textContent = active
-    ? `Running Stress Test   ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`
-    : `${stabilityOutcomeLabel(run.outcome)}   ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
-  // Once the run is complete this same button becomes the dismissal action.
-  // Leaving it disabled made the visible "Close Results" control inert.
-  if (stop) { stop.disabled = false; stop.textContent = active ? 'Stop Testing' : 'Close Results'; }
-  if (close) close.hidden = active;
-  const values: Record<string, string> = {
-    gpuClockMhz: stressMetricText(metrics?.gpuClockMhz),
-    vramClockMhz: stressMetricText(metrics?.vramClockMhz),
-    powerW: stressMetricText(metrics?.powerW),
-    fanRpm: stressMetricText(metrics?.fanRpm),
-    vramTempC: stressMetricText(metrics?.vramTempC),
-    currentTempC: stressMetricText(metrics?.currentTempC),
-    gpuUtilPct: stressMetricText(metrics?.gpuUtilPct),
-    vramUsedBytes: stressVramText(metrics?.vramUsedBytes),
+  const durationField = dialog.querySelector<HTMLElement>('[data-stability-stress-duration-field]');
+  const durationSelect = dialog.querySelector<HTMLSelectElement>('[data-stability-stress-duration]');
+  const footText = dialog.querySelector<HTMLElement>('[data-stability-stress-foot-text]');
+  const status = dialog.querySelector<HTMLElement>('[data-stability-stress-status]');
+  const dot = dialog.querySelector<HTMLElement>('[data-stability-stress-dot]');
+  const verdictNode = dialog.querySelector<HTMLElement>('[data-stability-stress-verdict]');
+  const detailNode = dialog.querySelector<HTMLElement>('[data-stability-stress-detail]');
+  const timeNode = dialog.querySelector<HTMLElement>('[data-stability-stress-time]');
+  const note = dialog.querySelector<HTMLElement>('[data-stability-stress-note]');
+  const statusSeparator = dialog.querySelector<HTMLElement>('.sd-status-sep');
+  const select = root.querySelector<HTMLSelectElement>('.stability-lab-controls select');
+  const durationInput = root.querySelector<HTMLInputElement>('.stability-lab-duration');
+  const selectedDevice = state.devices.find((device) => (device.deviceKey ?? deviceHardwareKey(device)) === select?.value)
+    ?? state.devices.find((device) => device.id === state.deviceId)
+    ?? state.devices[0]
+    ?? null;
+  const targetName = run?.target?.name ?? selectedDevice?.name ?? 'Selected GPU';
+  const device = dialog.querySelector<HTMLElement>('[data-stability-stress-device]');
+  if (device) device.textContent = targetName;
+
+  const metrics = run?.metrics ?? null;
+  const telemetryUnavailable = run?.telemetryStatus === 'unavailable';
+  const allocationTarget = run?.vramTargetBytes;
+  const allocationAchieved = run?.vramAllocatedBytes;
+  const partialAllocation = run?.vramAllocationComplete === false || run?.workloadStatus === 'partial';
+  const hasVramAllocation = Number.isFinite(allocationTarget) && Number(allocationTarget) > 0
+    && Number.isFinite(allocationAchieved);
+  const rawValues: Record<string, number | null | undefined> = {
+    gpuClockMhz: metrics?.gpuClockMhz,
+    vramClockMhz: metrics?.vramClockMhz,
+    powerW: metrics?.powerW,
+    fanRpm: metrics?.fanRpm,
+    vramTempC: metrics?.vramTempC,
+    currentTempC: metrics?.currentTempC,
+    gpuUtilPct: telemetryUnavailable ? null : metrics?.gpuUtilPct,
+    vramUsedBytes: metrics?.vramUsedBytes,
   };
   const fallbackLimits: Record<string, number> = {
     gpuClockMhz: 3000,
@@ -1105,33 +1204,144 @@ function updateStabilityStressDialog(root: HTMLElement, state: AppState): void {
     vramTempC: 100,
     currentTempC: 90,
     gpuUtilPct: 100,
-    vramUsedBytes: 8 * 1024 * 1024 * 1024,
+    vramUsedBytes: selectedDevice?.vramBytes ?? (8 * 1024 * 1024 * 1024),
   };
-  const limits = { ...fallbackLimits, ...(run.limits ?? {}) };
-  const rawValues: Record<string, number | null | undefined> = {
-    gpuClockMhz: metrics?.gpuClockMhz,
-    vramClockMhz: metrics?.vramClockMhz,
-    powerW: metrics?.powerW,
-    fanRpm: metrics?.fanRpm,
-    vramTempC: metrics?.vramTempC,
-    currentTempC: metrics?.currentTempC,
-    gpuUtilPct: metrics?.gpuUtilPct,
-    vramUsedBytes: metrics?.vramUsedBytes,
+  const limits: Record<string, number> = { ...fallbackLimits, ...(run?.limits ?? {}) };
+  const duration = run?.effectiveDurationSec ?? Number(durationInput?.value ?? 30);
+  const startMs = run ? Date.parse(run.startedAt) : NaN;
+  const endMs = run?.endedAt ? Date.parse(run.endedAt) : Date.now();
+  const elapsed = run && Number.isFinite(startMs) ? Math.max(0, Math.floor((endMs - startMs) / 1000)) : 0;
+  const remaining = Math.max(0, duration - elapsed);
+  const whea = run?.whea;
+  const wheaCount = Number(whea?.errorCount ?? 0);
+  const outcome = run?.outcome;
+  const mappedOutcome = run
+    ? stabilityDialogOutcome(outcome, run.sampleCount, run.thresholdBreaches ?? 0)
+    : 'unavailable';
+  const breachOrder = ['vramTempC', 'currentTempC', 'powerW'];
+  const breachedKey = breachOrder.find((key) => Number.isFinite(rawValues[key]) && Number(rawValues[key]) > limits[key]);
+  const displayOutcome = !run ? 'ready'
+    : active ? 'running'
+      : outcome === 'aborted' ? 'aborted'
+        : outcome === 'cancelled' ? 'cancelled'
+          : wheaCount > 0 && mappedOutcome !== 'unavailable' ? 'failed'
+            : mappedOutcome;
+
+  if (status) status.dataset.outcome = displayOutcome;
+  if (dot) {
+    dot.className = `status-dot ${displayOutcome === 'passed' ? 'status-ok'
+      : displayOutcome === 'aborted' || displayOutcome === 'failed' || displayOutcome === 'unavailable' ? 'status-error'
+        : displayOutcome === 'warning' || displayOutcome === 'no-workload' ? 'status-warn'
+          : displayOutcome === 'running' ? 'sd-dot-live' : 'status-unknown'}`;
+  }
+  if (verdictNode) verdictNode.textContent = displayOutcome === 'ready' ? 'Ready'
+    : displayOutcome === 'running' ? 'Running'
+      : displayOutcome === 'passed' ? 'Passed'
+      : displayOutcome === 'aborted' ? (run?.abortReason === 'gpu-temperature'
+        ? `Aborted — GPU ${stressMetricText(run.abortDetails?.temperatureC)} °C`
+        : run?.abortReason === 'whea'
+          ? `Aborted — WHEA error (${stressMetricText(run.abortDetails?.wheaDelta ?? run.abortDetails?.wheaErrorCount)})`
+          : 'Aborted')
+      : displayOutcome === 'failed' ? 'Failed'
+            : displayOutcome === 'cancelled' ? 'Cancelled by user'
+              : displayOutcome === 'no-workload' ? 'No workload detected'
+                : displayOutcome === 'warning' ? 'Warning' : 'Unavailable';
+  if (detailNode) {
+    const detail = displayOutcome === 'ready' ? 'WHEA: not started'
+      : displayOutcome === 'running' ? 'WHEA: monitoring'
+        : displayOutcome === 'failed' ? `WHEA reported ${wheaCount} error${wheaCount === 1 ? '' : 's'}`
+          : displayOutcome === 'aborted' || displayOutcome === 'cancelled' ? ''
+            : displayOutcome === 'passed' ? (whea?.available ? 'WHEA: no errors found' : `WHEA: ${whea?.error ?? 'check unavailable'}`)
+              : displayOutcome === 'warning' ? run?.reason ?? 'Stability checks reported an issue'
+                : run?.reason ?? (displayOutcome === 'no-workload' ? 'No GPU workload was detected' : 'Stability test unavailable');
+    const thresholdDetail = stabilityThresholdText(run?.thresholds);
+    const fallbackDetail = stabilityThresholdFallbackText(run?.thresholdFallbacks, run?.thresholdLimits);
+    detailNode.textContent = [detail, thresholdDetail, fallbackDetail].filter(Boolean).join(' · ');
+    detailNode.hidden = !detail && !thresholdDetail && !fallbackDetail;
+  }
+  if (statusSeparator) statusSeparator.hidden = displayOutcome === 'aborted' || displayOutcome === 'cancelled';
+  if (timeNode) {
+    timeNode.hidden = !run;
+    timeNode.textContent = active ? `${stressDurationText(elapsed)} of ${stressDurationText(duration)}` : stressDurationText(elapsed);
+  }
+  if (close) close.hidden = Boolean(active);
+  if (durationField) durationField.hidden = Boolean(run);
+  if (durationSelect) {
+    const option = Array.from(durationSelect.options).find((item) => Number(item.value) === duration);
+    durationSelect.value = option?.value ?? '30';
+  }
+  if (action) {
+    action.disabled = false;
+    action.className = `btn ${!run ? 'btn-primary' : active ? 'btn-danger' : ''}`.trim();
+    action.textContent = !run ? 'Start stress test' : active ? 'Stop' : 'Close results';
+  }
+  if (footText) {
+    footText.hidden = !run;
+    footText.textContent = active ? `${stressDurationText(remaining)} remaining`
+      : displayOutcome === 'aborted' || displayOutcome === 'cancelled'
+        ? `Stopped at ${stressDurationText(elapsed)} of ${stressDurationText(duration)}`
+        : `Completed in ${stressDurationText(elapsed)}`;
+  }
+  if (note) {
+    const telemetryNote = `Telemetry unavailable — utilization not sampled${run?.telemetryReason ? ` (${run.telemetryReason})` : ''}`;
+    const noteText = !run ? 'Samples are captured only while a test is running.'
+      : telemetryUnavailable ? telemetryNote
+      : displayOutcome === 'passed' ? `Final sample after ${stressDurationText(elapsed)} of sustained load.`
+        : displayOutcome === 'aborted' ? 'Load was released and the fan returned to automatic control.'
+        : '';
+    note.hidden = !noteText || (Boolean(active) && !telemetryUnavailable);
+    note.textContent = noteText;
+    note.classList.toggle('is-unavailable', telemetryUnavailable);
+  }
+
+  const values: Record<string, string> = {
+    gpuClockMhz: stressMetricText(rawValues.gpuClockMhz),
+    vramClockMhz: stressMetricText(rawValues.vramClockMhz),
+    powerW: stressMetricText(rawValues.powerW),
+    fanRpm: stressMetricText(rawValues.fanRpm),
+    vramTempC: stressMetricText(rawValues.vramTempC),
+    currentTempC: stressMetricText(rawValues.currentTempC),
+    gpuUtilPct: stressMetricText(rawValues.gpuUtilPct),
+    vramUsedBytes: hasVramAllocation
+      ? `${stressVramAllocationText(allocationAchieved, partialAllocation)} / ${stressVramTargetText(allocationTarget)}`
+      : stressVramText(rawValues.vramUsedBytes),
   };
   Object.entries(values).forEach(([key, value]) => {
     const node = dialog.querySelector<HTMLElement>(`[data-stability-stress-value="${key}"]`);
-    if (node) node.textContent = value;
-    const spark = dialog.querySelector<HTMLElement>(`[data-stability-stress-spark="${key}"]`);
-    if (spark) spark.style.setProperty('--stress-fill', `${stressMetricFill(key, rawValues[key], limits)}%`);
+    const number = node?.querySelector<HTMLElement>('.sd-num');
+    const cap = node?.querySelector<HTMLElement>('[data-stability-stress-cap]');
+    const sampled = key === 'vramUsedBytes' && hasVramAllocation
+      || Number.isFinite(rawValues[key]);
+    if (number) number.textContent = value;
+    node?.classList.toggle('is-empty', !sampled);
+    node?.classList.toggle('is-allocation', key === 'vramUsedBytes' && hasVramAllocation);
+    node?.classList.toggle('is-alert', displayOutcome === 'aborted' && breachedKey === key);
+    if (cap) {
+      const capacity = Number(limits.vramUsedBytes);
+      const showPartial = key === 'vramUsedBytes' && hasVramAllocation && partialAllocation;
+      cap.hidden = showPartial
+        ? false
+        : hasVramAllocation || !Number.isFinite(capacity) || capacity <= 0;
+      cap.classList.toggle('is-partial', showPartial);
+      cap.textContent = showPartial ? '(partial)'
+        : cap.hidden ? '' : `of ${Math.round(capacity / 1e9).toLocaleString('en-US')}`;
+    }
+    const stat = dialog.querySelector<HTMLElement>(`[data-stability-stress-stat="${key}"]`);
+    if (!stat || stat.dataset.stabilityStressMeter !== 'true') return;
+    let meter = stat.querySelector<HTMLElement>('.sd-meter');
+    if (!sampled) {
+      meter?.remove();
+      return;
+    }
+    if (!meter) {
+      meter = el('div', { class: 'sd-meter', role: 'presentation' }, [el('span')]);
+      stat.append(meter);
+    }
+    const fill = meter.querySelector<HTMLElement>('span');
+    const meterValue = key === 'vramUsedBytes' && hasVramAllocation ? allocationAchieved : rawValues[key];
+    const meterLimit = key === 'vramUsedBytes' && hasVramAllocation ? Number(allocationTarget) : limits[key];
+    if (fill) fill.style.width = `${stressMetricFill(key, meterValue, { ...limits, [key]: meterLimit })}%`;
   });
-  const whea = run.whea;
-  const wheaNode = dialog.querySelector<HTMLElement>('[data-stability-stress-whea]');
-  if (wheaNode) {
-    wheaNode.dataset.outcome = whea?.errorCount ? 'error' : whea?.available ? 'ok' : 'unknown';
-    wheaNode.textContent = whea?.errorCount
-      ? `WHEA: ${whea.errorCount} error${whea.errorCount === 1 ? '' : 's'} found`
-      : whea?.available ? 'WHEA: no errors found' : `WHEA: ${whea?.error ?? 'check unavailable'}`;
-  }
 }
 
 function updateStabilityLabPanel(root: HTMLElement, state: AppState): void {
@@ -1144,8 +1354,13 @@ function updateStabilityLabPanel(root: HTMLElement, state: AppState): void {
   const cancel = root.querySelector<HTMLButtonElement>('[data-stability-cancel]');
   const active = run?.state === 'running';
   if (status) {
-    status.textContent = active ? 'Running' : stabilityOutcomeLabel(run?.outcome ?? report?.outcome ?? null);
-    status.dataset.outcome = run?.outcome ?? report?.outcome ?? 'ready';
+    const statusOutcome = run?.outcome ?? report?.outcome ?? null;
+    const sampleCount = run?.sampleCount ?? report?.sampleCount ?? 0;
+    const thresholdBreaches = run?.thresholdBreaches ?? report?.thresholdBreaches ?? 0;
+    status.textContent = active ? 'Running' : stabilityOutcomeLabel(statusOutcome, sampleCount, thresholdBreaches);
+    status.dataset.outcome = active ? 'running' : statusOutcome
+      ? stabilityDialogOutcome(statusOutcome, sampleCount, thresholdBreaches)
+      : 'ready';
   }
   if (counters) counters.textContent = run ? `${run.sampleCount} samples · ${run.freshSampleCount} fresh · ${run.workloadEvidence ? 'GPU workload active' : run.workloadStatus === 'unavailable' ? 'workload unavailable' : run.workloadStatus === 'monitor-only' ? 'monitoring only' : run.workloadStatus === 'running' ? 'workload started · waiting for GPU utilization' : 'starting GPU workload'}` : report ? `${report.sampleCount} samples · ${report.workloadEvidence ? 'workload evidence' : 'no workload evidence'}` : 'No run yet';
   if (note) {
@@ -1164,9 +1379,9 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
   const selected = state.devices.find((device) => device.id === state.deviceId) ?? state.devices[0] ?? null;
   const select = el('select', { class: 'stability-lab-device', 'aria-label': 'Stability Lab GPU' }, state.devices.map((device) => el('option', { value: device.deviceKey ?? deviceHardwareKey(device), text: shortGpuName(device) })));
   if (selected) select.value = selected.deviceKey ?? deviceHardwareKey(selected);
-  const cadence = el('input', { class: 'stability-lab-cadence', type: 'number', min: '250', max: '2000', step: '50', value: '500', 'aria-label': 'Sampling interval in milliseconds' }) as HTMLInputElement;
+  const cadence = el('input', { class: 'stability-lab-cadence', type: 'number', min: '250', max: '2000', step: '50', value: String(STABILITY_CADENCE_DEFAULT_MS), 'aria-label': 'Sampling interval in milliseconds' }) as HTMLInputElement;
   const duration = el('input', { class: 'stability-lab-duration', type: 'number', min: '10', max: '900', step: '10', value: '30', 'aria-label': 'Run duration in seconds' }) as HTMLInputElement;
-  const start = el('button', { class: 'btn btn-primary', type: 'button', text: 'Start run', dataset: { stabilityStart: 'true' } }) as HTMLButtonElement;
+  const start = el('button', { class: 'btn btn-primary', type: 'button', text: 'Start Test', dataset: { stabilityStart: 'true' } }) as HTMLButtonElement;
   const cancel = el('button', { class: 'btn btn-secondary', type: 'button', text: 'Cancel', dataset: { stabilityCancel: 'true' } }) as HTMLButtonElement;
   const stressDialog = renderStabilityStressDialog();
   const root = el('section', { class: 'card stability-lab-panel', dataset: { stabilityLab: 'true' } }, [
@@ -1184,8 +1399,12 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
     el('p', { class: 'card-note', dataset: { stabilityNote: 'true' }, text: 'Runs stay tied to the selected physical GPU.' }),
     stressDialog,
   ]);
-  start.addEventListener('click', async () => {
+  const startRun = async () => {
+    stressDialog.dataset.requested = 'true';
+    stressDialog.dataset.dismissed = 'false';
     start.disabled = true;
+    const dialogStart = stressDialog.querySelector<HTMLButtonElement>('[data-stability-stress-action]');
+    if (dialogStart) dialogStart.disabled = true;
     try {
       const nextRun = await api.stabilityRunStart({ deviceKey: select.value, cadenceMs: Number(cadence.value), durationSec: Number(duration.value) });
       dismissedStabilityRunId = null;
@@ -1193,7 +1412,8 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
     }
     catch (error) { const node = root.querySelector<HTMLElement>('[data-stability-note]'); if (node) node.textContent = error instanceof Error ? error.message : String(error); }
     finally { updateStabilityLabPanel(root, ctx.store.get()); }
-  });
+  };
+  start.addEventListener('click', () => { void startRun(); });
   cancel.addEventListener('click', async () => {
     const runId = ctx.store.get().stabilityRun?.runId;
     if (!runId) return;
@@ -1201,19 +1421,29 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
     try { await api.stabilityRunCancel(runId); }
     catch (error) { const node = root.querySelector<HTMLElement>('[data-stability-note]'); if (node) node.textContent = error instanceof Error ? error.message : String(error); }
   });
-  stressDialog.querySelector<HTMLButtonElement>('[data-stability-stress-stop]')?.addEventListener('click', async () => {
+  stressDialog.querySelector<HTMLSelectElement>('[data-stability-stress-duration]')?.addEventListener('change', (event) => {
+    const target = event.currentTarget as HTMLSelectElement;
+    duration.value = target.value;
+  });
+  stressDialog.querySelector<HTMLButtonElement>('[data-stability-stress-action]')?.addEventListener('click', async () => {
     const current = ctx.store.get().stabilityRun;
     const runId = current?.runId;
-    if (!runId) return;
+    if (!runId) {
+      const selectedDuration = stressDialog.querySelector<HTMLSelectElement>('[data-stability-stress-duration]');
+      if (selectedDuration) duration.value = selectedDuration.value;
+      await startRun();
+      return;
+    }
     if (current?.state !== 'running') {
       dismissedStabilityRunId = runId;
       stressDialog.dataset.dismissed = 'true';
+      stressDialog.dataset.requested = 'false';
       stressDialog.hidden = true;
       return;
     }
     try { await api.stabilityRunCancel(runId); }
     catch (error) {
-      const node = stressDialog.querySelector<HTMLElement>('[data-stability-stress-result]');
+      const node = stressDialog.querySelector<HTMLElement>('[data-stability-stress-detail]');
       if (node) node.textContent = error instanceof Error ? error.message : String(error);
     }
   });
@@ -1221,6 +1451,7 @@ function renderStabilityLabPanel(state: AppState, ctx: PageContext): HTMLElement
     const runId = ctx.store.get().stabilityRun?.runId;
     if (runId) dismissedStabilityRunId = runId;
     stressDialog.dataset.dismissed = 'true';
+    stressDialog.dataset.requested = 'false';
     stressDialog.hidden = true;
   });
   updateStabilityLabPanel(root, state);
@@ -1249,19 +1480,11 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
 
   const panels = el('div', { class: 'telemetry-metrics' });
   panels.append(
-    telemetryPanel('fps', 'FPS & frame pacing', 'Present data', [
-      fpsMetricNode('Frame rate', 'fps', 'FPS'),
-      fpsMetricNode('Frame time', 'frame-time', 'ms'),
-      fpsMetricNode('Average', 'average', 'FPS'),
-      fpsMetricNode('1% low', 'low-1', 'FPS'),
-      fpsMetricNode('0.1% low', 'low-01', 'FPS'),
-      fpsMetricNode('P99', 'p99', 'FPS'),
-    ], true, 'mon-readout-fps'),
     telemetryPanel('cpu', 'CPU', 'System', cpuMetricNodes(s), true, 'mon-readout-cpu'),
     telemetryPanel('system-memory', 'System memory', 'System', systemMetricNodes(s), true, 'mon-readout-system-memory'),
   );
   const appendGpuPair = (device: DeviceInfo | null, index: number, badge: string): void => {
-    const label = `GPU ${index + 1}`;
+    const label = gpuSectionLabel(index, s.devices.length);
     const gpuPanel = telemetryPanel(`gpu-${device?.id ?? 'vendor'}`, label, badge, gpuMetricNodes(device, s), true, index === 0 ? 'mon-readout-gpu' : `mon-readout-gpu-${index + 1}`);
     const memoryPanel = telemetryPanel(`gpu-memory-${device?.id ?? 'vendor'}`, `${label} memory`, badge, gpuMemoryMetricNodes(device, s), true, index === 0 ? 'mon-readout-gpu-memory' : `mon-readout-gpu-memory-${index + 1}`);
     panels.append(el('div', { class: 'telemetry-gpu-pair', dataset: { telemetryGpuPair: String(device?.id ?? 'vendor') } }, [gpuPanel, memoryPanel]));
@@ -1273,6 +1496,16 @@ function renderMonitoringView(container: HTMLElement, ctx: PageContext): void {
     const badge = shortGpuNameFromName(s.osGpu.name);
     appendGpuPair(null, 0, badge);
   }
+  // CPU/GPU/system rows stay above the frame-pacing cards: FPS is the last
+  // group in Metrics, not the first.
+  panels.append(telemetryPanel('fps', 'FPS & frame pacing', 'Present data', [
+    fpsMetricNode('Frame rate', 'fps', 'FPS'),
+    fpsMetricNode('Frame time', 'frame-time', 'ms'),
+    fpsMetricNode('Average', 'average', 'FPS'),
+    fpsMetricNode('1% low', 'low-1', 'FPS'),
+    fpsMetricNode('0.1% low', 'low-01', 'FPS'),
+    fpsMetricNode('P99', 'p99', 'FPS'),
+  ], true, 'mon-readout-fps'));
   m.fpsTileValue = panels.querySelector('.mon-fps-tile .stat-value') as HTMLElement;
 
   const readout = el('section', { class: 'card arc-surface-card telemetry-metrics-card' }, [

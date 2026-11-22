@@ -1,0 +1,3853 @@
+{
+  "provenance": "Original GameProfileStore class methods, function bodies unchanged; fixed Date; in-memory file/candidate inputs; writes captured",
+  "sourceSha256": "ef0d653449af8f591142b3c8d8fadf3180ea1b598b38f3bbc8a68da893c5edd6",
+  "now": "2026-11-08T12:34:56.000Z",
+  "lex": [
+    "c:\\games\\a.exe",
+    "c:\\games\\b.exe",
+    "c:\\games\\c.exe",
+    "c:\\games\\missing.exe",
+    "c:\\games\\directory.exe"
+  ],
+  "files": [
+    "c:\\games\\a.exe",
+    "c:\\games\\b.exe",
+    "c:\\games\\c.exe"
+  ],
+  "existing": [
+    "c:\\games\\a.exe",
+    "c:\\games\\b.exe",
+    "c:\\games\\c.exe",
+    "c:\\games\\directory.exe"
+  ],
+  "comparisons": [
+    [
+      "c:\\games\\a.exe",
+      "c:\\games\\a.exe",
+      false,
+      0
+    ],
+    [
+      "c:\\games\\a.exe",
+      "c:\\games\\b.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "c:\\games\\c.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "c:\\games\\missing.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "c:\\games\\directory.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "c:\\games\\launcher.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "c:\\games\\a.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "c:\\games\\b.exe",
+      false,
+      0
+    ],
+    [
+      "c:\\games\\b.exe",
+      "c:\\games\\c.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "c:\\games\\missing.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "c:\\games\\directory.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "c:\\games\\launcher.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\c.exe",
+      "c:\\games\\a.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\c.exe",
+      "c:\\games\\b.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\c.exe",
+      "c:\\games\\c.exe",
+      false,
+      0
+    ],
+    [
+      "c:\\games\\c.exe",
+      "c:\\games\\missing.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\c.exe",
+      "c:\\games\\directory.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\c.exe",
+      "c:\\games\\launcher.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\c.exe",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\missing.exe",
+      "c:\\games\\a.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\missing.exe",
+      "c:\\games\\b.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\missing.exe",
+      "c:\\games\\c.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\missing.exe",
+      "c:\\games\\missing.exe",
+      false,
+      0
+    ],
+    [
+      "c:\\games\\missing.exe",
+      "c:\\games\\directory.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\missing.exe",
+      "c:\\games\\launcher.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\missing.exe",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\directory.exe",
+      "c:\\games\\a.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\directory.exe",
+      "c:\\games\\b.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\directory.exe",
+      "c:\\games\\c.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\directory.exe",
+      "c:\\games\\missing.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\directory.exe",
+      "c:\\games\\directory.exe",
+      false,
+      0
+    ],
+    [
+      "c:\\games\\directory.exe",
+      "c:\\games\\launcher.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\directory.exe",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\launcher.exe",
+      "c:\\games\\a.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\launcher.exe",
+      "c:\\games\\b.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\launcher.exe",
+      "c:\\games\\c.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\launcher.exe",
+      "c:\\games\\missing.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\launcher.exe",
+      "c:\\games\\directory.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\launcher.exe",
+      "c:\\games\\launcher.exe",
+      false,
+      0
+    ],
+    [
+      "c:\\games\\launcher.exe",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "c:\\games\\a.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "c:\\games\\b.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "c:\\games\\c.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "c:\\games\\missing.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "c:\\games\\directory.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "c:\\games\\launcher.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "c:\\unsafe.exe",
+      false,
+      0
+    ],
+    [
+      "Alpha\u0000C:/Games/A.EXE",
+      "Alpha\u0000C:/Games/A.EXE",
+      true,
+      0
+    ],
+    [
+      "Alpha\u0000C:/Games/A.EXE",
+      "Alpha\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "Alpha\u0000C:/Games/A.EXE",
+      "Beta\u0000C:/Games/B.EXE",
+      true,
+      -1
+    ],
+    [
+      "Alpha\u0000C:/Games/A.EXE",
+      "Beta\u0000c:\\games\\b.exe",
+      true,
+      -1
+    ],
+    [
+      "Alpha\u0000C:/Games/A.EXE",
+      "Charlie\u0000C:/Games/C.EXE",
+      true,
+      -1
+    ],
+    [
+      "Alpha\u0000C:/Games/A.EXE",
+      "Charlie\u0000c:\\games\\c.exe",
+      true,
+      -1
+    ],
+    [
+      "Alpha\u0000C:/Games/A.EXE",
+      "missing\u0000c:\\games\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      "Alpha\u0000c:\\games\\a.exe",
+      "Alpha\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "Alpha\u0000c:\\games\\a.exe",
+      "Alpha\u0000c:\\games\\a.exe",
+      true,
+      0
+    ],
+    [
+      "Alpha\u0000c:\\games\\a.exe",
+      "Beta\u0000C:/Games/B.EXE",
+      true,
+      -1
+    ],
+    [
+      "Alpha\u0000c:\\games\\a.exe",
+      "Beta\u0000c:\\games\\b.exe",
+      true,
+      -1
+    ],
+    [
+      "Alpha\u0000c:\\games\\a.exe",
+      "Charlie\u0000C:/Games/C.EXE",
+      true,
+      -1
+    ],
+    [
+      "Alpha\u0000c:\\games\\a.exe",
+      "Charlie\u0000c:\\games\\c.exe",
+      true,
+      -1
+    ],
+    [
+      "Alpha\u0000c:\\games\\a.exe",
+      "missing\u0000c:\\games\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      "Beta\u0000C:/Games/B.EXE",
+      "Alpha\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "Beta\u0000C:/Games/B.EXE",
+      "Alpha\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "Beta\u0000C:/Games/B.EXE",
+      "Beta\u0000C:/Games/B.EXE",
+      true,
+      0
+    ],
+    [
+      "Beta\u0000C:/Games/B.EXE",
+      "Beta\u0000c:\\games\\b.exe",
+      true,
+      -1
+    ],
+    [
+      "Beta\u0000C:/Games/B.EXE",
+      "Charlie\u0000C:/Games/C.EXE",
+      true,
+      -1
+    ],
+    [
+      "Beta\u0000C:/Games/B.EXE",
+      "Charlie\u0000c:\\games\\c.exe",
+      true,
+      -1
+    ],
+    [
+      "Beta\u0000C:/Games/B.EXE",
+      "missing\u0000c:\\games\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      "Beta\u0000c:\\games\\b.exe",
+      "Alpha\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "Beta\u0000c:\\games\\b.exe",
+      "Alpha\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "Beta\u0000c:\\games\\b.exe",
+      "Beta\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "Beta\u0000c:\\games\\b.exe",
+      "Beta\u0000c:\\games\\b.exe",
+      true,
+      0
+    ],
+    [
+      "Beta\u0000c:\\games\\b.exe",
+      "Charlie\u0000C:/Games/C.EXE",
+      true,
+      -1
+    ],
+    [
+      "Beta\u0000c:\\games\\b.exe",
+      "Charlie\u0000c:\\games\\c.exe",
+      true,
+      -1
+    ],
+    [
+      "Beta\u0000c:\\games\\b.exe",
+      "missing\u0000c:\\games\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      "Charlie\u0000C:/Games/C.EXE",
+      "Alpha\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "Charlie\u0000C:/Games/C.EXE",
+      "Alpha\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "Charlie\u0000C:/Games/C.EXE",
+      "Beta\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "Charlie\u0000C:/Games/C.EXE",
+      "Beta\u0000c:\\games\\b.exe",
+      true,
+      1
+    ],
+    [
+      "Charlie\u0000C:/Games/C.EXE",
+      "Charlie\u0000C:/Games/C.EXE",
+      true,
+      0
+    ],
+    [
+      "Charlie\u0000C:/Games/C.EXE",
+      "Charlie\u0000c:\\games\\c.exe",
+      true,
+      -1
+    ],
+    [
+      "Charlie\u0000C:/Games/C.EXE",
+      "missing\u0000c:\\games\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      "Charlie\u0000c:\\games\\c.exe",
+      "Alpha\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "Charlie\u0000c:\\games\\c.exe",
+      "Alpha\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "Charlie\u0000c:\\games\\c.exe",
+      "Beta\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "Charlie\u0000c:\\games\\c.exe",
+      "Beta\u0000c:\\games\\b.exe",
+      true,
+      1
+    ],
+    [
+      "Charlie\u0000c:\\games\\c.exe",
+      "Charlie\u0000C:/Games/C.EXE",
+      true,
+      1
+    ],
+    [
+      "Charlie\u0000c:\\games\\c.exe",
+      "Charlie\u0000c:\\games\\c.exe",
+      true,
+      0
+    ],
+    [
+      "Charlie\u0000c:\\games\\c.exe",
+      "missing\u0000c:\\games\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      "missing\u0000c:\\games\\missing.exe",
+      "Alpha\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\games\\missing.exe",
+      "Alpha\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\games\\missing.exe",
+      "Beta\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\games\\missing.exe",
+      "Beta\u0000c:\\games\\b.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\games\\missing.exe",
+      "Charlie\u0000C:/Games/C.EXE",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\games\\missing.exe",
+      "Charlie\u0000c:\\games\\c.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\games\\missing.exe",
+      "missing\u0000c:\\games\\missing.exe",
+      true,
+      0
+    ]
+  ],
+  "scenarios": [
+    {
+      "name": "catalog-gpu-and-association-lifecycle",
+      "initialText": null,
+      "steps": [
+        {
+          "op": "loadCatalog",
+          "args": [],
+          "result": {
+            "catalog": [],
+            "settings": []
+          },
+          "writes": 0,
+          "persistedText": null,
+          "persisted": null
+        },
+        {
+          "op": "hasCatalogPath",
+          "args": [
+            "C:/Games/A.EXE"
+          ],
+          "result": false,
+          "writes": 0,
+          "persistedText": null,
+          "persisted": null
+        },
+        {
+          "op": "addCatalogEntry",
+          "args": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "displayName": "Alpha",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB="
+            }
+          ],
+          "result": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": []
+          },
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": []
+          }
+        },
+        {
+          "op": "addCatalogEntry",
+          "args": [
+            {
+              "exePath": "C:/Games/B.EXE",
+              "displayName": "Beta"
+            }
+          ],
+          "result": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": []
+          },
+          "writes": 2,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": []
+          }
+        },
+        {
+          "op": "syncCatalog",
+          "args": [
+            [
+              {
+                "exePath": "C:/Games/A.EXE",
+                "displayName": "Alpha",
+                "artwork": "fallback-scan",
+                "banner": null
+              },
+              {
+                "exePath": "C:/Games/C.EXE",
+                "displayName": "Charlie"
+              }
+            ],
+            {}
+          ],
+          "result": [
+            {
+              "exePath": "c:\\games\\a.exe",
+              "processName": "a.exe",
+              "displayName": "Alpha",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": null,
+              "source": "scan",
+              "createdAt": "2026-11-08T12:34:56.000Z",
+              "updatedAt": "2026-11-08T12:34:56.000Z"
+            },
+            {
+              "exePath": "c:\\games\\b.exe",
+              "processName": "b.exe",
+              "displayName": "Beta",
+              "artwork": "fallback-836105bf",
+              "banner": null,
+              "source": "manual",
+              "createdAt": "2026-11-08T12:34:56.000Z",
+              "updatedAt": "2026-11-08T12:34:56.000Z"
+            },
+            {
+              "exePath": "c:\\games\\c.exe",
+              "processName": "c.exe",
+              "displayName": "Charlie",
+              "artwork": "fallback-79ae6570",
+              "banner": null,
+              "source": "scan",
+              "createdAt": "2026-11-08T12:34:56.000Z",
+              "updatedAt": "2026-11-08T12:34:56.000Z"
+            }
+          ],
+          "writes": 3,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\c.exe\",\"processName\":\"c.exe\",\"displayName\":\"Charlie\",\"artwork\":\"fallback-79ae6570\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\c.exe",
+                "processName": "c.exe",
+                "displayName": "Charlie",
+                "artwork": "fallback-79ae6570",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": []
+          }
+        },
+        {
+          "op": "saveSettings",
+          "args": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "deviceKey": "gpu-a",
+              "deviceName": "GPU A",
+              "enabled": true,
+              "tuningProfileId": "p1",
+              "graphics": {
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 120
+                }
+              }
+            }
+          ],
+          "result": {
+            "exePath": "c:\\games\\a.exe",
+            "enabled": true,
+            "tuningProfileId": "p1",
+            "graphics": {
+              "frameLimit": {
+                "enabled": true,
+                "value": 120
+              }
+            },
+            "gpuProfiles": [
+              {
+                "deviceKey": "gpu-a",
+                "deviceName": "GPU A",
+                "enabled": true,
+                "tuningProfileId": "p1",
+                "graphics": {
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  }
+                },
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "createdAt": "2026-11-08T12:34:56.000Z",
+            "updatedAt": "2026-11-08T12:34:56.000Z"
+          },
+          "writes": 4,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\c.exe\",\"processName\":\"c.exe\",\"displayName\":\"Charlie\",\"artwork\":\"fallback-79ae6570\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":true,\"tuningProfileId\":\"p1\",\"graphics\":{\"frameLimit\":{\"enabled\":true,\"value\":120}},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":true,\"tuningProfileId\":\"p1\",\"graphics\":{\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\c.exe",
+                "processName": "c.exe",
+                "displayName": "Charlie",
+                "artwork": "fallback-79ae6570",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": "p1",
+                "graphics": {
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  }
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": true,
+                    "tuningProfileId": "p1",
+                    "graphics": {
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "saveSettings",
+          "args": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "deviceKey": "gpu-b",
+              "enabled": true,
+              "tuningProfileId": "p2",
+              "graphics": {
+                "lowLatency": "on"
+              }
+            }
+          ],
+          "result": {
+            "exePath": "c:\\games\\a.exe",
+            "enabled": true,
+            "tuningProfileId": "p1",
+            "graphics": {
+              "frameLimit": {
+                "enabled": true,
+                "value": 120
+              }
+            },
+            "gpuProfiles": [
+              {
+                "deviceKey": "gpu-a",
+                "deviceName": "GPU A",
+                "enabled": true,
+                "tuningProfileId": "p1",
+                "graphics": {
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  }
+                },
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "deviceKey": "gpu-b",
+                "deviceName": null,
+                "enabled": true,
+                "tuningProfileId": "p2",
+                "graphics": {
+                  "lowLatency": "on"
+                },
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "createdAt": "2026-11-08T12:34:56.000Z",
+            "updatedAt": "2026-11-08T12:34:56.000Z"
+          },
+          "writes": 5,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\c.exe\",\"processName\":\"c.exe\",\"displayName\":\"Charlie\",\"artwork\":\"fallback-79ae6570\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":true,\"tuningProfileId\":\"p1\",\"graphics\":{\"frameLimit\":{\"enabled\":true,\"value\":120}},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":true,\"tuningProfileId\":\"p1\",\"graphics\":{\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":\"gpu-b\",\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p2\",\"graphics\":{\"lowLatency\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\c.exe",
+                "processName": "c.exe",
+                "displayName": "Charlie",
+                "artwork": "fallback-79ae6570",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": "p1",
+                "graphics": {
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  }
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": true,
+                    "tuningProfileId": "p1",
+                    "graphics": {
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "saveSettings",
+          "args": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "deviceKey": "gpu-a",
+              "enabled": false,
+              "graphics": {
+                "flipMode": "vsync-off"
+              }
+            }
+          ],
+          "result": {
+            "exePath": "c:\\games\\a.exe",
+            "enabled": false,
+            "tuningProfileId": "p1",
+            "graphics": {
+              "flipMode": "vsync-off",
+              "frameLimit": {
+                "enabled": true,
+                "value": 120
+              }
+            },
+            "gpuProfiles": [
+              {
+                "deviceKey": "gpu-a",
+                "deviceName": "GPU A",
+                "enabled": false,
+                "tuningProfileId": "p1",
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  }
+                },
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "deviceKey": "gpu-b",
+                "deviceName": null,
+                "enabled": true,
+                "tuningProfileId": "p2",
+                "graphics": {
+                  "lowLatency": "on"
+                },
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "createdAt": "2026-11-08T12:34:56.000Z",
+            "updatedAt": "2026-11-08T12:34:56.000Z"
+          },
+          "writes": 6,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\c.exe\",\"processName\":\"c.exe\",\"displayName\":\"Charlie\",\"artwork\":\"fallback-79ae6570\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":false,\"tuningProfileId\":\"p1\",\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120}},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":false,\"tuningProfileId\":\"p1\",\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":\"gpu-b\",\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p2\",\"graphics\":{\"lowLatency\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\c.exe",
+                "processName": "c.exe",
+                "displayName": "Charlie",
+                "artwork": "fallback-79ae6570",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": false,
+                "tuningProfileId": "p1",
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  }
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": "p1",
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "upsert",
+          "args": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "displayName": "Alpha",
+              "artwork": "fallback-new",
+              "banner": null,
+              "profileId": "p1",
+              "graphics": {
+                "enduranceGaming": "on"
+              }
+            }
+          ],
+          "result": [
+            {
+              "id": "game-70317c633a5c67616d65735c612e6578",
+              "profileId": "p1",
+              "exePath": "c:\\games\\a.exe",
+              "processName": "a.exe",
+              "displayName": "Alpha",
+              "artwork": "fallback-new",
+              "banner": null,
+              "source": "scan",
+              "enabled": true,
+              "graphics": {
+                "enduranceGaming": "on"
+              },
+              "createdAt": "2026-11-08T12:34:56.000Z",
+              "updatedAt": "2026-11-08T12:34:56.000Z"
+            }
+          ],
+          "writes": 7,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[{\"id\":\"game-70317c633a5c67616d65735c612e6578\",\"profileId\":\"p1\",\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"fallback-new\",\"banner\":null,\"source\":\"scan\",\"enabled\":true,\"graphics\":{\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\c.exe\",\"processName\":\"c.exe\",\"displayName\":\"Charlie\",\"artwork\":\"fallback-79ae6570\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":true,\"tuningProfileId\":\"p1\",\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":false,\"tuningProfileId\":\"p1\",\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":\"gpu-b\",\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p2\",\"graphics\":{\"lowLatency\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":null,\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p1\",\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [
+              {
+                "id": "game-70317c633a5c67616d65735c612e6578",
+                "profileId": "p1",
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "fallback-new",
+                "banner": null,
+                "source": "scan",
+                "enabled": true,
+                "graphics": {
+                  "enduranceGaming": "on"
+                },
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\c.exe",
+                "processName": "c.exe",
+                "displayName": "Charlie",
+                "artwork": "fallback-79ae6570",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": "p1",
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  },
+                  "enduranceGaming": "on"
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": "p1",
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p1",
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      },
+                      "enduranceGaming": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "delete",
+          "args": [
+            "missing",
+            "C:/Games/A.EXE"
+          ],
+          "result": [
+            {
+              "id": "game-70317c633a5c67616d65735c612e6578",
+              "profileId": "p1",
+              "exePath": "c:\\games\\a.exe",
+              "processName": "a.exe",
+              "displayName": "Alpha",
+              "artwork": "fallback-new",
+              "banner": null,
+              "source": "scan",
+              "enabled": true,
+              "graphics": {
+                "enduranceGaming": "on"
+              },
+              "createdAt": "2026-11-08T12:34:56.000Z",
+              "updatedAt": "2026-11-08T12:34:56.000Z"
+            }
+          ],
+          "writes": 8,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[{\"id\":\"game-70317c633a5c67616d65735c612e6578\",\"profileId\":\"p1\",\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"fallback-new\",\"banner\":null,\"source\":\"scan\",\"enabled\":true,\"graphics\":{\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"fallback-new\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\c.exe\",\"processName\":\"c.exe\",\"displayName\":\"Charlie\",\"artwork\":\"fallback-79ae6570\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":true,\"tuningProfileId\":\"p1\",\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":false,\"tuningProfileId\":\"p1\",\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":\"gpu-b\",\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p2\",\"graphics\":{\"lowLatency\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":null,\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p1\",\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [
+              {
+                "id": "game-70317c633a5c67616d65735c612e6578",
+                "profileId": "p1",
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "fallback-new",
+                "banner": null,
+                "source": "scan",
+                "enabled": true,
+                "graphics": {
+                  "enduranceGaming": "on"
+                },
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "fallback-new",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\c.exe",
+                "processName": "c.exe",
+                "displayName": "Charlie",
+                "artwork": "fallback-79ae6570",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": "p1",
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  },
+                  "enduranceGaming": "on"
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": "p1",
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p1",
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      },
+                      "enduranceGaming": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "load",
+          "args": [],
+          "result": [
+            {
+              "id": "game-70317c633a5c67616d65735c612e6578",
+              "profileId": "p1",
+              "exePath": "c:\\games\\a.exe",
+              "processName": "a.exe",
+              "displayName": "Alpha",
+              "artwork": "fallback-new",
+              "banner": null,
+              "source": "scan",
+              "enabled": true,
+              "graphics": {
+                "enduranceGaming": "on"
+              },
+              "createdAt": "2026-11-08T12:34:56.000Z",
+              "updatedAt": "2026-11-08T12:34:56.000Z"
+            }
+          ],
+          "writes": 8,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[{\"id\":\"game-70317c633a5c67616d65735c612e6578\",\"profileId\":\"p1\",\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"fallback-new\",\"banner\":null,\"source\":\"scan\",\"enabled\":true,\"graphics\":{\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"fallback-new\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\c.exe\",\"processName\":\"c.exe\",\"displayName\":\"Charlie\",\"artwork\":\"fallback-79ae6570\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":true,\"tuningProfileId\":\"p1\",\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":false,\"tuningProfileId\":\"p1\",\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":\"gpu-b\",\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p2\",\"graphics\":{\"lowLatency\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":null,\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p1\",\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [
+              {
+                "id": "game-70317c633a5c67616d65735c612e6578",
+                "profileId": "p1",
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "fallback-new",
+                "banner": null,
+                "source": "scan",
+                "enabled": true,
+                "graphics": {
+                  "enduranceGaming": "on"
+                },
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "fallback-new",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\c.exe",
+                "processName": "c.exe",
+                "displayName": "Charlie",
+                "artwork": "fallback-79ae6570",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": "p1",
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  },
+                  "enduranceGaming": "on"
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": "p1",
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p1",
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      },
+                      "enduranceGaming": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "cleanupProfile",
+          "args": [
+            "p1"
+          ],
+          "result": [],
+          "writes": 9,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"fallback-new\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\c.exe\",\"processName\":\"c.exe\",\"displayName\":\"Charlie\",\"artwork\":\"fallback-79ae6570\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":\"gpu-b\",\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p2\",\"graphics\":{\"lowLatency\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":null,\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "fallback-new",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\c.exe",
+                "processName": "c.exe",
+                "displayName": "Charlie",
+                "artwork": "fallback-79ae6570",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": null,
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  },
+                  "enduranceGaming": "on"
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      },
+                      "enduranceGaming": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "deleteSettings",
+          "args": [
+            "C:/Games/B.EXE"
+          ],
+          "result": {
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "fallback-new",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\c.exe",
+                "processName": "c.exe",
+                "displayName": "Charlie",
+                "artwork": "fallback-79ae6570",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": null,
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  },
+                  "enduranceGaming": "on"
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      },
+                      "enduranceGaming": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          },
+          "writes": 10,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"fallback-new\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\c.exe\",\"processName\":\"c.exe\",\"displayName\":\"Charlie\",\"artwork\":\"fallback-79ae6570\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":\"gpu-b\",\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p2\",\"graphics\":{\"lowLatency\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":null,\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "fallback-new",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\c.exe",
+                "processName": "c.exe",
+                "displayName": "Charlie",
+                "artwork": "fallback-79ae6570",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": null,
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  },
+                  "enduranceGaming": "on"
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      },
+                      "enduranceGaming": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "hasCatalogPath",
+          "args": [
+            "C:/Games/C.EXE"
+          ],
+          "result": true,
+          "writes": 10,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"fallback-new\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\c.exe\",\"processName\":\"c.exe\",\"displayName\":\"Charlie\",\"artwork\":\"fallback-79ae6570\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":\"gpu-b\",\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p2\",\"graphics\":{\"lowLatency\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":null,\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "fallback-new",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\c.exe",
+                "processName": "c.exe",
+                "displayName": "Charlie",
+                "artwork": "fallback-79ae6570",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": null,
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  },
+                  "enduranceGaming": "on"
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      },
+                      "enduranceGaming": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "syncCatalog",
+          "args": [
+            [
+              {
+                "exePath": "C:/Games/A.EXE",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB="
+              }
+            ],
+            {
+              "authoritative": true
+            }
+          ],
+          "result": [
+            {
+              "exePath": "c:\\games\\a.exe",
+              "processName": "a.exe",
+              "displayName": "Alpha",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB=",
+              "source": "scan",
+              "createdAt": "2026-11-08T12:34:56.000Z",
+              "updatedAt": "2026-11-08T12:34:56.000Z"
+            },
+            {
+              "exePath": "c:\\games\\b.exe",
+              "processName": "b.exe",
+              "displayName": "Beta",
+              "artwork": "fallback-836105bf",
+              "banner": null,
+              "source": "manual",
+              "createdAt": "2026-11-08T12:34:56.000Z",
+              "updatedAt": "2026-11-08T12:34:56.000Z"
+            }
+          ],
+          "writes": 11,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":\"gpu-b\",\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p2\",\"graphics\":{\"lowLatency\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":null,\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": null,
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  },
+                  "enduranceGaming": "on"
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      },
+                      "enduranceGaming": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "hasCatalogPath",
+          "args": [
+            "C:/Games/C.EXE"
+          ],
+          "result": false,
+          "writes": 11,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":\"gpu-b\",\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p2\",\"graphics\":{\"lowLatency\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":null,\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": null,
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  },
+                  "enduranceGaming": "on"
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      },
+                      "enduranceGaming": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "loadCatalog",
+          "args": [],
+          "result": {
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": null,
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  },
+                  "enduranceGaming": "on"
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      },
+                      "enduranceGaming": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          },
+          "writes": 11,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":\"gpu-b\",\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p2\",\"graphics\":{\"lowLatency\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":null,\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": null,
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  },
+                  "enduranceGaming": "on"
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      },
+                      "enduranceGaming": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "save",
+          "args": [
+            [
+              {
+                "exePath": "C:/Games/B.EXE",
+                "displayName": "Beta",
+                "profileId": "p3"
+              }
+            ]
+          ],
+          "result": [
+            {
+              "id": "game-70337c633a5c67616d65735c622e6578",
+              "profileId": "p3",
+              "exePath": "c:\\games\\b.exe",
+              "processName": "b.exe",
+              "displayName": "Beta",
+              "artwork": "fallback-836105bf",
+              "banner": null,
+              "source": "scan",
+              "enabled": true,
+              "graphics": {},
+              "createdAt": "2026-11-08T12:34:56.000Z",
+              "updatedAt": "2026-11-08T12:34:56.000Z"
+            }
+          ],
+          "writes": 12,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[{\"id\":\"game-70337c633a5c67616d65735c622e6578\",\"profileId\":\"p3\",\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"scan\",\"enabled\":true,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":\"gpu-b\",\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p2\",\"graphics\":{\"lowLatency\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":null,\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [
+              {
+                "id": "game-70337c633a5c67616d65735c622e6578",
+                "profileId": "p3",
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "scan",
+                "enabled": true,
+                "graphics": {},
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": null,
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  },
+                  "enduranceGaming": "on"
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      },
+                      "enduranceGaming": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "delete",
+          "args": [
+            "p3",
+            "C:/Games/B.EXE"
+          ],
+          "result": [],
+          "writes": 14,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"gpuProfiles\":[{\"deviceKey\":\"gpu-a\",\"deviceName\":\"GPU A\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120}},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":\"gpu-b\",\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":\"p2\",\"graphics\":{\"lowLatency\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"deviceKey\":null,\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{\"flipMode\":\"vsync-off\",\"frameLimit\":{\"enabled\":true,\"value\":120},\"enduranceGaming\":\"on\"},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{},\"gpuProfiles\":[{\"deviceKey\":null,\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": true,
+                "tuningProfileId": null,
+                "graphics": {
+                  "flipMode": "vsync-off",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 120
+                  },
+                  "enduranceGaming": "on"
+                },
+                "gpuProfiles": [
+                  {
+                    "deviceKey": "gpu-a",
+                    "deviceName": "GPU A",
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      }
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": "gpu-b",
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": "p2",
+                    "graphics": {
+                      "lowLatency": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  },
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": null,
+                    "graphics": {
+                      "flipMode": "vsync-off",
+                      "frameLimit": {
+                        "enabled": true,
+                        "value": 120
+                      },
+                      "enduranceGaming": "on"
+                    },
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "enabled": true,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "deleteSettings",
+          "args": [
+            "C:/Games/A.EXE"
+          ],
+          "result": {
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\b.exe",
+                "enabled": true,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          },
+          "writes": 15,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"manual\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\b.exe\",\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{},\"gpuProfiles\":[{\"deviceKey\":null,\"deviceName\":null,\"enabled\":true,\"tuningProfileId\":null,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "manual",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\b.exe",
+                "enabled": true,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": true,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "legacy-missing-and-nonfile-exceptions",
+      "initialText": null,
+      "steps": [
+        {
+          "op": "upsert",
+          "args": [
+            {
+              "exePath": "C:/Games/missing.exe",
+              "profileId": "p1"
+            }
+          ],
+          "result": [
+            {
+              "id": "game-70317c633a5c67616d65735c6d697373",
+              "profileId": "p1",
+              "exePath": "c:\\games\\missing.exe",
+              "processName": "missing.exe",
+              "displayName": "missing",
+              "artwork": "fallback-c646b365",
+              "banner": null,
+              "source": "scan",
+              "enabled": true,
+              "graphics": {},
+              "createdAt": "2026-11-08T12:34:56.000Z",
+              "updatedAt": "2026-11-08T12:34:56.000Z"
+            }
+          ],
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[{\"id\":\"game-70317c633a5c67616d65735c6d697373\",\"profileId\":\"p1\",\"exePath\":\"c:\\\\games\\\\missing.exe\",\"processName\":\"missing.exe\",\"displayName\":\"missing\",\"artwork\":\"fallback-c646b365\",\"banner\":null,\"source\":\"scan\",\"enabled\":true,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [
+              {
+                "id": "game-70317c633a5c67616d65735c6d697373",
+                "profileId": "p1",
+                "exePath": "c:\\games\\missing.exe",
+                "processName": "missing.exe",
+                "displayName": "missing",
+                "artwork": "fallback-c646b365",
+                "banner": null,
+                "source": "scan",
+                "enabled": true,
+                "graphics": {},
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "loadCatalog",
+          "args": [],
+          "result": {
+            "catalog": [],
+            "settings": []
+          },
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[{\"id\":\"game-70317c633a5c67616d65735c6d697373\",\"profileId\":\"p1\",\"exePath\":\"c:\\\\games\\\\missing.exe\",\"processName\":\"missing.exe\",\"displayName\":\"missing\",\"artwork\":\"fallback-c646b365\",\"banner\":null,\"source\":\"scan\",\"enabled\":true,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [
+              {
+                "id": "game-70317c633a5c67616d65735c6d697373",
+                "profileId": "p1",
+                "exePath": "c:\\games\\missing.exe",
+                "processName": "missing.exe",
+                "displayName": "missing",
+                "artwork": "fallback-c646b365",
+                "banner": null,
+                "source": "scan",
+                "enabled": true,
+                "graphics": {},
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "upsert",
+          "args": [
+            {
+              "exePath": "C:/Games/directory.exe",
+              "profileId": "p1"
+            }
+          ],
+          "error": "game-profile-save: executable is not a safe existing game candidate",
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[{\"id\":\"game-70317c633a5c67616d65735c6d697373\",\"profileId\":\"p1\",\"exePath\":\"c:\\\\games\\\\missing.exe\",\"processName\":\"missing.exe\",\"displayName\":\"missing\",\"artwork\":\"fallback-c646b365\",\"banner\":null,\"source\":\"scan\",\"enabled\":true,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [
+              {
+                "id": "game-70317c633a5c67616d65735c6d697373",
+                "profileId": "p1",
+                "exePath": "c:\\games\\missing.exe",
+                "processName": "missing.exe",
+                "displayName": "missing",
+                "artwork": "fallback-c646b365",
+                "banner": null,
+                "source": "scan",
+                "enabled": true,
+                "graphics": {},
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "upsert",
+          "args": [
+            {
+              "exePath": "C:/Games/launcher.exe",
+              "profileId": "p1"
+            }
+          ],
+          "error": "game-profile-save: executable is not a safe existing game candidate",
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[{\"id\":\"game-70317c633a5c67616d65735c6d697373\",\"profileId\":\"p1\",\"exePath\":\"c:\\\\games\\\\missing.exe\",\"processName\":\"missing.exe\",\"displayName\":\"missing\",\"artwork\":\"fallback-c646b365\",\"banner\":null,\"source\":\"scan\",\"enabled\":true,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [
+              {
+                "id": "game-70317c633a5c67616d65735c6d697373",
+                "profileId": "p1",
+                "exePath": "c:\\games\\missing.exe",
+                "processName": "missing.exe",
+                "displayName": "missing",
+                "artwork": "fallback-c646b365",
+                "banner": null,
+                "source": "scan",
+                "enabled": true,
+                "graphics": {},
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "upsert",
+          "args": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "displayName": "Alpha",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB=",
+              "profileId": "p id"
+            }
+          ],
+          "error": "game-profile-save: invalid association",
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[{\"id\":\"game-70317c633a5c67616d65735c6d697373\",\"profileId\":\"p1\",\"exePath\":\"c:\\\\games\\\\missing.exe\",\"processName\":\"missing.exe\",\"displayName\":\"missing\",\"artwork\":\"fallback-c646b365\",\"banner\":null,\"source\":\"scan\",\"enabled\":true,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [
+              {
+                "id": "game-70317c633a5c67616d65735c6d697373",
+                "profileId": "p1",
+                "exePath": "c:\\games\\missing.exe",
+                "processName": "missing.exe",
+                "displayName": "missing",
+                "artwork": "fallback-c646b365",
+                "banner": null,
+                "source": "scan",
+                "enabled": true,
+                "graphics": {},
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "delete",
+          "args": [
+            "p1",
+            "C:/Games/missing.exe"
+          ],
+          "result": [],
+          "writes": 2,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "load",
+          "args": [],
+          "result": [],
+          "writes": 2,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "schema1-filter-and-cleanup",
+      "initialText": "{\"schemaVersion\":1,\"associations\":[{\"exePath\":\"C:/Games/A.EXE\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"profileId\":\"p1\"},{\"exePath\":\"C:/Games/B.EXE\",\"displayName\":\"Beta\",\"profileId\":\"p2\"}]}",
+      "steps": [
+        {
+          "op": "load",
+          "args": [
+            [
+              "p1"
+            ]
+          ],
+          "result": [
+            {
+              "id": "game-70317c633a5c67616d65735c612e6578",
+              "profileId": "p1",
+              "exePath": "c:\\games\\a.exe",
+              "processName": "a.exe",
+              "displayName": "Alpha",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB=",
+              "source": "scan",
+              "enabled": true,
+              "graphics": {},
+              "createdAt": "2026-11-08T12:34:56.000Z",
+              "updatedAt": "2026-11-08T12:34:56.000Z"
+            }
+          ],
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[{\"id\":\"game-70317c633a5c67616d65735c612e6578\",\"profileId\":\"p1\",\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"scan\",\"enabled\":true,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"gpuProfiles\":[{\"deviceKey\":null,\"deviceName\":null,\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"gpuProfiles\":[{\"deviceKey\":null,\"deviceName\":null,\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [
+              {
+                "id": "game-70317c633a5c67616d65735c612e6578",
+                "profileId": "p1",
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "enabled": true,
+                "graphics": {},
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": false,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "enabled": false,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "loadCatalog",
+          "args": [],
+          "result": {
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": false,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "enabled": false,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          },
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[{\"id\":\"game-70317c633a5c67616d65735c612e6578\",\"profileId\":\"p1\",\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"scan\",\"enabled\":true,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"gpuProfiles\":[{\"deviceKey\":null,\"deviceName\":null,\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"gpuProfiles\":[{\"deviceKey\":null,\"deviceName\":null,\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [
+              {
+                "id": "game-70317c633a5c67616d65735c612e6578",
+                "profileId": "p1",
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "enabled": true,
+                "graphics": {},
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": false,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "enabled": false,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "cleanupProfile",
+          "args": [
+            "p1"
+          ],
+          "result": [],
+          "writes": 2,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"gpuProfiles\":[{\"deviceKey\":null,\"deviceName\":null,\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"gpuProfiles\":[{\"deviceKey\":null,\"deviceName\":null,\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": false,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "enabled": false,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        },
+        {
+          "op": "loadCatalog",
+          "args": [],
+          "result": {
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": false,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "enabled": false,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          },
+          "writes": 2,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"processName\":\"a.exe\",\"displayName\":\"Alpha\",\"artwork\":\"data:image/png;base64,AAA=\",\"banner\":\"data:image/webp;base64,BBB=\",\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"processName\":\"b.exe\",\"displayName\":\"Beta\",\"artwork\":\"fallback-836105bf\",\"banner\":null,\"source\":\"scan\",\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"settings\":[{\"exePath\":\"c:\\\\games\\\\a.exe\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"gpuProfiles\":[{\"deviceKey\":null,\"deviceName\":null,\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"},{\"exePath\":\"c:\\\\games\\\\b.exe\",\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"gpuProfiles\":[{\"deviceKey\":null,\"deviceName\":null,\"enabled\":false,\"tuningProfileId\":null,\"graphics\":{},\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}],\"createdAt\":\"2026-11-08T12:34:56.000Z\",\"updatedAt\":\"2026-11-08T12:34:56.000Z\"}]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "processName": "a.exe",
+                "displayName": "Alpha",
+                "artwork": "data:image/png;base64,AAA=",
+                "banner": "data:image/webp;base64,BBB=",
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "processName": "b.exe",
+                "displayName": "Beta",
+                "artwork": "fallback-836105bf",
+                "banner": null,
+                "source": "scan",
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ],
+            "settings": [
+              {
+                "exePath": "c:\\games\\a.exe",
+                "enabled": false,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              },
+              {
+                "exePath": "c:\\games\\b.exe",
+                "enabled": false,
+                "tuningProfileId": null,
+                "graphics": {},
+                "gpuProfiles": [
+                  {
+                    "deviceKey": null,
+                    "deviceName": null,
+                    "enabled": false,
+                    "tuningProfileId": null,
+                    "graphics": {},
+                    "createdAt": "2026-11-08T12:34:56.000Z",
+                    "updatedAt": "2026-11-08T12:34:56.000Z"
+                  }
+                ],
+                "createdAt": "2026-11-08T12:34:56.000Z",
+                "updatedAt": "2026-11-08T12:34:56.000Z"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "future-schema-refusal",
+      "initialText": "{\"schemaVersion\":999,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+      "steps": [
+        {
+          "op": "load",
+          "args": [],
+          "error": "game-profiles.json uses a newer unsupported schema",
+          "writes": 0,
+          "persistedText": "{\"schemaVersion\":999,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 999,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "save",
+          "args": [
+            []
+          ],
+          "error": "game-profiles.json uses a newer unsupported schema",
+          "writes": 0,
+          "persistedText": "{\"schemaVersion\":999,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 999,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "addCatalogEntry",
+          "args": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "displayName": "Alpha",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB="
+            }
+          ],
+          "error": "game-profiles.json uses a newer unsupported schema",
+          "writes": 0,
+          "persistedText": "{\"schemaVersion\":999,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 999,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "delete",
+          "args": [
+            "p1",
+            "C:/Games/A.EXE"
+          ],
+          "error": "game-profiles.json uses a newer unsupported schema",
+          "writes": 0,
+          "persistedText": "{\"schemaVersion\":999,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 999,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "corruption-refusal",
+      "initialText": "broken",
+      "steps": [
+        {
+          "op": "load",
+          "args": [],
+          "error": "Cannot load game-profiles.json: invalid JSON (Unexpected token 'b', \"broken\" is not valid JSON)",
+          "writes": 0,
+          "persistedText": "broken",
+          "corrupt": true
+        },
+        {
+          "op": "save",
+          "args": [
+            []
+          ],
+          "error": "Cannot load game-profiles.json: invalid JSON (Unexpected token 'b', \"broken\" is not valid JSON)",
+          "writes": 0,
+          "persistedText": "broken",
+          "corrupt": true
+        },
+        {
+          "op": "addCatalogEntry",
+          "args": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "displayName": "Alpha",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB="
+            }
+          ],
+          "error": "Cannot load game-profiles.json: invalid JSON (Unexpected token 'b', \"broken\" is not valid JSON)",
+          "writes": 0,
+          "persistedText": "broken",
+          "corrupt": true
+        }
+      ]
+    },
+    {
+      "name": "migration-before-later-validation-error",
+      "initialText": "{\"schemaVersion\":1,\"associations\":[]}",
+      "steps": [
+        {
+          "op": "saveSettings",
+          "args": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "deviceKey": "gpu-a",
+              "enabled": true
+            }
+          ],
+          "error": "game-settings-save: executable is not present in the game catalog",
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "loadCatalog",
+          "args": [],
+          "result": {
+            "catalog": [],
+            "settings": []
+          },
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "current-schema-noop-byte-preservation",
+      "initialText": "{ \"schemaVersion\":3, \"associations\":[], \"catalog\":[], \"settings\":[], \"unknown\":true }",
+      "steps": [
+        {
+          "op": "load",
+          "args": [],
+          "result": [],
+          "writes": 0,
+          "persistedText": "{ \"schemaVersion\":3, \"associations\":[], \"catalog\":[], \"settings\":[], \"unknown\":true }",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": [],
+            "unknown": true
+          }
+        },
+        {
+          "op": "delete",
+          "args": [
+            "missing",
+            "C:/Games/A.EXE"
+          ],
+          "result": [],
+          "writes": 0,
+          "persistedText": "{ \"schemaVersion\":3, \"associations\":[], \"catalog\":[], \"settings\":[], \"unknown\":true }",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": [],
+            "unknown": true
+          }
+        },
+        {
+          "op": "cleanupProfile",
+          "args": [
+            "missing"
+          ],
+          "result": [],
+          "writes": 0,
+          "persistedText": "{ \"schemaVersion\":3, \"associations\":[], \"catalog\":[], \"settings\":[], \"unknown\":true }",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": [],
+            "unknown": true
+          }
+        },
+        {
+          "op": "loadCatalog",
+          "args": [],
+          "result": {
+            "catalog": [],
+            "settings": []
+          },
+          "writes": 0,
+          "persistedText": "{ \"schemaVersion\":3, \"associations\":[], \"catalog\":[], \"settings\":[], \"unknown\":true }",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": [],
+            "unknown": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "validation-edges",
+      "initialText": null,
+      "steps": [
+        {
+          "op": "syncCatalog",
+          "args": [
+            {}
+          ],
+          "error": "game-catalog-sync: entries must be an array",
+          "writes": 0,
+          "persistedText": null,
+          "persisted": null
+        },
+        {
+          "op": "syncCatalog",
+          "args": [
+            [
+              {
+                "ExecutablePath": "C:/Games/A.EXE"
+              }
+            ]
+          ],
+          "result": [],
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "saveSettings",
+          "args": [
+            {
+              "exePath": "C:/unsafe.exe"
+            }
+          ],
+          "error": "game-settings-save: executable is not a safe existing game candidate",
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "delete",
+          "args": [
+            "p id",
+            "C:/Games/A.EXE"
+          ],
+          "error": "game-profile-delete: invalid profile id",
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "deleteSettings",
+          "args": [
+            "relative.exe"
+          ],
+          "error": "game-settings-delete: invalid executable path",
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "upsert",
+          "args": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "displayName": "Alpha",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB=",
+              "profileId": "not-found"
+            },
+            [
+              "p1"
+            ]
+          ],
+          "error": "game-profile-save: profile not found",
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        },
+        {
+          "op": "loadCatalog",
+          "args": [],
+          "result": {
+            "catalog": [],
+            "settings": []
+          },
+          "writes": 1,
+          "persistedText": "{\"schemaVersion\":3,\"associations\":[],\"catalog\":[],\"settings\":[]}",
+          "persisted": {
+            "schemaVersion": 3,
+            "associations": [],
+            "catalog": [],
+            "settings": []
+          }
+        }
+      ]
+    }
+  ]
+}

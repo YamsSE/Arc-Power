@@ -113,8 +113,8 @@
  */
 
 /**
- * M10b: the Display view's read-back (getDisplaySettings). NEVER throws -
- * degrades to { displays: [] } on any failure (the honest no-controls
+ * M10b: the Display view's read-back (getDisplaySettings). Degrades to
+ * { displays: [] } on ordinary read failures (the honest no-controls
  * surface). Only ACTIVE display outputs are enumerated (the M10b probe:
  * 30 outputs, ONE active on the A770); a display's per-feature reads are
  * defensive - a failing feature reads null/[] without taking the surface
@@ -122,6 +122,8 @@
  * color capabilities keep native `value` null when CURRENT is unavailable;
  * `desiredValue` and `lastSent` describe Arc Power's persisted editor intent,
  * never a live driver reading or an automatic startup reapply.
+ * A supplied expectedDeviceKey may throw the stale-target error if the fresh
+ * backend-id resolution no longer matches the aliases captured by inventory.
  * @typedef {{
  *   displays: Array<{
  *     id: number,
@@ -133,16 +135,6 @@
  *     colorFormat: string|null,
  *     quantizationRange: 'default'|'limited'|'full'|null,
  *     scalingMode: string|null,
- *     superResolution: {
- *       supported: boolean, controllable: boolean, reason: string|null,
- *       source: string, nativeResolution: { width: number, height: number }|null,
- *       nativeRefreshRate: number|null,
- *       currentSourceResolution: { width: number, height: number }|null,
- *       currentSourceRefreshRate: number|null, enabled: boolean,
- *       modes: Array<{ width: number, height: number, refreshRate: number, custom?: boolean }>,
- *       customSourceModes: Array<{ width: number, height: number }>,
- *       presets: Array<{ width: number, height: number, refreshRate: number, scale: number, label?: string }>,
- *     },
  *     supportedOptions: {
  *       scalingModes: string[],
  *       scalingMethods: string[],
@@ -174,7 +166,6 @@
  *   wireFormat?: { model: 'RGB' | 'YCbCr420' | 'YCbCr422' | 'YCbCr444', depth: number },
  *   scalingMode?: 'identity' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'custom',
  *   displayScalingMethod?: 'maintain-display-scaling' | 'custom' | 'centered' | 'stretched' | 'aspect-ratio-centered-max' | 'integer' | 'nearest-neighbour',
- *   superResolution?: { enabled: boolean, width?: number, height?: number, refreshRate?: number },
  *   hue?: number, saturation?: number, brightness?: number, contrast?: number,
  *   replaceExistingColorSettings?: boolean,
  * }} DisplaySettings
@@ -333,7 +324,7 @@
  *   // read-only result when the driver answers SUCCESS with an unchanged
  *   // read-back; the scaling entry carries the modeset-flash warning). NO
  *   // OC waiver applies to display settings.
- *   getDisplaySettings(deviceId: number): Promise<DisplayState>,
+ *   getDisplaySettings(deviceId: number, expectedDeviceKey?: string, expectedDeviceAliases?: string[]): Promise<DisplayState>,
   *   setDisplaySettings(deviceId: number, request: { deviceKey: string, displayKey: string, patch: DisplaySettings }): Promise<ApplyResult>,
  *   health(): Promise<HealthReport>,
  *   close(): Promise<void>,
@@ -402,7 +393,6 @@ export const DISPLAY_GLOBAL_VRR_MODE_OPTIONS = ['fullscreen', 'fullscreen-window
  * @type {string}
  */
 export const DISPLAY_SCALING_FLASH_WARNING = 'Changing the scaling mode may briefly flash the display while the driver applies the output state.';
-export const DISPLAY_SUPER_RESOLUTION_WARNING = 'Changing the Windows source resolution may briefly flash the display; games may need to be restarted to pick up the new render target.';
 
 /**
  * Map an IGCL ctl_result_t code to a canonical OcErrorCode (or null when

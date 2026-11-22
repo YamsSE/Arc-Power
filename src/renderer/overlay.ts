@@ -1148,9 +1148,8 @@ async function bootFpsLoop(): Promise<void> {
 }
 
 /** M17f: the FPS-poll cadence (ms) - the overlayPollMs slider value; null
- *  until the first settings push -> the renderer's clamp default 400 ms
- *  (M17g: the stock polling rate FLIPS 500 -> 400; clampOverlayPollMs(null)
- *  - the real default, never a hardcoded copy).
+ *  until the first settings push -> the shared 600 ms default
+ *  (clampOverlayPollMs(null) - the real default, never a hardcoded copy).
  *  The settings handler calls applyFpsPollMs which re-arms the loop. */
 let fpsPollMs: number | null = null;
 /** The FPS-poll interval id (null = not armed). */
@@ -1250,7 +1249,7 @@ async function configureOverlayDevices(
       || device.osController?.displayActive === true || device.osController?.displayActive === false;
     if (known || !Number.isInteger(device.id) || typeof api.displayGet !== 'function') return device;
     try {
-      const state = await api.displayGet(device.id);
+      const state = await api.displayGet(device.id, device.deviceKey ?? undefined);
       return {
         ...device,
         displayActive: Array.isArray(state?.displays)

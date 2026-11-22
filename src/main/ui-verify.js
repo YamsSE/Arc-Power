@@ -802,9 +802,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   // 'Arc Power Ver. 1.0.0'. M17e (round-2 N1): the 1.0.1 bump - the pinned
   // text is EXACTLY 'Arc Power Ver. 1.0.1 Beta' - the 1.0.1-beta.1 bump;
   // the suffix logic keeps the Beta line only for -beta.x versions).
-  // The 1.2.3 release pins the titlebar version surface.
-  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.2.3'`))) {
-    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.2.3')`);
+  // The 1.3.0 release pins the titlebar version surface.
+  if (!(await waitFor(win, `(document.querySelector('#titlebar-version')?.textContent ?? '').trim() === '1.3.0'`))) {
+    fail(`header version line is '${await js(`document.querySelector('#titlebar-version')?.textContent ?? ''`)}' (expected '1.3.0')`);
   }
   // B6: the page favicon points at the generated blue-AP asset.
   const favicon = await js(`document.querySelector('link[rel="icon"]')?.getAttribute('href') ?? ''`);
@@ -1202,9 +1202,11 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   }
   step('m4i-card-align', `M4-I (A4): the sysinfo-card and device-card kv rows start at the same y (diff ${kvTopDiff}px)`);
 
-  // M140: the dashboard now uses one compact Performance Pulse strip for
-  // live telemetry instead of the legacy CPU/GPU stat-tile groups. Validate
-  // the four current metric cards and the selected GPU utilization value.
+  // M140: the dashboard uses one compact Performance Pulse strip for live
+  // telemetry instead of the legacy CPU/GPU stat-tile groups, and its visual
+  // column is the GPU retail artwork (the SVG gauge ring was removed).
+  // Validate the retail art slot and the four current metric rows plus the
+  // selected GPU utilization value.
   if (!(await waitFor(win, `document.querySelectorAll('.dashboard-pulse-lane').length > 0`, 10000))) {
     fail('M140: the Dashboard did not render a Performance Pulse lane');
   }
@@ -1212,33 +1214,39 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
   const pulseMetrics = JSON.parse(await js(`JSON.stringify(Array.from(document.querySelectorAll('.dashboard-pulse-metric')).map((m) => ({ label: m.querySelector('.dashboard-pulse-label')?.textContent?.trim() ?? '', value: m.querySelector('.dashboard-pulse-value')?.textContent?.trim() ?? '' })))`));
   const pulseLabels = pulseMetrics.map((m) => m.label).join(',');
   const multiGpuDashboard = dashboardGpuCount > 1;
-  const expectedPulseLabels = Array.from({ length: dashboardGpuCount }, () => ['GPU utilization', 'GPU temperature', 'GPU power', 'VRAM in use']).flat().join(',');
+  const lanePulseLabels = ['GPU utilization', 'GPU temperature', 'GPU power', 'VRAM in use'];
+  const expectedPulseLabels = Array.from({ length: dashboardGpuCount }, () => lanePulseLabels).flat().join(',');
   if (pulseLabels !== expectedPulseLabels) {
     fail(`M140: Performance Pulse metrics are '${pulseLabels}' (expected the compact GPU telemetry set)`);
   }
   if (!(await waitFor(win, `document.querySelector('.dashboard-pulse-metric[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent?.trim() === '42'`, 8000))) {
     fail(`M140: GPU utilization pulse is '${await js(`document.querySelector('.dashboard-pulse-metric[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent ?? ''`)}' (expected 42)`);
   }
-  const gaugeGeometry = await js(`(() => {
-    const ring = document.querySelector('.dashboard-pulse-gauge-ring');
-    if (!ring) return 'no-ring';
-    const length = ring.getTotalLength();
-    const end = ring.getPointAtLength(length);
-    const svg = ring.ownerSVGElement;
-    const style = getComputedStyle(ring);
-    return JSON.stringify({ tag: ring.tagName, d: ring.getAttribute('d'), length, end: [end.x, end.y], value: document.querySelector('.dashboard-pulse-gauge-value')?.textContent?.trim(), transitionDuration: style.transitionDuration, animationDuration: style.animationDuration, transform: getComputedStyle(svg).transform });
-  })()`);
-  const gaugeGeometryState = gaugeGeometry === 'no-ring' ? null : JSON.parse(gaugeGeometry);
-  const expectedGaugeAngle = 42 / 100 * Math.PI * 2;
-  const expectedGaugeEnd = [52 + 42 * Math.sin(expectedGaugeAngle), 52 - 42 * Math.cos(expectedGaugeAngle)];
-  const gaugeArcLength = 2 * Math.PI * 42 * 0.42;
-  if (!gaugeGeometryState || gaugeGeometryState.tag !== 'path' || gaugeGeometryState.value !== '42%' || !/^M 52 10 A 42 42 0 0 1 /.test(gaugeGeometryState.d ?? '') || Math.abs(gaugeGeometryState.length - gaugeArcLength) > 0.02 || gaugeGeometryState.end.some((n, i) => Math.abs(n - expectedGaugeEnd[i]) > 0.01) || gaugeGeometryState.transitionDuration.split(',').some((duration) => parseFloat(duration) !== 0) || gaugeGeometryState.animationDuration.split(',').some((duration) => parseFloat(duration) !== 0) || gaugeGeometryState.transform !== 'none') {
-    fail(`M140: GPU utilization path geometry does not match the fixed-start 42% readout: '${gaugeGeometry}'`);
+  // The visual column is the GPU retail artwork slot - the removed gauge ring
+  // and its now-deleted styles no longer exist. Prove each lane's HUD rendered
+  // the slot with the GPU artwork image and its four metric rows (the card's
+  // actual DOM contract in dashboard.ts).
+  const pulseVisual = JSON.parse(await js(`JSON.stringify(Array.from(document.querySelectorAll('.dashboard-pulse-lane')).map((lane) => {
+    const slot = lane.querySelector('.dashboard-pulse-visual > .dashboard-retail-art-slot');
+    const image = slot?.querySelector('img.dashboard-retail-art-asset') ?? null;
+    return {
+      slot: !!slot,
+      src: image?.getAttribute('src') ?? '',
+      alt: image?.getAttribute('alt') ?? '',
+      metrics: Array.from(lane.querySelectorAll('.dashboard-pulse-metric')).map((metric) => metric.querySelector('.dashboard-pulse-label')?.textContent?.trim() ?? ''),
+    };
+  }))`));
+  const incompletePulseVisual = pulseVisual.filter((lane) => !lane.slot
+    || !/\/gpu\/[a-z0-9-]+\.png$/i.test(lane.src)
+    || !/GPU retail artwork$/.test(lane.alt)
+    || lane.metrics.join(',') !== lanePulseLabels.join(','));
+  if (!pulseVisual.length || incompletePulseVisual.length) {
+    fail(`M140: Performance Pulse HUD is missing its retail art slot/GPU artwork or its metric rows: '${JSON.stringify(pulseVisual)}'`);
   }
   if (multiGpuDashboard && !(await waitFor(win, `Array.from(document.querySelectorAll('.dashboard-pulse-lane')).length === ${dashboardGpuCount} && Array.from(document.querySelectorAll('.dashboard-pulse-lane')).every((lane) => lane.querySelector('[data-pulse-metric="gpu-util"] .dashboard-pulse-value')?.textContent?.trim() === '42' && lane.querySelector('[data-pulse-metric="vram"] .dashboard-pulse-value')?.textContent?.trim() !== '-')`, 10000))) {
     fail(`M140: multi-GPU Performance Pulse did not populate both GPU lanes: '${await js(`JSON.stringify(Array.from(document.querySelectorAll('.dashboard-pulse-lane')).map((lane) => Array.from(lane.querySelectorAll('.dashboard-pulse-value')).map((n) => n.textContent.trim())))`)}'`);
   }
-  step('m140-performance-pulse', `M140: compact Performance Pulse has '${pulseLabels}' with per-GPU utilization${multiGpuDashboard ? ' and VRAM values in both lanes' : ' 42%'}`);
+  step('m140-performance-pulse', `M140: compact Performance Pulse has '${pulseLabels}' with retail GPU artwork and per-GPU utilization${multiGpuDashboard ? ' and VRAM values in both lanes' : ' 42%'}`);
 
   // --- M31: compact ReBAR pill shares the VRAM row -------------------------
   const rebarLayout = await js(`(() => {
@@ -5251,9 +5259,9 @@ export async function runUiVerify(win, backend, store, getTrayRebuilds = () => 0
 // M11: the 1.0 Release - no suffix (the "Alpha" scheme is gone). M17e
 // (round-2 N1): the 1.0.1 bump joins the flips; M21: the 1.0.1-beta.1 bump
 // - the Settings row is the exact 'Arc Power Ver. 1.0.1 Beta' text (the
-// The 1.2.3 stable bump - Settings displays 'Arc Power Ver. 1.2.3'.
-if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.2.3'`))) {
-fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.2.3')`);
+// The 1.3.0 release - Settings displays 'Arc Power Ver. 1.3.0'.
+if (!(await waitFor(win, `(document.querySelector('.settings-version')?.textContent ?? '').trim() === 'Arc Power Ver. 1.3.0'`))) {
+fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.settings-version')?.textContent ?? ''`)}' (expected 'Arc Power Ver. 1.3.0')`);
   }
   const startWithBox = `document.querySelector('.settings-checkbox[data-setting="startWithWindows"]')`;
   const startMinBox = `document.querySelector('.settings-checkbox[data-setting="startMinimized"]')`;
@@ -5301,7 +5309,7 @@ fail(`M4-D: the Settings version row is '${await js(`document.querySelector('.se
       fail('M4-D: Start minimized did not persist startMinimized=false');
     }
   }
-step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save; Log to file is intentionally absent here; version row 1.2.3');
+step('m4d-settings-roundtrips', 'Settings: Close to tray / Start minimized round trips persisted true/false via profiles-settings-save; Log to file is intentionally absent here; version row 1.3.0');
   // Start with Windows round trip + the honest shared-registration state. The
   // Settings checkbox shows ON whenever the registration exists - the profile's
   // start-at-boot (ocOnBoot) can own it (F6: never a false mismatch).
@@ -9340,19 +9348,19 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   step('m17b-chipnames-off', 'the chip-names toggle OFF: the stock CPU / GPU prefixes return (byte-identical)');
 
   // (m17e-pollms) M17e (the user addition - "current 500 ms is a bit
-  // slow" - M17g: the stock polling rate is now 400 ms): the POLLING-RATE
+  // slow" - M17g: the stock polling rate is now 600 ms): the POLLING-RATE
   // slider on the General card + the persisted
   // payload + the FAST-RATE pin. (a) the slider exists with the pinned
-  // range (100-2000 ms, step 50) + the 400 default value label; (b) the
+  // range (100-2000 ms, step 50) + the 600 default value label; (b) the
   // boot payload carried the default (the overlay's documentElement
-  // dataset.overlayPollMs reads '400'); (c) sliding it to 100 persists
+  // dataset.overlayPollMs reads '600'); (c) sliding it to 100 persists
   // overlayPollMs=100 AND pushes the payload (the dataset flips to '100')
   // AND the telemetry push RESTARTS at the fast cadence (the
   // dataset.telemetryTicks counter advances >= 2 over a ~500 ms window -
   // the old 500 ms cadence would advance 0-1) AND the overlay FPS poll
   // re-arms at the fast cadence (m17f-fps-fastrate: the fpsPolls dev-probe
   // counter advances >= 2 over ~350 ms - the overlay's own fps loop reads
-  // at the slider cadence); (d) restored to 400 so the session stays
+  // at the slider cadence); (d) restored to 600 so the session stays
   // deterministic.
   if (!(await waitFor(win, `!!document.querySelector('.settings-poll-ms-slider')`, 5000))) {
     fail('M17e: the polling-rate slider is missing on the Overlay General card');
@@ -9362,11 +9370,11 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   const pollMax = await js(`${pollSlider}?.getAttribute('max')`);
   const pollStep = await js(`${pollSlider}?.getAttribute('step')`);
   const pollValue = await js(`${pollSlider}?.value`);
-  if (pollMin !== '100' || pollMax !== '2000' || pollStep !== '50' || pollValue !== '400') {
-    fail(`M17e: the polling-rate slider is ${pollMin}..${pollMax} step ${pollStep} value ${pollValue} (expected 100..2000 step 50 value 400 - M17g: the stock polling rate FLIPS 500 -> 400)`);
+  if (pollMin !== '100' || pollMax !== '2000' || pollStep !== '50' || pollValue !== '600') {
+    fail(`M17e: the polling-rate slider is ${pollMin}..${pollMax} step ${pollStep} value ${pollValue} (expected 100..2000 step 50 value 600 - M17g: the stock polling rate is now 600 ms)`);
   }
-  if (!(await waitFor(overlayWin, `document.documentElement.dataset.overlayPollMs === '400'`, 5000))) {
-    fail(`M17e: the boot overlay:settings payload carried '${await ojs(`document.documentElement.dataset.overlayPollMs ?? ''`)}' (expected '400' - the default cadence)`);
+  if (!(await waitFor(overlayWin, `document.documentElement.dataset.overlayPollMs === '600'`, 5000))) {
+    fail(`M17e: the boot overlay:settings payload carried '${await ojs(`document.documentElement.dataset.overlayPollMs ?? ''`)}' (expected '600' - the default cadence)`);
   }
   // Slide to 100 via the UI (input + change - the onchange saves).
   await js(`(() => {
@@ -9401,16 +9409,16 @@ export async function runOverlayVerify(win, overlayHandle, store, hotkeyProbe, g
   if (fpsPollsAfter - fpsPollsBefore < 2) {
     fail(`M17f: the overlay FPS poll did not honor the 100 ms setting (${fpsPollsBefore} -> ${fpsPollsAfter} fps-polls over ~350 ms - expected >= 2 at the re-armed cadence)`);
   }
-  step('m17e-pollms', `M17e: the polling-rate slider (${pollMin}..${pollMax} step ${pollStep}, default 400 - M17g: the stock polling rate FLIPS 500 -> 400) - sliding to 100 persisted overlayPollMs=100 + pushed the payload (dataset '100') + the push restarted at the fast cadence (${ticksBefore} -> ${ticksAfter} telemetry ticks over ~500 ms) + the FPS poll re-armed (${fpsPollsBefore} -> ${fpsPollsAfter} fps-polls over ~350 ms)`);
-  // Restore the 400 default (the later sections expect the seeded shape).
+  step('m17e-pollms', `M17e: the polling-rate slider (${pollMin}..${pollMax} step ${pollStep}, default 600) - sliding to 100 persisted overlayPollMs=100 + pushed the payload (dataset '100') + the push restarted at the fast cadence (${ticksBefore} -> ${ticksAfter} telemetry ticks over ~500 ms) + the FPS poll re-armed (${fpsPollsBefore} -> ${fpsPollsAfter} fps-polls over ~350 ms)`);
+  // Restore the 600 default (the later sections expect the seeded shape).
   await js(`(() => {
     const s = document.querySelector('.settings-poll-ms-slider');
-    s.value = '400';
+    s.value = '600';
     s.dispatchEvent(new Event('input', { bubbles: true }));
     s.dispatchEvent(new Event('change', { bubbles: true }));
   })()`);
-  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayPollMs === 400)`, 5000))) {
-    fail('M17e: restoring the polling-rate slider did not persist overlayPollMs=400');
+  if (!(await waitFor(win, `window.arcPower.profilesList().then((e) => e.settings.overlayPollMs === 600)`, 5000))) {
+    fail('M17e: restoring the polling-rate slider did not persist overlayPollMs=600');
   }
   await sleep(150);
 

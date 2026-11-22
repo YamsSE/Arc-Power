@@ -246,21 +246,6 @@ export const CTL_DISPLAY_EDID_OP_READ = 1;
 export const CTL_DISPLAY_EDID_TYPE_MONITOR = 3;
 export const CTL_PANEL_DESCRIPTOR_OP_READ = 1;
 
-// ctl_custom_mode_operation_types_t (igcl_api.h): GET returns the driver's
-// current custom-source-mode count/list, ADD accepts exactly one source mode,
-// and REMOVE accepts one or more source modes. These values are deliberately
-// kept separate from CTL_WIRE_OPERATION: they are a different IGCL enum.
-export const CTL_CUSTOM_MODE_OPERATION = Object.freeze({
-  GET: 0,
-  ADD: 1,
-  REMOVE: 2,
-});
-export const CTL_CUSTOM_MODE_OPERATION_TYPE_GET = CTL_CUSTOM_MODE_OPERATION.GET;
-export const CTL_CUSTOM_MODE_OPERATION_TYPE_ADD = CTL_CUSTOM_MODE_OPERATION.ADD;
-export const CTL_CUSTOM_MODE_OPERATION_TYPE_REMOVE = CTL_CUSTOM_MODE_OPERATION.REMOVE;
-export const CTL_CUSTOM_SRC_MODE_SIZE = 8;
-export const CTL_GET_SET_CUSTOM_MODE_ARGS_SIZE = 24;
-
 // ---------------------------------------------------------------------------
 // Structs (C -> koffi)
 // ---------------------------------------------------------------------------
@@ -761,23 +746,6 @@ const ctl_edid_management_args_t = koffi.struct('ctl_edid_management_args_t', {
   OutFlags: 'uint32',             // @32
 }); // 40 bytes, align 8
 
-// ctl_custom_src_mode_t / ctl_get_set_custom_mode_args_t from igcl_api.h.
-// MSVC x64 offsets are SourceX@0, SourceY@4 and, for the argument struct,
-// Size@0, Version@4, CustomModeOpType@8, NumOfModes@12 and
-// pCustomSrcModeList@16. The pointer forces the argument struct's size to 24.
-const ctl_custom_src_mode_t = koffi.struct('ctl_custom_src_mode_t', {
-  SourceX: 'uint32',
-  SourceY: 'uint32',
-}); // 8 bytes, align 4
-
-const ctl_get_set_custom_mode_args_t = koffi.struct('ctl_get_set_custom_mode_args_t', {
-  Size: 'uint32',
-  Version: 'uint8',
-  CustomModeOpType: 'int32',
-  NumOfModes: 'uint32',
-  pCustomSrcModeList: 'void*',
-}); // 24 bytes, align 8
-
 // ---------------------------------------------------------------------------
 // Layout assertions (sizes computed by hand from the C headers; any mismatch
 // means koffi laid out a struct differently than MSVC did)
@@ -840,8 +808,6 @@ const EXPECTED_SIZES = {
   ctl_intel_arc_sync_profile_params_t: 28,
   ctl_panel_descriptor_access_args_t: 32,
   ctl_edid_management_args_t: 40,
-  ctl_custom_src_mode_t: 8,
-  ctl_get_set_custom_mode_args_t: 24,
 };
 
 for (const [name, expected] of Object.entries(EXPECTED_SIZES)) {
@@ -1197,10 +1163,6 @@ export function loadIgcl(dllPath, { load = koffi.load } = {}) {
   bind('ctlGetSetVideoProcessingFeature', 'ctl_result_t', ['void*', 'void*']);
   bind('ctlPanelDescriptorAccess', 'ctl_result_t', ['void*', 'void*']);
   bind('ctlEdidManagement', 'ctl_result_t', ['void*', 'void*']);
-  // Optional Intel display custom-source-mode seam. Keep both parameters raw
-  // void* because callers pass koffi-allocated byte buffers, matching the
-  // other newer display APIs above; absent exports remain capability-local.
-  bind('ctlGetSetCustomMode', 'ctl_result_t', ['void*', 'void*']);
 
   return fn;
 }
@@ -1434,7 +1396,7 @@ export function decodeVfCurve(buf, numPoints) {
  * 56/57. The current B580 DriverStore read also returned the expected
  * gen/width and true/true ReBAR flags at these offsets.
  * @param {unknown} buf koffi buffer of 64+ bytes
- * @returns {{ domain: number, bus: number, device: number, function: number, gen: number, width: number, maxBandwidth: number, resizableBarSupported: boolean, resizableBarEnabled: boolean }}
+ * @returns {{ domain: number, bus: number, device: number, function: number, gen: number, width: number, maxBandwidth: number, resizableBarSupported: boolean|null, resizableBarEnabled: boolean|null }}
  */
 export function decodePciProperties(buf) {
   // koffi decode quirk (live-verified): single-byte/primitive decodes with
@@ -1451,6 +1413,14 @@ export function decodePciProperties(buf) {
     for (let b = 7; b >= 0; b--) v = (v << 8n) | BigInt(arr[o + b]);
     return v;
   };
+  const supportedFlag = arr[56];
+  const enabledFlag = arr[57];
+  // These are ABI BOOL fields represented as bytes. Only explicit 0/1 values
+  // are meaningful; arbitrary/unwritten data must not become an "off" state.
+  // An enabled BAR without support is internally contradictory, so fail closed.
+  const flagsValid = (supportedFlag === 0 || supportedFlag === 1)
+    && (enabledFlag === 0 || enabledFlag === 1)
+    && !(enabledFlag === 1 && supportedFlag !== 1);
   return {
     domain: u32(16),
     bus: u32(20),
@@ -1459,8 +1429,8 @@ export function decodePciProperties(buf) {
     gen: u32(40) | 0,
     width: u32(44) | 0,
     maxBandwidth: u64(48),
-    resizableBarSupported: arr[56] === 1,
-    resizableBarEnabled: arr[57] === 1,
+    resizableBarSupported: flagsValid ? supportedFlag === 1 : null,
+    resizableBarEnabled: flagsValid ? enabledFlag === 1 : null,
   };
 }
 
@@ -2016,100 +1986,6 @@ export function encodePanelDescriptorArgs({ dataSize = 0, pData = null } = {}) {
   koffi.encode(buf, koffi.offsetof('ctl_panel_descriptor_access_args_t', 'DescriptorDataSize'), 'uint32', dataSize);
   koffi.encode(buf, koffi.offsetof('ctl_panel_descriptor_access_args_t', 'pDescriptorData'), 'void*', pData ?? 0n);
   return { buf };
-}
-
-/**
- * Encode one ctl_custom_src_mode_t into a koffi byte buffer. The optional
- * buffer/offset form lets tests and future callers build a contiguous list.
- * Native layout: SourceX@0, SourceY@4, sizeof=8.
- * @param {{ SourceX?: number, SourceY?: number, sourceX?: number, sourceY?: number }} mode
- * @param {{ buffer?: unknown, offset?: number }} options
- * @returns {{ buf: unknown }}
- */
-export function encodeCustomSrcMode(mode = {}, { buffer = null, offset = 0 } = {}) {
-  const buf = buffer ?? koffi.alloc('uint8', CTL_CUSTOM_SRC_MODE_SIZE);
-  const sourceX = mode.SourceX ?? mode.sourceX ?? 0;
-  const sourceY = mode.SourceY ?? mode.sourceY ?? 0;
-  if (!Number.isInteger(sourceX) || sourceX < 0 || sourceX > 0xffffffff
-    || !Number.isInteger(sourceY) || sourceY < 0 || sourceY > 0xffffffff) {
-    throw new RangeError('Custom source mode dimensions must be uint32 values');
-  }
-  koffi.encode(buf, offset, 'uint32', sourceX);
-  koffi.encode(buf, offset + 4, 'uint32', sourceY);
-  return { buf };
-}
-
-/** Encode a contiguous ctl_custom_src_mode_t list. */
-export function encodeCustomSrcModes(modes = []) {
-  if (!Array.isArray(modes)) throw new TypeError('modes must be an array');
-  const buf = koffi.alloc('uint8', Math.max(1, modes.length * CTL_CUSTOM_SRC_MODE_SIZE));
-  modes.forEach((mode, index) => encodeCustomSrcMode(mode, {
-    buffer: buf,
-    offset: index * CTL_CUSTOM_SRC_MODE_SIZE,
-  }));
-  return { buf };
-}
-
-/** Decode one ctl_custom_src_mode_t from a koffi byte buffer. */
-export function decodeCustomSrcMode(buf, offset = 0) {
-  return {
-    SourceX: Number(koffi.decode(buf, offset, 'uint32')) >>> 0,
-    SourceY: Number(koffi.decode(buf, offset + 4, 'uint32')) >>> 0,
-  };
-}
-
-/** Decode a contiguous ctl_custom_src_mode_t list. */
-export function decodeCustomSrcModes(buf, count) {
-  if (!Number.isInteger(count) || count < 0) throw new RangeError('count must be a non-negative integer');
-  return Array.from({ length: count }, (_, index) => decodeCustomSrcMode(buf, index * CTL_CUSTOM_SRC_MODE_SIZE));
-}
-
-/**
- * Encode ctl_get_set_custom_mode_args_t using the repository's raw-buffer
- * convention. ADD is rejected unless exactly one mode is supplied; REMOVE
- * may carry multiple modes. GET with no list is the count-query form.
- * @param {{ operation?: number, modes?: Array<object>, numOfModes?: number,
- *   pCustomSrcModeList?: unknown }} options
- * @returns {{ buf: unknown, modeBuf: unknown|null }}
- */
-export function encodeCustomModeArgs({
-  operation = CTL_CUSTOM_MODE_OPERATION.GET,
-  modes = [],
-  numOfModes = modes.length,
-  pCustomSrcModeList = null,
-} = {}) {
-  if (![CTL_CUSTOM_MODE_OPERATION.GET, CTL_CUSTOM_MODE_OPERATION.ADD, CTL_CUSTOM_MODE_OPERATION.REMOVE].includes(operation)) {
-    throw new RangeError(`Unsupported custom mode operation: ${operation}`);
-  }
-  if (!Number.isInteger(numOfModes) || numOfModes < 0 || numOfModes > 0xffffffff) {
-    throw new RangeError('numOfModes must be a non-negative uint32');
-  }
-  if (operation === CTL_CUSTOM_MODE_OPERATION.ADD && numOfModes !== 1) {
-    throw new RangeError('ADD custom mode requires exactly one mode');
-  }
-  if (modes.length > 0 && modes.length !== numOfModes) {
-    throw new RangeError('modes length must match numOfModes');
-  }
-  const modeBuf = modes.length > 0 ? encodeCustomSrcModes(modes).buf : null;
-  const listPtr = pCustomSrcModeList ?? (modeBuf ? koffi.address(modeBuf) : 0n);
-  const buf = koffi.alloc('uint8', CTL_GET_SET_CUSTOM_MODE_ARGS_SIZE + DISPLAY_HEADROOM);
-  koffi.encode(buf, 0, 'uint32', CTL_GET_SET_CUSTOM_MODE_ARGS_SIZE);
-  koffi.encode(buf, 4, 'uint8', 0);
-  koffi.encode(buf, 8, 'int32', operation);
-  koffi.encode(buf, 12, 'uint32', numOfModes);
-  koffi.encode(buf, 16, 'void*', listPtr);
-  return { buf, modeBuf };
-}
-
-/** Decode ctl_get_set_custom_mode_args_t and an optional returned mode list. */
-export function decodeCustomModeArgs(buf, { modeBuf = null, modeCount } = {}) {
-  const operation = koffi.decode(buf, 8, 'int32') | 0;
-  const numOfModes = Number(koffi.decode(buf, 12, 'uint32')) >>> 0;
-  return {
-    operation,
-    numOfModes,
-    modes: modeBuf ? decodeCustomSrcModes(modeBuf, modeCount ?? numOfModes) : [],
-  };
 }
 
 /**

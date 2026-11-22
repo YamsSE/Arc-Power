@@ -28,6 +28,7 @@
 
 import { ghzFreq, gbValue } from './sysinfo.ts';
 import { gpuMemoryLabel, isUsableGpuMemoryBytes } from './gpu-memory.ts';
+import { TELEMETRY_POLL_MS_DEFAULT } from './telemetry-visuals.ts';
 import type { OverlayPosition } from '../types.ts';
 
 /** The 4 overlay corners (the persisted-truth owner is profile-store.js;
@@ -158,13 +159,10 @@ export const OVERLAY_SCALE_MIN = 0.5;
 export const OVERLAY_SCALE_MAX = 2.0;
 export const OVERLAY_SCALE_STEP = 0.25;
 
-/** M17e: the overlay polling-rate slider's range + default (the
- *  telemetry-service default; mirrored in profile-store.js + ipc-core.js -
- *  keep the three in lockstep). M17g: the DEFAULT FLIPS 500 -> 400 (the
- *  user's stock polling rate). */
+/** M17e: the overlay polling-rate slider's range + default. */
 export const OVERLAY_POLL_MS_MIN = 100;
 export const OVERLAY_POLL_MS_MAX = 2000;
-export const OVERLAY_POLL_MS_DEFAULT = 400;
+export const OVERLAY_POLL_MS_DEFAULT = TELEMETRY_POLL_MS_DEFAULT;
 
 /**
  * M6/M7a: the canonical overlay stat ids (the persisted-truth owner is
@@ -272,10 +270,9 @@ export function clampOverlayBgOpacity(v: unknown): number {
 }
 
 /** M17e: clamp the overlay polling-rate to the slider's 100-2000 ms range
- *  (garbage degrades to the 400 ms default - M17g: the default FLIPS 500 ->
- *  400; the renderer mirror of the store/ipc-core clamps - a garbage
- *  overlayPollMs must degrade to 400 in BOTH the store and the renderer,
- *  never a 500/400 split). */
+ *  (garbage degrades to the 600 ms shared default; the renderer mirror of the
+ *  store/ipc-core clamps - a garbage overlayPollMs must degrade to 600 in BOTH
+ *  the store and the renderer, never a store/renderer split). */
 export function clampOverlayPollMs(v: unknown): number {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : OVERLAY_POLL_MS_DEFAULT;
   return Math.min(OVERLAY_POLL_MS_MAX, Math.max(OVERLAY_POLL_MS_MIN, Math.round(n)));

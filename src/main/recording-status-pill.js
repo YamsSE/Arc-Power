@@ -34,6 +34,7 @@ export function createRecordingStatusPillWindow({
   getAnchorWindow = () => null,
   getRecordingState = () => null,
   deferBuild = false,
+  createWindow = (options) => new BrowserWindow(options),
 } = {}) {
   let win = null;
   let enabled = false;
@@ -100,7 +101,7 @@ export function createRecordingStatusPillWindow({
 
   const build = () => {
     if (win && !win.isDestroyed()) return win;
-    win = new BrowserWindow({
+    win = createWindow({
       ...boundsFor(),
       icon: resolveWindowIconPath(),
       transparent: true,

@@ -1,0 +1,344 @@
+{
+  "schemaVersion": 1,
+  "range": {
+    "units": "C",
+    "min": 50,
+    "max": 115,
+    "step": 0.001,
+    "default": 90
+  },
+  "learningCases": [
+    {
+      "id": "one-step-decrement-and-decimal-snap",
+      "operations": [
+        {
+          "result": { "tempLimitC": { "ok": false, "errorCode": "out-of-range" } },
+          "attempted": 103.235,
+          "range": { "units": "C", "min": 50, "max": 115, "step": 0.001 },
+          "expectedCeilings": [103.234]
+        }
+      ]
+    },
+    {
+      "id": "explicit-valid-capability-ceiling",
+      "operations": [
+        {
+          "result": { "tempLimitC": { "ok": false, "errorCode": "out-of-range", "capabilityCeiling": 103.234 } },
+          "attempted": 110,
+          "range": { "units": "C", "min": 50, "max": 115, "step": 0.001 },
+          "expectedCeilings": [103.234]
+        }
+      ]
+    },
+    {
+      "id": "explicit-off-grid-ceiling",
+      "operations": [
+        {
+          "result": { "tempLimitC": { "ok": false, "errorCode": "out-of-range", "capabilityCeiling": 103.2345 } },
+          "attempted": 110,
+          "range": { "units": "C", "min": 50, "max": 115, "step": 0.001 },
+          "expectedCeilings": [null]
+        }
+      ]
+    },
+    {
+      "id": "explicit-below-range-ceiling",
+      "operations": [
+        {
+          "result": { "tempLimitC": { "ok": false, "errorCode": "out-of-range", "capabilityCeiling": 49 } },
+          "attempted": 110,
+          "range": { "units": "C", "min": 50, "max": 115, "step": 0.001 },
+          "expectedCeilings": [null]
+        }
+      ]
+    },
+    {
+      "id": "explicit-above-range-ceiling",
+      "operations": [
+        {
+          "result": { "tempLimitC": { "ok": false, "errorCode": "out-of-range", "capabilityCeiling": 116 } },
+          "attempted": 110,
+          "range": { "units": "C", "min": 50, "max": 115, "step": 0.001 },
+          "expectedCeilings": [null]
+        }
+      ]
+    },
+    {
+      "id": "non-finite-attempted-temperature",
+      "operations": [
+        {
+          "result": { "tempLimitC": { "ok": false, "errorCode": "out-of-range" } },
+          "attempted": { "nonFinite": "NaN" },
+          "range": { "units": "C", "min": 50, "max": 115, "step": 1 },
+          "expectedCeilings": [null]
+        }
+      ]
+    },
+    {
+      "id": "io-failed-does-not-learn",
+      "operations": [
+        {
+          "result": { "tempLimitC": { "ok": false, "errorCode": "io-failed" } },
+          "attempted": 110,
+          "range": { "units": "C", "min": 50, "max": 115, "step": 1 },
+          "expectedCeilings": [null]
+        }
+      ]
+    },
+    {
+      "id": "non-temperature-result-does-not-learn",
+      "operations": [
+        {
+          "result": { "powerLimitW": { "ok": false, "errorCode": "out-of-range" } },
+          "attempted": 110,
+          "range": { "units": "C", "min": 50, "max": 115, "step": 1 },
+          "expectedCeilings": [null]
+        }
+      ]
+    },
+    {
+      "id": "ceilings-only-decrease",
+      "operations": [
+        {
+          "result": { "tempLimitC": { "ok": false, "errorCode": "out-of-range" } },
+          "attempted": 110,
+          "range": { "units": "C", "min": 50, "max": 115, "step": 1 },
+          "expectedCeilings": [109]
+        },
+        {
+          "result": { "tempLimitC": { "ok": false, "errorCode": "out-of-range" } },
+          "attempted": 112,
+          "range": { "units": "C", "min": 50, "max": 115, "step": 1 },
+          "expectedCeilings": [109]
+        },
+        {
+          "result": { "tempLimitC": { "ok": false, "errorCode": "out-of-range" } },
+          "attempted": 105,
+          "range": { "units": "C", "min": 50, "max": 115, "step": 1 },
+          "expectedCeilings": [104]
+        }
+      ]
+    },
+    {
+      "id": "success-does-not-clear-ceiling",
+      "operations": [
+        {
+          "result": { "tempLimitC": { "ok": false, "errorCode": "out-of-range" } },
+          "attempted": 110,
+          "range": { "units": "C", "min": 50, "max": 115, "step": 1 },
+          "expectedCeilings": [109]
+        },
+        {
+          "result": { "tempLimitC": { "ok": true } },
+          "attempted": 111,
+          "range": { "units": "C", "min": 50, "max": 115, "step": 1 },
+          "expectedCeilings": [109]
+        }
+      ]
+    }
+  ],
+  "identityCases": [
+    {
+      "id": "ordinal-reorder-resolves-by-stable-key",
+      "selected": {
+        "ordinal": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+        "pciVendorId": "0x00008086",
+        "pciDeviceId": "0x0000e20b",
+        "bdf": { "bus": 3, "device": 0, "function": 0 },
+        "luid": "0x00000001:0x00000002",
+        "writable": true
+      },
+      "inventory": [
+        {
+          "ordinal": 0,
+          "deviceKey": "pci:0x00008086:0x0000e20b@4:0.0",
+          "pciVendorId": "0x00008086",
+          "pciDeviceId": "0x0000e20b",
+          "bdf": { "bus": 4, "device": 0, "function": 0 },
+          "luid": "0x00000003:0x00000004",
+          "writable": true
+        },
+        {
+          "ordinal": 1,
+          "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+          "pciVendorId": "0x00008086",
+          "pciDeviceId": "0x0000e20b",
+          "bdf": { "bus": 3, "device": 0, "function": 0 },
+          "luid": "0x00000001:0x00000002",
+          "writable": true
+        }
+      ],
+      "expected": { "status": "resolved", "index": 1, "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0" }
+    },
+    {
+      "id": "same-model-adapters-have-distinct-bdf-keys",
+      "selected": {
+        "ordinal": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@4:0.0",
+        "pciVendorId": "0x00008086",
+        "pciDeviceId": "0x0000e20b",
+        "bdf": { "bus": 4, "device": 0, "function": 0 },
+        "luid": "0x00000003:0x00000004",
+        "writable": true
+      },
+      "inventory": [
+        {
+          "ordinal": 0,
+          "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+          "pciVendorId": "0x00008086",
+          "pciDeviceId": "0x0000e20b",
+          "bdf": { "bus": 3, "device": 0, "function": 0 },
+          "luid": "0x00000001:0x00000002",
+          "writable": true
+        },
+        {
+          "ordinal": 1,
+          "deviceKey": "pci:0x00008086:0x0000e20b@4:0.0",
+          "pciVendorId": "0x00008086",
+          "pciDeviceId": "0x0000e20b",
+          "bdf": { "bus": 4, "device": 0, "function": 0 },
+          "luid": "0x00000003:0x00000004",
+          "writable": true
+        }
+      ],
+      "expected": { "status": "resolved", "index": 1, "deviceKey": "pci:0x00008086:0x0000e20b@4:0.0" }
+    },
+    {
+      "id": "duplicate-physical-rows-are-ambiguous",
+      "selected": {
+        "ordinal": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+        "pciVendorId": "0x00008086",
+        "pciDeviceId": "0x0000e20b",
+        "bdf": { "bus": 3, "device": 0, "function": 0 },
+        "luid": "0x00000001:0x00000002",
+        "writable": true
+      },
+      "inventory": [
+        {
+          "ordinal": 0,
+          "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+          "pciVendorId": "0x00008086",
+          "pciDeviceId": "0x0000e20b",
+          "bdf": { "bus": 3, "device": 0, "function": 0 },
+          "luid": "0x00000001:0x00000002",
+          "writable": true
+        },
+        {
+          "ordinal": 1,
+          "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+          "pciVendorId": "0x00008086",
+          "pciDeviceId": "0x0000e20b",
+          "bdf": { "bus": 3, "device": 0, "function": 0 },
+          "luid": "0x00000001:0x00000002",
+          "writable": true
+        }
+      ],
+      "expected": { "status": "rejected" }
+    },
+    {
+      "id": "conflicting-luid-is-rejected",
+      "selected": {
+        "ordinal": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+        "pciVendorId": "0x00008086",
+        "pciDeviceId": "0x0000e20b",
+        "bdf": { "bus": 3, "device": 0, "function": 0 },
+        "luid": "0x00000001:0x00000002",
+        "writable": true
+      },
+      "inventory": [
+        {
+          "ordinal": 0,
+          "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+          "pciVendorId": "0x00008086",
+          "pciDeviceId": "0x0000e20b",
+          "bdf": { "bus": 3, "device": 0, "function": 0 },
+          "luid": "0x00000003:0x00000004",
+          "writable": true
+        }
+      ],
+      "expected": { "status": "rejected" }
+    },
+    {
+      "id": "missing-bdf-is-rejected",
+      "selected": {
+        "ordinal": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@-1:-1.-1",
+        "pciVendorId": "0x00008086",
+        "pciDeviceId": "0x0000e20b",
+        "luid": "0x00000001:0x00000002",
+        "writable": true
+      },
+      "inventory": [],
+      "expected": { "status": "rejected" }
+    },
+    {
+      "id": "zero-bdf-is-rejected",
+      "selected": {
+        "ordinal": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@-1:-1.-1",
+        "pciVendorId": "0x00008086",
+        "pciDeviceId": "0x0000e20b",
+        "bdf": { "bus": 0, "device": 0, "function": 0 },
+        "luid": "0x00000001:0x00000002",
+        "writable": true
+      },
+      "inventory": [],
+      "expected": { "status": "rejected" }
+    },
+    {
+      "id": "malformed-vendor-pci-id-is-rejected",
+      "selected": {
+        "ordinal": 0,
+        "deviceKey": "pci:0x0000g086:0x0000e20b@3:0.0",
+        "pciVendorId": "0x0000g086",
+        "pciDeviceId": "0x0000e20b",
+        "bdf": { "bus": 3, "device": 0, "function": 0 },
+        "luid": "0x00000001:0x00000002",
+        "writable": true
+      },
+      "inventory": [],
+      "expected": { "status": "rejected" }
+    },
+    {
+      "id": "malformed-device-pci-id-is-rejected",
+      "selected": {
+        "ordinal": 0,
+        "deviceKey": "pci:0x00008086:0x0000xyz0@3:0.0",
+        "pciVendorId": "0x00008086",
+        "pciDeviceId": "0x0000xyz0",
+        "bdf": { "bus": 3, "device": 0, "function": 0 },
+        "luid": "0x00000001:0x00000002",
+        "writable": true
+      },
+      "inventory": [],
+      "expected": { "status": "rejected" }
+    },
+    {
+      "id": "unknown-fresh-inventory-identity-is-rejected",
+      "selected": {
+        "ordinal": 0,
+        "deviceKey": "pci:0x00008086:0x0000e20b@3:0.0",
+        "pciVendorId": "0x00008086",
+        "pciDeviceId": "0x0000e20b",
+        "bdf": { "bus": 3, "device": 0, "function": 0 },
+        "luid": "0x00000001:0x00000002",
+        "writable": true
+      },
+      "inventory": [
+        {
+          "ordinal": 0,
+          "deviceKey": "pci:0x00008086:0x0000e20b@4:0.0",
+          "pciVendorId": "0x00008086",
+          "pciDeviceId": "0x0000e20b",
+          "bdf": { "bus": 4, "device": 0, "function": 0 },
+          "luid": "0x00000003:0x00000004",
+          "writable": true
+        }
+      ],
+      "expected": { "status": "rejected" }
+    }
+  ]
+}

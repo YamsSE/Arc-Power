@@ -49,22 +49,31 @@ import { execFileSync, spawn } from 'node:child_process';
 import { prepareArcPowerCacheSync, resolveArcPowerCachePath, readMaintenanceAction, readMaintenanceToken, filterRelaunchArgs, compareArcPowerVersions, readArcPowerLastOpenedVersionSync, resolveCacheRestartRelaunchOptions, resetArcPowerCachesSync, resetArcPowerDataSync, ensureCacheDirectorySync, consumeMaintenanceReceiptSync, writeMaintenanceReceiptSync } from './cache-lifecycle.js';
 import { fileURLToPath } from 'node:url';
 import { createBackend } from './backend/index.js';
+import { TELEMETRY_POLL_MS_DEFAULT } from './telemetry/constants.js';
 import { collectGpuReadOnlyDiagnostics } from './gpu-read-only-diagnostics.js';
 import { ARC_POWER_APP_USER_MODEL_ID, ARC_POWER_DEVELOPMENT_APP_USER_MODEL_ID, resolveTaskbarIconPath, repairArcPowerTaskbarShortcuts } from './taskbar-identity.js';
 import { runSmoke } from './smoke.js';
+import { createTauriServiceMode } from './tauri-service-mode.js';
+import { createTauriPipeTransport } from './tauri-broker.js';
 import { runUiVerify, runFeaturesetVerify, runTweaksApplyVerify, runFanGateVerify, runBootApplyVerify, runBootApplyExtVerify, runTrayApplyVerify, runNoIntelVerify, runLaptopSysinfoVerify, runOverlayVerify, runGraphicsVerify, runNoSysmanVerify, runAdvancedOverlayVerify } from './ui-verify.js';
 import { collectHealth } from './health.js';
 import { registerIpc } from './ipc.js';
-import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, resolvePreferredDevice, clampOverlayScale, overlayHotkeysCollide, validateOverlayHotkeyLetter, waiverProbeDue, pushRecordingActionResult } from './ipc-core.js';
+import { guardMainFrameIpcHandler } from './restricted-renderer-ipc.js';
+import { seedWaiverState, probeWaiverState, seedOcMode, resolveBootDeviceId, resolvePreferredDevice, clampOverlayScale, overlayHotkeysCollide, validateOverlayHotkeyLetter, validatePostprocessScaleHotkey, waiverProbeDue, pushRecordingActionResult } from './ipc-core.js';
 import { ProfileStore, activeProfileEntries, OVERLAY_POSITIONS, OVERLAY_STAT_IDS, OVERLAY_STATS_DEFAULT, OVERLAY_THEMES, OVERLAY_THEME_DEFAULT, OVERLAY_RENDERERS } from './store/profile-store.js';
+import { setBrokerApplyTransactionDelegate } from './apply-lock.js';
+import { NativeProfileStore } from './store/tauri-native-store.js';
+import { NativeOverlayLayoutStore } from './store/tauri-native-layout-store.js';
 import { GameProfileStore } from './store/game-profile-store.js';
-import { createSharpeningGameLookup } from './sharpening-game-eligibility.js';
 import { createScreenPostprocessSharpening } from './sharpening-screen.js';
-import { createProductionManagedSharpening } from './managed-sharpening-runtime.js';
 import { stageScreenSharpeningHelper } from './sharpening-helper-stage.js';
 import { createMockPostprocessSharpening } from './sharpening-postprocess-mock.js';
 import { RecordingStore } from './store/recording-store.js';
 import { StabilityStore } from './store/stability-store.js';
+import { NativeStabilityStore } from './store/tauri-native-stability-store.js';
+import { NativeGameProfileStore } from './store/tauri-native-game-store.js';
+import { NativeRecordingStore } from './store/tauri-native-recording-store.js';
+import { NativeWindowStateStore } from './store/tauri-native-window-state-store.js';
 import { createGpuWorkloadController } from './gpu-workload.js';
 import { createWheaMonitor } from './whea-check.js';
 import { OverlayLayoutStore } from './overlay-layout-store.js';
@@ -95,6 +104,7 @@ import { createAdvancedOverlayWindow } from './advanced-overlay.js';
 import { createStartup, createMockStartup, reconcileStartupRegistration } from './startup.js';
 import { createRtssStartup, createMockRtssStartup } from './rtss-startup.js';
 import { createRtssProfileHelperProxy } from './rtss-profile-helper-proxy.js';
+import { createNativeRtssProfileProxy } from './rtss-native-profile.js';
 import { createQuitTeardownGate } from './quit-teardown-gate.js';
 import { attachStartupUpdateStatus, createStartupSplash } from './splash.js';
 import { runInstallerMode } from './installer.js';
@@ -117,8 +127,10 @@ import { createLhmTelemetry } from './telemetry/lhm-provider.js';
 import { createMsrReader } from './msr-reader.js';
 import { createMonitorLog } from './monitor-log.js';
 import { collectSysinfo, createMockSysinfo, vramBytesOfDevice, applyDriverReBar, createDriverReBar } from './sysinfo.js';
+import { createD3d12UploadHeapEvidence, resolveD3d12UploadHeapHelperPath } from './windows-d3d12-uploadheap.js';
 import { trustedCpuRamSnapshotOf } from './backend/shared-memory-override.js';
-import { applyProfile, runApplyOnStartup, applyProfileBoot, resolveApplyDeviceId } from './apply-on-boot.js';
+import { applyProfile, runApplyOnStartup, applyProfileBoot, retryBootAfterIdentity, resolveApplyDeviceId } from './apply-on-boot.js';
+import { waitForWritableGpuIdentity } from './wait-gpu-identity.js';
 import { runBootApplyMode } from './boot-apply-mode.js';
 import { shouldUseInstanceLock, acquireInstanceLock, focusExistingWindow } from './single-instance.js';
 import { createBootSetup, taskActionMatches } from './setup-boot.js';
@@ -206,6 +218,125 @@ const bootApply = process.argv.includes('--boot-apply');
 // --ui-verify is dev tooling: it ALWAYS uses the mock backend (never touches
 // hardware), so treat it as mock for backend selection.
 const mock = process.argv.includes('--mock') || process.env.RID_BACKEND === 'mock' || uiVerify;
+const tauriBrokerMode = process.argv.includes('--tauri-broker');
+// Explicit, isolated mock diagnostics for the normal startup splash path.
+// This never changes backend selection or enables real update downloads.
+const tauriSplashProbe = tauriBrokerMode && mock
+  && ['current', 'available'].includes(process.env.RID_MOCK_STARTUP_SPLASH)
+  ? process.env.RID_MOCK_STARTUP_SPLASH : null;
+const tauriHostExecutable = tauriBrokerMode && path.isAbsolute(process.env.ARC_POWER_TAURI_HOST_EXECUTABLE ?? '')
+  ? process.env.ARC_POWER_TAURI_HOST_EXECUTABLE : null;
+let tauriMockRoot = null;
+if (tauriBrokerMode && mock) {
+  const suppliedRoot = process.env.ARC_POWER_TAURI_MOCK_ROOT;
+  tauriMockRoot = suppliedRoot ? path.resolve(suppliedRoot) : fs.mkdtempSync(path.join(os.tmpdir(), 'ArcPower-Tauri-Mock-'));
+  const relative = path.relative(os.tmpdir(), tauriMockRoot);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative) || !path.basename(tauriMockRoot).startsWith('ArcPower-Tauri-Mock-')) {
+    throw new Error('Mock host data must remain in its private temporary directory');
+  }
+  for (const [key, folder] of Object.entries({ appData: 'Roaming', userData: 'Browser', documents: 'Documents', videos: 'Videos', pictures: 'Pictures', downloads: 'Downloads' })) {
+    const directory = path.join(tauriMockRoot, folder);
+    fs.mkdirSync(directory, { recursive: true });
+    app.setPath(key, directory);
+  }
+  process.env.APPDATA = path.join(tauriMockRoot, 'Roaming');
+  process.env.LOCALAPPDATA = path.join(tauriMockRoot, 'Local');
+  fs.mkdirSync(process.env.LOCALAPPDATA, { recursive: true });
+}
+const tauriSession = tauriBrokerMode ? process.env.ARC_POWER_TAURI_SESSION : null;
+if (tauriBrokerMode && (typeof tauriSession !== 'string' || !/^[a-f0-9]{64}$/i.test(tauriSession))) {
+  throw new Error('The Tauri backend requires an authenticated native-host session');
+}
+delete process.env.ARC_POWER_TAURI_SESSION;
+const tauriPipe = tauriBrokerMode ? createTauriPipeTransport() : null;
+delete process.env.ARC_POWER_TAURI_PIPE;
+const tauriService = tauriBrokerMode ? createTauriServiceMode({
+  token: tauriSession, ...tauriPipe,
+  hostProcessId: process.ppid,
+  onDisconnect: reason => { console.error(`[tauri] disconnected: ${reason}`); app.quit(); },
+  onWindowClosed: () => app.quit(),
+}) : null;
+tauriService?.start();
+const nativeTemperatureRefusalCache = tauriService && !mock ? Object.freeze({
+  read: (target) => tauriService.requestNativeStore('temperature-refusal-cache-read', [target]),
+  record: (target, publication) => tauriService.requestNativeStore('temperature-refusal-cache-record', [target, publication]),
+  poison: (reason) => tauriService.requestNativeStore('temperature-refusal-cache-poison', [String(reason ?? 'unknown refusal-cache failure')]),
+  onFatal: (reason) => {
+    console.error(`[tauri] temperature refusal cache authority is unavailable: ${String(reason ?? 'unknown failure')}`);
+    app.quit();
+  },
+}) : null;
+if (tauriService && !mock) {
+  // The native host owns the shared FIFO for normal Tauri apply roots that
+  // enter through this bridge. The broker keeps its existing apply/preflight
+  // and cache work inside the granted turn during this migration step.
+  setBrokerApplyTransactionDelegate(async (run, { label, timeoutMs }) => {
+    const requestId = randomUUID().replaceAll('-', '');
+    const cancelBeforeRun = async (reason) => {
+      let acknowledgement;
+      try {
+        acknowledgement = await tauriService.requestNativeStore('apply-transaction-cancel', [requestId]);
+      } catch (cancelError) {
+        throw new Error(`Could not safely cancel the native GPU apply transaction: ${cancelError.message}`, { cause: reason });
+      }
+      if (!acknowledgement || typeof acknowledgement.cancelled !== 'boolean') {
+        throw new Error('The native GPU apply transaction could not confirm cancellation.', { cause: reason });
+      }
+      throw reason;
+    };
+    let lease;
+    try {
+      lease = await tauriService.requestNativeStore('apply-transaction-begin', [requestId, label, timeoutMs]);
+    } catch (error) {
+      return cancelBeforeRun(error);
+    }
+    if (!lease || typeof lease.token !== 'string'
+      || !/^[a-f0-9]{32}$/.test(lease.token)
+      || !Number.isSafeInteger(lease.sequence) || lease.sequence <= 0) {
+      return cancelBeforeRun(new Error('The native GPU apply transaction returned an invalid lease.'));
+    }
+    try {
+      const started = await tauriService.requestNativeStore('apply-transaction-activate', [requestId, lease.token]);
+      if (!started || started.sequence !== lease.sequence) {
+        return cancelBeforeRun(new Error('The native GPU apply transaction could not confirm its start.'));
+      }
+    } catch (error) {
+      return cancelBeforeRun(error);
+    }
+
+    let result;
+    let operationError;
+    try {
+      result = await run(lease.sequence);
+    } catch (error) {
+      operationError = error;
+    }
+    let finishError;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const finished = await tauriService.requestNativeStore(
+          'apply-transaction-finish', [requestId, lease.token], { timeoutMs: 5_000 },
+        );
+        if (!finished || finished.finished !== true) {
+          throw new Error('The native GPU apply transaction did not confirm release.');
+        }
+        finishError = null;
+        break;
+      } catch (error) {
+        finishError = error;
+      }
+    }
+    if (finishError && operationError) {
+      throw new AggregateError([operationError, finishError], 'GPU apply failed and native transaction release is unknown.');
+    }
+    if (finishError) throw new Error(`Native GPU apply transaction release is unknown: ${finishError.message}`, { cause: finishError });
+    if (operationError) throw operationError;
+    return result;
+  });
+}
+const useNativeHostShortcuts = Boolean(tauriService);
+if (tauriBrokerMode) app.on('window-all-closed', () => {});
+app.on('will-quit', () => { if (tauriService) void tauriService.hostOperation('host-exit').catch(() => {}); });
 // The portable launcher normally keeps the original artifact path in this
 // environment variable while Electron runs from its temporary extraction
 // directory. Some launch paths do not preserve that variable, so the packaged
@@ -305,6 +436,9 @@ const portableWrapperPath = resolvePortableWrapperPath({
   portableExecutableDir: process.env.PORTABLE_EXECUTABLE_DIR ?? null,
   parentExecutableFile,
 });
+// A native portable host is transient. Persist the actual outer wrapper,
+// including duplicate-download suffixes, for launches and maintenance proofs.
+const tauriLaunchPath = tauriHostExecutable ? portableStartupPath ?? tauriHostExecutable : null;
 
 const installerMode = installerModeFromEnvironment({
   argv: process.argv,
@@ -460,7 +594,7 @@ function applyWindowIdentity(win) {
     try { win.setIcon(APP_ICON); } catch { /* best effort */ }
   }
   if (process.platform !== 'win32') return;
-  const taskbarExecutablePath = portableWrapperPath ?? process.execPath;
+  const taskbarExecutablePath = tauriLaunchPath ?? portableWrapperPath ?? process.execPath;
   const taskbarIconPath = resolveTaskbarIconPath({ portableWrapperPath, windowIconPath: WINDOWS_APP_ICON_PATH });
   try {
     const details = {
@@ -484,6 +618,15 @@ function createWindow(backgroundColor = '#0f1116', show = true, theme = bootWind
     normalBounds: { width: 1280, height: 820 }, maximized: false,
   };
   const normalBounds = restoredWindowState.normalBounds;
+  if (tauriService) {
+    const bounds = { ...normalBounds };
+    if (!Number.isFinite(bounds.x) || !Number.isFinite(bounds.y)) {
+      const area = screen.getPrimaryDisplay().workArea;
+      bounds.x = Math.round(area.x + (area.width - bounds.width) / 2);
+      bounds.y = Math.round(area.y + (area.height - bounds.height) / 2);
+    }
+    return tauriService.createWindow({ bounds, maximized: restoredWindowState.maximized, show, persistWindowState });
+  }
   const win = new BrowserWindow({
     ...normalBounds,
     minWidth: 980,
@@ -739,12 +882,29 @@ async function main() {
   // prepares the cache, backend, profiles, tray, and renderer.
   let startupSplash = null;
   let startupSplashTimeout = null;
-  const startupUpdate = createStartupUpdateCoordinator({ check: checkForUpdates });
+  const selectReleaseNative = tauriService && !mock
+    ? (release, buildKind, currentVersion) => tauriService.requestNativeStore(
+      'update-release-select', [release, buildKind, currentVersion])
+    : null;
   const startupBuildKind = deriveBuildKind({ mock, installedBuild, isPackaged: app.isPackaged, portableWrapperPath });
+  const nativeStartupUpdate = Boolean(tauriService && !mock && !tauriSplashProbe);
+  const startupUpdate = nativeStartupUpdate ? null : createStartupUpdateCoordinator({
+    check: tauriSplashProbe
+      ? async () => ({ available: tauriSplashProbe === 'available', version: '9.9.9-mock' })
+      : tauriService && !mock
+        ? ({ intent = 'startup' }) => tauriService.requestNativeStore('update-check', [{ intent }])
+      : (options) => checkForUpdates({ ...options, selectReleaseNative }),
+  });
   const dismissStartupSplash = () => {
     if (startupSplashTimeout) {
       clearTimeout(startupSplashTimeout);
       startupSplashTimeout = null;
+    }
+    if (nativeStartupUpdate && shouldPrepareStartupSplash) {
+      void tauriService.hostOperation('startup-splash-dismiss').catch((err) => {
+        console.error(`[splash] unable to dismiss native startup window: ${err.message}`);
+      });
+      return;
     }
     if (!startupSplash) return;
     try {
@@ -752,9 +912,11 @@ async function main() {
     } catch { /* best effort during shutdown */ }
     startupSplash = null;
   };
-  const shouldPrepareStartupSplash = app.isPackaged
+  const shouldPrepareStartupSplash = (app.isPackaged || tauriSplashProbe)
     && (startupBuildKind === 'installed' || startupBuildKind === 'portable')
-    && !headless && !uiVerify && !profileBoot && !mock && !bootApply
+    && !headless && !uiVerify && !profileBoot && (!mock || tauriSplashProbe) && !bootApply
+    && !process.argv.includes('--clear-cache')
+    && !process.argv.some((arg) => arg.startsWith('--arc-power-maintenance='))
     && !workerReqFile && !sysmanHelperReqFile && sysmanHelperPipeIdx < 0
     && !applyProfileId;
   let startupSplashReady = null;
@@ -766,26 +928,53 @@ async function main() {
   // headless path still appears healthy.
   const prepareStartupSplash = () => {
     if (!shouldPrepareStartupSplash) return;
+    if (tauriSplashProbe) console.log(`[startup-probe] splash requested: ${tauriSplashProbe}`);
     startupSplashReady = app.whenReady().then(async () => {
+      if (nativeStartupUpdate) {
+        // Install the one-shot gate before publishing service readiness. The
+        // native host owns the splash window and starts the update check.
+        const decision = tauriService.waitForStartupUpdateDecision();
+        await tauriService.publishAvailable();
+        return decision;
+      }
       // Start independently of splash creation: a failed BrowserWindow must
       // not remove the titlebar's startup update check.
       const startupUpdatePromise = startupUpdate.start({ buildKind: startupBuildKind });
       void startupUpdatePromise.catch((err) => console.log(`[update] startup check failed: ${err.message}`));
-      ipcMain.handle('splash:update-choice', async (_event, action) => {
+      const chooseStartupUpdate = guardMainFrameIpcHandler('splash:update-choice', () => startupSplash, async (_event, action) => {
         if (action !== 'skip') throw new Error('startup update choice must be skip');
         return startupUpdate.choose('skip');
       });
+      ipcMain.handle('splash:update-choice', chooseStartupUpdate);
+      tauriService?.register('splash:update-choice', chooseStartupUpdate);
       const startupUpdateHandoff = createStartupUpdateHandoff({
         coordinator: startupUpdate,
         buildKind: startupBuildKind,
         portableWrapperPath,
-        downloadUpdate: async (...args) => (await import('./auto-update.js')).downloadUpdate(...args),
-        installUpdate: async (...args) => (await import('./auto-update.js')).installUpdate(...args),
+        downloadUpdate: async (...args) => {
+          if (tauriSplashProbe) throw new Error('Startup splash mock probe cannot download updates');
+          if (tauriService && !mock) {
+            const [assetUrl] = args;
+            return tauriService.requestNativeStore('update-download', [assetUrl], { timeoutMs: 30 * 60 * 1000 });
+          }
+          return (await import('./auto-update.js')).downloadUpdate(...args);
+        },
+        installUpdate: async (...args) => {
+          if (tauriSplashProbe) throw new Error('Startup splash mock probe cannot install updates');
+          if (tauriService && !mock) {
+            const [token] = args;
+            return tauriService.requestNativeStore('update-install', [token]);
+          }
+          return (await import('./auto-update.js')).installUpdate(...args);
+        },
         completeUpdate: (handoff) => startupUpdate.completeUpdate(handoff),
       });
-      ipcMain.handle('splash:update-now', async () => startupUpdateHandoff.updateNow());
+      const applyStartupUpdate = guardMainFrameIpcHandler('splash:update-now', () => startupSplash, async () => startupUpdateHandoff.updateNow());
+      ipcMain.handle('splash:update-now', applyStartupUpdate);
+      tauriService?.register('splash:update-now', applyStartupUpdate);
       try {
         startupSplash = createStartupSplash({
+          ...(tauriService ? { createWindow: options => tauriService.createAuxWindow('splash', options) } : {}),
           onFatalLoad: () => {
             const failure = startupUpdate.fatalSplashFailure();
             if (failure.action === 'abort') app.quit();
@@ -806,6 +995,9 @@ async function main() {
           })) event.preventDefault();
         });
         startupSplash.once('closed', () => startupUpdate.continueWithoutPrompt());
+        // Splash choices precede full device-service registration. Publish the
+        // early handlers without marking the main service composition ready.
+        await tauriService?.publishAvailable();
       } catch (err) {
         console.error(`[splash] unable to create startup window: ${err.message}`);
         startupUpdate.continueWithoutPrompt();
@@ -885,7 +1077,7 @@ async function main() {
         action: maintenanceAction,
         token: maintenanceToken,
         version: app.getVersion(),
-        launchPath: portableWrapperPath ?? process.execPath,
+        launchPath: tauriLaunchPath ?? portableWrapperPath ?? process.execPath,
       });
     }
     if (app.isPackaged && instanceLockAcquired) {
@@ -915,6 +1107,11 @@ async function main() {
   } catch (err) {
     console.error(`[cache] unable to prepare ${cachePath}: ${err.message}`);
     app.exit(1);
+    return;
+  }
+  if (tauriBrokerMode && !mock && process.env.RID_NATIVE_CACHE_PREFLIGHT === '1') {
+    console.log('[startup-preflight] cache preparation passed; stopping before splash, GPU initialization and boot profiles');
+    app.exit(0);
     return;
   }
   prepareStartupSplash();
@@ -1164,14 +1361,17 @@ async function main() {
     const bootSysmanCapable = mock ? process.env.RID_MOCK_NO_SYSMAN !== '1' : bootRealSysmanLimits !== null;
     const bootBackend = createBackend({
       kind: mock ? 'mock' : 'igcl',
-      igcl: bootOldIgcl ? {
-        extended: {
-          isCapable: () => bootOldIgcl.isCapable(),
-          isTempCapable: () => bootOldIgcl.isTempCapable(),
-          isAvailable: () => bootOldIgcl.isAvailable(),
-        },
-        sysmanPowerLimits: bootRealSysmanLimits,
-      } : {},
+      igcl: {
+        ...(nativeTemperatureRefusalCache ? { nativeTemperatureRefusalCache } : {}),
+        ...(bootOldIgcl ? {
+          extended: {
+            isCapable: () => bootOldIgcl.isCapable(),
+            isTempCapable: () => bootOldIgcl.isTempCapable(),
+            isAvailable: () => bootOldIgcl.isAvailable(),
+          },
+          sysmanPowerLimits: bootRealSysmanLimits,
+        } : {}),
+      },
       mock: { sysmanPowerCapable: bootSysmanCapable },
     });
     // Mirror the window/apply-profile boot seeding (bootBackend): the
@@ -1183,14 +1383,13 @@ async function main() {
       console.log(`[boot-apply] waiver seeding skipped: ${err.message}`);
     }
     try {
-      await seedOcMode(bootBackend, bootStore);
+      await seedOcMode(bootBackend, bootStore, { resolvePnpAliases: true });
     } catch (err) {
       console.log(`[boot-apply] oc-mode seeding skipped: ${err.message}`);
     }
     // M45: --boot-apply uses the raw IGCL backend, whose rows carry PCI/BDF
     // keys while the window path persists PNP-first inventory keys. Resolve
-    // through the raw-aware boot resolver so a PNP vendor/device pair is
-    // reconciled only when it identifies exactly one writable row.
+    // through the raw-aware resolver using a live, unique PNP-to-BDF match.
     let bootDeviceId = null;
     try {
       bootDeviceId = await resolveBootDeviceId(bootBackend, bootStore);
@@ -1248,6 +1447,7 @@ async function main() {
   }
 
   if (headless) {
+    const readOnlySmoke = process.env.RID_SMOKE_READ_ONLY === '1';
     // M2C-C S1: the smoke path is a real-backend path too - same probe wiring
     // as the app/worker so its caps match the product path. The bundled
     // 2023-runtime probe degrades safely here: a missing/unloadable DLL makes
@@ -1272,7 +1472,8 @@ async function main() {
     const backend = createBackend({
       kind: mock ? 'mock' : 'igcl',
       igcl: {
-        allowAutoWaiver: true, // smoke/tests only (plan §9 M1 waiver clause)
+        allowAutoWaiver: !readOnlySmoke, // smoke/tests only
+        ...(readOnlySmoke ? { fanProbe: false } : {}),
         extended: smokeOldIgcl
           ? {
             isCapable: () => smokeOldIgcl.isCapable(),
@@ -1307,6 +1508,7 @@ async function main() {
       // pass) so the full sequence still runs in --headless --mock.
       const { lines } = await runSmoke(backend, {
         isElevated: mock ? () => true : isElevatedReal,
+        readOnly: readOnlySmoke,
       });
       console.log('\nSMOKE OK - ' + lines.filter((l) => l.startsWith('[health]')).length + ' health line(s), see above for the full sequence.');
       smokeDxgi?.stop?.();
@@ -1325,7 +1527,7 @@ async function main() {
       const repair = await repairArcPowerTaskbarShortcuts({
         appDataPath: app.getPath('appData'),
         appId: APP_USER_MODEL_ID,
-        executablePath: portableWrapperPath ?? process.execPath,
+        executablePath: tauriLaunchPath ?? portableWrapperPath ?? process.execPath,
         iconPath: resolveTaskbarIconPath({ portableWrapperPath, windowIconPath: WINDOWS_APP_ICON_PATH }),
         shell,
       });
@@ -1336,7 +1538,7 @@ async function main() {
   // M99: narrowly scoped range-capable media serving. The renderer supplies
   // only an opaque clip id; main resolves and revalidates the metadata and
   // path on every request, including symlink/junction containment.
-  protocol.handle('arc-power-media', async (request) => {
+  const serveRecordingMedia = async (request, { maxBodyBytes = Infinity } = {}) => {
     const thumbnailId = mediaThumbnailRequestPath(request.url);
     const id = mediaRequestPath(request.url) ?? thumbnailId;
     if (!id) return new Response('Not found', { status: 404 });
@@ -1356,14 +1558,20 @@ async function main() {
         if (String(request.method ?? 'GET').toUpperCase() === 'HEAD') return new Response(null, { status: 200, headers });
         return new Response(image, { status: 200, headers });
       }
-      return createRecordingMediaResponse(filePath, request);
+      return createRecordingMediaResponse(filePath, request, fs, { maxBodyBytes });
     } catch {
       return new Response('Not found', { status: 404 });
     }
-  });
+  };
+  protocol.handle('arc-power-media', serveRecordingMedia);
+  tauriService?.setMediaHandler(serveRecordingMedia);
   if (startupSplashReady) {
+    if (tauriSplashProbe) console.log('[startup-probe] awaiting splash decision');
     const startupDecision = await startupSplashReady;
+    if (tauriSplashProbe) console.log(`[startup-probe] splash decision: ${startupDecision?.action ?? 'unknown'}`);
     if (startupDecision?.action === 'restart') return;
+    if (startupDecision?.action === 'abort') { app.exit(1); return; }
+    await tauriService?.initializing();
   }
   markProfileBoot('when-ready');
   app.on('will-quit', dismissStartupSplash);
@@ -1582,6 +1790,16 @@ async function main() {
     const driverReBarRetries = new Map();
     const driverReBarFinalAttempts = new Map();
     const driverReBarLateAttempts = new Map();
+    // A single short-lived helper checks whether each discrete adapter has
+    // fully CPU-visible VRAM. It never performs GPU settings writes.
+    const fullVramEvidence = createD3d12UploadHeapEvidence({
+      helperPath: resolveD3d12UploadHeapHelperPath(app.getAppPath()),
+    });
+    const rebarD3dTarget = (device) => ({
+      bdf: device?.bdf,
+      vendorId: device?.pciVendorId,
+      deviceId: device?.pciDeviceId,
+    });
     const rebarTargetKey = (target) => {
       if (typeof target?.deviceKey === 'string' && target.deviceKey.trim()) return `key:${target.deviceKey.trim().toUpperCase()}`;
       const vendor = typeof target?.pciVendorId === 'string' ? target.pciVendorId : '';
@@ -1596,6 +1814,7 @@ async function main() {
         let result = await sysinfoResult();
         let rawDevices = [];
         try { rawDevices = await rawBackend.listDevices(); } catch { rawDevices = []; }
+        if (rawDevices.length > 0) fullVramEvidence.start(rawDevices.map(rebarD3dTarget));
         for (const target of rawDevices) {
           const key = rebarTargetKey(target);
           if (!key) continue;
@@ -1656,6 +1875,11 @@ async function main() {
             const resolvedReader = driverReBars.get(key);
             result = applyDriverReBar(result, verdict, resolvedReader?.target ?? reader.target ?? target);
           }
+          // Per the user's display policy, full discrete VRAM CPU access is
+          // a positive fallback and wins over a disabled driver report.
+          if (fullVramEvidence.get(rebarD3dTarget(target)) === true) {
+            result = applyDriverReBar(result, true, target, { requireBdf: true });
+          }
         }
         return result;
       },
@@ -1663,7 +1887,9 @@ async function main() {
   }
   let backend = createBackend({
     kind: mock ? 'mock' : 'igcl',
-    igcl: realOldIgcl ? {
+    igcl: {
+      ...(nativeTemperatureRefusalCache ? { nativeTemperatureRefusalCache } : {}),
+      ...(realOldIgcl ? {
         extended: {
           isCapable: () => realOldIgcl.isCapable(),
           isTempCapable: () => realOldIgcl.isTempCapable(),
@@ -1686,8 +1912,8 @@ async function main() {
           // the adapter's integrated bit. Read only the trusted, cached CPU
           // and RAM snapshot; missing data must fail closed.
           systemInfoOf: () => cached,
-        }
-      : {},
+      } : {}),
+    },
     // M17c: the mock mirrors the laptop provider shape (the mock caps
     // decode's laptop branch; the mock fixture's laptop field rides the
     // caps through the constructor opt in tests / the Run-B verify knob -
@@ -1841,24 +2067,49 @@ async function main() {
   // session seeds its own mode into the isolated store before anything
   // reads it).
   const mockDataDir = mock
-    ? path.join(os.tmpdir(), process.env.RID_MOCK_GAME_SCAN === '1' ? `arcpower-mock-ui-${process.pid}` : 'arcpower-mock')
+    ? tauriMockRoot ? path.join(tauriMockRoot, 'Roaming', 'ArcPower') : path.join(os.tmpdir(), process.env.RID_MOCK_GAME_SCAN === '1' || process.env.RID_MOCK_FAN_RESUME_VERIFY === '1' || process.env.RID_MOCK_OVERLAY_HOTKEY_VERIFY === '1'
+      ? `arcpower-mock-ui-${process.pid}` : 'arcpower-mock')
     : null;
-  const store = new ProfileStore({
+  const Store = tauriService ? NativeProfileStore : ProfileStore;
+  const store = new Store({
     dir: mockDataDir ?? undefined,
     ocModeDefault: mock ? (process.env.RID_MOCK_STOCK_MODE === '1' ? 'stock' : 'advanced') : 'stock',
+    ...(tauriService ? { request: (...args) => tauriService.requestNativeStore(...args) } : {}),
   });
-  const gameProfiles = new GameProfileStore({ dir: store.dir });
+  // A native `profiles-settings-save` never passes through this process, so the
+  // host pushes the whole settings snapshot after each landed save and the
+  // compatibility cache follows it (close policy, toast gate, pill preference).
+  if (tauriService) {
+    tauriService.setSettingsSnapshotHandler?.((settings) => store.acceptSettingsSnapshot(settings));
+    // The sync gate below reads only this cache. It starts null, so until the
+    // first native settings save pushes a snapshot the recording-toast opt-in
+    // looked disabled and every notification was silently skipped. Seed it
+    // once from the authoritative native store at startup.
+    try { await store.loadSettings(); } catch { /* degrade to the pushed snapshot */ }
+  }
+  const GamesStore = tauriService ? NativeGameProfileStore : GameProfileStore;
+  const gameProfiles = new GamesStore({ dir: store.dir,
+    ...(tauriService ? { request: (...args) => tauriService.requestNativeStore(...args) } : {}),
+  });
   // M99: recording state is isolated from settings.json so future recording
   // migrations cannot alter the GPU/profile schema. The default capture
   // directory is created only when the user starts recording or chooses it.
-  const recordingStore = new RecordingStore({
+  const CaptureStore = tauriService ? NativeRecordingStore : RecordingStore;
+  const recordingStore = new CaptureStore({
     dir: store.dir,
     defaultLocation: path.join(app.getPath('videos'), 'Arc Power'),
+    ...(tauriService ? { request: (...args) => tauriService.requestNativeStore(...args) } : {}),
   });
-  const stabilityStore = new StabilityStore({ dir: store.dir });
+  if (tauriService) await recordingStore.load();
+  const HistoryStore = tauriService ? NativeStabilityStore : StabilityStore;
+  const stabilityStore = new HistoryStore({ dir: store.dir,
+    ...(tauriService ? { request: (...args) => tauriService.requestNativeStore(...args) } : {}),
+  });
   const stabilityWorkload = mock ? null : createGpuWorkloadController();
   const wheaMonitor = mock ? null : createWheaMonitor();
-  const overlayLayoutStore = new OverlayLayoutStore({ dir: store.dir, defaults: () => {
+  const LayoutStore = tauriService ? NativeOverlayLayoutStore : OverlayLayoutStore;
+  const overlayLayoutStore = new LayoutStore({ dir: store.dir,
+    ...(tauriService ? { request: (...args) => tauriService.requestNativeStore(...args) } : {}), defaults: () => {
     const current = store.loadSettingsSync() ?? {};
     return {
       position: current.overlayPosition ?? 'top-left', scale: current.overlayScale ?? 1,
@@ -1869,7 +2120,26 @@ async function main() {
     };
   } });
   const streamCredentialKey = 'obs-stream-password';
-  const streamCredentials = {
+  const nativeStreamCredentials = tauriService ? {
+    get: async () => {
+      const value = await tauriService.requestNativeStore('obs-credential-load', []).catch(() => null);
+      if (typeof value === 'string') return value;
+      // Legacy Electron safeStorage migration: decrypt once, then let the Rust
+      // DPAPI owner take over the same fixed file.
+      try {
+        if (safeStorage.isEncryptionAvailable()) {
+          const legacy = safeStorage.decryptString(Buffer.from(fs.readFileSync(path.join(store.dir, `${streamCredentialKey}.bin`))));
+          if (typeof legacy === 'string') {
+            void tauriService.requestNativeStore('obs-credential-save', [legacy]).catch(() => {});
+            return legacy;
+          }
+        }
+      } catch { /* no legacy credential */ }
+      return null;
+    },
+    set: (password) => { void tauriService.requestNativeStore('obs-credential-save', [password]).catch(() => {}); },
+  } : null;
+  const streamCredentials = nativeStreamCredentials ?? {
     get: () => {
       try { return safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(fs.readFileSync(path.join(store.dir, `${streamCredentialKey}.bin`)))) : null; } catch { return null; }
     },
@@ -2278,7 +2548,7 @@ async function main() {
         // the overlay seed so a failed verifier cannot bleed state forward.
         overlayChipNames: overlayOn ? false : cur.overlayChipNames,
         overlayDeviceKeys: overlayOn ? null : cur.overlayDeviceKeys,
-        overlayPollMs: overlayOn ? 400 : cur.overlayPollMs,
+        overlayPollMs: overlayOn ? TELEMETRY_POLL_MS_DEFAULT : cur.overlayPollMs,
       });
     } catch (err) {
       console.log(`[boot] overlay session seed skipped: ${err.message}`);
@@ -2308,7 +2578,7 @@ async function main() {
         // state left by a prior stock-HUD run.
         overlayChipNames: hudOn || advOn ? false : cur.overlayChipNames,
         overlayDeviceKeys: hudOn || advOn ? null : cur.overlayDeviceKeys,
-        overlayPollMs: hudOn || advOn ? 400 : cur.overlayPollMs,
+        overlayPollMs: hudOn || advOn ? TELEMETRY_POLL_MS_DEFAULT : cur.overlayPollMs,
         advancedOverlayEnabled: advOn,
         advancedOverlayHotkeyLetter: advOn ? 'P' : cur.advancedOverlayHotkeyLetter,
         advancedOverlayPosition: advOn ? 'right' : cur.advancedOverlayPosition,
@@ -2497,7 +2767,12 @@ async function main() {
   // mock/ui-verify this reads the ISOLATED store (the variant's mode seeded
   // above), so the backend gets the same mode the variant expects. setOcMode
   // is an in-memory caps-cache invalidation - safe before backend.init().
-  const seededMode = await seedOcMode(backend, store);
+  // Wait only when a saved GPU identity has not yet appeared in the initial
+  // inventory. This finishes before the window can accept mode changes.
+  const waitForStartupIdentity = (keys = []) => mock
+    ? Promise.resolve(false)
+    : waitForWritableGpuIdentity(() => backend.listDevices(), keys);
+  const seededMode = await seedOcMode(backend, store, { waitForIdentity: waitForStartupIdentity });
   if (seededMode) console.log(`[boot] oc-mode pre-seed: ${seededMode}`);
   markProfileBoot('seed-oc-mode');
   // Startup adapter: dev/mock keeps the lightweight HKCU Run path. Packaged
@@ -2513,7 +2788,7 @@ async function main() {
         // and wrapper markers. Installed builds must always register their
         // own executable; querying an Installer parent here could otherwise
         // leave a startup task pointing back at a deleted setup EXE.
-        logonExecPath: portableStartupPath ?? process.execPath,
+        logonExecPath: portableStartupPath ?? tauriHostExecutable ?? process.execPath,
         useElevatedTask: app.isPackaged && process.platform === 'win32',
       });
   // A prior packaged release could persist the user's startup intent while
@@ -2522,7 +2797,7 @@ async function main() {
   // Keep this off the critical startup path: a task query or UAC response must
   // never hold the window or the current session's profile apply.
   let startupRegistrationRepair = Promise.resolve();
-  if (!mock && startup.registrationMode === 'task') {
+  if (!mock && startup.registrationMode === 'task' && !tauriService) {
     const expectedIntentRevision = startup.getIntentRevision();
     startupRegistrationRepair = Promise.all([store.loadSettings(), store.loadProfiles()])
       .then(([settings, profiles]) => maintenanceRestartPending ? null : reconcileStartupRegistration({
@@ -2545,30 +2820,32 @@ async function main() {
   // Arc Power still owns the text, colors, scale tag, and telemetry content.
   const rtssProfile = mock
     ? null
-    : createRtssProfileHelperProxy({
-        entryPath: app.isPackaged
-          ? path.join(app.getAppPath(), 'src', 'main', 'rtss-profile-helper-entry.js')
-          : path.join(__dirname, 'rtss-profile-helper-entry.js'),
-        getRuntime: async () => {
-          try {
-            if (typeof rtssStartup.getRuntime === 'function') {
-              return await rtssStartup.getRuntime();
+    : tauriService
+      ? createNativeRtssProfileProxy((method, args) => tauriService.requestNativeStore(method, args))
+      : createRtssProfileHelperProxy({
+          entryPath: app.isPackaged
+            ? path.join(app.getAppPath(), 'src', 'main', 'rtss-profile-helper-entry.js')
+            : path.join(__dirname, 'rtss-profile-helper-entry.js'),
+          getRuntime: async () => {
+            try {
+              if (typeof rtssStartup.getRuntime === 'function') {
+                return await rtssStartup.getRuntime();
+              }
+              // Compatibility for injected startup adapters predating the
+              // runtime-only read seam.
+              const startupState = await rtssStartup.get();
+              return {
+                executablePath: startupState?.executablePath ?? null,
+                isRunning: await rtssStartup.isRunning?.() === true,
+              };
+            } catch {
+              // An unavailable RTSS process probe is passed through as current
+              // state; the controller will return its normal fallback result.
+              return { executablePath: null, isRunning: false };
             }
-            // Compatibility for injected startup adapters predating the
-            // runtime-only read seam.
-            const startupState = await rtssStartup.get();
-            return {
-              executablePath: startupState?.executablePath ?? null,
-              isRunning: await rtssStartup.isRunning?.() === true,
-            };
-          } catch {
-            // An unavailable RTSS process probe is passed through as current
-            // state; the controller will return its normal fallback result.
-            return { executablePath: null, isRunning: false };
-          }
-        },
-        log: (message) => console.warn(`[rtss] ${message}`),
-      });
+          },
+          log: (message) => console.warn(`[rtss] ${message}`),
+        });
   // The product telemetry HUD is rendered by RTSS itself. Keep the FPS lane
   // mutable because the foreground/process ownership seam is created after
   // the overlay lifecycle objects below; the publisher can safely queue its
@@ -2578,6 +2855,7 @@ async function main() {
   const rtssOverlay = mock
     ? null
     : createRtssOsdPublisher({
+        sharedMemory: !(tauriService && !mock),
         getFpsSample: async () => fpsLane?.poll(0) ?? null,
         getCpuName: async () => {
           rtssCpuNamePromise ??= Promise.resolve(sysinfo?.get?.()).then((info) => info?.cpu?.name ?? null, () => null);
@@ -2586,8 +2864,7 @@ async function main() {
       });
   if (rtssOverlay) {
     try {
-      const initialOverlaySettings = store.loadSettingsSync() ?? {};
-      rtssOverlay.updateSettings({
+      const initialOverlaySettings = store.loadSettingsSync() ?? {};      rtssOverlay.updateSettings({
         enabled: initialOverlaySettings.overlayEnabled === true
           && initialOverlaySettings.overlayRenderer !== 'capframex',
         position: initialOverlaySettings.overlayPosition,
@@ -2616,15 +2893,20 @@ async function main() {
       rtssOverlay.setVisible(false);
     }
   }
+  // Native telemetry owns the renderer sample stream; relay each composed
+  // sample to the unchanged RTSS publisher until that surface is ported.
+  tauriService?.setNativeTelemetryHandler?.((sample) => {
+    try { void rtssOverlay?.publish?.({ telemetry: sample })?.catch?.(() => {}); } catch { /* optional OSD consumer */ }
+  });
   // Driver-date adapter: real reg.exe query in the product path; mock mode
   // (incl. --ui-verify) returns the fixture date and never spawns reg.exe.
   const driverInfo = mock ? createMockDriverInfo() : createDriverInfo();
   // M3-A/M3-B registry-catalog + registry-apply adapters (Tweaks page):
-  // real read-only reg.exe queries + elevated reg.exe writes in the product
-  // path; mock mode (incl. --ui-verify) returns the fixture states and the
-  // mock apply flips the SAME in-memory state (never spawns, never
-  // elevates). The two mock adapters share one mock registry state so the
-  // post-apply state refresh honestly reflects the "written" values.
+  // real read-only reg.exe queries; the already-elevated non-mock Tauri
+  // apply route is handled in Rust, while this adapter keeps direct reg.exe
+  // and unelevated PowerShell/UAC compatibility paths. Mock mode (incl.
+  // --ui-verify) returns fixture states and flips the SAME in-memory state
+  // (never spawns, never elevates) so the post-apply refresh sees the write.
   const mockRegistryState = mock ? createMockRegistryState() : null;
   const registryCatalog = mock ? createMockRegistryCatalog(REGISTRY_CATALOG, { state: mockRegistryState }) : createRegistryCatalog();
   // ui-verify knobs: RID_MOCK_REGAPPLY_FAIL='<entryId>:<action>' simulates a
@@ -2653,7 +2935,12 @@ async function main() {
       // honest reporting; non-elevated dev keeps the PowerShell RunAs chain.
       // M4-B: the CATALOG is the first argument (a deps-only call used to
       // land the deps in `catalog` -> "catalog.find is not a function").
-      createRegistryApply(REGISTRY_CATALOG, { isElevated });
+      createRegistryApply(REGISTRY_CATALOG, {
+        isElevated,
+        ...(tauriService && !mock ? {
+          planApply: (entryId, action) => tauriService.requestNativeStore('registry-apply-plan', [entryId, action]),
+        } : {}),
+      });
   markProfileBoot('adapters');
   // FPS adapter (M4-D2): DXGI GetFrameStatistics - unelevated, system-wide,
   // no service. Mock mode reports unavailable (never loads dxgi.dll/koffi),
@@ -2703,19 +2990,15 @@ async function main() {
   const sharpeningHelperPath = app.isPackaged
     ? path.join(process.resourcesPath, 'app.asar.unpacked', 'src', 'main', 'sharpening-runtime', 'ArcPower.ScreenSharpen.exe')
     : undefined;
-  const isSharpeningGameExecutable = createSharpeningGameLookup({ gameProfiles, gameScan });
   const postprocessSharpening = mock
     ? createMockPostprocessSharpening()
     : createScreenPostprocessSharpening({ dir: store.dir, detector: sharpeningDetector,
-      isGameExecutable: isSharpeningGameExecutable,
       helperPath: sharpeningHelperPath,
-      ensureCompatibility: () => rtssProfile.ensureScreenSharpeningCompatibility(),
       stageHelper: app.isPackaged && process.platform === 'win32' ? stageScreenSharpeningHelper : null,
-      allowCaptureOverlay: false,
-      allowAsrCapture: true,
-      createManagedRuntime: (policy) => createProductionManagedSharpening({ ...policy, dir: store.dir,
-        detector: sharpeningDetector, isGameExecutable: isSharpeningGameExecutable }) });
-  // Sharpening runs inside explicitly launched games; ASR owns its independent thumbnail path.
+      allowCaptureOverlay: true,
+      allowAsrCapture: true });
+  // Global sharpening and ASR share one explicitly selected window path. The
+  // helper stays stopped until Scale or its global shortcut selects a target.
   void postprocessSharpening.start().catch((error) => console.error(`[sharpening] ${error.message}`));
   // M12/M14: the RAM detector (GlobalMemoryStatusEx -> the USED RAM in
   // bytes - total - avail - the Memory row's source). THE DETERMINISM
@@ -2747,6 +3030,18 @@ async function main() {
     sysStatsHolder.current = adapter;
     try { sysStatsHolder.onReady?.(); } catch { /* best effort */ }
   };
+  let nativeTelemetryTarget = null;
+  const applyNativeTelemetryTarget = () => {
+    const stats = sysStatsHolder.current;
+    if (!stats) return;
+    try { void stats.setTarget?.(nativeTelemetryTarget); } catch { /* optional OS-stats consumer */ }
+    try { void stats.startSlowLane?.(); } catch { /* optional OS-stats consumer */ }
+  };
+  sysStatsHolder.onReady = applyNativeTelemetryTarget;
+  tauriService?.setNativeTelemetryTargetHandler?.((target) => {
+    nativeTelemetryTarget = target ?? null;
+    applyNativeTelemetryTarget();
+  });
   let msrReader = null;
   // Production hardware readouts use one shared LibreHardwareMonitor bridge;
   // mock/ui-verify stays deterministic and never starts a privileged helper.
@@ -2787,6 +3082,7 @@ async function main() {
     // then re-enter app.quit once so the child has a chance to finalize.
     handleQuitTeardown(event);
     if (maintenanceQuiesced) return;
+    if (tauriService && teardown) return; // The native-host teardown drains requests before native cleanup.
     void backend.close().catch(() => {});
     void oldIgcl?.close?.().catch(() => {});
     void lhmTelemetry?.close?.().catch(() => {});
@@ -2815,14 +3111,6 @@ async function main() {
     }
     try { await seedWaiverState(backend, store); } catch (err) {
       console.log(`[boot] waiver seeding skipped: ${err.message}`);
-    }
-    // M3-C-E: seed the backend's OC mode from the persisted settings so
-    // getCapabilities exposes the right range set from the first query (a
-    // persisted 'advanced' must not wait for the next manual toggle).
-    try {
-      await seedOcMode(backend, store);
-    } catch (err) {
-      console.log(`[boot] oc-mode seeding skipped: ${err.message}`);
     }
   };
 
@@ -2983,19 +3271,29 @@ async function main() {
   // M4J (G/S2): setupTray runs BEFORE createWindow - the tray exists from
   // the FIRST moment (a start-hidden (tray) session is never stranded without
   // it); getWindow: () => win resolves lazily. --ui-verify injects the
-  // counting probe.
-  await setupTray({
-    getWindow: () => win,
-    backend,
-    store,
-    oldIgcl,
-    applyRunner,
-    // M17i: the window path's ONE proxy (constructed above) - the tray
-    // "Apply active profile" lands PL2 through the IGCL-free helper too.
-    sysmanPowerLimits,
-    iconPath: TRAY_ICON_PATH,
-    createTrayImpl: uiVerify ? createTrayProbe : createTray,
-  });
+  // counting probe. In the Tauri host the native tray owns this surface.
+  if (tauriService) {
+    tauriService.setTrayActionHandler?.((payload) => {
+      if (payload?.action !== 'apply-profile') return;
+      void trayApplyActiveProfile({
+        backend, store, oldIgcl, applyRunner, sysmanPowerLimits,
+        getWindow: () => win, getTray: () => null,
+      });
+    });
+  } else {
+    await setupTray({
+      getWindow: () => win,
+      backend,
+      store,
+      oldIgcl,
+      applyRunner,
+      // M17i: the window path's ONE proxy (constructed above) - the tray
+      // "Apply active profile" lands PL2 through the IGCL-free helper too.
+      sysmanPowerLimits,
+      iconPath: TRAY_ICON_PATH,
+      createTrayImpl: uiVerify ? createTrayProbe : createTray,
+    });
+  }
   markProfileBoot('tray');
 
   // M4M (F): the boot-apply decision runs BEFORE createWindow - the
@@ -3052,14 +3350,18 @@ async function main() {
     const bootSettings = await store.loadSettings();
     const bootProfiles = await store.loadProfiles();
     const activeEntries = activeProfileEntries(bootSettings, bootProfiles);
-    if (bootSettings.ocOnBoot === true && activeEntries.length > 0) {
+    // In an elevated Tauri run the native host owns this apply (it sets the
+    // flag on the broker process). Skipping here prevents a second, racing
+    // apply; mock/unelevated runs keep this broker path.
+    if (process.env.ARC_POWER_NATIVE_BOOT_APPLY !== '1'
+      && bootSettings.ocOnBoot === true && activeEntries.length > 0) {
       // M152: apply every active profile to its own physical adapter. The
       // legacy scalar is only one fallback entry for pre-M152 stores.
       const outcomes = [];
       for (const entry of activeEntries) {
         let out;
         try {
-          out = await applyProfileBoot({
+          const applyEntry = () => applyProfileBoot({
             backend,
             store,
             profileId: entry.profileId,
@@ -3073,6 +3375,20 @@ async function main() {
             sysmanPowerLimits,
             log: (s) => console.log(s),
           });
+          out = await applyEntry();
+          if (!mock && typeof sysinfo?.get === 'function') {
+            out = await retryBootAfterIdentity({
+              outcome: out,
+              waitForIdentity: () => waitForStartupIdentity([entry.deviceKey ?? entry.profile?.deviceKey ?? bootSettings.deviceKey]),
+              isStillActive: async () => {
+                const currentSettings = await store.loadSettings();
+                if (currentSettings.ocOnBoot !== true) return false;
+                const current = activeProfileEntries(currentSettings, await store.loadProfiles());
+                return current.some((item) => item.profileId === entry.profileId && item.deviceKey === entry.deviceKey);
+              },
+              apply: applyEntry,
+            });
+          }
         } catch (err) {
           out = { applied: false, reason: `profile apply threw: ${err.message}` };
         }
@@ -3117,26 +3433,44 @@ async function main() {
   }
   markProfileBoot('boot-apply-gate');
 
-  const holdMainWindowForSplash = !!startupSplash;
+  const holdMainWindowForSplash = !!startupSplash || (nativeStartupUpdate && shouldPrepareStartupSplash);
   const windowStatePath = path.join(store.dir, 'window-state.json');
   let restoredWindowState = null;
   const shouldPersistWindowState = !mock && !uiVerify && !profileBoot;
+  const windowStateStore = shouldPersistWindowState && tauriService
+    ? new NativeWindowStateStore({ dir: store.dir, request: (...args) => tauriService.requestNativeStore(...args) })
+    : null;
   if (shouldPersistWindowState) {
     try {
-      const saved = JSON.parse(fs.readFileSync(windowStatePath, 'utf8'));
-      restoredWindowState = restoreWindowState(saved, screen.getAllDisplays());
+      if (windowStateStore) {
+        const workAreas = screen.getAllDisplays().map((display) => {
+          const area = display?.workArea ?? {};
+          return { workArea: { x: area.x, y: area.y, width: area.width, height: area.height } };
+        });
+        restoredWindowState = await windowStateStore.restore(workAreas);
+      } else {
+        const saved = JSON.parse(fs.readFileSync(windowStatePath, 'utf8'));
+        if (saved) restoredWindowState = restoreWindowState(saved, screen.getAllDisplays());
+      }
     } catch { /* missing or malformed state uses the established default size */ }
   }
-  const saveWindowState = shouldPersistWindowState ? (state) => {
+  const saveWindowState = shouldPersistWindowState ? (stateOrBounds, maximized) => {
+    if (windowStateStore) {
+      void windowStateStore.saveCurrent(stateOrBounds, maximized).catch(() => {});
+      return;
+    }
     const temporaryPath = `${windowStatePath}.${process.pid}.tmp`;
     try {
       fs.mkdirSync(store.dir, { recursive: true });
-      fs.writeFileSync(temporaryPath, JSON.stringify(state), 'utf8');
+      fs.writeFileSync(temporaryPath, JSON.stringify(stateOrBounds), 'utf8');
       fs.renameSync(temporaryPath, windowStatePath);
     } catch {
       try { fs.rmSync(temporaryPath, { force: true }); } catch { /* best effort cleanup */ }
     }
   } : null;
+  // Identity may have settled while boot profiles were being resolved. Finish
+  // the last mode restore before renderer IPC can change a device's mode.
+  await seedOcMode(backend, store);
   const win = createWindow(
     windowBackground,
     holdMainWindowForSplash ? false : !startMinimizedAtBoot,
@@ -3265,6 +3599,7 @@ async function main() {
   let rtssOverlayHotkeyRegistered = false;
   let recordingStatusPillHandle = null;
   let recordingToastHandle = null;
+  let nativeRecordingState = null;
   let overlayHotkeyAccelerator = null;
   const overlayRendererOf = (settings = {}) => OVERLAY_RENDERERS.includes(settings.overlayRenderer)
     ? settings.overlayRenderer
@@ -3306,21 +3641,33 @@ async function main() {
     rtssOverlay.setVisible(rtssOverlayVisible);
   };
   const overlayAcceleratorOf = (value, fallback) => {
+    if (value === 'None') return 'None';
     try { return validateOverlayHotkeyLetter(value); } catch { return validateOverlayHotkeyLetter(fallback); }
   };
   const registerOverlayHotkey = (letter) => {
     if (!overlayHandle && !rtssOverlay) return;
     const accel = overlayAcceleratorOf(letter, 'O');
     if (uiVerify) {
-      overlayHotkeyProbe.registrations.push(accel);
+      if (accel !== 'None') overlayHotkeyProbe.registrations.push(accel);
       overlayHotkeyProbe.failRegister = overlayHotkeyProbe.failRegister === true;
-      if (overlayHandle) overlayHandle.setHotkeyRegistered(!overlayHotkeyProbe.failRegister);
-      rtssOverlayHotkeyRegistered = !overlayHotkeyProbe.failRegister;
+      if (overlayHandle) overlayHandle.setHotkeyRegistered(accel !== 'None' && !overlayHotkeyProbe.failRegister);
+      rtssOverlayHotkeyRegistered = accel !== 'None' && !overlayHotkeyProbe.failRegister;
+      return;
+    }
+    if (useNativeHostShortcuts) {
+      overlayHotkeyAccelerator = accel === 'None' ? null : accel;
+      rtssOverlayHotkeyRegistered = accel !== 'None';
+      if (overlayHandle) overlayHandle.setHotkeyRegistered(accel !== 'None');
       return;
     }
     if (overlayHotkeyAccelerator) {
       try { globalShortcut.unregister(overlayHotkeyAccelerator); } catch { /* best effort */ }
       overlayHotkeyAccelerator = null;
+    }
+    if (accel === 'None') {
+      rtssOverlayHotkeyRegistered = false;
+      if (overlayHandle) overlayHandle.setHotkeyRegistered(false);
+      return;
     }
     let ok = false;
     try {
@@ -3438,7 +3785,7 @@ async function main() {
       softwareRenderer: uiVerify,
       position: OVERLAY_POSITIONS.includes(settings.overlayPosition) ? settings.overlayPosition : 'top-left',
       scale: clampOverlayScale(settings.overlayScale),
-      hotkeyLetter: typeof settings.overlayHotkeyLetter === 'string'
+      hotkeyLetter: settings.overlayHotkeyLetter === 'None' ? 'None' : typeof settings.overlayHotkeyLetter === 'string'
         && (/^[A-Za-z]$/.test(settings.overlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(settings.overlayHotkeyLetter))
         ? settings.overlayHotkeyLetter
         : 'O',
@@ -3481,12 +3828,12 @@ async function main() {
       // M17e: the overlay polling-rate - forwarded like the rest (the
       // payload carries it so the ui-verify pins + the overlay renderer
       // know the cadence; ipc-core's startTelemetry + the live restart are
-      // the cadence owners; garbage degrades to the 400 ms default - M17g:
-      // the stock polling rate FLIPS 500 -> 400).
+      // the cadence owners; garbage degrades to the 600 ms default - M17g:
+      // the stock polling rate is 600 ms).
       overlayPollMs: typeof settings.overlayPollMs === 'number'
         && Number.isFinite(settings.overlayPollMs)
         ? Math.min(2000, Math.max(100, Math.round(settings.overlayPollMs)))
-        : 400,
+        : TELEMETRY_POLL_MS_DEFAULT,
       // M24: the overlay THEME - forwarded like the rest (the payload
       // shortens to 'theme'; the renderer applies it from the push -
       // dataset.overlayTheme + the arc canvas gradient). Garbage degrades
@@ -3501,6 +3848,7 @@ async function main() {
     || process.env.RID_MOCK_OVERLAY === '1'
     || process.env.RID_MOCK_DUPLICATE_PNP_OVERLAY === '1') {
     overlayHandle = createOverlayWindow({
+      ...(tauriService ? { createWindow: options => tauriService.createAuxWindow('overlay', options) } : {}),
       // The CURRENT persisted settings - the sync cache (the same cache the
       // close handler reads; a read failure degrades to the defaults).
       getOverlaySettings: () => {
@@ -3522,18 +3870,14 @@ async function main() {
     let bootLetter = 'O';
     try {
       const s = store.loadSettingsSync() ?? {};
-      if (typeof s.overlayHotkeyLetter === 'string' && (/^[A-Za-z]$/.test(s.overlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(s.overlayHotkeyLetter))) {
-        bootLetter = s.overlayHotkeyLetter;
-      }
+      bootLetter = overlayAcceleratorOf(s.overlayHotkeyLetter, 'O');
     } catch { /* default O */ }
     registerOverlayHotkey(bootLetter);
   } else if (rtssOverlay) {
     let bootLetter = 'O';
     try {
       const s = store.loadSettingsSync() ?? {};
-      if (typeof s.overlayHotkeyLetter === 'string' && (/^[A-Za-z]$/.test(s.overlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(s.overlayHotkeyLetter))) {
-        bootLetter = s.overlayHotkeyLetter;
-      }
+      bootLetter = overlayAcceleratorOf(s.overlayHotkeyLetter, 'O');
     } catch { /* default O */ }
     registerOverlayHotkey(bootLetter);
   }
@@ -3542,19 +3886,39 @@ async function main() {
   // overlay. Product builds keep its Chromium window absent until recording
   // or Instant Replay is active; ui-verify keeps the eager sibling window and
   // immediately stealths it so verification cannot flash the desktop.
-  const shouldCreateRecordingStatusPill = uiVerify
-    ? process.env.RID_MOCK_OVERLAY === '1'
-    : true;
+  // Normal Tauri startup waits for the native host's ownership signal before
+  // suppressing this Electron-compatible lifecycle. Mock Tauri and standalone
+  // Electron keep the existing implementation.
+  const nativeRecordingStatusPillPath = Boolean(tauriService && !mock);
+  let nativeRecordingStatusPillOwnerReady = false;
+  if (nativeRecordingStatusPillPath) {
+    nativeRecordingStatusPillOwnerReady = await tauriService.waitForRecordingStatusPillOwner();
+    if (!nativeRecordingStatusPillOwnerReady) {
+      console.log('[recording-pill] native ownership unavailable or unconfirmed; continuing without a compatibility pill');
+    }
+  }
+  // Normal Tauri never starts a second owner if its one-shot confirmation is
+  // delayed or lost. A late native confirmation can still receive settings.
+  const shouldCreateRecordingStatusPill = nativeRecordingStatusPillPath
+    ? false
+    : uiVerify ? process.env.RID_MOCK_OVERLAY === '1' : true;
   const applyRecordingStatusPillSettings = () => {
-    if (!recordingStatusPillHandle) return;
     let settings = {};
     try { settings = store.loadSettingsSync() ?? {}; } catch { settings = {}; }
-    recordingStatusPillHandle.apply(settings.overlayRecordingPill === true);
+    const enabled = settings.overlayRecordingPill === true;
+    if (nativeRecordingStatusPillPath && nativeRecordingStatusPillOwnerReady) {
+      void tauriService.hostOperation('recording-pill-settings', { enabled })
+        .catch((error) => console.log(`[recording-pill] native settings update skipped: ${error?.message ?? String(error)}`));
+      return;
+    }
+    if (nativeRecordingStatusPillPath) return;
+    recordingStatusPillHandle?.apply(enabled);
   };
   if (shouldCreateRecordingStatusPill) {
     recordingStatusPillHandle = createRecordingStatusPillWindow({
+      ...(tauriService ? { createWindow: options => tauriService.createAuxWindow('recording-status-pill', options) } : {}),
       getAnchorWindow: () => win,
-      getRecordingState: () => recordingEngine.getState(),
+      getRecordingState: () => nativeRecordingState ?? recordingEngine.getState(),
       deferBuild: !uiVerify,
     });
     // M145: keep the verifier's sibling window available even though the
@@ -3564,15 +3928,22 @@ async function main() {
       recordingStatusPillHandle.apply(true);
       stealthVerifyWindow(recordingStatusPillHandle.getWindow?.() ?? null);
     }
-    applyRecordingStatusPillSettings();
   }
+  if (nativeRecordingStatusPillPath) {
+    tauriService.setRecordingStatusPillOwnerHandler(() => {
+      nativeRecordingStatusPillOwnerReady = true;
+      applyRecordingStatusPillSettings();
+    });
+  }
+  applyRecordingStatusPillSettings();
 
   // Recording notifications are a separate, non-interactive desktop layer.
   // They are deliberately independent from the telemetry HUD: disabling or
   // hiding the HUD must never hide a recording/clip result notification.
   // The handle is not created in ui-verify so verification runs stay silent.
-  if (!uiVerify) {
+  if (!uiVerify && !nativeRecordingToast) {
     recordingToastHandle = createRecordingToastWindow({
+      ...(tauriService ? { createWindow: options => tauriService.createAuxWindow('recording-toast', options) } : {}),
       getAnchorWindow: () => win,
     });
   }
@@ -3613,13 +3984,22 @@ async function main() {
     if (!advancedOverlayHandle) return;
     const accel = overlayAcceleratorOf(letter, 'P');
     if (uiVerify) {
-      advancedOverlayHotkeyProbe.registrations.push(accel);
-      advancedOverlayHandle.setHotkeyRegistered(!advancedOverlayHotkeyProbe.failRegister);
+      if (accel !== 'None') advancedOverlayHotkeyProbe.registrations.push(accel);
+      advancedOverlayHandle.setHotkeyRegistered(accel !== 'None' && !advancedOverlayHotkeyProbe.failRegister);
+      return;
+    }
+    if (useNativeHostShortcuts) {
+      advancedOverlayHotkeyAccelerator = accel === 'None' ? null : accel;
+      advancedOverlayHandle.setHotkeyRegistered(accel !== 'None');
       return;
     }
     if (advancedOverlayHotkeyAccelerator) {
       try { globalShortcut.unregister(advancedOverlayHotkeyAccelerator); } catch { /* best effort */ }
       advancedOverlayHotkeyAccelerator = null;
+    }
+    if (accel === 'None') {
+      advancedOverlayHandle.setHotkeyRegistered(false);
+      return;
     }
     let ok = false;
     try {
@@ -3662,6 +4042,7 @@ async function main() {
   const createAdvancedOverlay = () => {
     if (advancedOverlayHandle) return advancedOverlayHandle;
     advancedOverlayHandle = createAdvancedOverlayWindow({
+      ...(tauriService ? { createWindow: options => tauriService.createAuxWindow('advanced-overlay', options) } : {}),
       // The CURRENT persisted settings - the sync cache (like the HUD).
       getOverlaySettings: () => {
         try {
@@ -3696,7 +4077,9 @@ async function main() {
       const s = store.loadSettingsSync() ?? {};
       hudBootAccelerator = overlayAcceleratorOf(s.overlayHotkeyLetter, 'O');
     } catch { /* default O */ }
-    if (overlayHotkeysCollide(overlayAcceleratorOf(bootLetter, 'P'), hudBootAccelerator)) {
+    if (overlayAcceleratorOf(bootLetter, 'P') !== 'None'
+      && hudBootAccelerator !== 'None'
+      && overlayHotkeysCollide(overlayAcceleratorOf(bootLetter, 'P'), hudBootAccelerator)) {
       console.log(`[advanced-overlay] boot hotkey ${overlayAcceleratorOf(bootLetter, 'P')} collides with the HUD hotkey - the advanced registration is SKIPPED (the honest note shows; the user picks another shortcut)`);
       advancedOverlayHandle.setHotkeyRegistered(false);
     } else {
@@ -3764,13 +4147,88 @@ async function main() {
   // every settings save. They never compete silently with the two existing
   // Control+letter overlay shortcuts.
   let recordingActionHandler = async () => {};
+  let postprocessScaleHotkeyAccelerator = null;
+  let postprocessScaleHotkeyRegistered = false;
+  let postprocessScaleHotkeyReason = null;
+  let resolvePostprocessScaleHotkeyStartup;
+  const postprocessScaleHotkeyStartupReady = new Promise((resolve) => {
+    resolvePostprocessScaleHotkeyStartup = resolve;
+  });
   const recordingHotkeys = createRecordingHotkeys({
-    shortcut: uiVerify ? { register: () => false, unregister: () => {} } : globalShortcut,
+    shortcut: uiVerify || (tauriService && !mock) ? { register: () => false, unregister: () => {} } : globalShortcut,
     getSettings: () => recordingStore.settings(),
-    reserved: () => [overlayHotkeyAccelerator, advancedOverlayHotkeyAccelerator],
+    reserved: () => [overlayHotkeyAccelerator, advancedOverlayHotkeyAccelerator, postprocessScaleHotkeyAccelerator],
     onAction: (action) => recordingActionHandler(action),
   });
   app.on('will-quit', () => recordingHotkeys.unregister());
+  const registerPostprocessScaleHotkey = async () => {
+    if (postprocessScaleHotkeyAccelerator) {
+      try { globalShortcut.unregister(postprocessScaleHotkeyAccelerator); } catch { /* best effort */ }
+      postprocessScaleHotkeyAccelerator = null;
+    }
+    let settings = {};
+    try { settings = store.loadSettingsSync() ?? {}; } catch { /* validated default below */ }
+    let accelerator;
+    try { accelerator = validatePostprocessScaleHotkey(settings.postprocessScaleHotkey ?? 'Alt+F10'); }
+    catch (error) {
+      postprocessScaleHotkeyRegistered = false;
+      postprocessScaleHotkeyReason = error.message;
+      return { registered: false, reason: postprocessScaleHotkeyReason };
+    }
+    const conflicts = [overlayHotkeyAccelerator, advancedOverlayHotkeyAccelerator,
+      ...Object.values(recordingHotkeys.getState().registered ?? {})].filter(Boolean);
+    if (conflicts.includes(accelerator)) {
+      postprocessScaleHotkeyRegistered = false;
+      postprocessScaleHotkeyReason = `Scale hotkey ${accelerator} conflicts with another Arc Power shortcut.`;
+      console.log(`[postprocess] ${postprocessScaleHotkeyReason}`);
+      return { registered: false, reason: postprocessScaleHotkeyReason };
+    }
+    if (useNativeHostShortcuts) {
+      postprocessScaleHotkeyAccelerator = accelerator;
+      postprocessScaleHotkeyRegistered = true;
+      postprocessScaleHotkeyReason = null;
+      resolvePostprocessScaleHotkeyStartup?.();
+      return { registered: true };
+    }
+    if (uiVerify) {
+      postprocessScaleHotkeyRegistered = false;
+      postprocessScaleHotkeyReason = 'Global shortcut registration is disabled in UI verification mode.';
+      return { registered: false, reason: postprocessScaleHotkeyReason };
+    }
+    let ok = false;
+    try {
+      ok = globalShortcut.register(accelerator, () => {
+        void postprocessSharpening.toggleScaleFromHotkey().catch((error) => {
+          postprocessScaleHotkeyReason = error.message;
+          console.log(`[postprocess] Scale shortcut failed: ${error.message}`);
+        });
+      });
+    } catch (error) {
+      postprocessScaleHotkeyReason = error.message;
+    }
+    postprocessScaleHotkeyAccelerator = ok ? accelerator : null;
+    postprocessScaleHotkeyRegistered = ok;
+    postprocessScaleHotkeyReason = ok ? null : postprocessScaleHotkeyReason ?? `Could not register ${accelerator}; another application may use it.`;
+    if (!ok) console.log(`[postprocess] hotkey ${accelerator} registration failed (taken by another application?)`);
+    await recordingHotkeys.register();
+    return { registered: postprocessScaleHotkeyRegistered, reason: postprocessScaleHotkeyReason };
+  };
+  const getPostprocessScaleHotkeyState = async () => {
+    // registerIpc is exposed before boot awaits the globalShortcut attempt.
+    // A fast renderer may ask during that gap; wait for the real first result
+    // so it doesn't cache the initial false value as an unavailable shortcut.
+    await postprocessScaleHotkeyStartupReady;
+    return {
+      registered: postprocessScaleHotkeyRegistered,
+      reason: postprocessScaleHotkeyReason,
+    };
+  };
+  app.on('will-quit', () => {
+    if (postprocessScaleHotkeyAccelerator) {
+      try { globalShortcut.unregister(postprocessScaleHotkeyAccelerator); } catch { /* best effort */ }
+      postprocessScaleHotkeyAccelerator = null;
+    }
+  });
   // M4J (G): the OLD post-window start-minimized block (minimize-to-taskbar
   // after ready-to-show) is REMOVED - the window is created show:false when
   // the pre-create settings read says startMinimized (see createWindow
@@ -3945,6 +4403,22 @@ async function main() {
       ]);
     } finally { clearTimeout(timer); }
   };
+  if (tauriService && !mock) {
+    // The native clear-cache restart waits for this acknowledgement before it
+    // gates bridge calls or quiesces native services. Match the old broker
+    // maintenance ordering: settle startup registration repair, the boot gate
+    // check, and any resulting task setup before declaring startup drained.
+    void (async () => {
+      try {
+        await startupRegistrationRepair;
+        await bootGateCheck;
+        await bootSetupOperation;
+        await tauriService.hostOperation('maintenance-drained');
+      } catch (error) {
+        console.error(`[maintenance] startup drain coordination failed: ${error?.message ?? String(error)}`);
+      }
+    })();
+  }
   const maintenanceAndRestart = async (action, { waitForPendingRequests = async () => {} } = {}) => {
     if (!['clear-cache', 'reset', 'reset-with-drivers'].includes(action)) throw new Error('maintenance action is invalid');
     if (uiVerify) {
@@ -3967,7 +4441,21 @@ async function main() {
       await bootSetupOperation;
       if (action !== 'clear-cache') {
         await startup.set(false);
-        await awaitMaintenanceStep('RTSS startup registration cleanup', () => rtssStartup.set(false), 15_000);
+        await awaitMaintenanceStep('RTSS startup registration cleanup', async () => {
+          const result = await rtssStartup.set(false);
+          // The Tauri host persists the RTSS boot intent separately from the
+          // HKCU value. Clear it too so a reset does not leave a stale toggle
+          // preference behind.
+          if (tauriService) {
+            try {
+              const settings = await tauriService.requestNativeStore('load-settings', []);
+              if (settings && typeof settings === 'object' && settings.rtssOnBoot === true) {
+                await tauriService.requestNativeStore('save-settings', [{ ...settings, rtssOnBoot: false }]);
+              }
+            } catch { /* the Run value is already removed */ }
+          }
+          return result;
+        }, 15_000);
         const bootSetup = bootSetupForMaintenance ?? createBootSetup();
         await bootSetup.remove();
       }
@@ -3999,7 +4487,7 @@ async function main() {
           action,
           token: resetToken,
           version: app.getVersion(),
-          launchPath: path.resolve(portableWrapperPath ?? process.execPath),
+          launchPath: path.resolve(tauriLaunchPath ?? portableWrapperPath ?? process.execPath),
           createdAt: Date.now(),
         });
       }
@@ -4011,7 +4499,10 @@ async function main() {
         portableWrapperPath,
         token: resetToken,
       });
-      app.relaunch(relaunchOptions);
+      if (tauriService) await tauriService.hostOperation('host-relaunch', {
+        args: relaunchOptions.args.filter(arg => arg === '--mock' || arg === '--profile-boot' || arg === '--clear-cache' || arg.startsWith('--arc-power-maintenance=')),
+      });
+      else app.relaunch(relaunchOptions);
       maintenanceQuiesced = true;
       app.exit(0);
       return { ok: true, restarting: true };
@@ -4026,7 +4517,10 @@ async function main() {
             argv: process.argv.slice(1), action: 'clear-cache', isPackaged: app.isPackaged,
             platform: process.platform, portableWrapperPath,
           });
-          app.relaunch({ ...recovery, args: filterRelaunchArgs(recovery.args) });
+          if (tauriService) await tauriService.hostOperation('host-relaunch', {
+            args: filterRelaunchArgs(recovery.args).filter(arg => arg === '--mock' || arg === '--profile-boot'),
+          });
+          else app.relaunch({ ...recovery, args: filterRelaunchArgs(recovery.args) });
         } finally { app.exit(1); }
         return { ok: false, restarting: true };
       }
@@ -4048,16 +4542,24 @@ async function main() {
   const openExternal = uiVerify
     ? async () => { openExternalCount += 1; }
     : async (url) => { await shell.openExternal(url); };
-  const recordingToastsEnabled = () => {
-    try { return store.loadSettingsSync()?.recordingToastsEnabled === true; } catch { return false; }
+  const recordingToastsEnabled = async () => {
+    try {
+      // The compatibility cache is push-maintained and can be stale or absent.
+      // In Tauri mode read the authoritative native store on every gate check;
+      // the toast is a rare event, so the extra store call is insignificant.
+      const settings = tauriService ? await store.loadSettings() : store.loadSettingsSync();
+      return settings?.recordingToastsEnabled === true;
+    } catch { return false; }
   };
-  const showRecordingActionToast = (result) => {
+  const nativeRecordingToast = process.env.ARC_POWER_NATIVE_RECORDING_TOAST === '1';
+  const showRecordingActionToast = async (result) => {
+    if (nativeRecordingToast) return;
     if (!result || typeof result !== 'object') return;
     const action = result.action;
     const replay = result.requestedMode === 'replay' || result.preActionMode === 'replay';
     // Screenshot notifications remain independent. Recording and Instant
     // Replay notifications are an explicit opt-in and stay silent by stock.
-    if (!recordingToastsEnabled() && action !== 'screenshot') return;
+    if (!(await recordingToastsEnabled()) && action !== 'screenshot') return;
     if (!result.ok) {
       const title = action === 'saveClip'
         ? 'Save Instant Replay failed'
@@ -4090,13 +4592,14 @@ async function main() {
       });
     }
   };
-  const showRecordingStateToast = (state, previous) => {
+  const showRecordingStateToast = async (state, previous) => {
+    if (nativeRecordingToast) return;
     // The tray icon is a second, desktop-wide status surface. Update it from
     // the engine stream so button actions and global hotkeys stay identical.
     try { trayRef?.setRecordingState?.(state); } catch { /* tray status is best effort */ }
     try { recordingStatusPillHandle?.setRecordingState?.(state); } catch { /* status pill is best effort */ }
     if (!state || !previous) return;
-    if (!recordingToastsEnabled()) return;
+    if (!(await recordingToastsEnabled())) return;
     const previousModes = previous.activeModes ?? { video: previous.mode === 'video' && previous.running === true, replay: previous.mode === 'replay' && previous.running === true };
     const stateModes = state.activeModes ?? { video: state.mode === 'video' && state.running === true, replay: state.mode === 'replay' && state.running === true };
     for (const mode of ['video', 'replay']) {
@@ -4131,7 +4634,34 @@ async function main() {
       if (overlayHandle && (currentOverlayRenderer() === 'capframex' || !rtssOverlay)) await overlayHandle.resize(deviceCount);
     },
   } : undefined;
+  tauriService?.setRecordingStateHandler?.((state) => {
+    // Native recording owns the engine in the Tauri host. Keep the desktop
+    // status pill, tray badge and opt-in toasts on the same state stream.
+    const previous = nativeRecordingState;
+    nativeRecordingState = state;
+    void showRecordingStateToast(state, previous).catch(() => { /* desktop indicators are best effort */ });
+  });
+  tauriService?.setRecordingActionResultHandler?.((result) => {
+    void showRecordingActionToast(result).catch(() => { /* desktop toasts are best effort */ });
+  });
+  tauriService?.setShortcutHandler?.((payload) => {
+    const action = payload?.action;
+    if (action === 'overlay') {
+      if (currentOverlayRenderer() === 'capframex' && overlayHandle) void overlayHandle.toggle();
+      else void toggleRtssOverlay();
+    } else if (action === 'advanced-overlay') {
+      void advancedOverlayHandle?.toggle();
+    } else if (action === 'postprocess-scale') {
+      void postprocessSharpening?.toggleScaleFromHotkey?.().catch?.(() => {});
+    }
+  });
   teardown = registerIpc({
+    tauriTransport: tauriService,
+    nativeTelemetry: Boolean(tauriService) && lhmTelemetry?.status?.().available === true,
+    nativeFanResume: Boolean(tauriService) && !mock,
+    // Arc Sleep is native only in an elevated Tauri host: the limiter writers
+    // need elevation, so an unelevated host leaves the controller to Electron.
+    nativeArcSleep: Boolean(tauriService) && !mock && isElevatedReal(),
     backend,
     store,
     getWindow: () => win,
@@ -4171,6 +4701,8 @@ async function main() {
     // onOverlaySettings pattern) - called by profiles-settings-save when an
     // advancedOverlay* field changed.
     onAdvancedOverlaySettings,
+    onPostprocessScaleHotkeySettings: registerPostprocessScaleHotkey,
+    getPostprocessScaleHotkeyState,
     onRecordingMemorySavingSettings: applyRecordingMemorySavingSettings,
     // M5: the overlay settings reaction (the rebuildTray pattern) - called
     // by profiles-settings-save when an overlay field changed.
@@ -4212,7 +4744,9 @@ async function main() {
     // 'portable' too - never 'dev' (deriveBuildKind pin).
     buildKind: startupBuildKind,
     portableWrapperPath,
-    startupUpdateCheck: ({ buildKind, intent }) => startupUpdate.check({ buildKind, intent }),
+    startupUpdateCheck: ({ buildKind, intent }) => startupUpdate
+      ? startupUpdate.check({ buildKind, intent })
+      : tauriService.requestNativeStore('update-check', [{ intent }]),
     // M4N (A.1): the window-path boot apply's outcome record (the renderer
     // boot fetch reads it; M16: the dashboard OC row no longer displays it -
     // the row derives its stock-state verdict from the driver read-back -
@@ -4227,7 +4761,7 @@ async function main() {
     gameScan,
     postprocessSharpening,
     chooseGameExecutable: async () => {
-      const result = await dialog.showOpenDialog(win, {
+      const result = await dialog.showOpenDialog(...(tauriBrokerMode ? [] : [win]), {
         title: 'Add game executable',
         properties: ['openFile'],
         filters: [{ name: 'Executable', extensions: ['exe'] }],
@@ -4258,25 +4792,29 @@ async function main() {
     wheaMonitor,
     overlayLayoutStore,
     obsStream,
-    applyOverlayLayout: async (layout) => {
-      const current = await store.loadSettings();
-      await store.saveSettings({
-        ...current,
-        overlayPosition: layout.position,
-        overlayScale: layout.scale,
-        overlayTheme: layout.theme,
-        overlayStats: layout.stats,
-        overlayDeviceKeys: layout.deviceKeys,
-        overlayBgEnabled: layout.background?.enabled === true,
-        overlayBgColor: layout.background?.color,
-        overlayBgOpacity: layout.background?.opacity,
-        advancedOverlayPosition: layout.advancedPosition,
-      });
+    applyOverlayLayout: async (layout, { alreadyPersisted = false } = {}) => {
+      if (!alreadyPersisted && typeof store.applyOverlayLayout === 'function') {
+        await store.applyOverlayLayout(layout);
+      } else if (!alreadyPersisted) {
+        const current = await store.loadSettings();
+        await store.saveSettings({
+          ...current,
+          overlayPosition: layout.position,
+          overlayScale: layout.scale,
+          overlayTheme: layout.theme,
+          overlayStats: layout.stats,
+          overlayDeviceKeys: layout.deviceKeys,
+          overlayBgEnabled: layout.background?.enabled === true,
+          overlayBgColor: layout.background?.color,
+          overlayBgOpacity: layout.background?.opacity,
+          advancedOverlayPosition: layout.advancedPosition,
+        });
+      }
       applyOverlaySettings();
       applyAdvancedOverlaySettings();
     },
     chooseRecordingDirectory: async () => {
-      const result = await dialog.showOpenDialog(win, {
+      const result = await dialog.showOpenDialog(...(tauriBrokerMode ? [] : [win]), {
         title: 'Choose recording location',
         properties: ['openDirectory', 'createDirectory'],
       });
@@ -4299,6 +4837,19 @@ async function main() {
       if (uiVerify) trayRebuilds += 1;
     },
   });
+  if (tauriService) {
+    const stopServices = teardown;
+    teardown = async () => {
+      try { await tauriService.drain(); }
+      finally {
+        try { await stopServices(); }
+        finally {
+          await Promise.allSettled([backend.close(), oldIgcl?.close?.(), lhmTelemetry?.close?.(), realSysmanLimits?.shutdown?.()]);
+          try { msrReader?.close?.(); } catch { /* bounded native cleanup */ }
+        }
+      }
+    };
+  }
   const saveReplayClipForAction = async (request) => {
     try {
       const response = await recordingEngine.saveReplayClip(request);
@@ -4355,16 +4906,24 @@ async function main() {
     captureScreenshot,
     onActionResult: (result) => {
       pushRecordingActionResult({ getWindow: () => win, result });
-      showRecordingActionToast(result);
+      void showRecordingActionToast(result).catch(() => { /* desktop toasts are best effort */ });
     },
   });
   await recordingHotkeys.register();
+  try {
+    await registerPostprocessScaleHotkey();
+  } finally {
+    resolvePostprocessScaleHotkeyStartup();
+  }
+  if (tauriService) await tauriService.ready();
 
   // Keep the bundled capture runtime out of the idle process tree when
   // Memory Saving Mode is enabled. With that setting off, probe once at boot
   // and keep the child warm so the user's explicit latency preference is
   // honored. Instant Replay auto-start remains a separate boot-time demand.
-  if (!mock && !uiVerify) {
+  // The native Tauri host owns recording startup in normal runs. Electron's
+  // capture engine is only the compatibility/mock fallback now.
+  if (!uiVerify && (!tauriService || mock)) {
     const probeWithRetry = async () => {
       let lastError = null;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -4508,6 +5067,12 @@ async function main() {
       if (win.webContents.isLoading()) win.webContents.once('did-finish-load', resolve);
       else resolve();
     });
+    if (process.env.RID_MOCK_OVERLAY_HOTKEY_VERIFY === '1') {
+      const { verifyOverlayHotkeyNoneUi } = await import('../../test/overlay-hotkey-none-ui.js');
+      await verifyOverlayHotkeyNoneUi(win);
+      app.exit(0);
+      return;
+    }
     if (process.env.RID_MOCK_ADV_OVERLAY_SETTINGS_VERIFY === '1') {
       const { verifyAdvancedOverlayGlobalSettingsUi } = await import('../../test/advanced-overlay-global-settings-ui.js');
       await verifyAdvancedOverlayGlobalSettingsUi(win, advancedOverlayHandle, postprocessSharpening);
@@ -4539,6 +5104,12 @@ async function main() {
     if (process.env.RID_MOCK_POSTPROCESS_VERIFY === '1' || process.env.RID_MOCK_SHARPENING_VERIFY === '1') {
       const { verifyPostprocessSharpeningUi } = await import('../../test/postprocess-sharpening-ui.js');
       await verifyPostprocessSharpeningUi(win, postprocessSharpening, gameProfiles, backend);
+      app.exit(0);
+      return;
+    }
+    if (process.env.RID_MOCK_VF_TEXT_EDITOR_VERIFY === '1') {
+      const { verifyVfTextEditor } = await import('../../test/vf-text-editor-ui.js');
+      console.log('[ui-verify][vf-text-editor]', await verifyVfTextEditor(win, backend));
       app.exit(0);
       return;
     }

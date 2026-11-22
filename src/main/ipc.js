@@ -19,8 +19,16 @@ import { createArcSleepController } from './arc-sleep-controller.js';
 import { createArcSleepIGCLLimiter } from './arc-sleep-igcl-limiter.js';
 import { createFanResumeController } from './fan-resume-controller.js';
 import { createFanResumeStore } from './store/fan-resume-store.js';
+import { NativeFanResumeStore } from './store/tauri-native-fan-resume-store.js';
+import { withBrokerApplyTransaction } from './apply-lock.js';
+import {
+  createNativeTemperatureApplyLease,
+  NATIVE_TEMPERATURE_APPLY_LEASE_BEGIN,
+  NATIVE_TEMPERATURE_APPLY_LEASE_FINISH,
+  NATIVE_TEMPERATURE_APPLY_LEASE_CANCEL,
+} from './native-temperature-apply-lease.js';
 import path from 'node:path';
-import { isAuthorizedRestrictedRendererIpc } from './restricted-renderer-ipc.js';
+import { isAuthorizedRestrictedRendererIpc, isRestrictedRendererIpcChannel } from './restricted-renderer-ipc.js';
 
 /**
  * Register every whitelisted handler on ipcMain. Returns a teardown that
@@ -96,7 +104,7 @@ import { isAuthorizedRestrictedRendererIpc } from './restricted-renderer-ipc.js'
  * }} ctx
  * @returns {() => Promise<void>}
  */
-export function registerIpc({ backend, store, getWindow, startup = createStartup(), rtssStartup = createRtssStartup(), driverInfo = createDriverInfo(), driverMonitor = null, sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), fpsLane = null, rtssOverlay = null, rtssFrameLimiter = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null, recordingStore = null, recordingCopyFile = async () => false, recordingEngine = null, recordingLifecycle = null, recordingEditor = null, stabilityLab = null, stabilityStore = null, stabilityWorkload = null, overlayLayoutStore = null, obsStream = null, applyOverlayLayout = async () => {}, chooseRecordingDirectory = async () => null, openRecordingFolder = async () => {}, refreshRecordingHotkeys = async () => null, getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }), recordingCaptureTargets = null, onRecordingActionResult = () => {}, onRecordingState = () => {}, getRecordingMemorySavingMode = () => false }) {
+export function registerIpc({ backend, store, getWindow, startup = createStartup(), rtssStartup = createRtssStartup(), driverInfo = createDriverInfo(), driverMonitor = null, sysinfo, windowOps, openExternal = async () => {}, registryCatalog = createRegistryCatalog(), registryApply = createRegistryApply(REGISTRY_CATALOG, { isElevated: isElevatedReal }), fpsAdapter = createDxgiFpsAdapter(), fpsLane = null, rtssOverlay = null, rtssFrameLimiter = null, foregroundApi = { detect: async () => null }, memoryUtil = { detect: async () => null }, sysStats = createSysStats(), monitorLog = createMonitorLog({ getDocumentsDir: () => app.getPath('documents') }), appLifecycle = { clearCacheAndRestart: async () => ({ ok: false, restarting: false }) }, rebuildTray = async () => {}, oldIgcl, applyRunner = null, isElevated, buildKind = 'dev', portableWrapperPath = null, startupUpdateCheck = null, bootApplyOutcome = () => null, mock = null, getOverlayWindow = () => null, overlayOps = { getState: async () => ({ exists: false, visible: false, bounds: null, position: 'top-left', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, onOverlaySettings = async () => {}, getAdvancedOverlayWindow = () => null, advancedOverlayOps = { getState: async () => ({ exists: false, visible: false, position: 'right', scale: 1, enabled: false, hotkeyRegistered: false }), toggle: async () => {} }, advancedOverlayClose = async () => {}, onAdvancedOverlaySettings = async () => {}, sysmanPowerLimits = null, gameProfiles = null, gameScan = null, chooseGameExecutable = async () => null, gameArtwork = async () => null, recordingStore = null, recordingCopyFile = async () => false, recordingEngine = null, recordingLifecycle = null, recordingEditor = null, stabilityLab = null, stabilityStore = null, stabilityWorkload = null, overlayLayoutStore = null, obsStream = null, applyOverlayLayout = async () => {}, chooseRecordingDirectory = async () => null, openRecordingFolder = async () => {}, refreshRecordingHotkeys = async () => null, getRecordingHotkeyState = () => ({ registered: {}, conflicts: {}, error: null }), recordingCaptureTargets = null, onRecordingActionResult = () => {}, onRecordingState = () => {}, getRecordingMemorySavingMode = () => false, nativeTelemetry = false, nativeFanResume = false, nativeArcSleep = false }) {
   let maintenancePending = false;
   const pendingIpcRequests = new Set();
   const waitForPendingRequests = async ({ timeoutMs = 15_000 } = {}) => {
@@ -178,6 +186,19 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
   const recordingRuntimeShutdownIfIdle = arguments[0]?.recordingRuntimeShutdownIfIdle
     ?? (async () => recordingEngine?.shutdownIfIdle?.() ?? null);
   const postprocessSharpening = arguments[0]?.postprocessSharpening ?? null;
+  // Single owner: when the elevated native host installed its Arc Sleep
+  // controller it owns the limiter, the recovery journal and the Base Cap.
+  // Electron still keeps the controller object for read-shaped answers, but the
+  // transaction seam is withheld - otherwise `profiles-settings-save` (ipc-core's
+  // `arcSleep` branch), the delegated graphics paths and `game-settings-save`
+  // would run `initialize()`/`setSettings()` here and write the same limiter and
+  // journal outside the native controller's lock. Every handler in this module
+  // must use this handle, never the raw controller.
+  const arcSleepSeam = nativeArcSleep ? {
+    getSnapshot: (...args) => (typeof arcSleepController.getSnapshot === 'function'
+      ? arcSleepController.getSnapshot(...args)
+      : null),
+  } : arcSleepController;
   const { handlers, stopAllTelemetry } = createIpcHandlers({
     backend,
     store,
@@ -195,12 +216,13 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     fpsAdapter,
     fpsLane,
     rtssOverlay,
+    nativeTelemetry: arguments[0]?.nativeTelemetry === true,
     rtssFrameLimiter,
-    arcSleepController,
+    arcSleepController: arcSleepSeam,
     foregroundApi,
     memoryUtil,
     sysStats,
-    onSysStatsReady: () => arcSleepController.onAdaptiveSamplerReady(),
+    onSysStatsReady: () => arcSleepSeam.onAdaptiveSamplerReady?.(),
     appLifecycle: appLifecycleForHandlers,
     monitorLog,
     rebuildTray,
@@ -224,6 +246,8 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     sysmanPowerLimits,
     gameProfiles,
     postprocessSharpening,
+    onPostprocessScaleHotkeySettings: arguments[0]?.onPostprocessScaleHotkeySettings,
+    getPostprocessScaleHotkeyState: arguments[0]?.getPostprocessScaleHotkeyState,
     gameScan: gameScan ?? undefined,
     chooseGameExecutable,
     gameArtwork,
@@ -299,7 +323,31 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     },
   });
   const rawApplySettings = handlers['apply-settings'];
-  const fanResumeStore = arguments[0]?.fanResumeStore ?? createFanResumeStore({ dir: store?.dir ?? path.join(app.getPath('appData'), 'ArcPower') });
+  const tauriTransport = arguments[0]?.tauriTransport;
+  const nativeTemperatureApplyLease = tauriTransport?.registerPrivate && !mock
+    ? createNativeTemperatureApplyLease({
+      backend,
+      isElevated: typeof isElevated === 'function' ? isElevated : isElevatedReal,
+      mockMode: Boolean(mock),
+      withTransaction: withBrokerApplyTransaction,
+    })
+    : null;
+  if (nativeTemperatureApplyLease) {
+    tauriTransport.registerPrivate(NATIVE_TEMPERATURE_APPLY_LEASE_BEGIN,
+      (payload) => nativeTemperatureApplyLease.begin(payload),
+      { onClose: (reason) => nativeTemperatureApplyLease.close(reason) });
+    tauriTransport.registerPrivate(NATIVE_TEMPERATURE_APPLY_LEASE_FINISH,
+      (payload) => nativeTemperatureApplyLease.finish(payload));
+    tauriTransport.registerPrivate(NATIVE_TEMPERATURE_APPLY_LEASE_CANCEL,
+      (payload) => nativeTemperatureApplyLease.cancel(payload));
+  }
+  const fanResumeStore = arguments[0]?.fanResumeStore
+    ?? (tauriTransport
+      ? new NativeFanResumeStore({
+          dir: store?.dir ?? path.join(app.getPath('appData'), 'ArcPower'),
+          request: (...args) => tauriTransport.requestNativeStore(...args),
+        })
+      : createFanResumeStore({ dir: store?.dir ?? path.join(app.getPath('appData'), 'ArcPower') }));
   const fanResumeController = createFanResumeController({
     backend, store: fanResumeStore, rawApplySettings,
     isElevated: typeof isElevated === 'function' ? isElevated : isElevatedReal,
@@ -321,6 +369,12 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     return fanResumeController.getState(payload.deviceId, payload.deviceKey);
   };
   handlers['fan-resume:set'] = async (payload) => fanResumeController.setEnabled(payload);
+  if (tauriTransport && !nativeFanResume) {
+    tauriTransport.setPowerHandler?.((payload) => {
+      if (payload?.state === 'resume') void fanResumeController.onResume();
+      else if (payload?.state === 'suspend') fanResumeController.onSuspend();
+    });
+  }
   void fanResumeController.initialize().catch(() => {});
   const recordingStateWithSettings = (state) => state && typeof state === 'object'
     ? { ...state, memorySavingMode: getRecordingMemorySavingMode() === true }
@@ -341,9 +395,8 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     previousRecordingState = enrichedState;
   });
   const unsubscribePostprocessSharpeningStatus = postprocessSharpening?.subscribeStatus?.((status) => {
-    for (const win of [getWindow(), getAdvancedOverlayWindow()]) {
-      if (win && !win.isDestroyed()) win.webContents.send(POSTPROCESS_SHARPENING_STATUS_CHANNEL, status);
-    }
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.send(POSTPROCESS_SHARPENING_STATUS_CHANNEL, status);
   });
   // The foreground detector is absent in mock/ui-verify mode. In the real
   // product it gives Game Profiles the same executable identity used by the
@@ -392,9 +445,9 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
   for (const [channel, fn] of Object.entries(handlers)) {
     const isMaintenanceChannel = channel === 'app:maintenance-restart' || channel === 'app:clear-cache-restart';
     const invokeHandler = async (event, ...args) => {
-      if (channel === 'device-selection-push' || channel.startsWith('update:') || channel.startsWith('postprocess-sharpening:') || channel.startsWith('arc-super-resolution:') || channel.startsWith('fan-resume:')) {
+      if (isRestrictedRendererIpcChannel(channel)) {
         if (!isAuthorizedRestrictedRendererIpc(channel, event, { getWindow, getAdvancedOverlayWindow })) {
-          throw new Error(`${channel} is restricted to the main renderer`);
+          throw new Error(`${channel} is not authorized for this renderer frame`);
         }
       }
       const recordingAction = recordingInvokeActions[channel];
@@ -417,8 +470,12 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
           out = await recordingRuntimeRelease(event);
         } else {
           const invoke = () => fn(...args);
+          // Game settings can move the same cap Arc Sleep brackets, so they run
+          // inside the controller transaction - but only through the shared seam
+          // handle, which withholds it when the native host owns Arc Sleep.
           out = (channel === 'game-settings-save' || channel === 'game-settings-delete')
-            ? await arcSleepController.withTransaction(invoke)
+            && typeof arcSleepSeam?.withTransaction === 'function'
+            ? await arcSleepSeam.withTransaction(invoke)
             : await invoke();
           if (channel === 'oc-mode-set') ocModeRevision = ++nextOcModeRevision;
         }
@@ -454,7 +511,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
         const kind = channel === 'postprocess-sharpening:set' ? 'sharpening' : 'asr';
         const revision = kind === 'sharpening' ? ++globalSharpeningRevision : ++globalAsrRevision;
         const payload = { kind, revision, state: out };
-        for (const target of [getWindow(), getAdvancedOverlayWindow?.()]) {
+        for (const target of [getWindow()]) {
           if (target && !target.isDestroyed()) target.webContents.send('postprocess-global-settings:updated', payload);
         }
       }
@@ -561,7 +618,7 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       }
       return out;
     };
-    ipcMain.handle(channel, (event, ...args) => {
+    const registeredHandler = (event, ...args) => {
       if (maintenancePending) throw new Error('Arc Power is preparing a maintenance restart');
       if (isMaintenanceChannel) maintenancePending = true;
       if (isMaintenanceChannel) fanResumeController.setMaintenance(true);
@@ -579,13 +636,26 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
       pendingIpcRequests.add(request);
       void request.finally(() => pendingIpcRequests.delete(request)).catch(() => {});
       return request;
+    };
+    ipcMain.handle(channel, registeredHandler);
+    // The optional native-host adapter reaches the same validation,
+    // serialization, leases, controller hooks and post-success broadcasts.
+    arguments[0]?.tauriTransport?.register(channel, registeredHandler);
+  }
+  if (!tauriTransport && !nativeFanResume) {
+    powerMonitor.on('resume', fanResumeController.onResume);
+    powerMonitor.on('suspend', fanResumeController.onSuspend);
+  }
+  // Single owner: `nativeArcSleep` is true only when the elevated Tauri host
+  // installed its controller. Two started controllers would race over the same
+  // RTSS/IGCL cap and recovery journal, so Electron starts its own in every
+  // other case: standalone Electron, mock runs, and unelevated Tauri runs where
+  // the native limiter writers are unavailable.
+  if (!nativeArcSleep) {
+    void arcSleepController.start().catch((error) => {
+      console.error(`[arc-sleep] startup failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }
-  powerMonitor.on('resume', fanResumeController.onResume);
-  powerMonitor.on('suspend', fanResumeController.onSuspend);
-  void arcSleepController.start().catch((error) => {
-    console.error(`[arc-sleep] startup failed: ${error instanceof Error ? error.message : String(error)}`);
-  });
   // The teardown closes the native RTSS mapping and leaves no provider state
   // behind on app exit.
   const stopFps = () => Promise.all([
@@ -594,8 +664,11 @@ export function registerIpc({ backend, store, getWindow, startup = createStartup
     Promise.resolve(rtssOverlay?.stop?.()).catch(() => {}),
   ]);
   return async () => {
-    powerMonitor.removeListener('resume', fanResumeController.onResume);
-    powerMonitor.removeListener('suspend', fanResumeController.onSuspend);
+    nativeTemperatureApplyLease?.close('IPC teardown');
+    if (!nativeFanResume) {
+      powerMonitor.removeListener('resume', fanResumeController.onResume);
+      powerMonitor.removeListener('suspend', fanResumeController.onSuspend);
+    }
     unsubscribeRecordingState?.();
     unsubscribePostprocessSharpeningStatus?.();
     await gameTuning?.stop();

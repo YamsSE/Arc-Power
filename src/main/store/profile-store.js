@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { migrateStoreData, SCHEMA_VERSION } from './migrations.js';
+import { TELEMETRY_POLL_MS_DEFAULT } from '../telemetry/constants.js';
 
 // 1.0.1 Themes: the canonical theme ids - the persisted-truth owner of the
 // list. The renderer mirror lives in src/renderer/pure/theme.ts and the
@@ -185,13 +186,11 @@ const OVERLAY_RECORDING_PILL_DEFAULT = false;
 // Recording/Instant Replay desktop toasts are a separate opt-in surface.
 // Keep the stock profile quiet until the user explicitly enables them.
 const RECORDING_TOASTS_DEFAULT = false;
-// M17e (the user addition - the overlay polling-rate slider): the
-// telemetry push cadence range + default (100-2000 ms, step 50, default
-// 400 - M17g: the user's stock polling rate FLIPS 500 -> 400). The
-// persisted-truth owner; the renderer slider (overlay-settings.ts) + the
-// ipc-core patch validation mirror the clamp. Absent on old files -> 400;
-// garbage degrades to 400.
-const OVERLAY_POLL_MS_DEFAULT = 400;
+// M17e: the telemetry push cadence range + default (100-2000 ms, step 50).
+// The persisted-truth owner; the renderer slider + ipc-core patch validation
+// mirror the clamp. Absent on old files or invalid input uses the shared 600 ms
+// telemetry default.
+const OVERLAY_POLL_MS_DEFAULT = TELEMETRY_POLL_MS_DEFAULT;
 const OVERLAY_POLL_MS_MIN = 100;
 const OVERLAY_POLL_MS_MAX = 2000;
 // M35: durable overlay GPU selection uses stable PCI/BDF device keys. Null
@@ -304,9 +303,8 @@ function clampOverlayBgOpacity(v) {
 }
 
 /** M17e: clamp the overlay polling rate to the slider's 100-2000 ms range
- *  (garbage degrades to the 400 ms default - M17g: the stock polling rate
- *  FLIPS 500 -> 400; the same clamp semantics as the scale slider; the
- *  slider cannot produce an out-of-range value). */
+ *  (garbage degrades to the shared 600 ms default; the same clamp semantics as
+ *  the scale slider; the slider cannot produce an out-of-range value). */
 function clampOverlayPollMs(v) {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : OVERLAY_POLL_MS_DEFAULT;
   return Math.min(OVERLAY_POLL_MS_MAX, Math.max(OVERLAY_POLL_MS_MIN, Math.round(n)));
@@ -485,7 +483,7 @@ export class ProfileStore {
    * M17b: overlayChipNames (the chip-name row labels) rides it too (off =
    * the stock 'CPU '/'GPU ' prefixes when absent).
    * M17e: overlayPollMs (the overlay telemetry push cadence) rides it too
-   * (400 ms when absent).
+   * (the shared 600 ms default when absent).
    * M24: overlayTheme (the overlay THEME - the Intel-Arc harness redesign
    * vs the classic HUD) rides it too ('arc' when absent - the redesign IS
    * the product default).
@@ -540,7 +538,8 @@ export class ProfileStore {
         // defaults (enabled off, letter 'O', top-left, scale 1.0 - the same
         // absent-field mechanism, NO schema bump).
         overlayEnabled: false,
-        overlayHotkeyLetter: 'O',
+        overlayHotkeyLetter: 'Alt+F8',
+        postprocessScaleHotkey: 'Alt+F10',
         overlayPosition: 'top-left',
         overlayScale: 1.0,
         // M6: the color defaults to the stock white '#ffffff' and the stats
@@ -561,8 +560,8 @@ export class ProfileStore {
         // 'CPU '/'GPU ' prefixes; the same absent-field mechanism, NO
         // schema bump - the overlay renderer reads the pushed setting).
         overlayChipNames: false,
-        // M17e: the overlay polling-rate - absent -> 400 ms (the same
-        // absent-field mechanism; the telemetry-service default).
+        // M17e: the overlay polling-rate - absent -> the shared 600 ms default
+        // (the same absent-field mechanism; the telemetry-service default).
         overlayPollMs: OVERLAY_POLL_MS_DEFAULT,
         // M24: the overlay theme - absent -> 'arc' (the redesign IS the
         // product default; 'classic' stays one click away via the Theme
@@ -582,7 +581,7 @@ export class ProfileStore {
         // mechanism, NO schema bump; NO scale key - the panel is a fixed
         // compact size).
         advancedOverlayEnabled: false,
-        advancedOverlayHotkeyLetter: 'P',
+        advancedOverlayHotkeyLetter: 'Alt+F9',
         advancedOverlayPosition: 'right',
       };
     }
@@ -612,10 +611,14 @@ export class ProfileStore {
       // saved true opt-in to memory saving.
       memorySavingMode: data.memorySavingMode === true,
       overlayEnabled: data.overlayEnabled === true,
-      overlayHotkeyLetter: typeof data.overlayHotkeyLetter === 'string'
+      overlayHotkeyLetter: data.overlayHotkeyLetter === 'None' ? 'None' : typeof data.overlayHotkeyLetter === 'string'
         && (/^[A-Za-z]$/.test(data.overlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(data.overlayHotkeyLetter))
         ? data.overlayHotkeyLetter
-        : 'O',
+        : 'Alt+F8',
+      postprocessScaleHotkey: typeof data.postprocessScaleHotkey === 'string'
+        && /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(data.postprocessScaleHotkey)
+        ? data.postprocessScaleHotkey
+        : 'Alt+F10',
       overlayPosition: OVERLAY_POSITIONS.includes(data.overlayPosition)
         ? data.overlayPosition
         : 'top-left',
@@ -650,9 +653,9 @@ export class ProfileStore {
       // stock 'CPU '/'GPU ' prefixes; a garbage value degrades to false -
       // never a crash).
       overlayChipNames: data.overlayChipNames === true,
-      // M17e: the overlay polling-rate - absent on old files -> 400 ms (the
-      // telemetry-service default; a garbage value degrades to 400 - never
-      // a crash, never an out-of-range cadence).
+      // M17e: the overlay polling-rate - absent on old files -> the shared
+      // 600 ms default (a garbage value degrades to 600 - never a crash,
+      // never an out-of-range cadence).
       overlayPollMs: clampOverlayPollMs(data.overlayPollMs),
       // M24: the overlay theme - absent on old files -> 'arc' (the
       // redesign IS the product default; a garbage value degrades to 'arc'
@@ -678,10 +681,10 @@ export class ProfileStore {
       // 'right'; a garbage value degrades to the default - never a crash.
       // NO scale key - the panel is a fixed compact size.
       advancedOverlayEnabled: data.advancedOverlayEnabled === true,
-      advancedOverlayHotkeyLetter: typeof data.advancedOverlayHotkeyLetter === 'string'
+      advancedOverlayHotkeyLetter: data.advancedOverlayHotkeyLetter === 'None' ? 'None' : typeof data.advancedOverlayHotkeyLetter === 'string'
         && (/^[A-Za-z]$/.test(data.advancedOverlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(data.advancedOverlayHotkeyLetter))
         ? data.advancedOverlayHotkeyLetter
-        : 'P',
+        : 'Alt+F9',
       advancedOverlayPosition: ADVANCED_OVERLAY_POSITIONS.includes(data.advancedOverlayPosition)
         ? data.advancedOverlayPosition
         : 'right',
@@ -771,10 +774,14 @@ export class ProfileStore {
       // theme (the channel validates first; the store fallback covers
       // direct callers).
       overlayEnabled: settings.overlayEnabled === true,
-      overlayHotkeyLetter: typeof settings.overlayHotkeyLetter === 'string'
+      overlayHotkeyLetter: settings.overlayHotkeyLetter === 'None' ? 'None' : typeof settings.overlayHotkeyLetter === 'string'
         && (/^[A-Za-z]$/.test(settings.overlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(settings.overlayHotkeyLetter))
         ? settings.overlayHotkeyLetter
-        : 'O',
+        : 'Alt+F8',
+      postprocessScaleHotkey: typeof settings.postprocessScaleHotkey === 'string'
+        && /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(settings.postprocessScaleHotkey)
+        ? settings.postprocessScaleHotkey
+        : 'Alt+F10',
       overlayPosition: OVERLAY_POSITIONS.includes(settings.overlayPosition)
         ? settings.overlayPosition
         : 'top-left',
@@ -811,7 +818,7 @@ export class ProfileStore {
       // M17e: the overlay polling-rate - clamped to the 100-2000 ms range
       // on save like the scale/opacity (the channel validates first; the
       // store fallback covers direct callers - an absent/garbage value
-      // persists as the 400 ms default).
+      // persists as the shared 600 ms default).
       overlayPollMs: clampOverlayPollMs(settings.overlayPollMs),
       // M24: the overlay theme - validated on save like the rest (the
       // channel validates first; the store fallback covers direct callers -
@@ -828,10 +835,10 @@ export class ProfileStore {
       // absent/garbage value degrades to the default). NO scale key - the
       // panel is a fixed compact size.
       advancedOverlayEnabled: settings.advancedOverlayEnabled === true,
-      advancedOverlayHotkeyLetter: typeof settings.advancedOverlayHotkeyLetter === 'string'
+      advancedOverlayHotkeyLetter: settings.advancedOverlayHotkeyLetter === 'None' ? 'None' : typeof settings.advancedOverlayHotkeyLetter === 'string'
         && (/^[A-Za-z]$/.test(settings.advancedOverlayHotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(settings.advancedOverlayHotkeyLetter))
         ? settings.advancedOverlayHotkeyLetter
-        : 'P',
+        : 'Alt+F9',
       advancedOverlayPosition: ADVANCED_OVERLAY_POSITIONS.includes(settings.advancedOverlayPosition)
         ? settings.advancedOverlayPosition
         : 'right',

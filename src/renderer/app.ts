@@ -4,12 +4,12 @@
 
 import { api } from './ipc.ts';
 import { stopTelemetry, startTelemetry } from './device.ts';
-import { el, clear, preserveScrollPositions, resetScrollPositions } from './dom.ts';
+import { el, svgEl, clear, preserveScrollPositions, resetScrollPositions } from './dom.ts';
 import { Store, currentPage, NAV_LABELS, PAGE_IDS } from './router.ts';
 import type { Page, PageId } from './router.ts';
-import { GpuHeader } from './components/header.ts';
+import { displayVersion, GpuHeader } from './components/header.ts';
 import { toast } from './components/toast.ts';
-import { initTitlebar, setTitlebarVersion, startupUpdateCheck } from './components/titlebar.ts';
+import { initTitlebar, initUpdaterControl, startupUpdateCheck } from './components/titlebar.ts';
 import { promptWaiverAtBoot } from './components/waiver-dialog.ts';
 import { dashboardPage } from './pages/dashboard.ts';
 import { tuningPage } from './pages/tuning.ts';
@@ -24,6 +24,7 @@ import { driverLibraryPage } from './pages/driver-library.ts';
 import { getLatestFpsSample, getMonitorLogToFile, filterMonitorLogSample, setMonitorLogMetrics, setMonitorLogToFile } from './log-state.ts';
 import { createDeviceSwitcher } from './device.ts';
 import { deviceHardwareKey, resolveBootDevice, resolveFeaturesetSwapSelection } from './pure/device.ts';
+import { mergeRebarByStableIdentity } from './pure/rebar-refresh.ts';
 import { isValidTheme } from './pure/theme.ts';
 import { primaryVideoController } from './pure/sysinfo.ts';
 import type { RecordingEngineState, TelemetrySample } from './types.ts';
@@ -45,6 +46,7 @@ const PAGES: Record<PageId, Page> = {
 };
 
 const store = new Store();
+let sidebarUpdateButton: HTMLButtonElement | null = null;
 
 const CAPTURE_ENGINE_IDLE_MESSAGE = 'Capture engine idle until recording is requested';
 const INITIAL_RECORDING_STATUS: RecordingEngineState = {
@@ -62,55 +64,7 @@ const INITIAL_RECORDING_STATUS: RecordingEngineState = {
   instantReplaySave: { status: 'idle', error: null, outputPath: null, updatedAt: null },
 };
 let globalRecordingStatus: RecordingEngineState = INITIAL_RECORDING_STATUS;
-let globalRecordingTimer: number | null = null;
 let unsubscribeGlobalRecordingState: (() => void) | null = null;
-let unsubscribeGlobalRecordingSettings: (() => void) | null = null;
-let recordingMemorySavingMode = false;
-
-function recordingElapsed(startedAt: number | null | undefined): string {
-  if (!Number.isFinite(startedAt)) return '00:00:00';
-  const elapsed = Math.max(0, Math.floor((Date.now() - Number(startedAt)) / 1000));
-  const hours = Math.floor(elapsed / 3600);
-  const minutes = Math.floor((elapsed % 3600) / 60);
-  const seconds = elapsed % 60;
-  return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
-}
-
-function updateGlobalRecordingWidget(target?: HTMLElement): void {
-  const root = target ?? document.querySelector<HTMLElement>('.sidebar-recording-status');
-  if (!root) return;
-  const running = globalRecordingStatus.running === true;
-  const loading = !globalRecordingStatus.probeComplete && globalRecordingStatus.error === 'Loading capture engine…';
-  const memorySavingMode = globalRecordingStatus.memorySavingMode === true && recordingMemorySavingMode === true;
-  const idle = memorySavingMode
-    && !globalRecordingStatus.probeComplete
-    && globalRecordingStatus.error === CAPTURE_ENGINE_IDLE_MESSAGE;
-  const ready = !running && !loading && !idle
-    && (globalRecordingStatus.available === true || globalRecordingStatus.probeComplete === true);
-  const state = running ? 'live' : loading ? 'loading' : idle ? 'idle' : ready ? 'ready' : 'offline';
-  const mode = globalRecordingStatus.mode;
-  const replaySaveStatus = globalRecordingStatus.instantReplaySave?.status;
-  const replaySaving = replaySaveStatus === 'saving';
-  const replayFailed = replaySaveStatus === 'error';
-  const title = root.querySelector<HTMLElement>('[data-recording-status-title]');
-  const detail = root.querySelector<HTMLElement>('[data-recording-status-detail]');
-  const timer = root.querySelector<HTMLElement>('[data-recording-timer]');
-  const dot = root.querySelector<HTMLElement>('[data-recording-status-dot]');
-  if (title) title.textContent = replaySaving ? 'Saving Instant Replay' : replayFailed ? 'Instant Replay failed' : running ? mode === 'replay' ? 'Instant Replay' : 'Recording' : loading ? 'Starting capture engine' : idle ? 'Memory Saving Mode' : ready ? 'Arc Capture' : 'Capture offline';
-  if (detail) detail.textContent = replaySaving ? 'Writing the latest moments to disk' : replayFailed ? (globalRecordingStatus.instantReplaySave?.error ?? 'Try saving again') : running ? 'Arc Capture is running' : loading ? 'Checking the bundled capture runtime' : idle ? 'Open Recording or start a capture to load it' : ready ? 'Recording is Ready' : (globalRecordingStatus.error || 'Capture engine unavailable');
-  if (timer) {
-    timer.textContent = running ? recordingElapsed(globalRecordingStatus.startedAt) : '';
-    timer.hidden = !running;
-  }
-  if (dot) dot.className = `sidebar-recording-dot is-${state}`;
-  root.classList.toggle('is-live', state === 'live');
-  root.classList.toggle('is-ready', state === 'ready');
-  root.classList.toggle('is-loading', state === 'loading');
-  root.classList.toggle('is-idle', state === 'idle');
-  root.classList.toggle('is-offline', state === 'offline');
-  root.dataset.state = state;
-  root.dataset.mode = mode ?? 'idle';
-}
 
 function setGlobalRecordingStatus(next: RecordingEngineState): void {
   const startedAt = next.running
@@ -118,26 +72,6 @@ function setGlobalRecordingStatus(next: RecordingEngineState): void {
     : null;
   globalRecordingStatus = { ...next, startedAt };
   store.set({ recordingStatus: globalRecordingStatus });
-  if (globalRecordingStatus.running && globalRecordingTimer === null) {
-    globalRecordingTimer = window.setInterval(updateGlobalRecordingWidget, 1000);
-  } else if (!globalRecordingStatus.running && globalRecordingTimer !== null) {
-    window.clearInterval(globalRecordingTimer);
-    globalRecordingTimer = null;
-  }
-  updateGlobalRecordingWidget();
-}
-
-function renderGlobalRecordingStatus(): HTMLElement {
-  const root = el('section', { class: 'sidebar-recording-status', 'aria-live': 'polite', 'aria-label': 'Arc Capture status' }, [
-    el('span', { class: 'sidebar-recording-dot', 'data-recording-status-dot': '' }),
-    el('div', { class: 'sidebar-recording-copy' }, [
-      el('strong', { 'data-recording-status-title': '' }),
-      el('span', { 'data-recording-status-detail': '' }),
-    ]),
-    el('time', { class: 'sidebar-recording-timer', 'data-recording-timer': '', hidden: true }),
-  ]);
-  updateGlobalRecordingWidget(root);
-  return root;
 }
 
 // 1.0.1 Themes: apply a theme id to <html> + recolor the monitoring
@@ -444,19 +378,141 @@ function renderPage(id: PageId) {
   }
 }
 
+const SIDEBAR_WIDTH_KEY = 'arcpower.sidebar.width.v1';
+const SIDEBAR_MIN_WIDTH = 64;
+const SIDEBAR_MAX_WIDTH = 224;
+const SIDEBAR_DEFAULT_WIDTH = 184;
+const SIDEBAR_PRE_REDESIGN_DEFAULT_WIDTH = 224;
+// Dashboard is the widest navigation label; below this width the available
+// label column becomes too narrow, so switch to the icon layout before text
+// or the Arc Power wordmark starts clipping.
+const SIDEBAR_COMPACT_WIDTH = 136;
+
+function readSidebarWidth(): number {
+  try {
+    const stored = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    if (!Number.isFinite(stored) || stored < SIDEBAR_MIN_WIDTH || stored > SIDEBAR_MAX_WIDTH) return SIDEBAR_DEFAULT_WIDTH;
+    const rounded = Math.round(stored);
+    return rounded === SIDEBAR_PRE_REDESIGN_DEFAULT_WIDTH ? SIDEBAR_DEFAULT_WIDTH : rounded;
+  } catch { return SIDEBAR_DEFAULT_WIDTH; }
+}
+
+function applySidebarWidth(body: HTMLElement, width: number, persist = false): void {
+  const safeWidth = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, Math.round(width)));
+  body.style.setProperty('--sidebar-width', `${safeWidth}px`);
+  body.dataset.sidebarCompact = String(safeWidth <= SIDEBAR_COMPACT_WIDTH);
+  const separator = body.querySelector<HTMLElement>('.sidebar-resize-handle');
+  if (separator) {
+    separator.setAttribute('aria-valuenow', String(safeWidth));
+    separator.setAttribute('aria-valuetext', safeWidth <= SIDEBAR_COMPACT_WIDTH ? `Compact sidebar, ${safeWidth} pixels` : `Sidebar, ${safeWidth} pixels`);
+  }
+  if (persist) {
+    try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(safeWidth)); } catch { /* keep the current session setting */ }
+  }
+}
+
+function installSidebarResize(): void {
+  const body = document.getElementById('app-body') as HTMLElement | null;
+  const sidebar = document.getElementById('sidebar') as HTMLElement | null;
+  const shell = document.getElementById('shell') as HTMLElement | null;
+  if (!body || !sidebar || !shell || body.querySelector('.sidebar-resize-handle')) return;
+  const handle = el('div', {
+    class: 'sidebar-resize-handle', role: 'separator', tabindex: 0, 'aria-label': 'Resize sidebar',
+    'aria-orientation': 'vertical', 'aria-valuemin': SIDEBAR_MIN_WIDTH, 'aria-valuemax': SIDEBAR_MAX_WIDTH,
+    title: 'Drag to resize the sidebar. Use the arrow keys for precise sizing.',
+  }) as HTMLDivElement;
+  body.insertBefore(handle, shell);
+  applySidebarWidth(body, readSidebarWidth());
+  let dragStartX = 0;
+  let dragStartWidth = 0;
+  handle.addEventListener('pointerdown', (event: PointerEvent) => {
+    if (event.button !== 0) return;
+    dragStartX = event.clientX;
+    dragStartWidth = sidebar.getBoundingClientRect().width;
+    handle.classList.add('is-dragging');
+    handle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  handle.addEventListener('pointermove', (event: PointerEvent) => {
+    if (!handle.hasPointerCapture(event.pointerId)) return;
+    applySidebarWidth(body, dragStartWidth + event.clientX - dragStartX);
+  });
+  const finishDrag = (event: PointerEvent): void => {
+    if (!handle.hasPointerCapture(event.pointerId)) return;
+    handle.releasePointerCapture(event.pointerId);
+    handle.classList.remove('is-dragging');
+    applySidebarWidth(body, sidebar.getBoundingClientRect().width, true);
+  };
+  handle.addEventListener('pointerup', finishDrag);
+  handle.addEventListener('pointercancel', finishDrag);
+  handle.addEventListener('keydown', (event: KeyboardEvent) => {
+    let width = sidebar.getBoundingClientRect().width;
+    if (event.key === 'ArrowLeft') width -= event.shiftKey ? 24 : 8;
+    else if (event.key === 'ArrowRight') width += event.shiftKey ? 24 : 8;
+    else if (event.key === 'Home') width = SIDEBAR_MIN_WIDTH;
+    else if (event.key === 'End') width = SIDEBAR_MAX_WIDTH;
+    else return;
+    event.preventDefault();
+    applySidebarWidth(body, width, true);
+  });
+}
+
+function sidebarVersionLabel(version: string): string {
+  if (!version || version === '0.0.0') return '';
+  return displayVersion(version).replace(/^Arc Power Ver\.\s*/, '');
+}
+
+function updateSidebarVersion(): void {
+  const version = store.get().appVersion;
+  const versionNode = document.querySelector<HTMLElement>('.sidebar-app-version');
+  if (versionNode) {
+    versionNode.textContent = sidebarVersionLabel(version);
+    versionNode.hidden = versionNode.textContent.length === 0;
+    versionNode.title = displayVersion(version);
+  }
+  const settingsLink = document.querySelector<HTMLAnchorElement>('.sidebar-footer-settings');
+  if (settingsLink) settingsLink.title = versionNode?.textContent
+    ? `Settings · ${displayVersion(version)}`
+    : 'Settings';
+}
+
+function createUpdaterControl(): HTMLButtonElement {
+  const check = svgEl('svg', { class: 'icon-update-check', width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' });
+  check.append(
+    svgEl('path', { d: 'M21 12a9 9 0 1 1-6.219-8.56' }),
+    svgEl('polyline', { points: '21 3 21 9 15 9' }),
+  );
+  const download = svgEl('svg', { class: 'icon-update-download', width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' });
+  download.append(
+    svgEl('path', { d: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' }),
+    svgEl('polyline', { points: '7 10 12 15 17 10' }),
+    svgEl('line', { x1: 12, y1: 15, x2: 12, y2: 3 }),
+  );
+  const done = svgEl('svg', { class: 'icon-update-done', width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' });
+  done.append(svgEl('polyline', { points: '20 6 9 17 4 12' }));
+  const button = el('button', {
+    class: 'titlebar-update-btn sidebar-update-btn',
+    id: 'titlebar-update-btn',
+    type: 'button',
+    title: 'Check for updates',
+    'aria-label': 'Check for updates',
+  }, [check, download, done]) as HTMLButtonElement;
+  initUpdaterControl(button);
+  return button;
+}
+
 function renderSidebar() {
   const nav = document.getElementById('sidebar') as HTMLElement;
   const active = currentPage();
+  sidebarUpdateButton ??= createUpdaterControl();
   clear(nav);
-  // Settings remains in the sidebar footer. Tweaks stays registered for
-  // direct links, but is hidden from the main navigation until it is needed.
-  // Driver Library is launched from the Intel GPU card.
-  const navIds = PAGE_IDS.filter((id) => id !== 'settings' && id !== 'driver-library' && id !== 'tweaks');
+  // Settings stays at the foot of the navigation. Tweaks and the Driver
+  // Library remain discoverable from the main menu as well as their existing
+  // contextual entry points.
+  const navIds = PAGE_IDS.filter((id) => id !== 'settings' && id !== 'driver-library');
   nav.append(
-    // M4-D: the sidebar brand - "Arc Power" with "Power" ILLUMINATED
-    // like the title bar (the blue gradient + glow) and a BOLD weight; the
-    // small blue accent bar below stays.
     el('div', { class: 'sidebar-brand' }, [
+      el('img', { class: 'sidebar-brand-logo', src: '../assets/ArcPowerIcon.png', alt: '' }),
       el('span', { class: 'sidebar-brand-arc', text: 'Arc ' }),
       el('span', { class: 'sidebar-brand-power', text: 'Power' }),
     ]),
@@ -464,6 +520,8 @@ function renderSidebar() {
       el('a', {
         class: `sidebar-link${id === active ? ' active' : ''}`,
         href: `#/${id}`,
+      'aria-label': NAV_LABELS[id],
+      title: NAV_LABELS[id],
       }, [
         // M4-D: one fitting icon per tab, left of the name.
         el('span', { class: `sidebar-icon sidebar-icon-${id}` }),
@@ -471,33 +529,26 @@ function renderSidebar() {
       ]),
     )),
     el('div', { class: 'sidebar-footer' }, [
-      renderGlobalRecordingStatus(),
       el('div', { class: 'sidebar-footer-links' }, [
-        el('a', {
-          class: 'sidebar-footer-link',
-          title: 'Open the Arc Power repository',
-          onClick: (e: Event) => {
-            e.preventDefault();
-            void api.openExternal('https://github.com/YamsSE/Arc-Power').catch(() => {
-              toast('error', 'Could not open GitHub', 'The repository link could not be opened.');
-            });
-          },
-        }, [
-          el('span', { class: 'sidebar-icon-github' }),
-          el('span', { class: 'sidebar-footer-label', text: 'GitHub' }),
-        ]),
         el('a', {
           class: `sidebar-link sidebar-footer-settings${active === 'settings' ? ' active' : ''}`,
           href: '#/settings',
+          'aria-label': 'Settings',
           title: 'Settings',
         }, [
           el('span', { class: 'sidebar-icon sidebar-icon-settings' }),
           el('span', { class: 'sidebar-link-label', text: NAV_LABELS.settings }),
         ]),
+        el('div', { class: 'sidebar-version-group' }, [
+          el('span', { class: 'sidebar-app-version', 'aria-hidden': 'true' }),
+          sidebarUpdateButton,
+        ]),
       ]),
     ]),
   );
-  updateGlobalRecordingWidget();
+  initUpdaterControl(sidebarUpdateButton);
+  installSidebarResize();
+  updateSidebarVersion();
 }
 
 async function boot() {
@@ -519,27 +570,15 @@ async function boot() {
   // probe must never prevent the user from seeing a release notification.
   void startupUpdateCheck();
 
-  // Capture status is app-global: the sidebar widget remains visible while
-  // the user moves between pages, and its timer stops as soon as capture ends.
+  // Keep the recording state in the store for dashboard and recording-page
+  // actions, without showing a persistent status tile.
   if (!unsubscribeGlobalRecordingState) {
     unsubscribeGlobalRecordingState = api.onRecordingStateUpdated((next) => setGlobalRecordingStatus(next));
   }
-  if (!unsubscribeGlobalRecordingSettings) {
-    unsubscribeGlobalRecordingSettings = api.onRecordingSettingsUpdated((next) => {
-      recordingMemorySavingMode = next?.memorySavingMode === true;
-      updateGlobalRecordingWidget();
-    });
-  }
-  void api.recordingSettingsGet().then((settings) => {
-    recordingMemorySavingMode = settings?.memorySavingMode === true;
-    updateGlobalRecordingWidget();
-  }).catch(() => {
-    // Missing settings use the stock warm-runtime state.
-  });
   void api.recordingStatus().then((next) => {
     setGlobalRecordingStatus(next);
   }).catch(() => {
-    // The widget already starts in a truthful idle state.
+    // The initial store status keeps capture actions available to the page.
   });
 
   store.subscribe(() => {
@@ -657,15 +696,15 @@ async function boot() {
   };
   if (!noDevice) await resolveFocusedDevice(devices);
 
-  // App version for the header line (M2C-B B3). Failure degrades to the
-  // initial placeholder - the header stays up.
+  // App version in the sidebar footer. Failure degrades to the 0.0.0
+  // placeholder while keeping updater behavior available.
   try {
     const v = await api.appVersion();
     store.set({ appVersion: v?.version ?? '0.0.0' });
   } catch {
     store.set({ appVersion: '0.0.0' });
   }
-  setTitlebarVersion(store.get().appVersion);
+  updateSidebarVersion();
 
 
   // M4-E: the distribution kind (app:build-info IPC) - the Settings
@@ -730,11 +769,16 @@ async function boot() {
     // keep the boot enumeration - the devices slot must never regress on a
     // transient re-fetch failure
   }
+  // The ReBAR verdict arrives with sysinfo, not with every inventory host:
+  // the native host's list-devices rows carry no osController at all. Join
+  // the verdict onto the inventory by stable identity so the pill reflects
+  // the driver/OS answer the sysinfo read already proved.
+  freshDevices = mergeRebarByStableIdentity(freshDevices, info?.videoControllers ?? null);
   store.set({ sysinfo: info ?? null, devices: freshDevices, latestSamples: {} });
-  // A driver that is still initializing at the first read can leave ReBAR
-  // unknown. Ask once more after boot and refresh the matched controller in
-  // the device inventory if the later bounded driver probe succeeds.
-  if (info?.videoControllers?.some((controller) => controller.rebarActive === null)) {
+  // Once after boot, collect any late driver or Windows resource evidence.
+  // Even a disabled driver result can be superseded by a valid active
+  // Windows result; this is a single timer, not a recurring poll.
+  if (info?.videoControllers?.length) {
     window.setTimeout(() => { void (async () => {
       try {
         const refreshed = await api.sysinfo();
@@ -745,6 +789,9 @@ async function boot() {
           const candidate = await api.listDevices();
           if (candidate.length > 0) nextDevices = candidate;
         } catch { /* keep the current inventory */ }
+        // A successful inventory refresh can still lack the verdict (the
+        // native host never emits osController), so join it either way.
+        nextDevices = mergeRebarByStableIdentity(nextDevices, refreshed.videoControllers);
         const selected = nextDevices.find((device) => device.id === current.deviceId) ?? null;
         store.set({
           sysinfo: refreshed,
@@ -752,7 +799,7 @@ async function boot() {
           osGpu: nextDevices.length === 0 ? primaryVideoController(refreshed) : selected?.osController ?? null,
         });
       } catch { /* unknown remains unknown when the delayed probe fails */ }
-    })(); }, 4000);
+    })(); }, 6500);
   }
   noDevice = freshDevices.length === 0;
   if (!noDevice) {

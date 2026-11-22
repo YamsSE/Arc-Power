@@ -75,7 +75,7 @@ function normalizeSettings(raw = {}) {
     ? raw.position
     : 'right';
   const hotkeyLetter = typeof raw.hotkeyLetter === 'string'
-    && (/^[A-Za-z]$/.test(raw.hotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(raw.hotkeyLetter))
+    && (raw.hotkeyLetter === 'None' || /^[A-Za-z]$/.test(raw.hotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(raw.hotkeyLetter))
     ? (/^[A-Za-z]$/.test(raw.hotkeyLetter) ? `Control+${raw.hotkeyLetter.toUpperCase()}` : raw.hotkeyLetter)
     : 'Control+P';
   const stats = Array.isArray(raw.stats)
@@ -114,7 +114,7 @@ function normalizeSettings(raw = {}) {
  *   destroy: () => void,
  * }}
  */
-export function createAdvancedOverlayWindow({ getOverlaySettings, deferBuild = false }) {
+export function createAdvancedOverlayWindow({ getOverlaySettings, deferBuild = false, createWindow = (options) => new BrowserWindow(options) }) {
   let win = null;
   let visible = false;
   let hotkeyRegistered = false;
@@ -129,7 +129,7 @@ export function createAdvancedOverlayWindow({ getOverlaySettings, deferBuild = f
     if (win && !win.isDestroyed()) return win;
     const { bounds } = screen.getPrimaryDisplay();
     const geom = geometryFor(applied.position, bounds);
-    win = new BrowserWindow({
+    win = createWindow({
       width: PANEL_WIDTH,
       // Product mode builds directly from the shortcut, so apply() does not
       // get a chance to perform the display-height clamp first.

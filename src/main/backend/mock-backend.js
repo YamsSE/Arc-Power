@@ -26,13 +26,13 @@
 import { clampAndSnap, clampGpuLock, clampFanPct, formatDeviceName, normalizeFanCurve, sortDevicesDiscreteFirst, deviceHardwareKey, isIntegratedStyleDevice } from './units.js';
 import { EXTENDED_UNAVAILABLE_MSG } from '../apply-routing.js';
 import { collectHealth } from '../health.js';
-import { loadFeaturesetOrFallback, listFeaturesetFiles, CONTROL_TO_CANONICAL } from './featuresets.js';
+import { loadFeaturesetOrFallback, listFeaturesets as scanFeaturesets, CONTROL_TO_CANONICAL } from './featuresets.js';
 import { classifyXeFgExecutable } from '../game-profile-capabilities.js';
 import {
   DISPLAY_QUANTIZATION_OPTIONS, DISPLAY_WIRE_FORMAT_OPTIONS, DISPLAY_BPC_OPTIONS,
   DISPLAY_SCALING_MODE_OPTIONS, DISPLAY_RETRO_SCALING_METHOD_OPTIONS,
   DISPLAY_ARC_SYNC_PROFILE_OPTIONS, DISPLAY_GLOBAL_VRR_MODE_OPTIONS,
-  DISPLAY_SCALING_FLASH_WARNING, DISPLAY_SUPER_RESOLUTION_WARNING,
+  DISPLAY_SCALING_FLASH_WARNING,
 } from './backend.interface.js';
 // M17c: the pure AIB decode (aibOf + the laptop branch) - the SAME decode
 // the real backend runs in getCapabilities (the renderer TS imports fine
@@ -120,26 +120,6 @@ const DISPLAY_FIXTURE = Object.freeze({
     quantizationRange: 'default',
     scalingMode: 'identity',
     scalingDetails: { customX: 100, customY: 100, hardwareModeSet: false, preferredScalingType: 'identity' },
-    superResolution: {
-      supported: true,
-      controllable: true,
-      reason: null,
-      source: 'mock-fixture',
-      nativeResolution: { width: 2560, height: 1440 },
-      nativeRefreshRate: 144,
-      currentSourceResolution: { width: 2560, height: 1440 },
-      currentSourceRefreshRate: 144,
-      enabled: false,
-      modes: [
-        { width: 3200, height: 1800, refreshRate: 144, custom: true },
-        { width: 3840, height: 2160, refreshRate: 144, custom: true },
-      ],
-      customSourceModes: [{ width: 3200, height: 1800 }, { width: 3840, height: 2160 }],
-      presets: [
-        { width: 3200, height: 1800, refreshRate: 144, scale: 1.25, label: '3200 × 1800 (1.25×)' },
-        { width: 3840, height: 2160, refreshRate: 144, scale: 1.5, label: '3840 × 2160 (1.50×)' },
-      ],
-    },
     scalingMethod: displayCapability({ enabled: true, method: 'integer' }, true, true, null, 'mock-fixture'),
     globalVrrMode: displayCapability('fullscreen', true, true, null, 'mock-fixture'),
     vrrMode: displayCapability('recommended', true, true, null, 'mock-fixture'),
@@ -334,6 +314,11 @@ export class MockBackend {
     // (the IGCL init failure degrades to an empty list in main). The
     // renderer then boots in the no-device mode.
     this._noIntel = opts.noIntel === true || process.env.RID_MOCK_NO_INTEL === '1';
+    // A featureset-less distribution (no loadable fixture on disk) reports the
+    // SAME no-device surface: nothing enumerated, IGCL not loaded. It is
+    // separate from the _noIntel knob so a later swap to a real fixture
+    // restores devices (`_applyFeatureset` recomputes it from the fixture).
+    this._noDeviceFixture = false;
     // M8: the unsupported-graphics session knob (the RID_MOCK_FAN_READONLY
     // pattern) - the WHOLE graphics surface degrades to the
     // supported-all-false state. The multi-device iGPU (device 1) degrades
@@ -388,6 +373,15 @@ export class MockBackend {
     return this._featureset.id;
   }
 
+  /**
+   * True when this session enumerates no adapter at all: the honest no-Intel
+   * knob, or a featureset drop with nothing loadable (the loader's explicit
+   * no-device state). Every no-device shape guard keys on this.
+   */
+  get _noDevices() {
+    return this._noIntel || this._noDeviceFixture === true;
+  }
+
   /** M2C-C: the mock's extended-capability flag (mirrors OldIgcl.isCapable). */
   get extendedCapable() {
     return this._extended;
@@ -421,16 +415,22 @@ export class MockBackend {
     return e;
   }
 
-  /** M29: the second device is Arc iGPU by default; mixed mode uses A750. */
+  /**
+   * M29: the second device is Arc iGPU by default; mixed mode uses A750.
+   * A distro that does not ship that line degrades to the first loadable
+   * fixture WITH a warning (never a throw, never a silent substitute); with
+   * nothing loadable it returns null and the session enumerates one device.
+   */
   _secondFeatureset() {
     const { featureset, warning } = loadFeaturesetOrFallback(
       process.env.RID_MOCK_MULTI_ARC === '1' ? 'a750' : 'arc-igpu',
     );
     if (warning) {
-      this._featuresetWarning = warning;
+      this._featuresetWarning = this._featuresetWarning
+        ? `${this._featuresetWarning}; ${warning}` : warning;
       console.error(`[mock-backend] ${warning}`);
     }
-    return featureset;
+    return featureset.noDevice === true ? null : featureset;
   }
 
   /**
@@ -465,6 +465,9 @@ export class MockBackend {
     // numeric id's ceiling to a newly sorted adapter.
     this._refusedCeilings = createRefusedCeilingStore();
     this._featureset = fs;
+    // A no-device fixture keeps its inert entry for device-0 reads, but the
+    // session enumerates nothing (see `_noDevices`).
+    this._noDeviceFixture = fs.noDevice === true;
     this._energyStepJ = this._energyStepOverride !== null
       ? this._energyStepOverride
       : fs.telemetry.powerW * this._intervalS;
@@ -520,7 +523,7 @@ export class MockBackend {
       entries.push(makeEntry(fs, 2));
     } else if (this._multiDevice) {
       const fs2 = this._secondFeatureset();
-      entries.push(makeEntry(fs2, 1, fs2.extendedRanges === true, fs2.hasFan && fs2.fanCanControl === true));
+      if (fs2) entries.push(makeEntry(fs2, 1, fs2.extendedRanges === true, fs2.hasFan && fs2.fanCanControl === true));
     }
     const ordered = this._reverseEnumeration
       ? sortDevicesDiscreteFirst([...entries].reverse().map((entry) => entry.device))
@@ -847,11 +850,23 @@ export class MockBackend {
 
   /**
    * The distribution files + the active selection (drives the header
-   * dropdown in mock mode).
-   * @returns {Promise<{ featuresets: Array<{id: string, name: string, tag: string}>, current: string }>}
+   * dropdown in mock mode). `warning` names a degraded featureset (missing
+   * requested id / skipped unloadable files) so the state is never silent.
+   * @returns {Promise<{ featuresets: Array<{id: string, name: string, tag: string}>, current: string, warning: string|null }>}
    */
   async listFeaturesets() {
-    return { featuresets: listFeaturesetFiles(), current: this._featureset.id };
+    const { featuresets, warnings } = scanFeaturesets();
+    if (warnings.length > 0) {
+      const note = `unloadable mock featureset file(s): ${warnings.join('; ')}`;
+      // Never hide a boot/swap warning behind the scan note.
+      if (!this._featuresetWarning) this._featuresetWarning = note;
+      console.error(`[mock-backend] ${note}`);
+    }
+    return {
+      featuresets,
+      current: this._featureset.id,
+      warning: this._featuresetWarning ?? null,
+    };
   }
 
   /**
@@ -864,10 +879,11 @@ export class MockBackend {
    */
   async setFeatureset(id) {
     const { featureset, warning } = loadFeaturesetOrFallback(id);
-    if (warning) {
-      this._featuresetWarning = warning;
-      console.error(`[mock-backend] ${warning}`);
-    }
+    // Replace (not append) the primary warning: a successful swap must not keep
+    // reporting the previous request's substitution. `_applyFeatureset` may set
+    // a fresh one for a degraded second device.
+    this._featuresetWarning = warning ?? null;
+    if (warning) console.error(`[mock-backend] ${warning}`);
     this._applyFeatureset(featureset);
     const devices = await this.listDevices();
     const active = devices.find((device) => device.deviceKey === this._buildDevice(featureset, 0).deviceKey);
@@ -922,7 +938,7 @@ export class MockBackend {
     // 1.0.1 no-Intel round: the no-Intel session enumerates NOTHING - the
     // renderer's no-device boot path (the same shape a real no-Intel
     // machine produces after the init-failure degrade in main).
-    if (this._noIntel) return [];
+    if (this._noDevices) return [];
     const raw = [{ ...this._device }];
     for (const e of this._extraDevices.values()) raw.push({ ...e.device });
     return sortDevicesDiscreteFirst(raw).map((device, id) => ({ ...device, id }));
@@ -1061,14 +1077,15 @@ export class MockBackend {
    * @param {{ perControl?: object }} result the apply result envelope
    * @param {object|null|undefined} settings the ATTEMPTED settings
    */
-  recordApplyRefusals(deviceId, result, settings) {
-    if (!result || typeof result !== 'object' || !result.perControl) return;
+  recordApplyRefusals(deviceId, result, settings, { ranges: validatedRanges = null } = {}) {
+    if (!result || typeof result !== 'object' || !result.perControl) return false;
     const entry = deviceId === undefined || deviceId === null || deviceId === 0
       ? { caps: this._caps }
       : this._extraDevices.get(deviceId);
-    if (!entry) return;
-    const ranges = entry.caps?.ranges ?? null;
-    recordRefusalEnvelope(this._refusedCeilings, deviceId, result.perControl, settings, ranges);
+    if (!entry) return false;
+    const ranges = validatedRanges ?? entry.caps?.ranges ?? null;
+    const recorded = recordRefusalEnvelope(this._refusedCeilings, deviceId, result.perControl, settings, ranges);
+    return recorded.tempLimitC === true;
   }
 
   async getCurrentSettings(deviceId = 0) {
@@ -1111,7 +1128,7 @@ export class MockBackend {
     const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
     const e = this._entry(id);
     const mobileControls = (e.device?.integrated === true || e.device?.mobile === true) && this._enduranceGamingSupported;
-    const degraded = (id !== 0 && !mobileControls) || this._graphicsUnsupported || this._noIntel;
+    const degraded = (id !== 0 && !mobileControls) || this._graphicsUnsupported || this._noDevices;
     if (degraded) {
       return JSON.parse(JSON.stringify(GRAPHICS_DEGRADED));
     }
@@ -1152,7 +1169,7 @@ export class MockBackend {
     const executable = classifyXeFgExecutable(exePath);
     const xeFg = id === 0
       && !this._graphicsUnsupported
-      && !this._noIntel
+      && !this._noDevices
       && GRAPHICS_FIXTURE.supported.frameGen === true
       && executable.supported;
     return {
@@ -1237,7 +1254,7 @@ export class MockBackend {
       .filter((c) => settings[c] !== null && settings[c] !== undefined);
     const e = this._entry(id);
     const mobileControls = (e.device?.integrated === true || e.device?.mobile === true) && this._enduranceGamingSupported;
-    const degraded = (id !== 0 && !mobileControls) || this._graphicsUnsupported || this._noIntel;
+    const degraded = (id !== 0 && !mobileControls) || this._graphicsUnsupported || this._noDevices;
     if (degraded) {
       for (const c of controls) {
         result.perControl[c] = { ok: false, errorCode: 'unsupported', message: 'graphics features are not supported on this device' };
@@ -1323,7 +1340,7 @@ export class MockBackend {
   async getDisplaySettings(deviceId = 0) {
     const id = deviceId === undefined || deviceId === null ? 0 : deviceId;
     const e = this._entry(id);
-    if (id !== 0 || this._displayUnsupported || this._noIntel) {
+    if (id !== 0 || this._displayUnsupported || this._noDevices) {
       return { deviceKey: e.device.deviceKey ?? null, adapterName: e.device.name ?? null, displays: [] };
     }
     const displays = JSON.parse(JSON.stringify(e.displays ?? []));
@@ -1344,13 +1361,22 @@ export class MockBackend {
     const e = this._entry(id);
     const patch = request?.patch && typeof request.patch === 'object' ? request.patch : {};
     const result = { ok: true, perControl: {} };
-    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'variableRefreshRate', 'vrrMode', 'superResolution', 'hue', 'saturation', 'brightness', 'contrast']
+    if (Object.prototype.hasOwnProperty.call(patch, 'superResolution')) {
+      result.ok = false;
+      result.perControl.superResolution = {
+        ok: false,
+        errorCode: 'unsupported',
+        message: 'Display Super Resolution has been removed; no display state was changed.',
+      };
+      return result;
+    }
+    const controls = ['quantizationRange', 'wireFormat', 'scalingMode', 'displayScalingMethod', 'scalingMethod', 'globalVrrMode', 'variableRefreshRate', 'vrrMode', 'hue', 'saturation', 'brightness', 'contrast']
       .filter((key) => patch[key] !== null && patch[key] !== undefined);
     const fail = (key, errorCode, message) => {
       result.perControl[key] = { ok: false, errorCode, message };
       result.ok = false;
     };
-    if (id !== 0 || this._displayUnsupported || this._noIntel) {
+    if (id !== 0 || this._displayUnsupported || this._noDevices) {
       for (const key of controls) fail(key, 'unsupported', 'display settings are not supported on this device');
       return result;
     }
@@ -1530,34 +1556,6 @@ export class MockBackend {
         display.arcSync.profile = patch.vrrMode;
         display.variableRefreshRate.value = patch.vrrMode !== 'off';
         result.perControl.vrrMode = { ok: display.vrrMode.value === patch.vrrMode, readBackEqual: display.vrrMode.value === patch.vrrMode };
-      }
-    }
-    if (patch.superResolution !== undefined && patch.superResolution !== null) {
-      const value = patch.superResolution;
-      if (typeof value !== 'object' || typeof value.enabled !== 'boolean') {
-        fail('superResolution', 'out-of-range', 'Supernative Resolution requires enabled=true or enabled=false');
-      } else if (display.superResolution?.controllable !== true) {
-        fail('superResolution', 'unsupported', display.superResolution?.reason ?? 'Supernative Resolution is not supported by this display');
-      } else if (!value.enabled) {
-        display.resolution = { ...display.superResolution.nativeResolution };
-        display.refreshRate = display.superResolution.nativeRefreshRate;
-        display.superResolution.currentSourceResolution = { ...display.superResolution.nativeResolution };
-        display.superResolution.currentSourceRefreshRate = display.superResolution.nativeRefreshRate;
-        display.superResolution.enabled = false;
-        result.perControl.superResolution = { ok: true, readBackEqual: true, warning: DISPLAY_SUPER_RESOLUTION_WARNING };
-      } else {
-        const mode = display.superResolution.modes.find((candidate) => candidate.width === value.width && candidate.height === value.height
-          && (value.refreshRate === undefined || Math.abs(candidate.refreshRate - value.refreshRate) <= 1));
-        if (!mode) {
-          fail('superResolution', 'unsupported', 'The requested source resolution is not available in the mock display mode list');
-        } else {
-          display.resolution = { width: mode.width, height: mode.height };
-          display.refreshRate = mode.refreshRate;
-          display.superResolution.currentSourceResolution = { width: mode.width, height: mode.height };
-          display.superResolution.currentSourceRefreshRate = mode.refreshRate;
-          display.superResolution.enabled = true;
-          result.perControl.superResolution = { ok: true, readBackEqual: true, warning: DISPLAY_SUPER_RESOLUTION_WARNING };
-        }
       }
     }
     for (const key of ['hue', 'saturation', 'brightness', 'contrast']) {
@@ -1971,22 +1969,28 @@ export class MockBackend {
   }
 
   async health() {
+    // A degraded featureset (missing requested id, skipped files, or the
+    // explicit no-device state) rides the health report so the operator log
+    // and the UI surface it instead of dying at boot. Additive field only.
+    const featuresetWarning = this._featuresetWarning;
     // 1.0.1 no-Intel round: the no-Intel session reports the same shape a
     // REAL no-Intel machine reports - IGCL not loaded (the renderer keys
     // the no-device mode on health.igclLoaded false + an empty device
     // list). No error text - the honest no-Intel rows must never show the
     // raw IGCL error.
-    if (this._noIntel) {
+    if (this._noDevices) {
       return {
         igclLoaded: false,
         driverVersion: null,
         levelZeroOk: false,
+        ...(featuresetWarning ? { featuresetWarning } : {}),
       };
     }
     return {
       igclLoaded: true,
       driverVersion: `${this._featureset.driverVersion} (mock fixture)`,
       levelZeroOk: true,
+      ...(featuresetWarning ? { featuresetWarning } : {}),
     };
   }
 }

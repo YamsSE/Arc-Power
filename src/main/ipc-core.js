@@ -35,7 +35,10 @@ import { CONTROLS, GRAPHICS_FRAME_GEN_OPTIONS, GRAPHICS_FLIP_MODE_OPTIONS, GRAPH
 import { clampAndSnap, clampGpuLock, nearlyEqual, deviceHardwareKey, isIntegratedStyleDevice } from './backend/units.js';
 import { isBattlemageGpuName } from '../renderer/pure/hardware-icons.ts';
 import { isValidNativeVfCurve } from '../renderer/pure/vf-curve.ts';
-import { pnpParts } from './gpu-inventory.js';
+import { pnpParts, physicalTargetMatches } from './gpu-inventory.js';
+import { withApplyLock as withGpuApplyLock, withBrokerApplyTransaction } from './apply-lock.js';
+import { markTemperatureRefusalCacheUnavailable, recordApplyRefusalsSafely, temperatureRefusalCacheFailure, TEMPERATURE_REFUSAL_CACHE_UNAVAILABLE_MESSAGE } from './apply-refusal-cache-state.js';
+import { readWindowsPnpLocationSnapshot, resolvePnpDeviceByLiveLocation } from './windows-pnp-location.js';
 import { REGISTRY_CATALOG, createMockRegistryCatalog, createMockRegistryState } from './registry-catalog.js';
 import { createMockRegistryApply } from './registry-apply.js';
 import { createMockStartup } from './startup.js';
@@ -43,6 +46,7 @@ import { createMockRtssStartup } from './rtss-startup.js';
 import { createMockDriverInfo } from './driver-info.js';
 import { createMockSysinfo } from './sysinfo.js';
 import { createMockSysStats } from './sys-stats.js';
+import { amdComputeUnitsOf } from '../shared/amd-static-info.ts';
 import { normalizeArcSleepSettings } from './arc-sleep-policy.js';
 import { executeApply, withCapabilityFlags, createNullOldIgcl, ocModeRefusal, refusalPerControl, extendedUnavailableRefusal, extendedUnavailablePerControl, extendedRangesFor, tempCapabilityRefusal, tempCapabilityPerControl, isSysmanPrimaryPowerRequest, wcUnitControls, EXTENDED_UNAVAILABLE_MSG, OC_MODES, OC_MODE_ADVANCED, ALCHEMIST_NEGATIVE_VOLT_OFFSET_MIN_V } from './apply-routing.js';
 import { isElevated as detectElevated } from './elevation.js';
@@ -77,7 +81,7 @@ const execFileAsync = promisify(execFile);
 
 // Display modes are process-global Windows state. Serialize requests by the
 // verified adapter/output identity before choosing the in-process or elevated
-// executor so two renderer actions cannot race the same DEVMODE/custom-mode
+  // executor so two renderer actions cannot race the same DEVMODE
 // transaction.
 const displayApplyLocks = new Map();
 
@@ -87,37 +91,27 @@ async function withDisplayApplyLock(key, task) {
   const turn = new Promise((resolve) => { release = resolve; });
   const queued = previous.then(() => turn);
   displayApplyLocks.set(key, queued);
-  await previous;
+  let timer;
+  const ready = await Promise.race([
+    previous.then(() => true),
+    new Promise((resolve) => { timer = setTimeout(() => resolve(false), 10_000); }),
+  ]);
+  clearTimeout(timer);
+  if (!ready) {
+    // Cancel this queued apply before it reaches the head of the per-output
+    // queue; an abandoned prior request must not cause a late hardware write.
+    void previous.finally(() => {
+      release();
+      if (displayApplyLocks.get(key) === queued) displayApplyLocks.delete(key);
+    });
+    throw new Error('Display apply is busy; try again.');
+  }
   try {
     return await task();
   } finally {
     release();
     if (displayApplyLocks.get(key) === queued) displayApplyLocks.delete(key);
   }
-}
-
-/**
- * Main/worker boundary validation for a requested source mode. Renderer-side
- * validation is UX only; a direct IPC caller must still choose a mode exposed
- * by the fresh capability read-back.
- * @returns {{ ok: true }|{ ok: false, message: string }}
- */
-export function validateDisplaySuperResolutionCapability(settings, displayState, displayKey) {
-  const requested = settings?.superResolution;
-  if (!requested || requested.enabled !== true) return { ok: true };
-  const display = Array.isArray(displayState?.displays)
-    ? displayState.displays.find((candidate) => candidate?.displayKey === displayKey)
-    : null;
-  const capability = display?.superResolution;
-  if (capability?.supported !== true || capability?.controllable !== true) {
-    return { ok: false, message: capability?.reason ?? 'The selected display does not expose a controllable supernative source mode.' };
-  }
-  const listed = [...(capability.modes ?? []), ...(capability.presets ?? [])];
-  const matches = listed.some((mode) => mode.width === requested.width && mode.height === requested.height
-    && (requested.refreshRate === undefined || Math.abs(Number(mode.refreshRate) - Number(requested.refreshRate)) <= 1));
-  return matches
-    ? { ok: true }
-    : { ok: false, message: 'The requested source resolution is not present in the selected display capability list.' };
 }
 
 function validGpuUtilPct(value) {
@@ -312,8 +306,7 @@ const OVERLAY_SCALE_MAX = 2.0;
 const OVERLAY_SCALE_STEP = 0.25;
 // M17e (the user addition - the overlay polling-rate slider): the
 // telemetry push cadence range (mirrored in profile-store.js +
-// overlay-settings.ts; the telemetry-service default is 400 ms - M17g:
-// the stock polling rate FLIPS 500 -> 400).
+// overlay-settings.ts; the telemetry-service default is 600 ms).
 const OVERLAY_POLL_MS_MIN = 100;
 const OVERLAY_POLL_MS_MAX = 2000;
 // M8: the frame-limit clamp fallback (30-300-1-60 - the probe-recorded
@@ -448,24 +441,6 @@ export function sanitizeDisplaySettings(payload) {
         throw new Error('scalingMethod must be { enabled: boolean, method: integer|nearest-neighbour }');
       }
       out[key] = { enabled: value.enabled, method: value.method };
-    } else if (key === 'superResolution') {
-      if (typeof value !== 'object' || value === null || Array.isArray(value) || typeof value.enabled !== 'boolean') {
-        throw new Error('superResolution must be { enabled: boolean, width?: integer, height?: integer, refreshRate?: number }');
-      }
-      if (!value.enabled) {
-        out[key] = { enabled: false };
-      } else if (!Number.isInteger(value.width) || value.width < 321 || value.width > 16384
-        || !Number.isInteger(value.height) || value.height < 321 || value.height > 16384
-        || (value.refreshRate !== undefined && (typeof value.refreshRate !== 'number' || !Number.isFinite(value.refreshRate) || value.refreshRate <= 0 || value.refreshRate > 1000))) {
-        throw new Error('superResolution enabled payload requires integer width/height from 321 to 16384 and an optional refreshRate greater than 0 and at most 1000');
-      } else {
-        out[key] = {
-          enabled: true,
-          width: value.width,
-          height: value.height,
-          ...(value.refreshRate === undefined ? {} : { refreshRate: value.refreshRate }),
-        };
-      }
     } else if (key === 'vrrMode') {
       if (!['recommended', 'excellent', 'good', 'compatible', 'off', 'vesa', 'custom'].includes(value)) {
         throw new Error('vrrMode must be one of: recommended, excellent, good, compatible, off, vesa, custom');
@@ -502,6 +477,7 @@ export function validateOverlayHotkeyLetter(v) {
   if (typeof v !== 'string') {
     throw new Error('overlayHotkeyLetter must be a modifier and a letter, number, or function key');
   }
+  if (v === 'None') return v;
   // Accept existing persisted letters as the historical Control+letter
   // chord, then validate the same grammar used by recording hotkeys.
   const source = /^[A-Za-z]$/.test(v) ? `Control+${v}` : v;
@@ -521,7 +497,18 @@ export function validateOverlayHotkeyLetter(v) {
 
 /** Compare legacy single-letter settings and modern overlay accelerators. */
 export function overlayHotkeysCollide(left, right) {
-  return validateOverlayHotkeyLetter(left) === validateOverlayHotkeyLetter(right);
+  const normalizedLeft = validateOverlayHotkeyLetter(left);
+  const normalizedRight = validateOverlayHotkeyLetter(right);
+  return normalizedLeft !== 'None' && normalizedRight !== 'None' && normalizedLeft === normalizedRight;
+}
+
+/** A Scale shortcut must include a modifier so it cannot fire while typing. */
+export function validatePostprocessScaleHotkey(value) {
+  const accelerator = validateOverlayHotkeyLetter(value);
+  if (typeof value !== 'string' || !value.includes('+')) {
+    throw new Error('postprocessScaleHotkey must include Ctrl, Alt, or Shift');
+  }
+  return accelerator;
 }
 
 /**
@@ -644,8 +631,7 @@ export function clampOverlayBgOpacity(v) {
 /**
  * M17e (the user addition - the overlay polling-rate slider): clamp the
  * telemetry push cadence to the slider's 100-2000 ms range (garbage
- * degrades to the 400 ms default - M17g: the stock polling rate FLIPS 500
- * -> 400; the telemetry-service default; the
+ * degrades to the 600 ms shared default; the telemetry-service default; the
  * same clamp semantics as the scale; the slider cannot produce an
  * out-of-range value).
  * @param {unknown} v
@@ -931,7 +917,11 @@ export async function probeWaiverState(backend, store) {
         // Accept dialog.
         await backend.restoreWaiverState(device.id, false);
         const settings = await store.loadSettings();
-        await store.saveSettings({ ...settings, waiverAccepted: false });
+        if (typeof store.patchSettings === 'function') {
+          await store.patchSettings({ waiverAccepted: false });
+        } else {
+          await store.saveSettings({ ...settings, waiverAccepted: false });
+        }
       }
     }
   }
@@ -950,21 +940,87 @@ export async function probeWaiverState(backend, store) {
  * @param {import('./store/profile-store.js').ProfileStore} store
  * @returns {Promise<'stock'|'advanced'|null>}
  */
-export async function seedOcMode(backend, store) {
+export async function seedOcMode(backend, store, { waitForIdentity, resolvePnpAliases = false, getPnpLocationSnapshot = readWindowsPnpLocationSnapshot } = {}) {
   try {
-    const s = await store.loadSettings();
-    if (typeof backend.setOcMode === 'function') backend.setOcMode(s.ocMode);
+    let s = await store.loadSettings();
+    if (typeof backend.setOcMode === 'function') await backend.setOcMode(s.ocMode);
+    let devices = [];
     // M157: restore keyed modes after the adapter inventory is available.
     // The scalar remains the backwards-compatible fallback for old settings
     // files and for the short pre-inventory seed.
     if (s.ocModes && typeof s.ocModes === 'object' && typeof backend.listDevices === 'function') {
       try {
-        const devices = await backend.listDevices();
-        for (const device of devices) {
-          const mode = typeof device?.deviceKey === 'string' ? s.ocModes[device.deviceKey] : null;
-          if ((mode === 'stock' || mode === 'advanced') && typeof backend.setOcMode === 'function') {
-            await backend.setOcMode(mode, device.id);
+        devices = await backend.listDevices();
+        const collectAliases = (rows) => {
+          const counts = new Map();
+          for (const device of rows) {
+            const aliases = new Set([device?.deviceKey, ...(Array.isArray(device?.deviceKeys) ? device.deviceKeys : [])]
+              .filter((key) => typeof key === 'string' && key.length > 0));
+            for (const key of aliases) {
+              counts.set(key, (counts.get(key) ?? 0) + 1);
+            }
           }
+          return { counts };
+        };
+        const isWritableIdentity = (device) => device?.identityAmbiguous !== true
+          && device?.synthetic !== true && device?.backendKind !== 'os'
+          && Number.isInteger(device?.id) && typeof device?.deviceKey === 'string' && device.deviceKey.length > 0;
+        // The packaged raw --boot-apply backend exposes PCI/BDF identities,
+        // while settings from the window inventory may be keyed by PNP.
+        // Reconcile those keys in memory only through the exact live Windows
+        // PNP-instance-to-BDF bridge.
+        const pnpAliasesById = new Map();
+        const ambiguousPnpById = new Map();
+        const reconcilePnpAliases = async () => {
+          pnpAliasesById.clear();
+          ambiguousPnpById.clear();
+          if (!resolvePnpAliases) return;
+          const snapshot = await getPnpLocationSnapshot();
+          for (const [key, mode] of Object.entries(s.ocModes)) {
+            if (!OC_MODES.includes(mode)) continue;
+            if (!pnpParts(key)) continue;
+            const { device: mappedDevice, ambiguousDevices } = resolvePnpDeviceByLiveLocation(key, devices, snapshot);
+            if (mappedDevice && isWritableIdentity(mappedDevice)) {
+              pnpAliasesById.set(mappedDevice.id, [...(pnpAliasesById.get(mappedDevice.id) ?? []), key]);
+            } else {
+              for (const device of ambiguousDevices.filter(isWritableIdentity)) {
+                ambiguousPnpById.set(device.id, [...(ambiguousPnpById.get(device.id) ?? []), key]);
+              }
+            }
+          }
+        };
+        await reconcilePnpAliases();
+        const missingAliases = Object.entries(s.ocModes)
+          .filter(([key, mode]) => {
+            if (!OC_MODES.includes(mode)) return false;
+            if (resolvePnpAliases && pnpParts(key)) return false;
+            const matches = devices.filter((device) => device?.deviceKey === key || device?.deviceKeys?.includes?.(key));
+            return matches.length !== 1 || !isWritableIdentity(matches[0]);
+          })
+          .map(([key]) => key);
+        if (missingAliases.length > 0 && typeof waitForIdentity === 'function') {
+          // The caller supplies a bounded, awaited startup barrier. No retry
+          // timer is detached from this call, so no stale seed can outlive it.
+          await waitForIdentity(missingAliases);
+          s = await store.loadSettings();
+          devices = await backend.listDevices();
+          if (typeof backend.setOcMode === 'function') await backend.setOcMode(s.ocMode);
+          await reconcilePnpAliases();
+        }
+        const { counts } = collectAliases(devices);
+        for (const device of devices) {
+          if (device?.identityAmbiguous === true || device?.synthetic === true || device?.backendKind === 'os') continue;
+          const allAliases = new Set([device?.deviceKey, ...(Array.isArray(device?.deviceKeys) ? device.deviceKeys : []), ...(pnpAliasesById.get(device.id) ?? [])]
+            .filter((key) => typeof key === 'string' && key.length > 0));
+          const ambiguousSavedAlias = (ambiguousPnpById.get(device.id)?.length ?? 0) > 0
+            || [...allAliases].some((key) => !pnpAliasesById.get(device.id)?.includes(key)
+              && counts.get(key) !== 1 && OC_MODES.includes(s.ocModes[key]));
+          const aliases = [...allAliases].filter((key) => counts.get(key) === 1 || pnpAliasesById.get(device.id)?.includes(key));
+          const modes = [...new Set(aliases.map((key) => s.ocModes[key]).filter((mode) => OC_MODES.includes(mode)))];
+          // Conflicting or ambiguous saved aliases must fail closed to Stock;
+          // otherwise the legacy scalar could silently leave this row Advanced.
+          if (ambiguousSavedAlias || modes.length > 1) await backend.setOcMode('stock', device.id);
+          else if (modes.length === 1) await backend.setOcMode(modes[0], device.id);
         }
       } catch {
         // The pre-window call can occur before backend enumeration. The
@@ -1150,7 +1206,7 @@ export async function resolvePreferredDeviceId(backend, devices = null) {
  * A persisted durable key that disappeared is refused without rewriting it;
  * boot profile application must never retarget another GPU.
  */
-export async function resolveBootDeviceId(backend, store) {
+export async function resolveBootDeviceId(backend, store, { getPnpLocationSnapshot = readWindowsPnpLocationSnapshot } = {}) {
   const devices = await backend.listDevices();
   if (devices.length === 0) return null;
   const keyed = devices.map((d) => ({ ...d, deviceKey: d.deviceKey ?? deviceHardwareKey(d) }));
@@ -1165,33 +1221,16 @@ export async function resolveBootDeviceId(backend, store) {
   if (exactMatches.length > 1) return null;
   let matched = exactMatches[0] ?? null;
   let reconciledPnp = false;
-  // M45: the raw --boot-apply backend enumerates PCI/BDF rows, while the
-  // window path persists a PNP-first inventory key. Reconcile only a PNP
-  // key whose vendor/device pair identifies exactly one current writable
-  // row. A missing or ambiguous pair is stale: choosing by ordinal would
-  // risk applying the profile to another adapter.
+  // Raw startup may see only PCI/BDF rows while settings persist a full PNP
+  // instance key. Require the live Windows instance-to-location bridge;
+  // shared vendor/device/subsystem IDs cannot identify a physical instance.
   if (!matched && persistedKey) {
-    const pnp = pnpParts(persistedKey);
-    if (pnp) {
-      const normalizePciId = (value) => {
-        const text = typeof value === 'number' && Number.isInteger(value)
-          ? value.toString(16)
-          : typeof value === 'string' ? value.trim().replace(/^0x/i, '') : '';
-        return /^[0-9a-f]{1,8}$/i.test(text) ? `0x${text.toLowerCase().slice(-4).padStart(4, '0')}` : null;
-      };
-      const candidates = keyed.filter((device) => device.synthetic !== true
-        && device.backendKind !== 'os'
-        && device.identityAmbiguous !== true
-        && normalizePciId(device.pciVendorId) === pnp.ven
-        && normalizePciId(device.pciDeviceId) === pnp.dev
-        && (!pnp.subsys || pnp.subsys === '00000000'
-          || (normalizePciId(device.pciSubsysVendorId) === `0x${pnp.subsys.slice(4).toLowerCase()}`
-            && normalizePciId(device.pciSubsysId) === `0x${pnp.subsys.slice(0, 4).toLowerCase()}`)));
-      if (candidates.length === 1) {
-        matched = candidates[0];
+    if (pnpParts(persistedKey)) {
+      const { device } = resolvePnpDeviceByLiveLocation(persistedKey, keyed, await getPnpLocationSnapshot());
+      if (device) {
+        matched = device;
         reconciledPnp = true;
-      } else if (candidates.length > 1) return null;
-      else return null;
+      } else return null;
     }
   }
   // A persisted durable identity is an explicit write target. If it has
@@ -1201,13 +1240,14 @@ export async function resolveBootDeviceId(backend, store) {
   const resolvedDevice = matched ?? keyed[0];
   if (settings && (settings.deviceId !== resolvedDevice.id || (!reconciledPnp && settings.deviceKey !== resolvedDevice.deviceKey))) {
     try {
-      await store.saveSettings({
-        ...settings,
+      const patch = {
         deviceId: resolvedDevice.id,
         // Keep the PNP-first inventory identity durable even though this
         // raw backend selected a PCI/BDF row for this boot.
         deviceKey: reconciledPnp ? settings.deviceKey : resolvedDevice.deviceKey,
-      });
+      };
+      if (typeof store.patchSettings === 'function') await store.patchSettings(patch);
+      else await store.saveSettings({ ...settings, ...patch });
     } catch (err) {
       console.log(`[boot] device selection self-heal persist skipped: ${err.message}`);
     }
@@ -1343,10 +1383,11 @@ export function createIpcHandlers({
   // catalog is read-side only - the M3-B apply channel is 'registry-apply'.
   registryCatalog,
   // M3-B: the registry-apply adapter. The DEFAULT is the MOCK (never spawns
-  // PowerShell, never elevates); ipc.js injects the real adapter in the
-  // product path. The mock catalog + mock apply SHARE one mock registry
-  // state so an applied action is honestly reflected by the next
-  // registry-catalog read (the post-apply state refresh).
+  // PowerShell, never elevates); ipc.js injects the Electron compatibility
+  // adapter for standalone runs and unelevated Tauri fallback. Already-
+  // elevated non-mock Tauri applies are intercepted by the native host.
+  // The mock catalog + mock apply SHARE one registry state so the next read
+  // reflects the simulated action.
   registryApply,
   // M4-D2: the system-stats adapter (CPU util/freq/temp + GPU memory).
   // The DEFAULT is the MOCK (fixed deterministic values, never spawns
@@ -1378,6 +1419,10 @@ export function createIpcHandlers({
   // publishing must remain a best-effort consumer and never delay or fail a
   // normal renderer sample.
   rtssOverlay = null,
+  // Native Tauri telemetry owns the renderer sample stream. Electron still
+  // publishes relayed samples to RTSS, but must not start a second set of
+  // telemetry lanes or emit duplicate renderer samples.
+  nativeTelemetry = false,
   // RTSS's profile-backed frame limiter. This is independent of the OSD
   // publisher and is deliberately optional: every failed RTSS read/write
   // falls through to the existing IGCL limiter path.
@@ -1450,6 +1495,8 @@ export function createIpcHandlers({
   // geometry/visibility/hotkey + sends 'advanced-overlay:settings'
   // DIRECTLY to the panel window.
   onAdvancedOverlaySettings = async () => {},
+  onPostprocessScaleHotkeySettings = async () => ({ registered: false }),
+  getPostprocessScaleHotkeyState = async () => ({ registered: false }),
   onRecordingMemorySavingSettings = async () => {},
   getRecordingMemorySavingMode = () => false,
   // M23: the panel's custom close op - the dedicated 'advanced-overlay:close'
@@ -1462,6 +1509,7 @@ export function createIpcHandlers({
   // companion); main.js wires the REAL adapter in the product path and the
   // MOCK seam in mock/ui-verify mode.
   sysmanPowerLimits = null,
+  applyLock = withGpuApplyLock,
   // M17c: the vendor-telemetry lane (non-Intel GPU readouts - the
   // no-device telemetry path's hook). The DEFAULT resolves the NVML/ADL
   // adapter from the sysinfo controller vendor (RID_MOCK_VENDOR=nvml|adl
@@ -1862,8 +1910,8 @@ export function createIpcHandlers({
    * telemetry fields are absent, so the GPU tiles/readouts honestly stay
    * '-' while the CPU util/temp + GPU-memory tiles go live. Same cadence
    * as the device TelemetryService (the overlay polling-rate - the
-   * store's overlayPollMs, default 400 ms - M17g: the stock polling rate
-   * FLIPS 500 -> 400; M17e round-2 N3); the
+   * store's overlayPollMs, default 600 ms - M17g: the stock polling rate
+   * is 600 ms; M17e round-2 N3); the
    * boot-level log-to-file subscription consumes the same telemetry:sample
    * push, so log-file logging works for free.
    * M14: the sample CARRIES the used-RAM-bytes field from the sysStats
@@ -1983,7 +2031,7 @@ export function createIpcHandlers({
     if (telemetry.has(deviceId)) return;
     const generation = ++telemetryGeneration;
     // M17e (round-2 N4, the overlay polling-rate slider): the telemetry
-    // DEFAULT is 400 ms (M17g: the stock polling rate FLIPS 500 -> 400;
+    // DEFAULT is 600 ms (M17g: the stock polling rate is 600 ms;
     // telemetry-service.js) - the overlay's tick reads
     // pollMs ONCE at svc.start() (a change RESTARTS the push with the new
     // interval - the live-restart reaction in profiles-settings-save).
@@ -2546,6 +2594,7 @@ export function createIpcHandlers({
     await startOverlayTelemetry(union);
   };
   const requestRtssOverlaySync = (settings) => {
+    if (nativeTelemetry) return Promise.resolve();
     const syncGeneration = ++rtssOverlaySyncGeneration;
     return syncRtssOverlayTelemetry(settings, rtssOverlayLifecycle, syncGeneration);
   };
@@ -2643,23 +2692,21 @@ export function createIpcHandlers({
         ? caps.deviceKey
         : null);
     const physicalTarget = expectedTarget?.physicalTarget ?? physicalTargetOf(target);
-    const recordRefusals = (result) => {
-      if (!result || typeof result !== 'object') return;
-      if (result.ocModeRefused === true || result.extendedUnavailable === true) return;
-      try {
-        // M17c (step-4 N2): record the CLAMPED attempted values - the value
-        // the driver actually saw. The apply-settings handler already
-        // pre-clamps `settings` with the same ranges, so this re-clamp is
-        // idempotent for today's callers; it makes the recording contract
-        // self-contained (a direct runApply caller can never record a
-        // pre-clamp value whose snap lands above the caps max and no-ops in
-        // mergeIntoRanges).
-        const attempted = result.refused
-          ?? clampSettings(settings, profileApply === true ? extendedRangesFor(caps) : caps.ranges);
-        backend.recordApplyRefusals?.(deviceId, result, attempted);
-      } catch {
-        // a store failure must never break the apply flow
-      }
+    const recordRefusals = async (envelope) => {
+      // M17c (step-4 N2): record the CLAMPED attempted values - the value
+      // the driver actually saw. The apply-settings handler already
+      // pre-clamps `settings` with the same ranges, so this re-clamp is
+      // idempotent for today's callers; it makes the recording contract
+      // self-contained (a direct runApply caller can never record a
+      // pre-clamp value whose snap lands above the caps max and no-ops in
+      // mergeIntoRanges).
+      const attempted = envelope?.refused ?? envelope?.result?.refused
+        ?? clampSettings(settings, profileApply === true ? extendedRangesFor(caps) : caps.ranges);
+      await recordApplyRefusalsSafely(backend, deviceId, envelope, attempted, {
+        ranges: caps?.ranges ?? null,
+        deviceKey,
+        physicalTarget,
+      });
     };
     const rememberAcceptedTemperature = (envelope) => {
       const cacheKey = acceptedTemperatureKey(deviceId, deviceKey, physicalTarget);
@@ -2686,30 +2733,43 @@ export function createIpcHandlers({
         // request - the worker's gate thresholds must match the parent's
         // (the worker's own caps decode the subsystem only; on a laptop the
         // parent's portable branch could differ).
-        const out = await applyRunner.apply({
-          deviceId,
-          deviceKey,
-          physicalTarget,
-          settings,
-          waiverAccepted,
-          ocMode,
-          profileApply,
-          limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null },
-        });
+        let out;
+        try {
+          out = await applyRunner.apply({
+            deviceId,
+            deviceKey,
+            physicalTarget,
+            settings,
+            waiverAccepted,
+            ocMode,
+            profileApply,
+            limitsKey: { pciDeviceId: caps.pciDeviceId ?? null, aibVendor: caps.aibVendor ?? null, aibModel: caps.aibModel ?? null },
+          });
+        } catch (error) {
+          if (Number.isFinite(settings?.tempLimitC)) await markTemperatureRefusalCacheUnavailable(backend, error);
+          throw error;
+        }
         // S2 G2 mirror: when the driver lost the waiver, the worker's
         // per-control results carry waiver-not-set. Clear the parent-side
         // in-memory flag so getCapabilities reports unaccepted and the
         // dialog re-shows - the wedge (stale-true parent flag with failing
         // applies) must never happen.
         const normalized = normalizeApply(out);
+        await recordRefusals(normalized);
         rememberAcceptedTemperature(normalized);
         if (hasWaiverNotSet(normalized.result)) await backend.restoreWaiverState(deviceId, false);
-        recordRefusals(normalized.result);
         return normalized;
       }
-      const normalized = normalizeApply(await executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply, waiverAccepted }, ocMode, sysmanPowerLimits }));
+      let applied;
+      try {
+        applied = await executeApply({ backend, oldIgcl, deviceId, deviceKey, physicalTarget, settings, opts: { profileApply, waiverAccepted }, ocMode, sysmanPowerLimits });
+      } catch (error) {
+        if (Number.isFinite(settings?.tempLimitC)) await markTemperatureRefusalCacheUnavailable(backend, error);
+        throw error;
+      }
+      const normalized = normalizeApply(applied);
+      await recordRefusals(normalized);
       rememberAcceptedTemperature(normalized);
-      recordRefusals(normalized.result);
       return normalized;
     };
     const first = await attempt(caps.waiverAccepted === true);
@@ -2760,6 +2820,57 @@ export function createIpcHandlers({
       return (await backend.listDevices()).find((device) => device.id === deviceId) ?? null;
     }
     return null;
+  };
+
+  // Read a per-adapter mode only through aliases that uniquely identify one
+  // writable physical row in the current inventory. Multiple saved modes on
+  // the same refined identity are a conflict, not a reason to pick one.
+  const persistedDeviceMode = async (target, settings) => {
+    if (!target || target.identityAmbiguous === true || target.synthetic === true || target.backendKind === 'os') {
+      return { mode: null, conflict: false, aliases: [], identityStale: true };
+    }
+    let devices = [];
+    let inventoryAvailable = typeof backend.listDevices === 'function';
+    if (inventoryAvailable) {
+      try { devices = await backend.listDevices(); }
+      catch { return { mode: null, conflict: false, aliases: [], identityStale: true }; }
+      const sessionMatches = devices.filter((device) => device?.id === target.id);
+      if (sessionMatches.length !== 1
+        || sessionMatches[0]?.identityAmbiguous === true
+        || sessionMatches[0]?.synthetic === true
+        || sessionMatches[0]?.backendKind === 'os'
+        || !physicalTargetMatches(sessionMatches[0], target, devices)) {
+        return { mode: null, conflict: false, aliases: [], identityStale: true };
+      }
+    }
+    const freshTarget = inventoryAvailable ? devices.find((device) => device.id === target.id) : target;
+    const aliases = new Set([target.deviceKey, ...(Array.isArray(target.deviceKeys) ? target.deviceKeys : []),
+      freshTarget?.deviceKey, ...(Array.isArray(freshTarget?.deviceKeys) ? freshTarget.deviceKeys : [])]
+      .filter((key) => typeof key === 'string' && key.length > 0));
+    const ambiguousSavedAlias = [...aliases].some((key) => {
+      if (!OC_MODES.includes(settings?.ocModes?.[key])) return false;
+      if (!inventoryAvailable) return key !== target.deviceKey;
+      const matches = devices.filter((device) => device?.deviceKey === key || device?.deviceKeys?.includes?.(key));
+      return matches.length !== 1 || matches[0]?.id !== target.id
+        || matches[0]?.identityAmbiguous === true || matches[0]?.synthetic === true || matches[0]?.backendKind === 'os';
+    });
+    const uniqueAliases = [...aliases].filter((key) => {
+      // Legacy/mock backends may expose only the selected target. Its primary
+      // key is the one exact identity assertion available; never infer any
+      // secondary aliases without an inventory to check uniqueness against.
+      if (!inventoryAvailable) return key === target.deviceKey;
+      const matches = devices.filter((device) => device?.deviceKey === key || device?.deviceKeys?.includes?.(key));
+      return matches.length === 1 && matches[0]?.id === target.id && matches[0]?.identityAmbiguous !== true
+        && matches[0]?.synthetic !== true && matches[0]?.backendKind !== 'os';
+    });
+    const modes = [...new Set(uniqueAliases.map((key) => settings?.ocModes?.[key]).filter((mode) => OC_MODES.includes(mode)))];
+    return {
+      mode: modes.length === 1 ? modes[0] : null,
+      conflict: modes.length > 1 || ambiguousSavedAlias,
+      ambiguousAlias: ambiguousSavedAlias,
+      aliases: uniqueAliases,
+      identityStale: false,
+    };
   };
 
   // Resolve a Game Profile assignment by stable physical identity. The
@@ -3195,12 +3306,38 @@ export function createIpcHandlers({
     }
     return { enabled: value.enabled };
   };
-  const postprocessTarget = async (value) => {
-    const exePath = canonicalExePath(value);
-    if (!exePath) throw new Error('Choose a valid game executable.');
-    return exePath;
+  // Layout mutations and their settings/overlay reactions form one broker
+  // operation. A rejected operation must not block later requests.
+  let layoutQueue = Promise.resolve();
+  const withLayoutOperation = (operation) => {
+    const result = layoutQueue.then(operation);
+    layoutQueue = result.then(() => undefined, () => undefined);
+    return result;
   };
-
+  const withLayoutAndSettingsOperation = (operation) => queueSettingsSave(() => withLayoutOperation(operation));
+  const mutateOverlayLayout = async (method, value) => {
+    if (typeof overlayLayoutStore?.mutateAndApply !== 'function'
+      && typeof overlayLayoutStore?.[method] !== 'function') throw new Error('Overlay layouts are unavailable');
+    const combined = await overlayLayoutStore.mutateAndApply?.(method, value);
+    let data;
+    let alreadyPersisted = false;
+    if (combined !== null && combined !== undefined) {
+      if (!combined.data || !combined.cache || typeof store.acceptSettingsSnapshot !== 'function') {
+        throw new Error('Native overlay layout transaction returned an invalid settings snapshot');
+      }
+      store.acceptSettingsSnapshot(combined.cache);
+      data = combined.data;
+      alreadyPersisted = true;
+    } else {
+      if (typeof overlayLayoutStore?.[method] !== 'function') throw new Error('Overlay layouts are unavailable');
+      data = method === 'rename'
+        ? await overlayLayoutStore.rename(value?.id, value?.name)
+        : await overlayLayoutStore[method](value);
+    }
+    const selected = data.layouts?.find((item) => item.id === data.activeId) ?? data.layouts?.[0];
+    if (method !== 'rename' && selected) await applyOverlayLayout(selected, { alreadyPersisted });
+    return data;
+  };
   const handlers = {
     'postprocess-sharpening:get': async (...args) => {
       assertNoPayload(args, 'postprocess-sharpening:get');
@@ -3210,18 +3347,31 @@ export function createIpcHandlers({
       assertNoPayload(args, 'postprocess-sharpening:set');
       return postprocessService().setGlobal(postprocessValue(value));
     },
-    'postprocess-sharpening:game-get': async (exePath, ...args) => {
-      assertNoPayload(args, 'postprocess-sharpening:game-get');
-      return postprocessService().getGame(await postprocessTarget(exePath));
+    'postprocess-sharpening:select-window': async (...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:select-window');
+      return postprocessService().selectWindow();
     },
-    'postprocess-sharpening:game-set': async (exePath, override, ...args) => {
-      assertNoPayload(args, 'postprocess-sharpening:game-set');
-      const value = override === null ? null : postprocessValue(override);
-      return postprocessService().setGame(await postprocessTarget(exePath), value);
+    'postprocess-sharpening:stop-window': async (...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:stop-window');
+      return postprocessService().stopWindowSelection();
     },
-    'postprocess-sharpening:launch-game': async (exePath, ...args) => {
-      assertNoPayload(args, 'postprocess-sharpening:launch-game');
-      return postprocessService().launchGame(await postprocessTarget(exePath));
+    'postprocess-sharpening:hotkey-get': async (...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:hotkey-get');
+      const settings = await store.loadSettings();
+      return { accelerator: settings.postprocessScaleHotkey ?? 'Alt+F10', ...await getPostprocessScaleHotkeyState() };
+    },
+    'postprocess-sharpening:hotkey-set': async (value, ...args) => {
+      assertNoPayload(args, 'postprocess-sharpening:hotkey-set');
+      const accelerator = validatePostprocessScaleHotkey(value);
+      const settings = await store.loadSettings();
+      const hud = settings.overlayHotkeyLetter ?? 'O';
+      const advanced = settings.advancedOverlayHotkeyLetter ?? 'P';
+      if (overlayHotkeysCollide(accelerator, hud) || overlayHotkeysCollide(accelerator, advanced)) {
+        throw new Error('Scale hotkey must differ from both overlay hotkeys.');
+      }
+      await store.saveSettings({ ...settings, postprocessScaleHotkey: accelerator });
+      const registration = await onPostprocessScaleHotkeySettings({ postprocessScaleHotkey: accelerator });
+      return { accelerator, ...(registration && typeof registration === 'object' ? registration : {}) };
     },
     'arc-super-resolution:get': async (...args) => {
       assertNoPayload(args, 'arc-super-resolution:get');
@@ -3230,15 +3380,6 @@ export function createIpcHandlers({
     'arc-super-resolution:set': async (value, ...args) => {
       assertNoPayload(args, 'arc-super-resolution:set');
       return postprocessService().setAsr(asrPostprocessValue(value));
-    },
-    'arc-super-resolution:game-get': async (exePath, ...args) => {
-      assertNoPayload(args, 'arc-super-resolution:game-get');
-      return postprocessService().getAsrGame(await postprocessTarget(exePath));
-    },
-    'arc-super-resolution:game-set': async (exePath, override, ...args) => {
-      assertNoPayload(args, 'arc-super-resolution:game-set');
-      const value = override === null ? null : asrPostprocessValue(override);
-      return postprocessService().setAsrGame(await postprocessTarget(exePath), value);
     },
     'health': async () => collectHealth(backend),
 
@@ -3638,13 +3779,33 @@ export function createIpcHandlers({
           return { ok: Object.keys(perControl).length === 0, perControl, graphicsState: decorateGraphicsState(baseGraphicsState, null) };
         }
         let settingsForDriver = { ...settings };
+        const frameLimitRequested = Object.prototype.hasOwnProperty.call(settings, 'frameLimit');
         const controllerOwnsFrameLimit = typeof arcSleepTransaction?.setBaseFrameLimit === 'function';
-        const rtssApply = Object.prototype.hasOwnProperty.call(settings, 'frameLimit')
-          ? (typeof arcSleepTransaction?.setBaseFrameLimit === 'function'
-            ? await arcSleepTransaction.setBaseFrameLimit(settings.frameLimit, { deviceKey: target?.deviceKey ?? expectedDeviceKey })
-            : await applyRtssFrameLimit(settings.frameLimit))
-          : null;
-        if (rtssApply?.handled === false && !controllerOwnsFrameLimit && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
+        // A native-owner host hands the broker a read-only handle (`getSnapshot`,
+        // no `withTransaction`), so this apply runs without a transaction at all.
+        // Reaching `graphics:apply` in that state means the native Graphics gate
+        // delegated - it only does that for a journal it cannot parse, i.e. a cap
+        // that may belong to another writer - or that the host has no controller.
+        // Either way a direct RTSS/driver frame-limit write would land with no
+        // recovery record and could clobber a cap Arc Sleep does not own, so the
+        // request fails closed instead.
+        const arcSleepSeamWithheld = typeof arcSleepController?.getSnapshot === 'function'
+          && typeof arcSleepController?.withTransaction !== 'function';
+        const frameLimitRefused = frameLimitRequested
+          && (arcSleepSeamWithheld || (arcSleepTransaction != null && !controllerOwnsFrameLimit));
+        const frameLimitOwned = controllerOwnsFrameLimit || frameLimitRefused;
+        const rtssApply = frameLimitRefused
+          ? {
+            handled: false,
+            ok: false,
+            error: 'Arc Sleep owns the FPS limiter on this host and could not verify that changing it is safe.',
+          }
+          : (frameLimitRequested
+            ? (controllerOwnsFrameLimit
+              ? await arcSleepTransaction.setBaseFrameLimit(settings.frameLimit, { deviceKey: target?.deviceKey ?? expectedDeviceKey })
+              : await applyRtssFrameLimit(settings.frameLimit))
+            : null);
+        if (rtssApply?.handled === false && !frameLimitOwned && frameLimitRequested) {
           // RTSS may expose a wider 1-1000 range than the Intel driver. If a
           // verified RTSS write fails, re-clamp this same request against the
           // driver range before taking the IGCL fallback path.
@@ -3656,7 +3817,7 @@ export function createIpcHandlers({
         if (rtssApply?.handled === true) {
           const { frameLimit: _rtssFrameLimit, ...withoutFrameLimit } = settingsForDriver;
           settingsForDriver = withoutFrameLimit;
-        } else if (controllerOwnsFrameLimit && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
+        } else if (frameLimitOwned && frameLimitRequested) {
           // The Arc Sleep controller owns provider selection, identity pinning,
           // recovery journaling and read-back. Never bypass it with a direct
           // driver write when both its RTSS and IGCL paths refuse a request.
@@ -3679,8 +3840,8 @@ export function createIpcHandlers({
             driverOut = { ok: false, perControl: {} };
           }
         }
-        const frameLimitOwnerFailed = controllerOwnsFrameLimit
-          && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')
+        const frameLimitOwnerFailed = frameLimitOwned
+          && frameLimitRequested
           && rtssApply?.handled !== true;
         const rtssRollback = driverOut?.ok === true && !frameLimitOwnerFailed
           ? { ok: true }
@@ -3706,7 +3867,7 @@ export function createIpcHandlers({
               message: `FPS limit rollback failed: ${rtssRollback.error}`,
             };
           }
-        } else if (controllerOwnsFrameLimit && Object.prototype.hasOwnProperty.call(settings, 'frameLimit')) {
+        } else if (frameLimitOwned && frameLimitRequested) {
           perControl.frameLimit = {
             ok: false,
             errorCode: 'limiter-unavailable',
@@ -3734,11 +3895,22 @@ export function createIpcHandlers({
       // 'display:get' is the page's Display-view load read
       // (assertValidDeviceId-guarded like graphics:get - the renderer NEVER
       // calls it with a null deviceId: the no-Intel page guard renders
-      // 'No GPU available.' first). The backend never throws - the
-      // { displays: [] } shape is the honest no-controls degrade.
-      'display:get': async (deviceId) => {
+      // 'No GPU available.' first). Ordinary read failures degrade to
+      // { displays: [] }; keyed stale-target failures are surfaced so the
+      // renderer cannot display another adapter's state after reordering.
+      'display:get': async (deviceId, expectedDeviceKey) => {
         assertValidDeviceId(deviceId);
-        return backend.getDisplaySettings(deviceId);
+        // Mock/legacy clients keep the original unkeyed read contract. A
+        // real keyed request pins the numeric session id to the physical
+        // adapter the renderer selected; the backend rechecks this identity
+        // against a fresh IGCL device resolution under the Display lock.
+        if (backend.kind === 'mock' || expectedDeviceKey === undefined) {
+          return backend.getDisplaySettings(deviceId);
+        }
+        if (typeof expectedDeviceKey !== 'string' || expectedDeviceKey.trim().length === 0) {
+          throw new Error('invalid GPU target: expected device key must be a nonempty string');
+        }
+        return backend.getDisplaySettings(deviceId, expectedDeviceKey);
       },
 
       // M10b: the DEDICATED display apply path (plan-review S1, the
@@ -3796,18 +3968,6 @@ export function createIpcHandlers({
           }
           const displayKey = displayKeyInNamespace(request.displayKey, currentTarget.deviceKey);
           const settings = sanitizeDisplaySettings(request.patch);
-          let preflightState = null;
-          if (settings.superResolution?.enabled === true) {
-            try { preflightState = await backend.getDisplaySettings(deviceId); } catch { preflightState = null; }
-            const capability = validateDisplaySuperResolutionCapability(settings, preflightState, displayKey);
-            if (!capability.ok) {
-              return {
-                ok: false,
-                perControl: { superResolution: { ok: false, errorCode: 'unsupported', message: capability.message } },
-                displayState: preflightState,
-              };
-            }
-          }
           const applyRequest = { deviceId, deviceKey: currentTarget.deviceKey, displayKey, physicalTarget: physicalTargetOf(currentTarget), settings };
           if (applyRunner) {
             const out = await applyRunner.displayApply(applyRequest);
@@ -3821,7 +3981,7 @@ export function createIpcHandlers({
         });
       },
 
-      'apply-settings': async (deviceId, payload, opts) => {
+      'apply-settings': async (deviceId, payload, opts) => withBrokerApplyTransaction(async () => {
         assertValidDeviceId(deviceId);
         const settings = sanitizeSettings(payload);
         let expectedTarget = null;
@@ -3862,22 +4022,37 @@ export function createIpcHandlers({
         // A770) must refuse with OC_CEILING_REFUSAL_MSG, never a
         // silent clamp. The flagless interactive path is UNCHANGED - the
         // mode still gates the slider applies.
+        if (Number.isFinite(settings.tempLimitC) && temperatureRefusalCacheFailure(backend)) {
+          let state = null;
+          try { state = await backend.getCurrentSettings(deviceId); } catch { /* degraded */ }
+          const perControl = Object.fromEntries(Object.keys(settings).map((key) => [key, {
+            ok: false,
+            errorCode: 'refusal-cache-unavailable',
+            message: TEMPERATURE_REFUSAL_CACHE_UNAVAILABLE_MESSAGE,
+          }]));
+          return {
+            result: { ok: false, perControl },
+            state,
+            temperatureRefusalCacheUnavailable: true,
+          };
+        }
         const caps = await backend.getCapabilities(deviceId);
         const persisted = await store.loadSettings();
         // Capabilities are the authoritative mode for this physical GPU.
         // The persisted scalar/map fallback is only for older backends that
         // do not yet echo ocMode in their capability payload.
-        const targetKey = typeof caps?.deviceKey === 'string' ? caps.deviceKey : null;
-        const keyedMode = targetKey && persisted.ocModes && typeof persisted.ocModes === 'object'
-          ? persisted.ocModes[targetKey]
-          : null;
+        const target = await modeTarget(deviceId);
+        const { mode: keyedMode, conflict, identityStale } = await persistedDeviceMode(target, persisted);
+        const modeIdentityConflict = conflict || identityStale;
         // A keyed persisted mode wins for a physical adapter. With no keyed
         // override, retain the legacy scalar setting as the session default;
         // the capability echo is only a fallback for older callers that do
         // not persist settings. This keeps direct IPC tests and old settings
         // files compatible while preventing one GPU's keyed mode from
         // leaking into another GPU's apply gate.
-        const ocMode = keyedMode === 'advanced' || keyedMode === 'stock'
+        const ocMode = modeIdentityConflict
+          ? 'stock'
+          : keyedMode === 'advanced' || keyedMode === 'stock'
           ? keyedMode
           : persisted.ocMode === 'advanced' || persisted.ocMode === 'stock'
             ? persisted.ocMode
@@ -4014,9 +4189,9 @@ export function createIpcHandlers({
             perControl,
           },
         });
-      },
+      }, { label: 'apply-settings' }),
 
-      'reset-to-defaults': async (deviceId) => {
+      'reset-to-defaults': async (deviceId) => withBrokerApplyTransaction(async () => {
         assertValidDeviceId(deviceId);
         // M2C-C: the reset write needs elevation like any other OC write
         // (0-value writes are refused even elevated - reset runs
@@ -4027,21 +4202,40 @@ export function createIpcHandlers({
         const resetTemperatureKey = acceptedTemperatureKey(deviceId, target?.deviceKey ?? null, resetPhysicalTarget);
         acceptedTemperatureLimits.delete(resetTemperatureKey);
         oldIgcl?.clearAcceptedTemperatureLimitC?.(deviceId, target?.deviceKey ?? null, resetPhysicalTarget);
+        let sysmanOffsetReadable = false;
+        const readSysmanVoltageOffset = typeof sysmanPowerLimits?.readVoltageOffsetResult === 'function'
+          ? (id, physical) => sysmanPowerLimits.readVoltageOffsetResult(id, physical)
+          : typeof sysmanPowerLimits?.readVoltageOffset === 'function'
+            ? (id, physical) => sysmanPowerLimits.readVoltageOffset(id, physical)
+            : null;
         // M26: the legacy Alchemist Sysman voltage target is independent of
-        // IGCL's reset-to-default operation. Clear a known negative Sysman
-        // offset first, and require its exact zero read-back, so Reset cannot
-        // report a clean state while an undervolt remains active underneath.
-        if (sysmanPowerLimits
-          && typeof sysmanPowerLimits.readVoltageOffset === 'function'
-          && typeof sysmanPowerLimits.setVoltageOffset === 'function') {
-          let prior = null;
-          try {
-            prior = await sysmanPowerLimits.readVoltageOffset(deviceId, physicalTargetOf(target));
-          } catch {
-            // An unreadable companion is not itself proof that an offset is
-            // active; continue with the normal reset and its backend verify.
-          }
-          if (Number.isFinite(prior?.offsetV) && prior.offsetV < -RESET_VERIFY_EPS) {
+        // IGCL's reset-to-default operation. A known unsupported result means
+        // the selected GPU has no legacy Sysman voltage target. Every other
+        // unreadable result fails closed: otherwise an active offset could
+        // survive while Reset reports success. Clear a known negative offset
+        // first, then require its exact zero read-back.
+        if (readSysmanVoltageOffset) {
+          // Protect the Sysman read/clear as one writer operation. Release
+          // before resetToDefaults, which takes the same named lock itself.
+          // A writer can run in the gap between these two operations; the
+          // reset read-back below remains the authority and will fail closed
+          // if the combined reset did not reach defaults.
+          await applyLock(async () => {
+            let prior = null;
+            try {
+              prior = await readSysmanVoltageOffset(deviceId, resetPhysicalTarget);
+            } catch (error) {
+              throw new Error(`reset-to-defaults could not read the Sysman voltage offset: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            if (prior?.errorCode === 'unsupported') return;
+            if (prior?.ok !== true || !Number.isFinite(prior.offsetV)) {
+              throw new Error(`reset-to-defaults could not verify the Sysman voltage offset: ${prior?.message ?? prior?.errorCode ?? 'read-back unavailable'}`);
+            }
+            sysmanOffsetReadable = true;
+            if (prior.offsetV >= -RESET_VERIFY_EPS) return;
+            if (typeof sysmanPowerLimits?.setVoltageOffset !== 'function') {
+              throw new Error('reset-to-defaults could not clear the Sysman voltage offset: setter unavailable');
+            }
             let clearPayload = { offsetV: 0 };
             try {
               const persisted = await store.loadSettings();
@@ -4059,7 +4253,7 @@ export function createIpcHandlers({
             if (clear?.ok !== true || !Number.isFinite(clear.offsetV) || Math.abs(clear.offsetV) > RESET_VERIFY_EPS) {
               throw new Error(`reset-to-defaults could not clear the Sysman voltage offset: ${clear?.message ?? 'zero read-back was not verified'}`);
             }
-          }
+          });
         }
         let state = null;
         let hasWorkerState = false;
@@ -4099,6 +4293,20 @@ export function createIpcHandlers({
               mismatched.push(`${key}: read-back ${value} != default ${range.default}`);
             }
           }
+          if (sysmanOffsetReadable) {
+            let sysmanState = null;
+            try {
+              sysmanState = await applyLock(() => readSysmanVoltageOffset(deviceId, resetPhysicalTarget));
+            } catch {
+              // A previously readable companion that becomes unreadable
+              // cannot prove that the offset stayed cleared across reset.
+            }
+            if (sysmanState?.ok !== true || !Number.isFinite(sysmanState.offsetV)) {
+              mismatched.push('Sysman voltage offset: read-back unavailable');
+            } else if (Math.abs(sysmanState.offsetV) > RESET_VERIFY_EPS) {
+              mismatched.push(`Sysman voltage offset: read-back ${sysmanState.offsetV} != 0`);
+            }
+          }
           if (caps.controls.gpuLock && state?.gpuLock
             && (!nearlyEqual(state.gpuLock.voltageV, 0, RESET_VERIFY_EPS) || !nearlyEqual(state.gpuLock.freqMhz, 0, RESET_VERIFY_EPS))) {
             mismatched.push(`gpuLock: read-back ${state.gpuLock.voltageV}V/${state.gpuLock.freqMhz}MHz != unlocked (0,0)`);
@@ -4132,7 +4340,7 @@ export function createIpcHandlers({
           diagnostic = `reset-to-defaults verification failed: ${mismatched.join('; ')}`;
         }
         throw new Error(diagnostic);
-      },
+      }, { label: 'reset-to-defaults' }),
 
       'waiver-get': async (deviceId) => {
         assertValidDeviceId(deviceId);
@@ -4269,31 +4477,22 @@ export function createIpcHandlers({
 
       'overlay-layouts-list': async (...args) => {
         if (args.length) throw new Error('overlay-layouts-list takes no arguments');
-        return overlayLayoutStore?.load?.() ?? { activeId: null, layouts: [] };
+        return withLayoutAndSettingsOperation(async () => {
+          const snapshot = await overlayLayoutStore?.loadSnapshot?.();
+          if (snapshot) {
+            if (!snapshot.data || !snapshot.cache || typeof store.acceptSettingsSnapshot !== 'function') {
+              throw new Error('Native overlay layout snapshot returned an invalid settings cache');
+            }
+            store.acceptSettingsSnapshot(snapshot.cache);
+            return snapshot.data;
+          }
+          return await overlayLayoutStore?.load?.() ?? { activeId: null, layouts: [] };
+        });
       },
-      'overlay-layout-save': async (layout) => {
-        if (!overlayLayoutStore?.save) throw new Error('Overlay layouts are unavailable');
-        const data = overlayLayoutStore.save(layout);
-        const selected = data.layouts.find((item) => item.id === data.activeId) ?? data.layouts[0];
-        if (selected) await applyOverlayLayout(selected);
-        return data;
-      },
-      'overlay-layout-rename': async ({ id, name } = {}) => {
-        const data = overlayLayoutStore.rename(id, name);
-        return data;
-      },
-      'overlay-layout-select': async (id) => {
-        const data = overlayLayoutStore.select(id);
-        const selected = data.layouts.find((item) => item.id === data.activeId);
-        if (selected) await applyOverlayLayout(selected);
-        return data;
-      },
-      'overlay-layout-delete': async (id) => {
-        const data = overlayLayoutStore.delete(id);
-        const selected = data.layouts.find((item) => item.id === data.activeId);
-        if (selected) await applyOverlayLayout(selected);
-        return data;
-      },
+      'overlay-layout-save': async (layout) => withLayoutAndSettingsOperation(() => mutateOverlayLayout('save', layout)),
+      'overlay-layout-rename': async ({ id, name } = {}) => withLayoutAndSettingsOperation(() => mutateOverlayLayout('rename', { id, name })),
+      'overlay-layout-select': async (id) => withLayoutAndSettingsOperation(() => mutateOverlayLayout('select', id)),
+      'overlay-layout-delete': async (id) => withLayoutAndSettingsOperation(() => mutateOverlayLayout('delete', id)),
       'stream-status': async () => obsStream?.status?.() ?? { state: 'disconnected', connected: false },
       'stream-connect': async (payload = {}) => obsStream?.connect?.(payload) ?? { state: 'error', connected: false },
       'stream-disconnect': async () => obsStream?.disconnect?.() ?? { state: 'disconnected', connected: false },
@@ -4315,14 +4514,41 @@ export function createIpcHandlers({
       // back to the OS controller bytes / the '-' rows).
       'vendor-info:get': async (...args) => {
         if (args.length > 1) throw new Error('vendor-info:get takes at most a device id');
+        const explicitDeviceId = args.length === 1;
+        let target = null;
+        let osController = null;
+        let gpuVendor = null;
+        let computeUnits = null;
         try {
-      const target = args.length === 1 && Number.isInteger(args[0])
+          target = args.length === 1 && Number.isInteger(args[0])
             ? await backend.getDeviceTarget?.(args[0]) : null;
+          const controllers = typeof sysinfo?.get === 'function'
+            ? (await sysinfo.get())?.videoControllers ?? []
+            : sysinfo?.videoControllers ?? [];
+          const vendorControllers = controllers.filter((controller) => /VEN_(?:1002|10DE)/i.test(String(controller?.pnpDeviceId ?? '')));
+          if (explicitDeviceId && !target) return { vramBytes: null, computeCores: null, computeUnits: null };
+          if (!explicitDeviceId && vendorControllers.length !== 1) {
+            return { vramBytes: null, computeCores: null, computeUnits: null };
+          }
+          const targetPnp = String(target?.pnpDeviceId ?? target?.osController?.pnpDeviceId ?? '').trim().toUpperCase();
+          osController = target?.osController
+            ?? controllers.find((controller) => targetPnp
+              && String(controller?.pnpDeviceId ?? '').trim().toUpperCase() === targetPnp)
+            ?? (!explicitDeviceId ? vendorControllers[0] : null)
+            ?? null;
+          const pnpDeviceId = target?.pnpDeviceId ?? osController?.pnpDeviceId;
+          gpuVendor = target?.gpuVendor === 'amd' || /VEN_1002/i.test(String(pnpDeviceId ?? ''))
+            ? 'amd'
+            : target?.gpuVendor === 'nvidia' || /VEN_10DE/i.test(String(pnpDeviceId ?? ''))
+              ? 'nvidia' : null;
+          computeUnits = gpuVendor === 'amd'
+            ? amdComputeUnitsOf(target?.name ?? osController?.name)
+            : null;
           const lane = target && typeof vendorTelemetry.startFor === 'function'
             ? await vendorTelemetry.startFor(target, { owner: 'static' })
             : await vendorTelemetry.start();
           if (!lane || typeof lane.deviceInfo !== 'function') {
-            return { vramBytes: null, computeCores: null };
+            return { vramBytes: null, computeCores: null, computeUnits };
           }
           const info = await lane.deviceInfo();
           const vramBytes = typeof info?.vramBytes === 'number' && Number.isFinite(info.vramBytes) && info.vramBytes > 0
@@ -4330,10 +4556,10 @@ export function createIpcHandlers({
             : null;
           const computeCores = typeof info?.computeCores === 'number' && Number.isFinite(info.computeCores) && info.computeCores > 0
             ? Math.floor(info.computeCores)
-            : null;
-          return { vramBytes, computeCores };
+              : null;
+          return { vramBytes, computeCores, computeUnits };
         } catch {
-          return { vramBytes: null, computeCores: null };
+          return { vramBytes: null, computeCores: null, computeUnits };
         }
       },
 
@@ -5722,6 +5948,9 @@ export function createIpcHandlers({
           overlayHotkeyLetter: patch.overlayHotkeyLetter === undefined
             ? cur.overlayHotkeyLetter
             : validateOverlayHotkeyLetter(patch.overlayHotkeyLetter),
+          postprocessScaleHotkey: patch.postprocessScaleHotkey === undefined
+            ? cur.postprocessScaleHotkey ?? 'Alt+F10'
+            : validatePostprocessScaleHotkey(patch.postprocessScaleHotkey),
           overlayPosition: patch.overlayPosition === undefined
             ? cur.overlayPosition
             : validateOverlayPosition(patch.overlayPosition),
@@ -5782,8 +6011,8 @@ export function createIpcHandlers({
             : patch.overlayChipNames === true,
           // M17e: the overlay polling-rate - CLAMPED to the slider's
           // 100-2000 ms range (never rejected - the slider cannot produce
-          // an out-of-range value; a garbage patch degrades to the 400 ms
-          // default - M17g: the stock polling rate FLIPS 500 -> 400).
+          // an out-of-range value; a garbage patch degrades to the 600 ms
+          // shared default).
           overlayPollMs: patch.overlayPollMs === undefined
             ? cur.overlayPollMs
             : clampOverlayPollMs(patch.overlayPollMs),
@@ -5848,6 +6077,22 @@ export function createIpcHandlers({
         const effectiveAdvancedHotkey = patch.advancedOverlayHotkeyLetter === undefined
           ? cur.advancedOverlayHotkeyLetter
           : patch.advancedOverlayHotkeyLetter;
+        const effectiveScaleHotkey = patch.postprocessScaleHotkey === undefined
+          ? cur.postprocessScaleHotkey ?? 'Alt+F10'
+          : next.postprocessScaleHotkey;
+        if (patch.postprocessScaleHotkey !== undefined
+          && (overlayHotkeysCollide(effectiveScaleHotkey, effectiveOverlayHotkey)
+            || overlayHotkeysCollide(effectiveScaleHotkey, effectiveAdvancedHotkey))) {
+          throw new Error('postprocessScaleHotkey must differ from both overlay hotkeys');
+        }
+        if (patch.overlayHotkeyLetter !== undefined
+          && overlayHotkeysCollide(effectiveScaleHotkey, effectiveOverlayHotkey)) {
+          throw new Error('overlayHotkeyLetter must differ from the Scale hotkey');
+        }
+        if (patch.advancedOverlayHotkeyLetter !== undefined
+          && overlayHotkeysCollide(effectiveScaleHotkey, effectiveAdvancedHotkey)) {
+          throw new Error('advancedOverlayHotkeyLetter must differ from the Scale hotkey');
+        }
         if (patch.advancedOverlayHotkeyLetter !== undefined) {
           if (overlayHotkeysCollide(effectiveAdvancedHotkey, effectiveOverlayHotkey)) {
             throw new Error('advancedOverlayHotkeyLetter must differ from the overlay hotkey (the accelerators would collide)');
@@ -5889,6 +6134,14 @@ export function createIpcHandlers({
           await store.saveSettingsWithArcSleep(next, next.arcSleep);
         } else {
           await store.saveSettings(next);
+        }
+        if (patch.postprocessScaleHotkey !== undefined
+          && next.postprocessScaleHotkey !== cur.postprocessScaleHotkey) {
+          try {
+            await onPostprocessScaleHotkeySettings({ postprocessScaleHotkey: next.postprocessScaleHotkey });
+          } catch (err) {
+            console.log(`[postprocess] Scale hotkey reaction failed: ${err.message}`);
+          }
         }
         if (patch.memorySavingMode !== undefined && next.memorySavingMode !== cur.memorySavingMode) {
           try {
@@ -6007,8 +6260,9 @@ export function createIpcHandlers({
         if (deviceId === null) return { ocMode: s.ocMode };
         const target = await modeTarget(deviceId);
         const deviceKey = typeof target?.deviceKey === 'string' ? target.deviceKey : null;
-        const saved = deviceKey && s.ocModes && typeof s.ocModes === 'object' ? s.ocModes[deviceKey] : null;
-        return { ocMode: OC_MODES.includes(saved) ? saved : s.ocMode, deviceKey };
+        const { mode: saved, conflict, identityStale } = await persistedDeviceMode(target, s);
+        const identityConflict = conflict || identityStale;
+        return { ocMode: identityConflict ? 'stock' : saved ?? s.ocMode, deviceKey, ...(identityConflict ? { identityConflict: true } : {}) };
       },
 
       'oc-mode-set': async (ocMode, deviceId = null, expectedDeviceKey = null, expectedCurrentMode = null) => {
@@ -6025,22 +6279,40 @@ export function createIpcHandlers({
         }
         const cur = await store.loadSettings();
         let deviceKey = null;
+        let deviceAliases = [];
+        let selectedTarget = null;
         if (deviceId !== null) {
-          const target = await modeTarget(deviceId);
-          deviceKey = typeof target?.deviceKey === 'string' ? target.deviceKey : null;
+          selectedTarget = await modeTarget(deviceId);
+          deviceKey = typeof selectedTarget?.deviceKey === 'string' ? selectedTarget.deviceKey : null;
           if (expectedDeviceKey !== null && deviceKey !== expectedDeviceKey) {
             throw new Error('oc-mode-set: device key mismatch');
           }
-          const savedMode = deviceKey && cur.ocModes && typeof cur.ocModes === 'object'
-            ? cur.ocModes[deviceKey]
-            : null;
-          const currentMode = OC_MODES.includes(savedMode) ? savedMode : cur.ocMode;
+          const { mode: savedMode, conflict, aliases, identityStale, ambiguousAlias } = await persistedDeviceMode(selectedTarget, cur);
+          if (identityStale) throw new Error('oc-mode-set: selected GPU identity changed; refresh and try again');
+          deviceAliases = aliases;
+          if (ambiguousAlias) throw new Error('oc-mode-set: selected GPU has a shared or stale saved identity alias');
+          if (conflict && expectedCurrentMode !== null) throw new Error('oc-mode-set: conflicting saved modes for selected GPU identity');
+          const currentMode = savedMode ?? cur.ocMode;
           if (expectedCurrentMode !== null && currentMode !== expectedCurrentMode) {
             throw new Error('oc-mode-set: current mode changed');
           }
         }
+        if (deviceId !== null) {
+          // Inventory refresh is asynchronous; re-prove the selected session
+          // and physical adapter immediately before changing persisted state.
+          const latest = await persistedDeviceMode(selectedTarget, cur);
+          if (latest.identityStale) throw new Error('oc-mode-set: selected GPU identity changed; refresh and try again');
+          if (latest.ambiguousAlias) throw new Error('oc-mode-set: selected GPU has a shared or stale saved identity alias');
+          if (latest.conflict && expectedCurrentMode !== null) {
+            throw new Error('oc-mode-set: conflicting saved modes for selected GPU identity');
+          }
+          deviceAliases = latest.aliases;
+          if (typeof deviceKey !== 'string' || !deviceAliases.includes(deviceKey)) {
+            throw new Error('oc-mode-set: selected GPU identity changed; refresh and try again');
+          }
+        }
         const ocModes = deviceKey
-          ? { ...(cur.ocModes ?? {}), [deviceKey]: ocMode }
+          ? { ...Object.fromEntries(Object.entries(cur.ocModes ?? {}).filter(([key]) => !deviceAliases.includes(key))), [deviceKey]: ocMode }
           : cur.ocModes;
         // A targeted toggle changes only the keyed override. Keep the scalar
         // as the legacy/default mode for every physical GPU without an
@@ -6125,7 +6397,7 @@ export function createIpcHandlers({
     // responsible for the persisted primary GPU; this starts only the other
     // selected physical adapters so the native OSD is multi-GPU from its
     // first sample, even when no legacy HUD renderer exists.
-    if (rtssOverlay) {
+    if (rtssOverlay && !nativeTelemetry) {
       const lifecycle = rtssOverlayLifecycle;
       const syncGeneration = ++rtssOverlaySyncGeneration;
       void store.loadSettings()

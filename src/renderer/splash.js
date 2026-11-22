@@ -41,6 +41,17 @@ function render(payload = {}) {
   if (skipUpdate) skipUpdate.disabled = !available;
 }
 
+window.arcPowerSplash?.onDownloadProgress?.((payload = {}) => {
+  if (latestState !== 'downloading') return;
+  const percent = Number.isFinite(payload?.percent) ? Math.max(0, Math.min(99, payload.percent)) : null;
+  const downloadedMb = (Math.max(0, Number(payload?.downloadedBytes) || 0) / (1024 * 1024)).toFixed(1);
+  render({
+    state: 'downloading',
+    percent,
+    message: percent === null ? `Downloading update... ${downloadedMb} MB` : `Downloading update... ${percent}%`,
+  });
+});
+
 async function acceptUpdate() {
   if (latestState !== 'available' || !window.arcPowerSplash?.updateNow) return;
   if (updateNow) updateNow.disabled = true;

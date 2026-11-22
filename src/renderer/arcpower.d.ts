@@ -25,10 +25,10 @@ import type {
   GraphicsState,
   ArcSuperResolutionValue,
   ArcSuperResolutionState,
-  ArcSuperResolutionGame,
   PostprocessSharpeningValue,
   PostprocessSharpeningGlobal,
-  PostprocessSharpeningGame,
+  PostprocessWindowSelection,
+  PostprocessScaleHotkeyState,
   PostprocessGlobalSettingsUpdate,
   HealthReport,
   MockFeaturesetsResponse,
@@ -145,20 +145,20 @@ export interface ArcPowerApi {
   graphicsApply(deviceId: number, settings: GraphicsSettings, expectedDeviceKey?: string): Promise<GraphicsApplyResponse>;
   postprocessSharpeningGet(): Promise<PostprocessSharpeningGlobal>;
   postprocessSharpeningSet(value: PostprocessSharpeningValue): Promise<PostprocessSharpeningGlobal>;
-  postprocessSharpeningGameGet(exePath: string): Promise<PostprocessSharpeningGame>;
-  postprocessSharpeningGameSet(exePath: string, override: PostprocessSharpeningValue | null): Promise<PostprocessSharpeningGame>;
-  postprocessSharpeningLaunchGame(exePath: string): Promise<{ pid: number; exePath: string; creationFiletime: string; sharpeningPending: boolean }>;
+  postprocessSharpeningWindowSelect(): Promise<{ canceled: boolean; selection: PostprocessWindowSelection }>;
+  postprocessSharpeningWindowStop(): Promise<{ selection: PostprocessWindowSelection }>;
+  postprocessSharpeningHotkeyGet(): Promise<PostprocessScaleHotkeyState>;
+  postprocessSharpeningHotkeySet(accelerator: string): Promise<PostprocessScaleHotkeyState>;
   arcSuperResolutionGet(): Promise<ArcSuperResolutionState>;
   arcSuperResolutionSet(value: ArcSuperResolutionValue): Promise<ArcSuperResolutionState>;
-  arcSuperResolutionGameGet(exePath: string): Promise<ArcSuperResolutionGame>;
-  arcSuperResolutionGameSet(exePath: string, override: ArcSuperResolutionValue | null): Promise<ArcSuperResolutionGame>;
   onPostprocessGlobalSettingsUpdated(callback: (update: PostprocessGlobalSettingsUpdate) => void): () => void;
-  onPostprocessSharpeningStatus(callback: (status: { active: boolean; reason: string | null; mode?: 'asr' | 'sharpening'; sharpeningActive?: boolean; asrActive?: boolean; sharpeningReason?: string | null; asrReason?: string | null }) => void): () => void;
+  onPostprocessSharpeningStatus(callback: (status: { active: boolean; reason: string | null; mode?: 'asr' | 'sharpening' | 'scale'; sharpeningActive?: boolean; asrActive?: boolean; sharpeningReason?: string | null; asrReason?: string | null; selection?: PostprocessWindowSelection }) => void): () => void;
   /** M10b (the Graphics "Display" view): the display-output read (never
    *  throws - { displays: [] } is the honest no-controls degrade). NEVER
    *  called with a null deviceId - the no-Intel page guard renders
-   *  'No GPU available.' first (assertValidDeviceId would throw). */
-  displayGet(deviceId: number): Promise<DisplayState>;
+   *  'No GPU available.' first (assertValidDeviceId would throw). Pass the
+   *  selected inventory row's key when available to pin a native read. */
+  displayGet(deviceId: number, expectedDeviceKey?: string): Promise<DisplayState>;
   /** Apply display settings for ONE display by the stable physical key from
    *  the display:get payload - the DEDICATED apply path (NO OC waiver, NO
    *  OC-mode gate). Returns the { ok, perControl, displayState } envelope
@@ -166,8 +166,23 @@ export interface ArcPowerApi {
   displayApply(deviceId: number, request: { deviceKey: string; displayKey: string; patch: DisplaySettings }): Promise<DisplayApplyResponse>;
   /** M4O: `opts.profileApply: true` marks a PROFILE apply (the Profiles-page
    *  Apply button) - main skips the OC-mode gate for it (the mode is the
-   *  interactive slider gate ONLY; the ceiling + capability refusals stay). */
-  applySettings(deviceId: number, settings: Settings, opts?: { profileApply?: boolean }): Promise<ApplyResponse>;
+   *  interactive slider gate ONLY; the ceiling + capability refusals stay).
+   *  Direct GPU applies may also attach `expectedTarget`; native Tauri apply
+   *  requires this selected device key and PCI/BDF proof and defers ordinal-
+   *  only requests to the compatibility broker. */
+  applySettings(deviceId: number, settings: Settings, opts?: {
+    profileApply?: boolean;
+    expectedTarget?: {
+      deviceKey: string;
+      physicalTarget: {
+        deviceKey: string;
+        pciVendorId: string;
+        pciDeviceId: string;
+        bdf: { bus: number; device: number; function: number };
+        luid?: string | null;
+      };
+    };
+  }): Promise<ApplyResponse>;
   /** Experimental: persist the last confirmed fan settings for this physical GPU. */
   fanResumeGet(payload: { deviceId: number; deviceKey: string }): Promise<{ enabled: boolean; state: string; error: string | null; settings?: Pick<Settings, 'fanMode' | 'fanCurve' | 'fixedFanPct'> | null }>;
   fanResumeSet(payload: { enabled: boolean; deviceId: number; deviceKey: string }): Promise<{ enabled: boolean; state: string; error: string | null }>;
@@ -225,9 +240,8 @@ export interface ArcPowerApi {
    *  CPU card + the real-GPU VRAM suffix source. */
   sysinfo(): Promise<SysInfo>;
   /** M17d (round-1 S2): the vendor-lane static info - the no-Intel
-   *  dashboard VRAM/Compute rows' source ({ vramBytes, computeCores } - the
-   *  NVML total + core count; honest nulls when no vendor adapter resolves:
-   *  no lane / absent DLL / a vendor without the field - ADL). */
+   *  dashboard VRAM/Compute rows' source ({ vramBytes, computeCores,
+   *  computeUnits } - vendor VRAM and vendor-specific compute metrics). */
   vendorInfo(deviceId?: number): Promise<VendorDeviceInfo>;
   /** M4-D: integrated-title-bar window controls (no payload). */
   windowMinimize(): Promise<void>;
@@ -341,7 +355,7 @@ export interface ArcPowerApi {
   recordingClipCopy(id: string): Promise<{ ok: boolean }>;
   recordingClipDelete(id: string): Promise<RecordingClipDeleteResult>;
   recordingEditorStart(payload: { sourceId: string; operation: 'trim' | 'gif'; startMs: number; endMs: number; maxDurationMs?: number; fps?: number; width?: number; outputName?: string; audio?: 'original' | 'mute' | 'system' | 'microphone' }): Promise<RecordingEditorJob>;
-  recordingEditorAudio(sourceId: string): Promise<{ system: boolean; microphone: boolean; mixed: boolean }>;
+  recordingEditorAudio(sourceId: string): Promise<{ system: boolean; microphone: boolean; mixed: boolean; durationMs?: number | null }>;
   recordingEditorStatus(jobId: string): Promise<RecordingEditorJob>;
   recordingEditorCancel(jobId: string): Promise<RecordingEditorJob>;
   recordingEditorOpen(jobId: string): Promise<{ ok: boolean }>;

@@ -35,6 +35,14 @@ export function dashboardDeviceStatusLabel(index: number, gpuCount: number): str
   return `GPU ${index + 1} Detected`;
 }
 
+/** Section heading for one GPU card/tile. A lone GPU is just "GPU"; two or
+ *  more keep the 1-based number so the cards stay distinguishable. An unknown
+ *  or empty device count never produces "GPU 0" or "GPU NaN". */
+export function gpuSectionLabel(index: number, total: number): string {
+  if (!Number.isFinite(total) || total <= 1) return 'GPU';
+  return `GPU ${index + 1}`;
+}
+
 export function selectedDashboardController(
   selectedController: DashboardController | null | undefined,
   noDeviceController: DashboardController | null | undefined,

@@ -195,6 +195,13 @@ html, body {
   pointer-events: none;
 }
 
+.adv-tab.oc-mode-btn { border-radius: 0; }
+.adv-tab.oc-mode-btn.active { border-radius: 0; }
+.adv-view-heading.arc-page-hero { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0 10px; }
+.adv-view-heading.arc-page-hero .page-title { font-size: 16px; margin: 2px 0 4px; }
+.adv-view-heading.arc-page-hero .page-subtitle { font-size: 10px; line-height: 1.35; }
+.adv-wordmark-wrap { display: flex; flex-direction: column; gap: 2px; }
+.adv-wordmark-wrap .arc-section-kicker { font-size: 9px; line-height: 1; }
 .adv-wordmark {
   font-family: var(--font-display);
   font-size: 14.5px;

@@ -55,7 +55,7 @@ export interface Settings {
   overlayChipNames?: boolean;
   /** M17e: the persisted overlay telemetry push cadence (ms - the
    *  Overlay Settings polling-rate slider; the telemetry-service default
-   *  400 - M17g: the stock polling rate FLIPS 500 -> 400, the slider range
+   *  600 - M17g: the stock polling rate is 600 ms, the slider range
    *  100-2000). APPENDED - the OC apply surface
    *  never reads it; it mirrors the settings.json field. */
   overlayPollMs?: number;
@@ -263,6 +263,8 @@ export interface DeviceInfo {
   identityAmbiguous?: boolean;
   /** Stable PCI/BDF identity; session `id` is intentionally not durable. */
   deviceKey?: string;
+  /** Optional adapter LUID used as an additional physical identity check. */
+  luid?: string | null;
   /** Physical identity aliases retained across the initial/enriched inventory transition. */
   deviceKeys?: string[] | null;
   /** M4-B: VRAM in bytes for the display-name suffix. */
@@ -407,7 +409,7 @@ export interface RegistryApplyDescriptor {
 export interface RegistryApplyStepResult {
   step: number;
   ok: boolean;
-  status: 'done' | 'failed' | 'not-run';
+  status: 'done' | 'failed' | 'not-run' | 'unknown';
   /** Human description of the command ("MPOHack=1 written to HKLM\..."). */
   label: string;
 }
@@ -415,11 +417,15 @@ export interface RegistryApplyStepResult {
 /** The registry-apply IPC envelope. */
 export interface RegistryApplyResponse {
   ok: boolean;
-  /** True when the UAC prompt was declined/timed out - nothing ran. */
+  /** True when the UAC prompt was declined; no registry steps ran. */
   canceled?: boolean;
-  /** Honest outcome text (success / partial with the failed step / cancel). */
+  /** True when a deadline expired before the apply request was delivered. */
+  timedOut?: boolean;
+  /** True when the helper response was lost and step outcomes cannot be known. */
+  indeterminate?: boolean;
+  /** Honest outcome text (success / partial / cancel / timeout / uncertainty). */
   message: string;
-  /** Every expected step with its true status (done/failed/not-run). */
+  /** Every expected step with its true or explicitly unknown status. */
   perStep: RegistryApplyStepResult[];
 }
 
@@ -485,6 +491,10 @@ export interface VideoControllerInfo {
   driverVersion?: string | null;
   /** True when Win32_VideoController reports a current display mode. */
   displayActive?: boolean | null;
+  /** PCI location string ("PCI bus 3, device 0, function 0") - the identity
+   *  the native inventory rows lack a PNP id for, so a late ReBAR verdict can
+   *  still be joined to the right physical adapter. */
+  locationInfo?: string | null;
   /** M4-D: ReBAR verdict - true when the device's memory resources
    *  include a multi-GiB BAR (a functioning Resizable BAR), false when only
    *  the small aperture BAR exists, null when unknown. M4-D2: sourced from
@@ -527,12 +537,14 @@ export interface SysInfo {
  * the no-Intel dashboard VRAM/Compute rows' source. vramBytes = the vendor
  * adapter's total-VRAM (NVML memory total primary; the OS controller bytes
  * stay the renderer-side fallback; ADL exposes none -> null - honest);
- * computeCores = the compute-core count (NVML numGpuCores; null when the
- * vendor lane has no source - honest '-'). Nulls never lie.
+ * computeCores is NVIDIA's vendor-reported CUDA core count, while
+ * computeUnits is AMD's published model specification. Keep the fields
+ * separate because the counts describe different hardware units.
  */
 export interface VendorDeviceInfo {
   vramBytes: number | null;
   computeCores: number | null;
+  computeUnits: number | null;
 }
 
 export interface ThrottleFlags {
@@ -600,8 +612,13 @@ export interface TelemetrySample {
   memoryUsedBytes?: number | null;
 }
 
-export type StabilityOutcome = 'passed' | 'warning' | 'no-workload' | 'unavailable' | 'cancelled';
+export type StabilityOutcome = 'completed' | 'passed' | 'warning' | 'no-workload' | 'unavailable' | 'cancelled' | 'aborted' | 'failed';
 export type StabilityRunState = 'running' | 'completed';
+export interface StabilityThreshold {
+  metric: string;
+  value: number;
+  limit: number;
+}
 export interface StabilityLiveMetrics {
   gpuClockMhz: number | null;
   vramClockMhz: number | null;
@@ -643,8 +660,30 @@ export interface StabilityRunStatus {
   presentEvidenceCount?: number;
   utilEvidenceCount?: number;
   workloadActive?: boolean;
-  workloadStatus?: 'starting' | 'running' | 'unavailable' | 'monitor-only';
+  workloadStatus?: 'starting' | 'running' | 'partial' | 'unavailable' | 'monitor-only';
   workloadReason?: string | null;
+  workloadSubmits?: number;
+  workloadErrors?: number;
+  workloadError?: string | null;
+  workloadThreadFinished?: boolean;
+  workloadAdapterLuid?: string | null;
+  telemetryStatus?: 'starting' | 'running' | 'unavailable';
+  telemetryReason?: string | null;
+  vramTargetBytes?: number | null;
+  vramAllocatedBytes?: number | null;
+  vramAllocationComplete?: boolean | null;
+  abortReason?: 'gpu-temperature' | 'whea' | string | null;
+  abortDetails?: {
+    temperatureC?: number | null;
+    wheaErrorCount?: number;
+    wheaDelta?: number;
+  } | null;
+  thresholdBreaches?: number;
+  thresholds?: StabilityThreshold[];
+  thresholdLimits?: { powerW?: number; currentTempC?: number };
+  thresholdSources?: { powerW?: string; currentTempC?: string };
+  thresholdFallback?: boolean;
+  thresholdFallbacks?: string[];
   metrics?: StabilityLiveMetrics;
   limits?: StabilityMetricLimits;
   whea?: StabilityWheaStatus;
@@ -668,6 +707,11 @@ export interface StabilityReport {
   endedAt: string;
   reason: string | null;
   thresholdBreaches?: number;
+  thresholds?: StabilityThreshold[];
+  thresholdLimits?: { powerW?: number; currentTempC?: number };
+  thresholdSources?: { powerW?: string; currentTempC?: string };
+  thresholdFallback?: boolean;
+  thresholdFallbacks?: string[];
   driverErrorCount?: number;
   wheaErrorCount?: number;
 }
@@ -751,8 +795,8 @@ export interface OverlaySettings {
    *  the renderer fetches + applies the chip names only when this is on). */
   overlayChipNames: boolean;
   /** M17e: the overlay telemetry push cadence (ms - the overlay:settings
-   *  payload field; absent on old pushes -> 400 = the telemetry-service
-   *  default - M17g: the stock polling rate FLIPS 500 -> 400. The cadence
+   *  payload field; absent on old pushes -> 600 = the telemetry-service
+   *  default - M17g: the stock polling rate is 600 ms. The cadence
    *  itself is owned main-side (ipc-core's
    *  startTelemetry + the live restart); the payload carries it so the
    *  renderer + the verify pins know the setting end-to-end). */
@@ -872,6 +916,8 @@ export interface ProfileSettingsState {
   /** Optional overlay renderer; absent legacy values mean RTSS. */
   overlayRenderer?: OverlayRenderer;
   overlayHotkeyLetter: string;
+  /** Global hotkey that starts/stops selected-window scaling. */
+  postprocessScaleHotkey: string;
   overlayPosition: OverlayPosition;
   overlayScale: number;
   /** M6: the overlay text color (absent on old files -> '#ffffff' - the
@@ -899,9 +945,8 @@ export interface ProfileSettingsState {
    *  stock 'CPU '/'GPU ' prefixes; same absent-field mechanism, NO schema
    *  bump). The Overlay Settings page's chip-name checkbox persists this. */
   overlayChipNames: boolean;
-  /** M17e: the overlay telemetry push cadence - absent on old files -> 400
-   *  (the telemetry-service default - M17g: the stock polling rate FLIPS
-   *  500 -> 400; same absent-field mechanism, NO
+  /** M17e: the overlay telemetry push cadence - absent on old files -> 600
+   *  (the shared telemetry-service default; same absent-field mechanism, NO
    *  schema bump). The Overlay Settings page's polling-rate slider
    *  persists this. */
   overlayPollMs: number;
@@ -1086,7 +1131,6 @@ export interface GraphicsApplyResponse {
  *  main-side contract (backend.interface.js option lists); the scalingMode
  *  values are the driver's scaling-type FLAG names. */
 export interface DisplaySettings {
-  superResolution?: { enabled: boolean; width?: number; height?: number; refreshRate?: number };
   quantizationRange?: 'default' | 'limited' | 'full';
   wireFormat?: { model: 'RGB' | 'YCbCr420' | 'YCbCr422' | 'YCbCr444'; depth: number };
   /** Raw IGCL ordinary scaling type used behind the IGS-style view. */
@@ -1105,6 +1149,12 @@ export interface DisplaySettings {
   globalVrrMode?: 'fullscreen' | 'fullscreen-windowed' | 'disabled';
   /** IGS Variable Refresh Rate enabled/disabled switch. */
   variableRefreshRate?: boolean;
+  /**
+   * Intel Arc Sync custom refresh window. An object selects the driver's
+   * Custom profile with that exact window; `null` restores the driver's own
+   * window. Absent means "leave the driver value untouched".
+   */
+  arcSyncRange?: { minHz: number; maxHz: number } | null;
   vrrMode?: 'recommended' | 'excellent' | 'good' | 'compatible' | 'off' | 'vesa' | 'custom';
   hue?: number;
   saturation?: number;
@@ -1211,41 +1261,17 @@ export interface DisplayCapability<T> {
   source: string;
 }
 
-export interface DisplayResolutionMode {
-  width: number;
-  height: number;
-  refreshRate: number;
-  label?: string;
-  name?: string;
-  id?: string;
-}
-
-export interface DisplaySourceResolution {
-  width: number;
-  height: number;
-}
-
-export interface DisplaySuperResolutionCapability {
-  supported: boolean | null;
-  controllable: boolean;
-  reason: string | null;
-  source: string;
-  nativeResolution: { width: number; height: number } | null;
-  nativeRefreshRate: number | null;
-  currentSourceResolution: { width: number; height: number } | null;
-  currentSourceRefreshRate: number | null;
-  enabled: boolean;
-  modes: DisplayResolutionMode[];
-  customSourceModes: DisplaySourceResolution[];
-  presets: DisplayResolutionMode[];
-}
-
 /** M10b: the driver read-back (getDisplaySettings) - never throws; the
  *  { displays: [] } shape is the honest "no display outputs" degrade (the
  *  no-controls surface the page renders honestly). */
 export interface DisplayState {
   deviceKey?: string | null;
   adapterName?: string | null;
+  /** The keyed read declined because the selected adapter's identity could
+   *  not be verified (a transient, retryable condition). No display output
+   *  was enumerated, so `displays` is empty and no key is claimed - the page
+   *  must not render this as "this GPU has no displays". */
+  identityUnavailable?: boolean;
   displays: Array<{
     id: number;
     /** Stable physical output identity. Ordinal `id` is display-only and is
@@ -1284,7 +1310,6 @@ export interface DisplayState {
     saturation?: DisplayCapability<number>;
     brightness?: DisplayCapability<number>;
     contrast?: DisplayCapability<number>;
-    superResolution?: DisplaySuperResolutionCapability;
     supportedOptions: {
       scalingModes: string[];
       scalingMethods: string[];
@@ -1296,7 +1321,21 @@ export interface DisplayState {
       colorRanges?: Record<string, { min: number; max: number; step: number; default?: number }>;
     };
     flags: { active: boolean; attached: boolean; dongleConnected: boolean; ditheringEnabled: boolean };
-    arcSync: { supported: boolean; minRefreshHz: number | null; maxRefreshHz: number | null; profile: string | null };
+    arcSync: {
+      supported: boolean;
+      minRefreshHz: number | null;
+      maxRefreshHz: number | null;
+      profile: string | null;
+      /** Native-only: the profile setter exists AND IGSC is fully available.
+       *  Absent on payloads from hosts that do not project the write contract. */
+      writable?: boolean;
+      /** The window this control may admit: the display's own Windows mode list
+       *  at the resolution in use intersected with the monitor window. `null`
+       *  when either half is missing or the intersection is degenerate. */
+      rangeBounds?: { minHz: number; maxHz: number } | null;
+      /** The current profile's window, used to seed the range editor. */
+      currentRange?: { minHz: number; maxHz: number } | null;
+    };
   }>;
 }
 
@@ -1523,12 +1562,17 @@ export interface ArcSuperResolutionState {
   requiresRestart: false;
   active: boolean;
   reason?: string | null;
+  selection?: PostprocessWindowSelection;
 }
-export interface ArcSuperResolutionGame {
-  globalValue: ArcSuperResolutionValue;
-  override: ArcSuperResolutionValue | null;
-  effective: ArcSuperResolutionValue;
-  runtimeReady: boolean;
+export interface PostprocessWindowSelection {
+  phase: 'idle' | 'countdown' | 'selected';
+  secondsRemaining: number;
+  targetName: string | null;
+}
+
+export interface PostprocessScaleHotkeyState {
+  accelerator: string;
+  registered: boolean;
   reason?: string | null;
 }
 export interface PostprocessSharpeningGlobal {
@@ -1540,6 +1584,7 @@ export interface PostprocessSharpeningGlobal {
   launchSupported?: boolean;
   active?: boolean;
   reason?: string | null;
+  selection?: PostprocessWindowSelection;
   legacyIntegrations?: Array<{ exePath: string; mode: 'direct' | 'optiscaler' }>;
   legacyManifestPath?: string;
   legacyManifestStatus?: 'clear' | 'found' | 'unreadable';
@@ -1548,16 +1593,3 @@ export interface PostprocessSharpeningGlobal {
 export type PostprocessGlobalSettingsUpdate =
   | { kind: 'sharpening'; revision: number; state: PostprocessSharpeningGlobal }
   | { kind: 'asr'; revision: number; state: ArcSuperResolutionState };
-export interface PostprocessSharpeningGame {
-  value: PostprocessSharpeningValue;
-  effective: PostprocessSharpeningValue;
-  globalValue: PostprocessSharpeningValue;
-  override: PostprocessSharpeningValue | null;
-  runtimeReady?: boolean;
-  provider?: 'screen' | 'managed';
-  launchSupported?: boolean;
-  reason?: string | null;
-  legacyIntegration?: { exePath: string; mode: 'direct' | 'optiscaler' } | null;
-  legacyManifestStatus?: 'clear' | 'found' | 'unreadable';
-  legacyManifestReason?: string;
-}

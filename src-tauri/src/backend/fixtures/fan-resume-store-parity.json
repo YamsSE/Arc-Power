@@ -1,0 +1,894 @@
+{
+  "source": "src/main/store/fan-resume-store.js and src/main/fan-resume-controller.js",
+  "records": [
+    {
+      "input": null,
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": [],
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {},
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "auto"
+        }
+      },
+      "ok": true,
+      "value": {
+        "deviceKey": "gpu-a",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "auto"
+        }
+      }
+    },
+    {
+      "input": {
+        "deviceKey": "﻿ gpu-b ﻿",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "auto"
+        }
+      },
+      "ok": true,
+      "value": {
+        "deviceKey": "gpu-b",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "auto"
+        }
+      }
+    },
+    {
+      "input": {
+        "deviceKey": "",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "auto"
+        }
+      },
+      "ok": true,
+      "value": {
+        "deviceKey": "",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "auto"
+        }
+      }
+    },
+    {
+      "input": {
+        "deviceKey": "﻿",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "auto"
+        }
+      },
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": [],
+        "settings": {
+          "fanMode": "auto"
+        }
+      },
+      "ok": true,
+      "value": {
+        "deviceKey": "gpu-a",
+        "physicalTarget": [],
+        "settings": {
+          "fanMode": "auto"
+        }
+      }
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": null,
+        "settings": {
+          "fanMode": "auto"
+        }
+      },
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": null
+      },
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": []
+      },
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {}
+      },
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "auto"
+        }
+      },
+      "ok": true,
+      "value": {
+        "deviceKey": "gpu-a",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "auto"
+        }
+      }
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "invalid"
+        }
+      },
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "auto",
+          "coreOffsetMHz": 10
+        }
+      },
+      "ok": true,
+      "value": {
+        "deviceKey": "gpu-a",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "auto"
+        }
+      }
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "fixed",
+          "fixedFanPct": 0
+        }
+      },
+      "ok": true,
+      "value": {
+        "deviceKey": "gpu-a",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "fixed",
+          "fixedFanPct": 0
+        }
+      }
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "fixed",
+          "fixedFanPct": 100
+        }
+      },
+      "ok": true,
+      "value": {
+        "deviceKey": "gpu-a",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "fixed",
+          "fixedFanPct": 100
+        }
+      }
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "fixed",
+          "fixedFanPct": "30"
+        }
+      },
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "fixed",
+          "fixedFanPct": -1
+        }
+      },
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "fixed",
+          "fixedFanPct": 101
+        }
+      },
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "curve",
+          "fanCurve": [
+            {
+              "t": 0,
+              "speedPct": 0
+            },
+            {
+              "t": 100,
+              "speedPct": 100,
+              "extra": "drop"
+            }
+          ]
+        }
+      },
+      "ok": true,
+      "value": {
+        "deviceKey": "gpu-a",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "curve",
+          "fanCurve": [
+            {
+              "t": 0,
+              "speedPct": 0
+            },
+            {
+              "t": 100,
+              "speedPct": 100
+            }
+          ]
+        }
+      }
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "curve",
+          "fanCurve": [
+            {
+              "t": 50,
+              "speedPct": 50
+            },
+            {
+              "t": 50,
+              "speedPct": 80
+            }
+          ]
+        }
+      },
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "curve",
+          "fanCurve": [
+            {
+              "t": 1,
+              "speedPct": 50
+            }
+          ]
+        }
+      },
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "auto",
+          "fanCurve": null,
+          "fixedFanPct": "ignored"
+        }
+      },
+      "ok": true,
+      "value": {
+        "deviceKey": "gpu-a",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "auto"
+        }
+      }
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "curve",
+          "fanCurve": [
+            {
+              "t": 0,
+              "speedPct": 0
+            },
+            {
+              "t": 1,
+              "speedPct": 1
+            },
+            {
+              "t": 2,
+              "speedPct": 2
+            },
+            {
+              "t": 3,
+              "speedPct": 3
+            },
+            {
+              "t": 4,
+              "speedPct": 4
+            },
+            {
+              "t": 5,
+              "speedPct": 5
+            },
+            {
+              "t": 6,
+              "speedPct": 6
+            },
+            {
+              "t": 7,
+              "speedPct": 7
+            },
+            {
+              "t": 8,
+              "speedPct": 8
+            },
+            {
+              "t": 9,
+              "speedPct": 9
+            },
+            {
+              "t": 10,
+              "speedPct": 10
+            },
+            {
+              "t": 11,
+              "speedPct": 11
+            },
+            {
+              "t": 12,
+              "speedPct": 12
+            },
+            {
+              "t": 13,
+              "speedPct": 13
+            },
+            {
+              "t": 14,
+              "speedPct": 14
+            },
+            {
+              "t": 15,
+              "speedPct": 15
+            },
+            {
+              "t": 16,
+              "speedPct": 16
+            },
+            {
+              "t": 17,
+              "speedPct": 17
+            },
+            {
+              "t": 18,
+              "speedPct": 18
+            },
+            {
+              "t": 19,
+              "speedPct": 19
+            },
+            {
+              "t": 20,
+              "speedPct": 20
+            },
+            {
+              "t": 21,
+              "speedPct": 21
+            },
+            {
+              "t": 22,
+              "speedPct": 22
+            },
+            {
+              "t": 23,
+              "speedPct": 23
+            },
+            {
+              "t": 24,
+              "speedPct": 24
+            },
+            {
+              "t": 25,
+              "speedPct": 25
+            },
+            {
+              "t": 26,
+              "speedPct": 26
+            },
+            {
+              "t": 27,
+              "speedPct": 27
+            },
+            {
+              "t": 28,
+              "speedPct": 28
+            },
+            {
+              "t": 29,
+              "speedPct": 29
+            },
+            {
+              "t": 30,
+              "speedPct": 30
+            },
+            {
+              "t": 31,
+              "speedPct": 31
+            },
+            {
+              "t": 32,
+              "speedPct": 32
+            }
+          ]
+        }
+      },
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    },
+    {
+      "input": {
+        "deviceKey": " gpu-a ",
+        "physicalTarget": {
+          "pciDeviceId": "e20b"
+        },
+        "settings": {
+          "fanMode": "curve",
+          "fanCurve": [
+            {
+              "t": "0",
+              "speedPct": 10
+            },
+            {
+              "t": 100,
+              "speedPct": 100
+            }
+          ]
+        }
+      },
+      "ok": false,
+      "error": "fan-resume: invalid record"
+    }
+  ],
+  "settings": [
+    {
+      "input": null,
+      "ok": false,
+      "error": "fan-resume: invalid settings"
+    },
+    {
+      "input": [],
+      "ok": false,
+      "error": "fan-resume: invalid settings"
+    },
+    {
+      "input": {},
+      "ok": false,
+      "error": "fan-resume: invalid fan mode"
+    },
+    {
+      "input": {
+        "fanMode": "auto"
+      },
+      "ok": true,
+      "value": {
+        "fanMode": "auto"
+      }
+    },
+    {
+      "input": {
+        "fanMode": "invalid"
+      },
+      "ok": false,
+      "error": "fan-resume: invalid fan mode"
+    },
+    {
+      "input": {
+        "fanMode": "auto",
+        "coreOffsetMHz": 10
+      },
+      "ok": false,
+      "error": "fan-resume: fan-only settings required"
+    },
+    {
+      "input": {
+        "fanMode": "fixed",
+        "fixedFanPct": 0
+      },
+      "ok": true,
+      "value": {
+        "fanMode": "fixed",
+        "fixedFanPct": 0
+      }
+    },
+    {
+      "input": {
+        "fanMode": "fixed",
+        "fixedFanPct": 100
+      },
+      "ok": true,
+      "value": {
+        "fanMode": "fixed",
+        "fixedFanPct": 100
+      }
+    },
+    {
+      "input": {
+        "fanMode": "fixed",
+        "fixedFanPct": "30"
+      },
+      "ok": false,
+      "error": "fan-resume: invalid fixed speed"
+    },
+    {
+      "input": {
+        "fanMode": "fixed",
+        "fixedFanPct": -1
+      },
+      "ok": false,
+      "error": "fan-resume: invalid fixed speed"
+    },
+    {
+      "input": {
+        "fanMode": "fixed",
+        "fixedFanPct": 101
+      },
+      "ok": false,
+      "error": "fan-resume: invalid fixed speed"
+    },
+    {
+      "input": {
+        "fanMode": "curve",
+        "fanCurve": [
+          {
+            "t": 0,
+            "speedPct": 0
+          },
+          {
+            "t": 100,
+            "speedPct": 100,
+            "extra": "drop"
+          }
+        ]
+      },
+      "ok": true,
+      "value": {
+        "fanMode": "curve",
+        "fanCurve": [
+          {
+            "t": 0,
+            "speedPct": 0
+          },
+          {
+            "t": 100,
+            "speedPct": 100
+          }
+        ]
+      }
+    },
+    {
+      "input": {
+        "fanMode": "curve",
+        "fanCurve": [
+          {
+            "t": 50,
+            "speedPct": 50
+          },
+          {
+            "t": 50,
+            "speedPct": 80
+          }
+        ]
+      },
+      "ok": false,
+      "error": "fan-resume: invalid curve"
+    },
+    {
+      "input": {
+        "fanMode": "curve",
+        "fanCurve": [
+          {
+            "t": 1,
+            "speedPct": 50
+          }
+        ]
+      },
+      "ok": false,
+      "error": "fan-resume: invalid curve"
+    },
+    {
+      "input": {
+        "fanMode": "auto",
+        "fanCurve": null,
+        "fixedFanPct": "ignored"
+      },
+      "ok": true,
+      "value": {
+        "fanMode": "auto"
+      }
+    },
+    {
+      "input": {
+        "fanMode": "curve",
+        "fanCurve": [
+          {
+            "t": 0,
+            "speedPct": 0
+          },
+          {
+            "t": 1,
+            "speedPct": 1
+          },
+          {
+            "t": 2,
+            "speedPct": 2
+          },
+          {
+            "t": 3,
+            "speedPct": 3
+          },
+          {
+            "t": 4,
+            "speedPct": 4
+          },
+          {
+            "t": 5,
+            "speedPct": 5
+          },
+          {
+            "t": 6,
+            "speedPct": 6
+          },
+          {
+            "t": 7,
+            "speedPct": 7
+          },
+          {
+            "t": 8,
+            "speedPct": 8
+          },
+          {
+            "t": 9,
+            "speedPct": 9
+          },
+          {
+            "t": 10,
+            "speedPct": 10
+          },
+          {
+            "t": 11,
+            "speedPct": 11
+          },
+          {
+            "t": 12,
+            "speedPct": 12
+          },
+          {
+            "t": 13,
+            "speedPct": 13
+          },
+          {
+            "t": 14,
+            "speedPct": 14
+          },
+          {
+            "t": 15,
+            "speedPct": 15
+          },
+          {
+            "t": 16,
+            "speedPct": 16
+          },
+          {
+            "t": 17,
+            "speedPct": 17
+          },
+          {
+            "t": 18,
+            "speedPct": 18
+          },
+          {
+            "t": 19,
+            "speedPct": 19
+          },
+          {
+            "t": 20,
+            "speedPct": 20
+          },
+          {
+            "t": 21,
+            "speedPct": 21
+          },
+          {
+            "t": 22,
+            "speedPct": 22
+          },
+          {
+            "t": 23,
+            "speedPct": 23
+          },
+          {
+            "t": 24,
+            "speedPct": 24
+          },
+          {
+            "t": 25,
+            "speedPct": 25
+          },
+          {
+            "t": 26,
+            "speedPct": 26
+          },
+          {
+            "t": 27,
+            "speedPct": 27
+          },
+          {
+            "t": 28,
+            "speedPct": 28
+          },
+          {
+            "t": 29,
+            "speedPct": 29
+          },
+          {
+            "t": 30,
+            "speedPct": 30
+          },
+          {
+            "t": 31,
+            "speedPct": 31
+          },
+          {
+            "t": 32,
+            "speedPct": 32
+          }
+        ]
+      },
+      "ok": false,
+      "error": "fan-resume: invalid curve"
+    },
+    {
+      "input": {
+        "fanMode": "curve",
+        "fanCurve": [
+          {
+            "t": "0",
+            "speedPct": 10
+          },
+          {
+            "t": 100,
+            "speedPct": 100
+          }
+        ]
+      },
+      "ok": false,
+      "error": "fan-resume: invalid curve"
+    }
+  ]
+}

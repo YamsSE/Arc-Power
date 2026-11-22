@@ -26,7 +26,6 @@ import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
 import { ensureWaiver } from '../components/waiver-dialog.ts';
-import { renderGameSharpening, renderGameArcSuperResolution } from '../components/sharpening.ts';
 import { applyFailureText, CONTROL_LABELS } from '../pure/errors.ts';
 import { isNoopApply, validateSettingsPayload, profileApplyOutcome } from '../pure/settings.ts';
 import { hasScalarCoreOffsets, isExactStockVfCurve, repairLegacyScalarProfile } from '../pure/profile-core-surface.ts';
@@ -35,6 +34,7 @@ import { isAlchemistGpuName, isBattlemageGpuName } from '../pure/hardware-icons.
 import { controlDisplay, formatValue } from '../pure/slider.ts';
 import { normalizeBattlemageProfileSettings } from '../pure/profile-compat.ts';
 import { isValidNativeVfCurve } from '../pure/vf-curve.ts';
+import { gpuApplyTargetOptions } from '../pure/gpu-apply-target.ts';
 import type { AppState } from '../router.ts';
 import type { Capabilities, DeviceInfo, DeviceState, FlipMode, FrameGenOverride, GameCatalogEntry, GameGpuProfile, GameProfileCapabilities, GameProfileGraphics, GameSettingsRecord, LowLatency, Profile, ProfilesEnvelope, RangeInfo, Settings, StartupGetState } from '../types.ts';
 
@@ -663,8 +663,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   };
 
   const modeToggle = (): HTMLElement => el('div', { class: 'profiles-mode-toggle', role: 'group', 'aria-label': 'Profiles view' }, [
-    el('button', { class: `btn btn-ghost btn-sm${viewMode === 'oc' ? ' active' : ''}`, text: 'Tuning Profile', onclick: () => { viewMode = 'oc'; selectedGameExePath = null; updateProfileCopy(); renderList(); } }),
-    el('button', { class: `btn btn-ghost btn-sm${viewMode === 'game' ? ' active' : ''}`, text: 'Game Profile', onclick: () => void openGameView() }),
+    el('button', { class: `profile-mode-btn${viewMode === 'oc' ? ' active' : ''}`, 'aria-pressed': String(viewMode === 'oc'), text: 'Tuning Profile', onclick: () => { viewMode = 'oc'; selectedGameExePath = null; updateProfileCopy(); renderList(); } }),
+    el('button', { class: `profile-mode-btn${viewMode === 'game' ? ' active' : ''}`, 'aria-pressed': String(viewMode === 'game'), text: 'Game Profile', onclick: () => void openGameView() }),
   ]);
 
   const syncGameCatalogSession = (): void => {
@@ -777,7 +777,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const renderGameDetail = (game: GameCatalogEntry, targetDevice: DeviceInfo | null = gameDeviceFor(selectedGameDeviceKey)): void => {
     if (!targetDevice) {
       clear(root);
-      root.append(modeToggle(), el('p', { class: 'page-subtitle', text: 'No writable GPU is available for GPU-specific Game Profile settings.' }), renderGameSharpening(game.exePath), renderGameArcSuperResolution(game.exePath));
+      root.append(modeToggle(), el('p', { class: 'page-subtitle', text: 'No writable GPU is available for GPU-specific Game Profile settings.' }));
       return;
     }
     const current = gameSettingFor(game.exePath);
@@ -854,9 +854,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         settingRow('FPS Limiter', 'Uses RTSS when available and the Intel driver limiter otherwise.', el('span', { class: 'profile-inline-control' }, [fps, fpsValue])),
         settingRow('Low Latency Mode', 'Improves the responsiveness between user input and graphics rendering for a better gaming experience.', latency),
       ]),
-      renderGameSharpening(game.exePath),
-      renderGameArcSuperResolution(game.exePath),
-      el('p', { class: 'profile-capability-note', text: `When Use Profile is enabled for ${gameGpuLabel(targetDevice)}, its tuning preset and driver Graphics values apply to that GPU. Arc Image Sharpening is shared across GPUs and uses its own controls above.` }),
+      el('p', { class: 'profile-capability-note', text: `When Use Profile is enabled for ${gameGpuLabel(targetDevice)}, its tuning preset and driver Graphics values apply to that GPU. Arc Image Sharpening and Arc Super Resolution are configured globally in Graphics and started with Scale.` }),
     ]);
     tuning.addEventListener('change', () => save({ tuningProfileId: tuning.value || null }));
     endurance.addEventListener('change', () => save({ graphics: { enduranceGaming: endurance.value as 'off' | 'on' } }));
@@ -1277,7 +1275,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         // interactive OC-mode gate; runtime capability refusals still surface
         // as per-control error toasts.
         const settingsToApply = profileSettingsForCapabilities(p.settings, targetCaps, targetState);
-        appliedResponse = await api.applySettings(targetDeviceId, settingsToApply, { profileApply: true });
+        appliedResponse = await api.applySettings(targetDeviceId, settingsToApply, { profileApply: true, ...gpuApplyTargetOptions(targetDevice) });
         const { result, state: fresh } = appliedResponse;
         if (fresh) {
           targetState = fresh;

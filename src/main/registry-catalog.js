@@ -20,7 +20,9 @@
 // Entry state = any unknown wins; otherwise enabled > disabled > default.
 
 import { execFile as nodeExecFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 const execFile = promisify(nodeExecFile);
 
@@ -69,125 +71,8 @@ export const REG_NOT_FOUND = 1;
  * }} RegistryApplyStep
  */
 
-export const REGISTRY_CATALOG = [
-  {
-    id: 'mpo',
-    name: 'Multiplane Overlay (MPO)',
-    // M3-C-H: plain-language, 1-2 lines (the long canonical-location /
-    // hive-caveat prose is gone).
-    description:
-      'MPO can cause stutter, flicker, or black screens. Windows normally leaves it on; Enable writes legacy MPOHack plus DWM OverlayTestMode=5 as an experimental suppression to validate with PresentMon or GPUView.',
-    requiresElevation: true,
-    absentLabel: 'Not set - MPO follows the driver default (usually on)',
-    reads: [
-      { path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'DWORD', on: '1', off: '0' },
-      { path: 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'DWORD', on: '1', off: '0' },
-      { path: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\Dwm', value: 'OverlayTestMode', type: 'DWORD', on: '5', off: '0' },
-    ],
-    // Enable writes both the legacy MPOHack pair and DWM's stronger
-    // OverlayTestMode=5 workaround. Disable writes the explicit inactive
-    // values (MPOHack=0 and OverlayTestMode=0); Revert deletes all values so
-    // Windows/driver defaults apply again. OverlayTestMode remains an
-    // experimental, behaviorally unverified workaround until measured with
-    // PresentMon or GPUView on the target system.
-    apply: {
-      applyable: true,
-      revertNote: 'Revert deletes MPOHack and OverlayTestMode from their hives - MPO follows the Windows/driver defaults again.',
-      actions: {
-        enable: [
-          { kind: 'add', path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'REG_DWORD', data: '1' },
-          { kind: 'add', path: 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'REG_DWORD', data: '1' },
-          { kind: 'add', path: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\Dwm', value: 'OverlayTestMode', type: 'REG_DWORD', data: '5' },
-        ],
-        disable: [
-          { kind: 'add', path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'REG_DWORD', data: '0' },
-          { kind: 'add', path: 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack', type: 'REG_DWORD', data: '0' },
-          { kind: 'add', path: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\Dwm', value: 'OverlayTestMode', type: 'REG_DWORD', data: '0' },
-        ],
-        revert: [
-          { kind: 'delete', path: 'HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack' },
-          { kind: 'delete', path: 'HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences', value: 'MPOHack' },
-          { kind: 'delete', path: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\Dwm', value: 'OverlayTestMode' },
-        ],
-      },
-    },
-  },
-  {
-    id: 'hags',
-    name: 'Hardware-accelerated GPU scheduling',
-    description:
-      'HAGS lets the GPU scheduler manage VRAM instead of the CPU driver thread - better input latency on some systems, stutter on others. Needs a reboot to take effect.',
-    requiresElevation: true,
-    absentLabel: 'Not set - follows the Windows default (on for recent builds)',
-    reads: [
-      { path: 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers', value: 'HwSchMode', type: 'DWORD', on: '2', off: '1' },
-    ],
-    // M3-B apply: HwSchMode 2 = on / 1 = off; REVERT deletes the value so
-    // the Windows default applies.
-    apply: {
-      applyable: true,
-      revertNote: 'Revert deletes HwSchMode - the Windows default applies (on for recent builds).',
-      actions: {
-        enable: [
-          { kind: 'add', path: 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers', value: 'HwSchMode', type: 'REG_DWORD', data: '2' },
-        ],
-        disable: [
-          { kind: 'add', path: 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers', value: 'HwSchMode', type: 'REG_DWORD', data: '1' },
-        ],
-        revert: [
-          { kind: 'delete', path: 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers', value: 'HwSchMode' },
-        ],
-      },
-    },
-  },
-  {
-    id: 'game-dvr',
-    name: 'Game DVR / Background Recording',
-    description:
-      'Game Bar background recording can cost a few percent of FPS; this disables it machine-wide.',
-    requiresElevation: true,
-    absentLabel: 'Not configured - recording follows the user setting',
-    reads: [
-      { path: 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR', value: 'AllowGameDVR', type: 'DWORD', on: '0', off: '1' },
-    ],
-    // M3-B apply: AllowGameDVR=0 disables background recording (the tweak's
-    // active state); 1 = inactive. REVERT deletes the VALUE and keeps the
-    // policy key (safer than deleting the key - other policies may live in
-    // it), so recording follows the per-user Game Bar setting again.
-    apply: {
-      applyable: true,
-      revertNote: 'Revert deletes AllowGameDVR (the policy key stays) - recording follows the per-user Game Bar setting again.',
-      actions: {
-        enable: [
-          { kind: 'add', path: 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR', value: 'AllowGameDVR', type: 'REG_DWORD', data: '0' },
-        ],
-        disable: [
-          { kind: 'add', path: 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR', value: 'AllowGameDVR', type: 'REG_DWORD', data: '1' },
-        ],
-        revert: [
-          { kind: 'delete', path: 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR', value: 'AllowGameDVR' },
-        ],
-      },
-    },
-  },
-  {
-    id: 'fullscreen-optimizations',
-    name: 'Fullscreen Optimizations (per-app)',
-    description:
-      'A per-app compatibility flag - some games stutter with fullscreen optimizations on. There is no system-wide switch; this lists the apps carrying the flag.',
-    requiresElevation: true,
-    absentLabel: 'No per-app compatibility flags set',
-    reads: [
-      { path: 'HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers', value: null, type: 'REG_SZ', on: 'FULLSCREENOPTIMIZATIONS' },
-    ],
-    // M3-B: read-only INFO entry - there is no single system-wide switch to
-    // write (the flag is per-app), so this entry has NO apply commands.
-    apply: {
-      applyable: false,
-      revertNote: 'Read-only - no system-wide setting to apply or revert.',
-    },
-  },
-];
+// Shared with the native Rust catalog reader and included by Electron packaging.
+export const REGISTRY_CATALOG = JSON.parse(readFileSync(fileURLToPath(new URL('./registry-catalog.json', import.meta.url)), 'utf8'));
 
 // ---------------------------------------------------------------------------
 // Pure parsers (unit-testable, no process calls)
