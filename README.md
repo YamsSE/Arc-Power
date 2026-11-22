@@ -68,10 +68,13 @@ npm install
 npm start
 ```
 
-Build the Windows packages with:
+Build the Tauri renderer and compile the Windows release host with your Rust and Windows SDK toolchain. Then package the host with NSIS. The packaging command reads the runtime files directly from this checkout.
 
-```bash
-npm run dist
+```powershell
+npm ci --prefix src-tauri/frontend-deps
+node scripts/build-tauri-frontend.mjs
+cargo build --manifest-path src-tauri/Cargo.toml --locked --release
+npm run dist -- src-tauri/target/release/arc-power-tauri.exe dist-tauri/1.3.0
 ```
 
 ## First steps

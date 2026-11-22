@@ -80,24 +80,28 @@ export function assertAdministratorExecutable(file) {
   return { type: 24, id: 1, manifests };
 }
 
-export function stageNativeDistribution({ nativeExecutable, compatibilityDirectory, outputDirectory, testMockFixturesDirectory, nativeOnly = false }) {
+export function stageNativeDistribution({ nativeExecutable, compatibilityDirectory, outputDirectory, testMockFixturesDirectory, nativeOnly = !compatibilityDirectory }) {
   nativeExecutable = path.resolve(nativeExecutable);
-  compatibilityDirectory = path.resolve(compatibilityDirectory);
+  compatibilityDirectory = compatibilityDirectory ? path.resolve(compatibilityDirectory) : null;
   outputDirectory = path.resolve(outputDirectory);
   if (existsSync(outputDirectory)) throw new Error(`Output must be a new directory: ${outputDirectory}`);
+  if (!nativeOnly && !compatibilityDirectory) throw new Error('Compatibility packaging requires a compatibility input directory');
+  const resourceSource = compatibilityDirectory ? path.join(compatibilityDirectory, 'resources') : null;
+  if (compatibilityDirectory) {
   const relative = path.relative(compatibilityDirectory, outputDirectory);
   if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
     throw new Error('Output must not be inside the compatibility payload');
   }
-  const backendExecutable = path.join(compatibilityDirectory, 'Arc Power.exe');
-  const archive = path.join(compatibilityDirectory, 'resources/app.asar');
+  }
   const nativeManifest = assertAdministratorExecutable(nativeExecutable);
   let compatibilityManifest = null;
   const rootIcons = ['app-icon.ico', 'ArcPowerTaskbar-blue-gradient.ico'];
   for (const icon of rootIcons) {
-    if (!existsSync(path.join(compatibilityDirectory, 'resources', icon))) throw new Error(`Missing required native root icon: ${icon}`);
+    if (resourceSource && !existsSync(path.join(resourceSource, icon))) throw new Error(`Missing required native root icon: ${icon}`);
   }
   if (!nativeOnly) {
+    const backendExecutable = path.join(compatibilityDirectory, 'Arc Power.exe');
+    const archive = path.join(resourceSource, 'app.asar');
     if (!existsSync(archive)) throw new Error(`Missing compatibility archive: ${archive}`);
     if (existsSync(path.join(compatibilityDirectory, 'ArcPower.Backend.exe'))) throw new Error('Input payload already contains the reserved backend executable');
     compatibilityManifest = assertAdministratorExecutable(backendExecutable);
@@ -114,14 +118,15 @@ export function stageNativeDistribution({ nativeExecutable, compatibilityDirecto
   // of the nested service resources.
   mkdirSync(path.join(unpacked, 'resources'), { recursive: true });
   for (const icon of rootIcons) {
-    cpSync(path.join(compatibilityDirectory, 'resources', icon), path.join(unpacked, 'resources', icon));
+    cpSync(resourceSource ? path.join(resourceSource, icon) : path.join(projectRoot, 'src/assets/app-icon.ico'),
+      path.join(unpacked, 'resources', icon));
   }
   // The native host uses the same positive-only D3D12 evidence helper as the
   // Electron service. Keep a stable top-level resource path for native-only
   // packages and for installation/update payload validation.
   const d3d12HelperName = 'ArcPower.D3D12UploadHeapQuery.exe';
   const d3d12HelperCandidates = [
-    path.join(compatibilityDirectory, 'resources', 'app.asar.unpacked', 'src', 'main', 'native', d3d12HelperName),
+    ...(resourceSource ? [path.join(resourceSource, 'app.asar.unpacked', 'src', 'main', 'native', d3d12HelperName)] : []),
     path.join(projectRoot, 'src', 'main', 'native', d3d12HelperName),
   ];
   const d3d12HelperSource = d3d12HelperCandidates.find((candidate) => existsSync(candidate));
@@ -131,15 +136,18 @@ export function stageNativeDistribution({ nativeExecutable, compatibilityDirecto
     cpSync(compatibilityDirectory, backend, { recursive: true, errorOnExist: true, force: false });
     renameSync(path.join(backend, 'Arc Power.exe'), path.join(backend, 'ArcPower.Backend.exe'));
   } else {
-    // The native host still consumes the Electron payload's bundled runtimes.
-    // Copy them to the top-level resources locations the native code already
-    // probes; omitting them cost the host its LHM telemetry and bundled FFmpeg.
-    for (const runtime of ['lhm', 'recording-runtime', 'app.asar.unpacked']) {
-      cpSync(path.join(compatibilityDirectory, 'resources', runtime),
-        path.join(unpacked, 'resources', runtime), { recursive: true, errorOnExist: true, force: false });
+    const runtimeFiles = [
+      ['src/main/telemetry/lhm-runtime', 'lhm'],
+      ['recording-runtime', 'recording-runtime'],
+      ['src/main/backend/igcl2023/IntelControlLib.dll', 'app.asar.unpacked/src/main/backend/igcl2023/IntelControlLib.dll'],
+      ['src/main/sharpening-runtime/ArcPower.ScreenSharpen.exe', 'app.asar.unpacked/src/main/sharpening-runtime/ArcPower.ScreenSharpen.exe'],
+      ['src/main/backend/PawnIO_setup.exe', 'PawnIO_setup.exe'],
+    ];
+    for (const [source, destination] of runtimeFiles) {
+      const target = path.join(unpacked, 'resources', destination);
+      mkdirSync(path.dirname(target), { recursive: true });
+      cpSync(path.join(projectRoot, source), target, { recursive: true, errorOnExist: true, force: false });
     }
-    cpSync(path.join(compatibilityDirectory, 'resources', 'app.asar.unpacked', 'src', 'main', 'backend', 'PawnIO_setup.exe'),
-      path.join(unpacked, 'resources', 'PawnIO_setup.exe'));
     // Fail the build rather than silently shipping another telemetry-less
     // package. Every native runtime probe below must resolve in the payload.
     const required = [
@@ -283,6 +291,10 @@ function buildNativeWrapper({ makensis, payload, output, kind, runBuilder }) {
 }
 
 export function parseNativeDistributionArgs(args) {
+  if (args.length >= 2 && args.slice(2).every((flag) => ['--with-installer', '--native-only'].includes(flag))) {
+    const [nativeExecutable, outputDirectory, ...flags] = args;
+    return { nativeExecutable, outputDirectory, nativeOnly: true, withInstaller: flags.includes('--with-installer') };
+  }
   const [nativeExecutable, compatibilityDirectory, outputDirectory, ...flags] = args;
   if (!nativeExecutable || !compatibilityDirectory || !outputDirectory ||
       flags.some((flag) => !['--test-mock-fixtures', '--with-installer', '--native-only'].includes(flag)) || new Set(flags).size !== flags.length) {
