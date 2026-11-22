@@ -41,8 +41,7 @@ Controls depend on the capabilities reported by the selected device and its driv
 |---|---|---|
 | Arc A3 / A5 / A7 series | Alchemist | **Verified - Working** |
 | Arc B580 / B570 | Battlemage | **Verified - Working** |
-| Arc D270 | Crescent Island | **Verified - Tweaks & Telemetry only** |
-| Arc Pro B50 | Battlemage (pro) | **Verified - Tweaks & Telemetry only** |
+| Arc Pro Series| Alchemist & Battlemage & Crescent Island | **Verified - Tweaks & Telemetry only** |
 | Arc iGPU | Alchemist & Battlemage | **Verified - Tweaks & Telemetry only** |
 
 ### Support status
