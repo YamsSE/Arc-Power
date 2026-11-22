@@ -10,7 +10,6 @@
                     "node":  "\u003e=20"
                 },
     "scripts":  {
-                    "test":  "node --test",
                     "start":  "electron .",
                     "smoke":  "electron . --headless",
                     "smoke:mock":  "electron . --headless --mock",
