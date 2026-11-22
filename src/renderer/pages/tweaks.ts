@@ -106,7 +106,11 @@ async function runApply(ctx: PageContext, entry: RegistryEntry, action: ApplyAct
       toast('info', 'Administrator approval needed', `Applying this tweak requires administrator approval - approve the Windows prompt.`);
     }
     const out = await api.registryApply(entry.id, action);
-    if (out.canceled) {
+    if (out.indeterminate) {
+      toast('error', 'Apply outcome uncertain', out.message);
+    } else if (out.timedOut) {
+      toast('error', 'Apply timed out', out.message);
+    } else if (out.canceled) {
       toast('error', 'Administrator approval required', out.message);
     } else if (out.ok) {
       toast('success', `${ACTION_LABEL[action]} applied`, out.message);
@@ -228,28 +232,31 @@ export const tweaksPage: Page = {
     const states = catalog?.states ?? [];
 
     clear(container);
+    const refreshButton = el('button', {
+      class: 'btn btn-sm tweak-refresh',
+      text: 'Refresh state',
+      onClick: () => { void refreshCatalog(ctx); },
+    });
     container.append(
-      el('h1', { class: 'page-title', text: 'Tweaks' }),
-      el('p', {
-        class: 'page-subtitle',
-        text: 'Reversible GPU registry tweaks. Enable/Disable/Revert run elevated (one prompt per action).',
-      }),
-      el('div', { class: 'page-actions' }, [
-        el('button', {
-          class: 'btn btn-sm tweak-refresh',
-          text: 'Refresh state',
-          onClick: () => { void refreshCatalog(ctx); },
-        }),
+      el('section', { class: 'arc-page-shell tweaks-page-shell' }, [
+        el('header', { class: 'arc-page-hero tweaks-page-hero' }, [
+          el('div', { class: 'arc-page-hero-copy' }, [
+            el('span', { class: 'arc-section-kicker', text: 'SYSTEM ADJUSTMENTS' }),
+            el('h1', { class: 'page-title', text: 'Tweaks' }),
+            el('p', { class: 'page-subtitle', text: 'Reversible GPU registry tweaks. Applying a change requests administrator approval.' }),
+          ]),
+          el('div', { class: 'arc-page-hero-side tweaks-page-actions' }, [refreshButton]),
+        ]),
+        catalog === null
+          ? el('p', { class: 'text-unknown', text: 'Loading registry state…' })
+          : entries.length === 0
+            ? el('p', { class: 'text-error', text: 'The registry catalog could not be read - no tweaks to show.' })
+            : el('div', { class: 'card-stack tweaks-card-stack' }, entries.map((entry) =>
+                tweakCard(entry, states.find((s) => s.id === entry.id), (action) => {
+                  void runApply(ctx, entry, action);
+                }),
+              )),
       ]),
-      catalog === null
-        ? el('p', { class: 'text-unknown', text: 'Loading registry state…' })
-        : entries.length === 0
-          ? el('p', { class: 'text-error', text: 'The registry catalog could not be read - no tweaks to show.' })
-          : el('div', { class: 'card-stack' }, entries.map((entry) =>
-              tweakCard(entry, states.find((s) => s.id === entry.id), (action) => {
-                void runApply(ctx, entry, action);
-              }),
-            )),
     );
     void loadCatalog(ctx);
   },

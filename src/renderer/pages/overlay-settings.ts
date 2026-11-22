@@ -93,7 +93,7 @@ async function resolveOverlayDisplayOrder(devices: OverlayDevice[]): Promise<Ove
       || device.osController?.displayActive === true || device.osController?.displayActive === false;
     if (known || !Number.isInteger(device.id) || typeof api.displayGet !== 'function') return device;
     try {
-      const state = await api.displayGet(device.id);
+      const state = await api.displayGet(device.id, device.deviceKey ?? undefined);
       return {
         ...device,
         displayActive: Array.isArray(state?.displays)
@@ -132,8 +132,8 @@ interface PersistedOverlay {
   // the stock 'CPU '/'GPU ' prefixes.
   chipNames: boolean;
   // M17e (the user addition): the overlay polling-rate (the General card
-  // slider) - the telemetry push cadence in ms (100-2000, 400 the default
-  // - M17g: the stock polling rate FLIPS 500 -> 400).
+  // slider) - the telemetry push cadence in ms (100-2000, 600 the default
+  // - M17g: the stock polling rate is 600 ms).
   pollMs: number;
   // M23: the ADVANCED overlay (the AMD-Adrenaline-style interactive side
   // panel - CONTROL + <letter>, stock P). Absent on old files -> the
@@ -151,7 +151,7 @@ interface OverlayStatGroup {
 }
 
 function displayOverlayHotkey(value: string): string {
-  return /^[A-Za-z]$/.test(value) ? `Control+${value.toUpperCase()}` : value;
+  return value === 'None' ? 'None' : /^[A-Za-z]$/.test(value) ? `Control+${value.toUpperCase()}` : value;
 }
 
 // Keep the persisted stat ids and their order untouched. The groups are a
@@ -232,8 +232,8 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       theme: 'classic',
       // M17b: the chip-name row labels (absent on old files -> false).
       chipNames: s.overlayChipNames === true,
-      // M17e: the polling-rate (absent on old files -> the 400 ms default
-      // - M17g: the stock polling rate FLIPS 500 -> 400).
+      // M17e: the polling-rate (absent on old files -> the 600 ms shared
+      // default).
       pollMs: clampOverlayPollMs(s.overlayPollMs),
       // M23: the ADVANCED overlay (absent on old files -> off / 'P' /
       // 'right' - the same absent-field mechanism; NO scale key - the
@@ -290,9 +290,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     const rendererLabel = persisted.renderer === 'capframex' ? 'Arc Power Overlay · hook-free' : 'RTSS · native';
     const hero = el('header', { class: 'overlay-settings-hero' }, [
       el('div', { class: 'overlay-hero-copy' }, [
-        el('span', { class: 'overlay-section-kicker', text: 'OVERLAY CONTROL' }),
-        el('h2', { class: 'overlay-hero-title', text: 'Overlay Settings' }),
-        el('p', { class: 'overlay-hero-subtitle', text: 'Choose the native RTSS HUD or the Arc Power Overlay.' }),
+        el('span', { class: 'overlay-section-kicker', text: 'IN-GAME DISPLAY' }),
+        el('h2', { class: 'overlay-hero-title', text: 'HUD settings' }),
+        el('p', { class: 'overlay-hero-subtitle', text: 'Choose a provider, select what to show, and set its appearance.' }),
       ]),
       el('div', { class: 'overlay-hero-status', dataset: { status: liveOverlay ? 'active' : 'idle' } }, [
         el('span', { class: 'overlay-status-dot' }),
@@ -442,7 +442,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         ]),
       ]),
       // M17e (the user addition - "current 500 ms is a bit slow" - M17g:
-      // the stock polling rate is now 400 ms): the
+      // the stock polling rate is now 600 ms): the
       // POLLING-RATE slider - the overlay's telemetry push cadence. The
       // scale-slider pattern (a live ms value label; the change saves
       // through profiles-settings-save and main's reaction RESTARTS the
@@ -695,6 +695,18 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         });
       },
     });
+    const hotkeyOff = el('button', {
+      type: 'button', class: 'overlay-hotkey-none', text: 'None',
+      'aria-label': 'Turn off HUD overlay shortcut', title: 'Disable the HUD overlay shortcut',
+      disabled: persisted.hotkeyLetter === 'None',
+      onClick: () => void onHotkeyLetterChange('None'),
+    });
+    const advancedHotkeyOff = el('button', {
+      type: 'button', class: 'overlay-hotkey-none', text: 'None',
+      'aria-label': 'Turn off advanced overlay shortcut', title: 'Disable the advanced overlay shortcut',
+      disabled: persisted.advHotkeyLetter === 'None',
+      onClick: () => void onAdvancedHotkeyLetterChange('None'),
+    });
     const advancedPositionSelect = buildDropdown(persisted.advPosition, ADVANCED_OVERLAY_POSITIONS.map((p) => ({
       value: p,
       label: ADVANCED_OVERLAY_POSITION_LABELS[p],
@@ -712,7 +724,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       el('div', { class: 'overlay-subsection-label', text: 'HUD shortcut' }),
       el('div', { class: 'settings-row overlay-hotkey-row' }, [
         el('span', { class: 'settings-row-label', text: 'Monitor' }),
-        hotkeyInput,
+        el('div', { class: 'overlay-hotkey-controls' }, [hotkeyInput, hotkeyOff]),
       ]),
       // M9: keep the stock Monitor position directly below its hotkey,
       // matching the Advanced overlay's hotkey/edge grouping.
@@ -720,30 +732,27 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         el('span', { class: 'settings-row-label', text: 'Position' }),
         positionSelect,
       ]),
-      overlayState && overlayState.exists && overlayState.hotkeyRegistered === false
+      persisted.hotkeyLetter !== 'None' && overlayState && overlayState.exists && overlayState.hotkeyRegistered === false
         ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The ${persisted.hotkeyLetter} shortcut could not be registered - another application may be using it.` })
         : null,
       el('hr', { class: 'overlay-hotkey-divider' }),
       el('div', { class: 'overlay-subsection-label', text: 'Advanced panel' }),
       el('div', { class: 'settings-row overlay-advanced-hotkey-row' }, [
         el('span', { class: 'settings-row-label', text: 'Advanced' }),
-        advancedHotkeyInput,
+        el('div', { class: 'overlay-hotkey-controls' }, [advancedHotkeyInput, advancedHotkeyOff]),
       ]),
       el('div', { class: 'settings-row overlay-advanced-position-row' }, [
         el('span', { class: 'settings-row-label', text: 'Edge' }),
         advancedPositionSelect,
       ]),
-      advancedOverlayState && advancedOverlayState.exists && advancedOverlayState.hotkeyRegistered === false
+      persisted.advHotkeyLetter !== 'None' && advancedOverlayState && advancedOverlayState.exists && advancedOverlayState.hotkeyRegistered === false
         ? el('p', { class: 'card-note boot-hint overlay-hotkey-fail', text: `The CTRL + ${persisted.advHotkeyLetter.toUpperCase()} hotkey could not be registered - another application may be using it.` })
         : null,
     ]);
 
-    const workspace = el('div', { class: 'overlay-settings-workspace' }, [
-      el('div', { class: 'overlay-workspace-column overlay-hud-column' }, [generalCard, hotkeyCard]),
-      el('div', { class: 'overlay-workspace-column overlay-visual-column' }, [appearanceCard]),
-    ]);
+    const workspace = el('div', { class: 'overlay-settings-workspace' }, [generalCard, appearanceCard]);
     clear(root);
-    root.append(hero, workspace, statsCard);
+    root.append(hero, workspace, statsCard, hotkeyCard);
   };
 
   // --- M6 handlers (every save goes through profiles-settings-save;
@@ -1062,7 +1071,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const onHotkeyLetterChange = async (letter: string): Promise<void> => {
     const input = root.querySelector<HTMLButtonElement>('.settings-hotkey-input:not(.settings-advanced-hotkey-input)');
     const v = letter.trim();
-    if (!/^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(v)) {
+    if (v !== 'None' && !/^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(v)) {
       toast('error', 'Overlay hotkey', 'Use a modifier and a letter, number, or function key.');
       if (input) input.textContent = displayOverlayHotkey(persisted.hotkeyLetter);
       return;
@@ -1074,7 +1083,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         input.textContent = v;
         input.setAttribute('aria-label', `HUD overlay hotkey: ${v}`);
       }
-      toast('success', 'Overlay hotkey changed', `The overlay toggles with ${v}.`);
+      toast('success', 'Overlay hotkey changed', v === 'None' ? 'The HUD overlay shortcut is off.' : `The overlay toggles with ${v}.`);
     } catch (err) {
       toast('error', 'Overlay hotkey could not be changed', err instanceof Error ? err.message : String(err));
       if (input) input.textContent = displayOverlayHotkey(persisted.hotkeyLetter);
@@ -1123,7 +1132,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   const onAdvancedHotkeyLetterChange = async (letter: string): Promise<void> => {
     const input = root.querySelector<HTMLButtonElement>('.settings-advanced-hotkey-input');
     const v = letter.trim();
-    if (!/^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(v)) {
+    if (v !== 'None' && !/^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(v)) {
       toast('error', 'Advanced overlay hotkey', 'Use a modifier and a letter, number, or function key.');
       if (input) input.textContent = displayOverlayHotkey(persisted.advHotkeyLetter);
       return;
@@ -1135,7 +1144,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         input.textContent = v;
         input.setAttribute('aria-label', `Advanced overlay hotkey: ${v}`);
       }
-      toast('success', 'Advanced overlay hotkey changed', `The panel toggles with ${v}.`);
+      toast('success', 'Advanced overlay hotkey changed', v === 'None' ? 'The advanced overlay shortcut is off.' : `The panel toggles with ${v}.`);
     } catch (err) {
       toast('error', 'Advanced overlay hotkey could not be changed', err instanceof Error ? err.message : String(err));
       if (input) input.textContent = displayOverlayHotkey(persisted.advHotkeyLetter);

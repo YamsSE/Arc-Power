@@ -35,13 +35,12 @@ contextBridge.exposeInMainWorld('arcPower', {
   graphicsApply: (deviceId, settings, expectedDeviceKey) => ipcRenderer.invoke('graphics:apply', deviceId, settings, expectedDeviceKey),
   postprocessSharpeningGet: () => ipcRenderer.invoke('postprocess-sharpening:get'),
   postprocessSharpeningSet: (value) => ipcRenderer.invoke('postprocess-sharpening:set', value),
-  postprocessSharpeningGameGet: (exePath) => ipcRenderer.invoke('postprocess-sharpening:game-get', exePath),
-  postprocessSharpeningGameSet: (exePath, override) => ipcRenderer.invoke('postprocess-sharpening:game-set', exePath, override),
-  postprocessSharpeningLaunchGame: (exePath) => ipcRenderer.invoke('postprocess-sharpening:launch-game', exePath),
+  postprocessSharpeningWindowSelect: () => ipcRenderer.invoke('postprocess-sharpening:select-window'),
+  postprocessSharpeningWindowStop: () => ipcRenderer.invoke('postprocess-sharpening:stop-window'),
+  postprocessSharpeningHotkeyGet: () => ipcRenderer.invoke('postprocess-sharpening:hotkey-get'),
+  postprocessSharpeningHotkeySet: (accelerator) => ipcRenderer.invoke('postprocess-sharpening:hotkey-set', accelerator),
   arcSuperResolutionGet: () => ipcRenderer.invoke('arc-super-resolution:get'),
   arcSuperResolutionSet: (value) => ipcRenderer.invoke('arc-super-resolution:set', value),
-  arcSuperResolutionGameGet: (exePath) => ipcRenderer.invoke('arc-super-resolution:game-get', exePath),
-  arcSuperResolutionGameSet: (exePath, override) => ipcRenderer.invoke('arc-super-resolution:game-set', exePath, override),
   onPostprocessGlobalSettingsUpdated: (callback) => {
     const listener = (_event, update) => callback(update);
     ipcRenderer.on('postprocess-global-settings:updated', listener);
@@ -57,7 +56,7 @@ contextBridge.exposeInMainWorld('arcPower', {
   // NOT the OC apply-routing machinery: display settings have no OC
   // waiver). displayApply targets ONE display by the stable physical
   // displayKey from the display:get payload.
-  displayGet: (deviceId) => ipcRenderer.invoke('display:get', deviceId),
+  displayGet: (deviceId, expectedDeviceKey) => ipcRenderer.invoke('display:get', deviceId, expectedDeviceKey),
   displayApply: (deviceId, request) => ipcRenderer.invoke('display:apply', deviceId, request),
   // M4O: the third arg carries apply options - { profileApply: true } marks
   // a PROFILE apply (the Profiles-page Apply button), which skips the

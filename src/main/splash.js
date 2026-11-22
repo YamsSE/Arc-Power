@@ -21,8 +21,8 @@ function publishStartupUpdateStatus(splash, payload) {
  * closes it when the main renderer reports that boot has completed.
  * @returns {import('electron').BrowserWindow}
  */
-export function createStartupSplash({ onFatalLoad = null } = {}) {
-  const splash = new BrowserWindow({
+export function createStartupSplash({ onFatalLoad = null, createWindow = (options) => new BrowserWindow(options) } = {}) {
+  const splash = createWindow({
     width: 500,
     height: 500,
     useContentSize: true,

@@ -361,10 +361,8 @@ export function createWindowsDisplayModeController(deps = {}) {
       setModeFields(buffer, mode);
       const result = Number(win32.changeDisplaySettings(target.adapter.deviceName, buffer, null, CDS_RESET, null));
       if (result !== DISP_CHANGE_SUCCESSFUL) return { supported: true, ok: false, result, errorCode: 'display-mode-apply-failed', message: `Windows rejected the requested display mode (result ${result}).` };
-      // Preserve the first pre-Supernative mode for the whole session. If a
-      // user switches between multiple higher presets, disabling the feature
-      // must still return to the original desktop mode, not the previous
-      // higher preset.
+      // Preserve the first pre-change mode for the whole session. Repeated
+      // mode changes must still be able to restore the original desktop mode.
       if (request.captureOriginal !== false && !capturedByDeviceName.has(target.adapter.deviceName)) {
         capturedByDeviceName.set(target.adapter.deviceName, {
           deviceName: target.adapter.deviceName,

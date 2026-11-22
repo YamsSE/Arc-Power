@@ -1,0 +1,7881 @@
+{
+  "defaults": {
+    "location": "",
+    "runtimePath": "",
+    "mode": "manual",
+    "fps": 60,
+    "resolution": "1080p",
+    "encoderId": "automatic",
+    "rateControl": "CBR",
+    "bitrateKbps": 8000,
+    "maxBitrateKbps": 8000,
+    "rateControlQuality": 23,
+    "captureTarget": {
+      "type": "display",
+      "displayId": "primary",
+      "windowHandle": 0,
+      "processName": "",
+      "executablePath": "",
+      "windowTitle": "",
+      "windowClass": ""
+    },
+    "captureColorMode": "auto",
+    "showCursor": false,
+    "memorySavingMode": false,
+    "replayLengthSec": 30,
+    "instantReplayAutoStart": false,
+    "replayMarkersEnabled": true,
+    "audio": {
+      "microphone": {
+        "enabled": false,
+        "deviceId": "",
+        "volume": 1,
+        "mono": false
+      },
+      "system": {
+        "enabled": true,
+        "deviceId": "",
+        "volume": 1
+      },
+      "sourceMode": "system",
+      "customProcesses": []
+    },
+    "hotkeys": {
+      "toggle": "F9",
+      "saveClip": "F8",
+      "screenshot": "F7",
+      "marker": "F6"
+    }
+  },
+  "resolutions": [
+    {
+      "id": "default",
+      "width": 0,
+      "height": 0,
+      "label": "Default"
+    },
+    {
+      "id": "480p",
+      "width": 854,
+      "height": 480,
+      "label": "480p"
+    },
+    {
+      "id": "720p",
+      "width": 1280,
+      "height": 720,
+      "label": "720p"
+    },
+    {
+      "id": "900p",
+      "width": 1600,
+      "height": 900,
+      "label": "900p"
+    },
+    {
+      "id": "1080p",
+      "width": 1920,
+      "height": 1080,
+      "label": "1080p"
+    },
+    {
+      "id": "1440p",
+      "width": 2560,
+      "height": 1440,
+      "label": "1440p"
+    },
+    {
+      "id": "4k",
+      "width": 3840,
+      "height": 2160,
+      "label": "4K"
+    }
+  ],
+  "bitrateRanges": {
+    "default": {
+      "min": 4000,
+      "max": 8000,
+      "step": 100,
+      "default": 8000,
+      "label": "4,000–8,000 Kbps"
+    },
+    "480p": {
+      "min": 1500,
+      "max": 2500,
+      "step": 100,
+      "default": 2000,
+      "label": "1,500–2,500 Kbps"
+    },
+    "720p": {
+      "min": 2500,
+      "max": 5000,
+      "step": 100,
+      "default": 3500,
+      "label": "2,500–5,000 Kbps"
+    },
+    "900p": {
+      "min": 3500,
+      "max": 7000,
+      "step": 100,
+      "default": 5000,
+      "label": "3,500–7,000 Kbps"
+    },
+    "1080p": {
+      "min": 4000,
+      "max": 8000,
+      "step": 100,
+      "default": 6000,
+      "label": "4,000–8,000 Kbps"
+    },
+    "1440p": {
+      "min": 8000,
+      "max": 12000,
+      "step": 100,
+      "default": 10000,
+      "label": "8,000–12,000 Kbps"
+    },
+    "4k": {
+      "min": 15000,
+      "max": 50000,
+      "step": 500,
+      "default": 20000,
+      "label": "15,000–25,000+ Kbps"
+    }
+  },
+  "fixtures": [
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": "C:\\Capture",
+          "runtimePath": "D:\\Runtime",
+          "mode": "clips",
+          "fps": "144",
+          "resolution": "4k",
+          "encoderId": "obs_qsv11_av1",
+          "rateControl": "CQP",
+          "bitrateKbps": 12345.5,
+          "maxBitrateKbps": 10000,
+          "rateControlQuality": 63,
+          "captureTarget": {
+            "type": "window",
+            "displayId": " gpu1 ",
+            "windowHandle": 4294967295,
+            "processName": " game.exe ",
+            "executablePath": " C:\\game.exe ",
+            "windowTitle": " Game ",
+            "windowClass": " Class "
+          },
+          "captureColorMode": "hdr",
+          "showCursor": true,
+          "memorySavingMode": true,
+          "replayLengthSec": 55.5,
+          "audio": {
+            "microphone": {
+              "enabled": true,
+              "deviceId": " mic ",
+              "volume": 0.4,
+              "mono": true
+            },
+            "system": {
+              "enabled": false,
+              "deviceId": " system ",
+              "volume": 0
+            },
+            "sourceMode": "custom",
+            "customProcesses": [
+              " game.exe ",
+              "game.exe",
+              "other.exe",
+              "third.exe",
+              "fourth.exe"
+            ]
+          },
+          "hotkeys": {
+            "toggle": " alt + ctrl + f24 ",
+            "saveClip": "",
+            "screenshot": " cmdorcontrol + f7 ",
+            "marker": "shift+0"
+          },
+          "instantReplayAutoStart": true,
+          "replayMarkersEnabled": false
+        }
+      ],
+      "expected": {
+        "location": "C:\\Capture",
+        "runtimePath": "D:\\Runtime",
+        "mode": "clips",
+        "fps": 144,
+        "resolution": "4k",
+        "encoderId": "obs_qsv11_av1",
+        "rateControl": "CQP",
+        "bitrateKbps": 12345.5,
+        "maxBitrateKbps": 12345.5,
+        "rateControlQuality": 63,
+        "captureTarget": {
+          "type": "window",
+          "displayId": "gpu1",
+          "windowHandle": 4294967295,
+          "processName": "game.exe",
+          "executablePath": "C:\\game.exe",
+          "windowTitle": "Game",
+          "windowClass": "Class"
+        },
+        "captureColorMode": "hdr",
+        "showCursor": true,
+        "memorySavingMode": true,
+        "replayLengthSec": 56,
+        "audio": {
+          "microphone": {
+            "enabled": true,
+            "deviceId": "mic",
+            "volume": 0.4,
+            "mono": true
+          },
+          "system": {
+            "enabled": false,
+            "deviceId": "system",
+            "volume": 0
+          },
+          "sourceMode": "custom",
+          "customProcesses": [
+            "game.exe",
+            "other.exe",
+            "third.exe"
+          ]
+        },
+        "hotkeys": {
+          "toggle": "Alt+Control+F24",
+          "saveClip": "",
+          "screenshot": "CommandOrControl+F7",
+          "marker": "Shift+0"
+        },
+        "instantReplayAutoStart": true,
+        "replayMarkersEnabled": false
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": null,
+          "runtimePath": null,
+          "mode": null,
+          "fps": null,
+          "resolution": null,
+          "encoderId": null,
+          "rateControl": null,
+          "bitrateKbps": null,
+          "maxBitrateKbps": null,
+          "rateControlQuality": null,
+          "captureTarget": null,
+          "captureColorMode": null,
+          "showCursor": null,
+          "memorySavingMode": null,
+          "replayLengthSec": null,
+          "audio": null,
+          "hotkeys": null,
+          "instantReplayAutoStart": null,
+          "replayMarkersEnabled": null
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": false,
+          "runtimePath": false,
+          "mode": false,
+          "fps": false,
+          "resolution": false,
+          "encoderId": false,
+          "rateControl": false,
+          "bitrateKbps": false,
+          "maxBitrateKbps": false,
+          "rateControlQuality": false,
+          "captureTarget": false,
+          "captureColorMode": false,
+          "showCursor": false,
+          "memorySavingMode": false,
+          "replayLengthSec": false,
+          "audio": false,
+          "hotkeys": false,
+          "instantReplayAutoStart": false,
+          "replayMarkersEnabled": false
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": false
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": true,
+          "runtimePath": true,
+          "mode": true,
+          "fps": true,
+          "resolution": true,
+          "encoderId": true,
+          "rateControl": true,
+          "bitrateKbps": true,
+          "maxBitrateKbps": true,
+          "rateControlQuality": true,
+          "captureTarget": true,
+          "captureColorMode": true,
+          "showCursor": true,
+          "memorySavingMode": true,
+          "replayLengthSec": true,
+          "audio": true,
+          "hotkeys": true,
+          "instantReplayAutoStart": true,
+          "replayMarkersEnabled": true
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": true,
+        "memorySavingMode": true,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": true,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": 0,
+          "runtimePath": 0,
+          "mode": 0,
+          "fps": 0,
+          "resolution": 0,
+          "encoderId": 0,
+          "rateControl": 0,
+          "bitrateKbps": 0,
+          "maxBitrateKbps": 0,
+          "rateControlQuality": 0,
+          "captureTarget": 0,
+          "captureColorMode": 0,
+          "showCursor": 0,
+          "memorySavingMode": 0,
+          "replayLengthSec": 0,
+          "audio": 0,
+          "hotkeys": 0,
+          "instantReplayAutoStart": 0,
+          "replayMarkersEnabled": 0
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 1,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 1,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 5,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": -1,
+          "runtimePath": -1,
+          "mode": -1,
+          "fps": -1,
+          "resolution": -1,
+          "encoderId": -1,
+          "rateControl": -1,
+          "bitrateKbps": -1,
+          "maxBitrateKbps": -1,
+          "rateControlQuality": -1,
+          "captureTarget": -1,
+          "captureColorMode": -1,
+          "showCursor": -1,
+          "memorySavingMode": -1,
+          "replayLengthSec": -1,
+          "audio": -1,
+          "hotkeys": -1,
+          "instantReplayAutoStart": -1,
+          "replayMarkersEnabled": -1
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 1,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 1,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 5,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": 1.625,
+          "runtimePath": 1.625,
+          "mode": 1.625,
+          "fps": 1.625,
+          "resolution": 1.625,
+          "encoderId": 1.625,
+          "rateControl": 1.625,
+          "bitrateKbps": 1.625,
+          "maxBitrateKbps": 1.625,
+          "rateControlQuality": 1.625,
+          "captureTarget": 1.625,
+          "captureColorMode": 1.625,
+          "showCursor": 1.625,
+          "memorySavingMode": 1.625,
+          "replayLengthSec": 1.625,
+          "audio": 1.625,
+          "hotkeys": 1.625,
+          "instantReplayAutoStart": 1.625,
+          "replayMarkersEnabled": 1.625
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 2,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 1.625,
+        "maxBitrateKbps": 1.625,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 5,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": 10000,
+          "runtimePath": 10000,
+          "mode": 10000,
+          "fps": 10000,
+          "resolution": 10000,
+          "encoderId": 10000,
+          "rateControl": 10000,
+          "bitrateKbps": 10000,
+          "maxBitrateKbps": 10000,
+          "rateControlQuality": 10000,
+          "captureTarget": 10000,
+          "captureColorMode": 10000,
+          "showCursor": 10000,
+          "memorySavingMode": 10000,
+          "replayLengthSec": 10000,
+          "audio": 10000,
+          "hotkeys": 10000,
+          "instantReplayAutoStart": 10000,
+          "replayMarkersEnabled": 10000
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 360,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 10000,
+        "maxBitrateKbps": 10000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 3600,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": "",
+          "runtimePath": "",
+          "mode": "",
+          "fps": "",
+          "resolution": "",
+          "encoderId": "",
+          "rateControl": "",
+          "bitrateKbps": "",
+          "maxBitrateKbps": "",
+          "rateControlQuality": "",
+          "captureTarget": "",
+          "captureColorMode": "",
+          "showCursor": "",
+          "memorySavingMode": "",
+          "replayLengthSec": "",
+          "audio": "",
+          "hotkeys": "",
+          "instantReplayAutoStart": "",
+          "replayMarkersEnabled": ""
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": " 144 ",
+          "runtimePath": " 144 ",
+          "mode": " 144 ",
+          "fps": " 144 ",
+          "resolution": " 144 ",
+          "encoderId": " 144 ",
+          "rateControl": " 144 ",
+          "bitrateKbps": " 144 ",
+          "maxBitrateKbps": " 144 ",
+          "rateControlQuality": " 144 ",
+          "captureTarget": " 144 ",
+          "captureColorMode": " 144 ",
+          "showCursor": " 144 ",
+          "memorySavingMode": " 144 ",
+          "replayLengthSec": " 144 ",
+          "audio": " 144 ",
+          "hotkeys": " 144 ",
+          "instantReplayAutoStart": " 144 ",
+          "replayMarkersEnabled": " 144 "
+        }
+      ],
+      "expected": {
+        "location": " 144 ",
+        "runtimePath": " 144 ",
+        "mode": "manual",
+        "fps": 144,
+        "resolution": "1080p",
+        "encoderId": " 144 ",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": "bad",
+          "runtimePath": "bad",
+          "mode": "bad",
+          "fps": "bad",
+          "resolution": "bad",
+          "encoderId": "bad",
+          "rateControl": "bad",
+          "bitrateKbps": "bad",
+          "maxBitrateKbps": "bad",
+          "rateControlQuality": "bad",
+          "captureTarget": "bad",
+          "captureColorMode": "bad",
+          "showCursor": "bad",
+          "memorySavingMode": "bad",
+          "replayLengthSec": "bad",
+          "audio": "bad",
+          "hotkeys": "bad",
+          "instantReplayAutoStart": "bad",
+          "replayMarkersEnabled": "bad"
+        }
+      ],
+      "expected": {
+        "location": "bad",
+        "runtimePath": "bad",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "bad",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": [],
+          "runtimePath": [],
+          "mode": [],
+          "fps": [],
+          "resolution": [],
+          "encoderId": [],
+          "rateControl": [],
+          "bitrateKbps": [],
+          "maxBitrateKbps": [],
+          "rateControlQuality": [],
+          "captureTarget": [],
+          "captureColorMode": [],
+          "showCursor": [],
+          "memorySavingMode": [],
+          "replayLengthSec": [],
+          "audio": [],
+          "hotkeys": [],
+          "instantReplayAutoStart": [],
+          "replayMarkersEnabled": []
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": [
+            1
+          ],
+          "runtimePath": [
+            1
+          ],
+          "mode": [
+            1
+          ],
+          "fps": [
+            1
+          ],
+          "resolution": [
+            1
+          ],
+          "encoderId": [
+            1
+          ],
+          "rateControl": [
+            1
+          ],
+          "bitrateKbps": [
+            1
+          ],
+          "maxBitrateKbps": [
+            1
+          ],
+          "rateControlQuality": [
+            1
+          ],
+          "captureTarget": [
+            1
+          ],
+          "captureColorMode": [
+            1
+          ],
+          "showCursor": [
+            1
+          ],
+          "memorySavingMode": [
+            1
+          ],
+          "replayLengthSec": [
+            1
+          ],
+          "audio": [
+            1
+          ],
+          "hotkeys": [
+            1
+          ],
+          "instantReplayAutoStart": [
+            1
+          ],
+          "replayMarkersEnabled": [
+            1
+          ]
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "location": {},
+          "runtimePath": {},
+          "mode": {},
+          "fps": {},
+          "resolution": {},
+          "encoderId": {},
+          "rateControl": {},
+          "bitrateKbps": {},
+          "maxBitrateKbps": {},
+          "rateControlQuality": {},
+          "captureTarget": {},
+          "captureColorMode": {},
+          "showCursor": {},
+          "memorySavingMode": {},
+          "replayLengthSec": {},
+          "audio": {},
+          "hotkeys": {},
+          "instantReplayAutoStart": {},
+          "replayMarkersEnabled": {}
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingBitrateRange",
+      "args": [
+        "default"
+      ],
+      "expected": {
+        "min": 4000,
+        "max": 8000,
+        "step": 100,
+        "default": 8000,
+        "label": "4,000–8,000 Kbps"
+      }
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        null,
+        "default"
+      ],
+      "expected": 8000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        "5000",
+        "default"
+      ],
+      "expected": 8000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        -1,
+        "default"
+      ],
+      "expected": 4000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        4999.5,
+        "default"
+      ],
+      "expected": 5000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        15000,
+        "default"
+      ],
+      "expected": 8000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        55000,
+        "default"
+      ],
+      "expected": 8000
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "default",
+        3440,
+        1440
+      ],
+      "expected": {
+        "width": 3440,
+        "height": 1440
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "default",
+        1080,
+        1920
+      ],
+      "expected": {
+        "width": 1080,
+        "height": 1920
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "default",
+        853,
+        479
+      ],
+      "expected": {
+        "width": 854,
+        "height": 480
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "default",
+        "2560",
+        "1080"
+      ],
+      "expected": {
+        "width": 2560,
+        "height": 1080
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "default",
+        null,
+        false
+      ],
+      "expected": {
+        "width": 1920,
+        "height": 1080
+      }
+    },
+    {
+      "method": "recordingBitrateRange",
+      "args": [
+        "480p"
+      ],
+      "expected": {
+        "min": 1500,
+        "max": 2500,
+        "step": 100,
+        "default": 2000,
+        "label": "1,500–2,500 Kbps"
+      }
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        null,
+        "480p"
+      ],
+      "expected": 2000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        "5000",
+        "480p"
+      ],
+      "expected": 2000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        -1,
+        "480p"
+      ],
+      "expected": 1500
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        4999.5,
+        "480p"
+      ],
+      "expected": 2500
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        15000,
+        "480p"
+      ],
+      "expected": 2500
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        55000,
+        "480p"
+      ],
+      "expected": 2500
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "480p",
+        3440,
+        1440
+      ],
+      "expected": {
+        "width": 1148,
+        "height": 480
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "480p",
+        1080,
+        1920
+      ],
+      "expected": {
+        "width": 270,
+        "height": 480
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "480p",
+        853,
+        479
+      ],
+      "expected": {
+        "width": 854,
+        "height": 480
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "480p",
+        "2560",
+        "1080"
+      ],
+      "expected": {
+        "width": 1138,
+        "height": 480
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "480p",
+        null,
+        false
+      ],
+      "expected": {
+        "width": 854,
+        "height": 480
+      }
+    },
+    {
+      "method": "recordingBitrateRange",
+      "args": [
+        "720p"
+      ],
+      "expected": {
+        "min": 2500,
+        "max": 5000,
+        "step": 100,
+        "default": 3500,
+        "label": "2,500–5,000 Kbps"
+      }
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        null,
+        "720p"
+      ],
+      "expected": 3500
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        "5000",
+        "720p"
+      ],
+      "expected": 3500
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        -1,
+        "720p"
+      ],
+      "expected": 2500
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        4999.5,
+        "720p"
+      ],
+      "expected": 5000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        15000,
+        "720p"
+      ],
+      "expected": 5000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        55000,
+        "720p"
+      ],
+      "expected": 5000
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "720p",
+        3440,
+        1440
+      ],
+      "expected": {
+        "width": 1720,
+        "height": 720
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "720p",
+        1080,
+        1920
+      ],
+      "expected": {
+        "width": 406,
+        "height": 720
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "720p",
+        853,
+        479
+      ],
+      "expected": {
+        "width": 1282,
+        "height": 720
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "720p",
+        "2560",
+        "1080"
+      ],
+      "expected": {
+        "width": 1708,
+        "height": 720
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "720p",
+        null,
+        false
+      ],
+      "expected": {
+        "width": 1280,
+        "height": 720
+      }
+    },
+    {
+      "method": "recordingBitrateRange",
+      "args": [
+        "900p"
+      ],
+      "expected": {
+        "min": 3500,
+        "max": 7000,
+        "step": 100,
+        "default": 5000,
+        "label": "3,500–7,000 Kbps"
+      }
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        null,
+        "900p"
+      ],
+      "expected": 5000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        "5000",
+        "900p"
+      ],
+      "expected": 5000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        -1,
+        "900p"
+      ],
+      "expected": 3500
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        4999.5,
+        "900p"
+      ],
+      "expected": 5000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        15000,
+        "900p"
+      ],
+      "expected": 7000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        55000,
+        "900p"
+      ],
+      "expected": 7000
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "900p",
+        3440,
+        1440
+      ],
+      "expected": {
+        "width": 2150,
+        "height": 900
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "900p",
+        1080,
+        1920
+      ],
+      "expected": {
+        "width": 506,
+        "height": 900
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "900p",
+        853,
+        479
+      ],
+      "expected": {
+        "width": 1602,
+        "height": 900
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "900p",
+        "2560",
+        "1080"
+      ],
+      "expected": {
+        "width": 2134,
+        "height": 900
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "900p",
+        null,
+        false
+      ],
+      "expected": {
+        "width": 1600,
+        "height": 900
+      }
+    },
+    {
+      "method": "recordingBitrateRange",
+      "args": [
+        "1080p"
+      ],
+      "expected": {
+        "min": 4000,
+        "max": 8000,
+        "step": 100,
+        "default": 6000,
+        "label": "4,000–8,000 Kbps"
+      }
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        null,
+        "1080p"
+      ],
+      "expected": 6000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        "5000",
+        "1080p"
+      ],
+      "expected": 6000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        -1,
+        "1080p"
+      ],
+      "expected": 4000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        4999.5,
+        "1080p"
+      ],
+      "expected": 5000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        15000,
+        "1080p"
+      ],
+      "expected": 8000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        55000,
+        "1080p"
+      ],
+      "expected": 8000
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "1080p",
+        3440,
+        1440
+      ],
+      "expected": {
+        "width": 2580,
+        "height": 1080
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "1080p",
+        1080,
+        1920
+      ],
+      "expected": {
+        "width": 608,
+        "height": 1080
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "1080p",
+        853,
+        479
+      ],
+      "expected": {
+        "width": 1922,
+        "height": 1080
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "1080p",
+        "2560",
+        "1080"
+      ],
+      "expected": {
+        "width": 2560,
+        "height": 1080
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "1080p",
+        null,
+        false
+      ],
+      "expected": {
+        "width": 1920,
+        "height": 1080
+      }
+    },
+    {
+      "method": "recordingBitrateRange",
+      "args": [
+        "1440p"
+      ],
+      "expected": {
+        "min": 8000,
+        "max": 12000,
+        "step": 100,
+        "default": 10000,
+        "label": "8,000–12,000 Kbps"
+      }
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        null,
+        "1440p"
+      ],
+      "expected": 10000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        "5000",
+        "1440p"
+      ],
+      "expected": 10000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        -1,
+        "1440p"
+      ],
+      "expected": 8000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        4999.5,
+        "1440p"
+      ],
+      "expected": 8000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        15000,
+        "1440p"
+      ],
+      "expected": 12000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        55000,
+        "1440p"
+      ],
+      "expected": 12000
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "1440p",
+        3440,
+        1440
+      ],
+      "expected": {
+        "width": 3440,
+        "height": 1440
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "1440p",
+        1080,
+        1920
+      ],
+      "expected": {
+        "width": 810,
+        "height": 1440
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "1440p",
+        853,
+        479
+      ],
+      "expected": {
+        "width": 2562,
+        "height": 1440
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "1440p",
+        "2560",
+        "1080"
+      ],
+      "expected": {
+        "width": 3414,
+        "height": 1440
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "1440p",
+        null,
+        false
+      ],
+      "expected": {
+        "width": 2560,
+        "height": 1440
+      }
+    },
+    {
+      "method": "recordingBitrateRange",
+      "args": [
+        "4k"
+      ],
+      "expected": {
+        "min": 15000,
+        "max": 50000,
+        "step": 500,
+        "default": 20000,
+        "label": "15,000–25,000+ Kbps"
+      }
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        null,
+        "4k"
+      ],
+      "expected": 20000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        "5000",
+        "4k"
+      ],
+      "expected": 20000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        -1,
+        "4k"
+      ],
+      "expected": 15000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        4999.5,
+        "4k"
+      ],
+      "expected": 15000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        15000,
+        "4k"
+      ],
+      "expected": 15000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        55000,
+        "4k"
+      ],
+      "expected": 50000
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "4k",
+        3440,
+        1440
+      ],
+      "expected": {
+        "width": 5160,
+        "height": 2160
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "4k",
+        1080,
+        1920
+      ],
+      "expected": {
+        "width": 1216,
+        "height": 2160
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "4k",
+        853,
+        479
+      ],
+      "expected": {
+        "width": 3844,
+        "height": 2160
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "4k",
+        "2560",
+        "1080"
+      ],
+      "expected": {
+        "width": 5120,
+        "height": 2160
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "4k",
+        null,
+        false
+      ],
+      "expected": {
+        "width": 3840,
+        "height": 2160
+      }
+    },
+    {
+      "method": "recordingBitrateRange",
+      "args": [
+        "unknown"
+      ],
+      "expected": {
+        "min": 4000,
+        "max": 8000,
+        "step": 100,
+        "default": 8000,
+        "label": "4,000–8,000 Kbps"
+      }
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        null,
+        "unknown"
+      ],
+      "expected": 8000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        "5000",
+        "unknown"
+      ],
+      "expected": 8000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        -1,
+        "unknown"
+      ],
+      "expected": 4000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        4999.5,
+        "unknown"
+      ],
+      "expected": 5000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        15000,
+        "unknown"
+      ],
+      "expected": 8000
+    },
+    {
+      "method": "clampRecordingBitrate",
+      "args": [
+        55000,
+        "unknown"
+      ],
+      "expected": 8000
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "unknown",
+        3440,
+        1440
+      ],
+      "expected": {
+        "width": 3440,
+        "height": 1440
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "unknown",
+        1080,
+        1920
+      ],
+      "expected": {
+        "width": 1080,
+        "height": 1920
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "unknown",
+        853,
+        479
+      ],
+      "expected": {
+        "width": 854,
+        "height": 480
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "unknown",
+        "2560",
+        "1080"
+      ],
+      "expected": {
+        "width": 2560,
+        "height": 1080
+      }
+    },
+    {
+      "method": "recordingOutputDimensions",
+      "args": [
+        "unknown",
+        null,
+        false
+      ],
+      "expected": {
+        "width": 1920,
+        "height": 1080
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "mode": "manual"
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "mode": "clips"
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "clips",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "mode": "manual-only"
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "mode": "full-matches"
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "mode": "clips-only"
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "clips",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "mode": "always-on"
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "mode": "garbage"
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRuntimeEncoderIdForTarget",
+      "args": [
+        "obs_qsv11_av1",
+        false
+      ],
+      "expected": "obs_qsv11_av1_soft"
+    },
+    {
+      "method": "recordingRuntimeEncoderIdForTarget",
+      "args": [
+        "obs_qsv11_av1",
+        true
+      ],
+      "expected": "obs_qsv11_av1"
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "obs_qsv11_av1"
+      ],
+      "expected": "obs_qsv11_av1"
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "CBR",
+        "obs_qsv11_av1"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "CBR",
+          "encoderId": "obs_qsv11_av1",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "obs_qsv11_av1",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "VBR",
+        "obs_qsv11_av1"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "VBR",
+          "encoderId": "obs_qsv11_av1",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "obs_qsv11_av1",
+        "rateControl": "VBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "CQP",
+        "obs_qsv11_av1"
+      ],
+      "expected": 63
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "CQP",
+          "encoderId": "obs_qsv11_av1",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "obs_qsv11_av1",
+        "rateControl": "CQP",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 63,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "ICQ",
+        "obs_qsv11_av1"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "ICQ",
+          "encoderId": "obs_qsv11_av1",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "obs_qsv11_av1",
+        "rateControl": "ICQ",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRuntimeEncoderIdForTarget",
+      "args": [
+        "obs_qsv11_hevc",
+        false
+      ],
+      "expected": "obs_qsv11_hevc_soft"
+    },
+    {
+      "method": "recordingRuntimeEncoderIdForTarget",
+      "args": [
+        "obs_qsv11_hevc",
+        true
+      ],
+      "expected": "obs_qsv11_hevc"
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "obs_qsv11_hevc"
+      ],
+      "expected": "obs_qsv11_hevc"
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "CBR",
+        "obs_qsv11_hevc"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "CBR",
+          "encoderId": "obs_qsv11_hevc",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "obs_qsv11_hevc",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "VBR",
+        "obs_qsv11_hevc"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "VBR",
+          "encoderId": "obs_qsv11_hevc",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "obs_qsv11_hevc",
+        "rateControl": "VBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "CQP",
+        "obs_qsv11_hevc"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "CQP",
+          "encoderId": "obs_qsv11_hevc",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "obs_qsv11_hevc",
+        "rateControl": "CQP",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "ICQ",
+        "obs_qsv11_hevc"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "ICQ",
+          "encoderId": "obs_qsv11_hevc",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "obs_qsv11_hevc",
+        "rateControl": "ICQ",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRuntimeEncoderIdForTarget",
+      "args": [
+        "obs_qsv11_v2",
+        false
+      ],
+      "expected": "obs_qsv11_soft_v2"
+    },
+    {
+      "method": "recordingRuntimeEncoderIdForTarget",
+      "args": [
+        "obs_qsv11_v2",
+        true
+      ],
+      "expected": "obs_qsv11_v2"
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "obs_qsv11_v2"
+      ],
+      "expected": "obs_qsv11_v2"
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "CBR",
+        "obs_qsv11_v2"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "CBR",
+          "encoderId": "obs_qsv11_v2",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "obs_qsv11_v2",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "VBR",
+        "obs_qsv11_v2"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "VBR",
+          "encoderId": "obs_qsv11_v2",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "obs_qsv11_v2",
+        "rateControl": "VBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "CQP",
+        "obs_qsv11_v2"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "CQP",
+          "encoderId": "obs_qsv11_v2",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "obs_qsv11_v2",
+        "rateControl": "CQP",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "ICQ",
+        "obs_qsv11_v2"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "ICQ",
+          "encoderId": "obs_qsv11_v2",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "obs_qsv11_v2",
+        "rateControl": "ICQ",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRuntimeEncoderIdForTarget",
+      "args": [
+        "unknown",
+        false
+      ],
+      "expected": "unknown"
+    },
+    {
+      "method": "recordingRuntimeEncoderIdForTarget",
+      "args": [
+        "unknown",
+        true
+      ],
+      "expected": "unknown"
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "unknown"
+      ],
+      "expected": null
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "CBR",
+        "unknown"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "CBR",
+          "encoderId": "unknown",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "unknown",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "VBR",
+        "unknown"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "VBR",
+          "encoderId": "unknown",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "unknown",
+        "rateControl": "VBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "CQP",
+        "unknown"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "CQP",
+          "encoderId": "unknown",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "unknown",
+        "rateControl": "CQP",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "ICQ",
+        "unknown"
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "ICQ",
+          "encoderId": "unknown",
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "unknown",
+        "rateControl": "ICQ",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRuntimeEncoderIdForTarget",
+      "args": [
+        null,
+        false
+      ],
+      "expected": null
+    },
+    {
+      "method": "recordingRuntimeEncoderIdForTarget",
+      "args": [
+        null,
+        true
+      ],
+      "expected": null
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        null
+      ],
+      "expected": null
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "CBR",
+        null
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "CBR",
+          "encoderId": null,
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "VBR",
+        null
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "VBR",
+          "encoderId": null,
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "VBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "CQP",
+        null
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "CQP",
+          "encoderId": null,
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CQP",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingRateControlQualityMax",
+      "args": [
+        "ICQ",
+        null
+      ],
+      "expected": 51
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "rateControl": "ICQ",
+          "encoderId": null,
+          "rateControlQuality": 100
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "ICQ",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 51,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "arc-gpu-encoder:v1:eyJjb2RlYyI6Im9ic19xc3YxMV9hdjEifQ"
+      ],
+      "expected": "obs_qsv11_av1"
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "arc-gpu-encoder:v1:%7B%22codec%22%3A%22obs_qsv11_av1%22%7D"
+      ],
+      "expected": "obs_qsv11_av1"
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "arc-gpu-encoder:v1:eyJjIjoib2JzX3FzdjExX2hldmMifQ"
+      ],
+      "expected": "obs_qsv11_hevc"
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "arc-gpu-encoder:v1:%7B%22c%22%3A%22obs_qsv11_hevc%22%7D"
+      ],
+      "expected": "obs_qsv11_hevc"
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "arc-gpu-encoder:v1:eyJjb2RlYyI6bnVsbCwiYyI6Im9ic19xc3YxMV92MiJ9"
+      ],
+      "expected": "obs_qsv11_v2"
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "arc-gpu-encoder:v1:%7B%22codec%22%3Anull%2C%22c%22%3A%22obs_qsv11_v2%22%7D"
+      ],
+      "expected": "obs_qsv11_v2"
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "arc-gpu-encoder:v1:eyJjb2RlYyI6InVua25vd24iLCJjIjoib2JzX3FzdjExX2F2MSJ9"
+      ],
+      "expected": null
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "arc-gpu-encoder:v1:%7B%22codec%22%3A%22unknown%22%2C%22c%22%3A%22obs_qsv11_av1%22%7D"
+      ],
+      "expected": null
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "arc-gpu-encoder:v1:"
+      ],
+      "expected": null
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "arc-gpu-encoder:v1:%%%"
+      ],
+      "expected": null
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "arc-gpu-encoder:v1:aaaa"
+      ],
+      "expected": null
+    },
+    {
+      "method": "recordingEncoderCodecOf",
+      "args": [
+        "arc-gpu-encoder:v1:eyJjb2RlYyI6Im9ic19xc3YxMV9hdjEifQ=="
+      ],
+      "expected": "obs_qsv11_av1"
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        null,
+        "120"
+      ],
+      "expected": 120
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        null,
+        7777
+      ],
+      "expected": 7777
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        true,
+        "120"
+      ],
+      "expected": 120
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        true,
+        7777
+      ],
+      "expected": 7777
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        false,
+        "120"
+      ],
+      "expected": 120
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        false,
+        7777
+      ],
+      "expected": 7777
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        0,
+        "120"
+      ],
+      "expected": 1
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        0,
+        7777
+      ],
+      "expected": 7777
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        -1,
+        "120"
+      ],
+      "expected": 1
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        -1,
+        7777
+      ],
+      "expected": 7777
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        1.4,
+        "120"
+      ],
+      "expected": 1
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        1.4,
+        7777
+      ],
+      "expected": 1.4
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        30.5,
+        "120"
+      ],
+      "expected": 31
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        30.5,
+        7777
+      ],
+      "expected": 30.5
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        360.9,
+        "120"
+      ],
+      "expected": 360
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        360.9,
+        7777
+      ],
+      "expected": 360.9
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        "",
+        "120"
+      ],
+      "expected": 120
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        "",
+        7777
+      ],
+      "expected": 7777
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        " 144.5 ",
+        "120"
+      ],
+      "expected": 145
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        " 144.5 ",
+        7777
+      ],
+      "expected": 7777
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        "0x78",
+        "120"
+      ],
+      "expected": 120
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        "0x78",
+        7777
+      ],
+      "expected": 7777
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        "bad",
+        "120"
+      ],
+      "expected": 120
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        "bad",
+        7777
+      ],
+      "expected": 7777
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        [],
+        "120"
+      ],
+      "expected": 120
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        [],
+        7777
+      ],
+      "expected": 7777
+    },
+    {
+      "method": "normalizeRecordingFps",
+      "args": [
+        [
+          60
+        ],
+        "120"
+      ],
+      "expected": 120
+    },
+    {
+      "method": "normalizeRecordingBitrate",
+      "args": [
+        [
+          60
+        ],
+        7777
+      ],
+      "expected": 7777
+    },
+    {
+      "method": "normalizeRecordingAccelerator",
+      "args": [
+        "",
+        "f8"
+      ],
+      "expected": "F8"
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "",
+            "saveClip": "",
+            "screenshot": "",
+            "marker": ""
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "",
+          "saveClip": "",
+          "screenshot": "",
+          "marker": ""
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingAccelerator",
+      "args": [
+        "   ",
+        "f8"
+      ],
+      "expected": "F8"
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "   ",
+            "saveClip": "   ",
+            "screenshot": "   ",
+            "marker": "   "
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "",
+          "saveClip": "",
+          "screenshot": "",
+          "marker": ""
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingAccelerator",
+      "args": [
+        "f9",
+        "f8"
+      ],
+      "expected": "F9"
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "f9",
+            "saveClip": "f9",
+            "screenshot": "f9",
+            "marker": "f9"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F9",
+          "screenshot": "F9",
+          "marker": "F9"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingAccelerator",
+      "args": [
+        "Ctrl+alt+f10",
+        "f8"
+      ],
+      "expected": "Control+Alt+F10"
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "Ctrl+alt+f10",
+            "saveClip": "Ctrl+alt+f10",
+            "screenshot": "Ctrl+alt+f10",
+            "marker": "Ctrl+alt+f10"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "Control+Alt+F10",
+          "saveClip": "Control+Alt+F10",
+          "screenshot": "Control+Alt+F10",
+          "marker": "Control+Alt+F10"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingAccelerator",
+      "args": [
+        "cmdorcontrol+F6",
+        "f8"
+      ],
+      "expected": "CommandOrControl+F6"
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "cmdorcontrol+F6",
+            "saveClip": "cmdorcontrol+F6",
+            "screenshot": "cmdorcontrol+F6",
+            "marker": "cmdorcontrol+F6"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "CommandOrControl+F6",
+          "saveClip": "CommandOrControl+F6",
+          "screenshot": "CommandOrControl+F6",
+          "marker": "CommandOrControl+F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingAccelerator",
+      "args": [
+        "Ctrl+Control+F9",
+        "f8"
+      ],
+      "expected": "F8"
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "Ctrl+Control+F9",
+            "saveClip": "Ctrl+Control+F9",
+            "screenshot": "Ctrl+Control+F9",
+            "marker": "Ctrl+Control+F9"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingAccelerator",
+      "args": [
+        "Alt+Shift+F25",
+        "f8"
+      ],
+      "expected": "F8"
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "Alt+Shift+F25",
+            "saveClip": "Alt+Shift+F25",
+            "screenshot": "Alt+Shift+F25",
+            "marker": "Alt+Shift+F25"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingAccelerator",
+      "args": [
+        "Ctrl++F9",
+        "f8"
+      ],
+      "expected": "F8"
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "Ctrl++F9",
+            "saveClip": "Ctrl++F9",
+            "screenshot": "Ctrl++F9",
+            "marker": "Ctrl++F9"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingAccelerator",
+      "args": [
+        "F01",
+        "f8"
+      ],
+      "expected": "F8"
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "F01",
+            "saveClip": "F01",
+            "screenshot": "F01",
+            "marker": "F01"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingAccelerator",
+      "args": [
+        "commandorcontrol+shift+1",
+        "f8"
+      ],
+      "expected": "CommandOrControl+Shift+1"
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "commandorcontrol+shift+1",
+            "saveClip": "commandorcontrol+shift+1",
+            "screenshot": "commandorcontrol+shift+1",
+            "marker": "commandorcontrol+shift+1"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "CommandOrControl+Shift+1",
+          "saveClip": "CommandOrControl+Shift+1",
+          "screenshot": "CommandOrControl+Shift+1",
+          "marker": "CommandOrControl+Shift+1"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingAccelerator",
+      "args": [
+        "ß",
+        "f8"
+      ],
+      "expected": "F8"
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "ß",
+            "saveClip": "ß",
+            "screenshot": "ß",
+            "marker": "ß"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingAccelerator",
+      "args": [
+        "Alt+K",
+        "f8"
+      ],
+      "expected": "F8"
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "Alt+K",
+            "saveClip": "Alt+K",
+            "screenshot": "Alt+K",
+            "marker": "Alt+K"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingAccelerator",
+      "args": [
+        "Alt+F9\n",
+        "f8"
+      ],
+      "expected": "Alt+F9"
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "Alt+F9\n",
+            "saveClip": "Alt+F9\n",
+            "screenshot": "Alt+F9\n",
+            "marker": "Alt+F9\n"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "Alt+F9",
+          "saveClip": "Alt+F9",
+          "screenshot": "Alt+F9",
+          "marker": "Alt+F9"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "start": "F9",
+            "stop": "Ctrl+F11"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "Control+F11",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "start": "F12",
+            "stop": "F10"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F12",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "start": "",
+            "stop": "F11"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": null,
+            "start": "F12"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "F9",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingSettings",
+      "args": [
+        {
+          "hotkeys": {
+            "toggle": "",
+            "start": "F12"
+          }
+        }
+      ],
+      "expected": {
+        "location": "",
+        "runtimePath": "",
+        "mode": "manual",
+        "fps": 60,
+        "resolution": "1080p",
+        "encoderId": "automatic",
+        "rateControl": "CBR",
+        "bitrateKbps": 8000,
+        "maxBitrateKbps": 8000,
+        "rateControlQuality": 23,
+        "captureTarget": {
+          "type": "display",
+          "displayId": "primary",
+          "windowHandle": 0,
+          "processName": "",
+          "executablePath": "",
+          "windowTitle": "",
+          "windowClass": ""
+        },
+        "captureColorMode": "auto",
+        "showCursor": false,
+        "memorySavingMode": false,
+        "replayLengthSec": 30,
+        "audio": {
+          "microphone": {
+            "enabled": false,
+            "deviceId": "",
+            "volume": 1,
+            "mono": false
+          },
+          "system": {
+            "enabled": true,
+            "deviceId": "",
+            "volume": 1
+          },
+          "sourceMode": "system",
+          "customProcesses": []
+        },
+        "hotkeys": {
+          "toggle": "",
+          "saveClip": "F8",
+          "screenshot": "F7",
+          "marker": "F6"
+        },
+        "instantReplayAutoStart": false,
+        "replayMarkersEnabled": true
+      }
+    },
+    {
+      "method": "normalizeRecordingCaptureTarget",
+      "args": [
+        null
+      ],
+      "expected": {
+        "type": "display",
+        "displayId": "primary",
+        "windowHandle": 0,
+        "processName": "",
+        "executablePath": "",
+        "windowTitle": "",
+        "windowClass": ""
+      }
+    },
+    {
+      "method": "normalizeRecordingCaptureTarget",
+      "args": [
+        {}
+      ],
+      "expected": {
+        "type": "display",
+        "displayId": "primary",
+        "windowHandle": 0,
+        "processName": "",
+        "executablePath": "",
+        "windowTitle": "",
+        "windowClass": ""
+      }
+    },
+    {
+      "method": "normalizeRecordingCaptureTarget",
+      "args": [
+        []
+      ],
+      "expected": {
+        "type": "display",
+        "displayId": "primary",
+        "windowHandle": 0,
+        "processName": "",
+        "executablePath": "",
+        "windowTitle": "",
+        "windowClass": ""
+      }
+    },
+    {
+      "method": "normalizeRecordingCaptureTarget",
+      "args": [
+        {
+          "type": "window",
+          "displayId": " gpu1 ",
+          "windowHandle": 4294967295,
+          "processName": " game.exe ",
+          "executablePath": " C:\\game.exe ",
+          "windowTitle": " Game ",
+          "windowClass": " Class "
+        }
+      ],
+      "expected": {
+        "type": "window",
+        "displayId": "gpu1",
+        "windowHandle": 4294967295,
+        "processName": "game.exe",
+        "executablePath": "C:\\game.exe",
+        "windowTitle": "Game",
+        "windowClass": "Class"
+      }
+    },
+    {
+      "method": "normalizeRecordingCaptureTarget",
+      "args": [
+        {
+          "type": "window",
+          "windowHandle": 4294967296,
+          "processName": "C:\\bad.exe",
+          "displayId": " ",
+          "windowTitle": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      ],
+      "expected": {
+        "type": "window",
+        "displayId": "primary",
+        "windowHandle": 0,
+        "processName": "",
+        "executablePath": "",
+        "windowTitle": "",
+        "windowClass": ""
+      }
+    },
+    {
+      "method": "normalizeRecordingCaptureTarget",
+      "args": [
+        {
+          "displayId": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+          "windowClass": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+        }
+      ],
+      "expected": {
+        "type": "display",
+        "displayId": "primary",
+        "windowHandle": 0,
+        "processName": "",
+        "executablePath": "",
+        "windowTitle": "",
+        "windowClass": ""
+      }
+    },
+    {
+      "method": "normalizeRecordingCaptureTarget",
+      "args": [
+        {
+          "windowHandle": 1.5,
+          "processName": "nul\u0000.exe"
+        }
+      ],
+      "expected": {
+        "type": "display",
+        "displayId": "primary",
+        "windowHandle": 0,
+        "processName": "",
+        "executablePath": "",
+        "windowTitle": "",
+        "windowClass": ""
+      }
+    },
+    {
+      "method": "normalizeRecordingAudioSettings",
+      "args": [
+        null
+      ],
+      "expected": {
+        "microphone": {
+          "enabled": false,
+          "deviceId": "",
+          "volume": 1,
+          "mono": false
+        },
+        "system": {
+          "enabled": true,
+          "deviceId": "",
+          "volume": 1
+        },
+        "sourceMode": "system",
+        "customProcesses": []
+      }
+    },
+    {
+      "method": "normalizeRecordingAudioSettings",
+      "args": [
+        {}
+      ],
+      "expected": {
+        "microphone": {
+          "enabled": false,
+          "deviceId": "",
+          "volume": 1,
+          "mono": false
+        },
+        "system": {
+          "enabled": true,
+          "deviceId": "",
+          "volume": 1
+        },
+        "sourceMode": "system",
+        "customProcesses": []
+      }
+    },
+    {
+      "method": "normalizeRecordingAudioSettings",
+      "args": [
+        []
+      ],
+      "expected": {
+        "microphone": {
+          "enabled": false,
+          "deviceId": "",
+          "volume": 1,
+          "mono": false
+        },
+        "system": {
+          "enabled": true,
+          "deviceId": "",
+          "volume": 1
+        },
+        "sourceMode": "system",
+        "customProcesses": []
+      }
+    },
+    {
+      "method": "normalizeRecordingAudioSettings",
+      "args": [
+        {
+          "microphone": {
+            "enabled": true,
+            "deviceId": " mic ",
+            "volume": 0.4,
+            "mono": true
+          },
+          "system": {
+            "enabled": false,
+            "deviceId": " system ",
+            "volume": 0
+          },
+          "sourceMode": "custom",
+          "customProcesses": [
+            " game.exe ",
+            "game.exe",
+            "other.exe",
+            "third.exe",
+            "fourth.exe"
+          ]
+        }
+      ],
+      "expected": {
+        "microphone": {
+          "enabled": true,
+          "deviceId": "mic",
+          "volume": 0.4,
+          "mono": true
+        },
+        "system": {
+          "enabled": false,
+          "deviceId": "system",
+          "volume": 0
+        },
+        "sourceMode": "custom",
+        "customProcesses": [
+          "game.exe",
+          "other.exe",
+          "third.exe"
+        ]
+      }
+    },
+    {
+      "method": "normalizeRecordingAudioSettings",
+      "args": [
+        {
+          "microphone": {
+            "enabled": 1,
+            "deviceId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "volume": 2,
+            "mono": 1
+          },
+          "system": {
+            "enabled": null,
+            "volume": -1
+          },
+          "customProcesses": [
+            "a.exe",
+            "A.exe",
+            "a.exe",
+            "x/y.exe",
+            "z.exe"
+          ]
+        }
+      ],
+      "expected": {
+        "microphone": {
+          "enabled": false,
+          "deviceId": "",
+          "volume": 1,
+          "mono": false
+        },
+        "system": {
+          "enabled": true,
+          "deviceId": "",
+          "volume": 1
+        },
+        "sourceMode": "system",
+        "customProcesses": [
+          "a.exe",
+          "A.exe",
+          "z.exe"
+        ]
+      }
+    },
+    {
+      "method": "normalizeRecordingAudioSettings",
+      "args": [
+        {
+          "sourceMode": "bad",
+          "customProcesses": [
+            null,
+            {},
+            "",
+            3,
+            "\n",
+            "valid.exe"
+          ]
+        }
+      ],
+      "expected": {
+        "microphone": {
+          "enabled": false,
+          "deviceId": "",
+          "volume": 1,
+          "mono": false
+        },
+        "system": {
+          "enabled": true,
+          "deviceId": "",
+          "volume": 1
+        },
+        "sourceMode": "system",
+        "customProcesses": [
+          "valid.exe"
+        ]
+      }
+    },
+    {
+      "method": "validateRecordingProcessNames",
+      "args": [
+        null
+      ],
+      "error": "At most three custom process names are allowed"
+    },
+    {
+      "method": "validateRecordingProcessNames",
+      "args": [
+        []
+      ],
+      "expected": []
+    },
+    {
+      "method": "validateRecordingProcessNames",
+      "args": [
+        [
+          " a.exe ",
+          "a.exe"
+        ]
+      ],
+      "expected": [
+        "a.exe"
+      ]
+    },
+    {
+      "method": "validateRecordingProcessNames",
+      "args": [
+        [
+          "a",
+          "b",
+          "c",
+          "d"
+        ]
+      ],
+      "error": "At most three custom process names are allowed"
+    },
+    {
+      "method": "validateRecordingProcessNames",
+      "args": [
+        [
+          "path/a"
+        ]
+      ],
+      "error": "Custom process names must be non-empty names without paths"
+    },
+    {
+      "method": "validateRecordingProcessNames",
+      "args": [
+        [
+          ""
+        ]
+      ],
+      "error": "Custom process names must be non-empty names without paths"
+    },
+    {
+      "method": "validateRecordingProcessNames",
+      "args": [
+        [
+          true
+        ]
+      ],
+      "error": "Custom process names must be non-empty names without paths"
+    },
+    {
+      "method": "validateRecordingProcessNames",
+      "args": [
+        [
+          "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+        ]
+      ],
+      "expected": [
+        "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      ]
+    },
+    {
+      "method": "validateRecordingProcessNames",
+      "args": [
+        [
+          "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+        ]
+      ],
+      "error": "Custom process names must be non-empty names without paths"
+    },
+    {
+      "method": "normalizeRecordingMarker",
+      "args": [
+        null,
+        "1970-01-01T00:00:00.000Z"
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeRecordingMarker",
+      "args": [
+        {},
+        "1970-01-01T00:00:00.000Z"
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeRecordingMarker",
+      "args": [
+        {
+          "id": "marker_01",
+          "sourceSessionId": " s1 ",
+          "sourceAtMs": 42.5,
+          "label": " A\u0000B\n  C\t D ",
+          "createdAt": "2026-01-01"
+        },
+        "1970-01-01T00:00:00.000Z"
+      ],
+      "expected": {
+        "id": "marker_01",
+        "sourceSessionId": "s1",
+        "sourceAtMs": 43,
+        "label": "A B C D",
+        "createdAt": "2026-01-01"
+      }
+    },
+    {
+      "method": "normalizeRecordingMarker",
+      "args": [
+        {
+          "id": "marker_01",
+          "sourceSessionId": " s1 ",
+          "sourceAtMs": -50,
+          "label": " A\u0000B\n  C\t D ",
+          "createdAt": "2026-01-01",
+          "clipId": "clip_001"
+        },
+        "1970-01-01T00:00:00.000Z"
+      ],
+      "expected": {
+        "id": "marker_01",
+        "clipId": "clip_001",
+        "sourceSessionId": "s1",
+        "sourceAtMs": 0,
+        "label": "A B C D",
+        "createdAt": "2026-01-01"
+      }
+    },
+    {
+      "method": "normalizeRecordingMarker",
+      "args": [
+        {
+          "id": "marker_01",
+          "sourceSessionId": "",
+          "sourceAtMs": 42.5,
+          "label": " A\u0000B\n  C\t D ",
+          "createdAt": "2026-01-01",
+          "sessionId": "fallback"
+        },
+        "1970-01-01T00:00:00.000Z"
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeRecordingMarker",
+      "args": [
+        {
+          "id": "marker_01",
+          "sourceSessionId": null,
+          "sourceAtMs": 42.5,
+          "label": " A\u0000B\n  C\t D ",
+          "createdAt": "2026-01-01",
+          "sessionId": "fallback"
+        },
+        "1970-01-01T00:00:00.000Z"
+      ],
+      "expected": {
+        "id": "marker_01",
+        "sourceSessionId": "fallback",
+        "sourceAtMs": 43,
+        "label": "A B C D",
+        "createdAt": "2026-01-01"
+      }
+    },
+    {
+      "method": "normalizeRecordingMarker",
+      "args": [
+        {
+          "id": "marker_01",
+          "sourceSessionId": " s1 ",
+          "sourceAtMs": null,
+          "label": " A\u0000B\n  C\t D ",
+          "createdAt": "2026-01-01",
+          "atMs": 44
+        },
+        "1970-01-01T00:00:00.000Z"
+      ],
+      "expected": {
+        "id": "marker_01",
+        "sourceSessionId": "s1",
+        "sourceAtMs": 44,
+        "label": "A B C D",
+        "createdAt": "2026-01-01"
+      }
+    },
+    {
+      "method": "normalizeRecordingMarker",
+      "args": [
+        {
+          "id": "marker_01",
+          "sourceSessionId": " s1 ",
+          "sourceAtMs": 42.5,
+          "label": "\u0000\n\t",
+          "createdAt": "2026-01-01"
+        },
+        "1970-01-01T00:00:00.000Z"
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeRecordingMarker",
+      "args": [
+        {
+          "id": "marker_01",
+          "sourceSessionId": " s1 ",
+          "sourceAtMs": 42.5,
+          "label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "createdAt": "2026-01-01"
+        },
+        "1970-01-01T00:00:00.000Z"
+      ],
+      "expected": {
+        "id": "marker_01",
+        "sourceSessionId": "s1",
+        "sourceAtMs": 43,
+        "label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "createdAt": "2026-01-01"
+      }
+    },
+    {
+      "method": "normalizeRecordingMarker",
+      "args": [
+        {
+          "id": "bad",
+          "sourceSessionId": " s1 ",
+          "sourceAtMs": 42.5,
+          "label": " A\u0000B\n  C\t D ",
+          "createdAt": "2026-01-01"
+        },
+        "1970-01-01T00:00:00.000Z"
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeRecordingMarker",
+      "args": [
+        {
+          "id": "marker_01",
+          "sourceSessionId": " s1 ",
+          "sourceAtMs": 10000000000,
+          "label": " A\u0000B\n  C\t D ",
+          "createdAt": "2026-01-01"
+        },
+        "1970-01-01T00:00:00.000Z"
+      ],
+      "expected": {
+        "id": "marker_01",
+        "sourceSessionId": "s1",
+        "sourceAtMs": 86400000,
+        "label": "A B C D",
+        "createdAt": "2026-01-01"
+      }
+    },
+    {
+      "method": "normalizeRecordingMarker",
+      "args": [
+        {
+          "id": "marker_01",
+          "sourceSessionId": " s1 ",
+          "sourceAtMs": 42.5,
+          "label": " A\u0000B\n  C\t D ",
+          "createdAt": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        },
+        "1970-01-01T00:00:00.000Z"
+      ],
+      "expected": {
+        "id": "marker_01",
+        "sourceSessionId": "s1",
+        "sourceAtMs": 43,
+        "label": "A B C D",
+        "createdAt": "1970-01-01T00:00:00.000Z"
+      }
+    },
+    {
+      "method": "normalizeRecordingMarkers",
+      "args": [
+        [
+          {
+            "id": "marker_01",
+            "sourceSessionId": " s1 ",
+            "sourceAtMs": 42.5,
+            "label": " A\u0000B\n  C\t D ",
+            "createdAt": "2026-01-01"
+          },
+          {
+            "id": "marker_01",
+            "sourceSessionId": " s1 ",
+            "sourceAtMs": 42.5,
+            "label": " A\u0000B\n  C\t D ",
+            "createdAt": "2026-01-01"
+          },
+          {
+            "id": "marker_02",
+            "sourceSessionId": " s1 ",
+            "sourceAtMs": null,
+            "label": " A\u0000B\n  C\t D ",
+            "createdAt": "2026-01-01",
+            "atMs": 2
+          },
+          {
+            "id": "marker_03",
+            "sourceSessionId": " s1 ",
+            "sourceAtMs": 42.5,
+            "label": " A\u0000B\n  C\t D ",
+            "createdAt": "2026-01-01"
+          }
+        ],
+        "1970-01-01T00:00:00.000Z"
+      ],
+      "expected": [
+        {
+          "id": "marker_01",
+          "sourceSessionId": "s1",
+          "sourceAtMs": 43,
+          "label": "A B C D",
+          "createdAt": "2026-01-01"
+        },
+        {
+          "id": "marker_02",
+          "sourceSessionId": "s1",
+          "sourceAtMs": 2,
+          "label": "A B C D",
+          "createdAt": "2026-01-01"
+        },
+        {
+          "id": "marker_03",
+          "sourceSessionId": "s1",
+          "sourceAtMs": 43,
+          "label": "A B C D",
+          "createdAt": "2026-01-01"
+        }
+      ]
+    },
+    {
+      "method": "normalizeRecordingApmSamples",
+      "args": [
+        [
+          {
+            "atMs": 50,
+            "apm": 1
+          },
+          {
+            "atMs": 10.5,
+            "apm": 2
+          },
+          {
+            "atMs": 50,
+            "apm": 3
+          },
+          {
+            "atMs": -10,
+            "apm": 99999
+          },
+          {
+            "atMs": "10",
+            "apm": 3
+          },
+          {
+            "atMs": 90,
+            "apm": -2
+          },
+          null,
+          []
+        ]
+      ],
+      "expected": [
+        {
+          "atMs": 0,
+          "apm": 6000
+        },
+        {
+          "atMs": 11,
+          "apm": 2
+        },
+        {
+          "atMs": 50,
+          "apm": 1
+        },
+        {
+          "atMs": 50,
+          "apm": 3
+        },
+        {
+          "atMs": 90,
+          "apm": 0
+        }
+      ]
+    },
+    {
+      "method": "normalizeRecordingApmSamples",
+      "args": [
+        null
+      ],
+      "expected": []
+    },
+    {
+      "method": "mapRecordingApmSamplesToClip",
+      "args": [
+        [
+          {
+            "atMs": 50,
+            "apm": 1
+          },
+          {
+            "atMs": 10.5,
+            "apm": 2
+          },
+          {
+            "atMs": 50,
+            "apm": 3
+          },
+          {
+            "atMs": -10,
+            "apm": 99999
+          },
+          {
+            "atMs": "10",
+            "apm": 3
+          },
+          {
+            "atMs": 90,
+            "apm": -2
+          },
+          null,
+          []
+        ],
+        0,
+        50
+      ],
+      "expected": [
+        {
+          "atMs": 0,
+          "apm": 6000
+        },
+        {
+          "atMs": 11,
+          "apm": 2
+        },
+        {
+          "atMs": 50,
+          "apm": 1
+        },
+        {
+          "atMs": 50,
+          "apm": 3
+        }
+      ]
+    },
+    {
+      "method": "mapRecordingApmSamplesToClip",
+      "args": [
+        [
+          {
+            "atMs": 50,
+            "apm": 1
+          },
+          {
+            "atMs": 10.5,
+            "apm": 2
+          },
+          {
+            "atMs": 50,
+            "apm": 3
+          },
+          {
+            "atMs": -10,
+            "apm": 99999
+          },
+          {
+            "atMs": "10",
+            "apm": 3
+          },
+          {
+            "atMs": 90,
+            "apm": -2
+          },
+          null,
+          []
+        ],
+        11,
+        50
+      ],
+      "expected": [
+        {
+          "atMs": 0,
+          "apm": 2
+        },
+        {
+          "atMs": 39,
+          "apm": 1
+        },
+        {
+          "atMs": 39,
+          "apm": 3
+        }
+      ]
+    },
+    {
+      "method": "mapRecordingApmSamplesToClip",
+      "args": [
+        [
+          {
+            "atMs": 50,
+            "apm": 1
+          },
+          {
+            "atMs": 10.5,
+            "apm": 2
+          },
+          {
+            "atMs": 50,
+            "apm": 3
+          },
+          {
+            "atMs": -10,
+            "apm": 99999
+          },
+          {
+            "atMs": "10",
+            "apm": 3
+          },
+          {
+            "atMs": 90,
+            "apm": -2
+          },
+          null,
+          []
+        ],
+        70,
+        30
+      ],
+      "expected": []
+    },
+    {
+      "method": "mapRecordingApmSamplesToClip",
+      "args": [
+        [
+          {
+            "atMs": 50,
+            "apm": 1
+          },
+          {
+            "atMs": 10.5,
+            "apm": 2
+          },
+          {
+            "atMs": 50,
+            "apm": 3
+          },
+          {
+            "atMs": -10,
+            "apm": 99999
+          },
+          {
+            "atMs": "10",
+            "apm": 3
+          },
+          {
+            "atMs": 90,
+            "apm": -2
+          },
+          null,
+          []
+        ],
+        null,
+        null
+      ],
+      "expected": [
+        {
+          "atMs": 0,
+          "apm": 6000
+        },
+        {
+          "atMs": 11,
+          "apm": 2
+        },
+        {
+          "atMs": 50,
+          "apm": 1
+        },
+        {
+          "atMs": 50,
+          "apm": 3
+        },
+        {
+          "atMs": 90,
+          "apm": 0
+        }
+      ]
+    },
+    {
+      "method": "mapRecordingApmSamplesToClip",
+      "args": [
+        [
+          {
+            "atMs": 50,
+            "apm": 1
+          },
+          {
+            "atMs": 10.5,
+            "apm": 2
+          },
+          {
+            "atMs": 50,
+            "apm": 3
+          },
+          {
+            "atMs": -10,
+            "apm": 99999
+          },
+          {
+            "atMs": "10",
+            "apm": 3
+          },
+          {
+            "atMs": 90,
+            "apm": -2
+          },
+          null,
+          []
+        ],
+        -10,
+        10000000000
+      ],
+      "expected": [
+        {
+          "atMs": 0,
+          "apm": 6000
+        },
+        {
+          "atMs": 11,
+          "apm": 2
+        },
+        {
+          "atMs": 50,
+          "apm": 1
+        },
+        {
+          "atMs": 50,
+          "apm": 3
+        },
+        {
+          "atMs": 90,
+          "apm": 0
+        }
+      ]
+    },
+    {
+      "method": "normalizeRecordingClip",
+      "args": [
+        null
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeRecordingClip",
+      "args": [
+        {}
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeRecordingClip",
+      "args": [
+        {
+          "id": "clip_001",
+          "relativePath": "nested\\Clip 10.MP4",
+          "durationMs": 3000,
+          "extra": {
+            "preserved": true
+          },
+          "markerSummaries": [
+            {
+              "id": "marker_01",
+              "atMs": 10,
+              "label": " Hello\nworld "
+            },
+            {
+              "id": "marker_01",
+              "atMs": 15
+            },
+            {
+              "id": "bad",
+              "atMs": 2
+            }
+          ],
+          "apmSamples": [
+            {
+              "atMs": 50,
+              "apm": 1
+            },
+            {
+              "atMs": 10.5,
+              "apm": 2
+            },
+            {
+              "atMs": 50,
+              "apm": 3
+            },
+            {
+              "atMs": -10,
+              "apm": 99999
+            },
+            {
+              "atMs": "10",
+              "apm": 3
+            },
+            {
+              "atMs": 90,
+              "apm": -2
+            },
+            null,
+            []
+          ],
+          "apmAverage": 99.5,
+          "apmPeak": 9999,
+          "apmAvailable": true,
+          "editorVersion": 1
+        }
+      ],
+      "expected": {
+        "id": "clip_001",
+        "relativePath": "nested\\Clip 10.MP4",
+        "durationMs": 3000,
+        "extra": {
+          "preserved": true
+        },
+        "markerSummaries": [
+          {
+            "id": "marker_01",
+            "atMs": 10,
+            "label": "Hello world",
+            "createdAt": "1970-01-01T00:00:00.000Z"
+          }
+        ],
+        "apmSamples": [
+          {
+            "atMs": 0,
+            "apm": 6000
+          },
+          {
+            "atMs": 11,
+            "apm": 2
+          },
+          {
+            "atMs": 50,
+            "apm": 1
+          },
+          {
+            "atMs": 50,
+            "apm": 3
+          },
+          {
+            "atMs": 90,
+            "apm": 0
+          }
+        ],
+        "apmAverage": 100,
+        "apmPeak": 6000,
+        "apmAvailable": true,
+        "editorVersion": 1,
+        "fileName": "Clip 10.MP4",
+        "createdAt": "1970-01-01T00:00:00.000Z"
+      }
+    },
+    {
+      "method": "normalizeRecordingClip",
+      "args": [
+        {
+          "id": "clip_001",
+          "relativePath": "C:Clip.mp4",
+          "durationMs": 3000,
+          "extra": {
+            "preserved": true
+          },
+          "markerSummaries": [
+            {
+              "id": "marker_01",
+              "atMs": 10,
+              "label": " Hello\nworld "
+            },
+            {
+              "id": "marker_01",
+              "atMs": 15
+            },
+            {
+              "id": "bad",
+              "atMs": 2
+            }
+          ],
+          "apmSamples": [
+            {
+              "atMs": 50,
+              "apm": 1
+            },
+            {
+              "atMs": 10.5,
+              "apm": 2
+            },
+            {
+              "atMs": 50,
+              "apm": 3
+            },
+            {
+              "atMs": -10,
+              "apm": 99999
+            },
+            {
+              "atMs": "10",
+              "apm": 3
+            },
+            {
+              "atMs": 90,
+              "apm": -2
+            },
+            null,
+            []
+          ],
+          "apmAverage": 99.5,
+          "apmPeak": 9999,
+          "apmAvailable": true,
+          "editorVersion": 1
+        }
+      ],
+      "expected": {
+        "id": "clip_001",
+        "relativePath": "C:Clip.mp4",
+        "durationMs": 3000,
+        "extra": {
+          "preserved": true
+        },
+        "markerSummaries": [
+          {
+            "id": "marker_01",
+            "atMs": 10,
+            "label": "Hello world",
+            "createdAt": "1970-01-01T00:00:00.000Z"
+          }
+        ],
+        "apmSamples": [
+          {
+            "atMs": 0,
+            "apm": 6000
+          },
+          {
+            "atMs": 11,
+            "apm": 2
+          },
+          {
+            "atMs": 50,
+            "apm": 1
+          },
+          {
+            "atMs": 50,
+            "apm": 3
+          },
+          {
+            "atMs": 90,
+            "apm": 0
+          }
+        ],
+        "apmAverage": 100,
+        "apmPeak": 6000,
+        "apmAvailable": true,
+        "editorVersion": 1,
+        "fileName": "Clip.mp4",
+        "createdAt": "1970-01-01T00:00:00.000Z"
+      }
+    },
+    {
+      "method": "normalizeRecordingClip",
+      "args": [
+        {
+          "id": "clip_001",
+          "relativePath": ".mp4",
+          "durationMs": 3000,
+          "extra": {
+            "preserved": true
+          },
+          "markerSummaries": [
+            {
+              "id": "marker_01",
+              "atMs": 10,
+              "label": " Hello\nworld "
+            },
+            {
+              "id": "marker_01",
+              "atMs": 15
+            },
+            {
+              "id": "bad",
+              "atMs": 2
+            }
+          ],
+          "apmSamples": [
+            {
+              "atMs": 50,
+              "apm": 1
+            },
+            {
+              "atMs": 10.5,
+              "apm": 2
+            },
+            {
+              "atMs": 50,
+              "apm": 3
+            },
+            {
+              "atMs": -10,
+              "apm": 99999
+            },
+            {
+              "atMs": "10",
+              "apm": 3
+            },
+            {
+              "atMs": 90,
+              "apm": -2
+            },
+            null,
+            []
+          ],
+          "apmAverage": 99.5,
+          "apmPeak": 9999,
+          "apmAvailable": true,
+          "editorVersion": 1
+        }
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeRecordingClip",
+      "args": [
+        {
+          "id": "clip_001",
+          "relativePath": "a.arc-EDITOR-job.mp4",
+          "durationMs": 3000,
+          "extra": {
+            "preserved": true
+          },
+          "markerSummaries": [
+            {
+              "id": "marker_01",
+              "atMs": 10,
+              "label": " Hello\nworld "
+            },
+            {
+              "id": "marker_01",
+              "atMs": 15
+            },
+            {
+              "id": "bad",
+              "atMs": 2
+            }
+          ],
+          "apmSamples": [
+            {
+              "atMs": 50,
+              "apm": 1
+            },
+            {
+              "atMs": 10.5,
+              "apm": 2
+            },
+            {
+              "atMs": 50,
+              "apm": 3
+            },
+            {
+              "atMs": -10,
+              "apm": 99999
+            },
+            {
+              "atMs": "10",
+              "apm": 3
+            },
+            {
+              "atMs": 90,
+              "apm": -2
+            },
+            null,
+            []
+          ],
+          "apmAverage": 99.5,
+          "apmPeak": 9999,
+          "apmAvailable": true,
+          "editorVersion": 1
+        }
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeRecordingClip",
+      "args": [
+        {
+          "id": "clip_001",
+          "relativePath": "dir/a.mp4/",
+          "durationMs": 3000,
+          "extra": {
+            "preserved": true
+          },
+          "markerSummaries": [],
+          "apmSamples": [
+            {
+              "atMs": 50,
+              "apm": 1
+            },
+            {
+              "atMs": 10.5,
+              "apm": 2
+            },
+            {
+              "atMs": 50,
+              "apm": 3
+            },
+            {
+              "atMs": -10,
+              "apm": 99999
+            },
+            {
+              "atMs": "10",
+              "apm": 3
+            },
+            {
+              "atMs": 90,
+              "apm": -2
+            },
+            null,
+            []
+          ],
+          "apmAverage": 99.5,
+          "apmPeak": 9999,
+          "apmAvailable": true,
+          "editorVersion": 1
+        }
+      ],
+      "expected": {
+        "id": "clip_001",
+        "relativePath": "dir/a.mp4/",
+        "durationMs": 3000,
+        "extra": {
+          "preserved": true
+        },
+        "markerSummaries": [],
+        "apmSamples": [
+          {
+            "atMs": 0,
+            "apm": 6000
+          },
+          {
+            "atMs": 11,
+            "apm": 2
+          },
+          {
+            "atMs": 50,
+            "apm": 1
+          },
+          {
+            "atMs": 50,
+            "apm": 3
+          },
+          {
+            "atMs": 90,
+            "apm": 0
+          }
+        ],
+        "apmAverage": 100,
+        "apmPeak": 6000,
+        "apmAvailable": true,
+        "editorVersion": 1,
+        "fileName": "a.mp4",
+        "createdAt": "1970-01-01T00:00:00.000Z"
+      }
+    },
+    {
+      "method": "normalizeRecordingClip",
+      "args": [
+        {
+          "id": "clip_001",
+          "relativePath": "a.txt",
+          "durationMs": 3000,
+          "extra": {
+            "preserved": true
+          },
+          "markerSummaries": [
+            {
+              "id": "marker_01",
+              "atMs": 10,
+              "label": " Hello\nworld "
+            },
+            {
+              "id": "marker_01",
+              "atMs": 15
+            },
+            {
+              "id": "bad",
+              "atMs": 2
+            }
+          ],
+          "apmSamples": [
+            {
+              "atMs": 50,
+              "apm": 1
+            },
+            {
+              "atMs": 10.5,
+              "apm": 2
+            },
+            {
+              "atMs": 50,
+              "apm": 3
+            },
+            {
+              "atMs": -10,
+              "apm": 99999
+            },
+            {
+              "atMs": "10",
+              "apm": 3
+            },
+            {
+              "atMs": 90,
+              "apm": -2
+            },
+            null,
+            []
+          ],
+          "apmAverage": 99.5,
+          "apmPeak": 9999,
+          "apmAvailable": true,
+          "editorVersion": 1
+        }
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeRecordingClip",
+      "args": [
+        {
+          "id": "clip_001",
+          "relativePath": "nested\\Clip 10.MP4",
+          "durationMs": 3000,
+          "extra": {
+            "preserved": true
+          },
+          "markerSummaries": [
+            {
+              "id": "marker_01",
+              "atMs": 10,
+              "label": " Hello\nworld "
+            },
+            {
+              "id": "marker_01",
+              "atMs": 15
+            },
+            {
+              "id": "bad",
+              "atMs": 2
+            }
+          ],
+          "apmSamples": [
+            {
+              "atMs": 50,
+              "apm": 1
+            },
+            {
+              "atMs": 10.5,
+              "apm": 2
+            },
+            {
+              "atMs": 50,
+              "apm": 3
+            },
+            {
+              "atMs": -10,
+              "apm": 99999
+            },
+            {
+              "atMs": "10",
+              "apm": 3
+            },
+            {
+              "atMs": 90,
+              "apm": -2
+            },
+            null,
+            []
+          ],
+          "apmAverage": "bad",
+          "apmPeak": -2,
+          "apmAvailable": "yes",
+          "editorVersion": -1,
+          "fileName": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "createdAt": false
+        }
+      ],
+      "expected": {
+        "id": "clip_001",
+        "relativePath": "nested\\Clip 10.MP4",
+        "durationMs": 3000,
+        "extra": {
+          "preserved": true
+        },
+        "markerSummaries": [
+          {
+            "id": "marker_01",
+            "atMs": 10,
+            "label": "Hello world",
+            "createdAt": "1970-01-01T00:00:00.000Z"
+          }
+        ],
+        "apmSamples": [
+          {
+            "atMs": 0,
+            "apm": 6000
+          },
+          {
+            "atMs": 11,
+            "apm": 2
+          },
+          {
+            "atMs": 50,
+            "apm": 1
+          },
+          {
+            "atMs": 50,
+            "apm": 3
+          },
+          {
+            "atMs": 90,
+            "apm": 0
+          }
+        ],
+        "apmAverage": "bad",
+        "apmPeak": 0,
+        "apmAvailable": "yes",
+        "editorVersion": -1,
+        "fileName": "Clip 10.MP4",
+        "createdAt": "1970-01-01T00:00:00.000Z"
+      }
+    },
+    {
+      "method": "normalizeRecordingClip",
+      "args": [
+        {
+          "id": "clip_001",
+          "relativePath": "nested\\Clip 10.MP4",
+          "durationMs": 3000,
+          "extra": {
+            "preserved": true
+          },
+          "markerSummaries": null,
+          "apmSamples": [
+            {
+              "atMs": 50,
+              "apm": 1
+            },
+            {
+              "atMs": 10.5,
+              "apm": 2
+            },
+            {
+              "atMs": 50,
+              "apm": 3
+            },
+            {
+              "atMs": -10,
+              "apm": 99999
+            },
+            {
+              "atMs": "10",
+              "apm": 3
+            },
+            {
+              "atMs": 90,
+              "apm": -2
+            },
+            null,
+            []
+          ],
+          "apmAverage": 99.5,
+          "apmPeak": 9999,
+          "apmAvailable": true,
+          "editorVersion": 1,
+          "markers": [
+            {
+              "id": "marker_10",
+              "atMs": 1
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "id": "clip_001",
+        "relativePath": "nested\\Clip 10.MP4",
+        "durationMs": 3000,
+        "extra": {
+          "preserved": true
+        },
+        "markerSummaries": [
+          {
+            "id": "marker_10",
+            "atMs": 1,
+            "label": "Marker",
+            "createdAt": "1970-01-01T00:00:00.000Z"
+          }
+        ],
+        "apmSamples": [
+          {
+            "atMs": 0,
+            "apm": 6000
+          },
+          {
+            "atMs": 11,
+            "apm": 2
+          },
+          {
+            "atMs": 50,
+            "apm": 1
+          },
+          {
+            "atMs": 50,
+            "apm": 3
+          },
+          {
+            "atMs": 90,
+            "apm": 0
+          }
+        ],
+        "apmAverage": 100,
+        "apmPeak": 6000,
+        "apmAvailable": true,
+        "editorVersion": 1,
+        "markers": [
+          {
+            "id": "marker_10",
+            "atMs": 1
+          }
+        ],
+        "fileName": "Clip 10.MP4",
+        "createdAt": "1970-01-01T00:00:00.000Z"
+      }
+    },
+    {
+      "method": "normalizeRecordingClip",
+      "args": [
+        {
+          "id": "clip_001",
+          "relativePath": "nested\\Clip 10.MP4",
+          "durationMs": 3000,
+          "extra": {
+            "preserved": true
+          },
+          "markerSummaries": [
+            {
+              "id": "bad",
+              "atMs": "bad"
+            }
+          ],
+          "apmSamples": [
+            {
+              "atMs": "invalid",
+              "apm": 1
+            }
+          ],
+          "apmAverage": 99.5,
+          "apmPeak": 9999,
+          "apmAvailable": true,
+          "editorVersion": 1
+        }
+      ],
+      "expected": {
+        "id": "clip_001",
+        "relativePath": "nested\\Clip 10.MP4",
+        "durationMs": 3000,
+        "extra": {
+          "preserved": true
+        },
+        "markerSummaries": [
+          {
+            "id": "bad",
+            "atMs": "bad"
+          }
+        ],
+        "apmSamples": [
+          {
+            "atMs": "invalid",
+            "apm": 1
+          }
+        ],
+        "apmAverage": 100,
+        "apmPeak": 6000,
+        "apmAvailable": true,
+        "editorVersion": 1,
+        "fileName": "Clip 10.MP4",
+        "createdAt": "1970-01-01T00:00:00.000Z"
+      }
+    },
+    {
+      "method": "safeVideoExtension",
+      "args": [
+        "a.mp4"
+      ],
+      "expected": ".mp4"
+    },
+    {
+      "method": "isRecordingTemporaryArtifact",
+      "args": [
+        "a.mp4"
+      ],
+      "expected": false
+    },
+    {
+      "method": "safeVideoExtension",
+      "args": [
+        ".mp4"
+      ],
+      "expected": null
+    },
+    {
+      "method": "isRecordingTemporaryArtifact",
+      "args": [
+        ".mp4"
+      ],
+      "expected": false
+    },
+    {
+      "method": "safeVideoExtension",
+      "args": [
+        "..mp4"
+      ],
+      "expected": ".mp4"
+    },
+    {
+      "method": "isRecordingTemporaryArtifact",
+      "args": [
+        "..mp4"
+      ],
+      "expected": false
+    },
+    {
+      "method": "safeVideoExtension",
+      "args": [
+        "C:a.MKV"
+      ],
+      "expected": ".mkv"
+    },
+    {
+      "method": "isRecordingTemporaryArtifact",
+      "args": [
+        "C:a.MKV"
+      ],
+      "expected": false
+    },
+    {
+      "method": "safeVideoExtension",
+      "args": [
+        "dir\\Clip.MOV"
+      ],
+      "expected": ".mov"
+    },
+    {
+      "method": "isRecordingTemporaryArtifact",
+      "args": [
+        "dir\\Clip.MOV"
+      ],
+      "expected": false
+    },
+    {
+      "method": "safeVideoExtension",
+      "args": [
+        "dir/a.mp4/"
+      ],
+      "expected": ".mp4"
+    },
+    {
+      "method": "isRecordingTemporaryArtifact",
+      "args": [
+        "dir/a.mp4/"
+      ],
+      "expected": false
+    },
+    {
+      "method": "safeVideoExtension",
+      "args": [
+        "dir/a.arc-native-job.mp4"
+      ],
+      "expected": ".mp4"
+    },
+    {
+      "method": "isRecordingTemporaryArtifact",
+      "args": [
+        "dir/a.arc-native-job.mp4"
+      ],
+      "expected": true
+    },
+    {
+      "method": "safeVideoExtension",
+      "args": [
+        "DIR.ARC-SOURCE-NAME/x.mp4"
+      ],
+      "expected": ".mp4"
+    },
+    {
+      "method": "isRecordingTemporaryArtifact",
+      "args": [
+        "DIR.ARC-SOURCE-NAME/x.mp4"
+      ],
+      "expected": false
+    },
+    {
+      "method": "safeVideoExtension",
+      "args": [
+        "x.ARC-trim-a.mp4"
+      ],
+      "expected": ".mp4"
+    },
+    {
+      "method": "isRecordingTemporaryArtifact",
+      "args": [
+        "x.ARC-trim-a.mp4"
+      ],
+      "expected": true
+    },
+    {
+      "method": "safeVideoExtension",
+      "args": [
+        null
+      ],
+      "expected": null
+    },
+    {
+      "method": "isRecordingTemporaryArtifact",
+      "args": [
+        null
+      ],
+      "expected": false
+    },
+    {
+      "method": "safeVideoExtension",
+      "args": [
+        [
+          "a.webm"
+        ]
+      ],
+      "expected": ".webm"
+    },
+    {
+      "method": "isRecordingTemporaryArtifact",
+      "args": [
+        [
+          "a.webm"
+        ]
+      ],
+      "expected": false
+    },
+    {
+      "method": "normalizeEncoderStates",
+      "args": [
+        [
+          null,
+          {},
+          [],
+          {
+            "type": "obs_qsv11_av1",
+            "valid": true,
+            "startSupported": false,
+            "code": -3,
+            "deviceKey": " gpu0 ",
+            "gpuName": " name "
+          },
+          {
+            "type": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "description": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "status": "sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss",
+            "probeValid": 1,
+            "startTested": true,
+            "code": 1.5,
+            "deviceName": " ",
+            "adapterName": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+          }
+        ]
+      ],
+      "expected": [
+        {
+          "type": "obs_qsv11_av1",
+          "description": "obs_qsv11_av1",
+          "enumerated": true,
+          "probeValid": true,
+          "startTested": false,
+          "startSupported": false,
+          "code": -3,
+          "status": "",
+          "deviceKey": " gpu0 ",
+          "gpuName": " name "
+        },
+        {
+          "type": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "description": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "enumerated": true,
+          "probeValid": false,
+          "startTested": true,
+          "startSupported": true,
+          "code": null,
+          "status": ""
+        }
+      ]
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        null
+      ],
+      "expected": null
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        null
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        {}
+      ],
+      "expected": null
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        {}
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        {
+          "low": 0,
+          "high": -1
+        }
+      ],
+      "expected": "0xFFFFFFFF:0x00000000"
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        {
+          "low": 0,
+          "high": -1
+        }
+      ],
+      "expected": "0xFFFFFFFF:0x00000000"
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        {
+          "low": "0xA",
+          "high": "42"
+        }
+      ],
+      "expected": "0x0000002A:0x0000000A"
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        {
+          "low": "0xA",
+          "high": "42"
+        }
+      ],
+      "expected": "0x0000002A:0x0000000A"
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        {
+          "low": null,
+          "high": false
+        }
+      ],
+      "expected": "0x00000000:0x00000000"
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        {
+          "low": null,
+          "high": false
+        }
+      ],
+      "expected": "0x00000000:0x00000000"
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        {
+          "low": 4294967297,
+          "high": 9007199254740991
+        }
+      ],
+      "expected": "0xFFFFFFFF:0x00000001"
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        {
+          "low": 4294967297,
+          "high": 9007199254740991
+        }
+      ],
+      "expected": "0xFFFFFFFF:0x00000001"
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        {
+          "low": 1.5,
+          "high": 2
+        }
+      ],
+      "expected": null
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        {
+          "low": 1.5,
+          "high": 2
+        }
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        "0xFFFFFFFF:0x12345678"
+      ],
+      "expected": "0xFFFFFFFF:0x12345678"
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        "0xFFFFFFFF:0x12345678"
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        "-1:4294967297"
+      ],
+      "expected": "0xFFFFFFFF:0x00000001"
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        "-1:4294967297"
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        "10:11"
+      ],
+      "expected": "0x0000000A:0x0000000B"
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        "10:11"
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        "a:FF"
+      ],
+      "expected": "0x0000000A:0x000000FF"
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        "a:FF"
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        "-0xA:0Xb"
+      ],
+      "expected": "0xFFFFFFF6:0x0000000B"
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        "-0xA:0Xb"
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        "bad"
+      ],
+      "expected": null
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        "bad"
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        "1:2:3"
+      ],
+      "expected": null
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        "1:2:3"
+      ],
+      "expected": null
+    },
+    {
+      "method": "normalizeDxgiLuid",
+      "args": [
+        "+1:2"
+      ],
+      "expected": null
+    },
+    {
+      "method": "formatDxgiLuid",
+      "args": [
+        "+1:2"
+      ],
+      "expected": null
+    },
+    {
+      "method": "consumeAscentJsonObjects",
+      "args": [
+        "",
+        "{}{}"
+      ],
+      "expected": {
+        "objects": [
+          {},
+          {}
+        ],
+        "remainder": ""
+      }
+    },
+    {
+      "method": "consumeAscentJsonObjects",
+      "args": [
+        " {\"x\":\"}\\\"{\"}",
+        ""
+      ],
+      "expected": {
+        "objects": [
+          {
+            "x": "}\"{"
+          }
+        ],
+        "remainder": ""
+      }
+    },
+    {
+      "method": "consumeAscentJsonObjects",
+      "args": [
+        "",
+        " {\"a\":[{\"b\":\"😀\"}]} \n {\"c\":"
+      ],
+      "expected": {
+        "objects": [
+          {
+            "a": [
+              {
+                "b": "😀"
+              }
+            ]
+          }
+        ],
+        "remainder": "{\"c\":"
+      }
+    },
+    {
+      "method": "consumeAscentJsonObjects",
+      "args": [
+        "",
+        "[]"
+      ],
+      "error": "Unexpected bytes in Ascent JSON stream"
+    },
+    {
+      "method": "consumeAscentJsonObjects",
+      "args": [
+        "",
+        "{\"bad\":}"
+      ],
+      "error": "json-parse"
+    },
+    {
+      "method": "consumeAscentJsonObjects",
+      "args": [
+        "",
+        "{\"x\":\"123456789\"}",
+        8
+      ],
+      "error": "Ascent JSON message exceeded its safety bound"
+    },
+    {
+      "method": "consumeAscentJsonObjects",
+      "args": [
+        "",
+        "                                                  ",
+        8
+      ],
+      "error": "Ascent output buffer exceeded its safety bound"
+    },
+    {
+      "method": "consumeAscentJsonObjects",
+      "args": [
+        "{\"a\":",
+        "1} {\"b\":2}"
+      ],
+      "expected": {
+        "objects": [
+          {
+            "a": 1
+          },
+          {
+            "b": 2
+          }
+        ],
+        "remainder": ""
+      }
+    }
+  ]
+}

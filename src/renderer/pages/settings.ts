@@ -29,9 +29,9 @@
 
 import { el, clear } from '../dom.ts';
 import type { Page, PageContext } from '../router.ts';
-import { requestOverlayView } from '../router.ts';
 import { api } from '../ipc.ts';
 import { toast } from '../components/toast.ts';
+import { showRecordingHotkeyDialog } from '../components/recording-hotkey-dialog.ts';
 // M5 (N3): displayVersion is imported ALIASED - the settings page used to
 // define its OWN `displayVersion` local (the version-row formatter); the
 // alias keeps the header's pure helper without a name collision.
@@ -93,6 +93,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   // moved to the Overlay view - M6 the #/overlay page, M9 the Monitoring
   // page's Overlay view; the old #/overlay page is gone).
   let persisted: { startWithWindows: boolean; startMinimized: boolean; closeToTray: boolean; memorySavingMode: boolean; ocOnBoot: boolean; activeProfileId: string | null; theme: Theme };
+  // One row per global shortcut. Overlay chords use 'None' for off; recording
+  // accelerators use '' - that is what each backing store expects.
+  const hotkeys: Record<string, string> = {
+    overlay: 'None', advanced: 'None', scale: 'None',
+    toggle: '', saveClip: '', screenshot: '', marker: '',
+  };
   // Theme chips apply immediately, so rapid clicks can enqueue overlapping
   // read-modify-write IPC calls. Serialize only the theme writes to preserve
   // click order in the ProfileStore and keep the final chip persistent.
@@ -122,6 +128,9 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       theme: isValidTheme(envelope.settings.theme) ? envelope.settings.theme : 'dark',
     };
     committedTheme = persisted.theme;
+    hotkeys.overlay = envelope.settings.overlayHotkeyLetter ?? 'None';
+    hotkeys.advanced = envelope.settings.advancedOverlayHotkeyLetter ?? 'None';
+    hotkeys.scale = envelope.settings.postprocessScaleHotkey ?? 'None';
   } catch (err) {
     clear(root);
     root.append(el('p', { class: 'text-error', text: `Could not load settings: ${err instanceof Error ? err.message : String(err)}` }));
@@ -130,6 +139,12 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   try {
     bootState = await api.startupGet();
   } catch { /* the cards below degrade to the persisted state */ }
+  try {
+    const recording = await api.recordingSettingsGet();
+    for (const key of ['toggle', 'saveClip', 'screenshot', 'marker']) {
+      hotkeys[key] = recording.hotkeys?.[key as keyof typeof recording.hotkeys] ?? '';
+    }
+  } catch { /* recording shortcuts stay blank when the service is unavailable */ }
 
   const refresh = async (): Promise<void> => {
     if (startupCheckPending) return;
@@ -190,7 +205,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         : el('p', { class: 'card-note settings-state', text: taskStartup ? 'Not active - enable this setting to create the one-time administrator startup task.' : 'Not active - the app starts manually.' }),
     ]);
 
-    const startMinimizedCard = el('section', { class: 'card settings-card arc-surface-card' }, [
+    const startMinimizedCard = el('section', { class: 'card settings-card settings-minimized-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Start minimized' }),
       el('div', { class: 'settings-row' }, [
         el('label', { class: 'boot-toggle' }, [
@@ -212,7 +227,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       }),
     ]);
 
-    const closeToTrayCard = el('section', { class: 'card settings-card arc-surface-card' }, [
+    const closeToTrayCard = el('section', { class: 'card settings-card settings-close-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Close to tray' }),
       el('div', { class: 'settings-row' }, [
         el('label', { class: 'boot-toggle' }, [
@@ -234,7 +249,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       }),
     ]);
 
-    const memorySavingCard = el('section', { class: 'card settings-card arc-surface-card' }, [
+    const memorySavingCard = el('section', { class: 'card settings-card settings-memory-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Memory Saving Mode' }),
       el('div', { class: 'settings-row' }, [
         el('label', { class: 'boot-toggle' }, [
@@ -261,30 +276,6 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // are CSS-class driven (.swatch-*) - CSP style-src 'self' blocks inline
     // style attributes (plan-review N10). The current theme's swatch is
     // marked .active.
-    // M5: the Overlay card - the MSI Afterburner/RTSS-style HUD settings.
-    // M6-amd3 (the amendment): the card is BUTTON-ONLY - the
-    // "Overlay settings" button + a one-line description. The enable
-    // TOGGLE moved to the Overlay page's General card (overlay-settings.ts);
-    // the hotkey letter / position / scale / honest notes moved there in M6
-    // too.
-    // M9: the button navigates to the MONITORING page with the Overlay
-    // view active (the Overlay Settings content lives there now - the old
-    // #/overlay page is gone; requestOverlayView signals the view BEFORE
-    // the navigation, the #/fan pattern).
-    const overlayCard = el('section', { class: 'card settings-card overlay-card arc-surface-card' }, [
-      el('h2', { class: 'card-title', text: 'Overlay' }),
-      el('p', { class: 'card-note', text: 'The in-game HUD - its settings live in the Monitoring tab\'s Overlay view.' }),
-      el('div', { class: 'settings-row overlay-open-row' }, [
-        el('button', {
-          type: 'button',
-          class: 'overlay-settings-button',
-          onclick: () => {
-            requestOverlayView();
-            window.location.hash = '#/monitoring';
-          },
-        }, [el('span', { text: 'Overlay settings' })]),
-      ]),
-    ]);
     const maintenanceCard = el('section', { class: 'card settings-card maintenance-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Maintenance' }),
       el('div', { class: 'card-note maintenance-descriptions' }, [
@@ -323,14 +314,127 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       )),
     ]);
 
-    const aboutCard = el('section', { class: 'card settings-card arc-surface-card' }, [
+    const aboutCard = el('section', { class: 'card settings-card settings-about-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'About' }),
       el('div', { class: 'card-body kv-grid' }, [
         el('div', { class: 'kv', 'data-label': 'Version' }, [el('span', { class: 'settings-version', text: versionDisplay })]),
       ]),
     ]);
 
-    const settingCards = [startWithCard, startMinimizedCard, closeToTrayCard, memorySavingCard, overlayCard, maintenanceCard, themeCard, aboutCard];
+    type HotkeyRow = {
+      key: string; label: string; description: string; off: string | null;
+      modifier: boolean; save: (value: string) => Promise<unknown>;
+    };
+    const hotkeyRows: HotkeyRow[] = [
+      { key: 'overlay', label: 'HUD overlay', description: 'Toggle the in-game HUD from any window.', off: 'None', modifier: true,
+        save: (value) => api.profilesSettingsSave({ overlayHotkeyLetter: value }) },
+      { key: 'advanced', label: 'Advanced overlay', description: 'Open the advanced tuning panel from any window.', off: 'None', modifier: true,
+        save: (value) => api.profilesSettingsSave({ advancedOverlayHotkeyLetter: value }) },
+      { key: 'scale', label: 'Post-process scale', description: 'Start or stop selected-window scaling from any window.', off: 'None', modifier: true,
+        save: (value) => api.postprocessSharpeningHotkeySet(value).then(() => undefined) },
+      { key: 'toggle', label: 'Start / stop recording', description: 'Begin or finish video capture. Instant Replay continues independently.', off: '', modifier: false,
+        save: (value) => api.recordingSettingsSave({ hotkeys: { toggle: value } }) },
+      { key: 'saveClip', label: 'Save Instant Replay', description: 'Export the configured Instant Replay window.', off: '', modifier: false,
+        save: (value) => api.recordingSettingsSave({ hotkeys: { saveClip: value } }) },
+      { key: 'screenshot', label: 'Screenshot', description: 'Save the selected display or window as a PNG.', off: '', modifier: false,
+        save: (value) => api.recordingSettingsSave({ hotkeys: { screenshot: value } }) },
+      { key: 'marker', label: 'Add marker', description: 'Mark a moment in the current recording.', off: '', modifier: false,
+        save: (value) => api.recordingSettingsSave({ hotkeys: { marker: value } }) },
+    ];
+    // Overlay chords are persisted in shorthand ('o', 'p'); the UI must show
+    // the real accelerator the same way the Overlay page does.
+    const displayHotkey = (value: string): string =>
+      value === '' || value === 'None' ? (value || 'NONE')
+        : /^[A-Za-z]$/.test(value) ? `CONTROL+${value.toUpperCase()}` : value;
+    const hotkeyRow = (row: HotkeyRow): HTMLElement => {
+      const current = hotkeys[row.key] ?? '';
+      const picker = el('button', {
+        class: 'recording-hotkey', type: 'button', text: displayHotkey(current),
+        'aria-label': `${row.label} hotkey: ${current || 'not set'}`,
+        onClick: () => void showRecordingHotkeyDialog(row.label, current, { requireModifier: row.modifier }).then(async (next) => {
+          if (next === null) return;
+          await commitHotkey(row, next);
+        }),
+      });
+      return el('div', { class: 'recording-hotkey-row' }, [
+        el('div', { class: 'recording-hotkey-copy' }, [
+          el('strong', { text: row.label }), el('span', { text: row.description }),
+        ]),
+        el('div', { class: 'recording-hotkey-status' }, [
+          picker,
+          row.off !== null ? el('button', {
+            class: 'btn btn-secondary recording-hotkey-none', type: 'button', text: 'NONE',
+            title: `Turn off the ${row.label} shortcut`,
+            onClick: () => void commitHotkey(row, row.off as string),
+          }) : null,
+        ]),
+      ]);
+    };
+    const commitHotkey = async (row: HotkeyRow, value: string): Promise<void> => {
+      try {
+        await row.save(value);
+        hotkeys[row.key] = value;
+        toast('success', `${row.label} hotkey`, value ? `Set to ${value}.` : 'Shortcut turned off.');
+        render();
+      } catch (err) {
+        toast('error', `${row.label} hotkey could not be changed`, err instanceof Error ? err.message : String(err));
+      }
+    };
+    const hotkeysCard = el('section', { class: 'recording-panel settings-hotkeys-card arc-surface-card' }, [
+      el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
+        el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'SHORTCUTS' }), el('h2', { class: 'recording-panel-title', text: 'Hotkeys' })]),
+        el('span', { class: 'recording-panel-badge', text: 'Global' }),
+      ]),
+      el('p', { class: 'recording-panel-note', text: 'Works from any window. Click a key to swap it, or NONE to turn it off.' }),
+      ...hotkeyRows.map(hotkeyRow),
+    ]);
+    const settingCards = [startWithCard, startMinimizedCard, closeToTrayCard, memorySavingCard, maintenanceCard, themeCard, aboutCard, hotkeysCard];
+    const preferencesGroup = el('section', { class: 'settings-group settings-preferences-group' }, [
+      el('div', { class: 'settings-group-heading' }, [
+        el('div', {}, [
+          el('h2', { text: 'Startup & behavior' }),
+          el('p', { text: 'Choose how Arc Power opens and manages capture memory.' }),
+        ]),
+        el('span', { class: 'settings-group-index', text: '01' }),
+      ]),
+      el('div', { class: 'settings-preferences-grid' }, [startWithCard, startMinimizedCard, closeToTrayCard, memorySavingCard]),
+    ]);
+    const interfaceGroup = el('section', { class: 'settings-group settings-interface-group' }, [
+      el('div', { class: 'settings-group-heading' }, [
+        el('div', {}, [
+          el('h2', { text: 'Appearance' }),
+          el('p', { text: 'Set the app theme.' }),
+        ]),
+        el('span', { class: 'settings-group-index', text: '02' }),
+      ]),
+      el('div', { class: 'settings-interface-grid' }, [themeCard]),
+    ]);
+    const maintenanceGroup = el('section', { class: 'settings-group settings-maintenance-group' }, [
+      el('div', { class: 'settings-group-heading' }, [
+        el('div', {}, [
+          el('h2', { text: 'Maintenance & version' }),
+          el('p', { text: 'Manage local app data and check the installed version.' }),
+        ]),
+        el('span', { class: 'settings-group-index', text: '03' }),
+      ]),
+      el('div', { class: 'settings-maintenance-grid' }, [maintenanceCard, aboutCard]),
+    ]);
+    const hotkeysGroup = el('section', { class: 'settings-group settings-hotkeys-group' }, [
+      el('div', { class: 'settings-group-heading' }, [
+        el('div', {}, [
+          el('h2', { text: 'Hotkeys' }),
+          el('p', { text: 'Review, swap, or disable every global shortcut.' }),
+        ]),
+        el('span', { class: 'settings-group-index', text: '04' }),
+      ]),
+      hotkeysCard,
+    ]);
+    const settingGroups = [
+      { node: preferencesGroup, cards: [startWithCard, startMinimizedCard, closeToTrayCard, memorySavingCard] },
+      { node: interfaceGroup, cards: [themeCard] },
+      { node: maintenanceGroup, cards: [maintenanceCard, aboutCard] },
+      { node: hotkeysGroup, cards: [hotkeysCard] },
+    ];
     const settingsHero = el('header', { class: 'arc-page-hero settings-page-hero' }, [
       el('div', { class: 'arc-page-hero-copy' }, [
         el('span', { class: 'arc-section-kicker', text: 'SYSTEM CONTROL' }),
@@ -357,6 +461,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         card.hidden = !matches;
         if (matches) visible += 1;
       }
+      for (const group of settingGroups) group.node.hidden = !group.cards.some((card) => !card.hidden);
       resultCount.textContent = `${visible} ${visible === 1 ? 'section' : 'sections'}`;
     };
     search.addEventListener('input', filterSettings);
@@ -364,7 +469,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     root.append(
       settingsHero,
       el('div', { class: 'settings-toolbar arc-page-toolbar' }, [search, resultCount]),
-      ...settingCards,
+      preferencesGroup,
+      interfaceGroup,
+      maintenanceGroup,
+      hotkeysGroup,
     );
     filterSettings();
   };

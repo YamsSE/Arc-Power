@@ -1,0 +1,9 @@
+{
+  "name": "arc-power-tauri-frontend-build",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0"
+  }
+}

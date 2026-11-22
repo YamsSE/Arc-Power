@@ -4,7 +4,7 @@
 // driver contract. Capability rows that are not writable stay outside the
 // payload and are rendered as read-only by the page.
 
-import type { DisplaySettings, DisplayState } from '../types.ts';
+import type { DeviceInfo, DisplaySettings, DisplayState } from '../types.ts';
 
 export type Display = DisplayState['displays'][number];
 
@@ -26,6 +26,85 @@ export function selectedDisplayOf(
     ?? rows.find((display) => display.id === selectedDisplayId)
     ?? rows[0]
     ?? null;
+}
+
+/**
+ * Resolve the output-driving adapter without letting one unavailable adapter
+ * hide later candidates. Keyed reads stay pinned to the candidate identity;
+ * keyless legacy and mock inventories keep their ordinal read behavior. When
+ * no candidate has a display, the first successful read is an empty-state
+ * fallback unless the selected adapter itself failed.
+ */
+export async function resolveDisplayState(
+  candidates: ReadonlyArray<Pick<DeviceInfo, 'id' | 'deviceKey' | 'displayActive' | 'integrated'>>,
+  selectedDeviceId: number,
+  displayGet: (deviceId: number, expectedDeviceKey?: string) => Promise<DisplayState>,
+): Promise<{ state: DisplayState; deviceId: number }> {
+  const ordered = [...candidates].sort((a, b) => {
+    const displayRank = Number(b.displayActive === true) - Number(a.displayActive === true);
+    if (displayRank !== 0) return displayRank;
+    return Number(a.integrated === true) - Number(b.integrated === true);
+  });
+  let fallback: { state: DisplayState; deviceId: number } | null = null;
+  let firstError: unknown;
+  let selectedError: unknown;
+  let selectedReadFailed = false;
+
+  for (const candidate of ordered) {
+    const deviceKey = typeof candidate.deviceKey === 'string' && candidate.deviceKey.trim().length > 0
+      ? candidate.deviceKey : undefined;
+    let state: DisplayState;
+    try {
+      state = await displayGet(candidate.id, deviceKey);
+    } catch (error) {
+      firstError ??= error;
+      if (candidate.id === selectedDeviceId) {
+        selectedReadFailed = true;
+        selectedError = error;
+      }
+      continue;
+    }
+    const resolved = { state, deviceId: candidate.id };
+    fallback ??= resolved;
+    if (state.displays.length > 0) return resolved;
+  }
+
+  if (selectedReadFailed) throw selectedError;
+  if (fallback) return fallback;
+  if (ordered.length === 0) {
+    return { state: await displayGet(selectedDeviceId), deviceId: selectedDeviceId };
+  }
+  if (firstError !== undefined) throw firstError;
+  throw new Error('No graphics adapter is available; refresh Graphics and try again.');
+}
+
+export const DISPLAY_NO_DISPLAYS_MESSAGE = 'No display settings are available on this GPU.';
+export const DISPLAY_IDENTITY_UNVERIFIED_MESSAGE =
+  'The display identity could not be verified for the selected GPU. Refresh the Display view to try again.';
+
+/**
+ * The Display sub-view's no-controls decision.
+ *
+ * A keyed read that cannot prove the selected adapter's identity declines with
+ * `identityUnavailable` and an empty list. That is a transient, retryable
+ * condition - the same payload shape a genuinely display-less GPU produces -
+ * so the page must not reuse the generic empty copy for it, and must never
+ * render controls off an unverified read.
+ */
+export type DisplayViewState =
+  | { kind: 'populated' }
+  | { kind: 'identity-unavailable'; message: string; retry: true }
+  | { kind: 'empty'; message: string; retry: false };
+
+export function displayViewStateOf(
+  state: (DisplayState | null | undefined),
+): DisplayViewState {
+  if (state?.identityUnavailable === true) {
+    return { kind: 'identity-unavailable', message: DISPLAY_IDENTITY_UNVERIFIED_MESSAGE, retry: true };
+  }
+  return Array.isArray(state?.displays) && state.displays.length > 0
+    ? { kind: 'populated' }
+    : { kind: 'empty', message: DISPLAY_NO_DISPLAYS_MESSAGE, retry: false };
 }
 
 export const DISPLAY_QUANTIZATION_OPTIONS: NonNullable<DisplaySettings['quantizationRange']>[] = ['default', 'limited', 'full'];
@@ -120,23 +199,6 @@ export function scalingModeViewOptionsForDisplay(display: Display | null | undef
   if (supported.includes('identity') || supported.includes('custom')) options.push('display-scaling');
   if (supported.includes('identity') && scalingMethodOptionsForView(display, 'retro-scaling').length > 0) options.push('retro-scaling');
   return options;
-}
-
-/** Windows modes exposed by the existing source-resolution capability. The
- * UI intentionally excludes generated presets and modes that have not yet
- * been enumerated by Windows. */
-export function superResolutionSourceModesForDisplay(display: Display | null | undefined) {
-  const capability = display?.superResolution;
-  const native = capability?.nativeResolution;
-  if (!display || display.identityVerified !== true || !display.displayKey
-    || capability?.supported !== true || capability.controllable !== true || !native
-    || !Number.isFinite(native.width) || native.width <= 0 || !Number.isFinite(native.height) || native.height <= 0
-    || !capability.currentSourceResolution || !Number.isFinite(capability.currentSourceRefreshRate)
-    || (capability.currentSourceRefreshRate ?? 0) <= 0 || !Array.isArray(capability.modes)) return [];
-  return capability.modes.filter((mode) => Number.isFinite(mode.width) && mode.width > 0
-    && Number.isFinite(mode.height) && mode.height > 0
-    && Number.isFinite(mode.refreshRate) && mode.refreshRate > 0
-    && mode.width > native.width && mode.height > native.height);
 }
 
 export function scalingMethodViewOf(display: Display | null | undefined): string {
@@ -245,6 +307,18 @@ export function isDisplayControlSupported(display: Display | null | undefined, c
     // made a transient read-back failure look like the feature disappeared.
     case 'globalVrrMode': return display.globalVrrMode?.supported === true && (display.supportedOptions.globalVrrModes ?? []).length > 0;
     case 'variableRefreshRate': return display.variableRefreshRate?.controllable === true && display.variableRefreshRate.supported === true;
+    // The range control's write contract is the setter plus a window this
+    // machine actually admits. Variable Refresh Rate being enabled is a row
+    // gate (the inputs are disabled with a stated reason), not a capability:
+    // the row must stay visible so the reason is readable.
+    case 'arcSyncRange': {
+      const arcSync = display.arcSync;
+      const bounds = arcSync?.rangeBounds ?? null;
+      return arcSync?.supported === true && arcSync.writable === true
+        && bounds !== null
+        && Number.isFinite(bounds.minHz) && Number.isFinite(bounds.maxHz)
+        && bounds.maxHz > bounds.minHz;
+    }
     case 'scalingCustom': return display.supportedOptions.scalingModes.includes('custom');
     case 'wireFormat': return DISPLAY_WIRE_FORMAT_OPTIONS.includes(display.colorFormat as NonNullable<DisplaySettings['wireFormat']>['model'])
       && display.supportedOptions.wireFormats.includes(display.colorFormat ?? '')
@@ -254,13 +328,6 @@ export function isDisplayControlSupported(display: Display | null | undefined, c
     case 'saturation': return isDisplayColorWritable(display, 'saturation');
     case 'brightness': return isDisplayColorWritable(display, 'brightness');
     case 'contrast': return isDisplayColorWritable(display, 'contrast');
-    case 'superResolution': {
-      const capability = display.superResolution;
-      const modes = superResolutionSourceModesForDisplay(display);
-      const current = capability?.currentSourceResolution;
-      return modes.length > 0 && (capability?.enabled !== true || modes.some((mode) => mode.width === current?.width
-        && mode.height === current?.height && mode.refreshRate === capability.currentSourceRefreshRate));
-    }
     default: return false;
   }
 }
@@ -285,6 +352,11 @@ export function displayDriverValue(display: Display | null | undefined, control:
     case 'vrrMode': return display.vrrMode?.value;
     case 'globalVrrMode': return display.globalVrrMode?.value;
     case 'variableRefreshRate': return display.variableRefreshRate?.value;
+    // Only a custom profile has a user window; every other profile is the
+    // driver's own, so the draft stays clean until the user edits it.
+    case 'arcSyncRange': return display.arcSync?.profile === 'custom'
+      ? (display.arcSync.currentRange ?? null)
+      : null;
     case 'scalingCustom': return display.scalingDetails ? {
       x: display.scalingDetails.customX,
       y: display.scalingDetails.customY,
@@ -298,14 +370,6 @@ export function displayDriverValue(display: Display | null | undefined, control:
     case 'saturation': return display.saturation?.value;
     case 'brightness': return display.brightness?.value;
     case 'contrast': return display.contrast?.value;
-    case 'superResolution': {
-      const capability = display.superResolution;
-      if (!capability) return null;
-      const source = capability.currentSourceResolution;
-      return capability.enabled === true && source && capability.currentSourceRefreshRate && capability.currentSourceRefreshRate > 0
-        ? { enabled: true, width: source.width, height: source.height, refreshRate: capability.currentSourceRefreshRate }
-        : { enabled: false };
-    }
     default: return null;
   }
 }
@@ -327,17 +391,6 @@ export function displaySettingValue(display: Display | null | undefined, control
 export function normalizeDisplaySettings(display: Display | null | undefined): DisplaySettings {
   const out: DisplaySettings = {};
   if (!display) return out;
-  if (display.superResolution) {
-    const capability = display.superResolution;
-    const source = capability.currentSourceResolution;
-    const modes = [...capability.modes, ...capability.presets];
-    const current = source && capability.currentSourceRefreshRate
-      ? modes.find((mode) => mode.width === source.width && mode.height === source.height && mode.refreshRate === capability.currentSourceRefreshRate)
-      : undefined;
-    out.superResolution = capability.enabled === true && current
-      ? { enabled: true, width: current.width, height: current.height, refreshRate: current.refreshRate }
-      : { enabled: false };
-  }
   if (isDisplayControlSupported(display, 'quantizationRange')) {
     out.quantizationRange = display.quantizationRange ?? display.supportedOptions.quantizationRanges[0] as DisplaySettings['quantizationRange'];
   }
@@ -363,6 +416,11 @@ export function normalizeDisplaySettings(display: Display | null | undefined): D
   if (isDisplayControlSupported(display, 'variableRefreshRate') && display.variableRefreshRate?.value !== null && display.variableRefreshRate?.value !== undefined) {
     out.variableRefreshRate = display.variableRefreshRate.value;
   }
+  if (isDisplayControlSupported(display, 'arcSyncRange')) {
+    // `null` is meaningful here: it is the restore request, and it is also a
+    // clean baseline when the driver is not holding a custom window.
+    out.arcSyncRange = (displayDriverValue(display, 'arcSyncRange') ?? null) as DisplaySettings['arcSyncRange'];
+  }
   if (isDisplayControlSupported(display, 'wireFormat')) {
     out.wireFormat = {
       model: (display.colorFormat ?? display.supportedOptions.wireFormats[0]) as NonNullable<DisplaySettings['wireFormat']>['model'],
@@ -385,26 +443,6 @@ const ARC_SYNC_PROFILE_SET = new Set<unknown>(DISPLAY_ARC_SYNC_PROFILE_OPTIONS);
 const GLOBAL_VRR_MODE_SET = new Set<unknown>(DISPLAY_GLOBAL_VRR_MODE_OPTIONS);
 const SCALING_METHOD_SET = new Set<unknown>(DISPLAY_SCALING_METHOD_OPTIONS);
 
-function isPositiveDimension(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0;
-}
-
-function isListedSuperResolutionMode(value: { width?: unknown; height?: unknown; refreshRate?: unknown }, display?: Display | null): boolean {
-  if (!display || !isPositiveDimension(value.width) || !isPositiveDimension(value.height) || !isPositiveDimension(value.refreshRate)) return false;
-  return [...display.superResolution?.modes ?? [], ...display.superResolution?.presets ?? []]
-    .some((mode) => mode.width === value.width && mode.height === value.height && mode.refreshRate === value.refreshRate);
-}
-
-export function validateSuperResolutionSettings(value: unknown, display?: Display | null): boolean {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const setting = value as { enabled?: unknown; width?: unknown; height?: unknown; refreshRate?: unknown };
-  if (typeof setting.enabled !== 'boolean') return false;
-  if (setting.width !== undefined && !isPositiveDimension(setting.width)) return false;
-  if (setting.height !== undefined && !isPositiveDimension(setting.height)) return false;
-  if (setting.refreshRate !== undefined && !isPositiveDimension(setting.refreshRate)) return false;
-  return setting.enabled === false || isListedSuperResolutionMode(setting, display);
-}
-
 export function validateDisplaySettings(value: unknown, display?: Display | null): value is DisplaySettings {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   for (const [key, v] of Object.entries(value)) {
@@ -426,6 +464,17 @@ export function validateDisplaySettings(value: unknown, display?: Display | null
       if (!GLOBAL_VRR_MODE_SET.has(v)) return false;
     } else if (key === 'variableRefreshRate') {
       if (typeof v !== 'boolean') return false;
+    } else if (key === 'arcSyncRange') {
+      // `null` is the restore request. A window must be a real, ordered pair;
+      // whether it sits inside this display's admitted window is the native
+      // step's decision, and it names the real bounds when it refuses.
+      if (v !== null) {
+        if (typeof v !== 'object' || Array.isArray(v)) return false;
+        const range = v as { minHz?: unknown; maxHz?: unknown };
+        if (typeof range.minHz !== 'number' || !Number.isFinite(range.minHz)
+          || typeof range.maxHz !== 'number' || !Number.isFinite(range.maxHz)
+          || !(range.minHz > 0) || !(range.maxHz > range.minHz)) return false;
+      }
     } else if (key === 'scalingCustom') {
       if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
       const custom = v as { x?: unknown; y?: unknown; hardwareModeSet?: unknown };
@@ -436,8 +485,6 @@ export function validateDisplaySettings(value: unknown, display?: Display | null
       if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
       const wf = v as { model?: unknown; depth?: unknown };
       if (!WIRE_FORMAT_SET.has(wf.model) || typeof wf.depth !== 'number' || !Number.isFinite(wf.depth) || !DISPLAY_BPC_OPTIONS.includes(wf.depth)) return false;
-    } else if (key === 'superResolution') {
-      if (!validateSuperResolutionSettings(v, display)) return false;
     } else if (DISPLAY_COLOR_CONTROLS.includes(key as typeof DISPLAY_COLOR_CONTROLS[number])) {
       if (typeof v !== 'number' || !Number.isFinite(v)) return false;
     } else {
@@ -460,22 +507,16 @@ function sameValue(a: unknown, b: unknown): boolean {
   return false;
 }
 
-function sameSuperResolutionIntent(a: unknown, b: unknown): boolean {
-  if (a && typeof a === 'object' && (a as { enabled?: unknown }).enabled === false) {
-    return Boolean(b && typeof b === 'object' && (b as { enabled?: unknown }).enabled === false);
-  }
-  return sameValue(a, b);
-}
-
 export function isDisplayControlDirty(control: string, draft: DisplaySettings, display: Display | null): boolean {
   if (!(control in draft) || !display || !isDisplayControlSupported(display, control)) return false;
   const wanted = (draft as Record<string, unknown>)[control];
   const driver = DISPLAY_COLOR_CONTROLS.includes(control as typeof DISPLAY_COLOR_CONTROLS[number])
     ? displaySettingValue(display, control)
     : displayDriverValue(display, control);
-  if (control === 'superResolution' && !validateSuperResolutionSettings(wanted, display)) return false;
+  // `null` is a real value for the range control (the restore request), so an
+  // absent driver window must not read as "always dirty".
+  if (control === 'arcSyncRange') return !sameValue(wanted ?? null, driver ?? null);
   if (driver === null || driver === undefined) return true;
-  if (control === 'superResolution') return !sameSuperResolutionIntent(wanted, driver);
   if (typeof wanted === 'string') return wanted !== driver;
   if (control === 'wireFormat') return !sameWireFormat(wanted as { model: string; depth: number }, driver as { model: string; depth: number });
   return !sameValue(wanted, driver);
@@ -484,11 +525,9 @@ export function isDisplayControlDirty(control: string, draft: DisplaySettings, d
 export function isDisplayControlDirtyVsApplied(control: string, draft: DisplaySettings, display: Display | null, applied: DisplaySettings): boolean {
   if (!(control in draft) || (display && !isDisplayControlSupported(display, control))) return false;
   const wanted = (draft as Record<string, unknown>)[control];
-  if (control === 'superResolution' && !validateSuperResolutionSettings(wanted, display)) return false;
   if (control in applied) {
     const appliedValue = (applied as Record<string, unknown>)[control];
     if (typeof wanted === 'string') return wanted !== appliedValue;
-    if (control === 'superResolution') return !sameSuperResolutionIntent(wanted, appliedValue);
     if (control === 'wireFormat') return !sameWireFormat(wanted as { model: string; depth: number }, appliedValue as { model: string; depth: number });
     return !sameValue(wanted, appliedValue);
   }

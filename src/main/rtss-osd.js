@@ -592,7 +592,8 @@ export function createRtssOsdPublisher(deps = {}) {
   const now = deps.now ?? (() => Date.now());
   const getFpsSample = typeof deps.getFpsSample === 'function' ? deps.getFpsSample : null;
   const getCpuName = typeof deps.getCpuName === 'function' ? deps.getCpuName : null;
-  const bindings = deps.open && deps.map ? deps : defaultBindings();
+  const sharedMemory = deps.sharedMemory !== false;
+  const bindings = sharedMemory ? (deps.open && deps.map ? deps : defaultBindings()) : null;
   let handle = null;
   let view = null;
   let length = null;
@@ -743,6 +744,7 @@ export function createRtssOsdPublisher(deps = {}) {
   };
 
   const open = () => {
+    if (!sharedMemory) return false;
     if (stopped) return false;
     if (view !== null) {
       if (slot !== null && mappingHealthy()) return true;
@@ -902,6 +904,7 @@ export function createRtssOsdPublisher(deps = {}) {
   };
 
   const publishNow = (payload = {}, fpsOverride = undefined) => {
+    if (!sharedMemory) return true;
     if (stopped || !visibleState || settings.enabled === false || !open()) return false;
     if (!mappingHealthy()) { close(); return false; }
     let lockHeld = false;
@@ -978,6 +981,7 @@ export function createRtssOsdPublisher(deps = {}) {
   };
 
   const clear = ({ schedule = true } = {}) => {
+    if (!sharedMemory) return true;
     if (slot === null || view === null) return false;
     if (!mappingHealthy()) { close(); return false; }
     let lockHeld = false;

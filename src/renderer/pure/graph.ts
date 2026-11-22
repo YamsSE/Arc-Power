@@ -10,8 +10,8 @@ export interface SeriesPoint {
   v: number;
 }
 
-/** Default rolling window: 60 s of telemetry at the 400 ms poll cadence
- *  (M17g: the stock polling rate FLIPS 500 -> 400). */
+/** Default rolling window: 60 s of telemetry at the 600 ms poll cadence
+ *  (M17g: the stock polling rate is 600 ms). */
 export const GRAPH_WINDOW_S = 60;
 export const GRAPH_MAX_POINTS = 240;
 

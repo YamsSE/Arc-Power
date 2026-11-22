@@ -114,6 +114,15 @@ function firstValue(sensors, predicate) {
   return null;
 }
 
+function firstPositiveValue(sensors, predicate) {
+  for (const sensor of sensors) {
+    if (!predicate(sensor)) continue;
+    const value = sensorValue(sensor);
+    if (value !== null && value > 0) return value;
+  }
+  return null;
+}
+
 function valuesOf(sensors, predicate) {
   return sensors
     .filter(predicate)
@@ -162,8 +171,8 @@ function mapSystemSensors(hardware) {
     ));
     const coreClocks = valuesOf(sensors, (sensor) => (
       sensorTypeOf(sensor) === 'clock' && /cpu core/i.test(sensorNameOf(sensor))
-    ));
-    out.cpuFreqMhz = average(coreClocks) ?? firstValue(sensors, (sensor) => (
+    )).filter((value) => value > 0);
+    out.cpuFreqMhz = average(coreClocks) ?? firstPositiveValue(sensors, (sensor) => (
       sensorTypeOf(sensor) === 'clock'
     ));
     out.cpuPowerW = firstValue(sensors, (sensor) => (

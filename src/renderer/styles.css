@@ -90,7 +90,7 @@
   --border-strong: #b6bfce;
   --text: #232a36;
   --text-muted: #5b6575;
-  --text-dim: #8a93a3;
+  --text-dim: #586476;
   --accent: #0a7cc2;
   --accent-strong: #0869b8;
   --accent-rgb: 10, 124, 194;
@@ -409,7 +409,7 @@ html, body {
 
 #app-body {
   display: grid;
-  grid-template-columns: 224px 1fr;
+  grid-template-columns: var(--sidebar-width, 184px) 8px minmax(0, 1fr);
   flex: 1;
   min-height: 0;
 }
@@ -424,6 +424,7 @@ html, body {
   flex-direction: column;
   gap: 18px;
   overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: var(--accent-strong) var(--bg-inset);
 }
@@ -440,6 +441,31 @@ html, body {
   padding: 0 10px;
   color: var(--text);
 }
+
+.sidebar-brand-logo { display: none; width: 26px; height: 26px; object-fit: contain; }
+
+.sidebar-resize-handle {
+  position: relative;
+  z-index: 2;
+  width: 8px;
+  min-height: 0;
+  background: var(--bg-elev);
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  border-radius: 4px;
+  background: transparent;
+  transition: background-color .16s ease, inset .16s ease;
+}
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle:focus-visible::after,
+.sidebar-resize-handle.is-dragging::after { inset-inline: 2px; background: color-mix(in srgb, var(--accent) 72%, transparent); }
+.sidebar-resize-handle:focus-visible { outline: 1px solid var(--accent); outline-offset: -2px; }
 
 .sidebar-brand-power {
   background: linear-gradient(100deg, var(--accent) 10%, var(--accent-strong) 55%, var(--brand-highlight) 90%);
@@ -617,6 +643,8 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .sidebar-footer-link {
@@ -641,6 +669,60 @@ html, body {
   background-color: currentColor;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+#app-body[data-sidebar-compact="true"] #sidebar { padding-inline: 8px; gap: 14px; }
+#app-body[data-sidebar-compact="true"] .sidebar-brand { display: grid; place-items: center; padding: 0; min-height: 34px; }
+#app-body[data-sidebar-compact="true"] .sidebar-brand-logo { display: block; }
+#app-body[data-sidebar-compact="true"] .sidebar-brand-arc,
+#app-body[data-sidebar-compact="true"] .sidebar-brand-power,
+#app-body[data-sidebar-compact="true"] .sidebar-brand::after,
+#app-body[data-sidebar-compact="true"] .sidebar-link-label,
+#app-body[data-sidebar-compact="true"] .sidebar-footer-label,
+#app-body[data-sidebar-compact="true"] .sidebar-recording-copy,
+#app-body[data-sidebar-compact="true"] .sidebar-recording-timer { display: none !important; }
+#app-body[data-sidebar-compact="true"] .sidebar-nav { align-items: center; }
+#app-body[data-sidebar-compact="true"] .sidebar-link,
+#app-body[data-sidebar-compact="true"] .sidebar-footer-settings,
+#app-body[data-sidebar-compact="true"] .sidebar-footer-link { width: 42px; min-height: 42px; justify-content: center; padding: 0; }
+#app-body[data-sidebar-compact="true"] .sidebar-recording-status { display: flex; justify-content: center; padding: 12px 0; border-color: transparent; background: transparent; }
+#app-body[data-sidebar-compact="true"] .sidebar-footer-links { flex-direction: column; gap: 4px; }
+#app-body[data-sidebar-compact="true"] #sidebar .sidebar-link,
+#app-body[data-sidebar-compact="true"] #sidebar .sidebar-footer-link { position: relative; }
+#app-body[data-sidebar-compact="true"] #sidebar .sidebar-link:focus-visible::after,
+#app-body[data-sidebar-compact="true"] #sidebar .sidebar-footer-link:focus-visible::after {
+  content: attr(aria-label);
+  position: absolute;
+  z-index: 5;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  width: max-content;
+  max-width: 220px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 500;
+  pointer-events: none;
+  box-shadow: 0 5px 18px rgba(0,0,0,.28);
+}
+#app-body[data-sidebar-compact="true"] #sidebar .sidebar-link:focus-visible,
+#app-body[data-sidebar-compact="true"] #sidebar .sidebar-footer-link:focus-visible {
+  anchor-name: --compact-sidebar-tooltip;
+}
+@supports (position-anchor: --compact-sidebar-tooltip) and (position-area: right) {
+  #app-body[data-sidebar-compact="true"] #sidebar .sidebar-link:focus-visible::after,
+  #app-body[data-sidebar-compact="true"] #sidebar .sidebar-footer-link:focus-visible::after {
+    position: fixed;
+    position-anchor: --compact-sidebar-tooltip;
+    position-area: right;
+    left: auto;
+    top: auto;
+    transform: none;
+  }
 }
 
 /* M4-D: the GPU-card ReBAR pill - green when a multi-GiB BAR is
@@ -737,8 +819,21 @@ html, body {
 }
 
 #gpu-header {
+  position: relative;
+  z-index: 3;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
+}
+#gpu-header::after {
+  content: "";
+  position: absolute;
+  z-index: 3;
+  left: calc(0px - var(--sidebar-width, 224px) - 8px);
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--border);
+  pointer-events: none;
 }
 
 .gpu-header {
@@ -918,7 +1013,7 @@ html, body {
 .dashboard-pulse-lane { min-width: 0; padding: 13px 15px; border: 1px solid #2a4863; border-radius: 5px; background: linear-gradient(135deg, #0b1b2d 0%, #091525 58%, #0a1727 100%); box-shadow: inset 0 1px 0 rgba(100, 191, 227, .06); }
 .dashboard-pulse-hud { display: grid; grid-template-columns: minmax(300px, .8fr) minmax(420px, 1.65fr); align-items: stretch; gap: 16px; }
 .dashboard-pulse-visual { position: relative; isolation: isolate; display: flex; min-width: 0; flex-direction: column; align-items: center; justify-content: center; padding: 4px 8px; border-right: 1px solid #29455e; background: transparent; }
-.dashboard-pulse-visual::before { content: ''; position: absolute; top: -14px; left: 12%; z-index: 0; width: 76%; height: 184px; border-radius: 50%; background: radial-gradient(ellipse at center, rgba(53, 200, 244, .11) 0%, rgba(53, 200, 244, .045) 46%, transparent 76%); filter: blur(10px); pointer-events: none; }
+.dashboard-pulse-visual::before { content: ''; position: absolute; top: -14px; left: 12%; z-index: 0; width: 76%; height: 184px; border-radius: 50%; background: radial-gradient(ellipse at center, color-mix(in srgb, var(--accent) 11%, transparent) 0%, color-mix(in srgb, var(--accent) 4.5%, transparent) 46%, transparent 76%); filter: blur(10px); pointer-events: none; }
 .dashboard-pulse-visual > * { position: relative; z-index: 1; }
 .dashboard-pulse-identity { min-width: 0; display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 8px; }
 .dashboard-pulse-identity .hardware-card-icon { width: 48px; height: 48px; min-width: 48px; min-height: 48px; flex: 0 0 48px; padding: 0; border-color: #000; background: #0c1a2b; }
@@ -928,7 +1023,7 @@ html, body {
 .dashboard-retail-art { display: block; width: 218px; height: 86px; margin-top: 4px; overflow: visible; }
 .dashboard-retail-art-slot { position: relative; display: grid; place-items: center; width: 100%; min-height: 184px; }
 .dashboard-retail-art-slot .dashboard-retail-art { grid-area: 1 / 1; }
-.dashboard-retail-art-asset { position: absolute; inset: 0; z-index: 1; width: min(100%, 300px); height: 180px; margin: auto; object-fit: contain; object-position: center; border: 0; border-radius: 0; background: transparent; opacity: 1; filter: drop-shadow(0 14px 12px rgba(0, 0, 0, .46)) drop-shadow(0 0 12px rgba(53, 200, 244, .12)); }
+.dashboard-retail-art-asset { position: absolute; inset: 0; z-index: 1; width: min(100%, 300px); height: 180px; margin: auto; object-fit: contain; object-position: center; border: 0; border-radius: 0; background: transparent; opacity: 1; filter: drop-shadow(0 14px 12px rgba(0, 0, 0, .46)) drop-shadow(0 0 12px color-mix(in srgb, var(--accent) 12%, transparent)); }
 .dashboard-retail-art-board, .dashboard-retail-art-package { fill: #10263b; stroke: #4aa6c7; stroke-width: 1.4; }
 .dashboard-retail-art-bracket, .dashboard-retail-art-edge, .dashboard-retail-art-pins { fill: none; stroke: #5b83a0; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .dashboard-retail-art-fan { fill: #0a1828; stroke: #55c8e8; stroke-width: 1.4; }
@@ -937,13 +1032,6 @@ html, body {
 .dashboard-retail-art-trace { fill: none; stroke: #35c8f4; stroke-width: 1.2; stroke-linecap: round; opacity: .78; }
 .dashboard-retail-art-edge { fill: #17334a; stroke: #6ba7bd; }
 .dashboard-retail-art-integrated { width: 158px; height: 70px; }
-.dashboard-pulse-gauge { position: relative; display: grid; place-items: center; width: 132px; height: 132px; }
-.dashboard-pulse-gauge-svg { position: absolute; inset: 0; width: 100%; height: 100%; shape-rendering: geometricPrecision; }
-.dashboard-pulse-gauge-track { stroke: #1d3148; }
-.dashboard-pulse-gauge-ring { stroke: #35c8f4; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 4px rgba(53, 200, 244, .34)); }
-.dashboard-pulse-gauge-center { position: relative; z-index: 1; display: grid; place-items: center; gap: 4px; text-align: center; }
-.dashboard-pulse-gauge-value { color: var(--text); font: 700 27px/1 var(--font-display); font-variant-numeric: tabular-nums; }
-.dashboard-pulse-gauge-label { color: #6f8ba5; font: 8px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
 .dashboard-pulse-live-status { display: flex; align-items: center; gap: 5px; margin-top: 8px; color: #74d9e8; font: 8px var(--mono); letter-spacing: .06em; }
 .dashboard-pulse-live-dot { width: 6px; height: 6px; border-radius: 50%; background: #52d5ad; }
 .dashboard-pulse-grid { display: grid; grid-template-columns: 1fr; gap: 6px; }
@@ -2315,6 +2403,9 @@ input[type="number"] {
 .tuning-card-result { margin-right: auto; color: var(--text-dim); font: 600 10.5px var(--mono); }
 .tuning-card-result.result-ok { color: var(--success); }
 .tuning-card-result.result-error { color: var(--error); }
+.tuning-result-info { margin-left: 5px; padding: 0 2px; border: 0; background: transparent; color: inherit; font: inherit; cursor: help; }
+.tuning-result-info:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.tuning-result-tooltip { position: fixed; inset: auto; margin: 0; width: max-content; max-width: min(300px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto; box-sizing: border-box; padding: 9px 11px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--text); box-shadow: 0 5px 18px #0005; font: 500 11px/1.5 var(--font); white-space: normal; overflow-wrap: anywhere; }
 
 /* Concept 16 Tuning workspace: one unified control surface. The existing
    control cards remain the source of truth for selectors and handlers; these
@@ -2470,7 +2561,6 @@ input[type="number"] {
 .sharpening-help { margin-top: 8px; color: var(--text-dim); font-size: 12px; }
 .sharpening-help summary { width: fit-content; cursor: pointer; color: var(--text-muted); }
 .sharpening-help .card-note { margin-top: 6px; }
-.sharpening-runtime-status { margin: 8px 0 0; color: var(--text-dim); font-size: 12px; line-height: 1.45; }
 .sharpening-game-card { margin-top: 0; }
 
 /* Graphics | Display segmented view and compact IGS-style Display rows. */
@@ -2589,45 +2679,83 @@ input[type="number"] {
 .stability-lab-actions { display: flex; gap: 6px; }
 .stability-lab-actions .btn { white-space: nowrap; }
 .stability-lab-panel [data-stability-status][data-outcome="passed"] { color: var(--success); }
-.stability-lab-panel [data-stability-status][data-outcome="warning"], .stability-lab-panel [data-stability-status][data-outcome="no-workload"] { color: var(--warning); }
+.stability-lab-panel [data-stability-status][data-outcome="warning"], .stability-lab-panel [data-stability-status][data-outcome="no-workload"] { color: var(--warn); }
 @media (max-width: 760px) { .stability-lab-controls { grid-template-columns: 1fr 1fr; } .stability-lab-actions { grid-column: 1 / -1; } }
 
-.stability-stress-dialog {
+.stress-dialog {
   position: fixed;
   z-index: 1200;
   left: 50%;
   top: 50%;
   width: min(760px, calc(100vw - 32px));
+  max-width: none;
+  padding: 0;
   transform: translate(-50%, -50%);
   overflow: hidden;
-  border: 1px solid #2fbfff;
-  border-radius: 12px;
-  background: linear-gradient(145deg, rgba(18, 28, 45, .98), rgba(9, 14, 25, .99));
-  box-shadow: 0 24px 80px rgba(0, 0, 0, .65), 0 0 34px rgba(38, 174, 255, .18);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .55);
   color: var(--text);
 }
-.stability-stress-dialog[hidden] { display: none; }
-.stability-stress-header { display: flex; align-items: center; justify-content: space-between; padding: 15px 18px 13px; border-bottom: 1px solid rgba(47, 191, 255, .34); background: linear-gradient(90deg, rgba(30, 90, 145, .28), rgba(26, 30, 54, .2)); }
-.stability-stress-title { color: #f4f8ff; font-size: 15px; font-weight: 800; letter-spacing: .01em; }
-.stability-stress-close { width: 28px; height: 28px; border: 0; border-radius: 7px; color: #9eb4cb; background: transparent; font-size: 22px; line-height: 1; cursor: pointer; }
-.stability-stress-close:hover { color: #fff; background: rgba(56, 197, 255, .16); }
-.stability-stress-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: rgba(71, 102, 134, .35); }
-.stability-stress-metric { min-height: 94px; padding: 13px 15px 11px; background: rgba(17, 25, 39, .96); }
-.stability-stress-metric-label { color: #a9bad0; font-size: 11px; font-weight: 700; }
-.stability-stress-metric-value { display: flex; align-items: baseline; gap: 6px; margin-top: 7px; color: #f4f8ff; font-size: 24px; font-weight: 800; letter-spacing: .01em; }
-.stability-stress-metric-value small { color: #67caff; font-size: 11px; font-weight: 700; }
-.stability-stress-spark { --stress-fill: 0%; height: 9px; margin-top: 9px; border-radius: 999px; background: linear-gradient(90deg, #146eab 0%, #32c4ff var(--stress-fill), rgba(45, 75, 112, .26) var(--stress-fill), rgba(45, 75, 112, .26) 100%); box-shadow: 0 0 12px rgba(47, 191, 255, .2); transition: background .18s ease; }
-.stability-stress-footer { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 14px 16px 16px; background: rgba(8, 13, 23, .92); }
-.stability-stress-result { color: #eaf6ff; font-weight: 800; font-size: 14px; }
-.stability-stress-whea { color: #77cfff; font-size: 11px; font-weight: 700; }
-.stability-stress-whea[data-outcome="error"] { color: #ff7e8b; }
-.stability-stress-whea[data-outcome="unknown"] { color: #f2c66d; }
-.stability-stress-stop { min-width: 126px; border-color: #2fbfff; background: linear-gradient(135deg, #178bca, #2266be); color: #fff; }
-.stability-stress-stop:hover:not(:disabled) { background: linear-gradient(135deg, #2aaeea, #2a7cdb); }
+.stress-dialog[hidden] { display: none; }
+.sd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 15px 22px 14px; }
+.sd-title { margin: 0; font-family: var(--font-display); font-size: 16px; font-weight: 600; letter-spacing: -.01em; line-height: 1.25; }
+.sd-device { margin: 3px 0 0; color: var(--text-muted); font-size: 12.5px; }
+.sd-close { flex: 0 0 auto; width: 26px; height: 26px; margin-top: -1px; padding: 0; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font-size: 18px; line-height: 1; cursor: pointer; }
+.sd-close:hover { color: var(--text); border-color: var(--border-strong); background: var(--control-bg); }
+.sd-close[hidden] { display: none; }
+.sd-status { display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 9px 22px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--bg); }
+.sd-status .status-dot { flex: 0 0 auto; }
+.sd-dot-live { background: var(--accent) !important; box-shadow: none !important; }
+.sd-verdict { font-size: 13.5px; font-weight: 600; letter-spacing: -.005em; }
+.sd-status[data-outcome="ready"] .sd-verdict, .sd-status[data-outcome="running"] .sd-verdict { color: var(--text); }
+.sd-status[data-outcome="passed"] .sd-verdict { color: var(--success); }
+.sd-status[data-outcome="warning"] .sd-verdict, .sd-status[data-outcome="no-workload"] .sd-verdict { color: var(--warn); }
+.sd-status[data-outcome="aborted"] .sd-verdict, .sd-status[data-outcome="failed"] .sd-verdict, .sd-status[data-outcome="unavailable"] .sd-verdict { color: var(--error); }
+.sd-status-sep { width: 1px; height: 11px; flex: 0 0 auto; background: var(--border-strong); }
+.sd-status-detail { min-width: 0; color: var(--text-muted); font-size: 12px; }
+.sd-status-time { margin-left: auto; flex: 0 0 auto; color: var(--text-muted); font: 550 12px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sd-body { padding: 18px 22px 16px; }
+.sd-row-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.sd-group-divided { padding-left: 22px; margin-left: 22px; border-left: 1px solid var(--border); }
+.sd-group-label { margin: 0 0 10px; color: var(--text-muted); font-family: var(--font); font-size: 9.5px; font-weight: 600; letter-spacing: .075em; text-transform: uppercase; }
+.sd-stats { display: grid; gap: 14px 18px; }
+.sd-stats-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.sd-stats-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.sd-stat { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; }
+.sd-label { display: block; max-width: 100%; margin-bottom: 4px; overflow: hidden; color: var(--text-muted); font-size: 11px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.sd-value { display: inline-flex; align-items: baseline; gap: 5px; max-width: 100%; }
+.sd-num { color: var(--text); font: 650 31px/1.02 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.sd-unit { flex: 0 0 auto; color: var(--text-muted); font: 550 11px var(--mono); }
+.sd-cap { flex: 0 0 auto; color: var(--text-dim); font: 550 10.5px var(--mono); font-variant-numeric: tabular-nums; }
+.sd-value.is-allocation .sd-num { font-size: 18px; letter-spacing: -.01em; }
+.sd-cap.is-partial { color: var(--warn); }
+.sd-value.is-empty .sd-num, .sd-value.is-empty .sd-unit { color: var(--text-dim); }
+.sd-value.is-empty .sd-unit { opacity: .75; }
+.sd-value.is-alert .sd-num { color: var(--error); }
+.sd-value.is-alert .sd-unit { color: var(--error); opacity: .8; }
+.sd-meter { width: 100%; height: 4px; margin-top: 9px; overflow: hidden; border-radius: 2px; background: var(--bg-inset); }
+.sd-meter > span { display: block; height: 100%; background: rgba(var(--accent-rgb), .55); }
+.sd-body-divider { height: 1px; margin: 16px 0 15px; background: var(--border); }
+.sd-note { margin: 14px 0 0; color: var(--text-dim); font-size: 12px; }
+.sd-note.is-unavailable { color: var(--warn); }
+.sd-note[hidden] { display: none; }
+.sd-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 58px; padding: 12px 22px; border-top: 1px solid var(--border); }
+.sd-foot-info { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.sd-foot-text { color: var(--text-muted); font-size: 12px; }
+.sd-foot-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+.sd-field { display: inline-flex; align-items: center; gap: 8px; }
+.sd-field-label { color: var(--text-muted); font-size: 11px; }
+.sd-select { height: 31px; min-width: 82px; padding: 5px 7px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--control-bg); color: var(--text); font: 600 11px var(--mono); }
+.sd-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sd-status-time[hidden], .sd-foot-text[hidden], .sd-field[hidden], .sd-cap[hidden] { display: none; }
 @media (max-width: 640px) {
-  .stability-stress-grid { grid-template-columns: 1fr; }
-  .stability-stress-footer { grid-template-columns: 1fr; }
-  .stability-stress-stop { width: 100%; }
+  .sd-row-split { grid-template-columns: minmax(0, 1fr); }
+  .sd-group-divided { padding: 15px 0 0; margin: 15px 0 0; border-top: 1px solid var(--border); border-left: 0; }
+  .sd-stats-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sd-foot { flex-direction: column; align-items: stretch; }
+  .sd-foot-actions .btn { flex: 1 1 auto; }
 }
 .overlay-layout-card .settings-card-heading { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
 .overlay-layout-card .settings-row { gap:8px; }
@@ -3091,6 +3219,24 @@ input[type="number"] {
 .overlay-hotkey-card .settings-hotkey-input,
 .overlay-hotkey-card .settings-position-select {
   margin-left: 0;
+}
+.overlay-hotkey-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.overlay-hotkey-none {
+  min-width: 48px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.overlay-hotkey-none:disabled {
+  opacity: .55;
+  cursor: default;
 }
 /* M23: the Advanced card's rows need their own spacing - the unstyled
    Edge (position) row sat flush against the CONTROL+<letter> row and
@@ -3608,6 +3754,18 @@ input[type="number"] {
 .graphics-card-actions { margin-top: 12px; padding-top: 10px; border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent); }
 .graphics-card .card-note { margin-top: 8px; line-height: 1.45; }
 .graphics-card-heading { min-height: 36px; }
+.postprocess-suite-card { display: flex; flex-direction: column; gap: 0; padding: 0; overflow: hidden; }
+.postprocess-suite-header { position: relative; padding: 20px 22px 17px; border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent); background: linear-gradient(112deg,rgba(41,110,220,.12),rgba(69,157,139,.035)); }
+.postprocess-suite-eyebrow { display: block; margin-bottom: 7px; color: #80baff; font-size: 10px; font-weight: 700; letter-spacing: .14em; }
+.postprocess-suite-header .card-title { margin: 0; font-size: 17px; }
+.postprocess-suite-header .card-note { margin: 7px 0 0; max-width: 780px; color: var(--text-dim); line-height: 1.45; }
+.postprocess-feature-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 16px 18px; background: color-mix(in srgb, var(--bg-inset) 35%, transparent); }
+.postprocess-feature-panel { min-width: 0; padding: 18px 18px 15px; border: 1px solid color-mix(in srgb, var(--accent) 19%, var(--border)); border-radius: 12px; background: linear-gradient(145deg,color-mix(in srgb, var(--bg-elev) 96%, #286fd0 4%),color-mix(in srgb, var(--bg-inset) 30%, var(--bg-elev))); box-shadow: 0 8px 22px rgba(0,0,0,.10); }
+.postprocess-feature-panel .sharpening-card-heading { grid-template-columns: minmax(0, 1fr) minmax(180px, 42%); }
+.postprocess-feature-panel .sharpening-help { min-height: 20px; }
+.postprocess-window-panel { min-width: 0; padding: 17px 20px 18px; border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent); background: linear-gradient(112deg,color-mix(in srgb, var(--bg-inset) 68%, transparent),color-mix(in srgb, var(--accent) 3%, transparent)); }
+.postprocess-window-panel .graphics-card-actions { margin-top: 12px; }
+.postprocess-hotkey-warning { margin: 8px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.4; }
 .display-stack { gap: 14px; }
 .display-group-toggle { padding: 14px 16px; }
 .display-group-body-inner { padding: 14px 16px 16px; }
@@ -3693,6 +3851,9 @@ input[type="number"] {
   .graphics-endurance-preset-row,
   .display-control-heading { grid-template-columns: 1fr; gap: 8px; }
   .sharpening-card-control { width: 100%; }
+  .postprocess-feature-grid { grid-template-columns: 1fr; }
+  .postprocess-feature-panel + .postprocess-feature-panel { border-left: 0; }
+  .postprocess-suite-header, .postprocess-feature-panel, .postprocess-window-panel { padding-right: 14px; padding-left: 14px; }
   .graphics-inline-control,
   .display-inline-control {
     width: 100%;
@@ -4321,7 +4482,6 @@ input[type="number"] {
 .recording-editor-gif-options { align-items: center; min-height: 38px; margin-top: 5px; padding-top: 8px; border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent); }
 .recording-editor-footer { min-height: 29px; margin-top: 5px; }
 .recording-editor-footer .recording-editor-status { color: var(--text-dim); }
-.recording-editor-ascent .recording-editor-gif-options, .recording-editor-ascent .recording-editor-footer, .recording-editor-ascent .recording-editor-progress { display: none; }
 .recording-share-overlay { background: rgba(4, 7, 14, .78); backdrop-filter: blur(6px); }
 .recording-share-modal { width: min(420px, calc(100vw - 32px)); max-width: 420px; padding: 0; overflow: hidden; border: 1px solid #38c5ff; box-shadow: 0 0 0 1px rgba(56, 197, 255, .12), 0 22px 70px rgba(0, 0, 0, .52); background: linear-gradient(145deg, #151d2c, #0f151f 72%); }
 .recording-share-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px 15px; border-bottom: 1px solid color-mix(in srgb, #38c5ff 48%, var(--border)); }
@@ -4363,12 +4523,12 @@ input[type="number"] {
 @media (max-width: 700px) { .recording-heading, .recording-library-toolbar, .recording-player-view-heading { flex-direction: column; align-items: stretch; } .recording-player-heading-actions { margin-left: 0; } .recording-tabs, .recording-search { width: 100%; } .recording-tab { flex: 1; } .recording-settings-grid, .recording-storage-panel, .recording-audio-sections, .recording-quickstart-grid, .recording-capture-target-row { grid-template-columns: 1fr; } .recording-storage-panel .recording-panel-heading { grid-column: auto; } .recording-panel-heading { flex-direction: column; } .recording-storage-heading-meta { width: 100%; justify-content: space-between; } .recording-hotkey-row { grid-template-columns: 1fr; } .recording-hotkey-status { grid-column: auto; justify-content: flex-start; flex-wrap: wrap; } .recording-library-actions { flex-wrap: wrap; } .recording-library-actions .recording-search { flex-basis: 100%; } .recording-player-controls { flex-wrap: wrap; } .recording-player-volume { flex: 1; } .recording-player-brand { display: none; } .recording-player-timeline-ruler { padding-inline: 43px; } .recording-target-refresh { width: max-content; } }
 .recording-delete-modal { width: min(460px, calc(100vw - 32px)); }
 .recording-delete-file { overflow-wrap: anywhere; word-break: break-word; }
-@media (max-width: 1100px) { .dashboard-pulse-hud { grid-template-columns: 260px minmax(0, 1fr); gap: 11px; } .dashboard-pulse-identity .hardware-card-icon { width: 44px; height: 44px; min-width: 44px; min-height: 44px; flex-basis: 44px; } .dashboard-pulse-gauge { width: 116px; height: 116px; } .dashboard-retail-art { width: 190px; height: 75px; } .dashboard-retail-art-slot { min-height: 160px; } .dashboard-retail-art-asset { height: 156px; } .dashboard-retail-art-integrated { width: 140px; height: 62px; } }
-@media (max-width: 900px) { .dashboard-pulse-hud { grid-template-columns: 220px minmax(0, 1fr); } .dashboard-pulse-gauge { width: 105px; height: 105px; } .dashboard-pulse-lane { padding: 11px; } }
+@media (max-width: 1100px) { .dashboard-pulse-hud { grid-template-columns: 260px minmax(0, 1fr); gap: 11px; } .dashboard-pulse-identity .hardware-card-icon { width: 44px; height: 44px; min-width: 44px; min-height: 44px; flex-basis: 44px; } .dashboard-retail-art { width: 190px; height: 75px; } .dashboard-retail-art-slot { min-height: 160px; } .dashboard-retail-art-asset { height: 156px; } .dashboard-retail-art-integrated { width: 140px; height: 62px; } }
+@media (max-width: 900px) { .dashboard-pulse-hud { grid-template-columns: 220px minmax(0, 1fr); } .dashboard-pulse-lane { padding: 11px; } }
 @media (max-width: 1000px) { .dashboard-hub-layout { grid-template-columns: 1fr; } }
 @media (max-width: 700px) { .dashboard-hub-details { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) { .dashboard-hub-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 560px) { .dashboard-hud-header { align-items: flex-start; flex-direction: column; gap: 5px; } .dashboard-hud-header-status { padding-bottom: 0; } .dashboard-pulse-hud { grid-template-columns: 1fr; } .dashboard-pulse-visual { border-right: 0; border-bottom: 1px solid #20344a; padding-bottom: 10px; } .dashboard-pulse-identity { width: auto; } .dashboard-pulse-grid { grid-column: 1 / -1; grid-template-columns: 1fr; } .dashboard-retail-art-slot { min-height: 150px; } .dashboard-retail-art-asset { height: 145px; } .dashboard-pulse-gauge { width: 96px; height: 96px; } .dashboard-pulse-gauge-value { font-size: 20px; } .dashboard-pulse-device { max-width: 42%; } .dashboard-hub-actions, .dashboard-hub-details { grid-template-columns: 1fr; } .tuning-diff { display: none; } }
+@media (max-width: 560px) { .dashboard-hud-header { align-items: flex-start; flex-direction: column; gap: 5px; } .dashboard-hud-header-status { padding-bottom: 0; } .dashboard-pulse-hud { grid-template-columns: 1fr; } .dashboard-pulse-visual { border-right: 0; border-bottom: 1px solid #20344a; padding-bottom: 10px; } .dashboard-pulse-identity { width: auto; } .dashboard-pulse-grid { grid-column: 1 / -1; grid-template-columns: 1fr; } .dashboard-retail-art-slot { min-height: 150px; } .dashboard-retail-art-asset { height: 145px; } .dashboard-pulse-device { max-width: 42%; } .dashboard-hub-actions, .dashboard-hub-details { grid-template-columns: 1fr; } .tuning-diff { display: none; } }
 .recording-fps-control {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 92px;
@@ -4523,4 +4683,2406 @@ input[type="number"] {
   .sidebar-link:active { transform: none; }
   .shared-dropdown-menu { animation: none; }
   .toast { animation: none; }
+}
+
+/* The share dialog keeps its dark, branded surfaces in every theme. The
+   title field therefore needs its own light-on-dark foreground instead of
+   inheriting Arctic Light's dark --text token. */
+[data-theme="light"] .recording-share-title-value { color: #f3f6fb; }
+
+/* Arc Sleep's FPS cap uses pale text designed for dark cards, but these two
+   badges and the enabled control sit on the light theme's white panel. */
+[data-theme="light"] .arc-sleep-cap-device,
+[data-theme="light"] .arc-sleep-base-cap .graphics-fps-value,
+[data-theme="light"] .arc-sleep-base-cap .arc-sleep-cap-enable:has(.arc-sleep-base-toggle:checked) {
+  color: #17436f;
+}
+[data-theme="light"] .arc-sleep-eyebrow,
+[data-theme="light"] .arc-sleep-base-link {
+  color: #0869b8;
+}
+[data-theme="light"] .arc-sleep-toggle:focus-visible,
+[data-theme="light"] .arc-sleep-base-toggle:focus-visible {
+  outline-color: #0869b8;
+}
+
+/* Light-theme dim text is darkened for readable captions on white and inset
+   surfaces. Preserve the lighter caption token inside these fixed dark UI. */
+[data-theme="light"] .recording-share-modal,
+[data-theme="light"] .recording-player-speed-popover,
+[data-theme="light"] .recording-player-stage,
+[data-theme="light"] .recording-editor-ascent,
+[data-theme="light"] .recording-apm-tracker,
+[data-theme="light"] .recording-clip-thumbnail {
+  --text-dim: #8a9db2;
+}
+[data-theme="light"] .recording-share-modal,
+[data-theme="light"] .recording-editor-ascent,
+[data-theme="light"] .recording-apm-tracker {
+  --text: #f3f6fb;
+  --accent: #38c5ff;
+  --accent-rgb: 56, 197, 255;
+  --accent-soft: rgba(56, 197, 255, .12);
+}
+[data-theme="light"] .recording-apm-tracker {
+  background: linear-gradient(145deg, #121d2c, #0f151f);
+}
+
+/* Arctic Light Dashboard: the whole cockpit follows the page's light surfaces.
+   The layout, metric identities and semantic colors stay the same; only the
+   fixed dark fills and their foreground/graph colors are adapted for light. */
+[data-theme="light"] .dashboard-hud-header {
+  border-bottom-color: #d4dae4;
+}
+[data-theme="light"] .dashboard-hud-title { color: #232a36; }
+[data-theme="light"] .dashboard-hud-subtitle,
+[data-theme="light"] .dashboard-hud-selector-label { color: #586476; }
+[data-theme="light"] .dashboard-hud-header-status { color: #0d766e; }
+[data-theme="light"] .dashboard-quick-action {
+  border-color: #c5cedb;
+  background: #e7ebf2;
+  color: #465466;
+}
+[data-theme="light"] .dashboard-quick-action:hover,
+[data-theme="light"] .dashboard-quick-action:focus-visible {
+  border-color: #0a7cc2;
+  background: #e3f2fb;
+  color: #17436f;
+}
+[data-theme="light"] .dashboard-pulse-card {
+  color: #232a36;
+  border-color: #cbd5e1;
+  background: linear-gradient(145deg, #ffffff 0%, #f7f9fc 72%, #f2f6fa 100%);
+  box-shadow: 0 8px 24px rgba(30, 48, 72, .08);
+}
+[data-theme="light"] .dashboard-pulse-heading .dashboard-eyebrow { color: #0869b8; }
+[data-theme="light"] .dashboard-pulse-device { color: #586476; }
+[data-theme="light"] .dashboard-pulse-lane {
+  border-color: #d0d9e4;
+  background: linear-gradient(135deg, #ffffff 0%, #f7f9fc 62%, #f2f6fa 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9), 0 2px 8px rgba(30, 48, 72, .04);
+}
+[data-theme="light"] .dashboard-pulse-visual {
+  border-right-color: #d4dae4;
+}
+[data-theme="light"] .dashboard-pulse-visual::before {
+  background: radial-gradient(ellipse at center, color-mix(in srgb, var(--accent) 9%, transparent) 0%, color-mix(in srgb, var(--accent) 3.5%, transparent) 46%, transparent 76%);
+}
+[data-theme="light"] .dashboard-pulse-identity .hardware-card-icon {
+  border-color: #cbd5e1;
+  background: #ffffff;
+}
+[data-theme="light"] .dashboard-pulse-identity-note { color: #586476; }
+[data-theme="light"] .dashboard-pulse-live-status { color: #0d766e; }
+[data-theme="light"] .dashboard-pulse-metric {
+  border-color: color-mix(in srgb, var(--pulse-metric-color) 28%, #cbd5e1);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--pulse-metric-color) 5%, #ffffff), #f5f8fb 72%);
+  box-shadow: inset 0 1px 0 #ffffff, 0 1px 3px rgba(30, 48, 72, .04);
+}
+[data-theme="light"] .dashboard-pulse-metric[data-pulse-metric="gpu-util"] { --pulse-metric-color: #0878b2; }
+[data-theme="light"] .dashboard-pulse-metric[data-pulse-metric="temperature"] { --pulse-metric-color: #a45a00; }
+[data-theme="light"] .dashboard-pulse-metric[data-pulse-metric="power"] { --pulse-metric-color: #6c49b2; }
+[data-theme="light"] .dashboard-pulse-metric[data-pulse-metric="vram"] { --pulse-metric-color: #087b60; }
+[data-theme="light"] .dashboard-pulse-metric[data-pulse-metric] .dashboard-sparkline path:not(.dashboard-sparkline-baseline):not(.dashboard-sparkline-area) {
+  stroke: var(--pulse-metric-color);
+}
+[data-theme="light"] .dashboard-pulse-metric[data-pulse-metric="gpu-util"] .dashboard-sparkline-area {
+  fill: #0878b2;
+}
+[data-theme="light"] .dashboard-pulse-label { color: #465466; }
+[data-theme="light"] .dashboard-pulse-unit,
+[data-theme="light"] .dashboard-sparkline-range,
+[data-theme="light"] .dashboard-sparkline-range-label { color: #586476; }
+[data-theme="light"] .dashboard-pulse-value,
+[data-theme="light"] .dashboard-sparkline-range strong { color: #232a36; }
+[data-theme="light"] .dashboard-sparkline-surface {
+  border-color: color-mix(in srgb, var(--pulse-metric-color, #0878b2) 26%, #cbd5e1);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--pulse-metric-color, #0878b2) 3%, #ffffff), #f7f9fc);
+}
+[data-theme="light"] .dashboard-sparkline-baseline { stroke: #94a3b8; }
+[data-theme="light"] .dashboard-sparkline-grid-line { background: rgba(75, 96, 122, .2); }
+[data-theme="light"] .dashboard-sparkline-crosshair { border-left-color: rgba(8, 105, 184, .7); }
+[data-theme="light"] .dashboard-sparkline-tooltip {
+  padding: 3px 5px;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  background: #ffffff;
+  color: #17436f;
+  text-shadow: none;
+}
+[data-theme="light"] .dashboard-session-stats {
+  border-top-color: #d4dae4;
+  color: #586476;
+}
+[data-theme="light"] .dashboard-session-title { color: #465466; }
+[data-theme="light"] .dashboard-session-stat strong { color: #232a36; }
+[data-theme="light"] .dashboard-supporting-grid > .card {
+  color: #232a36;
+  --success: #087056;
+  border-color: color-mix(in srgb, var(--dashboard-card-accent) 34%, #cbd5e1);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--dashboard-card-accent) 3%, #ffffff), #f7f9fc 72%);
+  box-shadow: inset 0 1px 0 #ffffff, 0 7px 20px rgba(30, 48, 72, .08);
+}
+[data-theme="light"] .dashboard-supporting-grid > .sysinfo-card { --dashboard-card-accent: #0878b2; }
+[data-theme="light"] .dashboard-supporting-grid > .device-card { --dashboard-card-accent: #7056bd; }
+[data-theme="light"] .dashboard-supporting-grid > .health-card { --dashboard-card-accent: #087b60; }
+[data-theme="light"] .dashboard-supporting-grid .device-select { color: #17436f; }
+[data-theme="light"] .dashboard-control-card {
+  color: #232a36;
+  border-color: #cbd5e1;
+  background: linear-gradient(145deg, #ffffff, #f7f9fc 72%);
+  box-shadow: 0 7px 20px rgba(30, 48, 72, .08);
+}
+[data-theme="light"] .dashboard-hub-capture {
+  border-color: #d0d9e4;
+  background: linear-gradient(135deg, #ffffff, #f3f6fa 72%);
+}
+[data-theme="light"] .dashboard-action-dock {
+  border-color: #d0d9e4;
+  background: linear-gradient(145deg, #edf2f7, #e7ebf2 78%);
+}
+[data-theme="light"] .dashboard-action-dock-label { color: #586476; }
+[data-theme="light"] .dashboard-hub-action {
+  border-color: #c5cedb;
+  background: #ffffff;
+  color: #465466;
+}
+[data-theme="light"] .dashboard-hub-action:hover,
+[data-theme="light"] .dashboard-hub-action:focus-visible {
+  border-color: #0a7cc2;
+  background: #eaf5fc;
+  color: #17436f;
+}
+[data-theme="light"] .dashboard-hub-action-primary {
+  border-color: #98c7e4;
+  background: #dceef9;
+  color: #173f61;
+}
+[data-theme="light"] .dashboard-hub-action-primary .dashboard-hub-action-copy small,
+[data-theme="light"] .dashboard-hub-action-primary .dashboard-hub-action-arrow { color: #465466; }
+[data-theme="light"] .dashboard-hub-action-copy small,
+[data-theme="light"] .dashboard-hub-action-arrow { color: #586476; }
+[data-theme="light"] .dashboard-hub-detail {
+  border-color: #d4dae4;
+  background: #e7ebf2;
+}
+[data-theme="light"] .dashboard-control-label,
+[data-theme="light"] .dashboard-control-note { color: #586476; }
+
+/* These editor controls and metrics intentionally use dark surfaces. Keep
+   their foregrounds readable while the surrounding recording page is light. */
+[data-theme="light"] .recording-editor-ascent .recording-editor-clip-name,
+[data-theme="light"] .recording-editor-ascent .recording-editor-time-input,
+[data-theme="light"] .recording-editor-ascent .recording-editor-clip-duration,
+[data-theme="light"] .recording-apm-tracker .recording-apm-heading strong {
+  color: #f3f6fb;
+}
+
+
+/* Arc Power dashboard and tuning refresh. */
+.dashboard-hud-header { min-height: 50px; margin-bottom: 10px; padding: 0 2px 10px; border-bottom-color: var(--border); }
+.dashboard-hud-title { color: var(--text); font: 600 23px/1.2 var(--font-display); letter-spacing: -.02em; }
+.dashboard-hud-selector-label { color: var(--text-muted); font: 600 10px var(--font); letter-spacing: .04em; }
+.dashboard-hud-header-status { color: var(--text-muted); font: 11px var(--font); letter-spacing: 0; }
+.dashboard-pulse-card { padding: 14px 16px 12px; border-color: var(--border); border-radius: 6px; background: var(--bg-elev); box-shadow: none; }
+.dashboard-pulse-heading { align-items: center; margin-bottom: 0; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.dashboard-pulse-heading .card-title { font-size: 16px; font-weight: 600; }
+.dashboard-pulse-device { max-width: 48%; padding-top: 0; font-size: 11px; }
+.dashboard-pulse-lane { padding: 12px 0 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.dashboard-pulse-hud { grid-template-columns: minmax(220px, .76fr) minmax(0, 1.8fr); align-items: stretch; gap: 20px; }
+.dashboard-pulse-visual { display: grid; grid-template-rows: minmax(130px, 1fr) auto auto; align-content: stretch; justify-items: stretch; padding: 4px 18px 2px 2px; border-right-color: var(--border); }
+.dashboard-pulse-visual::before { display: none; }
+.dashboard-pulse-identity { width: 100%; margin-top: 8px; }
+.dashboard-pulse-identity-copy .dashboard-eyebrow { margin-bottom: 3px; color: var(--text-muted); font-size: 10px; font-weight: 550; letter-spacing: .02em; }
+.dashboard-pulse-identity-copy .card-title { font-size: 16px; font-weight: 600; }
+.dashboard-pulse-identity-note { margin-top: 3px; color: var(--text-dim); font: 11px var(--font); text-transform: none; }
+.dashboard-retail-art-slot { min-height: 132px; }
+.dashboard-retail-art-asset { width: min(100%, 320px); height: 142px; filter: none; }
+.dashboard-retail-art { filter: none; }
+.dashboard-pulse-live-status { margin-top: 10px; color: var(--text-muted); font: 11px var(--font); letter-spacing: 0; }
+.dashboard-pulse-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: stretch; gap: 0 18px; }
+.dashboard-pulse-metric { min-height: 0; overflow: visible; padding: 9px 0 10px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.dashboard-pulse-metric::before { display: none; }
+.dashboard-pulse-metric-head { align-items: baseline; margin-bottom: 3px; }
+.dashboard-pulse-label { color: var(--text-muted); font-size: 11px; }
+.dashboard-pulse-value { font-size: 20px; font-weight: 600; line-height: 1.15; }
+.dashboard-pulse-unit { font-size: 11px; }
+.dashboard-sparkline-surface { height: 45px; overflow: visible; border: 0; border-radius: 0; background: transparent; }
+.dashboard-sparkline { opacity: 1; }
+.dashboard-sparkline-baseline { stroke: color-mix(in srgb, var(--text-dim) 70%, transparent); opacity: .7; }
+.dashboard-sparkline-area { opacity: .24; }
+.dashboard-sparkline-grid { inset: 4px 0; }
+.dashboard-sparkline-grid-line { background: color-mix(in srgb, var(--border-strong) 60%, transparent); }
+.dashboard-sparkline-grid-quarter, .dashboard-sparkline-grid-three-quarter { display: none; }
+.dashboard-sparkline-crosshair { border-left-color: var(--accent); }
+.dashboard-sparkline-tooltip { padding: 3px 5px; border: 1px solid var(--border-strong); border-radius: 3px; background: var(--bg-elev); color: var(--text); font: 550 10px var(--mono); text-shadow: none; }
+.dashboard-sparkline-range { margin-top: 1px; font-size: 9px; }
+.dashboard-session-stats { gap: 8px 18px; margin-top: 8px; padding-top: 9px; border-top-color: var(--border); }
+.dashboard-session-title { color: var(--text-muted); font-size: 10px; letter-spacing: .02em; }
+.dashboard-session-stat strong { font-size: 11px; }
+.dashboard-supporting-grid { gap: 12px; }
+.dashboard-supporting-grid > .card { overflow: visible; padding: 14px 16px; border-color: var(--border); border-radius: 6px; background: var(--bg-elev); box-shadow: none; }
+.dashboard-supporting-grid > .card::before { display: none; }
+.dashboard-supporting-grid > .card .card-title { margin-bottom: 10px; font-size: 14px; }
+.dashboard-supporting-grid .hardware-card-icon { border-color: var(--border); }
+.dashboard-control-card { padding: 14px 16px; border-color: var(--border); border-radius: 6px; background: var(--bg-elev); box-shadow: none; }
+.dashboard-hub-capture, .dashboard-action-dock { border-color: var(--border); border-radius: 4px; background: var(--bg); }
+.dashboard-hub-status-dot.status-ok, .dashboard-hub-status-dot.status-recording, .dashboard-hub-status-dot.status-replay { box-shadow: none; }
+.dashboard-hub-action { border-radius: 4px; background: var(--bg-elev); }
+.dashboard-hub-action:hover, .dashboard-hub-action:focus-visible { transform: none; }
+
+/* Compact ReBAR state remains beside the VRAM value. */
+.dashboard-vram-value { flex-wrap: nowrap; gap: 8px; }
+.dashboard-vram-separator { display: none; }
+.rebar-pill.rebar-pill-compact { min-height: 20px; padding: 2px 7px; border-radius: 3px; font: 650 10px/1.2 var(--font); letter-spacing: .01em; box-shadow: none; }
+.rebar-pill.rebar-pill-compact.status-ok { color: var(--success); border-color: color-mix(in srgb, var(--success) 38%, var(--border)); background: color-mix(in srgb, var(--success) 9%, transparent); }
+.rebar-pill.rebar-pill-compact.status-error { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.rebar-pill.rebar-pill-compact.status-unknown { color: var(--text-muted); border-color: var(--border-strong); background: var(--bg-inset); }
+
+/* Tuning: simpler page header and control rows, with all existing controls intact. */
+.tuning-page-hero { min-height: 92px; padding: 18px 20px; border-color: var(--border); border-radius: 6px; background: var(--bg-elev); box-shadow: none; }
+.tuning-page-hero::after, .tuning-page-hero .arc-section-kicker { display: none; }
+.tuning-page-hero .page-title { margin: 0 0 4px; font-size: 23px; }
+.tuning-page-hero .page-subtitle { max-width: 720px; color: var(--text-muted); }
+.tuning-page-hero .arc-page-hero-side { flex-basis: 250px; padding: 0; border: 0; background: transparent; }
+.tuning-page-hero .arc-hero-label { color: var(--text-muted); font: 600 10px var(--font); letter-spacing: .04em; }
+.tuning-page-hero .device-select { max-width: 100%; }
+.tuning-page-hero + .arc-page-toolbar { width: 100%; padding: 10px 12px; border-color: var(--border); border-radius: 6px; background: var(--bg-elev); }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-row { align-items: center; gap: 20px; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-toggle { border-radius: 4px; padding: 2px; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-btn { border-radius: 3px; }
+.tuning-control-surface { padding: 15px 18px 12px; border-color: var(--border); border-radius: 6px; background: var(--bg-elev); }
+.tuning-control-heading { padding: 2px 0 10px; border-bottom-color: var(--border); }
+.tuning-control-heading .arc-section-kicker, .tuning-control-context { display: none; }
+.tuning-control-heading .card-title { margin: 0; font-size: 16px; letter-spacing: 0; }
+.tuning-control-surface .oc-stack { gap: 0; padding-top: 4px; }
+.tuning-control-surface .oc-card { padding: 14px 2px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; box-shadow: none; transition: none; }
+.tuning-control-surface .oc-card:hover, .tuning-control-surface .oc-card:focus-within { border-color: var(--border); background: transparent; }
+.tuning-control-surface .oc-card-head { align-items: center; margin-bottom: 4px; }
+.tuning-control-surface .oc-card .card-title { font-size: 14px; }
+.tuning-control-surface .oc-card-head-meta { gap: 12px; }
+.tuning-control-surface .oc-driver { color: var(--text-muted); font-size: 11px; }
+.tuning-control-surface .oc-slider-row { gap: 14px; min-height: 34px; }
+.tuning-control-surface .oc-value-input { border-radius: 4px; }
+.tuning-control-surface .oc-meta { margin-top: 4px; color: var(--text-dim); }
+.tuning-control-surface .oc-card-actions { margin-top: 6px; padding-top: 0; border-top: 0; }
+.tuning-control-surface .oc-card .chip { border-radius: 4px; }
+.tuning-control-surface .oc-mode-toggle, .tuning-control-surface .oc-mode-btn { border-radius: 4px; }
+.tuning-control-surface .oc-mode-btn.active { background: var(--accent); }
+
+@media (max-width: 1050px) {
+  .dashboard-pulse-hud { grid-template-columns: minmax(190px, .68fr) minmax(0, 1.65fr); gap: 14px; }
+  .dashboard-retail-art-asset { height: 128px; }
+}
+@media (max-width: 760px) {
+  .dashboard-pulse-hud { grid-template-columns: 1fr; }
+  .dashboard-pulse-visual { grid-template-columns: minmax(150px, .8fr) minmax(0, 1.2fr); grid-template-rows: auto auto; align-items: center; gap: 4px 18px; padding: 2px 0 12px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .dashboard-retail-art-slot { grid-column: 1; grid-row: 1 / span 2; min-height: 100px; }
+  .dashboard-retail-art-asset { height: 110px; }
+  .dashboard-pulse-identity { grid-column: 2; grid-row: 1; margin-top: 0; }
+  .dashboard-pulse-live-status { grid-column: 2; grid-row: 2; align-self: start; margin-top: 4px; }
+  .dashboard-pulse-grid { padding-top: 4px; }
+  .tuning-page-hero { align-items: flex-start; }
+}
+@media (max-width: 520px) {
+  .dashboard-pulse-card { padding-inline: 12px; }
+  .dashboard-pulse-grid { grid-template-columns: 1fr; }
+  .dashboard-pulse-visual { grid-template-columns: 1fr; justify-items: center; text-align: center; }
+  .dashboard-retail-art-slot { grid-column: 1; grid-row: 1; width: 100%; }
+  .dashboard-pulse-identity { grid-column: 1; grid-row: 2; justify-content: center; }
+  .dashboard-pulse-live-status { grid-column: 1; grid-row: 3; justify-self: center; }
+  .dashboard-session-stats { gap: 7px 12px; }
+  .dashboard-session-title { flex-basis: 100%; }
+  .tuning-control-surface { padding-inline: 12px; }
+  .tuning-control-surface .oc-card-head { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .tuning-control-surface .oc-card-head-meta { width: 100%; justify-content: space-between; }
+  .tuning-page-hero .arc-page-hero-side { max-width: 100%; flex-basis: auto; }
+}
+
+[data-theme="light"] .dashboard-pulse-card,
+[data-theme="light"] .dashboard-supporting-grid > .card,
+[data-theme="light"] .dashboard-control-card,
+[data-theme="light"] .tuning-page-hero,
+[data-theme="light"] .tuning-control-surface { border-color: var(--border); background: var(--bg-elev); box-shadow: none; }
+[data-theme="light"] .dashboard-pulse-lane { border: 0; background: transparent; box-shadow: none; }
+[data-theme="light"] .dashboard-pulse-visual { border-right-color: var(--border); border-bottom-color: var(--border); }
+[data-theme="light"] .dashboard-pulse-metric { background: transparent; box-shadow: none; }
+[data-theme="light"] .dashboard-pulse-label,
+[data-theme="light"] .dashboard-pulse-device,
+[data-theme="light"] .dashboard-pulse-identity-note,
+[data-theme="light"] .dashboard-pulse-live-status { color: var(--text-muted); }
+[data-theme="light"] .dashboard-pulse-value,
+[data-theme="light"] .dashboard-session-stat strong { color: var(--text); }
+[data-theme="light"] .dashboard-sparkline-surface { border: 0; background: transparent; }
+[data-theme="light"] .dashboard-sparkline-baseline { stroke: #94a3b8; }
+[data-theme="light"] .dashboard-sparkline-grid-line { background: color-mix(in srgb, var(--border-strong) 65%, transparent); }
+[data-theme="light"] .dashboard-sparkline-tooltip { border-color: var(--border-strong); background: var(--bg-elev); color: var(--text); }
+[data-theme="light"] .dashboard-session-stats { border-top-color: var(--border); }
+[data-theme="light"] .dashboard-hub-capture, [data-theme="light"] .dashboard-action-dock { border-color: var(--border); background: var(--bg); }
+[data-theme="light"] .dashboard-hub-action { border-color: var(--border); background: var(--bg-elev); color: var(--text-muted); }
+[data-theme="light"] .tuning-control-surface .oc-card,
+[data-theme="light"] .tuning-control-surface .oc-card:hover,
+[data-theme="light"] .tuning-control-surface .oc-card:focus-within { border-color: var(--border); background: transparent; }
+
+
+/* Application version sits beside Settings, with the full value in its tooltip. */
+.sidebar-footer-settings { flex: 1 1 auto; min-width: 0; }
+.sidebar-app-version { flex: 0 0 auto; margin-left: auto; color: var(--text-dim); font: 500 9px var(--mono); white-space: nowrap; }
+.sidebar-app-version[hidden] { display: none; }
+.sidebar-footer-settings.active .sidebar-app-version { color: color-mix(in srgb, currentColor 78%, var(--text-muted)); }
+#app-body[data-sidebar-compact="true"] .sidebar-app-version { display: none; }
+
+/* Shared, restrained application shell. The main title bar carries only the
+   product name; the sidebar owns the single app mark, version, and updater. */
+.titlebar {
+  height: 44px;
+  background: var(--bg-elev);
+  border-bottom-color: var(--border);
+}
+.titlebar-left { padding-left: 10px; }
+.titlebar-corner-icon,
+.titlebar-version,
+.titlebar-logo { display: none !important; }
+.titlebar-brand { align-items: center; gap: 0; }
+.titlebar-brand-name { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .01em; }
+.titlebar-brand-power { color: var(--text); background: none; filter: none; }
+.sidebar-update-btn { margin: 0; flex: 0 0 24px; }
+.sidebar-version-group { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px; margin-left: auto; }
+.sidebar-app-version { margin-left: 0; color: var(--text-dim); font: 500 9px var(--mono); }
+.sidebar-app-version[hidden] { display: none; }
+.sidebar-footer-settings.active .sidebar-app-version { color: var(--text-muted); }
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+.sidebar-footer-links { display: flex; align-items: center; flex-wrap: nowrap; gap: 4px; }
+.sidebar-footer-settings { flex: 1 1 auto; min-width: 0; }
+
+#sidebar {
+  gap: 14px;
+  padding: 13px 10px 11px;
+  background: var(--bg-elev);
+  border-right-color: var(--border);
+}
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 8px;
+  color: var(--text);
+  font: 650 14px/1 var(--font-display);
+  letter-spacing: 0;
+}
+.sidebar-brand-logo { display: block; width: 20px; height: 20px; }
+.sidebar-brand-power { color: inherit; background: none; filter: none; }
+.sidebar-brand::after { display: none; }
+.sidebar-nav { gap: 2px; }
+.sidebar-nav .sidebar-link,
+.sidebar-footer-settings {
+  min-height: 34px;
+  padding: 6px 9px;
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.sidebar-nav .sidebar-link:hover,
+.sidebar-footer-settings:hover { background: var(--bg-inset); color: var(--text); }
+.sidebar-nav .sidebar-link.active,
+.sidebar-footer-settings.active {
+  border-left: 2px solid var(--accent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-inset));
+  color: var(--text);
+  font-weight: 600;
+}
+.sidebar-nav .sidebar-icon,
+.sidebar-footer-settings .sidebar-icon { width: 15px; height: 15px; }
+.sidebar-footer-settings.active .sidebar-app-version { color: var(--text-muted); }
+#app-body[data-sidebar-compact="true"] .sidebar-brand {
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+#app-body[data-sidebar-compact="true"] .sidebar-brand-logo { display: block; }
+#app-body[data-sidebar-compact="true"] .sidebar-version-group { justify-content: center; margin-left: 0; }
+#app-body[data-sidebar-compact="true"] .sidebar-app-version { display: none; }
+.titlebar-update-btn .icon-update-download,
+.titlebar-update-btn .icon-update-done { display: none; }
+
+#gpu-header:empty,
+#gpu-header:not(:has(.gpu-status)) { display: none; }
+#gpu-header { border-bottom-color: var(--border); background: var(--bg); }
+#gpu-header::after { display: none; }
+#gpu-header .gpu-identity { display: none; }
+#gpu-header .gpu-header { justify-content: flex-end; padding: 4px 20px; }
+#gpu-header .gpu-status { gap: 8px; font-size: 11px; }
+#gpu-header .featureset-select { min-height: 26px; }
+
+#page { gap: 14px; padding: 18px 24px 34px; }
+.card {
+  border-color: var(--border);
+  border-radius: 5px;
+  background: var(--bg-elev);
+  box-shadow: none;
+}
+.arc-page-hero,
+.arc-surface-card,
+.arc-page-toolbar {
+  border-color: var(--border);
+  border-radius: 5px;
+  background: var(--bg-elev);
+  box-shadow: none;
+}
+.arc-page-hero::after,
+.arc-surface-card::after { display: none; }
+.arc-page-toolbar { background: transparent; }
+.page-title,
+.arc-page-hero .page-title { color: var(--text); font-weight: 600; letter-spacing: -.015em; }
+.page-subtitle,
+.arc-page-hero .page-subtitle { color: var(--text-muted); }
+
+/* Dashboard inventory reads as two information columns, with calm row rules
+   in place of separate glowing CPU and GPU panels. */
+.dashboard-hud-header { min-height: 40px; margin-bottom: 0; padding: 0 0 8px; }
+.dashboard-hud-title { font-size: 22px; font-weight: 600; letter-spacing: -.02em; }
+.dashboard-hud-header-status { display: none; }
+.dashboard-hud-selector { min-width: 170px; }
+.dashboard-hud-selector-label { font: 550 10px var(--font); letter-spacing: .02em; }
+.dashboard-hud-selector .device-select { min-width: 170px; }
+.dashboard-pulse-card { border-radius: 5px; }
+.dashboard-pulse-heading .card-title { font-size: 15px; }
+.dashboard-supporting-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 14px 26px;
+}
+.dashboard-supporting-grid > .card {
+  min-width: 0;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.dashboard-supporting-grid > .card::before { display: none; }
+.dashboard-supporting-grid .hardware-card-heading,
+.dashboard-supporting-grid .device-card-head {
+  display: block;
+  margin: 0 0 2px;
+  padding: 0 0 7px;
+  border-bottom: 1px solid var(--border-strong);
+}
+.dashboard-supporting-grid .device-card-head { margin: 0; padding: 0; border-bottom: 0; }
+.dashboard-supporting-grid .hardware-card-heading .card-title,
+.dashboard-supporting-grid .device-card-head .card-title,
+.dashboard-supporting-grid > .card > .card-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.dashboard-supporting-grid .hardware-card-icon { display: none; }
+.dashboard-supporting-grid .card-body.kv-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+.dashboard-supporting-grid .kv {
+  display: grid;
+  grid-template-columns: minmax(112px, 38%) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+}
+.dashboard-supporting-grid .kv::before {
+  grid-column: 1;
+  grid-row: 1;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.dashboard-supporting-grid .kv > span {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+.dashboard-supporting-grid .kv .kv-live-freq,
+.dashboard-supporting-grid .kv .kv-static-freq { color: var(--accent); }
+.dashboard-supporting-grid .kv .kv-cores-clock,
+.dashboard-supporting-grid .kv .kv-memory { overflow: hidden; text-overflow: ellipsis; }
+.dashboard-supporting-grid .intel-driver-version-value,
+.dashboard-supporting-grid .dashboard-vram-value { flex-wrap: nowrap; }
+.dashboard-supporting-grid .driver-library-launch { width: 21px; height: 21px; flex-basis: 21px; border-radius: 3px; }
+.dashboard-supporting-grid .driver-library-launch .sidebar-icon { width: 13px; height: 13px; }
+.dashboard-supporting-grid .dashboard-vram-value { gap: 6px; }
+.dashboard-supporting-grid .rebar-pill.rebar-pill-compact { min-height: 18px; padding: 2px 6px; font-size: 9px; }
+.dashboard-supporting-grid > .health-card {
+  grid-column: 1 / -1;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.dashboard-supporting-grid > .health-card > .card-title { margin-bottom: 7px; }
+.dashboard-supporting-grid > .health-card > .card-title { padding-bottom: 7px; border-bottom: 1px solid var(--border-strong); }
+.dashboard-supporting-grid > .health-card .card-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(205px, 1fr));
+  gap: 0 18px;
+}
+.dashboard-supporting-grid .health-row { min-height: 30px; border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, transparent); }
+.dashboard-control-card {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  box-shadow: none;
+}
+.dashboard-control-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 8px;
+  padding-top: 10px;
+}
+.dashboard-control-heading .card-title { margin: 0; font-size: 14px; font-weight: 600; }
+.dashboard-capture-actions .dashboard-hub-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.dashboard-capture-actions .dashboard-hub-action {
+  min-width: 190px;
+  min-height: 36px;
+  padding: 5px 10px;
+  border-color: var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-elev);
+  box-shadow: none;
+}
+.dashboard-capture-actions .dashboard-hub-action-primary { border-color: var(--accent); background: var(--accent-soft); }
+.dashboard-capture-actions .dashboard-hub-action-copy strong { font-size: 11px; }
+.dashboard-capture-actions .dashboard-hub-action-copy small { display: none; }
+
+/* Tuning rows follow the sketch's four aligned fields: control/driver,
+   slider, editable value, and range/status. */
+.tuning-page-hero {
+  min-height: 64px;
+  padding: 12px 16px;
+  border-radius: 5px;
+  background: var(--bg-elev);
+}
+.tuning-page-hero .page-title { margin: 0 0 2px; font-size: 21px; }
+.tuning-page-hero .page-subtitle { margin: 0; font-size: 11px; }
+.tuning-page-hero .arc-page-hero-side { flex-basis: 220px; }
+.tuning-page-hero + .arc-page-toolbar {
+  width: 100%;
+  padding: 0 2px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.tuning-page-hero + .arc-page-toolbar .oc-mode-row {
+  width: 100%;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+}
+.tuning-page-hero + .arc-page-toolbar .oc-mode-col { gap: 0; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-label { display: none; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-toggle {
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.tuning-page-hero + .arc-page-toolbar .oc-mode-btn {
+  min-height: 32px;
+  padding: 0 2px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.tuning-page-hero + .arc-page-toolbar .oc-mode-btn.active {
+  border-bottom-color: var(--accent);
+  background: transparent;
+  color: var(--text);
+}
+.tuning-page-hero + .arc-page-toolbar .profile-save-col { margin-left: auto; }
+.tuning-page-hero + .arc-page-toolbar .profile-save-col .profile-tag-row { align-items: center; }
+.tuning-control-surface {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.tuning-control-heading { padding: 2px 0 8px; border-bottom-color: var(--border); }
+.tuning-control-heading .card-title { margin: 0; font-size: 15px; font-weight: 600; }
+.tuning-control-description { margin: 3px 0 0; color: var(--text-muted); font-size: 10px; }
+.tuning-control-surface .oc-stack { gap: 0; padding-top: 0; }
+.tuning-control-surface .oc-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(150px, 23%) minmax(120px, 1fr) 104px minmax(95px, 125px);
+  grid-template-rows: 22px 22px auto;
+  align-items: center;
+  gap: 0 16px;
+  min-height: 57px;
+  padding: 7px 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transition: background-color .12s ease;
+}
+.tuning-control-surface .oc-card:hover,
+.tuning-control-surface .oc-card:focus-within { border-color: var(--border); background: color-mix(in srgb, var(--accent) 3%, transparent); }
+.tuning-control-surface .oc-card::after { display: none; }
+.tuning-control-surface .oc-card-head,
+.tuning-control-surface .oc-card-head-meta,
+.tuning-control-surface .oc-slider-row,
+.tuning-control-surface .oc-meta { display: contents; }
+.tuning-control-surface .oc-slider-row[hidden],
+.tuning-control-surface .oc-meta[hidden] { display: none; }
+.tuning-control-surface .oc-card .card-title {
+  grid-column: 1;
+  grid-row: 1;
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.tuning-control-surface .oc-driver {
+  grid-column: 1;
+  grid-row: 2;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tuning-control-surface .tuning-diff { grid-column: 4; grid-row: 1; justify-self: end; font-size: 9px; }
+.tuning-control-surface .oc-slider {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  min-width: 0;
+  height: 26px;
+}
+.tuning-control-surface .oc-value-field {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  width: 100%;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.tuning-control-surface .oc-value-input { width: 76px; min-height: 28px; padding: 3px 5px; border-radius: 3px; font-size: 11px; }
+.tuning-control-surface .oc-value-unit { min-width: 18px; font-size: 10px; }
+.tuning-control-surface .oc-range { grid-column: 4; grid-row: 2; justify-self: end; color: var(--text-muted); font-size: 9px; white-space: nowrap; }
+.tuning-control-surface .oc-meta > :not(.oc-range) { grid-column: 1 / -1; }
+.tuning-control-surface .oc-freq-mode-row,
+.tuning-control-surface .vf-curve-editor,
+.tuning-control-surface .gpu-lock-editor { grid-column: 1 / -1; }
+.tuning-control-surface .oc-freq-mode-row { margin: 4px 0; }
+.tuning-control-surface .gpu-lock-editor { margin-top: 4px; }
+.tuning-control-surface .oc-card-actions {
+  position: absolute;
+  top: 24px;
+  right: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .12s ease;
+}
+.tuning-control-surface .oc-card:hover .oc-card-actions,
+.tuning-control-surface .oc-card:focus-within .oc-card-actions { opacity: 1; pointer-events: auto; }
+.tuning-control-surface .oc-card-actions .btn { min-height: 22px; padding: 2px 6px; border-radius: 3px; font-size: 9px; }
+.tuning-control-surface .tuning-general-actions {
+  min-height: 40px;
+  margin-top: 0;
+  padding: 8px 0 2px;
+  border-top: 0;
+  border-bottom: 1px solid var(--border);
+}
+.tuning-control-surface .tuning-general-actions .btn { border-radius: 3px; }
+.tuning-control-surface .oc-mode-toggle,
+.tuning-control-surface .oc-mode-btn { border-radius: 3px; }
+
+@media (max-width: 1000px) {
+  .dashboard-supporting-grid { column-gap: 18px; }
+  .dashboard-supporting-grid .kv { grid-template-columns: minmax(96px, 38%) minmax(0, 1fr); }
+  .tuning-control-surface .oc-card { grid-template-columns: minmax(125px, 22%) minmax(90px, 1fr) 88px minmax(85px, 110px); gap: 0 10px; }
+  .tuning-control-surface .oc-value-input { width: 64px; }
+}
+@media (max-width: 720px) {
+  #page { padding: 14px 14px 26px; }
+  .dashboard-supporting-grid { grid-template-columns: minmax(0, 1fr); }
+  .dashboard-supporting-grid > .health-card { grid-column: 1; }
+  .dashboard-supporting-grid > .health-card .card-body { grid-template-columns: minmax(0, 1fr); }
+  .tuning-control-surface .oc-card {
+    grid-template-columns: minmax(110px, 31%) minmax(0, 1fr) 82px;
+    grid-template-rows: 21px 21px auto;
+  }
+  .tuning-control-surface .oc-slider { grid-column: 2; grid-row: 1 / span 2; }
+  .tuning-control-surface .oc-value-field { grid-column: 3; grid-row: 1 / span 2; }
+  .tuning-control-surface .oc-value-input { width: 58px; }
+  .tuning-control-surface .tuning-diff { display: none; }
+  .tuning-control-surface .oc-range { grid-column: 1 / -1; grid-row: 3; justify-self: start; }
+  .tuning-page-hero { align-items: flex-start; }
+}
+@media (max-width: 470px) {
+  .titlebar-brand-name { font-size: 12px; }
+  .sidebar-version-group { gap: 0; }
+  .tuning-control-surface .oc-card {
+    grid-template-columns: minmax(92px, 30%) minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto;
+    gap: 2px 10px;
+  }
+  .tuning-control-surface .oc-card .card-title { grid-column: 1; grid-row: 1; }
+  .tuning-control-surface .oc-driver { grid-column: 1; grid-row: 2; }
+  .tuning-control-surface .oc-slider { grid-column: 2; grid-row: 1 / span 2; }
+  .tuning-control-surface .oc-value-field { grid-column: 2; grid-row: 3; justify-content: flex-start; }
+  .tuning-control-surface .oc-range { grid-column: 1 / -1; grid-row: 4; }
+  .tuning-page-hero + .arc-page-toolbar .oc-mode-row { gap: 8px; flex-wrap: wrap; }
+}
+
+[data-theme="light"] .dashboard-supporting-grid > .card,
+[data-theme="light"] .dashboard-control-card,
+[data-theme="light"] .tuning-control-surface,
+[data-theme="light"] .tuning-control-surface .oc-card,
+[data-theme="light"] .tuning-control-surface .oc-card:hover,
+[data-theme="light"] .tuning-control-surface .oc-card:focus-within {
+  border-color: var(--border);
+  background: transparent;
+  box-shadow: none;
+}
+[data-theme="light"] .dashboard-supporting-grid .kv,
+[data-theme="light"] .dashboard-supporting-grid > .health-card { border-color: var(--border); }
+[data-theme="light"] .titlebar-brand-power,
+[data-theme="light"] .sidebar-brand-power { color: var(--text); background: none; filter: none; }
+
+/* Arc Power refreshed UI flow: consistent page headers, working surfaces,
+   and a clear separation between controls and their supporting information. */
+:root {
+  --radius: 6px;
+  --radius-sm: 4px;
+  --shadow: none;
+}
+
+#page { gap: 14px; padding: 16px 20px 30px; }
+#page > .arc-page-shell { width: 100%; max-width: none; margin: 0; }
+.arc-page-shell,
+.arc-sleep-page,
+.tuning-view,
+.graphics-view,
+.profiles-root,
+.settings-root,
+.mon-view { min-width: 0; }
+.arc-page-shell { gap: 12px; }
+.arc-page-hero {
+  min-height: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-elev);
+  box-shadow: none;
+}
+.arc-page-hero::after,
+.arc-surface-card::after { display: none; }
+.arc-page-hero .page-title { margin: 0 0 3px; font-size: 21px; }
+.arc-page-hero .page-subtitle { max-width: 760px; font-size: 12px; line-height: 1.45; }
+.arc-section-kicker { display: none; }
+.arc-page-hero-side,
+.arc-page-hero-status {
+  flex: 0 1 260px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.arc-page-hero-side { align-items: flex-end; gap: 5px; }
+.arc-page-hero-side .arc-hero-label { color: var(--text-muted); font-size: 10px; letter-spacing: .04em; }
+.arc-page-hero-side .arc-hero-value { color: var(--text); font-size: 12px; }
+.arc-page-toolbar {
+  width: 100%;
+  padding: 0 0 8px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.arc-page-toolbar .oc-mode-toggle { padding: 2px; border-radius: 4px; background: var(--bg-elev); }
+.arc-page-toolbar .oc-mode-btn { min-height: 28px; padding: 4px 11px; border-radius: 3px; font-size: 11px; }
+.card,
+.arc-surface-card {
+  border-color: var(--border);
+  border-radius: 5px;
+  background: var(--bg-elev);
+  box-shadow: none;
+}
+.card-stack { gap: 9px; }
+.btn,
+.chip,
+.profile-filter,
+.profile-setting-control,
+.profile-setting-number,
+.recording-panel { border-radius: 4px; }
+
+/* Dashboard: leave room for the retained GPU artwork and graphs while
+   keeping the hardware facts in two compact information columns. */
+.dashboard-pulse-card { padding: 14px 16px; }
+.dashboard-pulse-hud { grid-template-columns: minmax(220px, .72fr) minmax(0, 1.8fr); gap: 16px; }
+.dashboard-pulse-visual { grid-template-rows: minmax(150px, 1fr); justify-items: center; padding: 4px 16px 4px 0; }
+.dashboard-retail-art-slot { min-height: 160px; }
+.dashboard-retail-art-asset { width: min(100%, 340px); height: 160px; }
+.dashboard-retail-art { width: min(100%, 300px); height: 124px; }
+.dashboard-pulse-grid { gap: 0 16px; }
+.dashboard-pulse-metric { padding: 10px 0; }
+.dashboard-sparkline-surface { height: 56px; }
+.dashboard-sparkline-crosshair { z-index: 2; }
+.dashboard-sparkline-tooltip { z-index: 3; white-space: nowrap; }
+.dashboard-supporting-grid { align-items: start; gap: 14px 22px; }
+.dashboard-supporting-grid > .card { padding: 13px 15px; }
+.dashboard-supporting-grid .hardware-card-heading,
+.dashboard-supporting-grid .device-card-head { margin-bottom: 5px; padding-bottom: 7px; }
+.dashboard-supporting-grid .kv { min-height: 34px; }
+.dashboard-supporting-grid .kv[data-label="Installed Driver Version"] { min-height: 38px; }
+.dashboard-supporting-grid .kv[data-label="Installed Driver Version"] .intel-driver-version-value { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dashboard-supporting-grid .kv[data-label="Installed Driver Version"] .intel-driver-update-notice { flex-wrap: wrap; }
+.dashboard-hud-header-status { display: none !important; }
+
+/* Tuning: preserve the established toolbar and four-column slider rows.
+   Only the range/step readout moves below the row so it cannot collide with
+   the hover Apply/Reset actions. */
+.tuning-page-hero { min-height: 64px; padding: 12px 16px; border-color: var(--border); border-radius: 5px; background: var(--bg-elev); }
+.tuning-page-hero .page-title { margin: 0 0 2px; font-size: 21px; line-height: 1.3; }
+.tuning-page-hero .page-subtitle { margin: 0; font-size: 11px; line-height: 1.4; }
+.tuning-page-hero .arc-page-hero-side { flex-basis: 220px; }
+.tuning-page-hero + .arc-page-toolbar { width: 100%; padding: 0 2px 8px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-row { width: 100%; align-items: center; gap: 14px; margin: 0; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-col { gap: 0; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-label { display: none; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-toggle { gap: 12px; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-btn { min-height: 32px; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--text-muted); font-size: 11px; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-btn.active { border-bottom-color: var(--accent); background: transparent; color: var(--text); }
+.tuning-page-hero + .arc-page-toolbar .profile-save-col { margin-left: auto; }
+.tuning-page-hero + .arc-page-toolbar .profile-save-col .profile-tag-row { align-items: center; }
+.tuning-control-surface { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.tuning-control-heading { padding: 2px 0 8px; border-bottom-color: var(--border); }
+.tuning-control-heading .card-title { margin: 0; font-size: 15px; font-weight: 600; }
+.tuning-control-description { margin: 3px 0 0; color: var(--text-muted); font-size: 10px; }
+.tuning-control-surface .oc-stack { gap: 0; padding-top: 0; }
+.tuning-control-surface .oc-card { position: relative; display: grid; grid-template-columns: minmax(150px, 23%) minmax(120px, 1fr) 104px minmax(95px, 125px); grid-template-rows: 22px 22px auto; align-items: center; gap: 0 16px; min-height: 57px; padding: 7px 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; box-shadow: none; transition: background-color .12s ease; }
+.tuning-control-surface .oc-card:hover,
+.tuning-control-surface .oc-card:focus-within { border-color: var(--border); background: color-mix(in srgb, var(--accent) 3%, transparent); }
+.tuning-control-surface .oc-card::after { display: none; }
+.tuning-control-surface .oc-card-head,
+.tuning-control-surface .oc-card-head-meta,
+.tuning-control-surface .oc-slider-row,
+.tuning-control-surface .oc-meta { display: contents; }
+.tuning-control-surface .oc-slider-row[hidden],
+.tuning-control-surface .oc-meta[hidden] { display: none; }
+.tuning-control-surface .oc-card .card-title { grid-column: 1; grid-row: 1; margin: 0; color: var(--text); font-size: 12px; font-weight: 600; }
+.tuning-control-surface .oc-driver { grid-column: 1; grid-row: 2; overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.tuning-control-surface .tuning-diff { grid-column: 4; grid-row: 1; justify-self: end; font-size: 9px; }
+.tuning-control-surface .oc-slider { grid-column: 2; grid-row: 1 / span 2; min-width: 0; height: 26px; }
+.tuning-control-surface .oc-value-field { grid-column: 3; grid-row: 1 / span 2; width: 100%; justify-content: flex-end; gap: 4px; }
+.tuning-control-surface .oc-value-input { width: 76px; min-height: 28px; padding: 3px 5px; border-radius: 3px; font-size: 11px; }
+.tuning-control-surface .oc-value-unit { min-width: 18px; font-size: 10px; }
+.tuning-control-surface .oc-range { grid-column: 1 / -1; grid-row: auto; justify-self: start; align-self: start; color: var(--text-muted); font: 10px/1.45 var(--mono); white-space: normal; }
+.tuning-control-surface .oc-meta > :not(.oc-range) { grid-column: 1 / -1; }
+.tuning-control-surface .oc-freq-mode-row,
+.tuning-control-surface .vf-curve-editor,
+.tuning-control-surface .gpu-lock-editor { grid-column: 1 / -1; }
+.tuning-control-surface .oc-freq-mode-row { margin: 4px 0; }
+.tuning-control-surface .gpu-lock-editor { margin-top: 4px; }
+.tuning-control-surface .oc-card-actions { top: 24px; right: 0; z-index: 1; margin: 0; padding: 0; border: 0; }
+.tuning-control-surface .oc-card-actions .btn { min-height: 22px; padding: 2px 6px; border-radius: 3px; font-size: 9px; }
+.tuning-control-surface .tuning-general-actions { min-height: 40px; margin-top: 0; padding: 8px 0 2px; border-top: 0; border-bottom: 1px solid var(--border); }
+.tuning-control-surface .tuning-general-actions .btn { border-radius: 3px; }
+.tuning-control-surface .oc-mode-toggle,
+.tuning-control-surface .oc-mode-btn { border-radius: 3px; }
+.tuning-control-surface .vf-curve-editor { margin-top: 4px; padding: 8px 10px 10px; }
+.tuning-control-surface .vf-curve-stage { height: clamp(190px, 28vh, 310px); }
+.tuning-control-surface .vf-curve-actions { flex-wrap: wrap; }
+.tuning-control-surface .oc-card:has(.oc-freq-mode-row) .oc-range { grid-row: auto; }
+.tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])) .vf-curve-editor { grid-row: auto; }
+/* Fan Curve now uses a settings rail beside its graph, with the sleep
+   restore option kept adjacent and readable. */
+.tuning-view:has(.fan-resume-card) { display: grid; grid-template-columns: minmax(230px, .32fr) minmax(0, 1fr); align-items: start; gap: 12px; }
+.tuning-view:has(.fan-card):not(:has(.fan-resume-card)) { display: block; }
+.fan-resume-card { grid-column: 1; margin: 0; padding: 14px; border-radius: 5px; }
+.fan-resume-card .arc-sleep-panel-heading { align-items: flex-start; }
+.fan-resume-card .card-title { margin: 0; font-size: 14px; }
+.fan-resume-card .card-note { line-height: 1.45; }
+.fan-card { grid-column: 2; grid-row: 1 / span 2; min-width: 0; margin: 0; padding: 13px 15px; border-radius: 5px; }
+.fan-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 16px; }
+.fan-mode-toggle { grid-column: 1 / -1; margin: 0; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.fan-mode-toggle .chip { min-height: 28px; padding: 4px 12px; border-radius: 4px; }
+.fan-stage { grid-column: 1 / -1; min-height: 285px; height: min(38vh, 360px); border-radius: 4px; }
+.fan-axis { grid-column: 1 / -1; margin-top: -5px; }
+.fan-auto-note,
+.fan-fixed-note,
+.fan-fixed-row,
+.fan-body > .card-note { grid-column: 1 / -1; }
+.fan-actions { grid-column: 1; display: flex; flex-wrap: wrap; gap: 7px; margin: 0; }
+.fan-presets { grid-column: 1; display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
+.fan-apply-row { grid-column: 2; grid-row: auto; justify-content: flex-end; margin: 0; }
+.fan-apply-row .btn { min-height: 34px; }
+.fan-resume-card + .fan-card { grid-row: 1 / span 3; }
+.tuning-view:has(.fan-card):not(:has(.fan-resume-card)) .fan-card { width: 100%; }
+
+/* The remaining tabs follow the same flat card and compact toolbar rules. */
+.recording-page-shell { max-width: none; gap: 12px; }
+.recording-heading { min-height: 0; }
+.recording-tabs-toolbar { justify-content: flex-start; }
+.recording-tabs { display: inline-flex; width: fit-content; max-width: 100%; padding: 2px; border-radius: 4px; background: var(--bg-elev); }
+.recording-tabs button { min-height: 30px; padding: 5px 12px; border-radius: 3px; }
+.recording-panel { border-color: var(--border); background: var(--bg-elev); box-shadow: none; }
+.recording-panel-column { gap: 9px; }
+.arc-sleep-page { width: 100%; max-width: none; gap: 12px; }
+.arc-sleep-hero { min-height: 0; padding: 14px 16px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-elev); }
+.arc-sleep-hero::after { display: none; }
+.arc-sleep-eyebrow { display: none; }
+.arc-sleep-hero .page-title { margin: 0 0 3px; font-size: 21px; }
+.arc-sleep-hero .page-subtitle { margin: 0; max-width: 680px; }
+.arc-sleep-runtime,
+.arc-sleep-panel { padding: 14px 16px; border-radius: 5px; }
+.arc-sleep-panels { gap: 12px; }
+.arc-sleep-summary { gap: 14px; }
+.arc-sleep-summary > div { gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); }
+.arc-sleep-summary strong { font-size: 18px; }
+.arc-sleep-cap-control { margin: 12px 0; padding: 12px; border-color: var(--border); border-radius: 4px; background: var(--bg); }
+.arc-sleep-number { border-color: var(--border-strong); border-radius: 4px; background: var(--control-bg); }
+.graphics-view { display: grid; gap: 10px; }
+.graphics-view .graphics-card { padding: 14px 16px; border-color: var(--border); border-radius: 5px; background: var(--bg-elev); box-shadow: none; }
+.graphics-view .graphics-card::after { display: none; }
+.graphics-view .graphics-general-actions,
+.graphics-view .display-general-actions { margin-top: 8px; padding-top: 8px; border-color: var(--border); }
+.tweaks-page-shell { gap: 12px; }
+.tweaks-page-actions { flex: 0 0 auto; }
+.tweaks-page-actions .btn { min-height: 32px; }
+.tweaks-card-stack .tweak-card { border-radius: 5px; background: var(--bg-elev); }
+.tweak-card .tweak-title { min-height: 46px; padding-inline: 14px; }
+.settings-root { width: 100%; max-width: none; gap: 12px; }
+.settings-root > .settings-card { min-height: 0; border-radius: 5px; background: var(--bg-elev); }
+.settings-root > .settings-toolbar { padding: 0 0 8px; border-bottom: 1px solid var(--border); }
+.settings-root .settings-card .settings-row { border-radius: 4px; background: var(--bg); }
+.profiles-page-hero { width: 100%; }
+.profiles-root { width: 100%; }
+.profile-browser,
+.profile-detail,
+.game-profile-detail { gap: 10px; }
+.profile-list-card,
+.game-profile-target-card,
+.profile-use-card { border-radius: 5px; background: var(--bg-elev); }
+.profile-row { border-radius: 4px; background: var(--bg); }
+.profile-grid .profile-row { min-height: 160px; }
+.monitoring-page-shell { width: 100%; max-width: none; }
+.monitoring-page-shell .arc-page-toolbar { margin: 0; }
+.monitoring-workspace { gap: 12px; }
+.monitoring-metrics-column { gap: 10px; }
+.telemetry-metrics-card,
+.telemetry-tracking-card,
+.stability-lab-panel,
+.telemetry-panel { border-radius: 5px; background: var(--bg-elev); box-shadow: none; }
+.telemetry-panel { padding: 12px 14px; }
+.telemetry-tracking-card { position: static; }
+.mon-view { display: grid; gap: 10px; }
+
+@media (max-width: 900px) {
+  #page { padding-inline: 14px; }
+  .dashboard-pulse-hud { grid-template-columns: minmax(180px, .58fr) minmax(0, 1.7fr); gap: 12px; }
+  .tuning-view:has(.fan-resume-card) { grid-template-columns: minmax(190px, .34fr) minmax(0, 1fr); }
+  .fan-stage { height: 32vh; min-height: 250px; }
+  .monitoring-workspace { grid-template-columns: minmax(0, 1fr) 250px; }
+}
+@media (max-width: 720px) {
+  #page { padding: 12px 12px 24px; }
+  .arc-page-hero { align-items: flex-start; flex-direction: column; gap: 9px; }
+  .arc-page-hero-side,
+  .arc-page-hero-status { align-items: flex-start; flex: 1 1 auto; width: 100%; }
+  .dashboard-pulse-hud { grid-template-columns: 1fr; }
+  .dashboard-pulse-visual { min-height: 120px; padding: 0 0 8px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .dashboard-retail-art-slot { min-height: 126px; }
+  .dashboard-retail-art-asset { height: 126px; }
+  .dashboard-supporting-grid { grid-template-columns: minmax(0, 1fr); }
+  .tuning-control-surface .oc-value-input { width: 72px; }
+  .tuning-view:has(.fan-resume-card) { display: flex; flex-direction: column; }
+  .fan-resume-card,
+  .fan-card { width: 100%; }
+  .fan-stage { min-height: 230px; height: 36vh; }
+  .arc-sleep-panels { grid-template-columns: minmax(0, 1fr); }
+  .arc-sleep-base-cap { grid-column: 1; }
+  .arc-sleep-summary { grid-template-columns: 1fr; }
+  .monitoring-workspace { grid-template-columns: 1fr; }
+  .telemetry-tracking-card { position: static; }
+  .settings-root { grid-template-columns: minmax(0, 1fr); }
+  .settings-root > .theme-card,
+  .settings-root > .maintenance-card { grid-column: 1; }
+}
+@media (max-width: 470px) {
+  .fan-body { grid-template-columns: 1fr; }
+  .fan-actions,
+  .fan-presets,
+  .fan-apply-row { grid-column: 1; }
+  .fan-apply-row { justify-content: flex-start; }
+  .recording-tabs { width: 100%; }
+  .recording-tabs button { flex: 1 1 0; padding-inline: 6px; }
+}
+
+/* Follow-up correction: restore Tuning's established toolbar and control
+   rows. The range/step caption stays in the normal information row below
+   the slider, clear of the Apply/Reset actions. */
+.tuning-page-hero {
+  min-height: 92px;
+  height: auto;
+  box-sizing: border-box;
+  align-items: center;
+  overflow: visible;
+  padding: 18px 20px;
+  border-radius: 6px;
+  background: var(--bg-elev);
+}
+.tuning-page-hero .arc-page-hero-copy { min-width: 0; }
+.tuning-page-hero .page-title { margin: 0 0 4px; font-size: 23px; line-height: 1.3; }
+.tuning-page-hero .page-subtitle { max-width: 720px; margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-muted); }
+.tuning-page-hero .arc-page-hero-side { flex-basis: 250px; }
+.tuning-page-hero + .arc-page-toolbar { width: 100%; padding: 0 2px 8px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-row { width: 100%; align-items: center; gap: 14px; margin: 0; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-col { gap: 0; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-label { display: none; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-toggle { gap: 12px; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-btn { min-height: 32px; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--text-muted); font-size: 11px; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-btn.active { border-bottom-color: var(--accent); background: transparent; color: var(--text); }
+.tuning-page-hero + .arc-page-toolbar .profile-save-col { margin-left: auto; }
+.tuning-control-surface { padding: 15px 18px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); }
+.tuning-control-heading { padding: 2px 0 10px; border-bottom-color: var(--border); }
+.tuning-control-heading .card-title { margin: 0; font-size: 16px; letter-spacing: 0; }
+.tuning-control-surface .oc-stack { gap: 0; padding-top: 4px; }
+.tuning-control-surface .oc-card {
+  position: static;
+  display: block;
+  min-height: 0;
+  padding: 14px 2px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.tuning-control-surface .oc-card:hover,
+.tuning-control-surface .oc-card:focus-within { border-color: var(--border); background: transparent; }
+.tuning-control-surface .oc-card::after { display: none; }
+.tuning-control-surface .oc-card-head,
+.tuning-control-surface .oc-card-head-meta,
+.tuning-control-surface .oc-slider-row,
+.tuning-control-surface .oc-meta { display: revert; }
+.tuning-control-surface .oc-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+.tuning-control-surface .oc-card-head-meta { display: flex; align-items: baseline; justify-content: flex-end; gap: 12px; min-width: 0; }
+.tuning-control-surface .oc-card .card-title { margin: 0; color: var(--text); font-size: 14px; font-weight: 600; }
+.tuning-control-surface .oc-driver { color: var(--text-muted); font-size: 11px; }
+.tuning-control-surface .oc-slider-row { display: flex; align-items: center; gap: 14px; min-height: 34px; }
+.tuning-control-surface .oc-slider { flex: 1 1 auto; min-width: 0; height: 28px; }
+.tuning-control-surface .oc-value-field { flex: 0 0 auto; width: auto; justify-content: flex-end; gap: 6px; }
+.tuning-control-surface .oc-value-input { width: 76px; min-height: 30px; padding: 4px 6px; border-radius: 4px; font-size: 12px; }
+.tuning-control-surface .oc-value-unit { min-width: 20px; font-size: 11px; }
+.tuning-control-surface .oc-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 6px; flex-wrap: wrap; }
+.tuning-control-surface .oc-range { color: var(--text-muted); font: 11px/1.4 var(--mono); white-space: normal; }
+.tuning-control-surface .oc-meta > :not(.oc-range) { max-width: 100%; }
+.tuning-control-surface .oc-freq-mode-row,
+.tuning-control-surface .vf-curve-editor,
+.tuning-control-surface .gpu-lock-editor { margin-top: 5px; }
+.tuning-control-surface .oc-card-actions { position: static; display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 6px; padding: 0; border: 0; opacity: 1; pointer-events: auto; }
+.tuning-control-surface .oc-card-actions .btn { min-height: 26px; padding: 4px 9px; border-radius: 4px; font-size: 10px; }
+.tuning-control-surface .tuning-general-actions { min-height: 40px; margin-top: 0; padding: 8px 0 2px; border-top: 0; border-bottom: 1px solid var(--border); }
+.tuning-control-surface .oc-mode-toggle,
+.tuning-control-surface .oc-mode-btn { border-radius: 4px; }
+.tuning-control-surface .oc-mode-btn.active { background: var(--accent); color: var(--on-accent); }
+.tuning-control-surface .vf-curve-editor { padding: 8px 10px 10px; }
+.tuning-control-surface .vf-curve-actions { flex-wrap: wrap; }
+
+/* Arc Sleep: remove the nested card look and let the controls sit on a calm,
+   open surface with simple separators. */
+.arc-sleep-page { gap: 10px; }
+.arc-sleep-hero {
+  min-height: 0;
+  padding: 2px 0 12px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.arc-sleep-hero .page-title { font-size: 22px; }
+.arc-sleep-runtime {
+  padding: 8px 0 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.arc-sleep-summary { gap: 0; }
+.arc-sleep-summary > div {
+  gap: 2px;
+  padding: 0 16px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.arc-sleep-summary > div:first-child { padding-left: 0; border-left: 0; }
+.arc-sleep-summary strong { font-size: 17px; }
+.arc-sleep-status { margin-top: 9px; padding-top: 8px; border-top-color: var(--border); }
+.arc-sleep-panels { gap: 0 28px; }
+.arc-sleep-panel {
+  padding: 14px 0 16px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.arc-sleep-panel .card-title { font-size: 14px; }
+.arc-sleep-base-cap { grid-column: 1 / -1; }
+.arc-sleep-cap-enable {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.arc-sleep-cap-control {
+  margin: 12px 0 10px;
+  padding: 8px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.arc-sleep-number { min-height: 31px; height: 31px; }
+.arc-sleep-fields { gap: 8px; margin: 13px 0; }
+
+/* Settings: compact three-column preference groups with plain rows instead
+   of a large wall of nested cards. */
+.settings-root {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  gap: 6px 20px;
+}
+.settings-root > .settings-page-hero {
+  grid-column: 1 / -1;
+  min-height: 0;
+  padding: 2px 0 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.settings-root > .settings-page-hero .page-title { margin: 0 0 2px; font-size: 21px; }
+.settings-root > .settings-page-hero .page-subtitle { font-size: 11px; }
+.settings-root > .settings-page-hero .arc-page-hero-side { display: none; }
+.settings-root > .settings-toolbar {
+  grid-column: 1 / -1;
+  min-height: 34px;
+  padding: 0 0 7px;
+}
+.settings-root > .settings-card {
+  min-width: 0;
+  min-height: 0;
+  padding: 9px 0 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.settings-root > .theme-card { grid-column: span 1; }
+.settings-root > .maintenance-card { grid-column: span 2; }
+.settings-root .settings-card .card-title {
+  margin: 0 0 2px;
+  padding: 0;
+  font-size: 12px;
+  letter-spacing: 0;
+}
+.settings-root .settings-card .settings-row {
+  min-height: 31px;
+  padding: 3px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.settings-root .settings-card .settings-row:hover { border-color: transparent; background: transparent; }
+.settings-root .settings-card > .card-note {
+  margin: 2px 0 0;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.settings-root .settings-card .settings-state { margin-top: 2px; }
+.settings-root .maintenance-descriptions { gap: 3px; }
+.settings-root .maintenance-row { gap: 6px; margin-top: 7px; }
+.settings-root .maintenance-action { min-height: 30px; padding: 5px 10px; }
+.settings-root .theme-options { gap: 5px; margin-top: 6px; }
+.settings-root .theme-option { gap: 6px; min-height: 29px; padding: 4px 8px; font-size: 11px; }
+.settings-root .kv-grid { gap: 3px 10px; font-size: 11px; }
+
+/* Keep Recording / Instant Replay surfaces continuous across the content
+   width so their darker panel fill never stops at an inner child edge. */
+.recording-content,
+.recording-clips-content,
+.recording-manual-content { width: 100%; min-width: 0; }
+.recording-panel-column { width: 100%; min-width: 0; }
+.recording-panel.recording-capture-panel,
+.recording-panel.recording-replay-settings {
+  width: 100%;
+  background-color: var(--bg-elev);
+  background-image: none;
+}
+.recording-panel.recording-replay-settings { min-height: 0; }
+.recording-library-panel { width: 100%; }
+
+@media (max-width: 900px) {
+  .settings-root { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-root > .maintenance-card { grid-column: 1 / -1; }
+}
+@media (max-width: 720px) {
+  .settings-root { grid-template-columns: minmax(0, 1fr); }
+  .settings-root > .settings-page-hero,
+  .settings-root > .settings-toolbar,
+  .settings-root > .settings-card,
+  .settings-root > .theme-card,
+  .settings-root > .maintenance-card { grid-column: 1; }
+  .arc-sleep-summary { grid-template-columns: 1fr; gap: 8px; }
+  .arc-sleep-summary > div,
+  .arc-sleep-summary > div:first-child { padding: 0; border: 0; }
+  .arc-sleep-panels { grid-template-columns: minmax(0, 1fr); }
+  .arc-sleep-base-cap { grid-column: 1; }
+}
+
+/* Shared finishing pass: keep the compact layout while giving secondary
+   pages the same quiet surfaces and consistent segmented controls. */
+.arc-page-toolbar .oc-mode-toggle,
+.graphics-view-toggle,
+.mon-view-toggle,
+.profiles-mode-toggle,
+.profile-view-toggle,
+.recording-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control-bg);
+}
+.arc-page-toolbar .oc-mode-btn,
+.graphics-view-toggle .oc-mode-btn,
+.mon-view-toggle .oc-mode-btn,
+.profiles-mode-toggle > button,
+.profile-view-toggle > button,
+.recording-tabs .recording-tab {
+  min-height: 29px;
+  padding: 5px 11px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: none;
+  font-size: 11px;
+  font-weight: 600;
+  transition: background-color .12s ease, color .12s ease;
+}
+.arc-page-toolbar .oc-mode-btn:hover,
+.graphics-view-toggle .oc-mode-btn:hover,
+.mon-view-toggle .oc-mode-btn:hover,
+.profiles-mode-toggle > button:hover,
+.profile-view-toggle > button:hover,
+.recording-tabs .recording-tab:hover { background: color-mix(in srgb, var(--accent) 9%, var(--control-bg)); color: var(--text); }
+.arc-page-toolbar .oc-mode-btn.active,
+.graphics-view-toggle .oc-mode-btn.active,
+.mon-view-toggle .oc-mode-btn.active,
+.profiles-mode-toggle > button.active,
+.profile-view-toggle > button.active,
+.recording-tabs .recording-tab.active {
+  border: 0;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: none;
+}
+.profiles-mode-toggle { margin: 0 0 10px; }
+.profile-view-toggle { margin-left: auto; }
+.recording-tabs-toolbar { padding-bottom: 8px; }
+
+/* Tuning: retain the compact four-column control bar. Supporting range and
+   stepping text gets a dedicated line beneath each slider, away from actions. */
+.tuning-page-hero { min-height: 64px; padding: 12px 16px; }
+.tuning-page-hero .page-title { margin: 0 0 2px; font-size: 21px; }
+.tuning-page-hero + .arc-page-toolbar { width: 100%; padding: 0 0 8px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-row { width: 100%; align-items: center; gap: 14px; margin: 0; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-label { display: none; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-toggle { gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 6px; background: var(--control-bg); }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-btn { min-height: 29px; padding: 5px 11px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-btn.active { border: 0; background: var(--accent); color: var(--on-accent); }
+.tuning-page-hero + .arc-page-toolbar .profile-save-col { margin-left: auto; }
+.tuning-control-surface { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.tuning-control-surface .oc-stack { gap: 0; padding-top: 0; }
+.tuning-control-surface .oc-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(145px, 23%) minmax(0, 1fr) 102px minmax(82px, 112px);
+  grid-template-rows: 22px 22px auto;
+  align-items: center;
+  gap: 0 14px;
+  min-height: 58px;
+  padding: 7px 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.tuning-control-surface .oc-card:hover,
+.tuning-control-surface .oc-card:focus-within { border-color: var(--border); background: color-mix(in srgb, var(--accent) 3%, transparent); }
+.tuning-control-surface .oc-card::after { display: none; }
+.tuning-control-surface .oc-card-head,
+.tuning-control-surface .oc-card-head-meta,
+.tuning-control-surface .oc-slider-row,
+.tuning-control-surface .oc-meta { display: contents; }
+.tuning-control-surface .oc-slider-row[hidden],
+.tuning-control-surface .oc-meta[hidden] { display: none; }
+.tuning-control-surface .oc-card .card-title { grid-column: 1; grid-row: 1; margin: 0; color: var(--text); font-size: 12px; font-weight: 600; }
+.tuning-control-surface .oc-driver { grid-column: 1; grid-row: 2; overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.tuning-control-surface .tuning-diff { grid-column: 4; grid-row: 1; justify-self: end; font-size: 9px; }
+.tuning-control-surface .oc-slider { grid-column: 2; grid-row: 1 / span 2; min-width: 0; height: 26px; }
+.tuning-control-surface .oc-value-field { grid-column: 3; grid-row: 1 / span 2; width: 100%; justify-content: flex-end; gap: 4px; }
+.tuning-control-surface .oc-value-input { width: 76px; min-height: 28px; padding: 3px 5px; border-radius: 3px; font-size: 11px; }
+.tuning-control-surface .oc-value-unit { min-width: 18px; font-size: 10px; }
+.tuning-control-surface .oc-range { grid-column: 1 / -1; grid-row: 3; justify-self: start; align-self: start; color: var(--text-muted); font: 10px/1.45 var(--mono); white-space: normal; }
+.tuning-control-surface .oc-meta > :not(.oc-range) { grid-column: 1 / -1; }
+.tuning-control-surface .oc-freq-mode-row,
+.tuning-control-surface .vf-curve-editor,
+.tuning-control-surface .gpu-lock-editor { grid-column: 1 / -1; }
+.tuning-control-surface .oc-freq-mode-row { grid-row: 3; margin: 4px 0; }
+.tuning-control-surface .gpu-lock-editor { grid-row: 3; margin-top: 4px; }
+.tuning-control-surface .oc-card:has(.oc-freq-mode-row) .oc-range { grid-row: 4; }
+.tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])) .vf-curve-editor { grid-row: 4; margin-top: 4px; padding: 8px 10px 10px; }
+.tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])) .oc-range { display: none; }
+.tuning-control-surface .oc-card-actions { top: 24px; right: 0; z-index: 1; margin: 0; padding: 0; border: 0; }
+.tuning-control-surface .oc-card-actions .btn { min-height: 22px; padding: 2px 6px; border-radius: 3px; font-size: 9px; }
+.tuning-control-surface .oc-mode-toggle,
+.tuning-control-surface .oc-mode-btn { border-radius: 4px; }
+.tuning-control-surface .vf-curve-actions { flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .tuning-control-surface .oc-card { grid-template-columns: minmax(120px, 22%) minmax(0, 1fr) 88px; gap: 0 9px; }
+  .tuning-control-surface .tuning-diff { display: none; }
+  .tuning-control-surface .oc-range { padding-right: 4px; }
+}
+
+/* Dashboard: the art and telemetry now size against the card, not the whole
+   window, so a narrow mock or split panel cannot push the graphs off-screen. */
+.dashboard-pulse-lane { min-width: 0; container-type: inline-size; }
+.dashboard-pulse-hud { grid-template-columns: minmax(190px, .72fr) minmax(0, 1.8fr); gap: 14px; min-width: 0; }
+.dashboard-pulse-visual { min-width: 0; padding-right: 12px; }
+.dashboard-retail-art-slot { isolation: isolate; min-width: 0; overflow: hidden; border-radius: 5px; background: radial-gradient(ellipse at 50% 54%, color-mix(in srgb, var(--accent) 12%, transparent), color-mix(in srgb, var(--accent) 4%, transparent) 54%, transparent 78%); }
+.dashboard-retail-art-asset { display: block; max-width: 100%; }
+.dashboard-pulse-grid { min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.dashboard-pulse-metric { min-width: 0; }
+/* Live Monitoring is one column, so the retired two-column gutters/dividers
+   are gone for good (they were `:nth-child` rules that outranked the later
+   plain `.dashboard-pulse-metric` padding). Rebuild the intent here: identical
+   padding on every row, one hairline between consecutive rows, none after the
+   last. */
+.dashboard-pulse-metric:nth-child(-n + 3) { border-bottom: 1px solid var(--border); }
+/* Fixed value column, right-aligned: digits line up on the decimal edge so the
+   figures read as a stack, and the unit starts on the same x on every row. The
+   width covers a 4-digit integer ("1920") and a 3-digit decimal ("112.4" /
+   "400.0"); a longer value grows the column leftwards instead of pushing the
+   unit, so the right edge and the unit x never move. */
+.dashboard-pulse-value { min-width: 4.5ch; text-align: right; }
+.dashboard-pulse-unit { min-width: 3.2ch; text-align: left; }
+@container (max-width: 680px) {
+  .dashboard-pulse-hud { grid-template-columns: minmax(150px, .72fr) minmax(0, 1.5fr); gap: 10px; }
+  .dashboard-pulse-visual { padding: 4px 9px 4px 0; }
+  .dashboard-retail-art-slot { min-height: 142px; }
+  .dashboard-retail-art-asset { height: 138px; }
+  .dashboard-pulse-metric { padding: 7px 0; }
+}
+@container (max-width: 430px) {
+  .dashboard-pulse-hud { grid-template-columns: minmax(0, 1fr); }
+  .dashboard-pulse-visual { border-right: 0; border-bottom: 1px solid #20344a; padding: 0 0 8px; }
+  .dashboard-pulse-grid { grid-column: 1; }
+  .dashboard-retail-art-slot { min-height: 132px; }
+}
+
+/* Settings and Arc Sleep: restrained surfaces keep these compact pages from
+   reading as either bare dividers or stacks of heavy cards. */
+.settings-root { gap: 8px 16px; }
+.settings-root > .settings-page-hero { padding: 8px 12px 10px; border: 1px solid var(--border); border-radius: 5px; background: linear-gradient(110deg, color-mix(in srgb, var(--bg-elev) 91%, var(--accent) 9%), var(--bg-elev) 68%); }
+.settings-root > .settings-card { padding: 10px 12px 11px; border: 1px solid color-mix(in srgb, var(--border) 90%, var(--accent) 10%); border-radius: 5px; background: color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%); }
+.settings-root .settings-card .card-title { margin-bottom: 5px; font-size: 12px; }
+.settings-root .settings-card .settings-row { padding: 5px 6px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.settings-root .settings-card .settings-row:last-child { border-bottom: 0; }
+.settings-root .settings-card .settings-row:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.settings-root > .settings-toolbar { padding: 0 0 7px; border-bottom: 1px solid var(--border); }
+.arc-sleep-page { max-width: none; margin: 0; gap: 10px; }
+.arc-sleep-hero { padding: 12px 15px; border: 1px solid color-mix(in srgb, var(--border) 80%, var(--accent) 20%); border-radius: 5px; background: linear-gradient(110deg, color-mix(in srgb, var(--bg-elev) 91%, var(--accent) 9%), var(--bg-elev) 70%); }
+.arc-sleep-hero .page-title { margin: 0 0 3px; font-size: 21px; }
+.arc-sleep-runtime { padding: 11px 13px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-elev); }
+.arc-sleep-summary > div { gap: 4px; padding: 7px 12px; border-left: 1px solid var(--border); }
+.arc-sleep-summary > div:first-child { padding-left: 0; border-left: 0; }
+.arc-sleep-summary strong { font-size: 16px; }
+.arc-sleep-status { margin-top: 7px; padding-top: 7px; }
+.arc-sleep-panels { gap: 10px; }
+.arc-sleep-panel { padding: 12px 14px; border: 1px solid var(--border); border-radius: 5px; background: color-mix(in srgb, var(--bg-elev) 95%, var(--accent) 5%); }
+.arc-sleep-panel .card-title { margin-bottom: 2px; font-size: 13px; }
+.arc-sleep-base-cap { grid-column: 1 / -1; }
+.arc-sleep-cap-enable { padding: 7px 9px; border: 1px solid var(--border); border-radius: 4px; background: var(--control-bg); }
+.arc-sleep-cap-control { padding: 9px 10px; border: 1px solid var(--border); border-radius: 4px; background: color-mix(in srgb, var(--control-bg) 70%, transparent); }
+
+/* Overlay: let the page use its available width and replace the large nested
+   panels with quiet, low-contrast control surfaces. */
+.overlay-settings-root { width: 100%; max-width: none; gap: 10px; }
+.overlay-settings-hero { min-height: 70px; padding: 12px 15px; border-radius: 5px; background: linear-gradient(110deg, color-mix(in srgb, var(--bg-elev) 91%, var(--accent) 9%), var(--bg-elev) 72%); box-shadow: inset 2px 0 0 var(--accent); }
+.overlay-settings-hero::after { right: -120px; top: -150px; opacity: .5; }
+.overlay-hero-title { margin: 2px 0; font-size: 20px; }
+.overlay-hero-subtitle { font-size: 11px; }
+.overlay-hero-status { min-width: 145px; padding: 7px 9px; border-radius: 5px; }
+.overlay-settings-workspace { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.overlay-workspace-column { gap: 10px; }
+.overlay-settings-root .settings-card { padding: 12px 13px; border-color: var(--border); border-radius: 5px; background: color-mix(in srgb, var(--bg-elev) 95%, var(--accent) 5%); box-shadow: none; }
+.overlay-card-heading { margin-bottom: 8px; }
+.overlay-card-heading .card-title { margin-top: 2px; font-size: 14px; }
+.overlay-settings-root .overlay-stat-groups { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px 14px; }
+.overlay-settings-root .overlay-stat-group { padding: 7px 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: transparent; }
+.overlay-telemetry-lanes .overlay-stat-grid { gap: 2px 12px; }
+
+/* Recording: Audio stays content-height and the clip-library background
+   fills the full available pane instead of stopping at the inner list. */
+.recording-audio-summary { display: flex; gap: 14px; margin-top: 9px; overflow: visible; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; }
+.recording-audio-summary-item { min-width: 0; flex: 0 1 auto; gap: 10px; padding: 6px 0 8px; background: transparent; }
+.recording-audio-summary-item + .recording-audio-summary-item { padding-left: 14px; border-left: 1px solid var(--border); }
+.recording-audio-sections { align-items: start; gap: 10px; margin-top: 10px; }
+.recording-audio-section { display: grid; align-content: start; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; padding: 11px 12px; border-radius: 5px; background: color-mix(in srgb, var(--control-bg) 68%, var(--bg-elev)); }
+.recording-audio-section h3,
+.recording-audio-section:first-child > .recording-check-row,
+.recording-audio-section:nth-child(2) > .recording-field:first-of-type,
+.recording-audio-section:nth-child(2) > .recording-check-row,
+.recording-audio-section:nth-child(2) > .recording-process-fields { grid-column: 1 / -1; }
+.recording-audio-section:nth-child(2) > .recording-field:nth-of-type(3),
+.recording-audio-section:nth-child(2) > .recording-field:nth-of-type(2) { grid-column: span 1; }
+.recording-audio-section .recording-field { gap: 4px; }
+.recording-audio-section .recording-check-row { min-height: 25px; }
+.recording-clips-content { display: flex; flex: 1 1 auto; width: 100%; min-height: calc(100vh - 190px); background: var(--bg-elev); }
+.recording-library-panel { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-elev); box-sizing: border-box; }
+.recording-library-toolbar { padding-bottom: 10px; }
+
+/* Driver Library: tighten the header and make the release browser read as a
+   single two-part workspace with one continuous catalog surface. */
+.driver-library-page { width: 100%; max-width: none; gap: 10px; }
+.driver-library-hero { min-height: 68px; padding: 11px 14px; border-radius: 5px; background: linear-gradient(110deg, color-mix(in srgb, var(--bg-elev) 91%, var(--accent) 9%), var(--bg-elev) 72%); }
+.driver-library-hero .page-title { font-size: 20px; }
+.driver-library-hero .driver-library-catalog-note { margin-top: 2px; font-size: 10px; }
+.driver-library-hero .arc-page-hero-status { flex-basis: 240px; }
+.driver-library-layout { grid-template-columns: minmax(230px, .62fr) minmax(0, 1.8fr); gap: 10px; height: clamp(340px, calc(100vh - 260px), 780px); }
+.driver-library-list,
+.driver-library-details { padding: 12px 13px; border-radius: 5px; background: color-mix(in srgb, var(--bg-elev) 96%, var(--accent) 4%); }
+.driver-library-list .card-title { margin-bottom: 8px; font-size: 13px; }
+.driver-library-search { min-height: 32px; margin-bottom: 8px; border-radius: 4px; }
+.driver-library-release { gap: 4px; padding: 9px 10px; border-radius: 4px; }
+.driver-library-release + .driver-library-release { margin-top: 5px; }
+.driver-library-release-heading h2,
+.driver-library-changelog h3 { font-size: 14px; }
+.driver-library-changelog { margin-top: 16px; padding-top: 12px; }
+.driver-library-launch { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); background: color-mix(in srgb, var(--accent) 8%, var(--control-bg)); }
+.driver-library-launch .sidebar-icon { display: block; }
+
+@media (max-width: 760px) {
+  .overlay-settings-workspace { grid-template-columns: 1fr; }
+  .recording-audio-sections { grid-template-columns: 1fr; }
+  .recording-audio-section { grid-template-columns: 1fr; }
+  .recording-audio-section > * { grid-column: 1 !important; }
+  .driver-library-layout { grid-template-columns: 1fr; grid-template-rows: minmax(170px, .7fr) minmax(230px, 1.3fr); height: clamp(460px, calc(100vh - 250px), 840px); }
+}
+
+/* Settings: organize related controls into three clearly labeled groups.
+   The search still filters the original individual setting cards. */
+.settings-root {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: 100%;
+  max-width: 1360px;
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+.settings-root > .settings-page-hero { width: 100%; min-height: 0; padding: 10px 14px; }
+.settings-root > .settings-toolbar { width: 100%; justify-content: space-between; align-self: stretch; margin: 0; padding: 0 0 8px; border-bottom: 1px solid var(--border); }
+.settings-root > .settings-toolbar .settings-search { width: min(360px, 100%); }
+.settings-group { display: flex; min-width: 0; flex-direction: column; gap: 8px; }
+.settings-group[hidden],
+.settings-group .settings-card[hidden] { display: none; }
+.settings-group-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 2px 7px; border-bottom: 1px solid var(--border); }
+.settings-group-heading h2 { margin: 0; color: var(--text); font-size: 13px; font-weight: 650; letter-spacing: 0; }
+.settings-group-heading p { margin: 3px 0 0; color: var(--text-dim); font-size: 10px; line-height: 1.35; }
+.settings-group-index { flex: 0 0 auto; color: var(--text-dim); font: 600 10px var(--mono); }
+.settings-preferences-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; align-items: stretch; }
+.settings-interface-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(280px, .9fr); gap: 9px; align-items: stretch; }
+.settings-maintenance-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(240px, .75fr); gap: 9px; align-items: start; }
+.settings-hotkeys-group { margin-top: 4px; }
+.settings-hotkeys-card.recording-panel { width: 100%; }
+.settings-root .settings-group .settings-card {
+  min-width: 0;
+  min-height: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bg-elev) 96%, var(--accent) 4%);
+  box-shadow: none;
+}
+.settings-root .settings-group .settings-card .card-title { margin: 0 0 5px; padding: 0; font-size: 12px; }
+.settings-root .settings-group .settings-card .settings-row { min-height: 31px; padding: 4px 5px; border: 0; border-radius: 3px; background: transparent; }
+.settings-root .settings-group .settings-card .settings-row:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.settings-root .settings-group .settings-card > .card-note { margin: 3px 0 0; color: var(--text-dim); font-size: 10px; line-height: 1.4; }
+.settings-root .settings-group .settings-memory-card { display: flex; grid-column: auto; flex-direction: column; align-items: stretch; gap: 0; }
+.settings-root .settings-memory-card .settings-row { width: 100%; }
+.settings-root .overlay-card .overlay-open-row { margin-top: 5px; border-top: 1px solid var(--border); padding-top: 8px; }
+.settings-root .overlay-settings-button { min-height: 30px; padding: 5px 10px; border-radius: 4px; font-size: 11px; }
+.settings-root .maintenance-descriptions { gap: 3px; }
+.settings-root .maintenance-descriptions p { margin: 0; font-size: 10px; line-height: 1.4; }
+.settings-root .maintenance-row { gap: 6px; margin-top: 8px; }
+.settings-root .maintenance-action { min-height: 30px; padding: 5px 10px; border-radius: 4px; font-size: 11px; }
+.settings-root .theme-options { gap: 5px; margin-top: 7px; }
+.settings-root .theme-option { min-height: 29px; padding: 4px 8px; border-radius: 4px; font-size: 10px; }
+.settings-root .theme-option .swatch-chip { width: 16px; height: 16px; }
+.settings-root .theme-option .swatch-chip::after { width: 6px; height: 6px; }
+.settings-root .settings-about-card { display: flex; flex-direction: column; justify-content: flex-start; }
+.settings-root .settings-about-card .card-body { margin-top: 4px; }
+.settings-root .settings-about-card .kv { min-height: 27px; align-items: center; }
+@media (max-width: 900px) {
+  .settings-preferences-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-root .settings-group .settings-memory-card { grid-column: auto; }
+  .settings-interface-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-maintenance-grid { grid-template-columns: minmax(0, 1.5fr) minmax(190px, .8fr); }
+}
+@media (max-width: 640px) {
+  .settings-preferences-grid,
+  .settings-interface-grid,
+  .settings-maintenance-grid { grid-template-columns: minmax(0, 1fr); }
+  .settings-root .settings-group .settings-memory-card { grid-column: auto; }
+}
+
+/* Overlay: simplify the hierarchy to behavior, appearance, telemetry, then
+   shortcuts. Remove the oversized hero and the nested card-on-card framing. */
+.overlay-settings-root { display: flex; width: 100%; max-width: none; flex-direction: column; gap: 10px; }
+.overlay-settings-hero { min-height: 0; padding: 8px 1px 10px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; box-shadow: none; }
+.overlay-settings-hero::after { display: none; }
+.overlay-section-kicker { display: none; }
+.overlay-hero-title { margin: 0 0 2px; font-size: 17px; letter-spacing: 0; }
+.overlay-hero-subtitle { font-size: 11px; }
+.overlay-hero-status { min-width: 0; padding: 5px 8px; border-radius: 4px; background: var(--bg-elev); }
+.overlay-settings-workspace { grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); align-items: start; gap: 10px; }
+.overlay-settings-root .settings-card { min-width: 0; padding: 12px 13px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-elev); box-shadow: none; }
+.overlay-card-heading { align-items: center; margin-bottom: 8px; }
+.overlay-card-heading .card-title { margin: 0; font-size: 13px; }
+.overlay-card-eyebrow { display: none; }
+.overlay-value-badge { padding: 3px 6px; border-radius: 4px; font-size: 9px; }
+.overlay-settings-root .settings-row { min-height: 32px; padding: 5px 0; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 75%, transparent); border-radius: 0; background: transparent; }
+.overlay-settings-root .settings-row:hover { border-color: var(--border); background: transparent; }
+.overlay-settings-root .settings-row:last-child { border-bottom: 0; }
+.overlay-renderer-row { grid-template-columns: 56px minmax(0, 1fr); gap: 8px; }
+.overlay-renderer-options { gap: 5px; }
+.overlay-renderer-option { min-height: 40px; padding: 6px 8px; border-radius: 4px; }
+.overlay-renderer-option.active { box-shadow: inset 2px 0 0 var(--accent); }
+.overlay-settings-root .overlay-stat-groups { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px 16px; }
+.overlay-settings-root .overlay-stat-group { min-width: 0; padding: 7px 0 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: transparent; }
+.overlay-settings-root .overlay-stat-group-heading { margin-bottom: 4px; }
+.overlay-settings-root .overlay-stat-group-title { font-size: 11px; }
+.overlay-settings-root .overlay-stat-group-note { margin-top: 2px; }
+.overlay-settings-root .overlay-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px 10px; }
+.overlay-telemetry-lanes .overlay-stat-toggle,
+.overlay-telemetry-lanes .overlay-stat-toggle:has(input:checked) { padding: 3px 0; border: 0; border-radius: 0; background: transparent; }
+.overlay-telemetry-lanes .overlay-stat-actions { justify-content: flex-end; margin: -2px 0 7px; }
+.overlay-settings-root .overlay-hotkey-card { width: 100%; }
+.overlay-settings-root .overlay-hotkey-card .overlay-card-description { margin: 0 0 8px; }
+.overlay-settings-root .overlay-hotkey-card .overlay-subsection-label { margin: 9px 0 3px; }
+.overlay-settings-root .overlay-hotkey-card .settings-row { justify-content: flex-start; gap: 12px; }
+.overlay-settings-root .overlay-hotkey-card .settings-row-label { flex: 0 0 95px; }
+.overlay-settings-root .overlay-hotkey-controls { flex-wrap: wrap; gap: 6px; }
+.overlay-settings-root .overlay-hotkey-none {
+  padding: 5px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-inset);
+  color: var(--text);
+  font: 700 10px var(--mono);
+  letter-spacing: .04em;
+  line-height: 1.6;
+}
+.overlay-settings-root .overlay-hotkey-none:not(:disabled):hover { border-color: var(--accent); }
+.overlay-settings-root .overlay-hotkey-card .settings-hotkey-input,
+.overlay-settings-root .overlay-hotkey-card .settings-position-select { margin-left: 0; }
+.overlay-settings-root .overlay-hotkey-divider { margin: 8px 0 4px; }
+@media (max-width: 760px) {
+  .overlay-settings-workspace { grid-template-columns: 1fr; }
+  .overlay-settings-root .overlay-stat-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 520px) {
+  .overlay-settings-hero { align-items: flex-start; flex-direction: column; }
+  .overlay-hero-status { width: auto; }
+  .overlay-settings-root .overlay-stat-groups,
+  .overlay-settings-root .overlay-stat-grid { grid-template-columns: 1fr; }
+}
+
+/* Profiles: use a dedicated mode-button class so legacy btn-ghost styles do
+   not leak into the shared Tuning Profile / Game Profile segmented switch. */
+.profiles-mode-toggle > .profile-mode-btn { appearance: none; -webkit-appearance: none; min-width: 112px; font-family: inherit; font-size: 11px; cursor: pointer; opacity: 1; }
+.profiles-mode-toggle > .profile-mode-btn:not(.active) { color: var(--text-muted); }
+.profiles-mode-toggle > .profile-mode-btn.active { background: var(--accent); color: var(--on-accent); }
+.profiles-mode-toggle > .profile-mode-btn:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 2px; }
+
+/* Graphics / Display: keep the shared title block tall enough for its title
+   and two-line description, and reset scroll when switching its sub-view. */
+.graphics-page-hero { display: flex; align-items: center; min-height: 76px; height: auto; box-sizing: border-box; overflow: visible; }
+.graphics-page-hero .arc-page-hero-copy { min-width: 0; flex: 1 1 auto; }
+.graphics-page-hero .page-title { display: block; line-height: 1.3; }
+
+/* Tuning: keep the clean footer action-only; surface status and Apply only
+   when the user has staged a change. */
+.tuning-control-surface .tuning-general-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 34px;
+  margin: 5px 0 0;
+  padding: 7px 0 2px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.tuning-control-surface .tuning-general-actions.is-clean { justify-content: flex-end; min-height: 28px; margin-top: 3px; padding: 0; border: 0; }
+.tuning-control-surface .tuning-general-actions.has-pending { padding-top: 8px; border-top: 1px solid var(--border); }
+.tuning-control-surface .tuning-pending-summary { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text-muted); font: 500 10px/1.3 var(--font); }
+.tuning-control-surface .tuning-pending-summary[hidden] { display: none; }
+.tuning-control-surface .tuning-pending-summary.has-pending::before { content: ''; width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--accent); }
+.tuning-control-surface .tuning-pending-summary.has-pending { color: var(--accent); }
+.tuning-control-surface .tuning-general-actions .btn { min-height: 27px; padding: 4px 9px; border-radius: 4px; }
+
+@media (max-width: 640px) {
+  .settings-root .settings-preferences-grid,
+  .settings-root .settings-interface-grid,
+  .settings-root .settings-maintenance-grid { grid-template-columns: minmax(0, 1fr); }
+  .settings-root .settings-group .settings-memory-card { grid-column: 1; }
+  .overlay-settings-workspace { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Tuning: give each control a quiet surface so its range, value, and status
+   read as one unit without bringing back heavy card framing. */
+.tuning-control-surface .oc-stack { gap: 7px; }
+.tuning-control-surface .oc-card {
+  padding-inline: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 52%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-elev) 44%, var(--bg));
+  transition: border-color .14s ease, background-color .14s ease;
+}
+.tuning-control-surface .oc-card:hover,
+.tuning-control-surface .oc-card:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 5%, color-mix(in srgb, var(--bg-elev) 44%, var(--bg)));
+}
+
+/* Keep the compact layouts while making the small supporting text readable. */
+.dashboard-retail-art-slot [hidden] { display: none; }
+.settings-root > .settings-page-hero .page-subtitle { font-size: 12px; }
+.settings-root .settings-group-heading h2 { font-size: 14px; }
+.settings-root .settings-group-heading p,
+.settings-root .settings-group-index { font-size: 11px; }
+.settings-root .settings-group .settings-card .card-title { font-size: 13px; }
+.settings-root .settings-group .settings-card .settings-row { font-size: 14px; }
+.settings-root .settings-group .boot-toggle { font-size: 14.5px; }
+.settings-root .settings-group .settings-card > .card-note,
+.settings-root .maintenance-descriptions p { font-size: 11px; }
+.settings-root .overlay-settings-button,
+.settings-root .maintenance-action,
+.settings-root .theme-option,
+.settings-root .kv-grid { font-size: 12px; }
+
+.tuning-page-hero .page-subtitle { font-size: 13px; }
+.tuning-page-hero + .arc-page-toolbar .oc-mode-btn { font-size: 12px; }
+.tuning-control-description { font-size: 11px; }
+.tuning-control-surface .oc-card .card-title { font-size: 13px; }
+.tuning-control-surface .oc-driver,
+.tuning-control-surface .oc-value-unit,
+.tuning-control-surface .oc-range { font-size: 11px; }
+.tuning-control-surface .oc-value-input { font-size: 12px; }
+.tuning-control-surface .tuning-diff,
+.tuning-control-surface .oc-card-actions .btn,
+.tuning-control-surface .tuning-pending-summary { font-size: 11px; }
+
+/* Tuning overview: one compact action/telemetry rail above the controls. */
+.tuning-quick-strip {
+  display: grid;
+  grid-template-columns: minmax(210px, .92fr) minmax(390px, 1.8fr) minmax(210px, auto);
+  gap: 9px;
+  align-items: stretch;
+  margin: 10px 0 12px;
+}
+.tuning-activate-panel,
+.tuning-telemetry-panel,
+.tuning-quick-actions {
+  min-width: 0;
+  min-height: 72px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-elev) 58%, var(--bg));
+}
+.tuning-activate-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 13px;
+}
+.tuning-activate-copy { display: grid; min-width: 0; gap: 3px; }
+.tuning-activate-kicker { color: var(--accent); font: 700 9px/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.tuning-activate-title { color: var(--text); font-size: 15px; font-weight: 650; line-height: 1.25; }
+.tuning-activate-panel .tuning-pending-summary { color: var(--text-muted); font-size: 10px; line-height: 1.25; }
+.tuning-activate-panel .tuning-pending-summary.has-pending { color: var(--accent); }
+.tuning-activate-button { flex: 0 0 auto; min-height: 34px; padding: 7px 12px; white-space: nowrap; }
+.tuning-activate-button:disabled { cursor: default; border-color: var(--border); background: var(--bg-inset); color: var(--text-muted); box-shadow: none; opacity: 1; }
+.tuning-activate-unavailable { color: var(--text-muted); font-size: 11px; }
+.tuning-telemetry-panel { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center; padding: 7px 4px; }
+.tuning-telemetry-metric { display: grid; min-width: 0; gap: 5px; padding: 2px 14px; }
+.tuning-telemetry-metric + .tuning-telemetry-metric { border-left: 1px solid var(--border); }
+.tuning-telemetry-label { overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.tuning-telemetry-value { color: var(--text); font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tuning-quick-actions { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 10px; }
+.tuning-open-fan-curve { min-height: 34px; padding-inline: 11px; white-space: nowrap; }
+.tuning-quick-actions .profile-tag-row { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.tuning-quick-actions .profile-tag-row .active-profile-tag { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tuning-quick-actions .profile-save-btn { min-height: 32px; padding: 6px 9px; white-space: nowrap; }
+
+/* The five supported scalar controls follow the sketch's two-column rhythm. */
+.tuning-control-surface .oc-stack {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 9px;
+  padding-top: 10px;
+}
+.tuning-control-surface .oc-card {
+  min-width: 0;
+  min-height: 78px;
+  grid-template-columns: minmax(104px, 26%) minmax(0, 1fr) 84px minmax(72px, 90px);
+  grid-template-rows: 22px 22px auto;
+  gap: 0 8px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-elev) 48%, var(--bg));
+}
+.tuning-control-surface .oc-card[data-control="powerLimitW"] { grid-column: 1 / -1; }
+.tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])) { grid-column: 1 / -1; }
+.tuning-control-surface .oc-card[hidden] { display: none; }
+.tuning-control-surface .oc-card:hover,
+.tuning-control-surface .oc-card:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  background: color-mix(in srgb, var(--accent) 4%, color-mix(in srgb, var(--bg-elev) 48%, var(--bg)));
+}
+.tuning-control-surface .oc-card .card-title { font-size: 13px; }
+.tuning-control-surface .tuning-control-heading { order: 1; }
+.tuning-control-surface .oc-stack { order: 2; }
+.tuning-control-surface .oc-driver,
+.tuning-control-surface .oc-value-unit,
+.tuning-control-surface .oc-range { font-size: 10px; }
+.tuning-control-surface .oc-value-input { width: 72px; }
+.tuning-control-surface .oc-slider { height: 28px; }
+.tuning-control-surface .oc-card-actions { top: 29px; right: 8px; }
+.tuning-control-surface .oc-card-actions .btn { border-radius: 4px; font-size: 9px; }
+.tuning-control-surface .oc-freq-mode-row { grid-row: 3; margin: 3px 0; }
+.tuning-control-surface .oc-card:has(.oc-freq-mode-row) .oc-range { grid-row: 4; }
+.tuning-control-surface .oc-card:has(.oc-vf-mode-toggle):not(:has(.oc-lock-mode-toggle)) .oc-freq-mode-row {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: start;
+  align-self: center;
+  margin: 0;
+}
+.tuning-control-surface .oc-card:has(.oc-vf-mode-toggle):not(:has(.oc-lock-mode-toggle)) .oc-range { grid-row: 3; }
+.tuning-control-surface .oc-card:has(.oc-vf-mode-toggle):not(:has(.oc-lock-mode-toggle)) .oc-vf-mode-toggle .oc-mode-btn { min-height: 24px; padding: 3px 8px; font-size: 10px; }
+.tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])) .vf-curve-editor { grid-row: 4; }
+.tuning-control-surface .tuning-general-actions {
+  order: 4;
+  display: flex;
+  min-height: 0;
+  justify-content: flex-end;
+  margin-top: 8px;
+  padding: 7px 0 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+}
+
+/* A read-only preview of the same fan table edited by the Fan Curve view. */
+.tuning-fan-preview-host { order: 3; min-width: 0; margin-top: 10px; }
+.tuning-fan-preview {
+  padding: 12px 14px 9px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-elev) 48%, var(--bg));
+}
+.tuning-fan-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 5px; }
+.tuning-fan-preview-head .card-title { margin: 0; font-size: 14px; }
+.tuning-fan-preview-note { margin: 3px 0 0; color: var(--text-muted); font-size: 10px; }
+.tuning-fan-preview-points { color: var(--text-muted); font: 10px var(--mono); }
+.tuning-fan-plot-layout { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 8px; align-items: stretch; }
+.tuning-fan-y-ticks { display: flex; flex-direction: column; justify-content: space-between; padding: 4px 0 25px; color: var(--text-muted); font: 9px/1 var(--mono); text-align: right; }
+.tuning-fan-plot { position: relative; min-width: 0; }
+.tuning-fan-preview-svg { display: block; width: 100%; height: clamp(135px, 18vh, 190px); overflow: visible; }
+.tuning-fan-preview-bg { fill: color-mix(in srgb, var(--bg-inset) 56%, var(--bg)); stroke: var(--border); stroke-width: .5; }
+.tuning-fan-preview-grid { stroke: color-mix(in srgb, var(--text-muted) 28%, transparent); stroke-width: .35; vector-effect: non-scaling-stroke; }
+.tuning-fan-preview-line { fill: none; stroke: var(--accent); stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.tuning-fan-points-overlay { position: absolute; inset: 0 0 auto; height: clamp(135px, 18vh, 190px); pointer-events: none; }
+.tuning-fan-preview-point { position: absolute; width: 10px; height: 10px; border: 2px solid var(--accent); border-radius: 50%; background: var(--bg); transform: translate(-50%, -50%); }
+.tuning-fan-x-ticks { display: flex; justify-content: space-between; gap: 4px; padding-top: 6px; color: var(--text-muted); font: 9px/1 var(--mono); }
+.tuning-fan-axis-caption { display: flex; justify-content: space-between; margin: 5px 0 0 42px; color: var(--text-muted); font-size: 9px; }
+.tuning-fan-empty { margin: 12px 0 4px; color: var(--text-muted); font-size: 11px; }
+
+@media (max-width: 1050px) {
+  .tuning-quick-strip { grid-template-columns: minmax(205px, 1fr) minmax(330px, 1.6fr); }
+  .tuning-quick-actions { grid-column: 1 / -1; justify-content: flex-end; min-height: 48px; }
+}
+@media (max-width: 900px) {
+  .tuning-control-surface .oc-stack { grid-template-columns: minmax(0, 1fr); }
+  .tuning-control-surface .oc-card[data-control="powerLimitW"] { grid-column: auto; }
+}
+@media (max-width: 640px) {
+  .tuning-quick-strip { grid-template-columns: minmax(0, 1fr); }
+  .tuning-telemetry-panel { min-height: 64px; }
+  .tuning-quick-actions { grid-column: auto; justify-content: flex-start; flex-wrap: wrap; }
+  .tuning-control-surface .oc-card { grid-template-columns: minmax(92px, 28%) minmax(0, 1fr) 76px; gap: 0 6px; }
+  .tuning-control-surface .tuning-diff { display: none; }
+  .tuning-control-surface .oc-card[data-control="powerLimitW"] { grid-column: auto; }
+  .tuning-fan-preview { padding-inline: 10px; }
+}
+
+/* Tuning consolidation: one surface with live telemetry, inline fan tools,
+   and action rows below each slider so controls never collide. */
+.tuning-telemetry-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-width: 0;
+  margin: 0 0 2px;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bg-elev) 44%, var(--bg));
+}
+.tuning-telemetry-strip .tuning-telemetry-metric { gap: 2px; padding: 5px 12px; }
+.tuning-telemetry-strip .tuning-telemetry-metric + .tuning-telemetry-metric { border-left: 1px solid var(--border); }
+.tuning-telemetry-strip .tuning-telemetry-label { font-size: 10px; }
+.tuning-telemetry-strip .tuning-telemetry-value { font-size: 14px; }
+
+.tuning-control-surface { display: flex; flex-direction: column; gap: 0; }
+.tuning-control-surface .oc-stack {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 8px;
+  padding-top: 9px;
+}
+.tuning-control-surface .oc-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(120px, 23%) minmax(90px, 1fr) 82px minmax(72px, 102px);
+  grid-template-rows: 21px 28px 16px 25px;
+  align-items: center;
+  gap: 2px 10px;
+  min-width: 0;
+  min-height: 0;
+  padding: 9px 11px 7px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-elev) 48%, var(--bg));
+}
+.tuning-control-surface .oc-card[data-control="powerLimitW"] { grid-column: 1 / -1; }
+.tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])) { grid-column: 1 / -1; }
+.tuning-control-surface .oc-card[hidden] { display: none; }
+.tuning-control-surface .oc-card-head,
+.tuning-control-surface .oc-card-head-meta,
+.tuning-control-surface .oc-slider-row,
+.tuning-control-surface .oc-meta { display: contents; }
+.tuning-control-surface .oc-slider-row[hidden],
+.tuning-control-surface .oc-meta[hidden] { display: none; }
+.tuning-control-surface .oc-card .card-title { grid-column: 1; grid-row: 1; margin: 0; font-size: 13px; }
+.tuning-control-surface .oc-driver { grid-column: 1; grid-row: 2; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.tuning-control-surface .tuning-diff { grid-column: 4; grid-row: 1; justify-self: end; font-size: 9px; }
+.tuning-control-surface .oc-slider { grid-column: 2; grid-row: 1 / span 2; min-width: 0; height: 27px; }
+.tuning-control-surface .oc-value-field { grid-column: 3; grid-row: 1 / span 2; width: 100%; justify-content: flex-end; gap: 4px; }
+.tuning-control-surface .oc-value-input { width: 72px; min-height: 27px; padding: 3px 5px; border-radius: 4px; font-size: 11px; }
+.tuning-control-surface .oc-value-unit { min-width: 18px; font-size: 10px; }
+.tuning-control-surface .oc-range { grid-column: 1 / -1; grid-row: 3; justify-self: start; align-self: center; color: var(--text-muted); font: 10px/1.2 var(--mono); white-space: normal; }
+.tuning-control-surface .oc-meta > :not(.oc-range) { grid-column: 1 / -1; }
+.tuning-control-surface .oc-freq-mode-row { grid-column: 2; grid-row: 1; justify-self: start; align-self: center; margin: 0; }
+.tuning-control-surface .oc-freq-mode-row .oc-mode-btn { min-height: 23px; padding: 3px 8px; font-size: 10px; }
+.tuning-control-surface .oc-card:has(.oc-freq-mode-row) .oc-slider { grid-row: 2; }
+.tuning-control-surface .oc-card:has(.oc-freq-mode-row) .oc-value-field { grid-row: 2; }
+.tuning-control-surface .oc-card:has(.oc-freq-mode-row) .oc-range { grid-row: 3; }
+.tuning-control-surface .oc-card-actions {
+  position: static;
+  grid-column: 1 / -1;
+  grid-row: 4;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  padding: 3px 0 0;
+  border: 0;
+  opacity: 1;
+  pointer-events: auto;
+}
+.tuning-control-surface .oc-card-actions .btn { min-height: 22px; padding: 2px 7px; border-radius: 4px; font-size: 9px; white-space: nowrap; }
+.tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])) {
+  grid-template-rows: 24px auto 26px;
+  align-items: start;
+}
+.tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])) .oc-freq-mode-row { grid-column: 2; grid-row: 1; }
+.tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])) .vf-curve-editor { grid-column: 1 / -1; grid-row: 2; min-width: 0; margin: 0; padding: 10px 0 0; border: 0; background: transparent; }
+.tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])) .oc-card-actions { grid-row: 3; align-self: end; }
+.tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])) .tuning-diff { display: none; }
+.tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])) .card-title { align-self: center; }
+/* The lock editor is far taller than the compact card's fixed ~16px meta row.
+   Give it an auto-height row and push the actions below it, otherwise the red
+   warning and the two field labels collide with the card heading. */
+.tuning-control-surface .oc-card:has(.gpu-lock-editor:not([hidden])) {
+  grid-column: 1 / -1;
+  grid-template-rows: 21px 28px 24px auto auto;
+  align-items: start;
+}
+.tuning-control-surface .oc-card:has(.gpu-lock-editor:not([hidden])) .oc-freq-mode-row { grid-column: 2; grid-row: 3; }
+.tuning-control-surface .oc-card:has(.gpu-lock-editor:not([hidden])) .oc-range { grid-column: 3 / -1; grid-row: 3; justify-self: end; }
+.tuning-control-surface .oc-card:has(.gpu-lock-editor:not([hidden])) .gpu-lock-editor {
+  grid-column: 1 / -1; grid-row: 4; min-width: 0;
+  margin-top: 4px; padding: 8px 0 0; border: 0; background: transparent;
+}
+.tuning-control-surface .oc-card:has(.gpu-lock-editor:not([hidden])) .oc-card-actions { grid-row: 5; }
+.tuning-control-surface .oc-card:has(.gpu-lock-editor:not([hidden])) .tuning-diff { display: none; }
+.tuning-control-surface .gpu-lock-warning { font-size: 11px; line-height: 1.35; margin: 0 0 6px; }
+.tuning-control-surface .gpu-lock-fields { gap: 8px; margin: 6px 0; }
+.tuning-control-surface .gpu-lock-field input { width: 100%; max-width: 120px; }
+.tuning-control-surface .tuning-general-actions { order: 5; margin-top: 12px; padding-top: 10px; }
+
+/* The interactive fan curve sits under the scalar controls in the same
+   Tuning surface. The sleep fix is a quiet inline setting within that card. */
+.tuning-fan-editor-host { order: 4; min-width: 0; margin-top: 11px; }
+.tuning-control-surface .fan-card {
+  width: 100%;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-elev) 48%, var(--bg));
+}
+.tuning-control-surface .fan-body { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 9px 14px; }
+.tuning-control-surface .fan-mode-toggle { margin: 0; padding: 0 0 8px; border-bottom: 1px solid var(--border); }
+.tuning-control-surface .fan-mode-toggle .chip { min-height: 26px; padding: 4px 10px; border-radius: 4px; }
+.tuning-control-surface .fan-stage { grid-column: 1 / -1; min-height: 220px; height: clamp(220px, 30vh, 300px); border-radius: 5px; }
+.tuning-control-surface .fan-curve-help { grid-column: 1 / -1; margin: 0; font-size: 10px; }
+.tuning-control-surface .fan-presets { margin-top: 0; }
+.tuning-control-surface .fan-apply-row { margin-top: 0; }
+.tuning-control-surface .fan-apply-row .btn { min-height: 30px; }
+.fan-resume-inline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px 14px;
+  margin: 0 0 10px;
+  padding: 2px 1px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.fan-resume-inline .arc-sleep-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0; }
+.fan-resume-inline .card-title { margin: 0; font-size: 13px; }
+.fan-resume-inline .card-note { margin: 3px 0 0; line-height: 1.4; }
+.fan-resume-inline > .card-note { grid-column: 1 / -1; max-width: 940px; font-size: 10px; }
+.fan-resume-inline .arc-sleep-toggle { grid-column: 2; grid-row: 1; }
+
+/* Both curve editors share a restrained plot surface, cyan path and round
+   handles. Existing hover and point-edit behavior stays enabled. */
+.tuning-control-surface .vf-curve-stage {
+  display: flex;
+  height: clamp(220px, 30vh, 300px);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.tuning-control-surface .vf-curve-plot-host { order: 1; flex: 1 1 auto; min-width: 0; min-height: 0; }
+.tuning-control-surface .vf-curve-y-axis {
+  position: relative;
+  inset: auto;
+  order: 2;
+  flex: 0 0 54px;
+  padding: 8px 8px 8px 7px;
+  border-left: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elev) 55%, var(--bg));
+  font-size: 10px;
+}
+.tuning-control-surface .vf-curve-plot { fill: color-mix(in srgb, var(--bg-inset) 90%, var(--accent)); }
+.tuning-control-surface .vf-curve-grid { stroke: color-mix(in srgb, var(--text-muted) 25%, transparent); stroke-width: .45; }
+.tuning-control-surface .vf-curve-grid-edge { stroke: color-mix(in srgb, var(--text-muted) 38%, transparent); stroke-width: .55; }
+.tuning-control-surface .vf-curve-line { stroke-width: .65; }
+.tuning-control-surface .vf-curve-dot { width: 13px; height: 13px; background: var(--bg); }
+.tuning-control-surface .vf-curve-dot-selected { background: var(--text); }
+.tuning-control-surface .vf-curve-readout { padding: 5px 8px; border-radius: 5px; background: var(--bg-elev); border-color: var(--border-strong); box-shadow: 0 4px 14px rgba(0, 0, 0, .24); }
+.tuning-control-surface .vf-curve-readout-input { border-radius: 4px; }
+.tuning-control-surface .vf-curve-axis { padding-top: 6px; font-size: 10px; }
+.tuning-control-surface .vf-curve-help { margin: 0 0 7px; line-height: 1.45; }
+.tuning-control-surface .vf-curve-point-count { margin: 0 0 5px; }
+.tuning-control-surface .vf-curve-actions { margin-top: 7px; }
+.tuning-control-surface .vf-curve-status { margin: 7px 0 0; }
+
+@media (max-width: 900px) {
+  .tuning-control-surface .oc-stack { grid-template-columns: minmax(0, 1fr); }
+  .tuning-control-surface .oc-card[data-control="powerLimitW"] { grid-column: auto; }
+}
+@media (max-width: 760px) {
+  .tuning-control-surface .oc-card { grid-template-columns: minmax(105px, 24%) minmax(0, 1fr) 80px; gap: 2px 8px; }
+  .tuning-control-surface .tuning-diff { display: none; }
+  .tuning-control-surface .oc-range { grid-column: 1 / -1; }
+  .tuning-control-surface .oc-card:has(.oc-freq-mode-row) .oc-freq-mode-row { grid-column: 2; }
+  .tuning-control-surface .vf-curve-actions { flex-wrap: wrap; }
+  .tuning-control-surface .fan-stage { min-height: 205px; height: 26vh; }
+}
+@media (max-width: 520px) {
+  .tuning-telemetry-strip { padding-inline: 2px; }
+  .tuning-telemetry-strip .tuning-telemetry-metric { padding-inline: 7px; }
+  .tuning-telemetry-strip .tuning-telemetry-value { font-size: 12px; }
+  .tuning-control-surface .oc-card { grid-template-columns: minmax(86px, 29%) minmax(0, 1fr) 70px; grid-template-rows: 20px 28px 18px 25px; padding-inline: 8px; }
+  .tuning-control-surface .oc-value-input { width: 58px; }
+  .tuning-control-surface .oc-card:has(.oc-freq-mode-row) .oc-freq-mode-row { grid-column: 1 / -1; grid-row: 3; }
+  .tuning-control-surface .oc-card:has(.oc-freq-mode-row) .oc-range { grid-row: 4; }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])) { grid-template-rows: 24px auto 28px; }
+  .fan-resume-inline { gap: 3px 8px; }
+  .tuning-control-surface .fan-card { padding: 10px; }
+}
+
+/* Keep Power Limit's value field on the same alignment as the other cards,
+   while leaving its slider a longer inline track. */
+.tuning-control-surface .oc-card[data-control="powerLimitW"] {
+  grid-template-columns: minmax(120px, 11%) minmax(0, 1fr) 102px minmax(72px, 102px);
+  grid-template-rows: 21px 28px 16px 25px;
+}
+.tuning-control-surface .oc-card[data-control="powerLimitW"] .tuning-diff { grid-column: 4; grid-row: 1; }
+.tuning-control-surface .oc-card[data-control="powerLimitW"] .oc-driver { grid-column: 1; grid-row: 2; }
+.tuning-control-surface .oc-card[data-control="powerLimitW"] .oc-slider { grid-column: 2; grid-row: 1 / span 2; width: 100%; }
+.tuning-control-surface .oc-card[data-control="powerLimitW"] .oc-value-field { grid-column: 3; grid-row: 1 / span 2; }
+.tuning-control-surface .oc-card[data-control="powerLimitW"] .oc-range { grid-column: 1 / -1; grid-row: 3; }
+.tuning-control-surface .oc-card[data-control="powerLimitW"] .oc-card-actions { grid-column: 1 / -1; grid-row: 4; }
+
+/* A fixed unit slot keeps the numeric boxes on one vertical line despite
+   different labels such as MHz, W, mV and °C. */
+.tuning-control-surface .oc-value-field { display: inline-grid; grid-template-columns: 72px 26px; justify-content: end; gap: 4px; }
+.tuning-control-surface .oc-value-unit { width: 26px; min-width: 26px; text-align: left; }
+@media (max-width: 760px) {
+  .tuning-control-surface .oc-card[data-control="powerLimitW"] {
+    grid-template-columns: minmax(105px, 22%) minmax(0, 1fr) 94px;
+  }
+  .tuning-control-surface .oc-card[data-control="powerLimitW"] .tuning-diff { display: none; }
+  .tuning-control-surface .oc-card[data-control="powerLimitW"] .oc-value-field { grid-column: 3; }
+}
+@media (max-width: 520px) {
+  .tuning-control-surface .oc-card[data-control="powerLimitW"] {
+    grid-template-columns: minmax(86px, 27%) minmax(0, 1fr) 88px;
+  }
+  .tuning-control-surface .oc-value-field { grid-template-columns: 58px 26px; }
+}
+
+/* Align every tuning value field to a dedicated column wide enough for its
+   numeric input, unit slot and gap. This keeps the slider track separate. */
+.tuning-control-surface .oc-card:not([data-control="powerLimitW"]) {
+  grid-template-columns: minmax(120px, 23%) minmax(0, 1fr) 102px minmax(72px, 102px);
+}
+@media (max-width: 1000px) {
+  .tuning-control-surface .oc-card:not([data-control="powerLimitW"]) {
+    grid-template-columns: minmax(105px, 22%) minmax(0, 1fr) 94px minmax(72px, 94px);
+  }
+}
+@media (max-width: 760px) {
+  .tuning-control-surface .oc-card:not([data-control="powerLimitW"]) {
+    grid-template-columns: minmax(105px, 24%) minmax(0, 1fr) 94px;
+  }
+  .tuning-control-surface .oc-value-field { grid-template-columns: 64px 26px; }
+}
+@media (max-width: 520px) {
+  .tuning-control-surface .oc-card:not([data-control="powerLimitW"]) {
+    grid-template-columns: minmax(86px, 27%) minmax(0, 1fr) 88px;
+  }
+  .tuning-control-surface .oc-value-field { grid-template-columns: 58px 26px; }
+}
+
+/* At half-window widths the Core Clock mode switch needs a full row of its
+   own. Keeping it there prevents the long VF label from wrapping over the
+   slider, value field, or per-card actions. */
+@media (max-width: 760px) {
+  .tuning-control-surface .oc-card:has(.oc-freq-mode-row) {
+    grid-template-rows: 22px 28px 26px 16px 25px;
+  }
+  .tuning-control-surface .oc-card:has(.oc-freq-mode-row) .oc-freq-mode-row {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    justify-self: start;
+    max-width: 100%;
+  }
+  .tuning-control-surface .oc-card:has(.oc-vf-mode-toggle) .oc-vf-mode-toggle { flex-wrap: nowrap; }
+  .tuning-control-surface .oc-card:has(.oc-vf-mode-toggle) .oc-mode-btn { white-space: nowrap; }
+  .tuning-control-surface .oc-card:has(.oc-freq-mode-row) .oc-range { grid-column: 1 / -1; grid-row: 4; }
+  .tuning-control-surface .oc-card:has(.oc-freq-mode-row) .oc-card-actions { grid-column: 1 / -1; grid-row: 5; }
+  .tuning-control-surface .oc-card:has(.gpu-lock-editor:not([hidden])) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 22px 28px 24px auto auto 25px;
+  }
+  .tuning-control-surface .oc-card:has(.gpu-lock-editor:not([hidden])) .oc-freq-mode-row { grid-column: 1; grid-row: 3; }
+  .tuning-control-surface .oc-card:has(.gpu-lock-editor:not([hidden])) .oc-range { grid-column: 1; grid-row: 4; }
+  .tuning-control-surface .oc-card:has(.gpu-lock-editor:not([hidden])) .gpu-lock-editor { grid-row: 5; }
+  .tuning-control-surface .oc-card:has(.gpu-lock-editor:not([hidden])) .oc-card-actions { grid-row: 6; }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 22px 18px 26px auto 16px 25px;
+  }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) .card-title { grid-column: 1; grid-row: 1; }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) .oc-driver { grid-column: 1; grid-row: 2; }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) .oc-freq-mode-row { grid-column: 1; grid-row: 3; }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) .vf-curve-editor { grid-column: 1; grid-row: 4; }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) .oc-range { grid-column: 1; grid-row: 5; }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) .oc-card-actions { grid-column: 1; grid-row: 6; }
+}
+
+/* Adapt the Core Clock mode switch to the tuning surface width. When the
+   card stack is compact, let the switch span both free header columns. This
+   keeps it beside the title without adding a row or crowding the slider. */
+.tuning-control-surface .oc-stack { container-type: inline-size; }
+@container (max-width: 1500px) {
+  .tuning-control-surface .oc-card:has(.oc-vf-mode-toggle) {
+    grid-template-rows: 21px 28px 16px 25px;
+    row-gap: 2px;
+  }
+  .tuning-control-surface .oc-card:has(.oc-vf-mode-toggle):not(:has(.oc-lock-mode-toggle)) .oc-freq-mode-row {
+    grid-column: 2 / 4;
+    grid-row: 1;
+    justify-self: start;
+    max-width: 100%;
+  }
+  .tuning-control-surface .oc-card:has(.oc-vf-mode-toggle) .oc-vf-mode-toggle { flex-wrap: nowrap; }
+  .tuning-control-surface .oc-card:has(.oc-vf-mode-toggle) .oc-vf-mode-btn { white-space: nowrap; }
+  .tuning-control-surface .oc-card:has(.oc-vf-mode-toggle) .oc-range { grid-column: 1 / -1; grid-row: 3; }
+  .tuning-control-surface .oc-card:has(.oc-vf-mode-toggle) .oc-card-actions { grid-column: 1 / -1; grid-row: 4; }
+  /* The expanded-card rules earlier in this file place the mode switch at
+     row 1. Repeat the full layout here with higher specificity so the
+     narrow-surface query also separates the switch from the curve editor. */
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 22px 18px 26px auto 16px 25px;
+    row-gap: 6px;
+    align-items: start;
+  }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) .card-title { grid-column: 1; grid-row: 1; align-self: center; }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) .oc-driver { grid-column: 1; grid-row: 2; }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) .oc-freq-mode-row { grid-column: 1; grid-row: 3; }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) .vf-curve-editor { grid-column: 1; grid-row: 4; min-width: 0; }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) .oc-range { grid-column: 1; grid-row: 5; }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) .oc-card-actions { grid-column: 1; grid-row: 6; align-self: end; }
+  .tuning-control-surface .oc-card:has(.vf-curve-editor:not([hidden])):has(.oc-vf-mode-toggle) .tuning-diff { display: none; }
+}
+@media (max-width: 760px) {
+  .tuning-control-surface .oc-card:has(.oc-vf-mode-toggle) {
+    grid-template-rows: 22px 28px 26px 16px 25px;
+    row-gap: 6px;
+  }
+  .tuning-control-surface .oc-card:has(.oc-vf-mode-toggle):not(:has(.oc-lock-mode-toggle)) .oc-freq-mode-row {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+  .tuning-control-surface .oc-card:has(.oc-vf-mode-toggle) .oc-range { grid-row: 4; }
+  .tuning-control-surface .oc-card:has(.oc-vf-mode-toggle) .oc-card-actions { grid-row: 5; }
+}
+
+/* Restore the soft GPU halo behind the retained retail artwork in Dashboard. */
+.dashboard-pulse-visual::before {
+  display: block;
+  top: -8px;
+  left: 5%;
+  width: 90%;
+  height: 190px;
+  background: radial-gradient(ellipse at center, color-mix(in srgb, var(--accent) 16%, transparent) 0%, color-mix(in srgb, var(--accent) 5.5%, transparent) 48%, transparent 78%);
+  filter: blur(9px);
+}
+.dashboard-pulse-visual {
+  /* The art slot contains only an absolute image after its fallback SVG is
+     hidden, so an implicit auto track has no intrinsic width and collapses. */
+  grid-template-columns: minmax(0, 1fr);
+}
+.dashboard-retail-art-slot {
+  width: 100%;
+  background: radial-gradient(ellipse at 50% 54%, color-mix(in srgb, var(--accent) 16%, transparent), color-mix(in srgb, var(--accent) 5%, transparent) 56%, transparent 80%);
+}
+
+/* Dashboard Live Monitoring: the normalized GPU name is a caption underneath
+   the retail artwork, and the halo is a backlight centred on that artwork. The
+   visual column is a centred two-row group (art, then caption) so a column
+   stretched by the metrics grid never leaves a lit dead band above the card,
+   and the artwork itself keeps its size. */
+.dashboard-pulse-visual {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-content: center;
+}
+.dashboard-pulse-visual > .dashboard-retail-art-slot {
+  grid-column: 1;
+  grid-row: 1;
+}
+.dashboard-pulse-visual > .dashboard-pulse-gpu-name {
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: center;
+  z-index: 2;
+  max-width: 100%;
+  margin: 8px 0 0;
+  padding: 0 4px;
+  overflow: hidden;
+  color: var(--text);
+  /* Title scale of the card (`--font-display`, 16px/600 headings), one step
+     heavier and sized off the lane container so the squeeze between the compact
+     breakpoint and the full two-column layout cannot ellipsize the name. */
+  font-family: var(--font-display);
+  font-size: clamp(12px, 2.7cqw, 16px);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -.01em;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(2, 7, 13, .9), 0 0 16px rgba(2, 7, 13, .55);
+}
+[data-theme="light"] .dashboard-pulse-gpu-name {
+  color: var(--text);
+  text-shadow: none;
+}
+/* The single-column HUD gives the caption the full card width, so the lane-based
+   clamp above would shrink it needlessly; keep the title size here. */
+@container (max-width: 430px) {
+  .dashboard-pulse-visual > .dashboard-pulse-gpu-name { font-size: clamp(15px, 4cqw, 16px); }
+}
+/* Backlight: the halo is re-centred on the artwork instead of sitting in the
+   empty band above it. The group is vertically centred, so the art's centre is
+   exactly half the (caption + gap) block above the column's centre. The ellipse
+   is sized to fade out before it reaches the caption row. */
+.dashboard-pulse-visual::before {
+  display: block;
+  top: 50%;
+  left: 50%;
+  width: 94%;
+  height: 300px;
+  transform: translate(-50%, calc(-50% - 14px));
+  background: radial-gradient(ellipse at center, color-mix(in srgb, var(--accent) 22%, transparent) 0%, color-mix(in srgb, var(--accent) 8%, transparent) 52%, transparent 82%);
+  filter: blur(9px);
+}
+
+/* Keep video encoding controls and inventory legible as the Recording panel
+   narrows inside the app window. */
+.recording-quality-panel .recording-settings-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr));
+}
+.recording-quality-panel .recording-encoder-row {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.recording-quality-panel .recording-encoder-codecs {
+  white-space: normal;
+  text-align: right;
+}
+
+/* The clip editor keeps its five controls aligned at desktop width and exposes
+   export progress and failure details below the timeline. */
+.recording-editor-ascent .recording-editor-header {
+  grid-template-columns: minmax(160px, 1fr) auto auto minmax(148px, 190px) auto;
+}
+.recording-editor-ascent .recording-editor-gif-options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px 12px;
+  min-height: 38px;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+}
+.recording-editor-ascent .recording-editor-gif-options .recording-editor-secondary-label {
+  flex: 1 1 180px;
+}
+.recording-editor-ascent .recording-editor-gif-options label {
+  gap: 6px;
+  white-space: nowrap;
+}
+.recording-editor-ascent .recording-editor-number {
+  width: 72px;
+  min-height: 30px;
+  padding: 5px 7px;
+}
+.recording-editor-output-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 31px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 66%, transparent);
+}
+.recording-editor-output-status .recording-editor-status {
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.recording-editor-output-status .recording-editor-status[data-state="ready"] { color: var(--success); }
+.recording-editor-output-status .recording-editor-status[data-state="error"] { color: var(--danger); }
+.recording-editor-output-status .recording-editor-status[data-state="cancelled"] { color: var(--warn); }
+.recording-editor-output-status .recording-editor-progress {
+  flex: 0 1 220px;
+  width: min(220px, 100%);
+  height: 8px;
+  accent-color: #38c5ff;
+}
+.recording-editor-output-status .recording-editor-progress[hidden] { display: none; }
+
+@media (max-width: 900px) {
+  .recording-editor-ascent .recording-editor-header { grid-template-columns: minmax(140px, 1fr) auto auto; }
+}
+@media (max-width: 620px) {
+  .recording-editor-ascent .recording-editor-header { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .recording-editor-ascent .recording-editor-clip-name,
+  .recording-editor-ascent .recording-editor-audio-field { grid-column: 1 / -1; }
+  .recording-editor-timeline-actions { margin-left: 0; }
+  .recording-editor-output-status .recording-editor-progress { flex-basis: 100%; }
 }

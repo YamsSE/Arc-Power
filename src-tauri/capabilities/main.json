@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Local Arc Power main frontend event subscription only. Application commands also authenticate the native webview identity and origin.",
+  "windows": ["main", "overlay-*", "advanced-overlay-*", "recording-toast-*", "recording-status-pill-*", "splash-*"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

@@ -73,6 +73,12 @@ export function buildAscentCommand(command, identifier, recorderType = ASCENT_RE
   return { ...fields, cmd: command, identifier, recorder_type: recorderType };
 }
 
+export function serializeAscentCommand(payload) {
+  const serialized = JSON.stringify(payload);
+  if (Buffer.byteLength(serialized, 'utf8') > ASCENT_MAX_MESSAGE_BYTES) throw new Error('Ascent command exceeded its 8096-byte safety bound');
+  return `${serialized}\n`;
+}
+
 function positiveDimension(value) {
   const dimension = Number(value);
   return Number.isFinite(dimension) && dimension > 0 ? Math.max(2, Math.round(dimension)) : null;
@@ -811,8 +817,7 @@ export function createAscentEngine({ runtimeResolver = resolveAscentRuntime, spa
   }
 
   function enqueue(payload) {
-    const serialized = JSON.stringify(payload);
-    if (Buffer.byteLength(serialized, 'utf8') > ASCENT_MAX_MESSAGE_BYTES) throw new Error('Ascent command exceeded its 8096-byte safety bound');
+    const serialized = serializeAscentCommand(payload);
     return new Promise((resolve, reject) => {
       writeQueue.push({ serialized, resolve, reject });
       void drain();

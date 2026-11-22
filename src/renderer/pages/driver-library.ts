@@ -10,6 +10,7 @@ import { renderIntelDriverChangelog } from '../components/intel-driver-changelog
 type DriverLibraryApi = {
   intelDriverLibrary(kind: IntelDriverKind): Promise<{ versions: string[]; partial: boolean }>;
   intelDriverRelease(kind: IntelDriverKind, version: string): Promise<IntelDriverRelease>;
+  openIntelDriverDownloadPage(kind: IntelDriverKind, version?: string): Promise<void>;
   intelDriverDownloadStatus(kind: IntelDriverKind, version: string): Promise<{ downloaded: boolean; sizeBytes: number | null }>;
   intelDriverDownloadDelete(kind: IntelDriverKind, version: string): Promise<{ deleted: true }>;
 };
@@ -51,6 +52,7 @@ export const driverLibraryPage: Page = {
     let detailsError = false;
     const releaseCache = new Map<string, IntelDriverRelease>();
     let catalogError = false;
+    let catalogOpenError = false;
     let catalogPartial = false;
     let catalogLoading = true;
     let searchQuery = '';
@@ -65,7 +67,7 @@ export const driverLibraryPage: Page = {
 
     const selectedDeviceKind = (): IntelDriverKind | null => {
       const device = selectedDevice();
-      return device ? intelDriverKind(device.gpuVendor, device.name) : null;
+      return device ? intelDriverKind(device.gpuVendor, device.name, device.pciVendorId) : null;
     };
 
     const selectedInstalledVersion = (): string => {
@@ -109,6 +111,15 @@ export const driverLibraryPage: Page = {
         if (!root.isConnected || request !== requestId || selectedVersion !== version) return;
         if (!release || release.version !== version) throw new Error('Intel returned unexpected release details');
         releaseCache.set(version, release);
+        // The catalog is bounded to the versions Intel currently exposes, but a
+        // long-lived session can still cycle through many releases. Keep only
+        // the most recently viewed ones so the cache cannot grow without limit.
+        const RELEASE_CACHE_LIMIT = 64;
+        while (releaseCache.size > RELEASE_CACHE_LIMIT) {
+          const oldest = releaseCache.keys().next().value as string | undefined;
+          if (oldest === undefined || oldest === version) break;
+          releaseCache.delete(oldest);
+        }
         selected = release;
         detailsLoading = false;
         render();
@@ -261,7 +272,23 @@ export const driverLibraryPage: Page = {
         search.setSelectionRange(caret, caret);
       }
       if (catalogError) {
-        versionScroller.append(el('p', { class: 'driver-library-empty text-error', text: 'Intel’s driver catalog is unavailable. Check your connection and reopen Driver Library to try again.' }));
+        versionScroller.append(
+          el('p', { class: 'driver-library-empty text-error', text: 'Arc Power could not load Intel’s release catalog. Try again later, check your connection or proxy, or open Intel’s official download page.' }),
+          el('button', {
+            class: 'btn btn-ghost btn-sm driver-library-open-official', type: 'button', text: 'Open Intel download page',
+            onClick: () => {
+              if (!kind) return;
+              void libraryApi.openIntelDriverDownloadPage(kind).catch(() => {
+                if (!root.isConnected) return;
+                catalogOpenError = true;
+                render();
+              });
+            },
+          }),
+        );
+        if (catalogOpenError) {
+          versionScroller.append(el('p', { class: 'driver-library-empty text-error', role: 'status', text: 'Could not open Intel’s page automatically. Open Intel’s official download page in your browser.' }));
+        }
         details.append(el('p', { class: 'driver-library-empty', text: 'Release details are unavailable.' }));
         return;
       }
@@ -316,7 +343,7 @@ export const driverLibraryPage: Page = {
     const selectedId = driverLibraryDeviceId(state.devices, state.deviceId, window.location.hash);
     const currentKind = (() => {
       const device = state.devices.find((item) => item.id === selectedId);
-      return device ? intelDriverKind(device.gpuVendor, device.name) : null;
+        return device ? intelDriverKind(device.gpuVendor, device.name, device.pciVendorId) : null;
     })();
     const page = container.querySelector('.driver-library-page');
     const deviceId = String(state.devices.find((item) => item.id === selectedId)?.id ?? '');

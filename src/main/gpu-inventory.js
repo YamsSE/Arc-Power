@@ -6,6 +6,8 @@
 
 import { deviceHardwareKey } from './backend/units.js';
 import { displayKeyInNamespace, displayKeySuffix } from './display-identity.js';
+import { refusalCacheDeviceKey } from './backend/refused-ceilings.js';
+import { currentBrokerApplyTransactionSequence } from './apply-lock.js';
 
 const NULL_STATE = Object.freeze({
   powerLimitW: null,
@@ -495,6 +497,16 @@ export function physicalTargetOf(device) {
   };
 }
 
+function refusalCacheIdentityOf(device, physicalProof = null) {
+  const proof = physicalProof ?? physicalTargetOf(device);
+  const expectedLuid = proof?.osLuid ?? proof?.controllerLuid ?? proof?.luid ?? proof?.adapterLuid
+    ?? device?.osLuid ?? device?.osController?.luid ?? device?.luid ?? null;
+  return {
+    refusalCacheKey: refusalCacheDeviceKey(device),
+    expectedLuid,
+  };
+}
+
 export function physicalTargetMatches(device, proof, inventory = [device]) {
   if (Number.isInteger(proof?.displayCardIndex)
     && Number.isInteger(device?.displayCardIndex)
@@ -835,7 +847,7 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
     async getCapabilities(id) {
       const d = await route(id);
       if (d.synthetic) return syntheticCapabilities(d);
-      const caps = await backend.getCapabilities(d.backendId);
+      const caps = await backend.getCapabilities(d.backendId, refusalCacheIdentityOf(d));
       return { ...caps, deviceKey: d.deviceKey, deviceKeys: d.deviceKeys ?? null };
     },
     async getCurrentSettings(id) { const d = await route(id); return d.synthetic ? nullDeviceState() : backend.getCurrentSettings(d.backendId); },
@@ -864,10 +876,22 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
       }
       return backend.setGraphicsSettings(d.backendId, settings, exePath);
     },
-    async getDisplaySettings(id) {
+    async getDisplaySettings(id, expectedDeviceKey) {
+      if (expectedDeviceKey !== undefined
+        && (typeof expectedDeviceKey !== 'string' || expectedDeviceKey.trim().length === 0)) {
+        throw new Error('invalid GPU target: expected device key must be a nonempty string');
+      }
       const d = await route(id);
+      if (expectedDeviceKey !== undefined && expectedDeviceKey !== d.deviceKey) {
+        throw new Error('The selected graphics adapter changed; refresh Display and try again.');
+      }
       if (d.synthetic) return { deviceKey: d.deviceKey ?? null, adapterName: d.name ?? null, displays: [] };
-      const state = await backend.getDisplaySettings(d.backendId);
+      // Pass the aliases captured by this inventory resolution to the raw
+      // backend. It will resolve the numeric backend id again inside the
+      // shared Display lock and reject if that id now names another adapter.
+      const state = expectedDeviceKey === undefined
+        ? await backend.getDisplaySettings(d.backendId)
+        : await backend.getDisplaySettings(d.backendId, expectedDeviceKey, d.deviceKeys ?? [d.deviceKey]);
       return {
         ...state,
         deviceKey: d.deviceKey ?? state.deviceKey ?? null,
@@ -905,7 +929,40 @@ export function createUnifiedGpuBackend({ backend, sysinfo, videoControllers = n
     async sampleRawTelemetry(id) { const d = await route(id); return d.synthetic ? { t: Date.now(), throttle: {} } : backend.sampleRawTelemetry(d.backendId); },
     onRawTelemetry(id, cb) { const d = routes.get(id); return d && !d.synthetic ? backend.onRawTelemetry(d.backendId, cb) : () => {}; },
     async pciProperties(id) { const d = await route(id); return d.synthetic ? null : backend.pciProperties?.(d.backendId) ?? null; },
-    async recordApplyRefusals(id, result, settings) { const d = await route(id); return d.synthetic ? undefined : backend.recordApplyRefusals?.(d.backendId, result, settings); },
+    async recordApplyRefusals(id, result, settings, publicationOptions = {}) {
+      const temp = result?.perControl?.tempLimitC;
+      const temperatureRefusal = temp?.ok === false && temp.errorCode === 'out-of-range';
+      let d;
+      if (temperatureRefusal) {
+        if (typeof publicationOptions.deviceKey !== 'string'
+          || !publicationOptions.deviceKey
+          || !publicationOptions.physicalTarget
+          || typeof publicationOptions.physicalTarget !== 'object'
+          || Array.isArray(publicationOptions.physicalTarget)) return false;
+        const current = await route(id);
+        if (current.synthetic || current.backendKind === 'os') return false;
+        d = await wrapper.assertDeviceTarget(id, publicationOptions.deviceKey, publicationOptions.physicalTarget);
+      } else {
+        d = await route(id);
+      }
+      if (d.synthetic || typeof backend.recordApplyRefusals !== 'function') return false;
+      const recorded = await backend.recordApplyRefusals(d.backendId, result, settings, {
+        ranges: publicationOptions.ranges ?? null,
+        transactionSequence: publicationOptions.transactionSequence ?? currentBrokerApplyTransactionSequence(),
+        ...refusalCacheIdentityOf(d, publicationOptions.physicalTarget ?? null),
+      });
+      return recorded === true;
+    },
+    getTemperatureRefusalCacheGeneration() {
+      return backend.getTemperatureRefusalCacheGeneration?.() ?? 0;
+    },
+    getTemperatureRefusalCacheFailure() {
+      return backend.getTemperatureRefusalCacheFailure?.() ?? null;
+    },
+    async poisonTemperatureRefusalCache(reason) {
+      if (typeof backend.poisonTemperatureRefusalCache !== 'function') return true;
+      return backend.poisonTemperatureRefusalCache(reason);
+    },
     async extendedApply(control, value, id = 0) {
       const d = await writeTarget(id);
       return backend.extendedApply(control, value, d.backendId);

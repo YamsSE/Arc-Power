@@ -202,3 +202,15 @@ back to the built-in DXGI sampler.
   by MPL-2.0; preserving the license/source notices is the attribution and
   redistribution requirement.
 
+## AMD FidelityFX Super Resolution 1 (EASU and RCAS)
+
+- Component: `src/main/sharpening-runtime/fsr1/` (EASU/RCAS HLSL and shader
+  support headers), used by Arc Power's selected-window scaling path.
+- Copyright: Copyright (c) 2021 Advanced Micro Devices, Inc.
+- License: MIT. The complete license text is included as
+  `src/main/sharpening-runtime/fsr1/LICENSE.txt` and is shipped with the
+  source assets.
+- Upstream source: https://github.com/GPUOpen-Effects/FidelityFX-FSR
+- Arc Power compiles the included shader source at runtime; no LSFG or
+  Lossless Scaling binaries or source are used.
+

@@ -1,0 +1,3760 @@
+{
+  "source": "src/main/backend/units.js",
+  "node": "v24.22.1",
+  "locale": "en-DE",
+  "cases": [
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        -1
+      ],
+      "expected": "UNITS_-1"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        -1
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        -1
+      ],
+      "expected": 1250
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        0
+      ],
+      "expected": "MHz"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        0
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        0
+      ],
+      "expected": 1250
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        1
+      ],
+      "expected": "GTS"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        1
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        1
+      ],
+      "expected": 1250
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        2
+      ],
+      "expected": "MTS"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        2
+      ],
+      "expected": 234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        2
+      ],
+      "expected": 1.25
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        3
+      ],
+      "expected": "V"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        3
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        3
+      ],
+      "expected": 1250
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        4
+      ],
+      "expected": "W"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        4
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        4
+      ],
+      "expected": 1250
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        5
+      ],
+      "expected": "C"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        5
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        5
+      ],
+      "expected": 1250
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        6
+      ],
+      "expected": "ENERGY_JOULES"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        6
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        6
+      ],
+      "expected": 1250
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        7
+      ],
+      "expected": "TIME_SECONDS"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        7
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        7
+      ],
+      "expected": 1250
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        8
+      ],
+      "expected": "MEMORY_BYTES"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        8
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        8
+      ],
+      "expected": 1250
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        9
+      ],
+      "expected": "RPM"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        9
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        9
+      ],
+      "expected": 1250
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        10
+      ],
+      "expected": "mW"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        10
+      ],
+      "expected": 234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        10
+      ],
+      "expected": 1.25
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        11
+      ],
+      "expected": "%"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        11
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        11
+      ],
+      "expected": 1250
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        12
+      ],
+      "expected": "MHz"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        12
+      ],
+      "expected": 0.0018720000000000002
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        12
+      ],
+      "expected": 156250
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        13
+      ],
+      "expected": "mV"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        13
+      ],
+      "expected": 234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        13
+      ],
+      "expected": 1.25
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        14
+      ],
+      "expected": "BANDWIDTH_MBPS"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        14
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        14
+      ],
+      "expected": 1250
+    },
+    {
+      "fn": "canonicalUnit",
+      "args": [
+        99
+      ],
+      "expected": "UNITS_99"
+    },
+    {
+      "fn": "canonicalToIgcl",
+      "args": [
+        0.234,
+        99
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "igclToCanonical",
+      "args": [
+        1250,
+        99
+      ],
+      "expected": 1250
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        0,
+        false
+      ],
+      "expected": null
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        0,
+        true
+      ],
+      "expected": null
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        1,
+        false
+      ],
+      "expected": 1
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        1,
+        true
+      ],
+      "expected": null
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        268435456,
+        false
+      ],
+      "expected": 268435456
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        268435456,
+        true
+      ],
+      "expected": null
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        268435457,
+        false
+      ],
+      "expected": 268435457
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        268435457,
+        true
+      ],
+      "expected": 268435457
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        1073741824,
+        false
+      ],
+      "expected": 1073741824
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        1073741824,
+        true
+      ],
+      "expected": 1073741824
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        1.5,
+        false
+      ],
+      "expected": null
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        1.5,
+        true
+      ],
+      "expected": null
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        -1,
+        false
+      ],
+      "expected": null
+    },
+    {
+      "fn": "dedicatedMemoryBytesOf",
+      "args": [
+        -1,
+        true
+      ],
+      "expected": null
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        -5,
+        {
+          "min": 0,
+          "max": 0.234,
+          "step": 0.001
+        }
+      ],
+      "expected": 0
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        -0.5,
+        {
+          "min": 0,
+          "max": 0.234,
+          "step": 0.001
+        }
+      ],
+      "expected": 0
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0,
+        {
+          "min": 0,
+          "max": 0.234,
+          "step": 0.001
+        }
+      ],
+      "expected": 0
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0.1055,
+        {
+          "min": 0,
+          "max": 0.234,
+          "step": 0.001
+        }
+      ],
+      "expected": 0.106
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0.234,
+        {
+          "min": 0,
+          "max": 0.234,
+          "step": 0.001
+        }
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        6,
+        {
+          "min": 0,
+          "max": 0.234,
+          "step": 0.001
+        }
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        20,
+        {
+          "min": 0,
+          "max": 0.234,
+          "step": 0.001
+        }
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        -5,
+        {
+          "min": 0.103,
+          "max": 0.234,
+          "step": 0.005
+        }
+      ],
+      "expected": 0.103
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        -0.5,
+        {
+          "min": 0.103,
+          "max": 0.234,
+          "step": 0.005
+        }
+      ],
+      "expected": 0.103
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0,
+        {
+          "min": 0.103,
+          "max": 0.234,
+          "step": 0.005
+        }
+      ],
+      "expected": 0.103
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0.1055,
+        {
+          "min": 0.103,
+          "max": 0.234,
+          "step": 0.005
+        }
+      ],
+      "expected": 0.11
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0.234,
+        {
+          "min": 0.103,
+          "max": 0.234,
+          "step": 0.005
+        }
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        6,
+        {
+          "min": 0.103,
+          "max": 0.234,
+          "step": 0.005
+        }
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        20,
+        {
+          "min": 0.103,
+          "max": 0.234,
+          "step": 0.005
+        }
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        -5,
+        {
+          "min": -3,
+          "max": 7,
+          "step": 2
+        }
+      ],
+      "expected": -3
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        -0.5,
+        {
+          "min": -3,
+          "max": 7,
+          "step": 2
+        }
+      ],
+      "expected": 0
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0,
+        {
+          "min": -3,
+          "max": 7,
+          "step": 2
+        }
+      ],
+      "expected": 2
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0.1055,
+        {
+          "min": -3,
+          "max": 7,
+          "step": 2
+        }
+      ],
+      "expected": 2
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0.234,
+        {
+          "min": -3,
+          "max": 7,
+          "step": 2
+        }
+      ],
+      "expected": 2
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        6,
+        {
+          "min": -3,
+          "max": 7,
+          "step": 2
+        }
+      ],
+      "expected": 7
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        20,
+        {
+          "min": -3,
+          "max": 7,
+          "step": 2
+        }
+      ],
+      "expected": 7
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        -5,
+        {
+          "min": 0,
+          "max": 5,
+          "step": 0
+        }
+      ],
+      "expected": 0
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        -0.5,
+        {
+          "min": 0,
+          "max": 5,
+          "step": 0
+        }
+      ],
+      "expected": 0
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0,
+        {
+          "min": 0,
+          "max": 5,
+          "step": 0
+        }
+      ],
+      "expected": 0
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0.1055,
+        {
+          "min": 0,
+          "max": 5,
+          "step": 0
+        }
+      ],
+      "expected": 0.1055
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0.234,
+        {
+          "min": 0,
+          "max": 5,
+          "step": 0
+        }
+      ],
+      "expected": 0.234
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        6,
+        {
+          "min": 0,
+          "max": 5,
+          "step": 0
+        }
+      ],
+      "expected": 5
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        20,
+        {
+          "min": 0,
+          "max": 5,
+          "step": 0
+        }
+      ],
+      "expected": 5
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        -5,
+        {
+          "min": 10,
+          "max": 5,
+          "step": 1
+        }
+      ],
+      "expected": 5
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        -0.5,
+        {
+          "min": 10,
+          "max": 5,
+          "step": 1
+        }
+      ],
+      "expected": 5
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0,
+        {
+          "min": 10,
+          "max": 5,
+          "step": 1
+        }
+      ],
+      "expected": 5
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0.1055,
+        {
+          "min": 10,
+          "max": 5,
+          "step": 1
+        }
+      ],
+      "expected": 5
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        0.234,
+        {
+          "min": 10,
+          "max": 5,
+          "step": 1
+        }
+      ],
+      "expected": 5
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        6,
+        {
+          "min": 10,
+          "max": 5,
+          "step": 1
+        }
+      ],
+      "expected": 5
+    },
+    {
+      "fn": "clampAndSnap",
+      "args": [
+        20,
+        {
+          "min": 10,
+          "max": 5,
+          "step": 1
+        }
+      ],
+      "expected": 5
+    },
+    {
+      "fn": "clampFanPct",
+      "args": [
+        -50
+      ],
+      "expected": 0
+    },
+    {
+      "fn": "clampFanPct",
+      "args": [
+        -0.5
+      ],
+      "expected": 0
+    },
+    {
+      "fn": "clampFanPct",
+      "args": [
+        0
+      ],
+      "expected": 0
+    },
+    {
+      "fn": "clampFanPct",
+      "args": [
+        0.5
+      ],
+      "expected": 1
+    },
+    {
+      "fn": "clampFanPct",
+      "args": [
+        50.5
+      ],
+      "expected": 51
+    },
+    {
+      "fn": "clampFanPct",
+      "args": [
+        100.5
+      ],
+      "expected": 100
+    },
+    {
+      "fn": "normalizeFanCurve",
+      "args": [
+        [
+          {
+            "t": 40.49,
+            "speedPct": 100.5
+          },
+          {
+            "t": 20.5,
+            "speedPct": -1
+          },
+          {
+            "t": 20.49,
+            "speedPct": 30
+          },
+          {
+            "t": 20,
+            "speedPct": 70
+          }
+        ],
+        0
+      ],
+      "expected": [
+        {
+          "t": 20,
+          "speedPct": 30
+        },
+        {
+          "t": 21,
+          "speedPct": 70
+        },
+        {
+          "t": 22,
+          "speedPct": 0
+        },
+        {
+          "t": 40,
+          "speedPct": 100
+        }
+      ]
+    },
+    {
+      "fn": "normalizeFanCurve",
+      "args": [
+        [
+          {
+            "t": 50,
+            "speedPct": 40
+          },
+          {
+            "t": 30,
+            "speedPct": 60
+          },
+          {
+            "t": 20,
+            "speedPct": 30
+          }
+        ],
+        1.9
+      ],
+      "expected": [
+        {
+          "t": 50,
+          "speedPct": 40
+        }
+      ]
+    },
+    {
+      "fn": "clampGpuLock",
+      "args": [
+        {
+          "voltageV": 0,
+          "freqMhz": 0
+        },
+        null
+      ],
+      "expected": {
+        "voltageV": 0,
+        "freqMhz": 0
+      }
+    },
+    {
+      "fn": "clampGpuLock",
+      "args": [
+        {
+          "voltageV": 0,
+          "freqMhz": 0
+        },
+        {
+          "voltMin": 0.7,
+          "voltMax": 1.2,
+          "freqMin": 500,
+          "freqMax": 3000
+        }
+      ],
+      "expected": {
+        "voltageV": 0,
+        "freqMhz": 0
+      }
+    },
+    {
+      "fn": "clampGpuLock",
+      "args": [
+        {
+          "voltageV": 0,
+          "freqMhz": 0
+        },
+        {
+          "voltMin": 1.2,
+          "voltMax": 0.7,
+          "freqMin": 3000,
+          "freqMax": 500
+        }
+      ],
+      "expected": {
+        "voltageV": 0,
+        "freqMhz": 0
+      }
+    },
+    {
+      "fn": "clampGpuLock",
+      "args": [
+        {
+          "voltageV": 0,
+          "freqMhz": 2400
+        },
+        null
+      ],
+      "expected": {
+        "voltageV": 0,
+        "freqMhz": 2400
+      }
+    },
+    {
+      "fn": "clampGpuLock",
+      "args": [
+        {
+          "voltageV": 0,
+          "freqMhz": 2400
+        },
+        {
+          "voltMin": 0.7,
+          "voltMax": 1.2,
+          "freqMin": 500,
+          "freqMax": 3000
+        }
+      ],
+      "expected": {
+        "voltageV": 0,
+        "freqMhz": 2400
+      }
+    },
+    {
+      "fn": "clampGpuLock",
+      "args": [
+        {
+          "voltageV": 0,
+          "freqMhz": 2400
+        },
+        {
+          "voltMin": 1.2,
+          "voltMax": 0.7,
+          "freqMin": 3000,
+          "freqMax": 500
+        }
+      ],
+      "expected": {
+        "voltageV": 0,
+        "freqMhz": 500
+      }
+    },
+    {
+      "fn": "clampGpuLock",
+      "args": [
+        {
+          "voltageV": 0.9,
+          "freqMhz": 0
+        },
+        null
+      ],
+      "expected": {
+        "voltageV": 0.9,
+        "freqMhz": 0
+      }
+    },
+    {
+      "fn": "clampGpuLock",
+      "args": [
+        {
+          "voltageV": 0.9,
+          "freqMhz": 0
+        },
+        {
+          "voltMin": 0.7,
+          "voltMax": 1.2,
+          "freqMin": 500,
+          "freqMax": 3000
+        }
+      ],
+      "expected": {
+        "voltageV": 0.9,
+        "freqMhz": 0
+      }
+    },
+    {
+      "fn": "clampGpuLock",
+      "args": [
+        {
+          "voltageV": 0.9,
+          "freqMhz": 0
+        },
+        {
+          "voltMin": 1.2,
+          "voltMax": 0.7,
+          "freqMin": 3000,
+          "freqMax": 500
+        }
+      ],
+      "expected": {
+        "voltageV": 0.7,
+        "freqMhz": 0
+      }
+    },
+    {
+      "fn": "clampGpuLock",
+      "args": [
+        {
+          "voltageV": 2,
+          "freqMhz": 9000
+        },
+        null
+      ],
+      "expected": {
+        "voltageV": 1.5,
+        "freqMhz": 5000
+      }
+    },
+    {
+      "fn": "clampGpuLock",
+      "args": [
+        {
+          "voltageV": 2,
+          "freqMhz": 9000
+        },
+        {
+          "voltMin": 0.7,
+          "voltMax": 1.2,
+          "freqMin": 500,
+          "freqMax": 3000
+        }
+      ],
+      "expected": {
+        "voltageV": 1.2,
+        "freqMhz": 3000
+      }
+    },
+    {
+      "fn": "clampGpuLock",
+      "args": [
+        {
+          "voltageV": 2,
+          "freqMhz": 9000
+        },
+        {
+          "voltMin": 1.2,
+          "voltMax": 0.7,
+          "freqMin": 3000,
+          "freqMax": 500
+        }
+      ],
+      "expected": {
+        "voltageV": 0.7,
+        "freqMhz": 500
+      }
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Intel Arc B580"
+      ],
+      "expected": "GDDR6"
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel Arc B580"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc B580"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel Arc B580"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B580",
+        0,
+        null
+      ],
+      "expected": "Intel Arc B580"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B580",
+        1,
+        null
+      ],
+      "expected": "Intel Arc B580 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B580",
+        536870912,
+        null
+      ],
+      "expected": "Intel Arc B580 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B580",
+        1073741824,
+        null
+      ],
+      "expected": "Intel Arc B580 1GB GDDR6"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B580",
+        2576980378,
+        null
+      ],
+      "expected": "Intel Arc B580 3GB GDDR6"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Intel Arc B370"
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel Arc B370"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc B370"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel Arc B370"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B370",
+        0,
+        null
+      ],
+      "expected": "Intel Arc B370"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B370",
+        1,
+        null
+      ],
+      "expected": "Intel Arc B370 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B370",
+        536870912,
+        null
+      ],
+      "expected": "Intel Arc B370 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B370",
+        1073741824,
+        null
+      ],
+      "expected": "Intel Arc B370 1GB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B370",
+        2576980378,
+        null
+      ],
+      "expected": "Intel Arc B370 3GB"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Intel Arc B390"
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel Arc B390"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc B390"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel Arc B390"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B390",
+        0,
+        null
+      ],
+      "expected": "Intel Arc B390"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B390",
+        1,
+        null
+      ],
+      "expected": "Intel Arc B390 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B390",
+        536870912,
+        null
+      ],
+      "expected": "Intel Arc B390 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B390",
+        1073741824,
+        null
+      ],
+      "expected": "Intel Arc B390 1GB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B390",
+        2576980378,
+        null
+      ],
+      "expected": "Intel Arc B390 3GB"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Intel Arc A770M"
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel Arc A770M"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc A770M"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel Arc A770M"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc A770M",
+        0,
+        null
+      ],
+      "expected": "Intel Arc A770M"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc A770M",
+        1,
+        null
+      ],
+      "expected": "Intel Arc A770M 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc A770M",
+        536870912,
+        null
+      ],
+      "expected": "Intel Arc A770M 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc A770M",
+        1073741824,
+        null
+      ],
+      "expected": "Intel Arc A770M 1GB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc A770M",
+        2576980378,
+        null
+      ],
+      "expected": "Intel Arc A770M 3GB"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Intel Arc A770"
+      ],
+      "expected": "GDDR6"
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel Arc A770"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc A770"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel Arc A770"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc A770",
+        0,
+        null
+      ],
+      "expected": "Intel Arc A770"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc A770",
+        1,
+        null
+      ],
+      "expected": "Intel Arc A770 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc A770",
+        536870912,
+        null
+      ],
+      "expected": "Intel Arc A770 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc A770",
+        1073741824,
+        null
+      ],
+      "expected": "Intel Arc A770 1GB GDDR6"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc A770",
+        2576980378,
+        null
+      ],
+      "expected": "Intel Arc A770 3GB GDDR6"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Intel Arc Pro B50"
+      ],
+      "expected": "GDDR6"
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel Arc Pro B50"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc Pro B50"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel Arc Pro B50"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc Pro B50",
+        0,
+        null
+      ],
+      "expected": "Intel Arc Pro B50"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc Pro B50",
+        1,
+        null
+      ],
+      "expected": "Intel Arc Pro B50 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc Pro B50",
+        536870912,
+        null
+      ],
+      "expected": "Intel Arc Pro B50 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc Pro B50",
+        1073741824,
+        null
+      ],
+      "expected": "Intel Arc Pro B50 1GB GDDR6"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc Pro B50",
+        2576980378,
+        null
+      ],
+      "expected": "Intel Arc Pro B50 3GB GDDR6"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Intel Arc Graphics"
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel Arc Graphics"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc Graphics"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel Arc Graphics"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc Graphics",
+        0,
+        null
+      ],
+      "expected": "Intel Arc Graphics"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc Graphics",
+        1,
+        null
+      ],
+      "expected": "Intel Arc Graphics 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc Graphics",
+        536870912,
+        null
+      ],
+      "expected": "Intel Arc Graphics 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc Graphics",
+        1073741824,
+        null
+      ],
+      "expected": "Intel Arc Graphics 1GB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc Graphics",
+        2576980378,
+        null
+      ],
+      "expected": "Intel Arc Graphics 3GB"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Intel(R) Graphics"
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel(R) Graphics"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel(R) Graphics"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel(R) Graphics"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel(R) Graphics",
+        0,
+        null
+      ],
+      "expected": "Intel(R) Graphics"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel(R) Graphics",
+        1,
+        null
+      ],
+      "expected": "Intel(R) Graphics 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel(R) Graphics",
+        536870912,
+        null
+      ],
+      "expected": "Intel(R) Graphics 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel(R) Graphics",
+        1073741824,
+        null
+      ],
+      "expected": "Intel(R) Graphics 1GB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel(R) Graphics",
+        2576980378,
+        null
+      ],
+      "expected": "Intel(R) Graphics 3GB"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Intel (R) Graphics"
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel (R) Graphics"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel (R) Graphics"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel (R) Graphics"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel (R) Graphics",
+        0,
+        null
+      ],
+      "expected": "Intel (R) Graphics"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel (R) Graphics",
+        1,
+        null
+      ],
+      "expected": "Intel (R) Graphics 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel (R) Graphics",
+        536870912,
+        null
+      ],
+      "expected": "Intel (R) Graphics 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel (R) Graphics",
+        1073741824,
+        null
+      ],
+      "expected": "Intel (R) Graphics 1GB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel (R) Graphics",
+        2576980378,
+        null
+      ],
+      "expected": "Intel (R) Graphics 3GB"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Intel Iris Xe Graphics"
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel Iris Xe Graphics"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Iris Xe Graphics"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel Iris Xe Graphics"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Iris Xe Graphics",
+        0,
+        null
+      ],
+      "expected": "Intel Iris Xe Graphics"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Iris Xe Graphics",
+        1,
+        null
+      ],
+      "expected": "Intel Iris Xe Graphics 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Iris Xe Graphics",
+        536870912,
+        null
+      ],
+      "expected": "Intel Iris Xe Graphics 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Iris Xe Graphics",
+        1073741824,
+        null
+      ],
+      "expected": "Intel Iris Xe Graphics 1GB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Iris Xe Graphics",
+        2576980378,
+        null
+      ],
+      "expected": "Intel Iris Xe Graphics 3GB"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "AMD Radeon"
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "AMD Radeon"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "AMD Radeon"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "AMD Radeon"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "AMD Radeon",
+        0,
+        null
+      ],
+      "expected": "AMD Radeon"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "AMD Radeon",
+        1,
+        null
+      ],
+      "expected": "AMD Radeon 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "AMD Radeon",
+        536870912,
+        null
+      ],
+      "expected": "AMD Radeon 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "AMD Radeon",
+        1073741824,
+        null
+      ],
+      "expected": "AMD Radeon 1GB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "AMD Radeon",
+        2576980378,
+        null
+      ],
+      "expected": "AMD Radeon 3GB"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "NVIDIA RTX Arc"
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "NVIDIA RTX Arc"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "NVIDIA RTX Arc"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "NVIDIA RTX Arc"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "NVIDIA RTX Arc",
+        0,
+        null
+      ],
+      "expected": "NVIDIA RTX Arc"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "NVIDIA RTX Arc",
+        1,
+        null
+      ],
+      "expected": "NVIDIA RTX Arc 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "NVIDIA RTX Arc",
+        536870912,
+        null
+      ],
+      "expected": "NVIDIA RTX Arc 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "NVIDIA RTX Arc",
+        1073741824,
+        null
+      ],
+      "expected": "NVIDIA RTX Arc 1GB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "NVIDIA RTX Arc",
+        2576980378,
+        null
+      ],
+      "expected": "NVIDIA RTX Arc 3GB"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Arc B770"
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Arc B770"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Arc B770"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Arc B770"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B770",
+        0,
+        null
+      ],
+      "expected": "Arc B770"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B770",
+        1,
+        null
+      ],
+      "expected": "Arc B770 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B770",
+        536870912,
+        null
+      ],
+      "expected": "Arc B770 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B770",
+        1073741824,
+        null
+      ],
+      "expected": "Arc B770 1GB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B770",
+        2576980378,
+        null
+      ],
+      "expected": "Arc B770 3GB"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Arc A370M"
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Arc A370M"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Arc A370M"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Arc A370M"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc A370M",
+        0,
+        null
+      ],
+      "expected": "Arc A370M"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc A370M",
+        1,
+        null
+      ],
+      "expected": "Arc A370M 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc A370M",
+        536870912,
+        null
+      ],
+      "expected": "Arc A370M 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc A370M",
+        1073741824,
+        null
+      ],
+      "expected": "Arc A370M 1GB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc A370M",
+        2576980378,
+        null
+      ],
+      "expected": "Arc A370M 3GB"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Arc 8GB Pro"
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Arc 8GB Pro"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Arc 8GB Pro"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Arc 8GB Pro"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc 8GB Pro",
+        0,
+        null
+      ],
+      "expected": "Arc 8GB Pro"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc 8GB Pro",
+        1,
+        null
+      ],
+      "expected": "Arc 8GB Pro 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc 8GB Pro",
+        536870912,
+        null
+      ],
+      "expected": "Arc 8GB Pro 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc 8GB Pro",
+        1073741824,
+        null
+      ],
+      "expected": "Arc 8GB Pro 1GB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc 8GB Pro",
+        2576980378,
+        null
+      ],
+      "expected": "Arc 8GB Pro 3GB"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Arc B580 8GB mobile"
+      ],
+      "expected": "GDDR6"
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Arc B580 8GB mobile"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Arc B580 8GB mobile"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Arc B580 8GB mobile"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B580 8GB mobile",
+        0,
+        null
+      ],
+      "expected": "Arc B580 8GB mobile"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B580 8GB mobile",
+        1,
+        null
+      ],
+      "expected": "Arc B580 8GB mobile 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B580 8GB mobile",
+        536870912,
+        null
+      ],
+      "expected": "Arc B580 8GB mobile 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B580 8GB mobile",
+        1073741824,
+        null
+      ],
+      "expected": "Arc B580 8GB mobile 1GB GDDR6"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B580 8GB mobile",
+        2576980378,
+        null
+      ],
+      "expected": "Arc B580 8GB mobile 3GB GDDR6"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Arc B580_"
+      ],
+      "expected": "GDDR6"
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Arc B580_"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Arc B580_"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Arc B580_"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B580_",
+        0,
+        null
+      ],
+      "expected": "Arc B580_"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B580_",
+        1,
+        null
+      ],
+      "expected": "Arc B580_ 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B580_",
+        536870912,
+        null
+      ],
+      "expected": "Arc B580_ 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B580_",
+        1073741824,
+        null
+      ],
+      "expected": "Arc B580_ 1GB GDDR6"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B580_",
+        2576980378,
+        null
+      ],
+      "expected": "Arc B580_ 3GB GDDR6"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Arc_A770"
+      ],
+      "expected": "GDDR6"
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Arc_A770"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Arc_A770"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Arc_A770"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc_A770",
+        0,
+        null
+      ],
+      "expected": "Arc_A770"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc_A770",
+        1,
+        null
+      ],
+      "expected": "Arc_A770 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc_A770",
+        536870912,
+        null
+      ],
+      "expected": "Arc_A770 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc_A770",
+        1073741824,
+        null
+      ],
+      "expected": "Arc_A770 1GB GDDR6"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc_A770",
+        2576980378,
+        null
+      ],
+      "expected": "Arc_A770 3GB GDDR6"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Intel HD Graphics"
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel HD Graphics"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel HD Graphics"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel HD Graphics"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel HD Graphics",
+        0,
+        null
+      ],
+      "expected": "Intel HD Graphics"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel HD Graphics",
+        1,
+        null
+      ],
+      "expected": "Intel HD Graphics 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel HD Graphics",
+        536870912,
+        null
+      ],
+      "expected": "Intel HD Graphics 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel HD Graphics",
+        1073741824,
+        null
+      ],
+      "expected": "Intel HD Graphics 1GB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel HD Graphics",
+        2576980378,
+        null
+      ],
+      "expected": "Intel HD Graphics 3GB"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Arc B60"
+      ],
+      "expected": "GDDR6"
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Arc B60"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Arc B60"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Arc B60"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B60",
+        0,
+        null
+      ],
+      "expected": "Arc B60"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B60",
+        1,
+        null
+      ],
+      "expected": "Arc B60 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B60",
+        536870912,
+        null
+      ],
+      "expected": "Arc B60 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B60",
+        1073741824,
+        null
+      ],
+      "expected": "Arc B60 1GB GDDR6"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Arc B60",
+        2576980378,
+        null
+      ],
+      "expected": "Arc B60 3GB GDDR6"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        "Basic Microsoft Arc B580"
+      ],
+      "expected": "GDDR6"
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Basic Microsoft Arc B580"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Basic Microsoft Arc B580"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Basic Microsoft Arc B580"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Basic Microsoft Arc B580",
+        0,
+        null
+      ],
+      "expected": "Basic Microsoft Arc B580"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Basic Microsoft Arc B580",
+        1,
+        null
+      ],
+      "expected": "Basic Microsoft Arc B580 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Basic Microsoft Arc B580",
+        536870912,
+        null
+      ],
+      "expected": "Basic Microsoft Arc B580 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Basic Microsoft Arc B580",
+        1073741824,
+        null
+      ],
+      "expected": "Basic Microsoft Arc B580 1GB GDDR6"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Basic Microsoft Arc B580",
+        2576980378,
+        null
+      ],
+      "expected": "Basic Microsoft Arc B580 3GB GDDR6"
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        null
+      ],
+      "expected": null
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": null
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": null
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": null
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        null,
+        0,
+        null
+      ],
+      "expected": null
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        null,
+        1,
+        null
+      ],
+      "expected": null
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        null,
+        536870912,
+        null
+      ],
+      "expected": null
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        null,
+        1073741824,
+        null
+      ],
+      "expected": null
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        null,
+        2576980378,
+        null
+      ],
+      "expected": null
+    },
+    {
+      "fn": "vramMemTypeOfName",
+      "args": [
+        [
+          "Arc",
+          "B580"
+        ]
+      ],
+      "expected": "GDDR6"
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": [
+            "Arc",
+            "B580"
+          ]
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": [
+            "Arc",
+            "B580"
+          ]
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": [
+            "Arc",
+            "B580"
+          ]
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        [
+          "Arc",
+          "B580"
+        ],
+        0,
+        null
+      ],
+      "expected": [
+        "Arc",
+        "B580"
+      ]
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        [
+          "Arc",
+          "B580"
+        ],
+        1,
+        null
+      ],
+      "expected": "Arc,B580 0 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        [
+          "Arc",
+          "B580"
+        ],
+        536870912,
+        null
+      ],
+      "expected": "Arc,B580 512 MB"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        [
+          "Arc",
+          "B580"
+        ],
+        1073741824,
+        null
+      ],
+      "expected": "Arc,B580 1GB GDDR6"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        [
+          "Arc",
+          "B580"
+        ],
+        2576980378,
+        null
+      ],
+      "expected": "Arc,B580 3GB GDDR6"
+    },
+    {
+      "fn": "deviceHardwareKey",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": 32902,
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": "pci:32902:0xe20b@-1:-1.-1"
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": 32902,
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "deviceHardwareKey",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": 4318,
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": "pci:4318:0xe20b@-1:-1.-1"
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": 4318,
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "deviceHardwareKey",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": "0x00008086",
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": "pci:0x00008086:0xe20b@-1:-1.-1"
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": "0x00008086",
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "deviceHardwareKey",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": "8086",
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": "pci:8086:0xe20b@-1:-1.-1"
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": "8086",
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "deviceHardwareKey",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": "ffff8086",
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": "pci:ffff8086:0xe20b@-1:-1.-1"
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": "ffff8086",
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "deviceHardwareKey",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": "1002",
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": "pci:1002:0xe20b@-1:-1.-1"
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": "1002",
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "deviceHardwareKey",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": null,
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": "pci::0xe20b@-1:-1.-1"
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": null,
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "deviceHardwareKey",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": {},
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": "pci:[object object]:0xe20b@-1:-1.-1"
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": {},
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "deviceHardwareKey",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": [
+            "8086"
+          ],
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": "pci:8086:0xe20b@-1:-1.-1"
+    },
+    {
+      "fn": "isIntelIntegratedOrMobileArc",
+      "args": [
+        {
+          "name": "Intel Arc B370",
+          "pciVendorId": [
+            "8086"
+          ],
+          "pciDeviceId": "0xE20B",
+          "bdf": {
+            "bus": 0,
+            "device": 0,
+            "function": 0
+          }
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "deviceHardwareKey",
+      "args": [
+        {
+          "pciVendorId": 32902,
+          "pciDeviceId": 57867,
+          "bdf": {
+            "bus": 3,
+            "device": "0",
+            "function": 0
+          }
+        }
+      ],
+      "expected": "pci:32902:57867@3:-1.0"
+    },
+    {
+      "fn": "sortDevicesDiscreteFirst",
+      "args": [
+        [
+          {
+            "id": 1,
+            "name": "Intel Arc Graphics",
+            "pciVendorId": "8086"
+          },
+          {
+            "id": 2,
+            "name": "Intel Arc B580",
+            "pciVendorId": "8086",
+            "bdf": {
+              "bus": 10,
+              "device": 0,
+              "function": 0
+            }
+          },
+          {
+            "id": 3,
+            "name": "AMD Radeon",
+            "pciVendorId": "1002"
+          },
+          {
+            "id": 4,
+            "name": "Intel Arc B580",
+            "pciVendorId": "8086",
+            "bdf": {
+              "bus": 1,
+              "device": 0,
+              "function": 0
+            }
+          }
+        ]
+      ],
+      "expected": [
+        {
+          "id": 3,
+          "name": "AMD Radeon",
+          "pciVendorId": "1002"
+        },
+        {
+          "id": 4,
+          "name": "Intel Arc B580",
+          "pciVendorId": "8086",
+          "bdf": {
+            "bus": 1,
+            "device": 0,
+            "function": 0
+          }
+        },
+        {
+          "id": 2,
+          "name": "Intel Arc B580",
+          "pciVendorId": "8086",
+          "bdf": {
+            "bus": 10,
+            "device": 0,
+            "function": 0
+          }
+        },
+        {
+          "id": 1,
+          "name": "Intel Arc Graphics",
+          "pciVendorId": "8086"
+        }
+      ]
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel(R)Graphics"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel(R)Graphics"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel(R) Graphics"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel(R) Graphics"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel  Graphics"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel  Graphics"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Arc B580 8 GB mobile"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Arc B580 8 GB mobile"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Arc B580 8GB mobile\n"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Arc B580 8GB mobile\n"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Arc 8GB Pro\n"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Arc 8GB Pro\n"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Arc B580 8GB GDDR6\r\n"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Arc B580 8GB GDDR6\r\n"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel﻿Graphics"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel﻿Graphics"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isIntegratedStyleDevice",
+      "args": [
+        {
+          "name": "Intel_Arc B580"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "isArcDevice",
+      "args": [
+        {
+          "name": "Intel_Arc B580"
+        }
+      ],
+      "expected": false
+    },
+    {
+      "fn": "nearlyEqual",
+      "args": [
+        1,
+        1.0000000001,
+        0
+      ],
+      "expected": false
+    },
+    {
+      "fn": "nearlyEqual",
+      "args": [
+        1,
+        1.0000000001,
+        1e-9
+      ],
+      "expected": true
+    },
+    {
+      "fn": "nearlyEqual",
+      "args": [
+        1,
+        1.0000000001,
+        -1
+      ],
+      "expected": false
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B580",
+        8589934592,
+        "GDDR7"
+      ],
+      "expected": "Intel Arc B580 8GB GDDR7"
+    },
+    {
+      "fn": "formatDeviceName",
+      "args": [
+        "Intel Arc B580",
+        536870912,
+        "GDDR7"
+      ],
+      "expected": "Intel Arc B580 512 MB"
+    }
+  ],
+  "keyComparisons": [
+    {
+      "a": "pci:8086:@-1:-1.-1",
+      "b": "pci:8086:@-1:-1.-1",
+      "order": 0
+    },
+    {
+      "a": "pci:8086:@-1:-1.-1",
+      "b": "pci:8086:@10:0.0",
+      "order": -1
+    },
+    {
+      "a": "pci:8086:@-1:-1.-1",
+      "b": "pci:1002:@-1:-1.-1",
+      "order": 1
+    },
+    {
+      "a": "pci:8086:@-1:-1.-1",
+      "b": "pci:8086:@1:0.0",
+      "order": -1
+    },
+    {
+      "a": "pci:8086:@10:0.0",
+      "b": "pci:8086:@-1:-1.-1",
+      "order": 1
+    },
+    {
+      "a": "pci:8086:@10:0.0",
+      "b": "pci:8086:@10:0.0",
+      "order": 0
+    },
+    {
+      "a": "pci:8086:@10:0.0",
+      "b": "pci:1002:@-1:-1.-1",
+      "order": 1
+    },
+    {
+      "a": "pci:8086:@10:0.0",
+      "b": "pci:8086:@1:0.0",
+      "order": 1
+    },
+    {
+      "a": "pci:1002:@-1:-1.-1",
+      "b": "pci:8086:@-1:-1.-1",
+      "order": -1
+    },
+    {
+      "a": "pci:1002:@-1:-1.-1",
+      "b": "pci:8086:@10:0.0",
+      "order": -1
+    },
+    {
+      "a": "pci:1002:@-1:-1.-1",
+      "b": "pci:1002:@-1:-1.-1",
+      "order": 0
+    },
+    {
+      "a": "pci:1002:@-1:-1.-1",
+      "b": "pci:8086:@1:0.0",
+      "order": -1
+    },
+    {
+      "a": "pci:8086:@1:0.0",
+      "b": "pci:8086:@-1:-1.-1",
+      "order": 1
+    },
+    {
+      "a": "pci:8086:@1:0.0",
+      "b": "pci:8086:@10:0.0",
+      "order": -1
+    },
+    {
+      "a": "pci:8086:@1:0.0",
+      "b": "pci:1002:@-1:-1.-1",
+      "order": 1
+    },
+    {
+      "a": "pci:8086:@1:0.0",
+      "b": "pci:8086:@1:0.0",
+      "order": 0
+    }
+  ]
+}

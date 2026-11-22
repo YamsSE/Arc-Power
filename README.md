@@ -1,22 +1,26 @@
 <p align="center">
-  <img src="docs/branding/Arc-Power-Main-Logo-Navy.png?v=1.2.5" alt="Arc Power" width="540">
+  <img src="docs/branding/Arc-Power-Main-Logo-Navy.png?v=1.3.0" alt="Arc Power" width="540">
 </p>
 
 <p align="center">
   <a href="https://discord.gg/nXAjasHy6e"><img src="https://api.iconify.design/simple-icons/discord.svg?color=%235865F2" alt="Join the Arc Power Discord" title="Join the Arc Power Discord" width="22" height="22"></a>
 </p>
 
-# Arc Power Ver. 1.2.5
+# Arc Power Ver. 1.3.0
 
-Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.2.5 brings Arc Super Resolution (ASR), in-game Arc Image Sharpening, and improvements to runtime stability and the interface. Arc Power also includes the Driver Library for browsing Intel driver releases and managing downloaded installers.
+Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.3.0 is the Rust/Tauri/WebView2 migration release: the native host, persistence, platform services and device inventory move to Rust while the existing tuning, monitoring, sharpening, ASR, recording and Driver Library features are retained.
 
-## Version 1.2.5 highlights
+## Version 1.3.0 highlights
 
-- **Arc Image Sharpening:** global and per-game settings with a 0–100% slider. Launch the game from its Arc Power profile to load the bundled sharpening runtime, then adjust strength while playing. The in-game path replaces the desktop-capture sharpening overlay that caused severe frame-pacing issues.
-- **Arc Super Resolution:** enlarge a smaller windowed game to your display using the smoother thumbnail path, with improved mouse input and restoration when you Alt-Tab away. ASR and sharpening have separate switches and can run independently or together.
-- **Advanced Overlay:** adjust global sharpening and ASR with shared settings, runtime status, and Apply feedback.
-- **Stability:** reduce repeated helper launches, improve RTSS discovery and ReBAR adapter matching, fix native polling allocation leaks, and limit repeated Sysman recovery after abnormal exits.
-- **Interface:** dropdowns follow their controls when scrolling, with smoother transitions that respect reduced-motion preferences.
+- **Native Windows host:** the installed and portable editions run on Rust, Tauri 2, and WebView2 without Electron.
+- **Rust-owned state:** profiles, settings, overlay layouts, stability history, game/recording metadata, fan-resume, window state and OBS credentials are stored by the Rust host under `%APPDATA%\ArcPower`.
+- **Native platform services:** GPU device enumeration, file/folder dialogs, clipboard, recording folder/storage/process inventory and capture targets.
+- **Arc Sync and recording:** verified per-display Arc Sync settings restore at startup, and the clip editor shows export progress and errors.
+- **Retained features:** Arc Image Sharpening, Arc Super Resolution, Advanced Overlay, Driver Library, recording/Instant Replay and the existing GPU tuning surface.
+
+## Upgrading from 1.2.5
+
+Once version 1.3.0 is published on GitHub, the 1.2.5 updater can find it through the existing installer and portable asset names. The upgrade is designed to preserve user data in `%APPDATA%\ArcPower`.
 
 ## What Arc Power does
 
@@ -36,9 +40,14 @@ Controls depend on the capabilities reported by the selected device and its driv
 | GPU | Architecture | Verified support |
 |---|---|---|
 | Arc A3 / A5 / A7 series | Alchemist | **Verified - Working** |
-| Arc B580 / B570 | Battlemage | **Verified - Working** |
-| Arc Pro A & B Series | Alchemist & Battlemage| **Verified - Tweaks & Telemetry only** |
+| Arc B580 / B570 | Battlemage | VF writes use driver-reported steps and require exact LIVE read-back |
+| Arc Pro B50 | Battlemage (pro) | **Verified - Tweaks & Telemetry only** |
 | Arc iGPU | Alchemist & Battlemage | **Verified - Tweaks & Telemetry only** |
+
+### Support status
+
+- [x] Battlemage controls and telemetry
+- [ ] B580 VF curve apply verified against IGS behavior
 
 
 AMD and NVIDIA adapters may appear for telemetry when their vendor libraries are available. Tuning controls require an Intel Arc GPU.

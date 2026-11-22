@@ -104,6 +104,7 @@ import { promisify } from 'node:util';
 import koffi from 'koffi';
 import { isIntegratedStyleDevice } from './backend/units.js';
 import { createD3dkmtGpuUtilReader } from './d3dkmt-gpu-util.js';
+import { TELEMETRY_POLL_MS_DEFAULT } from './telemetry/constants.js';
 
 const execFile = promisify(nodeExecFile);
 
@@ -112,6 +113,11 @@ export const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\p
 // let a stalled counter query masquerade as a current Task Manager value.
 export const GPU_UTIL_STALE_MS = 8000;
 const ARC_SLEEP_GPU_UTIL_STALE_MS = 5000;
+const PERSISTENT_WORKER_RETRY_BASE_MS = 1000;
+const PERSISTENT_WORKER_RETRY_MAX_MS = 30000;
+const FALLBACK_RETRY_THRESHOLD = 3;
+const FALLBACK_RETRY_MAX_MS = 10000;
+const SLOW_FALLBACK_STALE_MS = 10000;
 // The legacy broad system-stat query and the one-shot fallback use a
 // two-sample rate read. The production dedicated lane keeps one continuous
 // provider alive, so it can retain the counter baseline without paying cold
@@ -121,7 +127,7 @@ export const GPU_ENGINE_SAMPLE_INTERVAL_SEC = 1;
 // The GPU Engine lane is independent from the broad CIM lane. The cadence is
 // intentionally shorter than the old 2.5 s slow lane; the query itself still
 // determines the effective refresh and the in-flight guard prevents overlap.
-export const GPU_UTIL_LANE_CADENCE_MS = 1500;
+export const GPU_UTIL_LANE_CADENCE_MS = TELEMETRY_POLL_MS_DEFAULT;
 
 /**
  * The per-tick CIM query: the _Total processor FORMATTED counters (the OS's
@@ -720,6 +726,11 @@ export function createSysStats(deps = {}) {
   const clearIntervalFn = deps.clearInterval ?? clearInterval;
   const now = deps.now ?? (() => Date.now());
   const monotonicNow = deps.monotonicNow ?? (() => performance.now());
+  const retryDelay = (failures) => failures <= 1 ? 0
+    : Math.min(PERSISTENT_WORKER_RETRY_BASE_MS * (2 ** Math.max(0, failures - 2)), PERSISTENT_WORKER_RETRY_MAX_MS);
+  const fallbackDelay = (failures) => failures >= FALLBACK_RETRY_THRESHOLD
+    ? Math.min(PERSISTENT_WORKER_RETRY_BASE_MS * (2 ** Math.max(0, failures - FALLBACK_RETRY_THRESHOLD)), FALLBACK_RETRY_MAX_MS)
+    : 0;
   // D3DKMTQueryStatistics reads the adapter/node running-time counters that
   // Windows uses for its headline GPU value. Keep it out of injected test
   // seams (and out of the old PowerShell-only test path), while making it the
@@ -786,6 +797,14 @@ export function createSysStats(deps = {}) {
   let sysStatsRequestId = 0;
   let sysStatsGeneration = 0;
   let sysStatsWorkerFailed = false;
+  let sysStatsWorkerFailures = 0;
+  let sysStatsWorkerRetryAt = 0;
+  let sysStatsFallbackAt = 0;
+  let sysStatsLastSampleAt = null;
+  let gpuWorkerFailures = 0;
+  let gpuWorkerRetryAt = 0;
+  let gpuFallbackAt = 0;
+  let gpuWorkerSampleCount = 0;
 
   // M150: system counters are queried once, but the GPU fields are cached
   // per physical adapter.  The old adapter had one mutable target, so a
@@ -1144,8 +1163,16 @@ export function createSysStats(deps = {}) {
     }
   };
 
+  const failSysStatsWorker = () => {
+    sysStatsWorkerFailed = true;
+    sysStatsWorkerFailures += 1;
+    sysStatsWorkerRetryAt = now() + retryDelay(sysStatsWorkerFailures);
+  };
+
   const startSysStatsWorker = () => {
-    if (!usePersistentSysStatsWorker || sysStatsProcess !== null || sysStatsWorkerFailed) return;
+    if (!usePersistentSysStatsWorker || sysStatsProcess !== null) return;
+    if (sysStatsWorkerFailures > 0 && now() < sysStatsWorkerRetryAt) return;
+    sysStatsWorkerFailed = false;
     let child;
     try {
       child = spawn(
@@ -1168,17 +1195,20 @@ export function createSysStats(deps = {}) {
         const pending = sysStatsPending;
         sysStatsPending = null;
         clearTimeout(pending.timer);
+        sysStatsWorkerFailures = 0;
+        sysStatsWorkerRetryAt = 0;
+        sysStatsWorkerFailed = false;
         pending.resolve(text.slice(separator + 1));
       });
       const failed = () => {
         if (sysStatsProcess !== worker) return;
-        sysStatsWorkerFailed = true;
+        failSysStatsWorker();
         stopSysStatsWorker();
       };
       child.once?.('error', failed);
       child.once?.('close', failed);
     } catch {
-      sysStatsWorkerFailed = true;
+      failSysStatsWorker();
       stopSysStatsWorker();
     }
   };
@@ -1192,30 +1222,38 @@ export function createSysStats(deps = {}) {
     const id = String(++sysStatsRequestId);
     const timer = setTimeout(() => {
       if (sysStatsPending?.id !== id) return;
-      sysStatsWorkerFailed = true;
+      failSysStatsWorker();
       stopSysStatsWorker();
     }, 10000);
     sysStatsPending = { id, timer, resolve, reject };
     try {
       child.stdin.write(`${id}\n`, (error) => {
         if (!error || sysStatsPending?.id !== id) return;
-        sysStatsWorkerFailed = true;
+        failSysStatsWorker();
         stopSysStatsWorker();
       });
     } catch {
-      sysStatsWorkerFailed = true;
+      failSysStatsWorker();
       stopSysStatsWorker();
     }
   });
 
   const restartGpuEngineWorker = () => {
+    failGpuEngineWorker();
     stopGpuEngineWorker();
-    gpuWorkerFailed = false;
     startGpuEngineWorker();
   };
 
+  const failGpuEngineWorker = () => {
+    gpuWorkerFailed = true;
+    gpuWorkerFailures += 1;
+    gpuWorkerRetryAt = now() + retryDelay(gpuWorkerFailures);
+  };
+
   const startGpuEngineWorker = () => {
-    if (!usePersistentGpuSampler || gpuProcess !== null || gpuWorkerFailed) return;
+    if (!usePersistentGpuSampler || gpuProcess !== null) return;
+    if (gpuWorkerFailures > 0 && now() < gpuWorkerRetryAt) return;
+    gpuWorkerFailed = false;
     let child;
     try {
       child = spawn(
@@ -1225,11 +1263,12 @@ export function createSysStats(deps = {}) {
       );
       if (!child?.stdout) throw new Error('GPU Engine worker has no stdout');
     } catch {
-      gpuWorkerFailed = true;
+      failGpuEngineWorker();
       return;
     }
     latestGpuRows = null;
     latestGpuRowsAt = null;
+    gpuWorkerSampleCount = 0;
     gpuProcess = child;
     gpuWorkerActive = true;
     try {
@@ -1244,20 +1283,26 @@ export function createSysStats(deps = {}) {
         if (!Object.prototype.hasOwnProperty.call(parsed ?? {}, 'gpuEng')) return;
         latestGpuRows = parseGpuEngineOutput(text);
         latestGpuRowsAt = now();
+        gpuWorkerSampleCount += 1;
+        if (gpuWorkerSampleCount >= 2) {
+          gpuWorkerFailures = 0;
+          gpuWorkerRetryAt = 0;
+          gpuWorkerFailed = false;
+        }
         if (gpuWorkerFirstSampleTimer !== null) {
           clearTimeout(gpuWorkerFirstSampleTimer);
           gpuWorkerFirstSampleTimer = null;
         }
       });
     } catch {
-      gpuWorkerFailed = true;
+      failGpuEngineWorker();
       stopGpuEngineWorker();
       return;
     }
     const worker = child;
     const failed = () => {
       if (gpuProcess !== worker) return;
-      gpuWorkerFailed = true;
+      failGpuEngineWorker();
       stopGpuEngineWorker();
     };
     try {
@@ -1272,7 +1317,7 @@ export function createSysStats(deps = {}) {
     // permanently unavailable.
     gpuWorkerFirstSampleTimer = setTimeout(() => {
       if (gpuWorkerActive && latestGpuRowsAt === null) {
-        gpuWorkerFailed = true;
+        failGpuEngineWorker();
         stopGpuEngineWorker();
       }
     }, 15000);
@@ -1300,6 +1345,7 @@ export function createSysStats(deps = {}) {
     if (gpuInflight) return;
     gpuInflight = true;
     try {
+      if (!gpuWorkerActive && gpuWorkerFailed && now() >= gpuWorkerRetryAt) startGpuEngineWorker();
       if (gpuWorkerActive) {
         const sampledAt = latestGpuRowsAt;
         const fresh = Array.isArray(latestGpuRows)
@@ -1317,6 +1363,11 @@ export function createSysStats(deps = {}) {
           if (gpuWorkerActive) return;
         } else return;
       }
+      if (!gpuWorkerActive && gpuWorkerFailures >= FALLBACK_RETRY_THRESHOLD && now() < gpuFallbackAt) {
+        await applyGpuEngineRows([], now(), nativeRecords, generation);
+        return;
+      }
+      gpuFallbackAt = now() + fallbackDelay(gpuWorkerFailures);
       const { stdout } = await exec(
         deps.powershellExe ?? POWERSHELL_EXE,
         ['-NoProfile', '-NonInteractive', '-Command', buildGpuEngineScript()],
@@ -1337,6 +1388,7 @@ export function createSysStats(deps = {}) {
       if (validEnvelope) {
         latestGpuRows = validRows;
         latestGpuRowsAt = sampledAt;
+        gpuFallbackAt = sampledAt + fallbackDelay(gpuWorkerFailures);
       }
       await applyGpuEngineRows(rows, sampledAt, nativeRecords, generation);
     } catch {
@@ -1391,14 +1443,25 @@ export function createSysStats(deps = {}) {
       inflight = true;
       // Recover a failed worker on a later lane tick; the request that
       // observed the failure already falls back through the one-shot path.
-      if (slowHandle !== null && sysStatsProcess === null && sysStatsWorkerFailed) {
-        sysStatsWorkerFailed = false;
-        startSysStatsWorker();
-      }
+      if (slowHandle !== null && sysStatsProcess === null && sysStatsWorkerFailed) startSysStatsWorker();
       const workerGeneration = sysStatsGeneration;
       const laneWasActive = slowHandle !== null;
       const workerWasActive = slowHandle !== null && sysStatsProcess !== null;
       try {
+        if (!workerWasActive && sysStatsWorkerFailures >= FALLBACK_RETRY_THRESHOLD
+          && now() < sysStatsFallbackAt) {
+          if (Number.isFinite(sysStatsLastSampleAt) && now() - sysStatsLastSampleAt > SLOW_FALLBACK_STALE_MS) {
+            const stale = { cpuUtilPct: null, cpuFreqMhz: null, cpuTempC: null, cpuPowerW: null,
+              gpuMemUsedBytes: null, gpuMemorySource: null };
+            for (const record of targetRecords.values()) {
+              record.cache = { ...record.cache, ...stale,
+                gpuUtilPct: enableDedicatedGpuSampler ? record.cache.gpuUtilPct : null };
+              if (!enableDedicatedGpuSampler) record.gpuUtilSampledAt = null;
+            }
+            laneCache = activeRecord.cache;
+          }
+          return laneCache;
+        }
         let stdout;
         if (workerWasActive) {
           try {
@@ -1407,6 +1470,7 @@ export function createSysStats(deps = {}) {
             // Teardown/restart owns this response; do not launch an orphaned
             // one-shot query or allow it to commit into a later generation.
             if (workerGeneration !== sysStatsGeneration || slowHandle === null) return laneCache;
+            sysStatsFallbackAt = now() + fallbackDelay(sysStatsWorkerFailures);
             ({ stdout } = await exec(
               deps.powershellExe ?? POWERSHELL_EXE,
               ['-NoProfile', '-NonInteractive', '-Command', buildSysStatsScript({
@@ -1416,6 +1480,7 @@ export function createSysStats(deps = {}) {
             ));
           }
         } else {
+          sysStatsFallbackAt = now() + fallbackDelay(sysStatsWorkerFailures);
           ({ stdout } = await exec(
             deps.powershellExe ?? POWERSHELL_EXE,
             ['-NoProfile', '-NonInteractive', '-Command', buildSysStatsScript({
@@ -1425,6 +1490,7 @@ export function createSysStats(deps = {}) {
           ));
         }
         if (laneWasActive && (workerGeneration !== sysStatsGeneration || slowHandle === null)) return laneCache;
+        sysStatsLastSampleAt = now();
         const raw = parseSysStatsOutput(stdout);
         if (raw.maxClockMhz !== null) maxClockMhz = raw.maxClockMhz;
         // Fix round 2: single samples of the OS-formatted counters.
@@ -1626,6 +1692,10 @@ export function createSysStats(deps = {}) {
       slowOwner = owner;
       sysStatsGeneration += 1;
       sysStatsWorkerFailed = false;
+      sysStatsWorkerFailures = 0;
+      sysStatsWorkerRetryAt = 0;
+      sysStatsFallbackAt = 0;
+      sysStatsLastSampleAt = null;
       startSysStatsWorker();
       slowHandle = setIntervalFn(() => {
         void slowTick();

@@ -32,7 +32,7 @@ export class SmokeFailure extends Error {}
 
 /**
  * @param {IOCBackend} backend
- * @param {{ log?: (s: string) => void, isElevated?: () => boolean }} opts -
+ * @param {{ log?: (s: string) => void, isElevated?: () => boolean, readOnly?: boolean }} opts -
  *   M4-D2: `isElevated` (default the real koffi probe) gates the no-op
  *   write round trips: unelevated on the real A770 the writes are refused
  *   (PL) or silently ignored (freq/fan) - the round trips would fail the
@@ -103,7 +103,10 @@ export async function runSmoke(backend, opts = {}) {
     // gate. When unelevated, the write round trips are SKIPPED and
     // reported honestly (the read-back + telemetry + packaging checks
     // still run); the packaged gate stays exit 0.
-    if (!isElevated()) {
+    if (opts.readOnly === true) {
+      step('noop', 'no-op write round trips SKIPPED (read-only smoke)');
+      step('verify', 'write verification SKIPPED (read-only smoke)');
+    } else if (!isElevated()) {
       step('noop', `no-op write round trips SKIPPED (unelevated - igcl writes refused/lie unelevated; see the M4-D2 report)`);
       step('verify', 'write verification SKIPPED with the no-op round trips (unelevated)');
     } else {

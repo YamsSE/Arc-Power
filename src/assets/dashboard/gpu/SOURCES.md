@@ -1,14 +1,20 @@
 # Dashboard GPU portrait sources
 
-All raster portraits in this directory are real product, reference-card, or
-processor-package imagery. The dashboard only performs deterministic
-transparent-margin trimming; it does not generate or stylize the hardware.
+Raster portraits in this directory are product, reference-card, or
+processor-package imagery. The D270 portrait is a transparent-background edit
+of a model image supplied by the user; the dashboard does not alter the
+artwork.
 
 The shared dashboard slot is `300px × 180px` with `object-fit: contain`. This
 keeps every portrait in the same layout box while preserving the real aspect
 ratio of each model instead of stretching a card to fit.
 
 ## Intel Arc
+
+- `intel-gpu-d270.png` — Intel GPU D270 / Crescent Island model image supplied
+  by the user, edited to remove its white background. Intel identifies the
+  D270 as an inference-optimized data center GPU:
+  <https://www.intel.com/content/www/us/en/products/details/discrete-gpus/data-center-gpu/d-series.html>.
 
 - `intel-arc-a750.png` — Intel Arc A750 Limited Edition reference supplied in
   the user's design reference; transparent background and empty margins were

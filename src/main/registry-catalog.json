@@ -1,0 +1,214 @@
+[
+  {
+    "id": "mpo",
+    "name": "Multiplane Overlay (MPO)",
+    "description": "MPO can cause stutter, flicker, or black screens. Windows normally leaves it on; Enable writes legacy MPOHack plus DWM OverlayTestMode=5 as an experimental suppression to validate with PresentMon or GPUView.",
+    "requiresElevation": true,
+    "absentLabel": "Not set - MPO follows the driver default (usually on)",
+    "reads": [
+      {
+        "path": "HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences",
+        "value": "MPOHack",
+        "type": "DWORD",
+        "on": "1",
+        "off": "0"
+      },
+      {
+        "path": "HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences",
+        "value": "MPOHack",
+        "type": "DWORD",
+        "on": "1",
+        "off": "0"
+      },
+      {
+        "path": "HKLM\\SOFTWARE\\Microsoft\\Windows\\Dwm",
+        "value": "OverlayTestMode",
+        "type": "DWORD",
+        "on": "5",
+        "off": "0"
+      }
+    ],
+    "apply": {
+      "applyable": true,
+      "revertNote": "Revert deletes MPOHack and OverlayTestMode from their hives - MPO follows the Windows/driver defaults again.",
+      "actions": {
+        "enable": [
+          {
+            "kind": "add",
+            "path": "HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences",
+            "value": "MPOHack",
+            "type": "REG_DWORD",
+            "data": "1"
+          },
+          {
+            "kind": "add",
+            "path": "HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences",
+            "value": "MPOHack",
+            "type": "REG_DWORD",
+            "data": "1"
+          },
+          {
+            "kind": "add",
+            "path": "HKLM\\SOFTWARE\\Microsoft\\Windows\\Dwm",
+            "value": "OverlayTestMode",
+            "type": "REG_DWORD",
+            "data": "5"
+          }
+        ],
+        "disable": [
+          {
+            "kind": "add",
+            "path": "HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences",
+            "value": "MPOHack",
+            "type": "REG_DWORD",
+            "data": "0"
+          },
+          {
+            "kind": "add",
+            "path": "HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences",
+            "value": "MPOHack",
+            "type": "REG_DWORD",
+            "data": "0"
+          },
+          {
+            "kind": "add",
+            "path": "HKLM\\SOFTWARE\\Microsoft\\Windows\\Dwm",
+            "value": "OverlayTestMode",
+            "type": "REG_DWORD",
+            "data": "0"
+          }
+        ],
+        "revert": [
+          {
+            "kind": "delete",
+            "path": "HKLM\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences",
+            "value": "MPOHack"
+          },
+          {
+            "kind": "delete",
+            "path": "HKCU\\SOFTWARE\\Microsoft\\DirectX\\UserGpuPreferences",
+            "value": "MPOHack"
+          },
+          {
+            "kind": "delete",
+            "path": "HKLM\\SOFTWARE\\Microsoft\\Windows\\Dwm",
+            "value": "OverlayTestMode"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "hags",
+    "name": "Hardware-accelerated GPU scheduling",
+    "description": "HAGS lets the GPU scheduler manage VRAM instead of the CPU driver thread - better input latency on some systems, stutter on others. Needs a reboot to take effect.",
+    "requiresElevation": true,
+    "absentLabel": "Not set - follows the Windows default (on for recent builds)",
+    "reads": [
+      {
+        "path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
+        "value": "HwSchMode",
+        "type": "DWORD",
+        "on": "2",
+        "off": "1"
+      }
+    ],
+    "apply": {
+      "applyable": true,
+      "revertNote": "Revert deletes HwSchMode - the Windows default applies (on for recent builds).",
+      "actions": {
+        "enable": [
+          {
+            "kind": "add",
+            "path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
+            "value": "HwSchMode",
+            "type": "REG_DWORD",
+            "data": "2"
+          }
+        ],
+        "disable": [
+          {
+            "kind": "add",
+            "path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
+            "value": "HwSchMode",
+            "type": "REG_DWORD",
+            "data": "1"
+          }
+        ],
+        "revert": [
+          {
+            "kind": "delete",
+            "path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
+            "value": "HwSchMode"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "game-dvr",
+    "name": "Game DVR / Background Recording",
+    "description": "Game Bar background recording can cost a few percent of FPS; this disables it machine-wide.",
+    "requiresElevation": true,
+    "absentLabel": "Not configured - recording follows the user setting",
+    "reads": [
+      {
+        "path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",
+        "value": "AllowGameDVR",
+        "type": "DWORD",
+        "on": "0",
+        "off": "1"
+      }
+    ],
+    "apply": {
+      "applyable": true,
+      "revertNote": "Revert deletes AllowGameDVR (the policy key stays) - recording follows the per-user Game Bar setting again.",
+      "actions": {
+        "enable": [
+          {
+            "kind": "add",
+            "path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",
+            "value": "AllowGameDVR",
+            "type": "REG_DWORD",
+            "data": "0"
+          }
+        ],
+        "disable": [
+          {
+            "kind": "add",
+            "path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",
+            "value": "AllowGameDVR",
+            "type": "REG_DWORD",
+            "data": "1"
+          }
+        ],
+        "revert": [
+          {
+            "kind": "delete",
+            "path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",
+            "value": "AllowGameDVR"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "fullscreen-optimizations",
+    "name": "Fullscreen Optimizations (per-app)",
+    "description": "A per-app compatibility flag - some games stutter with fullscreen optimizations on. There is no system-wide switch; this lists the apps carrying the flag.",
+    "requiresElevation": true,
+    "absentLabel": "No per-app compatibility flags set",
+    "reads": [
+      {
+        "path": "HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers",
+        "value": null,
+        "type": "REG_SZ",
+        "on": "FULLSCREENOPTIMIZATIONS"
+      }
+    ],
+    "apply": {
+      "applyable": false,
+      "revertNote": "Read-only - no system-wide setting to apply or revert."
+    }
+  }
+]

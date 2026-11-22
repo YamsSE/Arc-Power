@@ -1,0 +1,5168 @@
+{
+  "provenance": "Original game-profile-store.js function bodies; fixed Date; in-memory fs and explicit safe-candidate set",
+  "now": "2026-11-08T12:34:56.000Z",
+  "safe": [
+    "c:\\games\\a.exe",
+    "c:\\games\\b.exe",
+    "c:\\games\\😀.exe"
+  ],
+  "canonical": [
+    [
+      "C:/Games/A.EXE",
+      "c:\\games\\a.exe"
+    ],
+    [
+      "c:\\games\\a.exe",
+      "c:\\games\\a.exe"
+    ],
+    [
+      "C:/Games/B.EXE",
+      "c:\\games\\b.exe"
+    ],
+    [
+      "c:\\games\\b.exe",
+      "c:\\games\\b.exe"
+    ],
+    [
+      "relative.exe",
+      null
+    ],
+    [
+      "../bad.exe",
+      null
+    ],
+    [
+      "C:/missing.exe",
+      "c:\\missing.exe"
+    ],
+    [
+      "c:\\missing.exe",
+      "c:\\missing.exe"
+    ],
+    [
+      "C:/unsafe.exe",
+      "c:\\unsafe.exe"
+    ],
+    [
+      "c:\\unsafe.exe",
+      "c:\\unsafe.exe"
+    ]
+  ],
+  "comparisons": [
+    [
+      "C:/Games/A.EXE",
+      "C:/Games/A.EXE",
+      false,
+      0
+    ],
+    [
+      "C:/Games/A.EXE",
+      "c:\\games\\a.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/A.EXE",
+      "C:/Games/B.EXE",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/A.EXE",
+      "c:\\games\\b.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/A.EXE",
+      "relative.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/A.EXE",
+      "../bad.exe",
+      false,
+      1
+    ],
+    [
+      "C:/Games/A.EXE",
+      "C:/missing.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/A.EXE",
+      "c:\\missing.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/A.EXE",
+      "C:/unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/A.EXE",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "C:/Games/A.EXE",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "c:\\games\\a.exe",
+      false,
+      0
+    ],
+    [
+      "c:\\games\\a.exe",
+      "C:/Games/B.EXE",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "c:\\games\\b.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "relative.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "../bad.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "C:/missing.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "c:\\missing.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "C:/unsafe.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\a.exe",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/B.EXE",
+      "C:/Games/A.EXE",
+      false,
+      1
+    ],
+    [
+      "C:/Games/B.EXE",
+      "c:\\games\\a.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/B.EXE",
+      "C:/Games/B.EXE",
+      false,
+      0
+    ],
+    [
+      "C:/Games/B.EXE",
+      "c:\\games\\b.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/B.EXE",
+      "relative.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/B.EXE",
+      "../bad.exe",
+      false,
+      1
+    ],
+    [
+      "C:/Games/B.EXE",
+      "C:/missing.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/B.EXE",
+      "c:\\missing.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/B.EXE",
+      "C:/unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/Games/B.EXE",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "C:/Games/A.EXE",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "c:\\games\\a.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "C:/Games/B.EXE",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "c:\\games\\b.exe",
+      false,
+      0
+    ],
+    [
+      "c:\\games\\b.exe",
+      "relative.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "../bad.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "C:/missing.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "c:\\missing.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "C:/unsafe.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\games\\b.exe",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "relative.exe",
+      "C:/Games/A.EXE",
+      false,
+      1
+    ],
+    [
+      "relative.exe",
+      "c:\\games\\a.exe",
+      false,
+      1
+    ],
+    [
+      "relative.exe",
+      "C:/Games/B.EXE",
+      false,
+      1
+    ],
+    [
+      "relative.exe",
+      "c:\\games\\b.exe",
+      false,
+      1
+    ],
+    [
+      "relative.exe",
+      "relative.exe",
+      false,
+      0
+    ],
+    [
+      "relative.exe",
+      "../bad.exe",
+      false,
+      1
+    ],
+    [
+      "relative.exe",
+      "C:/missing.exe",
+      false,
+      1
+    ],
+    [
+      "relative.exe",
+      "c:\\missing.exe",
+      false,
+      1
+    ],
+    [
+      "relative.exe",
+      "C:/unsafe.exe",
+      false,
+      1
+    ],
+    [
+      "relative.exe",
+      "c:\\unsafe.exe",
+      false,
+      1
+    ],
+    [
+      "../bad.exe",
+      "C:/Games/A.EXE",
+      false,
+      -1
+    ],
+    [
+      "../bad.exe",
+      "c:\\games\\a.exe",
+      false,
+      -1
+    ],
+    [
+      "../bad.exe",
+      "C:/Games/B.EXE",
+      false,
+      -1
+    ],
+    [
+      "../bad.exe",
+      "c:\\games\\b.exe",
+      false,
+      -1
+    ],
+    [
+      "../bad.exe",
+      "relative.exe",
+      false,
+      -1
+    ],
+    [
+      "../bad.exe",
+      "../bad.exe",
+      false,
+      0
+    ],
+    [
+      "../bad.exe",
+      "C:/missing.exe",
+      false,
+      -1
+    ],
+    [
+      "../bad.exe",
+      "c:\\missing.exe",
+      false,
+      -1
+    ],
+    [
+      "../bad.exe",
+      "C:/unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "../bad.exe",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/missing.exe",
+      "C:/Games/A.EXE",
+      false,
+      1
+    ],
+    [
+      "C:/missing.exe",
+      "c:\\games\\a.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/missing.exe",
+      "C:/Games/B.EXE",
+      false,
+      1
+    ],
+    [
+      "C:/missing.exe",
+      "c:\\games\\b.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/missing.exe",
+      "relative.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/missing.exe",
+      "../bad.exe",
+      false,
+      1
+    ],
+    [
+      "C:/missing.exe",
+      "C:/missing.exe",
+      false,
+      0
+    ],
+    [
+      "C:/missing.exe",
+      "c:\\missing.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/missing.exe",
+      "C:/unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/missing.exe",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\missing.exe",
+      "C:/Games/A.EXE",
+      false,
+      1
+    ],
+    [
+      "c:\\missing.exe",
+      "c:\\games\\a.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\missing.exe",
+      "C:/Games/B.EXE",
+      false,
+      1
+    ],
+    [
+      "c:\\missing.exe",
+      "c:\\games\\b.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\missing.exe",
+      "relative.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\missing.exe",
+      "../bad.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\missing.exe",
+      "C:/missing.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\missing.exe",
+      "c:\\missing.exe",
+      false,
+      0
+    ],
+    [
+      "c:\\missing.exe",
+      "C:/unsafe.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\missing.exe",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/unsafe.exe",
+      "C:/Games/A.EXE",
+      false,
+      1
+    ],
+    [
+      "C:/unsafe.exe",
+      "c:\\games\\a.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/unsafe.exe",
+      "C:/Games/B.EXE",
+      false,
+      1
+    ],
+    [
+      "C:/unsafe.exe",
+      "c:\\games\\b.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/unsafe.exe",
+      "relative.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/unsafe.exe",
+      "../bad.exe",
+      false,
+      1
+    ],
+    [
+      "C:/unsafe.exe",
+      "C:/missing.exe",
+      false,
+      1
+    ],
+    [
+      "C:/unsafe.exe",
+      "c:\\missing.exe",
+      false,
+      -1
+    ],
+    [
+      "C:/unsafe.exe",
+      "C:/unsafe.exe",
+      false,
+      0
+    ],
+    [
+      "C:/unsafe.exe",
+      "c:\\unsafe.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "C:/Games/A.EXE",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "c:\\games\\a.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "C:/Games/B.EXE",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "c:\\games\\b.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "relative.exe",
+      false,
+      -1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "../bad.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "C:/missing.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "c:\\missing.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "C:/unsafe.exe",
+      false,
+      1
+    ],
+    [
+      "c:\\unsafe.exe",
+      "c:\\unsafe.exe",
+      false,
+      0
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      0
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      " Éclair \u0000relative.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      "missing\u0000C:/missing.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      "missing\u0000c:\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000C:/Games/A.EXE",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      0
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      " Éclair \u0000relative.exe",
+      true,
+      1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      "missing\u0000C:/missing.exe",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      "missing\u0000c:\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000C:/Games/B.EXE",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      " Éclair \u0000relative.exe",
+      true,
+      0
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      "missing\u0000C:/missing.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      "missing\u0000c:\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000relative.exe",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      " Éclair \u0000relative.exe",
+      true,
+      1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      0
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      "missing\u0000C:/missing.exe",
+      true,
+      -1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      "missing\u0000c:\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "Éclair\u0000c:\\games\\a.exe",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      " Éclair \u0000relative.exe",
+      true,
+      1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      0
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      "missing\u0000C:/missing.exe",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      "missing\u0000c:\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "alpha\u0000c:\\games\\b.exe",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      " Éclair \u0000relative.exe",
+      true,
+      1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      0
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      "missing\u0000C:/missing.exe",
+      true,
+      1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      "missing\u0000c:\\missing.exe",
+      true,
+      1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "﻿Z\u0000C:/Games/A.EXE",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      " Éclair \u0000relative.exe",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      0
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      "missing\u0000C:/missing.exe",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      "missing\u0000c:\\missing.exe",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "Z\u0000c:\\games\\a.exe",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      " Éclair \u0000relative.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      " Éclair \u0000../bad.exe",
+      true,
+      0
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      "missing\u0000C:/missing.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      "missing\u0000c:\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      " Éclair \u0000../bad.exe",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      " Éclair \u0000relative.exe",
+      true,
+      1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      0
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      "missing\u0000C:/missing.exe",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      "missing\u0000c:\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000C:/Games/A.EXE",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      " Éclair \u0000relative.exe",
+      true,
+      1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      0
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      "missing\u0000C:/missing.exe",
+      true,
+      1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      "missing\u0000c:\\missing.exe",
+      true,
+      1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "new\u0000C:/Games/A.EXE",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      " Éclair \u0000relative.exe",
+      true,
+      1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      0
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      "missing\u0000C:/missing.exe",
+      true,
+      1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      "missing\u0000c:\\missing.exe",
+      true,
+      1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "new\u0000c:\\games\\a.exe",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      " Éclair \u0000relative.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      "missing\u0000C:/missing.exe",
+      true,
+      0
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      "missing\u0000c:\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "missing\u0000C:/missing.exe",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      " Éclair \u0000relative.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      "missing\u0000C:/missing.exe",
+      true,
+      1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      "missing\u0000c:\\missing.exe",
+      true,
+      0
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "missing\u0000c:\\missing.exe",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      " Éclair \u0000relative.exe",
+      true,
+      1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      "missing\u0000C:/missing.exe",
+      true,
+      1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      "missing\u0000c:\\missing.exe",
+      true,
+      1
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      0
+    ],
+    [
+      "scan\u0000C:/Games/A.EXE",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      " Éclair \u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      "alpha\u0000C:/Games/B.EXE",
+      true,
+      1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      " Éclair \u0000relative.exe",
+      true,
+      1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      "Éclair\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      "alpha\u0000c:\\games\\b.exe",
+      true,
+      1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      "﻿Z\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      "Z\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      " Éclair \u0000../bad.exe",
+      true,
+      1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      "duplicate\u0000C:/Games/A.EXE",
+      true,
+      1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      "new\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      "new\u0000c:\\games\\a.exe",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      "missing\u0000C:/missing.exe",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      "missing\u0000c:\\missing.exe",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      "scan\u0000C:/Games/A.EXE",
+      true,
+      -1
+    ],
+    [
+      "duplicate\u0000c:\\games\\a.exe",
+      "duplicate\u0000c:\\games\\a.exe",
+      true,
+      0
+    ]
+  ],
+  "cases": [
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        null
+      ],
+      "result": "fallback-811c9dc5"
+    },
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        ""
+      ],
+      "result": "fallback-811c9dc5"
+    },
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        "ABC"
+      ],
+      "result": "fallback-1a47e90b"
+    },
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        "abc"
+      ],
+      "result": "fallback-1a47e90b"
+    },
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        "😀ÉΣΟΣİ"
+      ],
+      "result": "fallback-c88f631a"
+    },
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        "A﻿B"
+      ],
+      "result": "fallback-cbc54911"
+    },
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        [
+          "X",
+          null,
+          [
+            "Y"
+          ]
+        ]
+      ],
+      "result": "fallback-e173f97a"
+    },
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        true
+      ],
+      "result": "fallback-4db211e5"
+    },
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        0
+      ],
+      "result": "fallback-350ca8af"
+    },
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        0
+      ],
+      "result": "fallback-350ca8af"
+    },
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        1e+21
+      ],
+      "result": "fallback-b6a7b1f5"
+    },
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        1e-7
+      ],
+      "result": "fallback-5228e5cf"
+    },
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        {}
+      ],
+      "result": "fallback-807571ff"
+    },
+    {
+      "op": "deterministicArtworkKey",
+      "args": [
+        [
+          "😀",
+          "Z"
+        ]
+      ],
+      "result": "fallback-1a3f6ef2"
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        null
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        null
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        1
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        1
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "local:arc-power"
+      ],
+      "result": true
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "local:arc-power"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "local:arc-power\n"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "local:arc-power\n"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "fallback-a"
+      ],
+      "result": true
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "fallback-a"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "fallback-A"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "fallback-A"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "fallback-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      ],
+      "result": true
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "fallback-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "fallback-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "fallback-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "data:image/png;base64,A"
+      ],
+      "result": true
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "data:image/png;base64,A"
+      ],
+      "result": true
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "data:image/jpeg;base64,AB=="
+      ],
+      "result": true
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "data:image/jpeg;base64,AB=="
+      ],
+      "result": true
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "data:image/webp;base64,ABC="
+      ],
+      "result": true
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "data:image/webp;base64,ABC="
+      ],
+      "result": true
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "data:image/gif;base64,A"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "data:image/gif;base64,A"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "data:image/png;base64,="
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "data:image/png;base64,="
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "data:image/png;base64,AA==="
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "data:image/png;base64,AA==="
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "data:image/png;base64,A\n"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "data:image/png;base64,A\n"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidArtwork",
+      "args": [
+        "data:image/png;base64,A-A"
+      ],
+      "result": false
+    },
+    {
+      "op": "isValidBanner",
+      "args": [
+        "data:image/png;base64,A-A"
+      ],
+      "result": false
+    },
+    {
+      "op": "cleanGraphics",
+      "args": [
+        null
+      ],
+      "result": {}
+    },
+    {
+      "op": "cleanGraphics",
+      "args": [
+        []
+      ],
+      "result": {}
+    },
+    {
+      "op": "cleanGraphics",
+      "args": [
+        {}
+      ],
+      "result": {}
+    },
+    {
+      "op": "cleanGraphics",
+      "args": [
+        {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 119.5
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          },
+          "unknown": true
+        }
+      ],
+      "result": {
+        "flipMode": "smart-vsync",
+        "frameLimit": {
+          "enabled": true,
+          "value": 120
+        },
+        "lowLatency": "on-boost",
+        "enduranceGaming": "on",
+        "frameGenOverride": "4x",
+        "sharpening": {
+          "enabled": false,
+          "percentage": 100
+        }
+      }
+    },
+    {
+      "op": "cleanGraphics",
+      "args": [
+        {
+          "frameLimit": {
+            "enabled": 1,
+            "value": 20
+          },
+          "sharpening": {
+            "enabled": true,
+            "percentage": 2.5
+          }
+        }
+      ],
+      "result": {}
+    },
+    {
+      "op": "cleanGraphics",
+      "args": [
+        {
+          "frameLimit": {
+            "enabled": false,
+            "value": -2
+          },
+          "sharpening": {
+            "enabled": true,
+            "percentage": 0
+          }
+        }
+      ],
+      "result": {
+        "frameLimit": {
+          "enabled": false,
+          "value": 1
+        },
+        "sharpening": {
+          "enabled": true,
+          "percentage": 0
+        }
+      }
+    },
+    {
+      "op": "normalizeGameGpuProfile",
+      "args": [
+        null
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeGameGpuProfile",
+      "args": [
+        []
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeGameGpuProfile",
+      "args": [
+        {}
+      ],
+      "result": {
+        "deviceKey": null,
+        "deviceName": null,
+        "enabled": false,
+        "tuningProfileId": null,
+        "graphics": {},
+        "createdAt": "2026-11-08T12:34:56.000Z",
+        "updatedAt": "2026-11-08T12:34:56.000Z"
+      }
+    },
+    {
+      "op": "normalizeGameGpuProfile",
+      "args": [
+        {
+          "deviceKey": " GPU-A ",
+          "deviceName": " GPU A ",
+          "enabled": true,
+          "tuningProfileId": "p-a",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "createdAt": "first",
+          "updatedAt": "second"
+        }
+      ],
+      "result": {
+        "deviceKey": "GPU-A",
+        "deviceName": "GPU A",
+        "enabled": true,
+        "tuningProfileId": "p-a",
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "createdAt": "first",
+        "updatedAt": "second"
+      }
+    },
+    {
+      "op": "normalizeGameGpuProfile",
+      "args": [
+        {
+          "deviceKey": "GPU-B",
+          "deviceName": "GPU B",
+          "enabled": false,
+          "tuningProfileId": "p-b",
+          "graphics": {
+            "flipMode": "vsync-off"
+          },
+          "createdAt": "b-first"
+        }
+      ],
+      "result": {
+        "deviceKey": "GPU-B",
+        "deviceName": "GPU B",
+        "enabled": false,
+        "tuningProfileId": "p-b",
+        "graphics": {
+          "flipMode": "vsync-off"
+        },
+        "createdAt": "b-first",
+        "updatedAt": "2026-11-08T12:34:56.000Z"
+      }
+    },
+    {
+      "op": "normalizeGameGpuProfile",
+      "args": [
+        {
+          "deviceKey": ""
+        }
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeGameGpuProfile",
+      "args": [
+        {
+          "deviceKey": 4
+        }
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeGameGpuProfile",
+      "args": [
+        {
+          "deviceKey": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeGameGpuProfile",
+      "args": [
+        {
+          "deviceKey": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+          "deviceName": "﻿ GPU 😀  ",
+          "tuningProfileId": "pid"
+        }
+      ],
+      "result": {
+        "deviceKey": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "deviceName": "GPU 😀",
+        "enabled": false,
+        "tuningProfileId": "pid",
+        "graphics": {},
+        "createdAt": "2026-11-08T12:34:56.000Z",
+        "updatedAt": "2026-11-08T12:34:56.000Z"
+      }
+    },
+    {
+      "op": "normalizeGameGpuProfile",
+      "args": [
+        {
+          "deviceKey": null,
+          "tuningProfileId": "p﻿id",
+          "createdAt": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+        }
+      ],
+      "result": {
+        "deviceKey": null,
+        "deviceName": null,
+        "enabled": false,
+        "tuningProfileId": null,
+        "graphics": {},
+        "createdAt": "2026-11-08T12:34:56.000Z",
+        "updatedAt": "2026-11-08T12:34:56.000Z"
+      }
+    },
+    {
+      "op": "mergeGameGpuProfilePatch",
+      "args": [
+        {
+          "deviceKey": " GPU-A ",
+          "deviceName": " GPU A ",
+          "enabled": true,
+          "tuningProfileId": "p-a",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "createdAt": "first",
+          "updatedAt": "second"
+        },
+        {}
+      ],
+      "result": {
+        "deviceKey": "GPU-A",
+        "deviceName": "GPU A",
+        "enabled": true,
+        "tuningProfileId": "p-a",
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "createdAt": "first",
+        "updatedAt": "second"
+      }
+    },
+    {
+      "op": "mergeGameGpuProfilePatch",
+      "args": [
+        {
+          "deviceKey": " GPU-A ",
+          "deviceName": " GPU A ",
+          "enabled": true,
+          "tuningProfileId": "p-a",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "createdAt": "first",
+          "updatedAt": "second"
+        },
+        {
+          "enabled": false
+        }
+      ],
+      "result": {
+        "deviceKey": "GPU-A",
+        "deviceName": "GPU A",
+        "enabled": false,
+        "tuningProfileId": "p-a",
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "createdAt": "first",
+        "updatedAt": "second"
+      }
+    },
+    {
+      "op": "mergeGameGpuProfilePatch",
+      "args": [
+        {
+          "deviceKey": " GPU-A ",
+          "deviceName": " GPU A ",
+          "enabled": true,
+          "tuningProfileId": "p-a",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "createdAt": "first",
+          "updatedAt": "second"
+        },
+        {
+          "enabled": "true",
+          "deviceName": null
+        }
+      ],
+      "result": {
+        "deviceKey": "GPU-A",
+        "deviceName": null,
+        "enabled": true,
+        "tuningProfileId": "p-a",
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "createdAt": "first",
+        "updatedAt": "second"
+      }
+    },
+    {
+      "op": "mergeGameGpuProfilePatch",
+      "args": [
+        {
+          "deviceKey": " GPU-A ",
+          "deviceName": " GPU A ",
+          "enabled": true,
+          "tuningProfileId": "p-a",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "createdAt": "first",
+          "updatedAt": "second"
+        },
+        {
+          "deviceKey": null,
+          "graphics": {
+            "lowLatency": "off"
+          }
+        }
+      ],
+      "result": {
+        "deviceKey": null,
+        "deviceName": "GPU A",
+        "enabled": true,
+        "tuningProfileId": "p-a",
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "off",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "createdAt": "first",
+        "updatedAt": "second"
+      }
+    },
+    {
+      "op": "mergeGameGpuProfilePatch",
+      "args": [
+        {
+          "deviceKey": " GPU-A ",
+          "deviceName": " GPU A ",
+          "enabled": true,
+          "tuningProfileId": "p-a",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "createdAt": "first",
+          "updatedAt": "second"
+        },
+        {
+          "deviceKey": "",
+          "graphics": {
+            "frameLimit": {
+              "enabled": false,
+              "value": 300
+            }
+          }
+        }
+      ],
+      "result": null
+    },
+    {
+      "op": "mergeGameGpuProfilePatch",
+      "args": [
+        {
+          "deviceKey": " GPU-A ",
+          "deviceName": " GPU A ",
+          "enabled": true,
+          "tuningProfileId": "p-a",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "createdAt": "first",
+          "updatedAt": "second"
+        },
+        {
+          "tuningProfileId": null
+        }
+      ],
+      "result": {
+        "deviceKey": "GPU-A",
+        "deviceName": "GPU A",
+        "enabled": true,
+        "tuningProfileId": null,
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "createdAt": "first",
+        "updatedAt": "second"
+      }
+    },
+    {
+      "op": "mergeGameGpuProfilePatch",
+      "args": [
+        {
+          "deviceKey": " GPU-A ",
+          "deviceName": " GPU A ",
+          "enabled": true,
+          "tuningProfileId": "p-a",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "createdAt": "first",
+          "updatedAt": "second"
+        },
+        {
+          "graphics": []
+        }
+      ],
+      "result": {
+        "deviceKey": "GPU-A",
+        "deviceName": "GPU A",
+        "enabled": true,
+        "tuningProfileId": "p-a",
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "createdAt": "first",
+        "updatedAt": "second"
+      }
+    },
+    {
+      "op": "mergeGameGpuProfiles",
+      "args": [
+        [
+          {
+            "deviceKey": " GPU-A ",
+            "deviceName": " GPU A ",
+            "enabled": true,
+            "tuningProfileId": "p-a",
+            "graphics": {
+              "flipMode": "smart-vsync",
+              "frameLimit": {
+                "enabled": true,
+                "value": 119.5
+              },
+              "lowLatency": "on-boost",
+              "enduranceGaming": "on",
+              "frameGenOverride": "4x",
+              "sharpening": {
+                "enabled": false,
+                "percentage": 100
+              },
+              "unknown": true
+            },
+            "createdAt": "first",
+            "updatedAt": "second"
+          },
+          {
+            "deviceKey": "GPU-B",
+            "deviceName": "GPU B",
+            "enabled": false,
+            "tuningProfileId": "p-b",
+            "graphics": {
+              "flipMode": "vsync-off"
+            },
+            "createdAt": "b-first"
+          },
+          {
+            "deviceKey": null,
+            "enabled": true
+          }
+        ],
+        [
+          {
+            "deviceKey": " GPU-A ",
+            "deviceName": null,
+            "enabled": true,
+            "tuningProfileId": "p-a",
+            "graphics": {},
+            "createdAt": "replaced",
+            "updatedAt": "new"
+          },
+          {
+            "deviceKey": "__legacy__",
+            "enabled": false
+          }
+        ]
+      ],
+      "result": [
+        {
+          "deviceKey": "GPU-A",
+          "deviceName": "GPU A",
+          "enabled": true,
+          "tuningProfileId": "p-a",
+          "graphics": {},
+          "createdAt": "first",
+          "updatedAt": "new"
+        },
+        {
+          "deviceKey": "GPU-B",
+          "deviceName": "GPU B",
+          "enabled": false,
+          "tuningProfileId": "p-b",
+          "graphics": {
+            "flipMode": "vsync-off"
+          },
+          "createdAt": "b-first",
+          "updatedAt": "2026-11-08T12:34:56.000Z"
+        },
+        {
+          "deviceKey": "__legacy__",
+          "deviceName": null,
+          "enabled": false,
+          "tuningProfileId": null,
+          "graphics": {},
+          "createdAt": "2026-11-08T12:34:56.000Z",
+          "updatedAt": "2026-11-08T12:34:56.000Z"
+        }
+      ]
+    },
+    {
+      "op": "normalizeGameSettings",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "p-a",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB="
+        }
+      ],
+      "result": {
+        "exePath": "c:\\games\\a.exe",
+        "enabled": false,
+        "tuningProfileId": null,
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "gpuProfiles": [
+          {
+            "deviceKey": null,
+            "deviceName": null,
+            "enabled": false,
+            "tuningProfileId": null,
+            "graphics": {
+              "flipMode": "smart-vsync",
+              "frameLimit": {
+                "enabled": true,
+                "value": 120
+              },
+              "lowLatency": "on-boost",
+              "enduranceGaming": "on",
+              "frameGenOverride": "4x",
+              "sharpening": {
+                "enabled": false,
+                "percentage": 100
+              }
+            },
+            "createdAt": "old",
+            "updatedAt": "later"
+          }
+        ],
+        "createdAt": "old",
+        "updatedAt": "later"
+      }
+    },
+    {
+      "op": "normalizeGameSettings",
+      "args": [
+        {
+          "exePath": "C:/Games/B.EXE",
+          "profileId": "p-b",
+          "displayName": "alpha",
+          "createdAt": "",
+          "updatedAt": "",
+          "graphics": {
+            "frameLimit": {
+              "enabled": true,
+              "value": 240
+            }
+          },
+          "enabled": false
+        }
+      ],
+      "result": {
+        "exePath": "c:\\games\\b.exe",
+        "enabled": false,
+        "tuningProfileId": null,
+        "graphics": {
+          "frameLimit": {
+            "enabled": true,
+            "value": 240
+          }
+        },
+        "gpuProfiles": [
+          {
+            "deviceKey": null,
+            "deviceName": null,
+            "enabled": false,
+            "tuningProfileId": null,
+            "graphics": {
+              "frameLimit": {
+                "enabled": true,
+                "value": 240
+              }
+            },
+            "createdAt": "",
+            "updatedAt": ""
+          }
+        ],
+        "createdAt": "",
+        "updatedAt": ""
+      }
+    },
+    {
+      "op": "normalizeGameSettings",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "p-a",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB=",
+          "gpuProfiles": [
+            {
+              "deviceKey": " GPU-A ",
+              "deviceName": " GPU A ",
+              "enabled": true,
+              "tuningProfileId": "p-a",
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 119.5
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                },
+                "unknown": true
+              },
+              "createdAt": "first",
+              "updatedAt": "second"
+            },
+            {
+              "deviceKey": "GPU-B",
+              "deviceName": "GPU B",
+              "enabled": false,
+              "tuningProfileId": "p-b",
+              "graphics": {
+                "flipMode": "vsync-off"
+              },
+              "createdAt": "b-first"
+            },
+            {
+              "deviceKey": " GPU-A ",
+              "deviceName": null,
+              "enabled": true,
+              "tuningProfileId": "p-a",
+              "graphics": {},
+              "createdAt": "first",
+              "updatedAt": "second"
+            }
+          ]
+        }
+      ],
+      "result": {
+        "exePath": "c:\\games\\a.exe",
+        "enabled": true,
+        "tuningProfileId": "p-a",
+        "graphics": {},
+        "gpuProfiles": [
+          {
+            "deviceKey": "GPU-A",
+            "deviceName": "GPU A",
+            "enabled": true,
+            "tuningProfileId": "p-a",
+            "graphics": {},
+            "createdAt": "first",
+            "updatedAt": "second"
+          },
+          {
+            "deviceKey": "GPU-B",
+            "deviceName": "GPU B",
+            "enabled": false,
+            "tuningProfileId": "p-b",
+            "graphics": {
+              "flipMode": "vsync-off"
+            },
+            "createdAt": "b-first",
+            "updatedAt": "2026-11-08T12:34:56.000Z"
+          }
+        ],
+        "createdAt": "old",
+        "updatedAt": "later"
+      }
+    },
+    {
+      "op": "normalizeGameSettings",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "p-a",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB=",
+          "gpuProfiles": []
+        }
+      ],
+      "result": {
+        "exePath": "c:\\games\\a.exe",
+        "enabled": false,
+        "tuningProfileId": null,
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "gpuProfiles": [
+          {
+            "deviceKey": null,
+            "deviceName": null,
+            "enabled": false,
+            "tuningProfileId": null,
+            "graphics": {
+              "flipMode": "smart-vsync",
+              "frameLimit": {
+                "enabled": true,
+                "value": 120
+              },
+              "lowLatency": "on-boost",
+              "enduranceGaming": "on",
+              "frameGenOverride": "4x",
+              "sharpening": {
+                "enabled": false,
+                "percentage": 100
+              }
+            },
+            "createdAt": "old",
+            "updatedAt": "later"
+          }
+        ],
+        "createdAt": "old",
+        "updatedAt": "later"
+      }
+    },
+    {
+      "op": "normalizeGameSettings",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "p-a",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB=",
+          "gpuProfiles": [
+            {
+              "deviceKey": ""
+            }
+          ]
+        }
+      ],
+      "result": {
+        "exePath": "c:\\games\\a.exe",
+        "enabled": false,
+        "tuningProfileId": null,
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "gpuProfiles": [
+          {
+            "deviceKey": null,
+            "deviceName": null,
+            "enabled": false,
+            "tuningProfileId": null,
+            "graphics": {
+              "flipMode": "smart-vsync",
+              "frameLimit": {
+                "enabled": true,
+                "value": 120
+              },
+              "lowLatency": "on-boost",
+              "enduranceGaming": "on",
+              "frameGenOverride": "4x",
+              "sharpening": {
+                "enabled": false,
+                "percentage": 100
+              }
+            },
+            "createdAt": "old",
+            "updatedAt": "later"
+          }
+        ],
+        "createdAt": "old",
+        "updatedAt": "later"
+      }
+    },
+    {
+      "op": "normalizeGameSettings",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "p-a",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB=",
+          "deviceKey": ""
+        }
+      ],
+      "error": "Cannot read properties of null (reading 'deviceKey')"
+    },
+    {
+      "op": "normalizeGameSettings",
+      "args": [
+        {
+          "exePath": "relative.exe",
+          "profileId": "p-a",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB="
+        }
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeGameSettings",
+      "args": [
+        null
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeCatalogEntry",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "p-a",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB="
+        }
+      ],
+      "result": {
+        "exePath": "c:\\games\\a.exe",
+        "processName": "a.exe",
+        "displayName": "Éclair",
+        "artwork": "data:image/png;base64,AAA=",
+        "banner": "data:image/webp;base64,BBB=",
+        "source": "scan",
+        "createdAt": "old",
+        "updatedAt": "later"
+      }
+    },
+    {
+      "op": "normalizeCatalogEntry",
+      "args": [
+        {
+          "exePath": "C:/Games/B.EXE",
+          "profileId": "p-b",
+          "displayName": "alpha",
+          "createdAt": "",
+          "updatedAt": "",
+          "graphics": {
+            "frameLimit": {
+              "enabled": true,
+              "value": 240
+            }
+          },
+          "enabled": false
+        }
+      ],
+      "result": {
+        "exePath": "c:\\games\\b.exe",
+        "processName": "b.exe",
+        "displayName": "alpha",
+        "artwork": "fallback-836105bf",
+        "banner": null,
+        "source": "scan",
+        "createdAt": "",
+        "updatedAt": ""
+      }
+    },
+    {
+      "op": "normalizeCatalogEntry",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "p-a",
+          "displayName": "﻿Z",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB=",
+          "source": "manual"
+        }
+      ],
+      "result": {
+        "exePath": "c:\\games\\a.exe",
+        "processName": "a.exe",
+        "displayName": "Z",
+        "artwork": "data:image/png;base64,AAA=",
+        "banner": "data:image/webp;base64,BBB=",
+        "source": "manual",
+        "createdAt": "old",
+        "updatedAt": "later"
+      }
+    },
+    {
+      "op": "normalizeCatalogEntry",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "p-a",
+          "displayName": " Éclair ",
+          "createdAt": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "fallback-x",
+          "banner": "bad"
+        }
+      ],
+      "result": {
+        "exePath": "c:\\games\\a.exe",
+        "processName": "a.exe",
+        "displayName": "Éclair",
+        "artwork": "fallback-x",
+        "banner": null,
+        "source": "scan",
+        "createdAt": "2026-11-08T12:34:56.000Z",
+        "updatedAt": "later"
+      }
+    },
+    {
+      "op": "normalizeCatalogEntry",
+      "args": [
+        null
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeAssociation",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "p-a",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB="
+        }
+      ],
+      "result": {
+        "id": "game-702d617c633a5c67616d65735c612e65",
+        "profileId": "p-a",
+        "exePath": "c:\\games\\a.exe",
+        "processName": "a.exe",
+        "displayName": "Éclair",
+        "artwork": "data:image/png;base64,AAA=",
+        "banner": "data:image/webp;base64,BBB=",
+        "source": "scan",
+        "enabled": true,
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "createdAt": "old",
+        "updatedAt": "later"
+      }
+    },
+    {
+      "op": "normalizeAssociation",
+      "args": [
+        {
+          "exePath": "C:/Games/B.EXE",
+          "profileId": "p-b",
+          "displayName": "alpha",
+          "createdAt": "",
+          "updatedAt": "",
+          "graphics": {
+            "frameLimit": {
+              "enabled": true,
+              "value": 240
+            }
+          },
+          "enabled": false
+        }
+      ],
+      "result": {
+        "id": "game-702d627c633a5c67616d65735c622e65",
+        "profileId": "p-b",
+        "exePath": "c:\\games\\b.exe",
+        "processName": "b.exe",
+        "displayName": "alpha",
+        "artwork": "fallback-836105bf",
+        "banner": null,
+        "source": "scan",
+        "enabled": false,
+        "graphics": {
+          "frameLimit": {
+            "enabled": true,
+            "value": 240
+          }
+        },
+        "createdAt": "",
+        "updatedAt": ""
+      }
+    },
+    {
+      "op": "normalizeAssociation",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "p-a",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB=",
+          "id": " id ",
+          "enabled": 0
+        }
+      ],
+      "result": {
+        "id": "id",
+        "profileId": "p-a",
+        "exePath": "c:\\games\\a.exe",
+        "processName": "a.exe",
+        "displayName": "Éclair",
+        "artwork": "data:image/png;base64,AAA=",
+        "banner": "data:image/webp;base64,BBB=",
+        "source": "scan",
+        "enabled": true,
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "createdAt": "old",
+        "updatedAt": "later"
+      }
+    },
+    {
+      "op": "normalizeAssociation",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "p id",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB="
+        }
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeAssociation",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "pid",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB="
+        }
+      ],
+      "result": {
+        "id": "game-70c28569647c633a5c67616d65735c61",
+        "profileId": "pid",
+        "exePath": "c:\\games\\a.exe",
+        "processName": "a.exe",
+        "displayName": "Éclair",
+        "artwork": "data:image/png;base64,AAA=",
+        "banner": "data:image/webp;base64,BBB=",
+        "source": "scan",
+        "enabled": true,
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "createdAt": "old",
+        "updatedAt": "later"
+      }
+    },
+    {
+      "op": "normalizeAssociation",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "p﻿id",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB="
+        }
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeAssociation",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+          "displayName": " Éclair ",
+          "createdAt": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB=",
+          "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      ],
+      "result": {
+        "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "profileId": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "exePath": "c:\\games\\a.exe",
+        "processName": "a.exe",
+        "displayName": "Éclair",
+        "artwork": "data:image/png;base64,AAA=",
+        "banner": "data:image/webp;base64,BBB=",
+        "source": "scan",
+        "enabled": true,
+        "graphics": {
+          "flipMode": "smart-vsync",
+          "frameLimit": {
+            "enabled": true,
+            "value": 120
+          },
+          "lowLatency": "on-boost",
+          "enduranceGaming": "on",
+          "frameGenOverride": "4x",
+          "sharpening": {
+            "enabled": false,
+            "percentage": 100
+          }
+        },
+        "createdAt": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "updatedAt": "later"
+      }
+    },
+    {
+      "op": "normalizeAssociation",
+      "args": [
+        {
+          "exePath": "C:/Games/A.EXE",
+          "profileId": "p-a",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB=",
+          "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx😀"
+        }
+      ],
+      "rustRefusal": true
+    },
+    {
+      "op": "normalizeAssociation",
+      "args": [
+        {
+          "exePath": "../bad.exe",
+          "profileId": "p-a",
+          "displayName": " Éclair ",
+          "createdAt": "old",
+          "updatedAt": "later",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 119.5
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            },
+            "unknown": true
+          },
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB="
+        }
+      ],
+      "result": null
+    },
+    {
+      "op": "normalizeAssociations",
+      "args": [
+        [
+          {
+            "exePath": "C:/Games/A.EXE",
+            "profileId": "p-a",
+            "displayName": " Éclair ",
+            "createdAt": "old",
+            "updatedAt": "later",
+            "graphics": {
+              "flipMode": "smart-vsync",
+              "frameLimit": {
+                "enabled": true,
+                "value": 119.5
+              },
+              "lowLatency": "on-boost",
+              "enduranceGaming": "on",
+              "frameGenOverride": "4x",
+              "sharpening": {
+                "enabled": false,
+                "percentage": 100
+              },
+              "unknown": true
+            },
+            "artwork": "data:image/png;base64,AAA=",
+            "banner": "data:image/webp;base64,BBB="
+          },
+          {
+            "exePath": "C:/Games/B.EXE",
+            "profileId": "p-b",
+            "displayName": "alpha",
+            "createdAt": "",
+            "updatedAt": "",
+            "graphics": {
+              "frameLimit": {
+                "enabled": true,
+                "value": 240
+              }
+            },
+            "enabled": false
+          },
+          {
+            "exePath": "C:/Games/A.EXE",
+            "profileId": "p-a",
+            "displayName": "duplicate",
+            "createdAt": "old",
+            "updatedAt": "later",
+            "graphics": {
+              "flipMode": "smart-vsync",
+              "frameLimit": {
+                "enabled": true,
+                "value": 119.5
+              },
+              "lowLatency": "on-boost",
+              "enduranceGaming": "on",
+              "frameGenOverride": "4x",
+              "sharpening": {
+                "enabled": false,
+                "percentage": 100
+              },
+              "unknown": true
+            },
+            "artwork": "data:image/png;base64,AAA=",
+            "banner": "data:image/webp;base64,BBB="
+          },
+          null
+        ]
+      ],
+      "result": [
+        {
+          "id": "game-702d627c633a5c67616d65735c622e65",
+          "profileId": "p-b",
+          "exePath": "c:\\games\\b.exe",
+          "processName": "b.exe",
+          "displayName": "alpha",
+          "artwork": "fallback-836105bf",
+          "banner": null,
+          "source": "scan",
+          "enabled": false,
+          "graphics": {
+            "frameLimit": {
+              "enabled": true,
+              "value": 240
+            }
+          },
+          "createdAt": "",
+          "updatedAt": ""
+        },
+        {
+          "id": "game-702d617c633a5c67616d65735c612e65",
+          "profileId": "p-a",
+          "exePath": "c:\\games\\a.exe",
+          "processName": "a.exe",
+          "displayName": "Éclair",
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": "data:image/webp;base64,BBB=",
+          "source": "scan",
+          "enabled": true,
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 120
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            }
+          },
+          "createdAt": "old",
+          "updatedAt": "later"
+        }
+      ]
+    },
+    {
+      "op": "normalizeCatalog",
+      "args": [
+        [
+          {
+            "exePath": "C:/Games/A.EXE",
+            "profileId": "p-a",
+            "displayName": " Éclair ",
+            "createdAt": "old",
+            "updatedAt": "later",
+            "graphics": {
+              "flipMode": "smart-vsync",
+              "frameLimit": {
+                "enabled": true,
+                "value": 119.5
+              },
+              "lowLatency": "on-boost",
+              "enduranceGaming": "on",
+              "frameGenOverride": "4x",
+              "sharpening": {
+                "enabled": false,
+                "percentage": 100
+              },
+              "unknown": true
+            },
+            "artwork": "data:image/png;base64,AAA=",
+            "banner": "data:image/webp;base64,BBB="
+          },
+          {
+            "exePath": "C:/Games/B.EXE",
+            "profileId": "p-b",
+            "displayName": "alpha",
+            "createdAt": "",
+            "updatedAt": "",
+            "graphics": {
+              "frameLimit": {
+                "enabled": true,
+                "value": 240
+              }
+            },
+            "enabled": false
+          },
+          {
+            "exePath": "C:/Games/A.EXE",
+            "profileId": "p-a",
+            "displayName": "new",
+            "createdAt": "new",
+            "updatedAt": "later",
+            "graphics": {
+              "flipMode": "smart-vsync",
+              "frameLimit": {
+                "enabled": true,
+                "value": 119.5
+              },
+              "lowLatency": "on-boost",
+              "enduranceGaming": "on",
+              "frameGenOverride": "4x",
+              "sharpening": {
+                "enabled": false,
+                "percentage": 100
+              },
+              "unknown": true
+            },
+            "artwork": "fallback-new",
+            "banner": null
+          }
+        ]
+      ],
+      "result": [
+        {
+          "exePath": "c:\\games\\b.exe",
+          "processName": "b.exe",
+          "displayName": "alpha",
+          "artwork": "fallback-836105bf",
+          "banner": null,
+          "source": "scan",
+          "createdAt": "",
+          "updatedAt": ""
+        },
+        {
+          "exePath": "c:\\games\\a.exe",
+          "processName": "a.exe",
+          "displayName": "new",
+          "artwork": "data:image/png;base64,AAA=",
+          "banner": null,
+          "source": "scan",
+          "createdAt": "old",
+          "updatedAt": "later"
+        }
+      ]
+    },
+    {
+      "op": "normalizeSettings",
+      "args": [
+        [
+          {
+            "exePath": "C:/Games/A.EXE",
+            "profileId": "p-a",
+            "displayName": " Éclair ",
+            "createdAt": "old",
+            "updatedAt": "later",
+            "graphics": {
+              "flipMode": "smart-vsync",
+              "frameLimit": {
+                "enabled": true,
+                "value": 119.5
+              },
+              "lowLatency": "on-boost",
+              "enduranceGaming": "on",
+              "frameGenOverride": "4x",
+              "sharpening": {
+                "enabled": false,
+                "percentage": 100
+              },
+              "unknown": true
+            },
+            "artwork": "data:image/png;base64,AAA=",
+            "banner": "data:image/webp;base64,BBB=",
+            "gpuProfiles": [
+              {
+                "deviceKey": " GPU-A ",
+                "deviceName": " GPU A ",
+                "enabled": true,
+                "tuningProfileId": "p-a",
+                "graphics": {
+                  "flipMode": "smart-vsync",
+                  "frameLimit": {
+                    "enabled": true,
+                    "value": 119.5
+                  },
+                  "lowLatency": "on-boost",
+                  "enduranceGaming": "on",
+                  "frameGenOverride": "4x",
+                  "sharpening": {
+                    "enabled": false,
+                    "percentage": 100
+                  },
+                  "unknown": true
+                },
+                "createdAt": "first",
+                "updatedAt": "second"
+              }
+            ]
+          },
+          {
+            "exePath": "C:/Games/A.EXE",
+            "profileId": "p-a",
+            "displayName": " Éclair ",
+            "createdAt": "old",
+            "updatedAt": "later",
+            "graphics": {
+              "flipMode": "smart-vsync",
+              "frameLimit": {
+                "enabled": true,
+                "value": 119.5
+              },
+              "lowLatency": "on-boost",
+              "enduranceGaming": "on",
+              "frameGenOverride": "4x",
+              "sharpening": {
+                "enabled": false,
+                "percentage": 100
+              },
+              "unknown": true
+            },
+            "artwork": "data:image/png;base64,AAA=",
+            "banner": "data:image/webp;base64,BBB=",
+            "gpuProfiles": [
+              {
+                "deviceKey": "GPU-B",
+                "deviceName": "GPU B",
+                "enabled": false,
+                "tuningProfileId": "p-b",
+                "graphics": {
+                  "flipMode": "vsync-off"
+                },
+                "createdAt": "b-first"
+              }
+            ]
+          },
+          {
+            "exePath": "C:/Games/B.EXE",
+            "profileId": "p-b",
+            "displayName": "alpha",
+            "createdAt": "",
+            "updatedAt": "",
+            "graphics": {
+              "frameLimit": {
+                "enabled": true,
+                "value": 240
+              }
+            },
+            "enabled": false,
+            "gpuProfiles": []
+          }
+        ]
+      ],
+      "result": [
+        {
+          "exePath": "c:\\games\\a.exe",
+          "enabled": true,
+          "tuningProfileId": "p-a",
+          "graphics": {
+            "flipMode": "smart-vsync",
+            "frameLimit": {
+              "enabled": true,
+              "value": 120
+            },
+            "lowLatency": "on-boost",
+            "enduranceGaming": "on",
+            "frameGenOverride": "4x",
+            "sharpening": {
+              "enabled": false,
+              "percentage": 100
+            }
+          },
+          "gpuProfiles": [
+            {
+              "deviceKey": "GPU-A",
+              "deviceName": "GPU A",
+              "enabled": true,
+              "tuningProfileId": "p-a",
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 120
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                }
+              },
+              "createdAt": "first",
+              "updatedAt": "second"
+            },
+            {
+              "deviceKey": "GPU-B",
+              "deviceName": "GPU B",
+              "enabled": false,
+              "tuningProfileId": "p-b",
+              "graphics": {
+                "flipMode": "vsync-off"
+              },
+              "createdAt": "b-first",
+              "updatedAt": "2026-11-08T12:34:56.000Z"
+            }
+          ],
+          "createdAt": "old",
+          "updatedAt": "later"
+        },
+        {
+          "exePath": "c:\\games\\b.exe",
+          "enabled": false,
+          "tuningProfileId": null,
+          "graphics": {
+            "frameLimit": {
+              "enabled": true,
+              "value": 240
+            }
+          },
+          "gpuProfiles": [
+            {
+              "deviceKey": null,
+              "deviceName": null,
+              "enabled": false,
+              "tuningProfileId": null,
+              "graphics": {
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 240
+                }
+              },
+              "createdAt": "",
+              "updatedAt": ""
+            }
+          ],
+          "createdAt": "",
+          "updatedAt": ""
+        }
+      ]
+    },
+    {
+      "op": "migrate",
+      "args": [
+        {
+          "schemaVersion": 1,
+          "associations": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "profileId": "p-a",
+              "displayName": " Éclair ",
+              "createdAt": "old",
+              "updatedAt": "later",
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 119.5
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                },
+                "unknown": true
+              },
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB="
+            },
+            {
+              "exePath": "C:/Games/B.EXE",
+              "profileId": "p-b",
+              "displayName": "alpha",
+              "createdAt": "",
+              "updatedAt": "",
+              "graphics": {
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 240
+                }
+              },
+              "enabled": false
+            },
+            {
+              "exePath": "C:/missing.exe",
+              "profileId": "p-missing",
+              "displayName": "missing"
+            }
+          ]
+        }
+      ],
+      "result": {
+        "data": {
+          "schemaVersion": 3,
+          "associations": [
+            {
+              "id": "game-702d627c633a5c67616d65735c622e65",
+              "profileId": "p-b",
+              "exePath": "c:\\games\\b.exe",
+              "processName": "b.exe",
+              "displayName": "alpha",
+              "artwork": "fallback-836105bf",
+              "banner": null,
+              "source": "scan",
+              "enabled": false,
+              "graphics": {
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 240
+                }
+              },
+              "createdAt": "",
+              "updatedAt": ""
+            },
+            {
+              "id": "game-702d617c633a5c67616d65735c612e65",
+              "profileId": "p-a",
+              "exePath": "c:\\games\\a.exe",
+              "processName": "a.exe",
+              "displayName": "Éclair",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB=",
+              "source": "scan",
+              "enabled": true,
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 120
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                }
+              },
+              "createdAt": "old",
+              "updatedAt": "later"
+            },
+            {
+              "id": "game-702d6d697373696e677c633a5c6d6973",
+              "profileId": "p-missing",
+              "exePath": "c:\\missing.exe",
+              "processName": "missing.exe",
+              "displayName": "missing",
+              "artwork": "fallback-80e75412",
+              "banner": null,
+              "source": "scan",
+              "enabled": true,
+              "graphics": {},
+              "createdAt": "2026-11-08T12:34:56.000Z",
+              "updatedAt": "2026-11-08T12:34:56.000Z"
+            }
+          ],
+          "catalog": [
+            {
+              "exePath": "c:\\games\\b.exe",
+              "processName": "b.exe",
+              "displayName": "alpha",
+              "artwork": "fallback-836105bf",
+              "banner": null,
+              "source": "scan",
+              "createdAt": "",
+              "updatedAt": ""
+            },
+            {
+              "exePath": "c:\\games\\a.exe",
+              "processName": "a.exe",
+              "displayName": "Éclair",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB=",
+              "source": "scan",
+              "createdAt": "old",
+              "updatedAt": "later"
+            }
+          ],
+          "settings": [
+            {
+              "exePath": "c:\\games\\a.exe",
+              "enabled": false,
+              "tuningProfileId": null,
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 120
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                }
+              },
+              "gpuProfiles": [
+                {
+                  "deviceKey": null,
+                  "deviceName": null,
+                  "enabled": false,
+                  "tuningProfileId": null,
+                  "graphics": {
+                    "flipMode": "smart-vsync",
+                    "frameLimit": {
+                      "enabled": true,
+                      "value": 120
+                    },
+                    "lowLatency": "on-boost",
+                    "enduranceGaming": "on",
+                    "frameGenOverride": "4x",
+                    "sharpening": {
+                      "enabled": false,
+                      "percentage": 100
+                    }
+                  },
+                  "createdAt": "old",
+                  "updatedAt": "later"
+                }
+              ],
+              "createdAt": "old",
+              "updatedAt": "later"
+            },
+            {
+              "exePath": "c:\\games\\b.exe",
+              "enabled": false,
+              "tuningProfileId": null,
+              "graphics": {
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 240
+                }
+              },
+              "gpuProfiles": [
+                {
+                  "deviceKey": null,
+                  "deviceName": null,
+                  "enabled": false,
+                  "tuningProfileId": null,
+                  "graphics": {
+                    "frameLimit": {
+                      "enabled": true,
+                      "value": 240
+                    }
+                  },
+                  "createdAt": "",
+                  "updatedAt": ""
+                }
+              ],
+              "createdAt": "",
+              "updatedAt": ""
+            }
+          ]
+        },
+        "needsWrite": true
+      }
+    },
+    {
+      "op": "migrate",
+      "args": [
+        {
+          "schemaVersion": 2,
+          "associations": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "profileId": "p-a",
+              "displayName": " Éclair ",
+              "createdAt": "old",
+              "updatedAt": "later",
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 119.5
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                },
+                "unknown": true
+              },
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB="
+            }
+          ],
+          "catalog": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "profileId": "p-a",
+              "displayName": "scan",
+              "createdAt": "old",
+              "updatedAt": "later",
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 119.5
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                },
+                "unknown": true
+              },
+              "artwork": "data:image/png;base64,OLD=",
+              "banner": "data:image/webp;base64,BBB="
+            },
+            {
+              "exePath": "C:/unsafe.exe"
+            }
+          ],
+          "settings": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "profileId": "p-a",
+              "displayName": " Éclair ",
+              "createdAt": "old",
+              "updatedAt": "later",
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 119.5
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                },
+                "unknown": true
+              },
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB=",
+              "gpuProfiles": [
+                {
+                  "deviceKey": " GPU-A ",
+                  "deviceName": " GPU A ",
+                  "enabled": true,
+                  "tuningProfileId": "p-a",
+                  "graphics": {
+                    "flipMode": "smart-vsync",
+                    "frameLimit": {
+                      "enabled": true,
+                      "value": 119.5
+                    },
+                    "lowLatency": "on-boost",
+                    "enduranceGaming": "on",
+                    "frameGenOverride": "4x",
+                    "sharpening": {
+                      "enabled": false,
+                      "percentage": 100
+                    },
+                    "unknown": true
+                  },
+                  "createdAt": "first",
+                  "updatedAt": "second"
+                },
+                {
+                  "deviceKey": "GPU-B",
+                  "deviceName": "GPU B",
+                  "enabled": false,
+                  "tuningProfileId": "p-b",
+                  "graphics": {
+                    "flipMode": "vsync-off"
+                  },
+                  "createdAt": "b-first"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "result": {
+        "data": {
+          "schemaVersion": 3,
+          "associations": [
+            {
+              "id": "game-702d617c633a5c67616d65735c612e65",
+              "profileId": "p-a",
+              "exePath": "c:\\games\\a.exe",
+              "processName": "a.exe",
+              "displayName": "Éclair",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB=",
+              "source": "scan",
+              "enabled": true,
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 120
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                }
+              },
+              "createdAt": "old",
+              "updatedAt": "later"
+            }
+          ],
+          "catalog": [
+            {
+              "exePath": "c:\\games\\a.exe",
+              "processName": "a.exe",
+              "displayName": "Éclair",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB=",
+              "source": "scan",
+              "createdAt": "old",
+              "updatedAt": "later"
+            }
+          ],
+          "settings": [
+            {
+              "exePath": "c:\\games\\a.exe",
+              "enabled": true,
+              "tuningProfileId": "p-a",
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 120
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                }
+              },
+              "gpuProfiles": [
+                {
+                  "deviceKey": "GPU-A",
+                  "deviceName": "GPU A",
+                  "enabled": true,
+                  "tuningProfileId": "p-a",
+                  "graphics": {
+                    "flipMode": "smart-vsync",
+                    "frameLimit": {
+                      "enabled": true,
+                      "value": 120
+                    },
+                    "lowLatency": "on-boost",
+                    "enduranceGaming": "on",
+                    "frameGenOverride": "4x",
+                    "sharpening": {
+                      "enabled": false,
+                      "percentage": 100
+                    }
+                  },
+                  "createdAt": "first",
+                  "updatedAt": "second"
+                },
+                {
+                  "deviceKey": "GPU-B",
+                  "deviceName": "GPU B",
+                  "enabled": false,
+                  "tuningProfileId": "p-b",
+                  "graphics": {
+                    "flipMode": "vsync-off"
+                  },
+                  "createdAt": "b-first",
+                  "updatedAt": "2026-11-08T12:34:56.000Z"
+                }
+              ],
+              "createdAt": "old",
+              "updatedAt": "later"
+            }
+          ]
+        },
+        "needsWrite": true
+      }
+    },
+    {
+      "op": "migrate",
+      "args": [
+        {
+          "schemaVersion": 3,
+          "associations": [
+            {
+              "exePath": "C:/Games/A.EXE",
+              "profileId": "p-a",
+              "displayName": " Éclair ",
+              "createdAt": "old",
+              "updatedAt": "later",
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 119.5
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                },
+                "unknown": true
+              },
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB="
+            },
+            {
+              "exePath": "C:/Games/A.EXE",
+              "profileId": "p-a",
+              "displayName": "duplicate",
+              "createdAt": "old",
+              "updatedAt": "later",
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 119.5
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                },
+                "unknown": true
+              },
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB="
+            }
+          ],
+          "catalog": [
+            {
+              "exePath": "C:/Games/B.EXE",
+              "profileId": "p-b",
+              "displayName": "alpha",
+              "createdAt": "",
+              "updatedAt": "",
+              "graphics": {
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 240
+                }
+              },
+              "enabled": false
+            }
+          ],
+          "settings": [
+            {
+              "exePath": "C:/Games/B.EXE",
+              "profileId": "p-b",
+              "displayName": "alpha",
+              "createdAt": "",
+              "updatedAt": "",
+              "graphics": {
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 240
+                }
+              },
+              "enabled": false
+            }
+          ]
+        }
+      ],
+      "result": {
+        "data": {
+          "schemaVersion": 3,
+          "associations": [
+            {
+              "id": "game-702d617c633a5c67616d65735c612e65",
+              "profileId": "p-a",
+              "exePath": "c:\\games\\a.exe",
+              "processName": "a.exe",
+              "displayName": "Éclair",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB=",
+              "source": "scan",
+              "enabled": true,
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 120
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                }
+              },
+              "createdAt": "old",
+              "updatedAt": "later"
+            }
+          ],
+          "catalog": [
+            {
+              "exePath": "c:\\games\\b.exe",
+              "processName": "b.exe",
+              "displayName": "alpha",
+              "artwork": "fallback-836105bf",
+              "banner": null,
+              "source": "scan",
+              "createdAt": "",
+              "updatedAt": ""
+            },
+            {
+              "exePath": "c:\\games\\a.exe",
+              "processName": "a.exe",
+              "displayName": "Éclair",
+              "artwork": "data:image/png;base64,AAA=",
+              "banner": "data:image/webp;base64,BBB=",
+              "source": "scan",
+              "createdAt": "old",
+              "updatedAt": "later"
+            }
+          ],
+          "settings": [
+            {
+              "exePath": "c:\\games\\a.exe",
+              "enabled": true,
+              "tuningProfileId": null,
+              "graphics": {
+                "flipMode": "smart-vsync",
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 120
+                },
+                "lowLatency": "on-boost",
+                "enduranceGaming": "on",
+                "frameGenOverride": "4x",
+                "sharpening": {
+                  "enabled": false,
+                  "percentage": 100
+                }
+              },
+              "gpuProfiles": [
+                {
+                  "deviceKey": null,
+                  "deviceName": null,
+                  "enabled": true,
+                  "tuningProfileId": null,
+                  "graphics": {
+                    "flipMode": "smart-vsync",
+                    "frameLimit": {
+                      "enabled": true,
+                      "value": 120
+                    },
+                    "lowLatency": "on-boost",
+                    "enduranceGaming": "on",
+                    "frameGenOverride": "4x",
+                    "sharpening": {
+                      "enabled": false,
+                      "percentage": 100
+                    }
+                  },
+                  "createdAt": "old",
+                  "updatedAt": "later"
+                }
+              ],
+              "createdAt": "old",
+              "updatedAt": "later"
+            },
+            {
+              "exePath": "c:\\games\\b.exe",
+              "enabled": false,
+              "tuningProfileId": null,
+              "graphics": {
+                "frameLimit": {
+                  "enabled": true,
+                  "value": 240
+                }
+              },
+              "gpuProfiles": [
+                {
+                  "deviceKey": null,
+                  "deviceName": null,
+                  "enabled": false,
+                  "tuningProfileId": null,
+                  "graphics": {
+                    "frameLimit": {
+                      "enabled": true,
+                      "value": 240
+                    }
+                  },
+                  "createdAt": "",
+                  "updatedAt": ""
+                }
+              ],
+              "createdAt": "",
+              "updatedAt": ""
+            }
+          ]
+        },
+        "needsWrite": true
+      }
+    },
+    {
+      "op": "migrate",
+      "args": [
+        {
+          "schemaVersion": 3,
+          "associations": [],
+          "catalog": [],
+          "settings": []
+        }
+      ],
+      "result": {
+        "data": {
+          "schemaVersion": 3,
+          "associations": [],
+          "catalog": [],
+          "settings": []
+        },
+        "needsWrite": false
+      }
+    },
+    {
+      "op": "migrate",
+      "args": [
+        {
+          "schemaVersion": 4,
+          "associations": []
+        }
+      ],
+      "error": "game-profiles.json uses a newer unsupported schema"
+    },
+    {
+      "op": "migrate",
+      "args": [
+        {
+          "schemaVersion": 0,
+          "associations": []
+        }
+      ],
+      "error": "Cannot load game-profiles.json: invalid schema version"
+    },
+    {
+      "op": "migrate",
+      "args": [
+        {
+          "schemaVersion": 3,
+          "associations": {}
+        }
+      ],
+      "error": "Cannot load game-profiles.json: associations must be an array"
+    },
+    {
+      "op": "migrate",
+      "args": [
+        null
+      ],
+      "error": "Cannot load game-profiles.json: root must be an object"
+    }
+  ]
+}

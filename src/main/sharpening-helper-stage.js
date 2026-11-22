@@ -6,6 +6,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import koffi from 'koffi';
 
 const execFileAsync = promisify(execFile);
+const SCREEN_SHARPENING_ASSETS = Object.freeze({
+  'ArcPower.Fsr1.hlsl': '57E00E580F8AD852F1AAD9FC471842BB5586898CD1DD69058A9FB8AF7FB4EC07',
+  'ffx_a.h': 'F60E2722FCD13989523B9164D776AB382B3692791767F3BF8BB19967F763F3FB',
+  'ffx_fsr1.h': '93C3922362EA7FC99CBCC698CA30C98DE4F8C246D1FBB0B09E015DDEF38CE3A5',
+});
 
 export function querySystemWindowsDirectory({ platform = process.platform, load = koffi.load } = {}) {
   if (platform !== 'win32') throw new Error('System Windows directory lookup is available only on Windows.');
@@ -111,6 +116,27 @@ export async function stageScreenSharpeningHelper(sourcePath, expectedSha256, {
     const stagedHash = createHash('sha256').update(fsApi.readFileSync(stagedPath)).digest('hex').toUpperCase();
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stagedHash !== sourceHash) {
       throw new Error('The protected screen sharpening helper failed its post-copy integrity check.');
+    }
+    if (fileName === 'ArcPower.ScreenSharpen.exe') {
+      const sourceAssetsDir = path.join(path.dirname(sourcePath), 'fsr1');
+      const stagedAssetsDir = path.win32.join(directory, 'fsr1');
+      fsApi.mkdirSync(stagedAssetsDir);
+      for (const [assetName, expectedHash] of Object.entries(SCREEN_SHARPENING_ASSETS)) {
+        const assetSourcePath = path.join(sourceAssetsDir, assetName);
+        const assetSourceStat = fsApi.lstatSync(assetSourcePath);
+        const assetSource = fsApi.readFileSync(assetSourcePath);
+        const assetHash = createHash('sha256').update(assetSource).digest('hex').toUpperCase();
+        if (!assetSourceStat.isFile() || assetSourceStat.isSymbolicLink() || assetSourceStat.nlink !== 1 || assetHash !== expectedHash) {
+          throw new Error(`The bundled FSR1 source asset failed its integrity check: ${assetName}`);
+        }
+        const assetStagedPath = path.win32.join(stagedAssetsDir, assetName);
+        fsApi.writeFileSync(assetStagedPath, assetSource, { flag: 'wx' });
+        const assetStagedStat = fsApi.lstatSync(assetStagedPath);
+        const assetStagedHash = createHash('sha256').update(fsApi.readFileSync(assetStagedPath)).digest('hex').toUpperCase();
+        if (!assetStagedStat.isFile() || assetStagedStat.isSymbolicLink() || assetStagedStat.nlink !== 1 || assetStagedHash !== expectedHash) {
+          throw new Error(`The protected FSR1 source asset failed its post-copy integrity check: ${assetName}`);
+        }
+      }
     }
   } catch (error) {
     try { fsApi.rmSync(directory, { recursive: true, force: true }); } catch { /* leave a recoverable protected directory */ }

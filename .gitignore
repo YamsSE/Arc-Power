@@ -26,3 +26,27 @@ pipeline/
 
 # Dev tools (website asset generation, asar verification — not part of the software)
 scripts/
+
+# Native-host migration build outputs and local frontend dependencies.
+/tauri-dist/
+/src-tauri/target/
+/src-tauri/gen/
+/src-tauri/frontend-deps/node_modules/
+
+native-1.3-dist/
+/native-1.3-dist-*/
+/dist-tauri/
+/tauri-dist-progress-*/
+/tauri-compat-build-*/
+/tauri-compat-repaired-*/
+/target-astra-*/
+/AGENTS.ASTRA.md
+/_debug-apply.mjs
+/_inspect-fixture.cjs
+/_live-restore-electron.json
+/check-log.txt
+/check2.txt
+/src-tauri/check.err
+/src-tauri/check.out
+/src-tauri/examples/
+/ScalingMethodCombo=*

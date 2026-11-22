@@ -35,6 +35,7 @@ import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyWindowIconLifecycle, resolveWindowIconPath } from './window-icon.js';
+import { TELEMETRY_POLL_MS_DEFAULT } from './telemetry/constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -134,7 +135,7 @@ function normalizeSettings(raw = {}) {
     ? Math.min(OVERLAY_SCALE_MAX, Math.max(OVERLAY_SCALE_MIN, raw.scale))
     : 1.0;
   const hotkeyLetter = typeof raw.hotkeyLetter === 'string'
-    && (/^[A-Za-z]$/.test(raw.hotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(raw.hotkeyLetter))
+    && (raw.hotkeyLetter === 'None' || /^[A-Za-z]$/.test(raw.hotkeyLetter) || /^(?:Control|Alt|Shift)(?:\+(?:Control|Alt|Shift)){0,2}\+(?:[A-Za-z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/i.test(raw.hotkeyLetter))
     ? (/^[A-Za-z]$/.test(raw.hotkeyLetter) ? `Control+${raw.hotkeyLetter.toUpperCase()}` : raw.hotkeyLetter)
     : 'Control+O';
   const renderer = OVERLAY_RENDERERS.includes(raw.renderer) ? raw.renderer : 'rtss';
@@ -196,14 +197,14 @@ function normalizeSettings(raw = {}) {
     // renderer can fetch + apply the chip names).
     overlayChipNames: raw.overlayChipNames === true,
     // M17e: the overlay polling-rate - clamped to the 100-2000 ms range,
-    // 400 ms when absent/garbage (M17g: the stock polling rate FLIPS 500 ->
-    // 400 - the telemetry-service default; the payload carries it so the
+    // the shared 600 ms default when absent/garbage (same value as
+    // ipc-core's startTelemetry and the store; the payload carries it so the
     // renderer/verify know the cadence - the cadence itself is owned by
     // ipc-core's startTelemetry + the live restart).
     overlayPollMs: typeof raw.overlayPollMs === 'number'
       && Number.isFinite(raw.overlayPollMs)
       ? Math.min(2000, Math.max(100, Math.round(raw.overlayPollMs)))
-      : 400,
+      : TELEMETRY_POLL_MS_DEFAULT,
     // M24: the overlay theme - 'arc' when absent/garbage (the redesign IS
     // the product default; 'classic' stays one click away). The payload
     // carries the theme so the renderer applies it from the push (the
@@ -232,7 +233,7 @@ function normalizeSettings(raw = {}) {
  *   destroy: () => void,
  * }}
  */
-export function createOverlayWindow({ getOverlaySettings, deferBuild = false }) {
+export function createOverlayWindow({ getOverlaySettings, deferBuild = false, createWindow = (options) => new BrowserWindow(options) }) {
   let win = null;
   let visible = false;
   let hotkeyRegistered = false;
@@ -252,7 +253,7 @@ export function createOverlayWindow({ getOverlaySettings, deferBuild = false }) 
     if (win && !win.isDestroyed()) return win;
     const { bounds } = screen.getPrimaryDisplay();
     const size = sizeFor(applied.scale);
-    win = new BrowserWindow({
+    win = createWindow({
       width: size.width,
       height: size.height,
       x: xFor(applied.position, bounds, size.width),

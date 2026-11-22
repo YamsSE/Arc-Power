@@ -394,7 +394,7 @@ function streamBody(stream) {
  * The stream is never buffered in memory; range requests are constrained to
  * the exact inclusive byte interval advertised in Content-Range.
  */
-export function createRecordingMediaResponse(filePath, request = {}, fsImpl = fs) {
+export function createRecordingMediaResponse(filePath, request = {}, fsImpl = fs, { maxBodyBytes = Infinity } = {}) {
   const handle = openSafeRecordingFile(filePath, fsImpl);
   if (!handle) return new Response('Not found', { status: 404 });
   const stat = handle.stat;
@@ -412,6 +412,14 @@ export function createRecordingMediaResponse(filePath, request = {}, fsImpl = fs
     });
   }
 
+  // The native-host pipe carries bounded ranges rather than whole videos.
+  // The Electron streaming path retains its existing unlimited response size.
+  if (String(request.method ?? 'GET').toUpperCase() !== 'HEAD'
+    && Number.isSafeInteger(maxBodyBytes) && maxBodyBytes > 0
+    && stat.size > 0 && range.end - range.start + 1 > maxBodyBytes) {
+    range.end = range.start + maxBodyBytes - 1;
+    range.kind = 'range';
+  }
   const partial = range.kind === 'range';
   const length = stat.size === 0 ? 0 : range.end - range.start + 1;
   const headers = {
