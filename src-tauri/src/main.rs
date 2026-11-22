@@ -687,10 +687,11 @@ fn push_settings_cache(broker: &Broker) {
 /// with the compatibility service (its apply owns the Electron overlay window),
 /// so an open classic HUD keeps its previous geometry until the next
 /// settings-driven apply.
-fn publish_layout_reaction(broker: &Broker, channel: &str) {
+fn publish_layout_reaction(app: &tauri::AppHandle, broker: &Broker, channel: &str) {
     push_settings_cache(broker);
     if arc_power_tauri::backend::overlay_layout_channels::applies_layout(channel) {
         if let Some(service) = broker.advanced_overlay.as_ref() { service.poll(); }
+        refresh_native_overlay(app, broker, true, true);
     }
 }
 
@@ -1266,8 +1267,11 @@ impl Broker {
             if !broker.mock_mode && event == "shortcut" && payload["action"].as_str() == Some("overlay") {
                 // Native-only runs have no Electron service to show the HUD
                 // window. Own the overlay WebView here as well as the RTSS OSD.
-                let _ = broker.rtss_osd.toggle();
-                native_overlay_toggle(&tray_app, &broker);
+                if arc_power_tauri::backend::rtss_osd::RtssOsdHub::handles_overlay(&broker.native_store) {
+                    let _ = broker.rtss_osd.toggle();
+                } else {
+                    native_overlay_toggle(&tray_app, &broker);
+                }
                 continue;
             }
             if !broker.mock_mode && event == "shortcut" && payload["action"].as_str() == Some("advanced-overlay") {
@@ -2648,6 +2652,7 @@ fn publish_native_overlay_settings(app: &tauri::AppHandle, broker: &Broker, targ
         "color": text("overlayColor", "#ffffff"),
         "labelColor": text("overlayLabelColor", "#ffffff"),
         "valueColor": text("overlayValueColor", "#ffffff"),
+        "temperatureUnit": text("overlayTemperatureUnit", "C"),
         "stats": settings.get("overlayStats").cloned().unwrap_or(json!([])),
         "position": text("overlayPosition", "top-left"),
         // The overlay renderer reads the fully-prefixed names; unprefixed keys
@@ -2660,8 +2665,32 @@ fn publish_native_overlay_settings(app: &tauri::AppHandle, broker: &Broker, targ
         "theme": text("overlayTheme", "arc"),
         "deviceKeys": settings.get("overlayDeviceKeys").cloned().unwrap_or(Value::Null),
     });
-    let _ = app.emit_to(target, "arc-power:broker-event",
-        json!({"channel":"overlay:settings","args":[payload]}));
+    if let Ok(args) = arc_power_tauri::backend::wire::encode_json(&json!([payload])) {
+        let _ = app.emit_to(target, "arc-power:broker-event", json!({"channel":"overlay:settings","args":args}));
+    }
+}
+
+fn refresh_native_overlay(app: &tauri::AppHandle, broker: &Broker, show_if_enabled: bool, refresh_lanes: bool) {
+    if let Ok(Some(settings)) = broker.native_store.settings_store().load_settings_sync() {
+        broker.rtss_osd.apply_settings(&settings);
+        let uses_rtss = settings["overlayRenderer"].as_str() != Some("capframex");
+        let enabled = settings["overlayEnabled"].as_bool() == Some(true);
+        let lanes = if uses_rtss && enabled {
+            settings["overlayDeviceKeys"].as_array().cloned().unwrap_or_default()
+        } else { Vec::new() };
+        broker.telemetry.set_rtss_overlay_targets(app, &broker.native_store, lanes, refresh_lanes);
+        if uses_rtss || !enabled {
+            if let Some(window) = app.get_webview_window(NATIVE_OVERLAY_LABEL) { let _ = window.hide(); }
+        } else {
+            native_overlay_apply_geometry(app, broker);
+            if show_if_enabled && !app.get_webview_window(NATIVE_OVERLAY_LABEL)
+                .is_some_and(|window| window.is_visible().unwrap_or(false)) {
+                native_overlay_toggle(app, broker);
+            }
+        }
+    }
+    publish_native_overlay_settings(app, broker, "main");
+    publish_native_overlay_settings(app, broker, NATIVE_OVERLAY_LABEL);
 }
 
 fn native_overlay_geometry(app: &tauri::AppHandle, broker: &Broker) -> (f64, f64, f64, f64) {
@@ -2680,9 +2709,30 @@ fn native_overlay_geometry(app: &tauri::AppHandle, broker: &Broker) -> (f64, f64
         }
         None => (0.0, 0.0, 1920.0, 1080.0),
     };
-    let width = (900.0 * scale).min(area_w - 32.0).max(200.0);
-    let height = (500.0 * scale).min(area_h - 32.0).max(120.0);
-    let margin = 16.0;
+    // The software HUD's grid was designed around the original 336 CSS px
+    // surface. A 900 px window stretches its first column and pushes values
+    // far away from their labels.
+    let dpi = app.get_webview_window("main")
+        .and_then(|window| window.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten())
+        .map(|monitor| monitor.scale_factor()).unwrap_or(1.0);
+    let gpu_count = settings.get("overlayDeviceKeys").and_then(Value::as_array)
+        .map(|keys| keys.len().max(1)).unwrap_or(1);
+    let stats = settings.get("overlayStats").and_then(Value::as_array);
+    let enabled = |name: &str| stats.map_or(true, |items| items.iter().any(|item| item.as_str() == Some(name)));
+    let gpu_rows = ["gpu-util", "gpu-temp", "gpu-voltage", "gpu-power", "gpu-fan", "gpu-vram", "gpu-vram-temp"]
+        .iter().filter(|name| enabled(name)).count();
+    let cpu_rows = usize::from(enabled("cpu-clock")) + usize::from(enabled("cpu-util"))
+        + usize::from(enabled("cpu-power") || enabled("cpu-temp"));
+    let summary_rows = ["fps-avg", "fps-1pct-low", "fps-01pct-low", "fps-99pct", "fps"]
+        .iter().filter(|name| enabled(name)).count();
+    let gpu_height = 24 + gpu_rows * 21 + usize::from(enabled("gpu-clock") || enabled("gpu-mem-clock")) * 21;
+    let extra_height = gpu_height.saturating_sub(108) + cpu_rows.saturating_sub(3) * 21
+        + summary_rows.saturating_sub(5) * 21 + usize::from(enabled("api")) * 21
+        + gpu_count.saturating_sub(1) * gpu_height;
+    let width = (336.0 * scale * dpi).min(area_w - 16.0).max(200.0);
+    let height = ((426 + extra_height) as f64 * scale * dpi).min(area_h - 16.0).max(120.0);
+    let margin = 8.0 * dpi;
     let x = if position.ends_with("right") { origin_x + area_w - width - margin } else { origin_x + margin };
     let y = if position.starts_with("bottom") { origin_y + area_h - height - margin } else { origin_y + margin };
     (x, y, width, height)
@@ -2703,6 +2753,8 @@ fn native_overlay_apply_geometry(app: &tauri::AppHandle, broker: &Broker) {
 /// Show/hide the host-owned Arc Power overlay window. The role document is the
 /// same one Electron used, so the renderer contract is unchanged.
 fn native_overlay_toggle(app: &tauri::AppHandle, broker: &Broker) {
+    if !broker.native_store.settings_store().load_settings_sync().ok().flatten()
+        .is_some_and(|settings| settings["overlayEnabled"].as_bool() == Some(true)) { return; }
     let (x, y, width, height) = native_overlay_geometry(app, broker);
     if let Some(window) = app.get_webview_window(NATIVE_OVERLAY_LABEL) {
         native_overlay_apply_geometry(app, broker);
@@ -2716,6 +2768,7 @@ fn native_overlay_toggle(app: &tauri::AppHandle, broker: &Broker) {
         return;
     }
     if let Some(window) = app.get_webview_window(NATIVE_OVERLAY_LABEL) {
+        native_overlay_apply_geometry(app, broker);
         let _ = window.show();
     }
 }
@@ -2727,8 +2780,11 @@ static PENDING_RECORDING_TOAST: Mutex<Option<Value>> = Mutex::new(None);
 pub(crate) fn flush_pending_recording_toast(app: &tauri::AppHandle) {
     let pending = PENDING_RECORDING_TOAST.lock().ok().and_then(|mut value| value.take());
     if let Some(payload) = pending {
-        let _ = app.emit_to(RECORDING_TOAST_LABEL, "arc-power:broker-event",
-            json!({"channel":"recording:notification","args":[payload]}));
+        if let Ok(args) = arc_power_tauri::backend::wire::encode_json(&json!([payload])) {
+            let _ = app.emit_to(RECORDING_TOAST_LABEL, "arc-power:broker-event",
+                json!({"channel":"recording:notification","args":args}));
+            if let Some(window) = app.get_webview_window(RECORDING_TOAST_LABEL) { let _ = window.show(); }
+        }
     }
 }
 
@@ -2787,8 +2843,11 @@ fn native_recording_toast(app: &tauri::AppHandle, broker: &Arc<Broker>, notifica
     let emit_payload = payload.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(180));
-        let _ = emit_app.emit_to(RECORDING_TOAST_LABEL, "arc-power:broker-event",
-            json!({"channel":"recording:notification","args":[emit_payload]}));
+        if let Ok(args) = arc_power_tauri::backend::wire::encode_json(&json!([emit_payload])) {
+            let _ = emit_app.emit_to(RECORDING_TOAST_LABEL, "arc-power:broker-event",
+                json!({"channel":"recording:notification","args":args}));
+            if let Some(window) = emit_app.get_webview_window(RECORDING_TOAST_LABEL) { let _ = window.show(); }
+        }
     });
     let hide_app = app.clone();
     std::thread::spawn(move || {
@@ -3133,12 +3192,19 @@ async fn bridge_invoke(window: tauri::WebviewWindow, state: tauri::State<'_, Arc
                 .unwrap_or_else(|| Err("Device selection service is unavailable".into()))
         }).await.map_err(|error| error.to_string())?;
     }
-    if !broker.mock_mode && matches!(channel.as_str(), "overlay:get-state" | "overlay:toggle" | "overlay-resize")
-        && arc_power_tauri::backend::rtss_osd::RtssOsdHub::handles_overlay(&broker.native_store) {
-        let result = match channel.as_str() {
+    if !broker.mock_mode && matches!(channel.as_str(), "overlay:get-state" | "overlay:toggle" | "overlay-resize") {
+        let result = if arc_power_tauri::backend::rtss_osd::RtssOsdHub::handles_overlay(&broker.native_store) {
+            match channel.as_str() {
             "overlay:get-state" => broker.rtss_osd.state(),
             "overlay:toggle" => broker.rtss_osd.toggle(),
             _ => Value::Null,
+            }
+        } else {
+            let app = window.app_handle();
+            if channel == "overlay:toggle" { native_overlay_toggle(app, &broker); }
+            if channel == "overlay-resize" { native_overlay_apply_geometry(app, &broker); }
+            let overlay = app.get_webview_window(NATIVE_OVERLAY_LABEL);
+            json!({"exists":overlay.is_some(),"visible":overlay.is_some_and(|window| window.is_visible().unwrap_or(false))})
         };
         return arc_power_tauri::backend::wire::encode_json(&result);
     }
@@ -3215,13 +3281,13 @@ async fn bridge_invoke(window: tauri::WebviewWindow, state: tauri::State<'_, Arc
                     fields.keys().any(|key| key.starts_with("overlay"))
                 });
                 if overlay_changed {
-                    let overlay_app = window.app_handle();
-                    native_overlay_apply_geometry(&overlay_app, &broker);
-                    publish_native_overlay_settings(&overlay_app, &broker, "main");
-                    publish_native_overlay_settings(&overlay_app, &broker, NATIVE_OVERLAY_LABEL);
+                    let show = patch.as_ref().is_some_and(|patch| patch.get("overlayRenderer").is_some()
+                        || patch.get("overlayEnabled").is_some());
+                    let refresh_lanes = patch.as_ref().is_some_and(|patch| patch.get("overlayPollMs").is_some());
+                    refresh_native_overlay(window.app_handle(), &broker, show, refresh_lanes);
                 }
             } else if arc_power_tauri::backend::overlay_layout_channels::handles(&channel) {
-                publish_layout_reaction(broker.as_ref(), &channel);
+                publish_layout_reaction(window.app_handle(), broker.as_ref(), &channel);
             }
         }
         return result;
@@ -3284,6 +3350,9 @@ async fn renderer_ready(window: tauri::WebviewWindow, state: tauri::State<'_, Ar
         }
         if roles::role(&target) == Some("overlay") {
             publish_native_overlay_settings(&app, &broker, &target);
+        }
+        if role == Some("main") && !broker.mock_mode {
+            refresh_native_overlay(&app, &broker, true, false);
         }
         if roles::role(&target) == Some("advanced-overlay") {
             if let Some(service) = broker.advanced_overlay.as_ref() { service.publish_settings(); }

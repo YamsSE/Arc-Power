@@ -141,7 +141,6 @@ impl Mapping {
         mapping.entry_size = entry_size;
         mapping.entry_offset = entry_offset;
         mapping.count = count;
-        mapping.claim_slot()?;
         Some(mapping)
     }
 
@@ -384,6 +383,10 @@ fn load_settings() -> Settings {
     let Some(path) = settings_path() else { return Settings::default(); };
     let Ok(text) = std::fs::read_to_string(path) else { return Settings::default(); };
     let Ok(value) = serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')) else { return Settings::default(); };
+    settings_from_value(&value)
+}
+
+fn settings_from_value(value: &Value) -> Settings {
     let color = |key: &str, fallback: &str| value.get(key).and_then(Value::as_str)
         .filter(|value| value.len() == 7 && value.starts_with('#') && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit()))
         .map(|value| value.to_ascii_uppercase()).unwrap_or_else(|| fallback.to_owned());
@@ -477,8 +480,10 @@ impl Publisher {
         let mtime = settings_path().and_then(|path| std::fs::metadata(path).ok()).and_then(|metadata| metadata.modified().ok());
         if mtime == self.last_mtime { return; }
         self.last_mtime = mtime;
-        let previous = self.settings.clone();
-        self.settings = load_settings();
+        self.update_settings(load_settings());
+    }
+    fn update_settings(&mut self, settings: Settings) {
+        let previous = std::mem::replace(&mut self.settings, settings);
         if self.settings.enabled != previous.enabled || self.settings.renderer != previous.renderer {
             self.visible = self.settings.enabled && self.settings.renderer != "capframex";
         }
@@ -500,10 +505,17 @@ impl Publisher {
                 .or_else(|| sample.get("deviceKeys").and_then(Value::as_array).and_then(|keys| keys.iter().find_map(Value::as_str)).map(str::to_owned))
                 .or_else(|| sample.get("deviceId").and_then(Value::as_u64).map(|id| format!("id:{id}")))
                 .unwrap_or_else(|| "default".into());
+            // Hot-plugged devices must not accumulate telemetry indefinitely.
+            if !self.latest.contains_key(&key) && self.latest.len() >= 32 {
+                if let Some(oldest_key) = self.latest.keys().next().cloned() { self.latest.remove(&oldest_key); }
+            }
             self.latest.insert(key, sample);
         }
         if !self.settings.enabled || self.settings.renderer == "capframex" || !self.visible { return; }
         if !self.ensure_mapping() { return; }
+        if let Some(mapping) = self.mapping.as_mut() {
+            if mapping.slot.is_none() && mapping.claim_slot().is_none() { return; }
+        }
         let stats = self.mapping.as_ref().map(|mapping| mapping.foreground_fps()).unwrap_or_default();
         if let Some(frame_time) = stats.frame_time.filter(|value| *value > 0.0) {
             self.frame_history.push(frame_time);
@@ -549,6 +561,8 @@ impl Publisher {
     }
     fn state(&self) -> Value {
         json!({
+            "provider": "rtss",
+            "available": self.mapping.is_some(),
             "exists": self.mapping.is_some(),
             "visible": self.visible && self.settings.enabled,
             "bounds": Value::Null,
@@ -598,7 +612,15 @@ fn build_text(settings: &Settings, latest: &BTreeMap<String, Value>, stats: &Fps
         if enabled("gpu-util") { fields.push(format!("{}%", number(sample.get("gpuUtilPct").and_then(Value::as_f64), 0, "-"))); }
         if enabled("gpu-clock") { fields.push(format!("{}MHz", number(sample.get("gpuClockMhz").and_then(Value::as_f64), 0, "-"))); }
         if enabled("gpu-temp") { fields.push(temperature(sample.get("tempC").and_then(Value::as_f64), &settings.temperature_unit)); }
+        if enabled("gpu-voltage") { fields.push(format!("{}V", number(sample["gpuVoltageV"].as_f64(), 3, "-"))); }
         if enabled("gpu-power") { fields.push(format!("{}W", number(sample.get("powerW").and_then(Value::as_f64), 0, "-"))); }
+        if enabled("gpu-fan") {
+            let rpm = sample.get("fanRpm").and_then(|value| value.as_f64().or_else(|| value.as_array().and_then(|items| items.first()).and_then(Value::as_f64)));
+            fields.push(format!("{}RPM", number(rpm, 0, "-")));
+        }
+        push(row(&name, fields));
+        let mut fields = Vec::new();
+        if enabled("gpu-mem-clock") { fields.push(format!("{}MHz", number(sample["memClockMhz"].as_f64(), 0, "-"))); }
         if enabled("gpu-vram") {
             let used = sample.get("gpuMemUsedBytes").or_else(|| sample.get("vramUsedBytes")).and_then(Value::as_f64);
             let total = sample.get("vramTotalBytes").and_then(Value::as_f64);
@@ -608,11 +630,8 @@ fn build_text(settings: &Settings, latest: &BTreeMap<String, Value>, stats: &Fps
                 _ => "-".into(),
             });
         }
-        if enabled("gpu-fan") {
-            let rpm = sample.get("fanRpm").and_then(|value| value.as_f64().or_else(|| value.as_array().and_then(|items| items.first()).and_then(Value::as_f64)));
-            fields.push(format!("{}RPM", number(rpm, 0, "-")));
-        }
-        push(row(&name, fields));
+        if enabled("gpu-vram-temp") { fields.push(temperature(sample["vramTempC"].as_f64(), &settings.temperature_unit)); }
+        push(row(&format!("{name} VRAM"), fields));
     }
     if enabled("api") { if let Some(api) = stats.api.as_ref().filter(|api| !api.is_empty()) { push(row("API", vec![api.clone()])); } }
     if enabled("frametime") { push(row("Frametime", vec![format!("{}ms", number(stats.frame_time, 2, "-"))])); }
@@ -641,7 +660,17 @@ impl RtssOsdHub {
         self.publisher.lock().map(|mut publisher| publisher.toggle()).unwrap_or_else(|_| json!({}))
     }
     pub fn state(&self) -> Value {
-        self.publisher.lock().map(|publisher| publisher.state()).unwrap_or_else(|_| json!({}))
+        self.publisher.lock().map(|mut publisher| {
+            publisher.refresh();
+            publisher.ensure_mapping();
+            publisher.state()
+        }).unwrap_or_else(|_| json!({}))
+    }
+    pub fn apply_settings(&self, value: &Value) {
+        if let Ok(mut publisher) = self.publisher.lock() {
+            publisher.update_settings(settings_from_value(value));
+            publisher.publish(None);
+        }
     }
     pub fn clear(&self) {
         if let Ok(mut publisher) = self.publisher.lock() { publisher.clear(); }
@@ -719,6 +748,7 @@ mod tests {
     #[ignore = "live RTSS shared-memory slot write/read; requires RTSS running"]
     fn live_rtss_mapping_claim_write_and_clear() {
         let mut mapping = Mapping::open().expect("RTSSSharedMemoryV2");
+        mapping.claim_slot().expect("claim OSD slot");
         let slot = mapping.slot.expect("claimed OSD slot");
         mapping.write_text("ArcPower native OSD test").expect("write OSD text");
         let (offset, _) = mapping.text_span();
@@ -744,7 +774,9 @@ mod tests {
             hub.publish(&sample);
             std::thread::sleep(std::time::Duration::from_millis(50));
             let mapping = Mapping::open().expect("RTSSSharedMemoryV2");
-            let slot = mapping.slot.expect("claimed OSD slot");
+            let Some(slot) = (1..mapping.count).find(|slot| {
+                mapping.read_text(mapping.entry_offset + slot * mapping.entry_size + ENTRY_OWNER, 256) == "ArcPower"
+            }) else { continue; };
             let (offset, size) = mapping.text_span();
             let base = mapping.entry_offset + slot * mapping.entry_size;
             text = mapping.read_text(base + offset, size.min(4096));
