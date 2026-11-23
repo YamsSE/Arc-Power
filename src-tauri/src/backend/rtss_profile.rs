@@ -308,10 +308,18 @@ impl RtssProfileController {
     }
 
     fn with_api<T>(&self, action: impl FnOnce(&mut Inner, &dyn ProfileApi) -> T) -> Result<T, String> {
+        self.with_api_using(action, || Api::open().map(|api| Arc::new(api) as Arc<dyn ProfileApi>))
+    }
+
+    fn with_api_using<T>(
+        &self,
+        action: impl FnOnce(&mut Inner, &dyn ProfileApi) -> T,
+        open_api: impl FnOnce() -> Option<Arc<dyn ProfileApi>>,
+    ) -> Result<T, String> {
         let mut inner = self.inner.lock().map_err(|_| "RTSS profile lock failed")?;
         if !inner.assume_running && !rtss_running() { return Err("RTSS is not running".into()); }
         if inner.api.is_none() {
-            inner.api = Api::open().map(|api| Arc::new(api) as Arc<dyn ProfileApi>);
+            inner.api = open_api();
             inner.executable_path = rtss_startup::executable_path();
         }
         let api = inner.api.as_ref().cloned().ok_or("RTSS profile API is unavailable")?;
@@ -334,19 +342,27 @@ impl RtssProfileController {
     }
 
     pub fn state(&self) -> Value {
-        self.inner.lock().map(|inner| {
-            let running = inner.assume_running || rtss_running();
+        // Do the same read-only discovery as the limiter channels. Merely
+        // reporting `inner.api.is_some()` made a freshly installed/running
+        // RTSS look unavailable until some unrelated call first opened the
+        // hooks DLL.
+        self.with_api(Self::state_value).unwrap_or_else(|error| {
+            let path = self.inner.lock().ok().and_then(|inner| inner.executable_path.clone());
             json!({
-                "available": running && inner.api.is_some(),
-                "configured": inner.osd_snapshot.is_some(),
-                "renderingMode": if inner.osd_snapshot.is_some() { "vector2d" } else { "unknown" },
-                "executablePath": inner.executable_path,
-                "error": Value::Null,
+                "available": false, "configured": false, "renderingMode": "unknown",
+                "executablePath": path, "error": error,
             })
-        }).unwrap_or_else(|_| json!({
-            "available": false, "configured": false, "renderingMode": "unknown",
-            "executablePath": null, "error": "RTSS profile lock failed",
-        }))
+        })
+    }
+
+    fn state_value(inner: &mut Inner, _api: &dyn ProfileApi) -> Value {
+        json!({
+            "available": true,
+            "configured": inner.osd_snapshot.is_some(),
+            "renderingMode": if inner.osd_snapshot.is_some() { "vector2d" } else { "unknown" },
+            "executablePath": inner.executable_path,
+            "error": Value::Null,
+        })
     }
 
     pub fn apply(&self, options: &Value) -> Value {
@@ -1227,6 +1243,23 @@ mod tests {
         assert_eq!(fake.value(GLOBAL_PROFILE, "Implementation"), Some(2));
         assert_eq!(fake.value(GLOBAL_PROFILE, "AppDetectionLevel"), Some(0));
         assert_eq!(fake.value(GLOBAL_PROFILE, "EnableOSD"), Some(0));
+    }
+
+    #[test]
+    fn fake_state_discovers_an_already_running_rtss_without_writes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let controller = RtssProfileController::new();
+        controller.inner.lock().unwrap().assume_running = true;
+        let opens = AtomicUsize::new(0);
+        let fake: Arc<dyn ProfileApi> = global_fake();
+        let state = controller.with_api_using(RtssProfileController::state_value, || {
+            opens.fetch_add(1, Ordering::SeqCst);
+            Some(fake)
+        }).unwrap();
+        assert_eq!(state["available"], true);
+        assert_eq!(state["configured"], false);
+        assert_eq!(opens.load(Ordering::SeqCst), 1, "an uninitialized controller must attempt API discovery");
+        assert!(controller.inner.lock().unwrap().api.is_some());
     }
 
     #[test]

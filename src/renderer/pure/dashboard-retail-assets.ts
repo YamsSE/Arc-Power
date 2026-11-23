@@ -47,15 +47,27 @@ function isIntelIntegratedModel(model: string): boolean {
   return /\bigpu\b|\b(?:uhd|iris)\b|\bintegrated\b|\bintel graphics\b|\barc(?:\s*\([^)]*\))?\s+graphics\b|\barc\s+b370\b/.test(model);
 }
 
+function isExplicitIntelV70(input: DashboardRetailAssetInput): boolean {
+  // Keep parenthesized model suffixes: some driver strings report the variant
+  // as "Intel Graphics (V70)". Other decoration such as (R)/(TM) cannot
+  // match the exact V70 token below.
+  const model = textOf(input.name).replace(/\s+/g, ' ').trim();
+  const isIntel = textOf(input.gpuVendor) === 'intel' || model.includes('intel') || model.includes('arc') || model.includes('crescent island');
+  return isIntel && /\bv70\b/.test(model);
+}
+
 function isIntelD270(input: DashboardRetailAssetInput): boolean {
-  const model = textOf(input.name).replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
-  const isIntel = textOf(input.gpuVendor) === 'intel' || model.includes('intel') || model.includes('arc');
-  return isIntel && (numberOf(input.pciDeviceId) === 0x674c || /\b(?:d270|crescent island)\b/.test(model));
+  const name = textOf(input.name).replace(/\s+/g, ' ').trim();
+  const model = name.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+  const isIntel = textOf(input.gpuVendor) === 'intel' || model.includes('intel') || model.includes('arc') || model.includes('crescent island');
+  return isIntel && !isExplicitIntelV70(input)
+    && (numberOf(input.pciDeviceId) === 0x674c || /\b(?:d270|crescent island)\b/.test(name));
 }
 
 /** Resolve the D270 label when a driver reports only a generic Intel name. */
 export function dashboardGpuDisplayName(input: DashboardRetailAssetInput): string {
   const name = typeof input.name === 'string' ? input.name.trim() : '';
+  if (isExplicitIntelV70(input)) return name || 'GPU';
   return isIntelD270(input) ? 'Intel GPU D270' : name || 'GPU';
 }
 
@@ -74,6 +86,10 @@ export function dashboardRetailAssetPath(input: DashboardRetailAssetInput): stri
   if (isAmd && input.integrated === true) return `${ASSET_ROOT}amd-radeon-igpu-chip.png`;
 
   if (isIntel) {
+    // V70 is a Crescent Island family variant, but no verified variant art
+    // is available. Preserve the driver's explicit model name and use the
+    // neutral dashboard illustration instead of mislabeling it as D270.
+    if (isExplicitIntelV70(input)) return null;
     // Intel's compute runtime lists 0x674C in the Crescent Island (CRI)
     // family; use the D270 image when the driver exposes only this PCI ID.
     if (isIntelD270(input)) {

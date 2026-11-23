@@ -5,6 +5,11 @@ const root = document.getElementById('recording-toast') as HTMLElement | null;
 const title = document.getElementById('recording-toast-title') as HTMLElement | null;
 const message = document.getElementById('recording-toast-message') as HTMLElement | null;
 
+const theme = new URLSearchParams(window.location.search).get('theme');
+if (theme === 'light' || theme === 'midnight') {
+  document.documentElement.dataset.theme = theme;
+}
+
 api.onRecordingNotification((notification: RecordingNotification) => {
   if (!root || !title || !message) return;
   root.dataset.variant = notification.variant;

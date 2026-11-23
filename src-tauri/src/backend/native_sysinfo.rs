@@ -61,10 +61,14 @@ fn wmi_snapshot() -> Option<Value> {
             "$alloc=@(Get-CimInstance Win32_AllocatedResource -OperationTimeoutSec 2|ForEach-Object{[pscustomobject]@{D=[string]$_.Dependent;A=[string]$_.Antecedent}});",
             "[pscustomobject]@{cpu=$cpu;physicalMemory=$mem;baseboard=$bb;controllers=$controllers;ranges=$ranges;allocations=$alloc}|ConvertTo-Json -Depth 4 -Compress",
         );
-        let output = std::process::Command::new(
-            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .output().ok()?;
+        let mut command = std::process::Command::new(
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+        command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+        #[cfg(windows)] {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let output = command.output().ok()?;
         if !output.status.success() { return None; }
         let parsed: Value = serde_json::from_slice(&output.stdout).ok()?;
         // Keep only the exact CIM identities and the two sides of each
