@@ -475,7 +475,7 @@ struct Publisher {
 }
 
 impl Publisher {
-    fn new() -> Self { Self { mapping: None, settings: load_settings(), last_mtime: None, visible: true, latest: BTreeMap::new(), frame_history: Vec::new() } }
+    fn new() -> Self { Self { mapping: None, settings: load_settings(), last_mtime: None, visible: false, latest: BTreeMap::new(), frame_history: Vec::new() } }
     fn refresh(&mut self) {
         let mtime = settings_path().and_then(|path| std::fs::metadata(path).ok()).and_then(|metadata| metadata.modified().ok());
         if mtime == self.last_mtime { return; }
@@ -483,10 +483,7 @@ impl Publisher {
         self.update_settings(load_settings());
     }
     fn update_settings(&mut self, settings: Settings) {
-        let previous = std::mem::replace(&mut self.settings, settings);
-        if self.settings.enabled != previous.enabled || self.settings.renderer != previous.renderer {
-            self.visible = self.settings.enabled && self.settings.renderer != "capframex";
-        }
+        self.settings = settings;
         if !self.settings.enabled || self.settings.renderer == "capframex" {
             self.visible = false;
             if let Some(mapping) = self.mapping.as_mut() { mapping.clear(); }
@@ -553,8 +550,8 @@ impl Publisher {
 
     fn toggle(&mut self) -> Value {
         self.refresh();
-        if self.settings.enabled && self.settings.renderer != "capframex" {
-            self.visible = !self.visible;
+        if let Some(visible) = toggled_visibility(self.visible, &self.settings) {
+            self.visible = visible;
             if self.visible { self.publish(None); } else if let Some(mapping) = self.mapping.as_mut() { mapping.clear(); self.mapping = None; }
         }
         self.state()
@@ -643,6 +640,13 @@ fn build_text(settings: &Settings, latest: &BTreeMap<String, Value>, stats: &Fps
         .chars().take(MAX_TEXT).collect()
 }
 
+/// The explicit overlay toggle is the only visibility-on path. Settings
+/// updates may hide an unavailable provider, but enabling or selecting a
+/// provider never reveals the overlay by itself.
+fn toggled_visibility(visible: bool, settings: &Settings) -> Option<bool> {
+    (settings.enabled && settings.renderer != "capframex").then_some(!visible)
+}
+
 pub struct RtssOsdHub {
     publisher: Mutex<Publisher>,
 }
@@ -688,6 +692,31 @@ impl RtssOsdHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rtss_overlay_starts_hidden_and_settings_do_not_reveal_it() {
+        assert!(!Publisher::new().visible, "the native publisher must begin hidden on boot");
+        let mut publisher = Publisher {
+            mapping: None,
+            settings: Settings::default(),
+            last_mtime: None,
+            visible: false,
+            latest: BTreeMap::new(),
+            frame_history: Vec::new(),
+        };
+        publisher.update_settings(Settings { enabled: true, ..Settings::default() });
+        assert!(!publisher.visible, "enabling the master switch must not reveal the OSD");
+        assert_eq!(toggled_visibility(publisher.visible, &publisher.settings), Some(true),
+            "the shortcut can reveal an enabled RTSS overlay");
+
+        publisher.visible = true;
+        publisher.update_settings(Settings { enabled: true, scale: 1.5, ..Settings::default() });
+        assert!(publisher.visible, "appearance changes preserve shortcut-selected visibility");
+        publisher.update_settings(Settings { enabled: false, ..Settings::default() });
+        assert!(!publisher.visible, "disabling the master switch still hides the OSD");
+        assert_eq!(toggled_visibility(publisher.visible, &publisher.settings), None,
+            "the shortcut remains gated while the master switch is off");
+    }
 
     #[test]
     fn text_contains_classic_rows_and_escapes_values() {

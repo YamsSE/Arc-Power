@@ -12,6 +12,7 @@ type RecordingShareDialogOptions = {
 };
 
 export type RecordingShareDialogHandle = {
+  setProgress: (progress: number, state?: 'queued' | 'running') => void;
   setReady: (previewUrl: string | null, fileName?: string) => void;
   setError: (message: string) => void;
 };
@@ -183,10 +184,13 @@ export function showRecordingShareDialog(options: RecordingShareDialogOptions): 
     'aria-label': 'Clip title',
   });
   const previewSlot = el('div', { class: 'recording-share-preview' });
+  const progressBar = el('progress', { class: 'recording-share-export-progress', max: 100, value: 0, 'aria-label': 'Clip export progress' }) as HTMLProgressElement;
+  const progressLabel = el('span', { class: 'recording-share-export-progress-label', text: 'Preparing export…' });
   const loadingState = el('div', { class: 'recording-share-loading', role: 'status', 'aria-live': 'polite' }, [
     el('span', { class: 'recording-share-spinner', 'aria-hidden': 'true' }),
     el('strong', { text: 'Creating your clip' }),
-    el('span', { text: 'Encoding the selected range…' }),
+    progressBar,
+    progressLabel,
   ]);
   const renderPreview = (previewUrl: string | null | undefined) => {
     clear(previewSlot);
@@ -217,6 +221,11 @@ export function showRecordingShareDialog(options: RecordingShareDialogOptions): 
   copyButton.addEventListener('click', () => { void runAction('copy'); });
   folderButton.addEventListener('click', () => { void runAction('folder'); });
   const handle: RecordingShareDialogHandle = {
+    setProgress: (value, state = 'running') => {
+      const percent = Math.max(0, Math.min(100, Number.isFinite(value) ? Math.round(value) : 0));
+      progressBar.value = percent;
+      progressLabel.textContent = state === 'queued' ? 'Waiting for the export worker…' : `Creating clip · ${percent}%`;
+    },
     setReady: (previewUrl, fileName) => {
       isLoading = false;
       if (fileName) currentFileName = fileName;
@@ -242,12 +251,12 @@ export function showRecordingShareDialog(options: RecordingShareDialogOptions): 
   root.append(el('div', { class: 'modal-overlay recording-share-overlay' }, [
     el('div', { class: 'modal recording-share-modal', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'recording-share-title' }, [
       el('div', { class: 'recording-share-heading' }, [
-        el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'Arc capture' }), el('h2', { class: 'modal-title', id: 'recording-share-title', text: 'Save & Share Clip' })]),
+        el('h2', { class: 'modal-title', id: 'recording-share-title', text: 'Share clip' }),
         closeButton,
       ]),
       previewSlot,
       el('div', { class: 'recording-share-title-row' }, [
-        el('div', { class: 'recording-share-field' }, [el('span', { text: 'CLIP TITLE' }), titleNode]),
+        el('div', { class: 'recording-share-field' }, [el('span', { text: 'Clip name' }), titleNode]),
       ]),
       el('div', { class: 'recording-share-actions' }, [folderButton, copyButton]),
     ]),

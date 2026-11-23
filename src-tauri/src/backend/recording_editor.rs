@@ -315,7 +315,10 @@ fn run_job(store: Arc<NativeStore>, job: Arc<Job>) {
         return;
     }
     update(&job, Some("running"), Some(1), None);
-    let result = run_job_inner(&store, &job);
+    // Keep panics inside the queue guard's lifetime. Unwinding past the guard
+    // poisons the global export gate and makes every later export fail.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_job_inner(&store, &job)))
+        .unwrap_or_else(|payload| Err(format!("Clip export worker panicked: {}", panic_message(payload))));
     match result {
         Ok(()) => {}
         Err(error) => {
@@ -325,14 +328,27 @@ fn run_job(store: Arc<NativeStore>, job: Arc<Job>) {
     }
 }
 
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    payload.downcast_ref::<&str>().map(|message| (*message).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unexpected internal error".into())
+        .chars().take(200).collect()
+}
+
 fn gate_acquire(job: &Arc<Job>) -> Option<std::sync::MutexGuard<'static, ()>> {
     // The gate is owned by the editor service; jobs run one at a time in
     // request order. A static gate also keeps the service easy to own from the
     // host without storing a guard in every job.
     static GATE: Mutex<()> = Mutex::new(());
-    let guard = GATE.lock().ok()?;
+    // This lock protects no mutable queue data; recovering it after a panic is
+    // safe and lets jobs recover even if an older worker poisoned the gate.
+    let guard = recovered_lock(&GATE);
     if job.cancel.load(Ordering::Acquire) { return None; }
     Some(guard)
+}
+
+fn recovered_lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn run_job_inner(store: &NativeStore, job: &Arc<Job>) -> Result<(), String> {
@@ -557,7 +573,7 @@ fn audio_streams(ffprobe: &Path, source: &Path) -> Result<AudioTracks, String> {
             let text = format!("{} {}", stream["tags"]["title"].as_str().unwrap_or(""), stream["tags"]["handler_name"].as_str().unwrap_or(""));
             regex.is_match(&text)
         }).filter_map(|stream| stream["index"].as_u64()).collect();
-        (matches.len() == 1).then_some(matches[0])
+        if matches.len() == 1 { matches.first().copied() } else { None }
     };
     Ok(AudioTracks { system: named(&system_regex), microphone: named(&microphone_regex), mixed: !audio.is_empty() })
 }
@@ -617,6 +633,17 @@ mod tests {
         assert_eq!(normalize_output_name(Some(&json!("Arc Edit.gif"))), Some("Arc Edit".into()));
         assert!(normalize_output_name(Some(&json!("C:\\clip"))).is_none());
         assert!(normalize_output_name(Some(&json!(".hidden"))).is_none());
+    }
+
+    #[test]
+    fn editor_gate_recovers_after_a_worker_panics() {
+        let gate = Arc::new(Mutex::new(()));
+        let worker_gate = gate.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = worker_gate.lock().unwrap();
+            panic!("simulated editor worker panic");
+        }).join();
+        let _guard = recovered_lock(&gate);
     }
 
     #[test]

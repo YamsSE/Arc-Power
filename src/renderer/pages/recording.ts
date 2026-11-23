@@ -61,6 +61,7 @@ let unsubscribeRecordingState: (() => void) | null = null;
 let unsubscribeRecordingSettings: (() => void) | null = null;
 let unsubscribeRecordingPillSettings: (() => void) | null = null;
 let playerVideo: HTMLVideoElement | null = null;
+let playerEditorResizeObserver: ResizeObserver | null = null;
 let recordingProcesses: string[] = [];
 let recordingProcessesBusy = false;
 let recordingTargets: RecordingCaptureTargets = { displays: [], windows: [] };
@@ -154,6 +155,8 @@ async function ensureRecordingRuntime(): Promise<void> {
 const messageOf = recordingMessage;
 
 function disposePlayerVideo(): void {
+  playerEditorResizeObserver?.disconnect();
+  playerEditorResizeObserver = null;
   if (editorPollTimer !== null) {
     window.clearInterval(editorPollTimer);
     editorPollTimer = null;
@@ -1545,6 +1548,7 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
   const endRange = el('input', { class: 'recording-editor-range', type: 'range', min: 0, max: 1000, step: 1, value: 1000, 'aria-label': 'Edit end' }) as HTMLInputElement;
   const startLabel = el('span', { text: 'START 0:00' });
   const endLabel = el('span', { text: 'END 0:00' });
+  const rangeLabels = el('div', { class: 'recording-editor-range-labels' }, [startLabel, endLabel]);
   const rangeRuler = el('div', { class: 'recording-editor-range-ruler' }, [
     el('span', { text: '0:00' }),
     el('span', { class: 'recording-editor-range-ruler-middle', text: '0:00' }),
@@ -1583,6 +1587,26 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
   const gifButton = button('Export GIF', () => void startJob('gif'), 'btn btn-secondary');
   const fps = el('input', { class: 'recording-editor-number', type: 'number', min: 5, max: 30, step: 1, value: 15, 'aria-label': 'GIF frames per second' }) as HTMLInputElement;
   const width = el('input', { class: 'recording-editor-number', type: 'number', min: 2, max: 1920, step: 2, value: 640, 'aria-label': 'GIF width' }) as HTMLInputElement;
+  const gifPreset = el('select', { class: 'recording-editor-preset', 'aria-label': 'GIF size and smoothness' }, [
+    el('option', { value: 'compact', text: 'Small file · 10 fps, 480 px' }),
+    el('option', { value: 'balanced', text: 'Balanced · 15 fps, 640 px', selected: true }),
+    el('option', { value: 'smooth', text: 'Smoother · 20 fps, 960 px' }),
+    el('option', { value: 'custom', text: 'Custom settings' }),
+  ]) as HTMLSelectElement;
+  gifPreset.addEventListener('change', () => {
+    if (gifPreset.value === 'custom') return;
+    const preset = gifPreset.value === 'compact' ? [10, 480] : gifPreset.value === 'smooth' ? [20, 960] : [15, 640];
+    fps.value = String(preset[0]);
+    width.value = String(preset[1]);
+  });
+  const syncGifPreset = (): void => {
+    const match = Number(fps.value) === 10 && Number(width.value) === 480 ? 'compact'
+      : Number(fps.value) === 20 && Number(width.value) === 960 ? 'smooth'
+        : Number(fps.value) === 15 && Number(width.value) === 640 ? 'balanced' : 'custom';
+    gifPreset.value = match;
+  };
+  fps.addEventListener('input', syncGifPreset);
+  width.addEventListener('input', syncGifPreset);
   const editor = el('section', { class: 'recording-editor-drawer recording-editor-ascent', 'aria-label': 'Clip editor' }) as RecordingEditorElement;
   const selectionFill = el('div', { class: 'recording-editor-selection-fill', 'aria-hidden': 'true' });
   let selectionStartMs = 0;
@@ -1643,6 +1667,7 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
     endLabel.style.left = `${endPercent}%`;
     startLabel.style.transform = startPercent < 8 ? 'translateX(0)' : 'translateX(-50%)';
     endLabel.style.transform = endPercent > 92 ? 'translateX(-100%)' : 'translateX(-50%)';
+    updateRangeLabelLayout(startPercent, endPercent);
     startRange.setAttribute('aria-valuetext', formatTime(range.startMs / 1000));
     endRange.setAttribute('aria-valuetext', formatTime(range.endMs / 1000));
     const middle = rangeRuler.querySelector<HTMLElement>('.recording-editor-range-ruler-middle');
@@ -1650,6 +1675,14 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
     if (middle) middle.textContent = formatTime((range.durationMs / 2) / 1000);
     if (rulerEnd) rulerEnd.textContent = formatTime(range.durationMs / 1000);
     editor.onSelectionChanged?.({ startMs: range.startMs, endMs: range.endMs });
+  };
+  const updateRangeLabelLayout = (startPercent: number, endPercent: number): void => {
+    const trackWidth = rangeTrack.getBoundingClientRect().width;
+    const startLabelWidth = (startLabel.textContent?.length ?? 0) * 6 + 12;
+    const endLabelWidth = (endLabel.textContent?.length ?? 0) * 6 + 12;
+    const startLabelLeft = startPercent < 8 ? startPercent * trackWidth / 100 : startPercent * trackWidth / 100 - startLabelWidth / 2;
+    const endLabelLeft = endPercent > 92 ? endPercent * trackWidth / 100 - endLabelWidth : endPercent * trackWidth / 100 - endLabelWidth / 2;
+    rangeLabels.classList.toggle('has-overlapping-labels', trackWidth > 0 && startLabelLeft + startLabelWidth + 8 > endLabelLeft);
   };
   const seekVideoTo = (nextMs: number): void => {
     const video = getVideo();
@@ -1677,11 +1710,15 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
     endRange.disabled = busy;
     fps.disabled = busy;
     width.disabled = busy;
+    gifPreset.disabled = busy;
     cancelButton.disabled = busy && !(job && (job.state === 'queued' || job.state === 'running'));
   };
   const updateJob = (next: RecordingEditorJob) => {
     const previousJob = job;
     job = next;
+    if (next.state === 'queued' || next.state === 'running') {
+      shareDialogHandle?.setProgress(next.progress, next.state);
+    }
     progress.hidden = next.state !== 'running' && next.state !== 'queued';
     progress.value = Math.max(0, Math.min(100, next.progress));
     if (next.state === 'error') {
@@ -1864,11 +1901,18 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
   };
   rangeTrack.addEventListener('pointerup', finishTimelineDrag);
   rangeTrack.addEventListener('pointercancel', finishTimelineDrag);
+  playerEditorResizeObserver?.disconnect();
+  playerEditorResizeObserver = new ResizeObserver(() => {
+    const range = clampRecordingEditorRange(selectionStartMs, selectionEndMs, durationMs);
+    updateRangeLabelLayout((range.startMs / range.durationMs) * 100, (range.endMs / range.durationMs) * 100);
+  });
+  playerEditorResizeObserver.observe(rangeTrack);
   const startField = el('label', { class: 'recording-editor-time-field' }, [el('span', { text: 'START' }), startTime]);
   const endField = el('label', { class: 'recording-editor-time-field' }, [el('span', { text: 'END' }), endTime]);
+  const nameField = el('label', { class: 'recording-editor-name-field' }, [el('span', { text: 'Clip name' }), clipName]);
   const creationTimelineActions = el('div', { class: 'recording-editor-timeline-actions' }, [cancelButton]);
   editor.append(
-    el('div', { class: 'recording-editor-header' }, [clipName, startField, endField, audioField, createClipButton]),
+    el('div', { class: 'recording-editor-header' }, [nameField, startField, endField, audioField, createClipButton]),
     el('div', { class: 'recording-editor-selection-toolbar' }, [
       el('span', { class: 'recording-editor-clip-duration', text: 'Clip duration:' }),
       durationReadout,
@@ -1876,13 +1920,19 @@ function renderRecordingEditor(clip: RecordingClip, getVideo: () => HTMLVideoEle
     ]),
       el('div', { class: 'recording-editor-selected-timeline' }, [
       rangeTrack,
-      el('div', { class: 'recording-editor-range-labels' }, [startLabel, endLabel]),
+      rangeLabels,
       rangeRuler,
     ]),
     el('div', { class: 'recording-editor-gif-options' }, [
-      el('span', { class: 'recording-editor-secondary-label', text: 'GIF export · 1–15 seconds' }),
-      el('label', {}, [el('span', { text: 'FPS' }), fps]),
-      el('label', {}, [el('span', { text: 'Width' }), width]),
+      el('label', { class: 'recording-editor-preset-field' }, [el('span', { text: 'GIF quality' }), gifPreset]),
+      el('details', { class: 'recording-editor-advanced-options' }, [
+        el('summary', { text: 'More options' }),
+        el('div', { class: 'recording-editor-advanced-controls' }, [
+          el('label', {}, [el('span', { text: 'Frames per second (5–30)' }), fps]),
+          el('label', {}, [el('span', { text: 'Width in pixels (up to 1,920)' }), width]),
+        ]),
+      ]),
+      el('span', { class: 'recording-editor-gif-hint', text: 'GIFs are limited to 1–15 seconds.' }),
       gifButton,
     ]),
     editorOutputStatus,

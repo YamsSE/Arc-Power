@@ -691,7 +691,7 @@ fn publish_layout_reaction(app: &tauri::AppHandle, broker: &Broker, channel: &st
     push_settings_cache(broker);
     if arc_power_tauri::backend::overlay_layout_channels::applies_layout(channel) {
         if let Some(service) = broker.advanced_overlay.as_ref() { service.poll(); }
-        refresh_native_overlay(app, broker, true, true);
+        refresh_native_overlay(app, broker, true);
     }
 }
 
@@ -2670,7 +2670,7 @@ fn publish_native_overlay_settings(app: &tauri::AppHandle, broker: &Broker, targ
     }
 }
 
-fn refresh_native_overlay(app: &tauri::AppHandle, broker: &Broker, show_if_enabled: bool, refresh_lanes: bool) {
+fn refresh_native_overlay(app: &tauri::AppHandle, broker: &Broker, refresh_lanes: bool) {
     if let Ok(Some(settings)) = broker.native_store.settings_store().load_settings_sync() {
         broker.rtss_osd.apply_settings(&settings);
         let uses_rtss = settings["overlayRenderer"].as_str() != Some("capframex");
@@ -2683,10 +2683,6 @@ fn refresh_native_overlay(app: &tauri::AppHandle, broker: &Broker, show_if_enabl
             if let Some(window) = app.get_webview_window(NATIVE_OVERLAY_LABEL) { let _ = window.hide(); }
         } else {
             native_overlay_apply_geometry(app, broker);
-            if show_if_enabled && !app.get_webview_window(NATIVE_OVERLAY_LABEL)
-                .is_some_and(|window| window.is_visible().unwrap_or(false)) {
-                native_overlay_toggle(app, broker);
-            }
         }
     }
     publish_native_overlay_settings(app, broker, "main");
@@ -3281,10 +3277,8 @@ async fn bridge_invoke(window: tauri::WebviewWindow, state: tauri::State<'_, Arc
                     fields.keys().any(|key| key.starts_with("overlay"))
                 });
                 if overlay_changed {
-                    let show = patch.as_ref().is_some_and(|patch| patch.get("overlayRenderer").is_some()
-                        || patch.get("overlayEnabled").is_some());
                     let refresh_lanes = patch.as_ref().is_some_and(|patch| patch.get("overlayPollMs").is_some());
-                    refresh_native_overlay(window.app_handle(), &broker, show, refresh_lanes);
+                    refresh_native_overlay(window.app_handle(), &broker, refresh_lanes);
                 }
             } else if arc_power_tauri::backend::overlay_layout_channels::handles(&channel) {
                 publish_layout_reaction(window.app_handle(), broker.as_ref(), &channel);
@@ -3352,7 +3346,10 @@ async fn renderer_ready(window: tauri::WebviewWindow, state: tauri::State<'_, Ar
             publish_native_overlay_settings(&app, &broker, &target);
         }
         if role == Some("main") && !broker.mock_mode {
-            refresh_native_overlay(&app, &broker, true, false);
+            // Renderer readiness is a boot/setup refresh. Keep the HUD hidden
+            // even when the persisted master switch is enabled; only the
+            // explicit overlay:toggle action may reveal it for this session.
+            refresh_native_overlay(&app, &broker, false);
         }
         if roles::role(&target) == Some("advanced-overlay") {
             if let Some(service) = broker.advanced_overlay.as_ref() { service.publish_settings(); }
