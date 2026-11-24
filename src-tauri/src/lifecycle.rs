@@ -109,7 +109,7 @@ fn resolve_relaunch_target(current_exe: &Path, portable_file: Option<&std::ffi::
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallerMode { Install, Uninstall, Update }
 
 /// Classify only original process arguments and the inherited NSIS marker.

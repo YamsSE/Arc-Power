@@ -43,6 +43,17 @@ fn supported(info: &ctl_oc_control_info_t, value: Option<f64>) -> bool {
     info.bSupported != 0 && value.is_some()
 }
 
+pub(crate) fn raw_limit_ranges(snapshot: &ControlSnapshot) -> Value {
+    let mut ranges = Map::new();
+    if supported(&snapshot.oc.powerLimit, snapshot.power_limit) {
+        ranges.insert("powerLimitW".into(), control_range(&snapshot.oc.powerLimit));
+    }
+    if supported(&snapshot.oc.temperatureLimit, snapshot.temp_limit) {
+        ranges.insert("tempLimitC".into(), control_range(&snapshot.oc.temperatureLimit));
+    }
+    Value::Object(ranges)
+}
+
 fn fan_unit(fan: &ctl_fan_properties_t) -> Option<i32> {
     if fan.supportedUnits & 0b10 != 0 { Some(1) } else if fan.supportedUnits & 0b01 != 0 { Some(0) } else { None }
 }
@@ -205,13 +216,24 @@ fn load_snapshot_from_open(
     let snapshot = igcl.controls_snapshot(raw_index).map_err(|error| error.to_string())?;
     // The probe only matters where Electron would run it: properties refuse
     // control, or their derived modes claim fixed (the B580/A770 lie).
-    let fan_probe = if policy != ProbePolicy::Skip
-        && (snapshot.fan.canControl == 0 || fan_modes(snapshot.fan.supportedModes).contains(&"fixed")) {
+    let probe_needed = fan_probe_needed(policy, snapshot.fan.canControl, snapshot.fan.supportedModes);
+    let fan_probe = if probe_needed {
         match policy {
             ProbePolicy::Force => {
-                let result = igcl.probe_fan_control(raw_index, snapshot.fan.maxPoints);
-                remember_fan_probe(device, result);
-                Some(result)
+                // The probe is a reversible hardware write. Hold the shared
+                // apply mutex so it cannot interleave with another writer.
+                // Block for the standard timeout instead of skipping: an apply
+                // that triggers a cache-miss caps read already holds the mutex
+                // on another thread, and skipping the probe leaves the fan
+                // read-only for the rest of the session.
+                let probe_lock = super::apply_lock::acquire().ok();
+                if probe_lock.is_some() {
+                    let result = igcl.probe_fan_control(raw_index, snapshot.fan.maxPoints);
+                    remember_fan_probe(device, result);
+                    Some(result)
+                } else {
+                    None
+                }
             }
             ProbePolicy::Cached => cached_fan_probe(&device).filter(|probe| probe.probe_ok)
                 .map(Some)
@@ -223,6 +245,11 @@ fn load_snapshot_from_open(
     };
     let _ = igcl.close();
     Ok((snapshot, device.clone(), fan_probe))
+}
+
+fn fan_probe_needed(policy: ProbePolicy, can_control: u8, supported_modes: u32) -> bool {
+    policy != ProbePolicy::Skip
+        && (can_control == 0 || fan_modes(supported_modes).contains(&"fixed"))
 }
 
 fn fan_probe_key(device: &Value) -> Option<String> {
@@ -299,6 +326,12 @@ fn persist_fan_probe(device: &Value, result: FanProbe) {
     let _ = std::fs::write(path, payload.to_string());
 }
 
+fn finalize_ranges_with_witness(ranges: &mut Map<String, Value>, limits: &DeviceLimits, advanced: bool) -> Map<String, Value> {
+    let witness = ranges.clone();
+    apply_device_limits(ranges, limits, advanced);
+    witness
+}
+
 fn map_capabilities(snapshot: &ControlSnapshot, device: &Value, oc_mode: &str, waiver: bool, probe: Option<FanProbe>) -> Value {
     let oc = &snapshot.oc;
     let vf = vf_range(oc);
@@ -328,6 +361,8 @@ fn map_capabilities(snapshot: &ControlSnapshot, device: &Value, oc_mode: &str, w
     if supported(&oc.vramMemSpeedLimit, snapshot.vram_freq) {
         ranges.insert("vramFreqOffsetGts".into(), control_range(&oc.vramMemSpeedLimit));
     }
+    // Preserve the unmodified DriverStore witness before listed/advanced
+    // policy widens or narrows the renderer-facing ranges.
     let overclocking_supported = controls.values().any(|value| value == &Value::Bool(true));
     let (aib_vendor, aib_model) = aib_identity(
         device["pciSubsysVendorId"].as_u64().unwrap_or(0) as u16,
@@ -335,7 +370,7 @@ fn map_capabilities(snapshot: &ControlSnapshot, device: &Value, oc_mode: &str, w
     );
     let advanced = oc_mode == "advanced";
     let limits = device_limits_of(device["pciDeviceId"].as_str(), aib_vendor, advanced);
-    apply_device_limits(&mut ranges, &limits, advanced);
+    let driver_ranges = finalize_ranges_with_witness(&mut ranges, &limits, advanced);
     let legacy = if limits.listed { Some(super::legacy_igcl::capability()) } else { None };
     let extended_controls = legacy.map(|(power, temp)| json!({"powerLimitW": power, "tempLimitC": temp}));
     let extended_ranges = advanced && legacy.is_some_and(|(power, temp)| power || temp);
@@ -372,6 +407,7 @@ fn map_capabilities(snapshot: &ControlSnapshot, device: &Value, oc_mode: &str, w
         "waiverAccepted": waiver,
         "controls": Value::Object(controls),
         "ranges": Value::Object(ranges),
+        "driverRanges": Value::Object(driver_ranges),
         "controlStatus": {"gpuLock": gpu_lock_status, "vfCurve": vf_status},
         "fan": {
             "canControl": fan_control,
@@ -507,6 +543,63 @@ pub(crate) fn capabilities_for_identity(
     Ok(map_capabilities(&snapshot, &device, oc_mode, waiver, probe))
 }
 
+/// Outcome of the driver's whole-device OC reset.
+pub enum DriverReset { Reset, Unavailable }
+
+/// Reset one adapter through `ctlOverclockResetToDefault` and close the
+/// session. Callers hold the shared apply locks and verify the read-back.
+pub fn reset_to_default_for_device(dll_path: &Path, device_id: u64, expected_key: &str) -> Result<DriverReset, String> {
+    let (mut igcl, raw_index, device) = open_for_device(dll_path, device_id)?;
+    if device["deviceKey"].as_str() != Some(expected_key) {
+        let _ = igcl.close();
+        return Err("reset-to-defaults: selected GPU identity changed; refresh and try again".into());
+    }
+    let _ = igcl.apply_waiver(raw_index);
+    let reset = igcl.reset_to_default(raw_index);
+    let _ = igcl.close();
+    match reset {
+        Ok(()) => Ok(DriverReset::Reset),
+        Err(error) if error.status.is_none() || error.status == Some(0x4000_000a) => Ok(DriverReset::Unavailable),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Read capabilities and run the reversible fan probe when Electron's
+/// success-only cache is missing. This is the native equivalent of Electron's
+/// `_probeFanCapability` on the capability path; it writes a safe table and
+/// restores default mode, so only the packaged/native-only fallback calls it.
+pub(crate) fn capabilities_for_identity_with_probe(
+    dll_path: &Path,
+    identity: &super::gpu_apply_identity::ApplyIdentity,
+    oc_mode: &str,
+    waiver: bool,
+) -> Result<Value, String> {
+    let (snapshot, device, probe) = load_snapshot_for_identity(dll_path, identity, ProbePolicy::Force)?;
+    Ok(map_capabilities(&snapshot, &device, oc_mode, waiver, probe))
+}
+
+/// Read native capabilities without probing fan control. Used by packaged
+/// native-only hosts when Electron's success-only fan cache is unavailable and
+/// the live probe cannot be completed; the other controls remain readable
+/// while fan editing stays disabled.
+pub(crate) fn capabilities_for_identity_without_fan_probe(
+    dll_path: &Path,
+    identity: &super::gpu_apply_identity::ApplyIdentity,
+    oc_mode: &str,
+    waiver: bool,
+) -> Result<Value, String> {
+    let (snapshot, device, _) = load_snapshot_for_identity(dll_path, identity, ProbePolicy::Skip)?;
+    let mut caps = map_capabilities(&snapshot, &device, oc_mode, waiver, None);
+    force_fan_read_only(&mut caps);
+    Ok(caps)
+}
+
+fn force_fan_read_only(caps: &mut Value) {
+    if let Some(fan) = caps.get_mut("fan").and_then(Value::as_object_mut) {
+        fan.insert("canControl".into(), Value::Bool(false));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,6 +663,35 @@ mod tests {
         assert_eq!(ranges["powerLimitW"]["max"], 270.0);
         assert_eq!(ranges["tempLimitC"]["max"], 115.0);
         assert_eq!(ranges["gpuVoltOffsetV"]["min"], -0.8);
+    }
+
+    #[test]
+    fn advanced_finalization_preserves_raw_driver_ranges() {
+        let mut ranges = Map::new();
+        ranges.insert("powerLimitW".into(), json!({"min":50,"max":247,"step":1,"units":"W"}));
+        ranges.insert("tempLimitC".into(), json!({"min":50,"max":90,"step":1,"units":"C"}));
+        let raw = finalize_ranges_with_witness(&mut ranges, &device_limits_of(Some("0x000056a0"), Some("Acer"), true), true);
+        assert_eq!(raw["powerLimitW"]["max"], 247);
+        assert_eq!(raw["tempLimitC"]["max"], 90);
+        assert!(ranges["powerLimitW"]["max"].as_f64().unwrap() > 247.0);
+        assert!(ranges["tempLimitC"]["max"].as_f64().unwrap() > 90.0);
+    }
+
+    #[test]
+    fn missing_fan_probe_fallback_keeps_other_capabilities_and_disables_fan_control() {
+        let mut caps = json!({"fan":{"canControl":true,"modes":["auto","fixed"]},
+            "controls":{"powerLimit":true},"ranges":{"powerLimitW":{"min":1,"max":2}}});
+        force_fan_read_only(&mut caps);
+        assert_eq!(caps["fan"]["canControl"], json!(false));
+        assert_eq!(caps["fan"]["modes"], json!(["auto","fixed"]));
+        assert_eq!(caps["controls"]["powerLimit"], json!(true));
+        assert_eq!(caps["ranges"]["powerLimitW"]["max"], json!(2));
+    }
+
+    #[test]
+    fn waiver_read_skips_fan_probe_even_when_cache_would_be_required() {
+        assert!(fan_probe_needed(ProbePolicy::Cached, 0, 0));
+        assert!(!fan_probe_needed(ProbePolicy::Skip, 0, 0));
     }
 
     #[test]

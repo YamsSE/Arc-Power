@@ -3,7 +3,8 @@
 //! refuses active core offsets, writes once, and verifies the LIVE read-back.
 use super::gpu_apply::igcl_error_code;
 use super::vf_curve::{
-    is_valid_native_vf_curve, prepare_vf_curve_for_driver, same_vf_curve, VfCurvePoint, VfCurveRange,
+    is_valid_native_vf_curve, matches_vf_curve_reference, prepare_vf_curve_for_driver,
+    rebase_vf_curve_to_reference, same_vf_curve, VfCurvePoint, VfCurveRange,
 };
 use serde_json::{json, Value};
 
@@ -131,7 +132,7 @@ pub fn apply_vf_curve(settings: &Value, caps: &Value, backend: &mut dyn VfBacken
     if !curve.windows(2).all(|pair| pair[1].voltage_v > pair[0].voltage_v && pair[1].freq_mhz >= pair[0].freq_mhz) {
         return fail("out-of-range", "VF curve points must be ordered");
     }
-    let Some(prepared) = prepare_vf_curve_for_driver(&curve, &range) else {
+    let Some(mut prepared) = prepare_vf_curve_for_driver(&curve, &range) else {
         return fail("out-of-range", "VF curve voltages must match the driver voltage step, and frequencies must be whole MHz values within the supported range");
     };
 
@@ -157,12 +158,39 @@ pub fn apply_vf_curve(settings: &Value, caps: &Value, backend: &mut dyn VfBacken
     if live.len() != prepared.len() {
         return fail("readback-unverified", "the current LIVE VF curve does not match the requested point count; no curve write was sent");
     }
+    let reset = settings.get("vfCurveResetToDefault") == Some(&Value::Bool(true));
+    if settings.get("vfCurveResetToDefault").is_some() && !reset {
+        return fail("invalid-argument", "VF reset intent must be true");
+    }
+    if reset && settings.get("vfCurveBaseline").is_some() {
+        return fail("invalid-argument", "VF reset and baseline cannot be combined");
+    }
+    if reset {
+        if !is_battlemage(caps) { return fail("unsupported", "VF reset intent requires a Battlemage GPU"); }
+        let Some(stock_target) = prepare_vf_curve_for_driver(&stock_canonical, &range) else {
+            return fail("readback-unverified", "the current STOCK VF curve cannot be used as a reset target");
+        };
+        prepared = stock_target;
+    } else if let Some(reference) = settings.get("vfCurveBaseline") {
+        let Ok(reference) = serde_json::from_value::<Vec<VfCurvePoint>>(reference.clone()) else {
+            return fail("invalid-argument", "the VF baseline is invalid");
+        };
+        if !is_valid_native_vf_curve(Some(&reference), &range)
+            || !matches_vf_curve_reference(&reference, &live_canonical) {
+            return fail("readback-unstable", "the VF baseline no longer matches the current LIVE curve; no write was sent");
+        }
+        let Some(rebased) = rebase_vf_curve_to_reference(&curve, &reference, &live_canonical, &range) else {
+            return fail("out-of-range", "the rebased VF curve is outside the driver range or grid");
+        };
+        prepared = rebased;
+    }
     match backend.read_offsets() {
         Ok((frequency, voltage)) if frequency.abs() <= OFFSET_ACTIVE_EPSILON && voltage.abs() <= OFFSET_ACTIVE_EPSILON => {}
         Ok(_) => return fail("dependency-failed", "Reset the GPU core frequency and voltage offsets to zero before applying a custom VF curve. The driver uses both controls on the same tuning surface."),
         Err(_) => return fail("dependency-failed", "The active GPU core offsets could not be read, so the VF curve was not written. Verify both core offsets before applying a curve."),
     }
-    if same_vf_curve(Some(&prepared), Some(&live_canonical), 0.0, 0.0) {
+    if same_vf_curve(Some(&prepared), Some(&live_canonical), 0.0, 0.0)
+        || (reset && uniform_voltage_shift_mv(&prepared, &live_canonical).is_some()) {
         return json!({"ok": true, "perControl": {"vfCurve": {
             "ok": true, "readBackEqual": true, "normalized": false,
             "readBackCurve": curve_json(&live_canonical),
@@ -306,6 +334,33 @@ mod tests {
         let result = apply_vf_curve(&json!({"vfCurve": points()}), &caps(), &mut backend, &opts(false));
         assert_eq!(result["ok"], true);
         assert!(backend.writes.is_empty());
+    }
+
+    #[test]
+    fn baseline_rebases_against_fresh_live_and_rejects_changed_shape() {
+        let requested = json!([
+            {"voltageV":0.8,"freqMhz":2010}, {"voltageV":1.0,"freqMhz":2500}, {"voltageV":1.2,"freqMhz":3000}
+        ]);
+        let settings = json!({"vfCurve":requested,"vfCurveBaseline":points()});
+        let mut shifted = Mock { live: vec![(805, 2000), (1005, 2500), (1205, 3000)], ..Mock::default() };
+        assert_eq!(apply_vf_curve(&settings, &caps(), &mut shifted, &opts(false))["ok"], true);
+        assert_eq!(shifted.writes, vec![vec![(805, 2010), (1005, 2500), (1205, 3000)]]);
+        let mut changed = Mock { live: vec![(805, 2000), (1005, 2490), (1205, 3000)], ..Mock::default() };
+        assert_eq!(apply_vf_curve(&settings, &caps(), &mut changed, &opts(false))["perControl"]["vfCurve"]["errorCode"], "readback-unstable");
+        assert!(changed.writes.is_empty());
+    }
+
+    #[test]
+    fn reset_uses_fresh_stock_and_skips_equivalent_shifted_live() {
+        let battlemage = json!({"deviceName":"Arc B580","vfCurveRange":serde_json::from_str::<Value>(RANGE).unwrap()});
+        let settings = json!({"vfCurve":points(),"vfCurveResetToDefault":true});
+        let mut backend = Mock { stock: vec![(810, 2000), (1010, 2500), (1210, 3000)],
+            live: vec![(800, 1900), (1000, 2400), (1200, 2900)], ..Mock::default() };
+        assert_eq!(apply_vf_curve(&settings, &battlemage, &mut backend, &opts(false))["ok"], true);
+        assert_eq!(backend.writes, vec![vec![(810, 2000), (1010, 2500), (1210, 3000)]]);
+        let mut same = Mock { live: vec![(805, 2000), (1005, 2500), (1205, 3000)], ..Mock::default() };
+        assert_eq!(apply_vf_curve(&settings, &battlemage, &mut same, &opts(false))["ok"], true);
+        assert!(same.writes.is_empty());
     }
 
     #[test]

@@ -189,7 +189,7 @@ export interface ArcPowerApi {
   onFanResumeStatus(callback: () => void): () => void;
   resetToDefaults(deviceId: number): Promise<ResetResponse>;
   waiverGet(deviceId: number): Promise<{ accepted: boolean }>;
-  waiverAccept(deviceId: number): Promise<{ accepted: boolean }>;
+  waiverAccept(deviceId: number, expectedTarget?: import('./pure/gpu-apply-target.ts').ExpectedGpuApplyTarget): Promise<{ accepted: boolean }>;
   /** 1.0.1 no-Intel round: telemetryStart(null) starts the no-device mode
    *  (a sentinel-keyed timer pushing sys-stats-ONLY samples). A non-negative
    *  integer starts the per-device telemetry. */
@@ -417,6 +417,9 @@ export interface ArcPowerApi {
   /** M5: flip the overlay's visibility (the Settings toggle + the hotkey
    *  flip the same persisted field). Returns the fresh state. */
   overlayToggle(): Promise<OverlayState>;
+  monitorsList(): Promise<Array<{ name: string; label: string; width: number; height: number; scaleFactor: number; primary: boolean }>>;
+  overlayMonitorsGet(): Promise<{ hud: string | null; advanced: string | null }>;
+  overlayMonitorsSet(selection: { hud: string | null; advanced: string | null }): Promise<{ ok: boolean }>;
   /** M23: pushed ADVANCED-overlay settings ({ position, enabled,
    *  hotkeyLetter } - the panel window's surface; sent by main on every
    *  apply incl. the initial did-finish-load push - the panel registers

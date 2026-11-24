@@ -72,11 +72,11 @@ function isVerifiedSuccess(per) {
  */
 export function refusalMessage(control, per) {
   if (!per || isVerifiedSuccess(per)) return null;
-  // VF curve failures carry actionable native/read-back diagnostics (for
+  // Curve and fan failures carry actionable native/read-back diagnostics (for
   // example the exact IGCL refusal or the point that failed verification).
   // Keep those for the tuning UI instead of replacing them with the generic
   // refusal text, which made distinct B-series failures look identical.
-  if (control === 'vfCurve' && typeof per.message === 'string' && per.message.trim().length > 0) {
+  if (['vfCurve', 'fanCurve', 'fanMode', 'fixedFanPct'].includes(control) && typeof per.message === 'string' && per.message.trim().length > 0) {
     return per.message;
   }
   if (per.errorCode && HARD_ERROR_CODES.has(per.errorCode)) return null;

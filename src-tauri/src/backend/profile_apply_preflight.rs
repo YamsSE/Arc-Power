@@ -21,6 +21,7 @@ const REFUSAL_CACHE_UNAVAILABLE_MESSAGE: &str =
 #[derive(Debug, Default)]
 pub(crate) struct ProfileTempCeilings {
     by_device: HashMap<String, f64>,
+    units_by_device: HashMap<String, String>,
     last_snapshot_sequence: HashMap<String, u64>,
     last_publication: HashMap<String, (u64, Value)>,
     unavailable: HashSet<String>,
@@ -51,6 +52,7 @@ impl ProfileTempCeilings {
             "reason": unavailable,
             "generation": self.generation,
             "ceilings": { "tempLimitC": self.ceiling_for(device_key) },
+            "units": { "tempLimitC": self.units_by_device.get(device_key) },
         })
     }
 
@@ -269,6 +271,10 @@ impl ProfileTempCeilings {
         if temperature_grid(range).is_none() {
             return self.poison(&actual, "temperature refusal snapshot range is invalid");
         }
+        let units = range.get("units").and_then(Value::as_str).unwrap_or_default();
+        if self.units_by_device.get(&actual.device_key).is_some_and(|previous| previous != units) {
+            return self.poison(&actual, "temperature control units changed during this session; restart Arc Power before applying a temperature limit");
+        }
         if !valid_temperature_grid_value(attempted, range) {
             return self.poison(&actual, "temperature refusal attempted value is outside its range or grid");
         }
@@ -298,6 +304,7 @@ impl ProfileTempCeilings {
             return self.poison(&actual, "temperature refusal ceiling could not be recorded");
         }
         self.last_snapshot_sequence.insert(actual.device_key.clone(), sequence);
+        self.units_by_device.insert(actual.device_key.clone(), units.to_owned());
         Ok(self.ceiling_for(&actual.device_key))
     }
 
@@ -399,6 +406,19 @@ impl ProfileTempCeilings {
         let Some(range) = caps.get("ranges").and_then(|ranges| ranges.get(TEMP_CONTROL)) else {
             return unchanged();
         };
+        let current_units = range.get("units").and_then(Value::as_str);
+        if self.units_by_device.get(device_key).is_some_and(|units| Some(units.as_str()) != current_units) {
+            return ProfileApplyPlan {
+                routed_settings: json!({}),
+                refused_per_control: settings.as_object().map(|settings| settings.keys().map(|key| {
+                    (key.clone(), json!({
+                        "ok": false,
+                        "errorCode": "refusal-cache-unavailable",
+                        "message": "The temperature control units changed during this session. Restart Arc Power before applying a temperature limit.",
+                    }))
+                }).collect()).map(Value::Object).unwrap_or_else(|| json!({})),
+            };
+        }
         let local_ceiling = self.ceiling_for(device_key)
             .filter(|value| valid_learned_temp_ceiling(*value, range));
         let caps_ceiling = caps.get("learnedCeilings")
@@ -526,7 +546,7 @@ fn canonical_device_key(value: &str) -> bool {
 }
 
 fn temperature_grid(range: &Value) -> Option<(f64, f64, f64)> {
-    if range.get("units").and_then(Value::as_str) != Some("C") { return None; }
+    if !matches!(range.get("units").and_then(Value::as_str), Some("C" | "%")) { return None; }
     let min = range.get("min").and_then(Value::as_f64)?;
     let max = range.get("max").and_then(Value::as_f64)?;
     let step = range.get("step").and_then(Value::as_f64)?;
@@ -580,6 +600,40 @@ mod tests {
 
     fn temp_range(max: f64) -> Value {
         json!({"units":"C", "min":50.0, "max":max, "step":1.0, "default":90.0})
+    }
+
+    #[test]
+    fn battlemage_percent_temperature_refusals_are_learned_and_applied_in_the_same_units() {
+        let target = expected(3);
+        let range = json!({"units":"%","min":60.0,"max":100.0,"step":1.0,"default":80.0});
+        let mut store = ProfileTempCeilings::default();
+        let mut refusal = snapshot(1, 3, Some(100.0), json!({"ok":false,"errorCode":"out-of-range"}), "committed");
+        refusal["ranges"][TEMP_CONTROL] = range.clone();
+        assert_eq!(store.ingest_broker_snapshot(&target, &refusal).unwrap(), Some(99.0));
+
+        let plan = store.plan_profile_apply(
+            &target.device_key,
+            &json!({"tempLimitC":100.0}),
+            &json!({"ranges":{"tempLimitC":range}}),
+        );
+        assert_eq!(plan.routed_settings, json!({}));
+        assert_eq!(plan.refused_per_control[TEMP_CONTROL]["errorCode"], "out-of-range");
+        assert_eq!(plan.refused_per_control[TEMP_CONTROL]["capabilityCeiling"], 99.0);
+        assert!(plan.refused_per_control[TEMP_CONTROL]["message"].as_str().unwrap().contains("99%"));
+    }
+
+    #[test]
+    fn refusal_cache_poisoned_when_temperature_units_change_for_same_gpu() {
+        let target = expected(3);
+        let mut store = ProfileTempCeilings::default();
+        let mut celsius = snapshot(1, 3, Some(100.0), json!({"ok":false,"errorCode":"out-of-range"}), "committed");
+        celsius["ranges"][TEMP_CONTROL] = json!({"units":"C","min":60,"max":100,"step":1});
+        assert_eq!(store.ingest_broker_snapshot(&target, &celsius).unwrap(), Some(99.0));
+        let mut percent = snapshot(2, 3, Some(100.0), json!({"ok":false,"errorCode":"out-of-range"}), "committed");
+        percent["ranges"][TEMP_CONTROL] = json!({"units":"%","min":60,"max":100,"step":1});
+        assert!(store.ingest_broker_snapshot(&target, &percent).is_err());
+        assert!(store.is_unavailable(&target.device_key));
+        assert_eq!(store.session_snapshot(&target.device_key)["status"], "unavailable");
     }
 
     #[test]
@@ -669,7 +723,7 @@ mod tests {
         let other = expected(4);
         let mut store = ProfileTempCeilings::default();
         let mut invalid_range = snapshot(1, 3, Some(108.0), json!({"ok":false,"errorCode":"out-of-range"}), "committed");
-        invalid_range["ranges"][TEMP_CONTROL]["units"] = json!("%");
+        invalid_range["ranges"][TEMP_CONTROL]["units"] = json!("F");
         assert!(store.ingest_broker_snapshot(&target, &invalid_range).is_err());
         assert!(store.is_unavailable(&target.device_key));
         assert!(!store.is_unavailable(&other.device_key));
@@ -946,9 +1000,13 @@ mod tests {
         // that control with the M50 marker shape the broker merges after
         // runApply (ok:false + out-of-range + finite capabilityCeiling +
         // message).
+        let stock_vf = json!([
+            {"voltageV":0.8,"freqMhz":2000},
+            {"voltageV":1.0,"freqMhz":2500},
+        ]);
         let plan = store.plan_profile_apply(&target.device_key,
-            &json!({"tempLimitC": 108, "powerLimitW": 240}), &profile_caps());
-        assert_eq!(plan.routed_settings, json!({"powerLimitW": 240}));
+            &json!({"tempLimitC": 108, "powerLimitW": 240, "vfCurve": stock_vf}), &profile_caps());
+        assert_eq!(plan.routed_settings, json!({"powerLimitW": 240, "vfCurve": stock_vf}));
         let refused = plan.refused_per_control.as_object().unwrap();
         assert_eq!(refused.len(), 1);
         let temp = refused.get("tempLimitC").unwrap();

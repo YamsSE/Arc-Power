@@ -100,8 +100,9 @@ pub struct LegacyIgcl {
 
 impl LegacyIgcl {
     pub fn load(dll_path: &Path) -> Result<Self, String> {
-        let mut session = ReadOnlyIgcl::load(dll_path).map_err(|error| error.to_string())?;
+        let mut session = ReadOnlyIgcl::load_legacy(dll_path).map_err(|error| error.to_string())?;
         let adapters = session.enumerate_adapters().map_err(|error| error.to_string())?;
+        if adapters.is_empty() { return Err("legacy IGCL enumerated no adapters".into()); }
         Ok(Self { session, adapters })
     }
     pub fn index_for_bdf(&self, bus: u32, device: u32, function: u32) -> Option<usize> {
@@ -119,11 +120,39 @@ impl LegacyIgcl {
         if matches.next().is_some() { return Err("legacy IGCL target identity is ambiguous".into()); }
         Ok(index)
     }
+    pub(crate) fn unique_index_for_identity(&self, identity: &super::gpu_apply_identity::ApplyIdentity) -> Result<(usize, bool), String> {
+        let rows = self.adapters.iter().map(|adapter| if adapter.name.trim().is_empty() { (0, 0, 0, 0, 0) } else {
+            (adapter.pci_vendor_id, adapter.pci_device_id, u32::from(adapter.bdf.bus),
+                u32::from(adapter.bdf.device), u32::from(adapter.bdf.function)) }).collect::<Vec<_>>();
+        select_legacy_identity(&rows, identity.vendor, identity.device, identity.bus, identity.slot, identity.function)
+    }
     pub fn supports_power(&self) -> bool { self.session.legacy_supports_power() }
     pub fn supports_temp(&self) -> bool { self.session.legacy_supports_temp() }
     pub fn apply_waiver(&self, index: usize) -> Result<(), String> {
         self.session.apply_waiver(index).map_err(|error| error.to_string())
     }
+}
+
+fn select_legacy_identity(rows: &[(u32, u32, u32, u32, u32)], vendor: u32, device: u32,
+    bus: u32, slot: u32, function: u32) -> Result<(usize, bool), String> {
+    let exact: Vec<_> = rows.iter().enumerate().filter(|(_, row)| **row == (vendor, device, bus, slot, function)).map(|(i, _)| i).collect();
+    if exact.len() == 1 { return Ok((exact[0], false)); }
+    if !rows.is_empty() && rows.iter().all(|row| (row.2, row.3, row.4) == (0, 0, 0)) {
+        let pci: Vec<_> = rows.iter().enumerate().filter(|(_, row)| row.0 == vendor && row.1 == device).map(|(i, _)| i).collect();
+        if pci.len() == 1 { return Ok((pci[0], true)); }
+    }
+    Err("legacy IGCL target identity is missing or ambiguous".into())
+}
+
+pub(crate) fn current_identity_is_unique(adapters: &[AdapterInfo], identity: &super::gpu_apply_identity::ApplyIdentity, index: usize) -> bool {
+    let rows = adapters.iter().map(|adapter| (adapter.pci_vendor_id, adapter.pci_device_id,
+        u32::from(adapter.bdf.bus), u32::from(adapter.bdf.device), u32::from(adapter.bdf.function))).collect::<Vec<_>>();
+    current_rows_unique(&rows, (identity.vendor, identity.device, identity.bus, identity.slot, identity.function), index)
+}
+
+fn current_rows_unique(rows: &[(u32, u32, u32, u32, u32)], expected: (u32, u32, u32, u32, u32), index: usize) -> bool {
+    let matching: Vec<_> = rows.iter().enumerate().filter(|(_, row)| row.0 == expected.0 && row.1 == expected.1).collect();
+    matching.len() == 1 && matching[0].0 == index && *matching[0].1 == expected
 }
 
 impl LegacyBackend for LegacyIgcl {
@@ -175,6 +204,19 @@ pub fn locate_dll() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_selection_requires_exact_or_unique_pci_when_all_bdfs_missing() {
+        let target = (0x8086, 0xe20b, 3, 0, 0);
+        assert_eq!(select_legacy_identity(&[target], target.0, target.1, target.2, target.3, target.4).unwrap(), (0, false));
+        assert_eq!(select_legacy_identity(&[(0x8086, 0x1234, 0, 0, 0), (0x8086, 0xe20b, 0, 0, 0)], target.0, target.1, 3, 0, 0).unwrap(), (1, true));
+        assert!(select_legacy_identity(&[(0x8086, 0xe20b, 0, 0, 0); 2], target.0, target.1, 3, 0, 0).is_err());
+        assert!(select_legacy_identity(&[(0x8086, 0xe20b, 0, 0, 0), (0x8086, 0x1234, 4, 0, 0)], target.0, target.1, 3, 0, 0).is_err());
+        assert!(select_legacy_identity(&[(0x8086, 0x1234, 3, 0, 0)], target.0, target.1, 3, 0, 0).is_err());
+        assert!(current_rows_unique(&[target], target, 0));
+        assert!(!current_rows_unique(&[target, (0x8086, 0xe20b, 4, 0, 0)], target, 0));
+        assert!(!current_rows_unique(&[target], target, 1));
+    }
 
     struct Mock {
         power: f64, temp: f64,

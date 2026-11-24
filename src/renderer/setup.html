@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Arc Power Setup</title>
+  <link rel="stylesheet" href="./setup.css">
+</head>
+<body>
+  <div class="setup-shell">
+    <aside class="setup-sidebar">
+      <img src="../assets/installerSidebar.png" alt="">
+    </aside>
+    <main class="setup-main">
+      <header class="setup-header">
+        <img src="../assets/installerHeader.png" alt="Arc Power">
+        <span class="setup-version" id="setup-version"></span>
+      </header>
+      <div class="setup-pages">
+        <section class="setup-page active" id="page-welcome">
+          <span class="setup-kicker">ARC POWER</span>
+          <h1 id="welcome-title">Welcome to Arc Power</h1>
+          <p id="welcome-copy">This wizard installs Arc Power for all users on this computer.</p>
+          <div class="setup-actions">
+            <button class="btn btn-primary" id="welcome-next">Continue</button>
+            <button class="btn" data-close>Cancel</button>
+          </div>
+        </section>
+
+        <section class="setup-page" id="page-options">
+          <span class="setup-kicker">INSTALL OPTIONS</span>
+          <h1>Choose where Arc Power is installed</h1>
+          <label class="setup-label" for="install-path">Install location</label>
+          <div class="setup-path-row">
+            <input id="install-path" class="setup-input" type="text" spellcheck="false">
+            <button class="btn" id="browse">Browse...</button>
+          </div>
+          <div class="setup-checks">
+            <label class="setup-check"><input type="checkbox" id="opt-desktop"> Create a desktop shortcut</label>
+            <label class="setup-check"><input type="checkbox" id="opt-launch"> Launch Arc Power when setup finishes</label>
+            <label class="setup-check" id="rtss-row"><input type="checkbox" id="opt-rtss"> Install RivaTuner Statistics Server (RTSS) with WinGet</label>
+            <p class="setup-note" id="rtss-note"></p>
+          </div>
+          <p class="setup-error" id="options-error"></p>
+          <div class="setup-actions">
+            <button class="btn" id="options-back">Back</button>
+            <button class="btn btn-primary" id="install">Install</button>
+          </div>
+        </section>
+
+        <section class="setup-page" id="page-progress">
+          <div class="setup-spinner" aria-hidden="true"></div>
+          <h1 id="progress-title">Installing Arc Power</h1>
+          <p id="progress-copy">Please wait. Windows may ask for administrator approval.</p>
+          <p class="setup-error" id="progress-error"></p>
+          <div class="setup-actions" id="progress-actions" hidden>
+            <button class="btn" id="progress-back">Back</button>
+            <button class="btn btn-primary" id="progress-close">Close</button>
+          </div>
+        </section>
+
+        <section class="setup-page" id="page-finish">
+          <span class="setup-kicker" id="finish-kicker">COMPLETE</span>
+          <h1 id="finish-title">Arc Power is installed</h1>
+          <p id="finish-copy">Your profiles and recordings are kept in your user data folder.</p>
+          <div class="setup-actions">
+            <button class="btn btn-primary" id="finish-close">Close</button>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <script src="./setup.js"></script>
+</body>
+</html>

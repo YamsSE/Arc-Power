@@ -1,16 +1,16 @@
 <p align="center">
-  <img src="docs/branding/Arc-Power-Main-Logo-Navy.png?v=1.3.0" alt="Arc Power" width="540">
+  <img src="docs/branding/Arc-Power-Main-Logo-Navy.png?v=1.3.4" alt="Arc Power" width="540">
 </p>
 
 <p align="center">
   <a href="https://discord.gg/nXAjasHy6e"><img src="https://api.iconify.design/simple-icons/discord.svg?color=%235865F2" alt="Join the Arc Power Discord" title="Join the Arc Power Discord" width="22" height="22"></a>
 </p>
 
-# Arc Power Ver. 1.3.0
+# Arc Power Ver. 1.3.4
 
-Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.3.0 is the Rust/Tauri/WebView2 migration release: the native host, persistence, platform services and device inventory move to Rust while the existing tuning, monitoring, sharpening, ASR, recording and Driver Library features are retained.
+Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.3.4 is the Rust/Tauri/WebView2 migration release: the native host, persistence, platform services and device inventory move to Rust while the existing tuning, monitoring, sharpening, ASR, recording and Driver Library features are retained.
 
-## Version 1.3.0 highlights
+## Version 1.3.4 highlights
 
 - **Native Windows host:** the installed and portable editions run on Rust, Tauri 2, and WebView2 without Electron.
 - **Rust-owned state:** profiles, settings, overlay layouts, stability history, game/recording metadata, fan-resume, window state and OBS credentials are stored by the Rust host under `%APPDATA%\ArcPower`.
@@ -20,7 +20,7 @@ Arc Power is an open source Windows application for Intel Arc GPU tuning, monito
 
 ## Upgrading from 1.2.5
 
-Once version 1.3.0 is published on GitHub, the 1.2.5 updater can find it through the existing installer and portable asset names. The upgrade is designed to preserve user data in `%APPDATA%\ArcPower`.
+Once version 1.3.4 is published on GitHub, the 1.2.5 updater can find it through the existing installer and portable asset names. The upgrade is designed to preserve user data in `%APPDATA%\ArcPower`.
 
 ## What Arc Power does
 
@@ -70,7 +70,7 @@ Build the Tauri renderer and compile the Windows release host with your Rust and
 npm ci --prefix src-tauri/frontend-deps
 node scripts/build-tauri-frontend.mjs
 cargo build --manifest-path src-tauri/Cargo.toml --locked --release
-npm run dist -- src-tauri/target/release/arc-power-tauri.exe dist-tauri/1.3.0
+npm run dist -- src-tauri/target/release/arc-power-tauri.exe dist-tauri/1.3.4
 ```
 
 ## First steps

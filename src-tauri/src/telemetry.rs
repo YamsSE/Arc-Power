@@ -366,6 +366,14 @@ fn merge_vendor(sample: &mut Value, vendor: &Map<String, Value>) {
     }
 }
 
+fn combined_gpu_utilization(d3dkmt: Option<f64>, pdh: Option<f64>) -> Option<f64> {
+    match (d3dkmt, pdh) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
 fn apply_gpu_utilization(
     sample: &mut Value,
     target: Option<&Value>,
@@ -375,13 +383,18 @@ fn apply_gpu_utilization(
     let Some(luid) = target.and_then(pdh_gpu_engine::luid_from_target) else { return; };
     let detail = d3dkmt.lock().ok().and_then(|mut reader| reader.sample_detail(luid))
         .filter(|detail| !detail.nodes.is_empty());
-    let mut utilization = detail.as_ref().and_then(|detail| detail.nodes.iter().map(|node| node.pct).reduce(f64::max));
-    let mut source = "windows-d3dkmt";
-    if utilization.is_none() {
-        utilization = pdh.lock().ok().and_then(|mut reader| reader.as_mut().and_then(|reader| reader.sample(luid)));
-        source = "windows-gpu-engine";
-    }
-    let Some(utilization) = utilization else { return; };
+    let d3dkmt_util = detail.as_ref().and_then(|detail| detail.nodes.iter().map(|node| node.pct).reduce(f64::max));
+    // Task Manager reports the busiest GPU engine (3D, Compute, Copy, ...).
+    // D3DKMT nodes and the PDH GPU Engine list do not always expose the same
+    // engines, so the higher of the two is the honest device-wide reading.
+    let pdh_util = pdh.lock().ok().and_then(|mut reader| reader.as_mut().and_then(|reader| reader.sample(luid)));
+    let Some(utilization) = combined_gpu_utilization(d3dkmt_util, pdh_util) else { return; };
+    let source = match (d3dkmt_util.is_some(), pdh_util.is_some()) {
+        (true, true) => "windows-d3dkmt+windows-gpu-engine",
+        (true, false) => "windows-d3dkmt",
+        (false, true) => "windows-gpu-engine",
+        (false, false) => return,
+    };
     let Some(sample) = sample.as_object_mut() else { return; };
     sample.insert("gpuUtilPct".into(), json!(utilization));
     sample.insert("gpuUtilSource".into(), json!(source));
@@ -457,6 +470,15 @@ mod tests {
         assert_eq!(sample["powerW"], 120.0);
         assert_eq!(sample["tempC"], 50.0);
         assert!(sample.get("gpuUtilSource").is_none());
+    }
+
+    #[test]
+    fn the_busiest_engine_wins_across_d3dkmt_and_pdh() {
+        assert_eq!(combined_gpu_utilization(Some(30.0), Some(100.0)), Some(100.0));
+        assert_eq!(combined_gpu_utilization(Some(80.0), Some(45.0)), Some(80.0));
+        assert_eq!(combined_gpu_utilization(Some(50.0), None), Some(50.0));
+        assert_eq!(combined_gpu_utilization(None, Some(70.0)), Some(70.0));
+        assert_eq!(combined_gpu_utilization(None, None), None);
     }
 
     #[test]

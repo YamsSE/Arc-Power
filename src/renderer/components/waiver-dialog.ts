@@ -15,6 +15,8 @@ import { api } from '../ipc.ts';
 import { decideApply } from '../pure/waiver.ts';
 import type { WaiverDialogResult } from '../pure/waiver.ts';
 import { toast } from './toast.ts';
+import { gpuApplyTargetOptions } from '../pure/gpu-apply-target.ts';
+import type { DeviceInfo } from '../types.ts';
 
 const ROOT_ID = 'modal-root';
 
@@ -68,11 +70,12 @@ export function showWaiverDialog(deviceName: string): Promise<WaiverDialogResult
  * auto-accepts. Non-blocking by construction: the caller runs it detached
  * from the boot sequence.
  */
-export async function promptWaiverAtBoot(deviceId: number, deviceName: string): Promise<WaiverDialogResult> {
+export async function promptWaiverAtBoot(deviceId: number, deviceName: string, device?: DeviceInfo | null): Promise<WaiverDialogResult> {
   const decision = await showWaiverDialog(deviceName);
   if (decision === 'cancelled') return 'cancelled';
   try {
-    await api.waiverAccept(deviceId);
+    const result = await api.waiverAccept(deviceId, gpuApplyTargetOptions(device).expectedTarget);
+    if (result.accepted !== true) throw new Error('The selected GPU no longer requires a waiver. Refresh its settings.');
     return 'accepted';
   } catch (err) {
     toast('error', 'Waiver could not be saved', err instanceof Error ? err.message : String(err));
@@ -88,12 +91,13 @@ export async function promptWaiverAtBoot(deviceId: number, deviceName: string): 
  * devices (overclockingSupported === false) - there is no waiver to accept,
  * the gate passes and the driver's own per-control answers decide.
  */
-export async function ensureWaiver(deviceId: number, waiverAccepted: boolean, deviceName: string, required = true): Promise<WaiverDialogResult> {
+export async function ensureWaiver(deviceId: number, waiverAccepted: boolean, deviceName: string, required = true, device?: DeviceInfo | null): Promise<WaiverDialogResult> {
   if (decideApply(waiverAccepted, required) === 'proceed') return 'accepted';
   const decision = await showWaiverDialog(deviceName);
   if (decision === 'cancelled') return 'cancelled';
   try {
-    await api.waiverAccept(deviceId);
+    const result = await api.waiverAccept(deviceId, gpuApplyTargetOptions(device).expectedTarget);
+    if (result.accepted !== true) throw new Error('The selected GPU no longer requires a waiver. Refresh its settings.');
     // `decision` was already 'accepted' when we got here - the persisted
     // acceptance is the only thing left to do.
     return 'accepted';

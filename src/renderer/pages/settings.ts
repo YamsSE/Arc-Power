@@ -38,6 +38,7 @@ import { showRecordingHotkeyDialog } from '../components/recording-hotkey-dialog
 import { displayVersion as displayVersionLine } from '../components/header.ts';
 import { applyTheme } from '../app.ts';
 import { isValidTheme, reconcileThemeSave, THEMES, type Theme } from '../pure/theme.ts';
+import { HIDEABLE_TABS, HIDDEN_TABS_EVENT, readHiddenTabs, writeHiddenTabs } from '../pure/hidden-tabs.ts';
 import type { StartupGetState } from '../types.ts';
 
 function showMaintenanceConfirm(title: string, message: string): Promise<boolean> {
@@ -388,7 +389,47 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       el('p', { class: 'recording-panel-note', text: 'Works from any window. Click a key to swap it, or NONE to turn it off.' }),
       ...hotkeyRows.map(hotkeyRow),
     ]);
-    const settingCards = [startWithCard, startMinimizedCard, closeToTrayCard, memorySavingCard, maintenanceCard, themeCard, aboutCard, hotkeysCard];
+    const hiddenTabs = readHiddenTabs();
+    const navigationRow = (tab: (typeof HIDEABLE_TABS)[number]): HTMLElement => {
+      const status = el('span', { class: 'recording-hotkey-status-note', text: hiddenTabs.has(tab.id) ? 'Hidden' : 'Visible' });
+      return el('div', { class: 'recording-hotkey-row' }, [
+        el('div', { class: 'recording-hotkey-copy' }, [
+          el('strong', { text: tab.label }), el('span', { text: tab.description }),
+        ]),
+        el('div', { class: 'recording-hotkey-status' }, [
+          el('label', { class: 'boot-toggle' }, [
+            el('input', {
+              type: 'checkbox',
+              class: 'settings-checkbox',
+              dataset: { hiddenTab: tab.id },
+              checked: !hiddenTabs.has(tab.id),
+              onchange: (ev: Event) => {
+                const checked = (ev.target as HTMLInputElement).checked;
+                const next = readHiddenTabs();
+                if (checked) next.delete(tab.id); else next.add(tab.id);
+                writeHiddenTabs(next);
+                hiddenTabs.clear();
+                for (const id of next) hiddenTabs.add(id);
+                status.textContent = checked ? 'Visible' : 'Hidden';
+                window.dispatchEvent(new Event(HIDDEN_TABS_EVENT));
+                toast('success', 'Sidebar tabs', checked ? `${tab.label} shown.` : `${tab.label} hidden.`);
+              },
+            }),
+            el('span', { text: 'Show tab' }),
+          ]),
+          status,
+        ]),
+      ]);
+    };
+    const navigationCard = el('section', { class: 'recording-panel settings-hotkeys-card arc-surface-card' }, [
+      el('div', { class: 'recording-panel-heading recording-panel-heading-compact' }, [
+        el('div', {}, [el('span', { class: 'recording-eyebrow', text: 'NAVIGATION' }), el('h2', { class: 'recording-panel-title', text: 'Sidebar tabs' })]),
+        el('span', { class: 'recording-panel-badge', text: 'Optional' }),
+      ]),
+      el('p', { class: 'recording-panel-note', text: 'Hide tabs you do not use. Dashboard, Tuning and Settings always stay visible.' }),
+      ...HIDEABLE_TABS.map(navigationRow),
+    ]);
+    const settingCards = [startWithCard, startMinimizedCard, closeToTrayCard, memorySavingCard, maintenanceCard, themeCard, aboutCard, hotkeysCard, navigationCard];
     const preferencesGroup = el('section', { class: 'settings-group settings-preferences-group' }, [
       el('div', { class: 'settings-group-heading' }, [
         el('div', {}, [
@@ -429,11 +470,22 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       ]),
       hotkeysCard,
     ]);
+    const navigationGroup = el('section', { class: 'settings-group settings-hotkeys-group' }, [
+      el('div', { class: 'settings-group-heading' }, [
+        el('div', {}, [
+          el('h2', { text: 'Navigation' }),
+          el('p', { text: 'Hide sidebar tabs that are not part of your workflow.' }),
+        ]),
+        el('span', { class: 'settings-group-index', text: '05' }),
+      ]),
+      navigationCard,
+    ]);
     const settingGroups = [
       { node: preferencesGroup, cards: [startWithCard, startMinimizedCard, closeToTrayCard, memorySavingCard] },
       { node: interfaceGroup, cards: [themeCard] },
       { node: maintenanceGroup, cards: [maintenanceCard, aboutCard] },
       { node: hotkeysGroup, cards: [hotkeysCard] },
+      { node: navigationGroup, cards: [navigationCard] },
     ];
     const settingsHero = el('header', { class: 'arc-page-hero settings-page-hero' }, [
       el('div', { class: 'arc-page-hero-copy' }, [
@@ -473,6 +525,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       interfaceGroup,
       maintenanceGroup,
       hotkeysGroup,
+      navigationGroup,
     );
     filterSettings();
   };

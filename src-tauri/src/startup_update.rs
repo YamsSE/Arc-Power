@@ -49,6 +49,14 @@ impl StartupUpdateCoordinator {
 
     pub fn latest(&self) -> Value { self.state.lock().unwrap().latest.clone() }
 
+    /// Boot may close the splash only after the startup decision is settled.
+    /// In particular, `checking` and `available` must remain visible until the
+    /// check finishes or the user skips the offered update.
+    pub fn can_dismiss_for_boot(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        matches!(state.decision.as_deref(), Some("continue" | "abort"))
+    }
+
     /// Return the result that the titlebar may display after the splash gate.
     /// Once startup has begun, a closed splash or a timed-out check must not
     /// let a late network response create a second update prompt.
@@ -114,6 +122,9 @@ impl StartupUpdateCoordinator {
 
     pub fn choose_skip(&self) -> Result<Transition, String> {
         let mut state = self.state.lock().unwrap();
+        if state.decision.is_some() {
+            return Err("Startup update choice is already settled".into());
+        }
         if state.latest.get("state").and_then(Value::as_str) != Some("available") {
             return Err("No startup update choice is available".into());
         }
@@ -124,7 +135,7 @@ impl StartupUpdateCoordinator {
 
     pub fn begin_update(&self) -> Result<(String, Option<u64>, Transition), String> {
         let mut state = self.state.lock().unwrap();
-        if state.fatal_splash_failure {
+        if state.fatal_splash_failure || state.decision.is_some() {
             return Err("Startup update is no longer available".into());
         }
         if state.update_in_flight { return Err("Startup update is already in progress".into()); }
@@ -209,6 +220,25 @@ impl StartupUpdateCoordinator {
         Transition { status: None, decision: Self::decide(&mut state, if abort { "abort" } else { "continue" }) }
     }
 
+    /// Recover if a splash disappears outside the close path. A completed
+    /// choice and a started installer handoff already have an owner, so those
+    /// states must not be rewritten by the window-destroyed event.
+    pub fn unexpected_splash_destroyed(&self) -> Transition {
+        let mut state = self.state.lock().unwrap();
+        if !state.started || state.fatal_splash_failure || state.decision.is_some() || state.handoff_started {
+            return Transition::default();
+        }
+        state.fatal_splash_failure = true;
+        if state.startup_outcome.is_none() {
+            state.startup_outcome = Some(Err("Startup splash failed".into()));
+        }
+        let abort = state.update_pending;
+        state.update_pending = false;
+        state.update_in_flight = false;
+        state.handoff_started = false;
+        Transition { status: None, decision: Self::decide(&mut state, if abort { "abort" } else { "continue" }) }
+    }
+
     /// Returns true when the splash may close. A pending replacement blocks
     /// close until the user skips, a fatal error aborts, or handoff starts.
     pub fn close(&self) -> (bool, Transition) {
@@ -216,9 +246,91 @@ impl StartupUpdateCoordinator {
         if state.update_pending && !state.handoff_started && !state.fatal_splash_failure {
             return (false, Transition::default());
         }
+        // A healthy splash must remain available while checking or while an
+        // update choice is waiting. Closing it here would settle startup as
+        // "continue" and discard the update offer.
+        if state.decision.is_none() && !state.fatal_splash_failure {
+            return (false, Transition::default());
+        }
         let decision = if state.update_pending && state.handoff_started {
             None
         } else { Self::decide(&mut state, "continue") };
         (true, Transition { status: None, decision })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boot_dismissal_waits_for_check_or_skip_and_keeps_available_choice() {
+        let coordinator = StartupUpdateCoordinator::new();
+        assert!(!coordinator.can_dismiss_for_boot());
+        coordinator.start();
+        assert!(!coordinator.can_dismiss_for_boot());
+
+        coordinator.finish_startup(Ok(json!({"available":true,"version":"1.4.0"})));
+        assert!(!coordinator.can_dismiss_for_boot());
+        assert_eq!(coordinator.latest()["state"], "available");
+
+        coordinator.choose_skip().unwrap();
+        assert!(coordinator.can_dismiss_for_boot());
+    }
+
+    #[test]
+    fn boot_dismissal_opens_after_current_or_timed_out_check() {
+        let current = StartupUpdateCoordinator::new();
+        current.start();
+        current.finish_startup(Ok(json!({"available":false})));
+        assert!(current.can_dismiss_for_boot());
+
+        let timed_out = StartupUpdateCoordinator::new();
+        timed_out.start();
+        timed_out.timeout();
+        assert!(timed_out.can_dismiss_for_boot());
+    }
+
+    #[test]
+    fn healthy_splash_cannot_close_before_or_during_update_choice() {
+        let coordinator = StartupUpdateCoordinator::new();
+        coordinator.start();
+        assert!(!coordinator.close().0);
+
+        coordinator.finish_startup(Ok(json!({"available":true,"version":"1.4.0"})));
+        assert!(!coordinator.close().0);
+        assert_eq!(coordinator.latest()["state"], "available");
+        assert!(!coordinator.can_dismiss_for_boot());
+
+        coordinator.choose_skip().unwrap();
+        assert!(coordinator.close().0);
+        assert!(coordinator.begin_update().is_err(), "Skip must win against a late Update Now action");
+    }
+
+    #[test]
+    fn update_now_wins_against_a_late_skip_action() {
+        let coordinator = StartupUpdateCoordinator::new();
+        coordinator.start();
+        coordinator.finish_startup(Ok(json!({"available":true,"version":"1.4.0","assetUrl":"https://example.test/update.exe"})));
+        coordinator.begin_update().unwrap();
+        assert!(coordinator.choose_skip().is_err(), "Update Now must win against a late Skip action");
+    }
+
+    #[test]
+    fn unexpected_splash_destruction_settles_gate_but_preserves_started_handoff() {
+        let coordinator = StartupUpdateCoordinator::new();
+        coordinator.start();
+        coordinator.finish_startup(Ok(json!({"available":true,"version":"1.4.0","assetUrl":"https://example.test/update.exe"})));
+        assert_eq!(coordinator.unexpected_splash_destroyed().decision.as_deref(), Some("continue"));
+        assert!(coordinator.can_dismiss_for_boot());
+
+        let handoff = StartupUpdateCoordinator::new();
+        handoff.start();
+        handoff.finish_startup(Ok(json!({"available":true,"version":"1.4.0","assetUrl":"https://example.test/update.exe"})));
+        handoff.begin_update().unwrap();
+        handoff.start_handoff();
+        let transition = handoff.unexpected_splash_destroyed();
+        assert!(transition.decision.is_none());
+        assert!(handoff.may_start_install());
     }
 }

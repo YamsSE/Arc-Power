@@ -7,6 +7,74 @@ use super::native_store::NativeStore;
 use super::wire::{decode, encode_json, WireValue};
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+/// Electron keeps a session map of accepted extended temperature setpoints
+/// because the legacy V1 getter reports its 90 C sentinel after an extended
+/// write. Mirror that map so a page refresh does not undo the visible setpoint.
+static ACCEPTED_TEMPERATURES: OnceLock<Mutex<HashMap<String, f64>>> = OnceLock::new();
+
+fn accepted_temperatures() -> &'static Mutex<HashMap<String, f64>> {
+    ACCEPTED_TEMPERATURES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn remember_accepted_temperature(device_key: &str, value: f64) {
+    if !value.is_finite() { return; }
+    if value <= 90.0 {
+        if let Ok(mut map) = accepted_temperatures().lock() { map.remove(device_key); }
+        return;
+    }
+    if let Ok(mut map) = accepted_temperatures().lock() { map.insert(device_key.to_owned(), value); }
+}
+
+fn accepted_temperature(device_key: &str) -> Option<f64> {
+    accepted_temperatures().lock().ok().and_then(|map| map.get(device_key).copied())
+}
+
+/// Electron overrides the legacy V1 getter's 90 C sentinel with the accepted
+/// extended setpoint for this session. Apply the same correction to a fresh
+/// page/device read; a real getter value above the sentinel is trusted.
+fn apply_accepted_temperature(state: &mut Value, device_key: &str) {
+    let Some(accepted) = accepted_temperature(device_key) else { return; };
+    let raw = state.get("tempLimitC").and_then(Value::as_f64);
+    if raw.is_none_or(|raw| (raw - 90.0).abs() <= 0.5) {
+        state["tempLimitC"] = json!(accepted);
+        state["tempLimitCReadBackSource"] = json!("accepted-write");
+        state["tempLimitCReadBackUnavailable"] = json!(false);
+    }
+}
+
+/// Alchemist's negative-voltage Sysman path extends the V/F curve and can
+/// make the IGCL frequency-offset getter report a derived positive value
+/// (for example +172 MHz) after a voltage-only apply. Keep the user's
+/// effective offset for this session so every later read (page refresh,
+/// mode toggle, VF refresh) shows the requested value instead of the
+/// driver's derived one. Cleared by a zero/positive voltage apply and by
+/// reset-to-defaults.
+static FREQUENCY_OFFSET_GUARDS: OnceLock<Mutex<HashMap<String, f64>>> = OnceLock::new();
+
+fn frequency_offset_guards() -> &'static Mutex<HashMap<String, f64>> {
+    FREQUENCY_OFFSET_GUARDS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn remember_frequency_offset_guard(device_key: &str, value: f64) {
+    if !value.is_finite() { return; }
+    if let Ok(mut map) = frequency_offset_guards().lock() { map.insert(device_key.to_owned(), value); }
+}
+
+fn frequency_offset_guard(device_key: &str) -> Option<f64> {
+    frequency_offset_guards().lock().ok().and_then(|map| map.get(device_key).copied())
+}
+
+pub fn forget_frequency_offset_guard(device_key: &str) {
+    if let Ok(mut map) = frequency_offset_guards().lock() { map.remove(device_key); }
+}
+
+fn apply_frequency_offset_guard(state: &mut Value, device_key: &str) {
+    let Some(value) = frequency_offset_guard(device_key) else { return; };
+    if state.is_object() { state["gpuFreqOffsetMhz"] = json!(value); }
+}
 
 /// Electron exports this one string as `DISPLAY_SCALING_FLASH_WARNING` and
 /// attaches it to every scaling surface, including the Retro method row.
@@ -352,11 +420,12 @@ fn invoke_inner<'a>(
         })()),
         "recording-choose-folder" => Some((|| {
             no_payload(channel, args)?;
-            encode_json(&recording_folder_selection(context.store, super::dialogs::pick_folder()?)?)
+            let default = recording_folder_path(context.store).ok();
+            encode_json(&recording_folder_selection(context.store, super::dialogs::pick_folder(default.as_deref())?)?)
         })()),
         "game-catalog-add" => Some((|| {
             no_payload(channel, args)?;
-            let reply = match super::dialogs::pick_executable()? {
+            let reply = match super::dialogs::pick_executable(None)? {
                 Some(path) => add_game_catalog_path(context.store, &path)?,
                 None => game_catalog_canceled(context.store)?,
             };
@@ -572,43 +641,57 @@ fn invoke_inner<'a>(
                 Ok(device_id) => device_id,
                 Err(error) => return Some(Err(error)),
             };
-            super::gpu_devices::locate_dll()
-                .and_then(|path| {
-                    let (mode, waiver) = native_mode_waiver(context.store, &path, device_id)?;
-                    super::gpu_capabilities::capabilities(&path, device_id, &mode, waiver).ok()
-                })
-                .and_then(|caps| {
-                    if caps["overclockingSupported"].as_bool() == Some(false) {
-                        encode_json(&json!({"accepted": false, "required": false})).ok()
-                    } else {
-                        encode_json(&json!({
-                            "accepted": caps["waiverAccepted"].as_bool() == Some(true),
-                            "required": true,
-                        })).ok()
-                    }
-                })
-                .map(Ok)
+            let path = match super::gpu_devices::locate_dll() {
+                Some(path) => path,
+                None => return waiver_read_failure(context.build_kind, "Intel graphics runtime was not found"),
+            };
+            let identity = match refusal_cache_identity_for_device_id(&path, device_id) {
+                Ok(identity) => identity,
+                Err(error) => return waiver_read_failure(context.build_kind, &error),
+            };
+            let (mode, waiver) = match native_mode_waiver_for_key(context.store, &identity.device_key) {
+                Some(value) => value,
+                None => return waiver_read_failure(context.build_kind, "GPU identity or mode settings are unavailable"),
+            };
+            let caps = match super::gpu_capabilities::capabilities_for_identity_without_fan_probe(&path, &identity, &mode, waiver) {
+                Ok(caps) => caps,
+                Err(error) => return waiver_read_failure(context.build_kind, &error),
+            };
+            Some(if caps["overclockingSupported"].as_bool() == Some(false) {
+                encode_json(&json!({"accepted": false, "required": false}))
+            } else {
+                encode_json(&json!({"accepted": caps["waiverAccepted"].as_bool() == Some(true), "required": true}))
+            })
         }
         "waiver-accept" if !context.mock_mode => {
-            let device_id = match device_id_arg(channel, args) {
-                Ok(device_id) => device_id,
+            let (device_id, expected) = match waiver_accept_args(args, context.build_kind) {
+                Ok(value) => value,
                 Err(error) => return Some(Err(error)),
             };
-            let path = match super::gpu_devices::locate_dll() { Some(path) => path, None => return None };
-            let (mode, waiver) = match native_mode_waiver(context.store, &path, device_id) {
-                Some(value) => value,
-                None => return None,
+            let path = match super::gpu_devices::locate_dll() { Some(path) => path, None => return waiver_read_failure(context.build_kind, "Intel graphics runtime was not found") };
+            let identity = match refusal_cache_identity_for_device_id(&path, device_id) {
+                Ok(identity) => identity,
+                Err(error) => return waiver_read_failure(context.build_kind, &error),
             };
-            let caps = match super::gpu_capabilities::capabilities(&path, device_id, &mode, waiver) {
+            if let Some(expected) = expected {
+                if let Err(error) = super::gpu_apply_identity::ensure_same_target(&expected, &identity) {
+                    return Some(Err(error));
+                }
+            }
+            let (mode, waiver) = match native_mode_waiver_for_key(context.store, &identity.device_key) {
+                Some(value) => value,
+                None => return waiver_read_failure(context.build_kind, "GPU identity or mode settings are unavailable"),
+            };
+            let caps = match super::gpu_capabilities::capabilities_for_identity_without_fan_probe(&path, &identity, &mode, waiver) {
                 Ok(caps) => caps,
-                Err(_) => return None,
+                Err(error) => return waiver_read_failure(context.build_kind, &error),
             };
             if caps["overclockingSupported"].as_bool() == Some(false) {
                 return Some(encode_json(&json!({"accepted": false, "required": false})));
             }
-            let (mut igcl, raw_index, _) = match super::gpu_capabilities::open_for_device(&path, device_id) {
+            let (mut igcl, raw_index, _) = match super::gpu_capabilities::open_for_identity(&path, &identity) {
                 Ok(session) => session,
-                Err(_) => return None,
+                Err(error) => return waiver_read_failure(context.build_kind, &error),
             };
             let status = igcl.apply_waiver(raw_index);
             let _ = igcl.close();
@@ -640,7 +723,12 @@ fn invoke_inner<'a>(
                 Some(payload) => payload,
                 None => match native_apply_payload_with_temperature(args, temperature_lease.is_some()) {
                     Ok(Some(payload)) => payload,
-                    Ok(None) => return None,
+                    Ok(None) => {
+                        if !matches!(context.build_kind, BuildKind::Dev) {
+                            if let Some(reason) = native_direct_apply_decline_reason(args) { return Some(Err(reason.into())); }
+                        }
+                        return None;
+                    }
                     Err(error) => return Some(Err(error)),
                 },
             };
@@ -691,6 +779,14 @@ fn invoke_inner<'a>(
             let mode = if profile_apply { "advanced".to_owned() } else { stored_mode.clone() };
             let mut caps = match super::gpu_capabilities::capabilities_for_identity(&path, &expected_identity, &stored_mode, waiver) {
                 Ok(caps) => caps,
+                Err(error) if native_only_capabilities_fallback_allowed(context.build_kind, &error) => {
+                    match native_capabilities_with_probe_or_read_only(
+                        &path, &expected_identity, &stored_mode, waiver,
+                    ) {
+                        Ok(caps) => caps,
+                        Err(error) => return Some(Err(error)),
+                    }
+                }
                 Err(error) if native_capability_error_deferable(&error) => return None,
                 Err(_error) if leased_temperature => return None,
                 Err(error) => return Some(Err(error)),
@@ -703,7 +799,7 @@ fn invoke_inner<'a>(
                     &expected_identity,
                 ) {
                     Ok(lease) => lease,
-                    Err(_) => return None,
+                    Err(error) => return Some(Err(format!("native-temperature-preflight-declined: {error}"))),
                 };
                 let cache_identity = match refusal_cache_identity_for_device_id(&path, device_id) {
                     Ok(identity) => identity,
@@ -726,7 +822,9 @@ fn invoke_inner<'a>(
                     || current_ceiling != lease.learned_ceiling {
                     return None;
                 }
-                if lease.oc_mode.as_deref().is_some_and(|broker_mode| broker_mode != mode)
+                // The lease snapshots capabilities using the stored mode;
+                // profile applies separately use advanced mode for write gating.
+                if !temperature_lease_mode_matches_stored(lease.oc_mode.as_deref(), &stored_mode)
                     || !temperature_ranges_compatible(
                         caps.get("ranges").and_then(|ranges| ranges.get("tempLimitC")),
                         &lease.range,
@@ -810,6 +908,18 @@ fn invoke_inner<'a>(
             // Keep the requested controls unchanged here. The scalar IGCL
             // backend performs its own range clamp at the setter boundary.
             let mut settings = requested_settings.clone();
+            let mut stock_vf_profile = profile_apply
+                && settings.get("vfCurveProfileStock") == Some(&Value::Bool(true));
+            let profile_has_vf = profile_apply && settings.get("vfCurve").is_some();
+            if stock_vf_profile || profile_has_vf {
+                match resolve_profile_vf_settings(&settings, &caps, &path, &expected_identity) {
+                    Ok((resolved, is_stock)) => {
+                        settings = resolved;
+                        stock_vf_profile = is_stock;
+                    }
+                    Err(reply) => return Some(encode_json(&reply)),
+                }
+            }
             let has_vf = settings.get("vfCurve").is_some();
             let has_fan = ["fanMode", "fanCurve", "fixedFanPct"].iter()
                 .any(|key| settings.get(*key).is_some_and(|value| !value.is_null()));
@@ -828,6 +938,15 @@ fn invoke_inner<'a>(
             let sysman_power_requested = mode == "advanced"
                 && apply_ranges.and_then(|ranges| ranges.get("powerLimitW")).and_then(|range| range.get("units")).and_then(Value::as_str) == Some("W")
                 && power_value.is_some_and(|value| value > 315.0);
+            let profile_driver_ranges = caps.get("driverRanges").cloned();
+            let profile_legacy = if profile_apply {
+                match super::apply_gates::split_profile_by_driver_witness(
+                    &settings, profile_driver_ranges.as_ref(), sysman_power_requested,
+                ) {
+                    Ok((_, legacy)) => Some(legacy),
+                    Err(error) => return Some(Err(error)),
+                }
+            } else { None };
             let mut unavailable_caps = caps.clone();
             if profile_apply {
                 // M4O: a profile keys the extended-unavailable probe on the
@@ -839,33 +958,32 @@ fn invoke_inner<'a>(
                     map.insert("extendedRanges".into(), json!(legacy_power || legacy_temp));
                 }
             }
-            if super::apply_gates::extended_unavailable_refusal(&settings, &unavailable_caps, sysman_power_requested).is_some() {
-                // Keep mixed-control result shape and partial-apply behavior
-                // owned by the compatibility broker. This check is before
-                // all native setters.
-                return None;
-            }
-            // M17d (Run D - the V1-call pin): a profile apply is advanced-
-            // gated, so its W/C values route through the bundled 2023 runtime
-            // REGARDLESS of value. The sole M47 exception is a W-unit
-            // sysman-primary powerLimitW. Without a proven runtime the broker
-            // keeps the whole envelope.
-            if profile_apply && unavailable_caps.get("extendedRanges") != Some(&Value::Bool(true)) {
-                let mut wc = super::apply_gates::wc_unit_controls(&settings, ranges);
-                if super::apply_gates::is_sysman_primary_power_request(&settings, ranges, sysman_power_requested) {
-                    wc.retain(|control| *control != "powerLimitW");
-                }
-                if !wc.is_empty() { return None; }
-            }
             let mut plan_refusals = json!({});
+            let mut extended_unavailable_partial = false;
             if profile_apply {
+                let (routed_settings, refused) = native_profile_extended_unavailable_plan(
+                    &settings,
+                    &unavailable_caps,
+                    profile_legacy.as_ref().expect("profile routing is preflighted"),
+                );
+                if refused.as_object().is_some_and(|entries| !entries.is_empty()) {
+                    let routed_count = routed_settings.as_object().map(|entries| entries.len()).unwrap_or(0);
+                    if routed_count == 0 {
+                        let state = super::gpu_capabilities::current_settings_for_identity(&path, &expected_identity).ok().unwrap_or(Value::Null);
+                        let reply = json!({"result":{"ok":false,"perControl":refused},"state":state,"extendedUnavailable":true});
+                        return Some(encode_json(&reply));
+                    }
+                    plan_refusals = refused;
+                    settings = routed_settings;
+                    extended_unavailable_partial = true;
+                }
                 // M50: the shared process refusal cache owns the learned
                 // temperature ceiling for profile applies. A cache error
                 // declines (the broker reproduces the refusal-cache
                 // envelope); a refused temperature is routed out of the
                 // native write exactly like the broker's clamp step.
                 let plan = match super::profile_apply_preflight::ProfileTempCeilings::plan_session_profile_apply(
-                    &expected_identity.device_key, &requested_settings, &caps,
+                    &expected_identity.device_key, &settings, &caps,
                 ) {
                     Ok(plan) => plan,
                     Err(_) => return None,
@@ -877,7 +995,11 @@ fn invoke_inner<'a>(
                     let cache_unavailable = plan.refused_per_control.as_object().is_some_and(|map| map.values().any(|entry| {
                         entry.get("errorCode").and_then(Value::as_str) == Some("refusal-cache-unavailable")
                     }));
-                    let mut envelope = json!({"result": {"ok": false, "perControl": plan.refused_per_control}, "state": state});
+                    let mut all_refusals = plan.refused_per_control;
+                    if let (Some(merged), Some(extended)) = (all_refusals.as_object_mut(), plan_refusals.as_object()) {
+                        for (key, value) in extended { merged.insert(key.clone(), value.clone()); }
+                    }
+                    let mut envelope = json!({"result": {"ok": false, "perControl": all_refusals}, "state": state});
                     if cache_unavailable {
                         envelope["temperatureRefusalCacheUnavailable"] = json!(true);
                     } else {
@@ -885,7 +1007,14 @@ fn invoke_inner<'a>(
                     }
                     return Some(encode_json(&envelope));
                 }
-                plan_refusals = plan.refused_per_control;
+                let mut merged_refusals = plan.refused_per_control;
+                if let (Some(merged), Some(extended)) = (
+                    merged_refusals.as_object_mut(),
+                    plan_refusals.as_object(),
+                ) {
+                    for (key, value) in extended { merged.insert(key.clone(), value.clone()); }
+                }
+                plan_refusals = merged_refusals;
                 settings = plan.routed_settings;
                 // M4O (NEW-1): a profile clamps against the driver's TRUE
                 // limits (extendedRangesFor), never the mode-gated
@@ -922,11 +1051,34 @@ fn invoke_inner<'a>(
                 Ok(snapshot) => snapshot,
                 Err(_) => { let _ = igcl.close(); return None; }
             };
+            // The legacy Sysman undervolt extends the V/F curve and can make
+            // the IGCL frequency-offset getter report a derived positive value
+            // (for example +172 MHz) even though the user requested 0 MHz.
+            // Preserve the user's requested/pre-apply offset in the returned
+            // state so that value is never captured into a profile or sent by
+            // the next apply.
+            let pre_frequency_offset = snapshot.frequency_offset.filter(|value| value.is_finite());
+            if profile_apply && !super::apply_gates::profile_driver_witness_still_matches(
+                &settings, profile_driver_ranges.as_ref().unwrap_or(&Value::Null),
+                &super::gpu_capabilities::raw_limit_ranges(&snapshot),
+            ) {
+                let _ = igcl.close();
+                return Some(Err("DriverStore limits changed during profile preflight; no settings were written".into()));
+            }
             let units = super::gpu_apply::ScalarUnits::from_oc(&snapshot.oc);
             let mut legacy_targets: Vec<(&'static str, f64)> = Vec::new();
-            let (_, split_legacy) = super::apply_gates::split_by_runtime(
-                &settings, ranges, Some(&mode), sysman_power_requested, Some(limits),
-            );
+            let split_legacy = if profile_apply {
+                match super::apply_gates::split_profile_by_driver_witness(
+                    &settings, profile_driver_ranges.as_ref(), sysman_power_requested,
+                ) {
+                    Ok((_, legacy)) => legacy,
+                    Err(error) => { let _ = igcl.close(); return Some(Err(error)); }
+                }
+            } else {
+                super::apply_gates::split_by_runtime(
+                    &settings, ranges, Some(&mode), sysman_power_requested, Some(limits),
+                ).1
+            };
             for key in ["powerLimitW", "tempLimitC"] {
                 if let Some(value) = split_legacy.get(key).and_then(Value::as_f64) {
                     legacy_targets.push((if key == "powerLimitW" { "powerLimitW" } else { "tempLimitC" }, value));
@@ -939,28 +1091,35 @@ fn invoke_inner<'a>(
             }
             let legacy_context = if legacy_targets.is_empty() { None } else {
                 let legacy_path = match super::legacy_igcl::locate_dll() { Some(path) => path, None => return None };
-                let (bus, dev, function) = (expected_identity.bus, expected_identity.slot, expected_identity.function);
                 let legacy = match super::legacy_igcl::LegacyIgcl::load(&legacy_path) { Ok(legacy) => legacy, Err(_) => return None };
-                let index = match legacy.unique_index_for_bdf(bus, dev, function) {
+                let (index, pci_fallback) = match legacy.unique_index_for_identity(&expected_identity) {
                     Ok(index) => index,
                     Err(error) => return Some(Err(error)),
                 };
+                if pci_fallback {
+                    let current = match igcl.enumerate_adapters() { Ok(rows) => rows, Err(error) => return Some(Err(error.to_string())) };
+                    if !super::legacy_igcl::current_identity_is_unique(&current, &expected_identity, raw_index) {
+                        return Some(Err("legacy IGCL PCI fallback cannot uniquely prove the current GPU".into()));
+                    }
+                }
                 Some((legacy, index))
             };
             let temp_legacy_requested = legacy_targets.iter().any(|(key, _)| *key == "tempLimitC");
-            if leased_temperature && !temp_legacy_requested
+            let leased_temperature_control = leased_temperature && settings.get("tempLimitC").is_some();
+            if leased_temperature_control && !temp_legacy_requested
                 && caps.get("controls").and_then(|controls| controls.get("tempLimit")) != Some(&Value::Bool(true)) {
                 let _ = igcl.close();
                 return None;
             }
-            if leased_temperature && !temp_legacy_requested && igcl.scalar_backend(raw_index).is_none() {
+            if leased_temperature_control && !temp_legacy_requested && igcl.scalar_backend(raw_index).is_none() {
                 let _ = igcl.close();
                 return None;
             }
             // The broker FIFO is already held. Acquire the cross-process GPU
-            // mutex only after every identity/capability/runtime preflight,
-            // and release it before the broker publishes the result.
-            let mut temperature_apply_lock = if leased_temperature {
+            // mutex only after every identity/capability/runtime preflight.
+            // Keep it through every setter and read-back in a mixed profile;
+            // the guard drops when this invocation returns, before lease finish.
+            let _temperature_apply_lock = if leased_temperature {
                 match super::apply_lock::acquire() {
                     Ok(lock) => Some(lock),
                     Err(error) => { let _ = igcl.close(); return Some(Err(error)); }
@@ -1033,7 +1192,7 @@ fn invoke_inner<'a>(
             }
             let scalar = match igcl.scalar_backend(raw_index) {
                 Some(mut backend) => {
-                    if leased_temperature && !temp_legacy_requested {
+                    if leased_temperature_control && !temp_legacy_requested {
                         *attempted_temperature = super::gpu_apply::clamped_scalar(
                             &scalar_settings, &caps, super::gpu_apply::ScalarControl::TempLimit, true,
                         );
@@ -1043,7 +1202,6 @@ fn invoke_inner<'a>(
                 None => json!({"ok": false, "perControl": {}}),
             };
             merge_per_control(&mut applied, &scalar);
-            if leased_temperature && !temp_legacy_requested { drop(temperature_apply_lock.take()); }
             if let Some((session, bdf)) = sysman_context.as_mut() {
                 if negative_voltage && !lock_nonzero {
                     if applied["perControl"]["gpuVoltOffsetV"].get("readBackEqual") == Some(&Value::Bool(true)) {
@@ -1094,14 +1252,17 @@ fn invoke_inner<'a>(
                             step: 1.0,
                         });
                         if leased_temperature { *attempted_temperature = Some(target); }
-                        super::legacy_igcl::apply_extended_temp(&mut legacy, legacy_index, target, super::legacy_igcl::DELAYED_VERIFY_MS)
+                        let result = super::legacy_igcl::apply_extended_temp(&mut legacy, legacy_index, target, super::legacy_igcl::DELAYED_VERIFY_MS);
+                        if result.get("ok") == Some(&Value::Bool(true)) {
+                            remember_accepted_temperature(&expected_identity.device_key, target);
+                        }
+                        result
                     };
                     if result.get("ok") != Some(&Value::Bool(true)) { legacy_result["ok"] = json!(false); }
                     legacy_result["perControl"][key] = result;
                 }
                 merge_per_control(&mut applied, &legacy_result);
             }
-            if leased_temperature { drop(temperature_apply_lock.take()); }
             if let (Some((mut session, bdf)), Some(watts)) = (
                 sysman_context.take(),
                 sysman_power_requested.then(|| power_value.unwrap_or(315.0)),
@@ -1137,12 +1298,21 @@ fn invoke_inner<'a>(
                     driver_authoritative: super::vf_apply::is_battlemage(&caps),
                     ..Default::default()
                 };
-                let vf = match igcl.vf_backend(raw_index, units) {
+                let mut vf = match igcl.vf_backend(raw_index, units) {
                     Some(mut backend) => super::vf_apply::apply_vf_curve(&settings, &caps, &mut backend, &options),
                     None => json!({"ok": false, "perControl": {"vfCurve": {
                         "ok": false, "errorCode": "unsupported", "message": "VF backend unavailable",
                     }}}),
                 };
+                if stock_vf_profile && vf["ok"] == Value::Bool(true)
+                    && !stock_vf_readback_matches(&settings, &vf) {
+                    vf = json!({"ok": false, "perControl": {"vfCurve": {
+                        "ok": false, "errorCode": "readback-unverified",
+                        "message": "The applied VF curve did not match the verified STOCK curve.",
+                        "readBackEqual": false, "silentNoop": false,
+                        "readBackCurve": vf["perControl"]["vfCurve"]["readBackCurve"],
+                    }}});
+                }
                 merge_per_control(&mut applied, &vf);
             }
             let _ = igcl.close();
@@ -1171,6 +1341,34 @@ fn invoke_inner<'a>(
             if let (Some(state), Some(watts)) = (state.as_mut(), sysman_power_applied) {
                 if state.is_object() { state["powerLimitW"] = json!(watts); }
             }
+            if negative_voltage {
+                preserve_requested_frequency_offset(
+                    &mut state,
+                    settings.get("gpuFreqOffsetMhz").and_then(Value::as_f64),
+                    pre_frequency_offset,
+                );
+            }
+            // A voltage-only Alchemist apply must not expose the driver's
+            // derived frequency offset on any later read. Keep the user's
+            // effective value for this session (an explicit frequency change
+            // replaces it; a zero/positive voltage clears the guard).
+            if let Some(requested) = settings.get("gpuFreqOffsetMhz").and_then(Value::as_f64) {
+                let accepted = result.get("perControl").and_then(|per| per.get("gpuFreqOffsetMhz"))
+                    .and_then(|entry| entry.get("ok")).and_then(Value::as_bool) == Some(true);
+                if accepted { remember_frequency_offset_guard(&expected_identity.device_key, requested); }
+            } else if negative_voltage {
+                if frequency_offset_guard(&expected_identity.device_key).is_none() {
+                    if let Some(effective) = state.as_ref()
+                        .and_then(|state| state.get("gpuFreqOffsetMhz")).and_then(Value::as_f64) {
+                        remember_frequency_offset_guard(&expected_identity.device_key, effective);
+                    }
+                }
+            } else if settings.get("gpuVoltOffsetV").and_then(Value::as_f64).is_some() {
+                forget_frequency_offset_guard(&expected_identity.device_key);
+            }
+            if let Some(state) = state.as_mut() {
+                apply_frequency_offset_guard(state, &expected_identity.device_key);
+            }
             if profile_apply {
                 // The broker merges capabilityPerControl AFTER runApply so the
                 // refusal message survives finalize's hard-error-code
@@ -1186,6 +1384,10 @@ fn invoke_inner<'a>(
                     reply["capabilityCeilingRefused"] = json!(true);
                     if partial { reply["capabilityCeilingPartial"] = json!(true); }
                 }
+            }
+            if extended_unavailable_partial {
+                reply["extendedUnavailable"] = json!(true);
+                reply["extendedUnavailablePartial"] = json!(true);
             }
             if has_fan { super::fan_resume::notify_native_apply(&expected_identity, &settings, &reply); }
             Some(encode_json(&reply))
@@ -1327,26 +1529,38 @@ fn invoke_inner<'a>(
                 Ok(device_id) => device_id,
                 Err(error) => return Some(Err(error)),
             };
-            let Some(path) = super::gpu_devices::locate_dll() else { return None; };
+            let Some(path) = super::gpu_devices::locate_dll() else {
+                return gpu_read_failure(context.build_kind, channel, "Intel graphics runtime was not found");
+            };
             let identity = match refusal_cache_identity_for_device_id(&path, device_id) {
                 Ok(identity) => identity,
-                Err(_) => return None,
+                Err(error) => return gpu_read_failure(context.build_kind, channel, &error),
             };
             let Some((mode, waiver)) = native_mode_waiver_for_key(context.store, &identity.device_key) else {
-                return None;
+                return gpu_read_failure(context.build_kind, channel, "GPU mode settings are unavailable");
             };
             let mut caps = match super::gpu_capabilities::capabilities_for_identity(&path, &identity, &mode, waiver) {
                 Ok(caps) => caps,
-                Err(_) => return None,
+                Err(error) if native_only_capabilities_fallback_allowed(context.build_kind, &error) => {
+                    match native_capabilities_with_probe_or_read_only(
+                        &path, &identity, &mode, waiver,
+                    ) {
+                        Ok(caps) => caps,
+                        Err(error) => return gpu_read_failure(context.build_kind, channel, &error),
+                    }
+                }
+                Err(error) => return gpu_read_failure(context.build_kind, channel, &error),
             };
             let cache_identity = match refusal_cache_identity_for_device_id(&path, device_id) {
                 Ok(identity) => identity,
-                Err(_) => return None,
+                Err(error) => return gpu_read_failure(context.build_kind, channel, &error),
             };
-            if super::gpu_apply_identity::ensure_same_target(&identity, &cache_identity).is_err() { return None; }
+            if let Err(error) = super::gpu_apply_identity::ensure_same_target(&identity, &cache_identity) {
+                return gpu_read_failure(context.build_kind, channel, &error);
+            }
             let cache = match super::profile_apply_preflight::ProfileTempCeilings::snapshot_for_device(&cache_identity.device_key) {
                 Ok(cache) => cache,
-                Err(_) => return None,
+                Err(error) => return gpu_read_failure(context.build_kind, channel, &error),
             };
             merge_temperature_refusal_cache(&mut caps, &cache, &identity.device_key);
             Some(encode_json(&caps))
@@ -1356,11 +1570,24 @@ fn invoke_inner<'a>(
                 Ok(device_id) => device_id,
                 Err(error) => return Some(Err(error)),
             };
-            super::gpu_devices::locate_dll()
-                .and_then(|path| native_mode_waiver(context.store, &path, device_id)
-                    .and_then(|_| super::gpu_capabilities::current_settings(&path, device_id).ok()))
-                .and_then(|state| encode_json(&state).ok())
-                .map(Ok)
+            let Some(path) = super::gpu_devices::locate_dll() else {
+                return gpu_read_failure(context.build_kind, channel, "Intel graphics runtime was not found");
+            };
+            if native_mode_waiver(context.store, &path, device_id).is_none() {
+                return gpu_read_failure(context.build_kind, channel, "GPU identity or mode settings are unavailable");
+            }
+            let identity = match refusal_cache_identity_for_device_id(&path, device_id) {
+                Ok(identity) => identity,
+                Err(error) => return gpu_read_failure(context.build_kind, channel, &error),
+            };
+            match super::gpu_capabilities::current_settings(&path, device_id) {
+                Ok(mut state) => {
+                    apply_accepted_temperature(&mut state, &identity.device_key);
+                    apply_frequency_offset_guard(&mut state, &identity.device_key);
+                    Some(encode_json(&state))
+                }
+                Err(error) => gpu_read_failure(context.build_kind, channel, &error),
+            }
         }
         // M8 native Graphics surface. The arm only exists on an elevated,
         // non-mock host; `graphics::get`/`apply` additionally return `None`
@@ -3332,6 +3559,23 @@ fn device_id_arg(channel: &str, args: &Value) -> Result<u64, String> {
     device_id.as_u64().ok_or_else(|| format!("{channel}: invalid device id"))
 }
 
+fn waiver_accept_args(args: &Value, build_kind: BuildKind) -> Result<(u64, Option<super::gpu_apply_identity::ApplyIdentity>), String> {
+    let value = decode(args)?.into_json()?;
+    let items = value.as_array().ok_or("waiver-accept expects an argument array")?;
+    if items.is_empty() || items.len() > 2 { return Err("waiver-accept expects a device id and physical target".into()); }
+    let device_id = items[0].as_u64().ok_or("waiver-accept: invalid device id")?;
+    let Some(target) = items.get(1).filter(|value| !value.is_null()) else {
+        return if matches!(build_kind, BuildKind::Dev) { Ok((device_id, None)) }
+            else { Err("waiver-accept: selected GPU identity is unavailable; refresh and try again".into()) };
+    };
+    let physical = target.get("physicalTarget").ok_or("waiver-accept: physical target is missing")?;
+    let identity = super::gpu_apply_identity::identity_from_row(physical)?;
+    if target.get("deviceKey").and_then(Value::as_str) != Some(identity.device_key.as_str()) {
+        return Err("waiver-accept: GPU key does not match physical target".into());
+    }
+    Ok((device_id, Some(identity)))
+}
+
 fn args_array(channel: &str, args: &Value) -> Result<Vec<WireValue>, String> {
     let WireValue::Array(items) = decode(args)? else { return Err(format!("{channel} expects an argument array")); };
     Ok(items)
@@ -3553,6 +3797,11 @@ fn native_apply_payload_of_shape(args: &Value, shape: NativeApplyShape) -> Resul
     let Some(WireValue::Object(entries)) = items.next() else { return Ok(None); };
     let mut settings = Map::new();
     let has_temperature = entries.iter().any(|(key, _)| key == "tempLimitC");
+    if shape == NativeApplyShape::Direct
+        && entries.iter().any(|(key, _)| key == "vfCurveBaseline" || key == "vfCurveResetToDefault")
+        && (entries.len() != 2 || !entries.iter().any(|(key, _)| key == "vfCurve")) {
+        return Ok(None);
+    }
     let temperature_allowed = shape != NativeApplyShape::Direct;
     if has_temperature {
         match shape {
@@ -3566,12 +3815,20 @@ fn native_apply_payload_of_shape(args: &Value, shape: NativeApplyShape) -> Resul
     if matches!(shape, NativeApplyShape::Profile) && entries.is_empty() { return Ok(None); }
     for (key, value) in entries {
         let Ok(value) = value.into_json() else { return Ok(None); };
-        if key == "vfCurve" || key == "fanCurve" {
-            // Electron owns a large profile-VF policy (stock classification,
-            // legacy-scalar repair, reference validation); a VF profile
-            // keeps its broker route.
-            if key == "vfCurve" && shape == NativeApplyShape::Profile { return Ok(None); }
+        if key == "vfCurve" && shape == NativeApplyShape::Profile {
             if !value.is_array() { return Ok(None); }
+        } else if key == "vfCurve" || key == "fanCurve" {
+            // Electron owns a large profile-VF policy (stock classification,
+            // legacy-scalar repair, reference validation). The native profile
+            // preflight implements the saved stock-reference cases; baseline
+            // metadata and other non-native VF policies remain broker-owned.
+            if !value.is_array() { return Ok(None); }
+        } else if key == "vfCurveStockReference" && shape == NativeApplyShape::Profile {
+            if !value.is_array() { return Ok(None); }
+        } else if key == "vfCurveBaseline" && matches!(shape, NativeApplyShape::Profile | NativeApplyShape::Direct) {
+            if !value.is_array() { return Ok(None); }
+        } else if key == "vfCurveResetToDefault" && matches!(shape, NativeApplyShape::Profile | NativeApplyShape::Direct) {
+            if value != Value::Bool(true) { return Ok(None); }
         } else if key == "fanMode" {
             if !value.as_str().is_some_and(|mode| ["auto", "curve", "fixed"].contains(&mode)) { return Ok(None); }
         } else if key == "fixedFanPct" {
@@ -3580,6 +3837,8 @@ fn native_apply_payload_of_shape(args: &Value, shape: NativeApplyShape) -> Resul
             if !value.is_object()
                 || !value.get("voltageV").and_then(Value::as_f64).is_some()
                 || !value.get("freqMhz").and_then(Value::as_f64).is_some() { return Ok(None); }
+        } else if key == "vfCurveProfileStock" && shape == NativeApplyShape::Profile {
+            if value != Value::Bool(true) { return Ok(None); }
         } else if NATIVE_SCALAR_KEYS.contains(&key.as_str()) || (temperature_allowed && key == "tempLimitC") {
             if !value.is_null() && !value.is_number() { return Ok(None); }
         } else {
@@ -3587,12 +3846,162 @@ fn native_apply_payload_of_shape(args: &Value, shape: NativeApplyShape) -> Resul
         }
         settings.insert(key, value);
     }
+    if settings.contains_key("vfCurveResetToDefault") && !settings.contains_key("vfCurve") {
+        return Ok(None);
+    }
+    if settings.get("vfCurveProfileStock") == Some(&Value::Bool(true)) {
+        if ["vfCurve", "vfCurveResetToDefault", "vfCurveBaseline", "vfCurveStockReference"]
+            .iter().any(|key| settings.contains_key(*key))
+            || ["gpuFreqOffsetMhz", "gpuVoltOffsetV"].iter().any(|key| {
+                settings.get(*key).and_then(Value::as_f64).is_some_and(|value| value.abs() > 0.0005)
+            }) {
+            return Ok(None);
+        }
+    }
+    if matches!(shape, NativeApplyShape::Profile | NativeApplyShape::Direct)
+        && (settings.contains_key("vfCurveStockReference") || settings.contains_key("vfCurveBaseline")) {
+        let Some(curve) = settings.get("vfCurve").and_then(Value::as_array) else { return Ok(None); };
+        let reference = settings.get("vfCurveStockReference").or_else(|| settings.get("vfCurveBaseline"))
+            .and_then(Value::as_array);
+        let Some(reference) = reference else { return Ok(None); };
+        if curve.len() < 2 || reference.len() != curve.len() || curve.len() > 32
+            || !curve.iter().chain(reference).all(|point| {
+                point.get("voltageV").and_then(Value::as_f64).is_some_and(f64::is_finite)
+                    && point.get("freqMhz").and_then(Value::as_f64).is_some_and(f64::is_finite)
+            })
+            || settings.contains_key("vfCurveResetToDefault") {
+            return Ok(None);
+        }
+    }
     Ok(Some(NativeApplyPayload {
         device_id,
         settings: Value::Object(settings),
         expected_identity: identity,
         physical_target: expected.get("physicalTarget").cloned().unwrap_or(Value::Null),
     }))
+}
+
+fn native_direct_apply_decline_reason(args: &Value) -> Option<&'static str> {
+    let value = decode(args).ok()?.into_json().ok()?;
+    let items = value.as_array()?;
+    let settings = items.get(1)?.as_object()?;
+    if items.get(2).and_then(Value::as_object)
+        .and_then(|options| options.get("profileApply")).and_then(Value::as_bool) == Some(true) { return None; }
+    if settings.contains_key("tempLimitC") && settings.len() > 1 {
+        return Some("Apply the temperature limit separately from other tuning controls; no settings were written.");
+    }
+    if (settings.contains_key("vfCurveBaseline") || settings.contains_key("vfCurveResetToDefault"))
+        && settings.len() > 2 {
+        return Some("Apply the VF curve separately from other tuning controls; no settings were written.");
+    }
+    None
+}
+
+/// Resolve the renderer's STOCK VF profile marker to a freshly read and
+/// validated driver STOCK curve. This mirrors Electron's profile expansion,
+/// but keeps the native-only path fail-closed before any setter.
+fn resolve_profile_vf_settings(
+    settings: &Value,
+    caps: &Value,
+    path: &std::path::Path,
+    identity: &super::gpu_apply_identity::ApplyIdentity,
+) -> Result<(Value, bool), Value> {
+    if !super::vf_apply::is_battlemage(caps) {
+        return Err(profile_vf_failure(settings, "unsupported", "This profile requests a Battlemage VF curve, which this GPU does not support.", Value::Null));
+    }
+    let Some(range_value) = caps.get("vfCurveRange") else {
+        return Err(profile_vf_failure(settings, "unsupported", "The driver STOCK VF curve could not be verified. No profile settings were written.", Value::Null));
+    };
+    let Ok(range) = serde_json::from_value::<super::vf_curve::VfCurveRange>(range_value.clone()) else {
+        return Err(profile_vf_failure(settings, "readback-unverified", "The driver STOCK VF curve could not be verified. No profile settings were written.", Value::Null));
+    };
+    let Ok(state) = super::gpu_capabilities::current_settings_for_identity(path, identity) else {
+        return Err(profile_vf_failure(settings, "readback-unverified", "The driver STOCK VF curve could not be read. No profile settings were written.", Value::Null));
+    };
+    let stock = state.get("vfCurveDefault").and_then(Value::as_array)
+        .and_then(|points| serde_json::from_value::<Vec<super::vf_curve::VfCurvePoint>>(Value::Array(points.clone())).ok());
+    if !super::vf_curve::is_valid_native_vf_curve(stock.as_deref(), &range) {
+        return Err(profile_vf_failure(settings, "readback-unverified", "The driver STOCK VF curve could not be read and verified. No profile settings were written.", state));
+    }
+    let mut resolved = settings.clone();
+    let Some(map) = resolved.as_object_mut() else {
+        return Err(profile_vf_failure(settings, "invalid-argument", "The saved profile settings are invalid. No profile settings were written.", state));
+    };
+    if map.get("vfCurveProfileStock") == Some(&Value::Bool(true)) {
+        map.remove("vfCurveProfileStock");
+        map.insert("vfCurve".into(), serde_json::to_value(stock.unwrap()).unwrap_or(Value::Null));
+        map.insert("vfCurveResetToDefault".into(), Value::Bool(true));
+        return Ok((resolved, true));
+    }
+    if map.contains_key("vfCurveBaseline") {
+        return Err(profile_vf_failure(settings, "unsupported",
+            "Baseline-referenced VF profiles are not supported by the native apply path. No settings were written.", state));
+    }
+    let requested = map.get("vfCurve").and_then(Value::as_array)
+        .and_then(|points| serde_json::from_value::<Vec<super::vf_curve::VfCurvePoint>>(Value::Array(points.clone())).ok());
+    if !super::vf_curve::is_valid_native_vf_curve(requested.as_deref(), &range) {
+        return Err(profile_vf_failure(settings, "out-of-range", "The saved VF curve is invalid for this GPU. No profile settings were written.", state));
+    }
+    let reference = map.get("vfCurveStockReference").and_then(Value::as_array)
+        .and_then(|points| serde_json::from_value::<Vec<super::vf_curve::VfCurvePoint>>(Value::Array(points.clone())).ok());
+    if map.contains_key("vfCurveStockReference") {
+        if !super::vf_curve::is_valid_native_vf_curve(reference.as_deref(), &range)
+            || !super::vf_curve::same_vf_curve(reference.as_deref(), stock.as_deref(), 0.0, 0.0) {
+            return Err(profile_vf_failure(settings, "readback-unverified", "The saved STOCK reference no longer matches this device. No curve write was sent.", state));
+        }
+    }
+    let explicit_stock_curve = super::vf_curve::same_vf_curve(requested.as_deref(), stock.as_deref(), 0.0, 0.0);
+    let frequency_offset = map.get("gpuFreqOffsetMhz").and_then(Value::as_f64);
+    let voltage_offset = map.get("gpuVoltOffsetV").and_then(Value::as_f64);
+    let has_nonzero_core_offset = frequency_offset.is_some_and(|value| value.abs() > 0.0005)
+        || voltage_offset.is_some_and(|value| value.abs() > 0.0005);
+    let legacy_scalar_curve = reference.as_ref().is_some_and(|reference| {
+        let offset = frequency_offset.unwrap_or(0.0);
+        requested.as_ref().is_some_and(|requested| requested.len() == reference.len()
+            && requested.iter().zip(reference).all(|(live, stock)| {
+                live.voltage_v == stock.voltage_v && live.freq_mhz == stock.freq_mhz + offset
+            }))
+    });
+    if has_nonzero_core_offset {
+        if legacy_scalar_curve {
+            map.remove("vfCurve");
+            map.remove("vfCurveStockReference");
+            map.remove("vfCurveResetToDefault");
+            return Ok((resolved, false));
+        }
+        let message = if explicit_stock_curve {
+            "The stock VF reset cannot be safely combined with nonzero core offsets in one profile. No settings were written."
+        } else {
+            "The profile combines nonzero core offsets with a custom VF curve. No settings were written."
+        };
+        return Err(profile_vf_failure(settings, "dependency-failed", message, state));
+    }
+    // Profile reset intent is one-shot UI metadata. The curve itself has
+    // already been validated and the native VF writer handles its reset path.
+    map.remove("vfCurveStockReference");
+    map.remove("vfCurveResetToDefault");
+    Ok((resolved, explicit_stock_curve))
+}
+
+fn profile_vf_failure(settings: &Value, code: &str, message: &str, state: Value) -> Value {
+    let mut per_control = serde_json::Map::new();
+    per_control.insert("vfCurve".into(), json!({"ok":false,"errorCode":code,"message":message}));
+    if settings.get("tempLimitC").and_then(Value::as_f64).is_some_and(f64::is_finite) {
+        per_control.insert("tempLimitC".into(), json!({
+            "ok": false, "errorCode": "dependency-failed",
+            "message": "The temperature control was not applied because the profile VF curve could not be verified.",
+        }));
+    }
+    json!({"result":{"ok":false,"perControl":per_control},"state":state})
+}
+
+fn stock_vf_readback_matches(settings: &Value, result: &Value) -> bool {
+    let points = |value: Option<&Value>| value.and_then(Value::as_array)
+        .and_then(|points| serde_json::from_value::<Vec<super::vf_curve::VfCurvePoint>>(Value::Array(points.clone())).ok());
+    let requested = points(settings.get("vfCurve"));
+    let read_back = points(result.get("perControl").and_then(|controls| controls.get("vfCurve"))
+        .and_then(|control| control.get("readBackCurve")));
+    super::vf_curve::same_vf_curve(requested.as_deref(), read_back.as_deref(), 0.0, 0.0)
 }
 
 pub fn native_temperature_apply_candidate(args: &Value) -> Result<Option<NativeTemperatureApplyRequest>, String> {
@@ -3675,7 +4084,7 @@ fn wire_json_without_undefined(value: &WireValue) -> Result<Value, String> {
 }
 
 fn temperature_range_values(range: &Value) -> Option<(f64, f64, f64)> {
-    if range.get("units").and_then(Value::as_str) != Some("C") { return None; }
+    if !matches!(range.get("units").and_then(Value::as_str), Some("C" | "%")) { return None; }
     let min = range.get("min").and_then(Value::as_f64)?;
     let max = range.get("max").and_then(Value::as_f64)?;
     let step = range.get("step").and_then(Value::as_f64)?;
@@ -3694,8 +4103,12 @@ fn merge_temperature_refusal_cache(caps: &mut Value, cache: &Value, device_key: 
     });
     if status != "available" { return; }
     let Some(range) = caps.get("ranges").and_then(|ranges| ranges.get("tempLimitC")).cloned() else { return; };
-    if range.get("units").and_then(Value::as_str) != Some("C") { return; }
+    if !matches!(range.get("units").and_then(Value::as_str), Some("C" | "%")) { return; }
+    let range_units = range.get("units").and_then(Value::as_str);
+    let cached_units = cache.get("units").and_then(|units| units.get("tempLimitC")).and_then(Value::as_str);
+    if cached_units.is_some_and(|units| Some(units) != range_units) { return; }
     let Some(ceiling) = cache.get("ceilings").and_then(|ceilings| ceilings.get("tempLimitC")).and_then(Value::as_f64) else { return; };
+    if cached_units != range_units { return; }
     if !super::apply_gates::valid_learned_temp_ceiling(ceiling, &range) { return; }
     let Some(ranges) = caps.get_mut("ranges").and_then(Value::as_object_mut) else { return; };
     let Some(temp_range) = ranges.get_mut("tempLimitC").and_then(Value::as_object_mut) else { return; };
@@ -3755,11 +4168,21 @@ fn validate_temperature_lease_snapshot(
     if wire_string(Some(wire_field(cache, "status").ok_or("Native temperature cache status is missing")?)) != Some("available") {
         return Err("The temperature refusal cache is unavailable".into());
     }
+    let range_units = range.get("units").and_then(Value::as_str);
+    let cached_units = wire_field(cache, "units")
+        .and_then(|units| wire_field(units, "tempLimitC"))
+        .and_then(|units| wire_string(Some(units)));
+    if cached_units.is_some_and(|units| Some(units) != range_units) {
+        return Err("Temperature control units changed during this session".into());
+    }
     let ceilings = wire_field(cache, "ceilings").ok_or("Native temperature cache ceilings are missing")?;
     let learned_ceiling = match wire_field(ceilings, "tempLimitC").ok_or("Native temperature cache ceiling is missing")? {
-        WireValue::Undefined => None,
+        WireValue::Undefined | WireValue::Null => None,
         value => Some(wire_finite_number(value).ok_or("Native temperature cache ceiling is invalid")?),
     };
+    if learned_ceiling.is_some() && cached_units != range_units {
+        return Err("Temperature refusal cache ceiling has no matching unit identity".into());
+    }
     if learned_ceiling.is_some_and(|ceiling| !super::apply_gates::valid_learned_temp_ceiling(ceiling, &range)) {
         return Err("Native temperature cache ceiling is invalid".into());
     }
@@ -3769,12 +4192,89 @@ fn validate_temperature_lease_snapshot(
     })
 }
 
+/// Validate the native temperature lease begin envelope against a physical
+/// target row. Exposed for the host's producer/consumer contract test; normal
+/// applies use the identity already pinned by their preflight.
+pub fn validate_temperature_lease_snapshot_for_target(
+    lease: &WireValue,
+    device_id: u64,
+    requested_settings: &Value,
+    expected_target: &Value,
+) -> Result<(), String> {
+    let expected_identity = super::gpu_apply_identity::identity_from_row(expected_target)?;
+    validate_temperature_lease_snapshot(lease, device_id, requested_settings, &expected_identity).map(|_| ())
+}
+
 fn native_capability_error_deferable(error: &str) -> bool {
     error == "fan probe verdict is not cached"
 }
 
+fn waiver_read_failure(build_kind: BuildKind, error: &str) -> Option<Result<Value, String>> {
+    if matches!(build_kind, BuildKind::Dev) { None }
+    else { Some(Err(format!("Unable to read GPU waiver eligibility: {error}"))) }
+}
+
+fn gpu_read_failure(build_kind: BuildKind, channel: &str, error: &str) -> Option<Result<Value, String>> {
+    if matches!(build_kind, BuildKind::Dev) { None }
+    else { Some(Err(format!("{channel}: unable to read GPU: {error}"))) }
+}
+
+fn native_only_capabilities_fallback_allowed(build_kind: BuildKind, error: &str) -> bool {
+    !matches!(build_kind, BuildKind::Dev) && native_capability_error_deferable(error)
+}
+
+/// Native-only fallback for a missing Electron fan-probe cache: run the same
+/// reversible probe Electron runs, and degrade to read-only capabilities only
+/// if the probe itself cannot complete. This keeps fan control available on a
+/// fresh install without changing the write/restore contract.
+fn native_capabilities_with_probe_or_read_only(
+    path: &std::path::Path,
+    identity: &super::gpu_apply_identity::ApplyIdentity,
+    mode: &str,
+    waiver: bool,
+) -> Result<Value, String> {
+    match super::gpu_capabilities::capabilities_for_identity_with_probe(path, identity, mode, waiver) {
+        Ok(caps) => Ok(caps),
+        Err(_) => super::gpu_capabilities::capabilities_for_identity_without_fan_probe(path, identity, mode, waiver),
+    }
+}
+
+/// Mirror Electron's profile behavior when the bundled 2023 runtime cannot
+/// own W/C controls: refuse just those controls and keep applying the rest of
+/// the saved profile. This decision is made before any setter is opened.
+fn native_profile_extended_unavailable_plan(
+    settings: &Value,
+    caps: &Value,
+    legacy_settings: &Value,
+) -> (Value, Value) {
+    let targets: Vec<&str> = ["powerLimitW", "tempLimitC"].into_iter()
+        .filter(|key| legacy_settings.get(*key).is_some()).collect();
+    let refused = if caps.get("extendedControls").is_some_and(Value::is_object) {
+        super::apply_gates::unsupported_legacy_targets(&targets, caps)
+    } else if caps.get("extendedRanges") == Some(&Value::Bool(true)) { Vec::new() }
+    else { targets };
+    let mut routed = settings.clone();
+    let mut per_control = serde_json::Map::new();
+    if let Some(entries) = routed.as_object_mut() {
+        for control in refused {
+            entries.remove(control);
+            per_control.insert(control.to_owned(), json!({
+                "ok": false,
+                "errorCode": "unsupported",
+                "message": super::apply_gates::EXTENDED_UNAVAILABLE_MSG,
+            }));
+        }
+    }
+    (routed, Value::Object(per_control))
+}
+
+fn temperature_lease_mode_matches_stored(lease_mode: Option<&str>, stored_mode: &str) -> bool {
+    lease_mode.is_none_or(|mode| mode == stored_mode)
+}
+
 fn temperature_ranges_compatible(native: Option<&Value>, broker: &Value) -> bool {
     let Some(native) = native else { return false; };
+    if native.get("units") != broker.get("units") { return false; }
     let Some((native_min, native_max, native_step)) = temperature_range_values(native) else { return false; };
     let Some((broker_min, broker_max, broker_step)) = temperature_range_values(broker) else { return false; };
     let close = |left: f64, right: f64| {
@@ -4138,6 +4638,22 @@ fn disk_space(path: &str) -> Option<(u64, u64)> {
 #[cfg(not(windows))]
 fn disk_space(_path: &str) -> Option<(u64, u64)> { None }
 
+/// A negative Alchemist Sysman undervolt extends the V/F curve and can make
+/// the IGCL frequency-offset getter report a derived positive value even
+/// though the user requested none. Keep the requested offset (or the value
+/// that was present before the apply) in the returned state so the derived
+/// value is never shown as a core clock or captured into a profile.
+fn preserve_requested_frequency_offset(
+    state: &mut Option<Value>,
+    requested: Option<f64>,
+    pre_apply: Option<f64>,
+) {
+    let Some(state) = state.as_mut().filter(|value| value.is_object()) else { return; };
+    let reported = requested.filter(|value| value.is_finite())
+        .or(pre_apply.filter(|value| value.is_finite()));
+    if let Some(reported) = reported { state["gpuFreqOffsetMhz"] = json!(reported); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4154,6 +4670,39 @@ fn fixture_mode(mode: &str) -> (std::path::PathBuf, NativeStore) {
     fn service(store: &NativeStore, channel: &str, payload: Value) -> Value {
         let result = invoke(channel, &encode_json(&json!([payload])).unwrap(), context(store)).unwrap().unwrap();
         decode(&result).unwrap().into_json().unwrap()
+    }
+    #[test]
+    fn negative_voltage_keeps_the_requested_frequency_offset() {
+        let mut derived = Some(json!({"gpuFreqOffsetMhz": 172.0, "gpuVoltOffsetV": -0.075}));
+        preserve_requested_frequency_offset(&mut derived, None, Some(0.0));
+        assert_eq!(derived.unwrap()["gpuFreqOffsetMhz"], 0.0);
+
+        let mut requested = Some(json!({"gpuFreqOffsetMhz": 172.0}));
+        preserve_requested_frequency_offset(&mut requested, Some(50.0), Some(0.0));
+        assert_eq!(requested.unwrap()["gpuFreqOffsetMhz"], 50.0);
+
+        let mut missing = None;
+        preserve_requested_frequency_offset(&mut missing, None, Some(0.0));
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn derived_frequency_guard_survives_a_fresh_read_and_clears_on_reset() {
+        let key = "pci:derived-frequency-guard";
+        forget_frequency_offset_guard(key);
+        remember_frequency_offset_guard(key, 0.0);
+        let mut apply_state = json!({"gpuFreqOffsetMhz": 172.0});
+        apply_frequency_offset_guard(&mut apply_state, key);
+        assert_eq!(apply_state["gpuFreqOffsetMhz"], 0.0);
+
+        let mut fresh = json!({"gpuFreqOffsetMhz": 172.0});
+        apply_frequency_offset_guard(&mut fresh, key);
+        assert_eq!(fresh["gpuFreqOffsetMhz"], 0.0);
+
+        forget_frequency_offset_guard(key);
+        fresh["gpuFreqOffsetMhz"] = json!(172.0);
+        apply_frequency_offset_guard(&mut fresh, key);
+        assert_eq!(fresh["gpuFreqOffsetMhz"], 172.0);
     }
     #[test]
     fn arc_sync_range_intent_requires_the_final_verified_physical_output() {
@@ -4322,7 +4871,7 @@ fn fixture_mode(mode: &str) -> (std::path::PathBuf, NativeStore) {
     fn version_keeps_existing_frontend_shape() {
         let (root, store) = fixture();
         let result = invoke("app-version", &json!({"t":"array","v":[]}), context(&store)).unwrap().unwrap();
-        assert_eq!(decode(&result).unwrap().into_json().unwrap(), json!({"version":"1.3.0"}));
+        assert_eq!(decode(&result).unwrap().into_json().unwrap(), json!({"version":"1.3.4"}));
         assert!(invoke("app-version", &json!({"t":"array","v":[{"t":"undefined"}]}), context(&store)).unwrap().is_err());
         let elevated = invoke("app-elevated", &json!({"t":"array","v":[]}), context(&store)).unwrap().unwrap();
         let elevated = decode(&elevated).unwrap().into_json().unwrap();
@@ -4826,6 +5375,36 @@ fn fixture_mode(mode: &str) -> (std::path::PathBuf, NativeStore) {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn waiver_read_errors_are_native_in_packaged_builds_and_defer_in_dev() {
+        assert!(waiver_read_failure(BuildKind::Dev, "IGCL failed").is_none());
+        for kind in [BuildKind::Portable, BuildKind::Installed] {
+            assert_eq!(waiver_read_failure(kind, "IGCL failed").unwrap().unwrap_err(),
+                "Unable to read GPU waiver eligibility: IGCL failed");
+        }
+    }
+    #[test]
+    fn waiver_accept_requires_physical_target_in_packaged_builds() {
+        let target = apply_target("pci:0x00008086:0x0000e20b@3:0.0", 3);
+        let legacy = encode_json(&json!([0])).unwrap();
+        assert!(waiver_accept_args(&legacy, BuildKind::Dev).unwrap().1.is_none());
+        assert!(waiver_accept_args(&legacy, BuildKind::Portable).is_err());
+        let valid = encode_json(&json!([0, target])).unwrap();
+        let expected = waiver_accept_args(&valid, BuildKind::Installed).unwrap().1.unwrap();
+        let changed = apply_target("pci:0x00008086:0x0000e20b@4:0.0", 4);
+        let changed = super::super::gpu_apply_identity::identity_from_row(&changed["physicalTarget"]).unwrap();
+        assert!(super::super::gpu_apply_identity::ensure_same_target(&expected, &changed).is_err());
+    }
+    #[test]
+    fn gpu_read_errors_are_native_in_packaged_builds_and_defer_in_dev() {
+        for channel in ["get-capabilities", "get-current-settings"] {
+            assert!(gpu_read_failure(BuildKind::Dev, channel, "fixture failure").is_none());
+            for kind in [BuildKind::Portable, BuildKind::Installed] {
+                assert_eq!(gpu_read_failure(kind, channel, "fixture failure").unwrap().unwrap_err(),
+                    format!("{channel}: unable to read GPU: fixture failure"));
+            }
+        }
+    }
+    #[test]
     fn monitor_log_rejects_malformed_payloads() {
         let (root, store) = fixture();
         assert!(invoke("monitor-log-append", &json!({"t":"array","v":[]}), context(&store)).unwrap().is_err());
@@ -4918,7 +5497,25 @@ fn fixture_mode(mode: &str) -> (std::path::PathBuf, NativeStore) {
     }
 
     #[test]
-    fn profile_candidate_parses_the_native_subset_and_delegates_vf_and_empty_payloads() {
+    fn direct_vf_metadata_requires_an_isolated_curve_and_mixed_temperature_declines() {
+        let expected = apply_target("pci:0x00008086:0x0000e20b@3:0.0", 3);
+        let curve = json!([{"voltageV":0.8,"freqMhz":2000},{"voltageV":1.0,"freqMhz":2500}]);
+        let args = |settings: Value| encode_json(&json!([0, settings, {"expectedTarget":expected.clone()}])).unwrap();
+        for settings in [json!({"vfCurve":curve,"vfCurveBaseline":curve}),
+            json!({"vfCurve":curve,"vfCurveResetToDefault":true})] {
+            assert!(native_apply_payload(&args(settings)).unwrap().is_some());
+        }
+        let mixed_vf = args(json!({"vfCurve":curve,"vfCurveBaseline":curve,"powerLimitW":150}));
+        assert!(native_apply_payload(&mixed_vf).unwrap().is_none());
+        assert!(native_direct_apply_decline_reason(&mixed_vf).unwrap().contains("VF curve separately"));
+        let mixed_temp = args(json!({"tempLimitC":80,"powerLimitW":150}));
+        assert!(native_direct_apply_decline_reason(&mixed_temp).unwrap().contains("temperature limit separately"));
+        let bad_baseline = args(json!({"vfCurve":curve,"vfCurveBaseline":[]}));
+        assert!(native_apply_payload(&bad_baseline).unwrap().is_none());
+    }
+
+    #[test]
+    fn profile_candidate_parses_native_vf_profiles_and_delegates_unsupported_metadata() {
         let expected = apply_target("pci:0x00008086:0x0000e20b@3:0.0", 3);
         let profile = |settings: Value| {
             encode_json(&json!([0, settings, {"profileApply": true, "expectedTarget": expected.clone()}])).unwrap()
@@ -4937,14 +5534,11 @@ fn fixture_mode(mode: &str) -> (std::path::PathBuf, NativeStore) {
         }))).unwrap().unwrap();
         assert_eq!(with_temperature.settings.get("tempLimitC").and_then(Value::as_f64), Some(88.0));
 
-        // Electron owns the profile-VF policy (stock classification, legacy
-        // scalar repair, reference validation): any VF profile delegates.
+        // Baseline metadata is admitted only far enough to receive an explicit
+        // pre-write native refusal. Custom and stock-reference profiles use
+        // the fresh STOCK validation below.
         for delegated in [
-            json!({"vfCurve": [{"voltageV": 0.8, "freqMhz": 2000}, {"voltageV": 1.0, "freqMhz": 2500}]}),
-            json!({"vfCurveResetToDefault": true}),
             json!({"vfCurveBaseline": []}),
-            json!({"vfCurveStockReference": []}),
-            json!({"vfCurveProfileStock": true}),
             json!({}),
         ] {
             assert!(native_profile_apply_candidate(&profile(delegated)).unwrap().is_none(),
@@ -4954,6 +5548,59 @@ fn fixture_mode(mode: &str) -> (std::path::PathBuf, NativeStore) {
         assert!(native_profile_apply_candidate(&profile(json!({"fanMode": "turbo"}))).unwrap().is_none());
         assert!(native_profile_apply_candidate(&profile(json!({"powerLimitW": "240"}))).unwrap().is_none());
         assert!(native_profile_apply_candidate(&profile(json!({"tempLimitC": "88"}))).unwrap().is_none());
+        assert!(native_profile_apply_candidate(&profile(json!({"vfCurveProfileStock": true}))).unwrap().is_some());
+        let points = json!([
+            {"voltageV":0.8,"freqMhz":2000},
+            {"voltageV":1.0,"freqMhz":2500},
+        ]);
+        assert!(native_profile_apply_candidate(&profile(json!({"vfCurve": points}))).unwrap().is_some());
+        assert!(native_profile_apply_candidate(&profile(json!({
+            "vfCurve": points, "vfCurveStockReference": points,
+        }))).unwrap().is_some(), "new saved custom profiles carry their STOCK reference");
+        assert!(native_profile_apply_candidate(&profile(json!({"vfCurveResetToDefault": true}))).unwrap().is_none(),
+            "reset intent without a curve must not silently no-op");
+        assert!(native_profile_apply_candidate(&profile(json!({
+            "vfCurveProfileStock": true, "gpuFreqOffsetMhz": 10,
+        }))).unwrap().is_none(), "stock VF marker cannot accompany nonzero core offsets");
+        assert!(native_profile_apply_candidate(&profile(json!({
+            "vfCurveProfileStock": true,
+            "vfCurve": [{"voltageV": 0.8, "freqMhz": 2000}, {"voltageV": 1.0, "freqMhz": 2500}],
+        }))).unwrap().is_none(), "stock VF marker cannot accompany a custom curve");
+        assert!(native_profile_apply_candidate(&profile(json!({
+            "vfCurveProfileStock": true, "tempLimitC": 108,
+        }))).unwrap().is_some(), "stock curve profiles may use the temperature refusal plan");
+    }
+
+    #[test]
+    fn stock_vf_profile_requires_an_equivalent_final_curve_readback() {
+        let settings = json!({"vfCurve": [
+            {"voltageV": 0.8, "freqMhz": 2000},
+            {"voltageV": 1.0, "freqMhz": 2500},
+        ]});
+        let exact = json!({"perControl":{"vfCurve":{"readBackCurve":[
+            {"voltageV": 0.8, "freqMhz": 2000},
+            {"voltageV": 1.0, "freqMhz": 2500},
+        ]}}});
+        let changed = json!({"perControl":{"vfCurve":{"readBackCurve":[
+            {"voltageV": 0.8, "freqMhz": 2000},
+            {"voltageV": 1.0, "freqMhz": 2490},
+        ]}}});
+        assert!(stock_vf_readback_matches(&settings, &exact));
+        assert!(!stock_vf_readback_matches(&settings, &changed),
+            "a valid but non-stock driver curve cannot report stock reset success");
+    }
+
+    #[test]
+    fn stock_preflight_failure_finishes_mixed_temperature_profiles_without_poisoning_cache() {
+        let failure = profile_vf_failure(
+            &json!({"vfCurveProfileStock":true,"tempLimitC":88}),
+            "readback-unverified",
+            "The driver STOCK VF curve could not be read.",
+            Value::Null,
+        );
+        assert_eq!(failure["result"]["perControl"]["vfCurve"]["ok"], false);
+        assert_eq!(failure["result"]["perControl"]["tempLimitC"]["ok"], false);
+        assert_eq!(failure["result"]["perControl"]["tempLimitC"]["errorCode"], "dependency-failed");
     }
 
     #[test]
@@ -4986,6 +5633,47 @@ fn fixture_mode(mode: &str) -> (std::path::PathBuf, NativeStore) {
             json!({"tempLimitC": 85}),
             json!({"expectedTarget": expected}),
         )));
+    }
+
+    #[test]
+    fn alchemist_temperature_profiles_keep_the_lease_separate_from_sysman_controls() {
+        let key = "pci:0x00008086:0x000056a0@3:0.0";
+        let expected = json!({"deviceKey":key,"physicalTarget":{
+            "deviceKey":key,"pciVendorId":"0x00008086","pciDeviceId":"0x000056a0",
+            "bdf":{"bus":3,"device":0,"function":0},"luid":"0x00000001:0x00000002"
+        }});
+        let encoded = |settings: Value| encode_json(&json!([0, settings, {
+            "profileApply":true,"expectedTarget":expected.clone(),
+        }])).unwrap();
+
+        // A-series advanced temperature uses the Celsius V1/legacy lane. Its
+        // lease owns the entire profile transaction even when other controls
+        // will route through Sysman.
+        for settings in [
+            json!({"tempLimitC":105}),
+            json!({"tempLimitC":105,"powerLimitW":350}),
+            json!({"tempLimitC":105,"gpuVoltOffsetV":-0.05}),
+            json!({"tempLimitC":105,"powerLimitW":350,"gpuVoltOffsetV":-0.05}),
+        ] {
+            let args = encoded(settings);
+            assert!(!native_apply_transaction_candidate(&args),
+                "temperature-bearing A-series profile must use the single lease transaction");
+            let request = native_profile_apply_request(&args).unwrap().unwrap();
+            assert!(request.requested_temperature.is_some());
+        }
+
+        // The same A-series Sysman power/voltage controls without temperature
+        // retain the established plain native FIFO route.
+        for settings in [
+            json!({"powerLimitW":350}),
+            json!({"gpuVoltOffsetV":-0.05}),
+            json!({"powerLimitW":350,"gpuVoltOffsetV":-0.05}),
+        ] {
+            let args = encoded(settings);
+            assert!(native_apply_transaction_candidate(&args),
+                "temperature-free Sysman controls must remain on the plain native FIFO");
+            assert_eq!(native_profile_apply_request(&args).unwrap().unwrap().requested_temperature, None);
+        }
     }
 
     #[test]
@@ -5040,6 +5728,133 @@ fn fixture_mode(mode: &str) -> (std::path::PathBuf, NativeStore) {
         assert!(native_capability_error_deferable("fan probe verdict is not cached"));
         assert!(!native_capability_error_deferable("GPU identity changed during apply; refresh and try again"));
         assert!(!native_capability_error_deferable("IGCL failed"));
+        assert!(!native_only_capabilities_fallback_allowed(BuildKind::Dev, "fan probe verdict is not cached"),
+            "development keeps the broker's verified probe path");
+        assert!(native_only_capabilities_fallback_allowed(BuildKind::Portable, "fan probe verdict is not cached"));
+        assert!(native_only_capabilities_fallback_allowed(BuildKind::Installed, "fan probe verdict is not cached"));
+        assert!(!native_only_capabilities_fallback_allowed(BuildKind::Installed, "IGCL failed"));
+    }
+
+    #[test]
+    fn native_only_apply_uses_read_only_fan_caps_and_keeps_unrelated_errors_brokered() {
+        assert!(native_only_capabilities_fallback_allowed(BuildKind::Installed, "fan probe verdict is not cached"));
+        assert!(native_only_capabilities_fallback_allowed(BuildKind::Portable, "fan probe verdict is not cached"));
+        assert!(!native_only_capabilities_fallback_allowed(BuildKind::Dev, "fan probe verdict is not cached"));
+        assert!(!native_only_capabilities_fallback_allowed(BuildKind::Installed, "IGCL failed"));
+    }
+
+    #[test]
+    fn saved_overclock_profile_refuses_only_v1_controls_when_runtime_is_unavailable() {
+        // Read-only mirror of the user's saved Overclock payload. This pure
+        // plan runs before any setter and mirrors Electron's mixed-profile
+        // behavior when the bundled 2023 runtime is unavailable.
+        let saved = json!({
+            "powerLimitW": 260,
+            "gpuVoltOffsetV": 30,
+            "gpuFreqOffsetMhz": 150,
+            "tempLimitC": 100,
+            "vramFreqOffsetGts": 2400,
+            "fanMode": "auto",
+        });
+        let unavailable_caps = json!({
+            "extendedRanges": false,
+            "extendedControls": {"powerLimitW": false, "tempLimitC": false},
+            "ranges": {
+                "powerLimitW": {"units":"W", "min":105, "max":315},
+                "tempLimitC": {"units":"C", "min":50, "max":115},
+            }
+        });
+        for local_mode in ["stock", "advanced"] {
+            let (routed, refused) = native_profile_extended_unavailable_plan(&saved, &unavailable_caps, &json!({"powerLimitW":260,"tempLimitC":100}));
+            assert_eq!(refused["powerLimitW"]["errorCode"], "unsupported", "{local_mode}");
+            assert_eq!(refused["tempLimitC"]["errorCode"], "unsupported", "{local_mode}");
+            assert_eq!(routed, json!({
+                "gpuVoltOffsetV": 30,
+                "gpuFreqOffsetMhz": 150,
+                "vramFreqOffsetGts": 2400,
+                "fanMode": "auto",
+            }), "{local_mode}: compatible profile controls remain native-owned");
+        }
+        let available_caps = json!({
+            "extendedRanges": true,
+            "extendedControls": {"powerLimitW": true, "tempLimitC": true},
+            "ranges": unavailable_caps["ranges"].clone(),
+        });
+        let (routed, refused) = native_profile_extended_unavailable_plan(&saved, &available_caps, &json!({"powerLimitW":260,"tempLimitC":100}));
+        assert_eq!(routed, saved, "a capable runtime keeps every saved setting routed");
+        assert!(refused.as_object().unwrap().is_empty());
+
+    }
+
+    #[test]
+    fn unavailable_legacy_does_not_block_profile_values_within_driver_witness() {
+        let requested = json!({"powerLimitW":247,"tempLimitC":90,"gpuFreqOffsetMhz":25});
+        let raw = json!({"powerLimitW":{"units":"W","max":247},"tempLimitC":{"units":"C","max":90}});
+        let caps = json!({"extendedRanges":false,"extendedControls":{"powerLimitW":false,"tempLimitC":false}});
+        let (_, legacy) = super::super::apply_gates::split_profile_by_driver_witness(&requested, Some(&raw), false).unwrap();
+        let (routed, refused) = native_profile_extended_unavailable_plan(&requested, &caps, &legacy);
+        assert_eq!(routed, requested);
+        assert_eq!(refused, json!({}));
+        let above = json!({"powerLimitW":248,"tempLimitC":91,"gpuFreqOffsetMhz":25});
+        let (_, legacy) = super::super::apply_gates::split_profile_by_driver_witness(&above, Some(&raw), false).unwrap();
+        let (routed, refused) = native_profile_extended_unavailable_plan(&above, &caps, &legacy);
+        assert_eq!(routed, json!({"gpuFreqOffsetMhz":25}));
+        assert_eq!(refused["powerLimitW"]["errorCode"], "unsupported");
+        assert_eq!(refused["tempLimitC"]["errorCode"], "unsupported");
+    }
+
+    #[test]
+    fn temperature_lease_mode_is_compared_with_the_stored_mode_for_profiles() {
+        assert!(temperature_lease_mode_matches_stored(Some("stock"), "stock"));
+        assert!(!temperature_lease_mode_matches_stored(Some("advanced"), "stock"));
+        assert!(temperature_lease_mode_matches_stored(None, "stock"));
+    }
+
+    #[test]
+    fn temperature_lease_accepts_native_celsius_and_battlemage_percent_units() {
+        let row = json!({
+            "deviceKey":"pci:0x00008086:0x0000e20b@3:0.0",
+            "pciVendorId":"0x00008086","pciDeviceId":"0x0000e20b",
+            "bdf":{"bus":3,"device":0,"function":0},"luid":"0x00000001:0x00000002",
+            "electronOrdinal":0
+        });
+        let expected = super::super::gpu_apply_identity::identity_from_row(&row).unwrap();
+        let snapshot = |units: &str| encode_json(&json!({
+            "type":"temperature-refusal-cache:begin","schemaVersion":1,
+            "epoch":"0123456789abcdef0123456789abcdef","transactionSequence":1,
+            "cacheGeneration":0,"target":row,
+            "ranges":{"tempLimitC":{"units":units,"min":60,"max":100,"step":1}},
+            "requestedSettings":{"tempLimitC":100},
+            "cache":{"status":"available","ceilings":{"tempLimitC":null}},
+            "ocMode":"stock"
+        })).unwrap();
+        let celsius = decode(&snapshot("C")).unwrap();
+        let percent = decode(&snapshot("%")).unwrap();
+        assert!(validate_temperature_lease_snapshot(&celsius, 0, &json!({"tempLimitC":100}), &expected).is_ok());
+        assert!(validate_temperature_lease_snapshot(&percent, 0, &json!({"tempLimitC":100}), &expected).is_ok(),
+            "Battlemage's IGCL temperature limit is reported as a percent-shaped control");
+        let stale_unit_cache = encode_json(&json!({
+            "type":"temperature-refusal-cache:begin","schemaVersion":1,
+            "epoch":"0123456789abcdef0123456789abcdef","transactionSequence":1,
+            "cacheGeneration":0,"target":row,
+            "ranges":{"tempLimitC":{"units":"%","min":60,"max":100,"step":1}},
+            "requestedSettings":{"tempLimitC":100},
+            "cache":{"status":"available","ceilings":{"tempLimitC":90},"units":{"tempLimitC":"C"}},
+            "ocMode":"stock"
+        })).unwrap();
+        let stale_result = validate_temperature_lease_snapshot(&decode(&stale_unit_cache).unwrap(), 0,
+            &json!({"tempLimitC":100}), &expected);
+        assert!(matches!(stale_result, Err(error) if error.contains("units changed")));
+        assert!(temperature_ranges_compatible(
+            Some(&json!({"units":"%","min":60,"max":100,"step":1})),
+            &json!({"units":"%","min":60,"max":100,"step":1}),
+        ));
+        assert!(!temperature_ranges_compatible(
+            Some(&json!({"units":"C","min":60,"max":100,"step":1})),
+            &json!({"units":"%","min":60,"max":100,"step":1}),
+        ), "equal numeric ranges with different units are never interchangeable");
+        let unsupported = decode(&snapshot("F")).unwrap();
+        assert!(validate_temperature_lease_snapshot(&unsupported, 0, &json!({"tempLimitC":100}), &expected).is_err());
     }
 
     #[test]

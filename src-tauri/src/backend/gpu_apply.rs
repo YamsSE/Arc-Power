@@ -219,7 +219,7 @@ pub fn is_verified_success(per: &Value) -> bool {
 
 pub fn refusal_message(control: &str, per: &Value) -> Option<String> {
     if per.is_null() || is_verified_success(per) { return None; }
-    if control == "vfCurve" {
+    if matches!(control, "vfCurve" | "fanCurve" | "fanMode" | "fixedFanPct") {
         if let Some(message) = per.get("message").and_then(Value::as_str).filter(|message| !message.trim().is_empty()) {
             return Some(message.to_owned());
         }
@@ -431,6 +431,14 @@ mod tests {
         assert_eq!(unverified["perControl"]["x"]["message"], "The GPU driver refused the change.");
         let curve = finalize_apply_result(json!({"ok": false, "perControl": {"vfCurve": {"ok": false, "errorCode": "io-failed", "message": "point 3 mismatch"}}}));
         assert_eq!(curve["perControl"]["vfCurve"]["message"], "point 3 mismatch");
+        for control in ["fanCurve", "fanMode", "fixedFanPct"] {
+            for code in ["io-failed", "invalid-argument"] {
+                let input = json!({"ok": false, "perControl": {control: {"ok": false, "errorCode": code, "message": "fan curve point 1 read-back 53C/40% != requested 53C/45%"}}});
+                let output = finalize_apply_result(input);
+                assert_eq!(output["perControl"][control]["message"], "fan curve point 1 read-back 53C/40% != requested 53C/45%");
+                assert_eq!(output["perControl"][control]["ok"], false);
+            }
+        }
     }
 
     #[test]

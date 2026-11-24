@@ -16,7 +16,16 @@ use std::{
 
 use super::{gpu_devices, memory, native_store::NativeStore, os_gpu_inventory, windows_display_modes};
 
-static WMI_SNAPSHOT: OnceLock<Option<Value>> = OnceLock::new();
+static WMI_SNAPSHOT: OnceLock<Mutex<WmiCache>> = OnceLock::new();
+const WMI_TIMEOUT: Duration = Duration::from_secs(10);
+const WMI_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+const WMI_RETRY_AFTER: Duration = Duration::from_secs(30);
+
+#[derive(Default)]
+struct WmiCache {
+    value: Option<Value>,
+    last_attempt: Option<Instant>,
+}
 static D3D12_EVIDENCE: OnceLock<Mutex<D3d12Evidence>> = OnceLock::new();
 const D3D12_HELPER_NAME: &str = "ArcPower.D3D12UploadHeapQuery.exe";
 const D3D12_MAX_TARGETS: usize = 16;
@@ -49,47 +58,93 @@ impl D3d12Target {
 /// One cached read-only CIM collection per process, mirroring Electron's
 /// `sysinfo.js`. PowerShell is a Windows component, not an app dependency.
 fn wmi_snapshot() -> Option<Value> {
-    WMI_SNAPSHOT.get_or_init(|| {
-        let script = concat!(
-            "[Console]::OutputEncoding=[Text.Encoding]::UTF8;",
-            "$ErrorActionPreference='SilentlyContinue';",
-            "$cpu=Get-CimInstance Win32_Processor|Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed;",
-            "$mem=Get-CimInstance Win32_PhysicalMemory|Select-Object -First 1 Manufacturer,ConfiguredClockSpeed,SMBIOSMemoryType;",
-            "$bb=Get-CimInstance Win32_BaseBoard|Select-Object -First 1 Manufacturer,Product;",
-            "$controllers=@(Get-CimInstance Win32_VideoController|Select-Object DeviceID,PNPDeviceID);",
-            "$ranges=@(Get-CimInstance Win32_DeviceMemoryAddress -OperationTimeoutSec 2|ForEach-Object{[pscustomobject]@{S=[string]$_.StartingAddress;E=[string]$_.EndingAddress}});",
-            "$alloc=@(Get-CimInstance Win32_AllocatedResource -OperationTimeoutSec 2|ForEach-Object{[pscustomobject]@{D=[string]$_.Dependent;A=[string]$_.Antecedent}});",
-            "[pscustomobject]@{cpu=$cpu;physicalMemory=$mem;baseboard=$bb;controllers=$controllers;ranges=$ranges;allocations=$alloc}|ConvertTo-Json -Depth 4 -Compress",
-        );
-        let mut command = std::process::Command::new(
-            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
-        command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
-        #[cfg(windows)] {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x08000000);
+    let cache = WMI_SNAPSHOT.get_or_init(|| Mutex::new(WmiCache::default()));
+    let mut cache = cache.lock().ok()?;
+    if let Some(value) = &cache.value { return Some(value.clone()); }
+    // A failed/hung query must not poison the process forever. Retry only after
+    // a quiet window so repeated sysinfo reads cannot spawn PowerShell storms.
+    if cache.last_attempt.is_some_and(|last| last.elapsed() < WMI_RETRY_AFTER) { return None; }
+    cache.last_attempt = Some(Instant::now());
+    let script = concat!(
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8;",
+        "$ErrorActionPreference='SilentlyContinue';",
+        "$cpu=Get-CimInstance Win32_Processor -OperationTimeoutSec 5|Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed;",
+        "$mem=Get-CimInstance Win32_PhysicalMemory -OperationTimeoutSec 5|Select-Object -First 1 Manufacturer,ConfiguredClockSpeed,SMBIOSMemoryType;",
+        "$bb=Get-CimInstance Win32_BaseBoard -OperationTimeoutSec 5|Select-Object -First 1 Manufacturer,Product;",
+        "$controllers=@(Get-CimInstance Win32_VideoController -OperationTimeoutSec 5|Select-Object DeviceID,PNPDeviceID);",
+        "$ranges=@(Get-CimInstance Win32_DeviceMemoryAddress -OperationTimeoutSec 5|ForEach-Object{[pscustomobject]@{S=[string]$_.StartingAddress;E=[string]$_.EndingAddress}});",
+        "$alloc=@(Get-CimInstance Win32_AllocatedResource -OperationTimeoutSec 5|ForEach-Object{[pscustomobject]@{D=[string]$_.Dependent;A=[string]$_.Antecedent}});",
+        "[pscustomobject]@{cpu=$cpu;physicalMemory=$mem;baseboard=$bb;controllers=$controllers;ranges=$ranges;allocations=$alloc}|ConvertTo-Json -Depth 4 -Compress",
+    );
+    let output = run_wmi_script(script)?;
+    let parsed: Value = serde_json::from_slice(&output).ok()?;
+    // Keep only the exact CIM identities and the two sides of each
+    // allocation association needed for per-controller ReBAR fallback.
+    let controllers = parsed.get("controllers").cloned().unwrap_or_else(|| json!([]));
+    let allocations: Vec<Value> = parsed.get("allocations").and_then(Value::as_array)
+        .map(|items| items.iter().map(|item| json!({
+            "dependent": item.get("D").cloned().unwrap_or(Value::Null),
+            "antecedent": item.get("A").cloned().unwrap_or(Value::Null),
+        })).collect())
+        .unwrap_or_default();
+    let ranges = parsed.get("ranges").cloned().unwrap_or_else(|| json!([]));
+    let value = json!({
+        "cpu": parsed.get("cpu").cloned().unwrap_or(Value::Null),
+        "physicalMemory": parsed.get("physicalMemory").cloned().unwrap_or(Value::Null),
+        "baseboard": parsed.get("baseboard").cloned().unwrap_or(Value::Null),
+        "controllers": controllers,
+        "allocations": allocations,
+        "ranges": ranges,
+    });
+    cache.value = Some(value.clone());
+    Some(value)
+}
+
+/// Run PowerShell with a hard deadline. A wedged CIM provider must not hold the
+/// renderer's boot path open indefinitely; the child is killed on timeout.
+fn run_wmi_script(script: &str) -> Option<Vec<u8>> {
+    let mut command = std::process::Command::new(
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)] {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let mut child = command.spawn().ok()?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let reader = match std::thread::Builder::new().name("arc-power-wmi-output".into()).spawn(move || {
+        let mut output = Vec::new();
+        let mut bounded = stdout.take(WMI_MAX_OUTPUT_BYTES as u64 + 1);
+        bounded.read_to_end(&mut output).ok().map(|_| output)
+    }) {
+        Ok(reader) => reader,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
         }
-        let output = command.output().ok()?;
-        if !output.status.success() { return None; }
-        let parsed: Value = serde_json::from_slice(&output.stdout).ok()?;
-        // Keep only the exact CIM identities and the two sides of each
-        // allocation association needed for per-controller ReBAR fallback.
-        let controllers = parsed.get("controllers").cloned().unwrap_or_else(|| json!([]));
-        let allocations: Vec<Value> = parsed.get("allocations").and_then(Value::as_array)
-            .map(|items| items.iter().map(|item| json!({
-                "dependent": item.get("D").cloned().unwrap_or(Value::Null),
-                "antecedent": item.get("A").cloned().unwrap_or(Value::Null),
-            })).collect())
-            .unwrap_or_default();
-        let ranges = parsed.get("ranges").cloned().unwrap_or_else(|| json!([]));
-        Some(json!({
-            "cpu": parsed.get("cpu").cloned().unwrap_or(Value::Null),
-            "physicalMemory": parsed.get("physicalMemory").cloned().unwrap_or(Value::Null),
-            "baseboard": parsed.get("baseboard").cloned().unwrap_or(Value::Null),
-            "controllers": controllers,
-            "allocations": allocations,
-            "ranges": ranges,
-        }))
-    }).clone()
+    };
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let output = reader.join().ok().flatten()?;
+                return (status.success() && output.len() <= WMI_MAX_OUTPUT_BYTES).then_some(output);
+            }
+            Ok(None) if started.elapsed() < WMI_TIMEOUT => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return None;
+            }
+        }
+    }
 }
 
 fn cim_reference_field(value: &str, class_name: &str, field_name: &str) -> Option<String> {

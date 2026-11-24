@@ -1,4 +1,4 @@
-# Arc Image Sharpening and ASR validation (1.2.5)
+# Arc Image Sharpening and ASR validation (1.2.5, retained in 1.3.0)
 
 Arc Image Sharpening runs the bundled controlled ReShade shader in a game
 launched from its Arc Power profile. ASR independently enlarges the game using

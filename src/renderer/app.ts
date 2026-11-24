@@ -25,6 +25,7 @@ import { getLatestFpsSample, getMonitorLogToFile, filterMonitorLogSample, setMon
 import { createDeviceSwitcher } from './device.ts';
 import { deviceHardwareKey, resolveBootDevice, resolveFeaturesetSwapSelection } from './pure/device.ts';
 import { mergeRebarByStableIdentity } from './pure/rebar-refresh.ts';
+import { HIDDEN_TABS_EVENT, isTabHidden, readHiddenTabs } from './pure/hidden-tabs.ts';
 import { isValidTheme } from './pure/theme.ts';
 import { primaryVideoController } from './pure/sysinfo.ts';
 import type { RecordingEngineState, TelemetrySample } from './types.ts';
@@ -357,6 +358,12 @@ api.onOcModeUpdated((payload) => {
 let current: Page | null = null;
 
 function renderPage(id: PageId) {
+  // A hidden tab keeps its route but must not render; a direct hash or a
+  // toggle while the page is active returns to the always-visible dashboard.
+  if (isTabHidden(id)) {
+    if (currentPage() !== 'dashboard') window.location.hash = '#/dashboard';
+    return;
+  }
   const container = document.getElementById('page') as HTMLElement;
   const samePage = current?.id === id;
   // M2b review F4: the page being left stops its timers/subscriptions
@@ -377,6 +384,16 @@ function renderPage(id: PageId) {
     container.append(el('p', { class: 'text-error', text: `Page failed to render: ${err instanceof Error ? err.message : String(err)}` }));
   }
 }
+
+window.addEventListener(HIDDEN_TABS_EVENT, () => {
+  const page = currentPage();
+  if (isTabHidden(page)) {
+    window.location.hash = '#/dashboard';
+    return;
+  }
+  renderSidebar();
+  renderPage(page);
+});
 
 const SIDEBAR_WIDTH_KEY = 'arcpower.sidebar.width.v1';
 const SIDEBAR_MIN_WIDTH = 64;
@@ -509,7 +526,8 @@ function renderSidebar() {
   // Settings stays at the foot of the navigation. Tweaks and the Driver
   // Library remain discoverable from the main menu as well as their existing
   // contextual entry points.
-  const navIds = PAGE_IDS.filter((id) => id !== 'settings' && id !== 'driver-library');
+  const navIds = PAGE_IDS.filter((id) => id !== 'settings' && id !== 'driver-library'
+    && !readHiddenTabs().has(id));
   nav.append(
     el('div', { class: 'sidebar-brand' }, [
       el('img', { class: 'sidebar-brand-logo', src: '../assets/ArcPowerIcon.png', alt: '' }),
@@ -784,14 +802,11 @@ async function boot() {
         const refreshed = await api.sysinfo();
         const current = store.get();
         if (!refreshed || JSON.stringify(refreshed.videoControllers) === JSON.stringify(current.sysinfo?.videoControllers)) return;
-        let nextDevices = current.devices;
-        try {
-          const candidate = await api.listDevices();
-          if (candidate.length > 0) nextDevices = candidate;
-        } catch { /* keep the current inventory */ }
-        // A successful inventory refresh can still lack the verdict (the
-        // native host never emits osController), so join it either way.
-        nextDevices = mergeRebarByStableIdentity(nextDevices, refreshed.videoControllers);
+        // This late read exists only to join the asynchronous ReBAR verdict.
+        // Do NOT replace the inventory here: a refreshed list can reassign
+        // numeric session ids and silently retarget the focused GPU. Boot and
+        // explicit selection are the only places that re-enumerate.
+        const nextDevices = mergeRebarByStableIdentity(current.devices, refreshed.videoControllers);
         const selected = nextDevices.find((device) => device.id === current.deviceId) ?? null;
         store.set({
           sysinfo: refreshed,
@@ -863,9 +878,13 @@ async function boot() {
   } else {
     try {
       pb('pre-caps');
+      const waiverDevice = store.get().devices.find(device => device.id === deviceId);
       const caps = await api.getCapabilities(deviceId as number);
       const state = await api.getCurrentSettings(deviceId as number);
-      store.set({ caps, state });
+      const liveDevice = store.get().devices.find(device => device.id === deviceId);
+      const currentTarget = store.get().deviceId === deviceId && !!waiverDevice?.deviceKey
+        && liveDevice?.deviceKey === waiverDevice.deviceKey && caps.deviceKey === waiverDevice.deviceKey;
+      if (currentTarget) store.set({ caps, state });
       pb('post-caps');
       // M4-B: the OC waiver prompt shows at EVERY startup while the waiver is
       // NOT accepted ("please prompt it when the Program opens").
@@ -883,12 +902,16 @@ async function boot() {
       // have NO waiver - the driver refuses ctlOverclockWaiverSet with
       // ERROR_UNSUPPORTED_FEATURE. The prompt is skipped entirely there (a
       // prompt the user can never satisfy would toast on every boot).
-      if (caps.waiverAccepted !== true && caps.overclockingSupported !== false) {
+      if (currentTarget && caps.waiverAccepted !== true && caps.overclockingSupported !== false
+        && waiverDevice?.deviceKey && caps.deviceKey === waiverDevice.deviceKey
+        && store.get().deviceId === deviceId
+        && store.get().devices.find(device => device.id === deviceId)?.deviceKey === waiverDevice.deviceKey) {
         void (async () => {
-          const decision = await promptWaiverAtBoot(deviceId as number, caps.deviceName || 'this GPU');
+          const decision = await promptWaiverAtBoot(deviceId as number, caps.deviceName || 'this GPU', waiverDevice);
           if (decision !== 'accepted') return;
           const live = store.get();
-          if (live.caps && live.caps.waiverAccepted !== true) {
+          if (live.deviceId === deviceId && live.devices.find(device => device.id === deviceId)?.deviceKey === waiverDevice.deviceKey
+            && live.caps && live.caps.deviceKey === waiverDevice.deviceKey && live.caps.waiverAccepted !== true) {
             store.set({ caps: { ...live.caps, waiverAccepted: true } });
           }
         })();

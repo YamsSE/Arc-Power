@@ -256,6 +256,15 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
   } catch {
     overlayDevices = [];
   }
+  let overlayMonitors: Array<{ name: string; label: string; primary: boolean }> = [];
+  let overlayMonitorChoice: { hud: string | null; advanced: string | null } = { hud: null, advanced: null };
+  try {
+    const [monitors, choice] = await Promise.all([api.monitorsList(), api.overlayMonitorsGet()]);
+    overlayMonitors = Array.isArray(monitors)
+      ? monitors.map((monitor) => ({ name: monitor.name, label: monitor.label, primary: monitor.primary }))
+      : [];
+    overlayMonitorChoice = { hud: choice?.hud ?? null, advanced: choice?.advanced ?? null };
+  } catch { /* Electron/mock hosts without the native monitor channels */ }
   try {
     overlayState = await api.overlayGetState();
   } catch { /* the cards degrade to the persisted state */ }
@@ -386,6 +395,49 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // Settings page (the Settings card is button-only now). The
     // .settings-checkbox[data-setting="overlayEnabled"] class + dataset
     // are KEPT so the ui-verify toggle pins moved with the control.
+    // --- Displays: the Arc Power HUD and Advanced Overlay are separate
+    // windows, so each can be pinned to a monitor. RTSS follows the game.
+    const monitorOptions = [
+      { value: '', label: 'Follow the main window' },
+      ...overlayMonitors.map((monitor) => ({
+        value: monitor.name,
+        label: monitor.primary ? `${monitor.label} (Primary)` : monitor.label,
+      })),
+    ];
+    const saveMonitors = (next: { hud: string | null; advanced: string | null }): void => {
+      overlayMonitorChoice = next;
+      void api.overlayMonitorsSet(next)
+        .then(() => toast('success', 'Overlay monitor', 'The overlay will use the selected display.'))
+        .catch((err) => toast('error', 'Overlay monitor', err instanceof Error ? err.message : String(err)));
+    };
+    const hudMonitorSelect = buildDropdown(overlayMonitorChoice.hud ?? '', monitorOptions, {
+      className: 'settings-position-select',
+      ariaLabel: 'Arc Power overlay monitor',
+      onChange: (value) => saveMonitors({ ...overlayMonitorChoice, hud: value || null }),
+    });
+    const advancedMonitorSelect = buildDropdown(overlayMonitorChoice.advanced ?? '', monitorOptions, {
+      className: 'settings-position-select settings-advanced-position-select',
+      ariaLabel: 'Advanced overlay monitor',
+      onChange: (value) => saveMonitors({ ...overlayMonitorChoice, advanced: value || null }),
+    });
+    const displaysCard = el('section', { class: 'card settings-card overlay-general-card' }, [
+      el('div', { class: 'overlay-card-heading' }, [
+        el('div', {}, [el('span', { class: 'overlay-card-eyebrow', text: 'DISPLAYS' }), el('h2', { class: 'card-title', text: 'Overlay Monitors' })]),
+        el('span', { class: 'overlay-value-badge', text: 'WINDOWS' }),
+      ]),
+      el('p', { class: 'card-note', text: 'Choose the monitor for each Arc Power overlay. The RTSS renderer follows the game window instead.' }),
+      el('div', { class: 'settings-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Arc Power Overlay' }),
+        hudMonitorSelect,
+      ]),
+      el('div', { class: 'settings-row' }, [
+        el('span', { class: 'settings-row-label', text: 'Advanced Overlay' }),
+        advancedMonitorSelect,
+      ]),
+      overlayMonitors.length === 0
+        ? el('p', { class: 'card-note', text: 'Monitor selection is available in the native build.' })
+        : null,
+    ]);
     const generalCard = el('section', { class: 'card settings-card overlay-general-card' }, [
       el('div', { class: 'overlay-card-heading' }, [
         el('div', {}, [el('span', { class: 'overlay-card-eyebrow', text: 'HUD BEHAVIOR' }), el('h2', { class: 'card-title', text: 'HUD Behavior' })]),
@@ -750,7 +802,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         : null,
     ]);
 
-    const workspace = el('div', { class: 'overlay-settings-workspace' }, [generalCard, appearanceCard]);
+    const workspace = el('div', { class: 'overlay-settings-workspace' }, [generalCard, appearanceCard, displaysCard]);
     clear(root);
     root.append(hero, workspace, statsCard, hotkeyCard);
   };

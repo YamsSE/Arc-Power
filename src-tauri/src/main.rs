@@ -4,6 +4,8 @@ mod protocol;
 mod transport;
 mod lifecycle;
 mod runtime;
+mod setup_ui;
+mod overlay_monitors;
 mod registry_apply_helper;
 mod roles;
 mod readiness;
@@ -64,6 +66,7 @@ struct Broker {
     startup_reconcile_ready: std::sync::atomic::AtomicBool,
     active_invocations: std::sync::atomic::AtomicUsize,
     tray_available: std::sync::atomic::AtomicBool,
+    overlay_measured_devices: std::sync::atomic::AtomicUsize,
     host_events: mpsc::SyncSender<(String, String, Value)>,
     telemetry: Arc<telemetry::TelemetryHub>,
     stability: Option<Arc<arc_power_tauri::backend::stability_runtime::StabilityRuntime>>,
@@ -77,7 +80,14 @@ struct Broker {
     native_store: Arc<arc_power_tauri::backend::native_store::NativeStore>,
     apply_transactions: Arc<arc_power_tauri::backend::apply_transaction::ApplyTransactionCoordinator>,
     startup_update: Arc<startup_update::StartupUpdateCoordinator>,
-    startup_splash_ready: std::sync::atomic::AtomicBool,
+    startup_configuration_ready: std::sync::atomic::AtomicBool,
+    startup_handoff_done: std::sync::atomic::AtomicBool,
+    startup_handoff_lock: Mutex<()>,
+    startup_main_reveal_expected: std::sync::atomic::AtomicBool,
+    startup_splash_expected: std::sync::atomic::AtomicBool,
+    startup_splash_lifecycle: std::sync::atomic::AtomicU8,
+    startup_splash_timeout_elapsed: std::sync::atomic::AtomicBool,
+    startup_main_ready: std::sync::atomic::AtomicBool,
     last_store_request: std::sync::atomic::AtomicU64,
     build_kind: arc_power_tauri::backend::native_system::BuildKind,
     mock_mode: bool,
@@ -564,8 +574,286 @@ fn recording_pill_enabled_value(settings: &Value) -> bool {
     settings.get("overlayRecordingPill").and_then(Value::as_bool) == Some(true)
 }
 
+fn recording_pill_settings_payload(settings: &Value) -> Option<Value> {
+    let mut payload = serde_json::Map::new();
+    if let Some(enabled) = settings.get("overlayRecordingPill").and_then(Value::as_bool) {
+        payload.insert("enabled".into(), json!(enabled));
+    }
+    if let Some(enabled) = settings.get("recordingToastsEnabled").and_then(Value::as_bool) {
+        payload.insert("toastsEnabled".into(), json!(enabled));
+    }
+    (!payload.is_empty()).then_some(Value::Object(payload))
+}
+
+static RECORDING_PILL_PUBLISH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn publish_recording_pill_snapshot(
+    lock: &std::sync::Mutex<()>,
+    load: impl FnOnce() -> Option<Value>,
+    publish: impl FnOnce(Value),
+) {
+    let _guard = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(settings) = load() { publish(settings); }
+}
+
+fn publish_recording_pill_settings(app: &tauri::AppHandle, broker: &Broker) {
+    publish_recording_pill_snapshot(&RECORDING_PILL_PUBLISH_LOCK,
+        || broker.native_store.settings_store().load_settings_sync().ok().flatten(),
+        |settings| publish_recording_pill_settings_snapshot(app, broker, settings));
+}
+
+fn publish_recording_pill_settings_snapshot(app: &tauri::AppHandle, broker: &Broker, settings: Value) {
+    if let Some(pill) = broker.recording_status_pill.as_ref() {
+        pill.set_enabled(recording_pill_enabled_value(&settings));
+    }
+    let Some(payload) = recording_pill_settings_payload(&settings) else { return; };
+    let Ok(args) = arc_power_tauri::backend::wire::encode_json(&json!([payload])) else { return; };
+    for (label, _) in app.webview_windows() {
+        if matches!(roles::role(&label), Some("main" | "advanced-overlay")) {
+            let _ = app.emit_to(label.as_str(), "arc-power:broker-event", json!({"channel":"recording:pill-settings", "args":args}));
+        }
+    }
+}
+
 fn wait_for_device_manifest_before_renderer_ready(role: Option<&str>, native_pill_owner: bool) -> bool {
     role != Some("splash") && !(role == Some("recording-status-pill") && native_pill_owner)
+}
+
+fn startup_splash_dismissal_ready(mock_mode: bool, main_ready: bool, splash_ready: bool) -> bool {
+    !mock_mode && main_ready && splash_ready
+}
+
+const SPLASH_PENDING: u8 = 0;
+const SPLASH_READY: u8 = 1;
+const SPLASH_TIMED_OUT: u8 = 2;
+
+fn claim_splash_ready(lifecycle: &std::sync::atomic::AtomicU8) -> bool {
+    lifecycle.compare_exchange(SPLASH_PENDING, SPLASH_READY,
+        std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst).is_ok()
+}
+
+fn claim_splash_timeout(lifecycle: &std::sync::atomic::AtomicU8) -> bool {
+    lifecycle.compare_exchange(SPLASH_PENDING, SPLASH_TIMED_OUT,
+        std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst).is_ok()
+}
+
+fn claim_splash_timeout_if_ready(
+    lifecycle: &std::sync::atomic::AtomicU8,
+    timeout_elapsed: bool,
+    main_ready: bool,
+) -> bool {
+    timeout_elapsed && main_ready && claim_splash_timeout(lifecycle)
+}
+
+fn startup_splash_watchdog_should_run(lifecycle: u8, splash_expected: bool, splash_exists: bool, handoff_done: bool) -> bool {
+    !handoff_done && splash_expected && (lifecycle != SPLASH_READY || !splash_exists)
+}
+
+fn startup_main_should_be_visible(settings: Result<Value, String>) -> bool {
+    !settings.ok().and_then(|value| value.get("startMinimized").and_then(Value::as_bool)).unwrap_or(false)
+}
+
+fn native_startup_reveal_expected(
+    mock_mode: bool,
+    build_kind: arc_power_tauri::backend::native_system::BuildKind,
+) -> bool {
+    !mock_mode && !matches!(build_kind, arc_power_tauri::backend::native_system::BuildKind::Dev)
+}
+
+fn native_startup_handoff_ready(
+    mock_mode: bool,
+    configuration_ready: bool,
+    reveal_expected: bool,
+    splash_expected: bool,
+    main_ready: bool,
+    splash_ready: bool,
+    splash_exists: bool,
+) -> bool {
+    !mock_mode && configuration_ready && reveal_expected && main_ready
+        && (!splash_expected || splash_ready || !splash_exists)
+}
+
+fn reveal_native_main_after_startup(app: &tauri::AppHandle, broker: &Broker) {
+    let Some(window) = app.get_webview_window("main") else { return; };
+    if startup_main_should_be_visible(broker.native_store.settings_store().load_settings_sync()
+        .map(|value| value.unwrap_or(Value::Null))) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn dismiss_startup_splash_when_renderers_ready(app: &tauri::AppHandle, broker: &Broker) {
+    use std::sync::atomic::Ordering::SeqCst;
+    let splash_expected = broker.startup_splash_expected.load(SeqCst);
+    let splash_exists = app.get_webview_window("splash-1000000").is_some();
+    if native_startup_handoff_ready(
+        broker.mock_mode,
+        broker.startup_configuration_ready.load(SeqCst),
+        broker.startup_main_reveal_expected.load(SeqCst),
+        splash_expected,
+        broker.startup_main_ready.load(SeqCst),
+        broker.startup_splash_lifecycle.load(SeqCst) == SPLASH_READY,
+        splash_exists,
+    ) {
+        {
+            let Ok(_guard) = broker.startup_handoff_lock.lock() else { return; };
+            if splash_expected && !broker.startup_update.can_dismiss_for_boot() { return; }
+            if !claim_startup_handoff(&broker.startup_handoff_done) { return; }
+        }
+        if splash_expected {
+            let _ = dismiss_native_startup_splash(app, broker);
+        }
+        reveal_native_main_after_startup(app, broker);
+    }
+}
+
+fn claim_startup_handoff(done: &std::sync::atomic::AtomicBool) -> bool {
+    done.compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst,
+        std::sync::atomic::Ordering::SeqCst).is_ok()
+}
+
+fn fail_timed_out_splash_when_main_is_ready(app: &tauri::AppHandle, broker: &Broker) {
+    use std::sync::atomic::Ordering::SeqCst;
+    let Ok(guard) = broker.startup_handoff_lock.lock() else { return; };
+    if broker.startup_handoff_done.load(SeqCst) { return; }
+    if !claim_splash_timeout_if_ready(
+        &broker.startup_splash_lifecycle,
+        broker.startup_splash_timeout_elapsed.load(SeqCst),
+        broker.startup_main_ready.load(SeqCst),
+    )
+        || !broker.startup_splash_expected.load(SeqCst)
+    {
+        return;
+    }
+    let transition = broker.startup_update.fatal();
+    drop(guard);
+    publish_startup_update_transition(app, broker, transition);
+    if let Some(splash) = app.get_webview_window("splash-1000000") {
+        let _ = splash.destroy();
+    }
+    dismiss_startup_splash_when_renderers_ready(app, broker);
+}
+
+const STARTUP_SPLASH_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
+fn start_startup_splash_ready_timeout(app: &tauri::AppHandle, broker: &Arc<Broker>) {
+    let app = app.clone();
+    let broker = broker.clone();
+    let _ = std::thread::Builder::new()
+        .name("arc-startup-splash-ready-timeout".into())
+        .spawn(move || {
+            std::thread::sleep(STARTUP_SPLASH_READY_TIMEOUT);
+            use std::sync::atomic::Ordering::SeqCst;
+            let splash_missing = app.get_webview_window("splash-1000000").is_none();
+            if !startup_splash_watchdog_should_run(
+                broker.startup_splash_lifecycle.load(SeqCst),
+                broker.startup_splash_expected.load(SeqCst),
+                !splash_missing,
+                broker.startup_handoff_done.load(SeqCst),
+            ) {
+                return;
+            }
+            broker.startup_splash_timeout_elapsed.store(true, SeqCst);
+            if splash_missing {
+                // A destroyed splash cannot receive Skip/Update Now. Settle
+                // the gate so a ready main window cannot remain hidden forever.
+                let Ok(guard) = broker.startup_handoff_lock.lock() else { return; };
+                if broker.startup_handoff_done.load(SeqCst) { return; }
+                let transition = broker.startup_update.fatal();
+                drop(guard);
+                publish_startup_update_transition(&app, &broker, transition);
+                dismiss_startup_splash_when_renderers_ready(&app, &broker);
+                return;
+            }
+            // Keep the visible splash in place until main is ready, so the
+            // timeout cannot leave both windows hidden. The main-ready path
+            // then fails open explicitly if splash never became interactive.
+            fail_timed_out_splash_when_main_is_ready(&app, &broker);
+        });
+}
+
+#[cfg(test)]
+mod startup_reveal_tests {
+    use super::{claim_splash_ready, claim_splash_timeout, claim_splash_timeout_if_ready, claim_startup_handoff, native_startup_handoff_ready,
+        native_startup_reveal_expected, startup_main_should_be_visible, startup_splash_watchdog_should_run,
+        STARTUP_SPLASH_READY_TIMEOUT, SPLASH_PENDING, SPLASH_READY};
+    use serde_json::json;
+
+    #[test]
+    fn startup_reveal_honors_minimized_preference_and_defaults_to_visible() {
+        assert!(startup_main_should_be_visible(Ok(json!({"startMinimized": false}))));
+        assert!(!startup_main_should_be_visible(Ok(json!({"startMinimized": true}))));
+        assert!(startup_main_should_be_visible(Ok(json!({}))));
+        assert!(startup_main_should_be_visible(Err("settings unavailable".into())));
+    }
+
+    #[test]
+    fn native_reveal_is_enabled_only_for_non_mock_packaged_hosts() {
+        use arc_power_tauri::backend::native_system::BuildKind;
+        assert!(native_startup_reveal_expected(false, BuildKind::Installed));
+        assert!(native_startup_reveal_expected(false, BuildKind::Portable));
+        assert!(!native_startup_reveal_expected(false, BuildKind::Dev));
+        assert!(!native_startup_reveal_expected(true, BuildKind::Installed));
+    }
+
+    #[test]
+    fn splash_handoff_waits_for_renderers_but_recovers_when_splash_is_missing() {
+        assert!(!native_startup_handoff_ready(false, false, true, false, true, false, false));
+        assert!(!native_startup_handoff_ready(false, false, true, true, true, false, false));
+        assert!(!native_startup_handoff_ready(false, true, true, true, false, true, true));
+        assert!(!native_startup_handoff_ready(false, true, true, true, true, false, true));
+        assert!(native_startup_handoff_ready(false, true, true, true, true, true, true));
+        assert!(native_startup_handoff_ready(false, true, true, true, true, false, false));
+        assert!(native_startup_handoff_ready(false, true, true, false, true, false, false));
+        assert!(!native_startup_handoff_ready(true, true, true, true, true, true, true));
+        assert!(!native_startup_handoff_ready(false, true, false, true, false, false, false));
+    }
+
+    #[test]
+    fn startup_handoff_is_claimed_only_once() {
+        let done = std::sync::atomic::AtomicBool::new(false);
+        assert!(claim_startup_handoff(&done));
+        assert!(!claim_startup_handoff(&done));
+    }
+
+    #[test]
+    fn splash_readiness_timeout_exceeds_the_update_check_window() {
+        assert!(STARTUP_SPLASH_READY_TIMEOUT > crate::startup_update::STARTUP_CHECK_TIMEOUT);
+    }
+
+    #[test]
+    fn splash_ready_and_timeout_have_one_atomic_winner() {
+        let ready_first = std::sync::atomic::AtomicU8::new(SPLASH_PENDING);
+        assert!(claim_splash_ready(&ready_first));
+        assert!(!claim_splash_timeout(&ready_first));
+
+        let timeout_first = std::sync::atomic::AtomicU8::new(SPLASH_PENDING);
+        assert!(claim_splash_timeout(&timeout_first));
+        assert!(!claim_splash_ready(&timeout_first));
+    }
+
+    #[test]
+    fn elapsed_splash_timeout_waits_for_main_and_late_splash_ready_can_win() {
+        let delayed_main = std::sync::atomic::AtomicU8::new(SPLASH_PENDING);
+        assert!(!claim_splash_timeout_if_ready(&delayed_main, true, false));
+        assert!(claim_splash_ready(&delayed_main));
+        assert!(!claim_splash_timeout_if_ready(&delayed_main, true, true));
+
+        let delayed_splash = std::sync::atomic::AtomicU8::new(SPLASH_PENDING);
+        assert!(!claim_splash_timeout_if_ready(&delayed_splash, false, true));
+        assert!(claim_splash_timeout_if_ready(&delayed_splash, true, true));
+        assert!(!claim_splash_ready(&delayed_splash));
+    }
+
+    #[test]
+    fn splash_watchdog_recovers_a_missing_window_even_after_renderer_ready() {
+        assert!(!startup_splash_watchdog_should_run(SPLASH_READY, true, true, false));
+        assert!(startup_splash_watchdog_should_run(SPLASH_READY, true, false, false));
+        assert!(!startup_splash_watchdog_should_run(SPLASH_READY, false, false, false));
+        assert!(!startup_splash_watchdog_should_run(SPLASH_READY, true, false, true));
+        assert!(!startup_splash_watchdog_should_run(SPLASH_PENDING, true, false, true));
+    }
 }
 
 fn native_stability_resolve(device_key: &str) -> Option<Value> {
@@ -691,7 +979,7 @@ fn publish_layout_reaction(app: &tauri::AppHandle, broker: &Broker, channel: &st
     push_settings_cache(broker);
     if arc_power_tauri::backend::overlay_layout_channels::applies_layout(channel) {
         if let Some(service) = broker.advanced_overlay.as_ref() { service.poll(); }
-        refresh_native_overlay(app, broker, true);
+        refresh_native_overlay(app, broker, true, false);
     }
 }
 
@@ -710,6 +998,9 @@ fn refresh_after_settings_save<Reload: FnOnce() -> (), Poll: FnOnce() -> ()>(cha
 /// numeric range so the two creators cannot collide.
 static NEXT_ADVANCED_OVERLAY_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(1_000_000_000_000);
+/// Process-lifetime revision for the native `oc-mode:updated` broadcast. Kept
+/// separate from any host-event counter so a delayed reply can never look new.
+static OC_MODE_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn next_advanced_overlay_label(app: &tauri::AppHandle) -> String {
     loop {
@@ -1020,7 +1311,7 @@ impl Broker {
                 arc_power_tauri::backend::postprocess_sharpening::advanced_hotkey_registered(accelerator)
             });
             let display: advanced_overlay::PrimaryDisplay =
-                Box::new(move || primary_display_bounds(&display_app));
+                Box::new(move || crate::overlay_monitors::advanced_display_bounds(&display_app));
             Some(Arc::new(advanced_overlay::AdvancedOverlayHub::new(
                 loader, hotkey, display, Box::new(NativeAdvancedOverlayWindows { app: panel_app }))))
         };
@@ -1047,6 +1338,7 @@ impl Broker {
             active_invocations: std::sync::atomic::AtomicUsize::new(0),
             host_events,
             tray_available: std::sync::atomic::AtomicBool::new(false),
+            overlay_measured_devices: std::sync::atomic::AtomicUsize::new(0),
             telemetry,
             stability,
             recording,
@@ -1059,7 +1351,14 @@ impl Broker {
             native_store,
             apply_transactions: arc_power_tauri::backend::apply_transaction::process_lifetime(),
             startup_update: Arc::new(startup_update::StartupUpdateCoordinator::new()),
-            startup_splash_ready: std::sync::atomic::AtomicBool::new(false),
+            startup_configuration_ready: std::sync::atomic::AtomicBool::new(false),
+            startup_handoff_done: std::sync::atomic::AtomicBool::new(false),
+            startup_handoff_lock: Mutex::new(()),
+            startup_main_reveal_expected: std::sync::atomic::AtomicBool::new(false),
+            startup_splash_expected: std::sync::atomic::AtomicBool::new(false),
+            startup_splash_lifecycle: std::sync::atomic::AtomicU8::new(SPLASH_PENDING),
+            startup_splash_timeout_elapsed: std::sync::atomic::AtomicBool::new(false),
+            startup_main_ready: std::sync::atomic::AtomicBool::new(false),
             last_store_request: std::sync::atomic::AtomicU64::new(0),
             build_kind, mock_mode,
         });
@@ -1150,11 +1449,9 @@ impl Broker {
                 let snapshot_due = recording_snapshot_due(last_recording_snapshot_reconcile, now);
                 if snapshot_due {
                     last_recording_snapshot_reconcile = Some(now);
-                    if let Some(settings) = broker.native_store.settings_store().try_load_settings_sync() {
-                        if let Some(pill) = broker.recording_status_pill.as_ref() {
-                            pill.set_enabled(recording_pill_enabled_value(&settings));
-                        }
-                    }
+                    publish_recording_pill_snapshot(&RECORDING_PILL_PUBLISH_LOCK,
+                        || broker.native_store.settings_store().try_load_settings_sync(),
+                        |settings| pill.set_enabled(recording_pill_enabled_value(&settings)));
                     if let Some(recording) = broker.recording.try_latest_state() {
                         pill.set_recording_state(recording);
                     }
@@ -1769,6 +2066,99 @@ fn native_transaction_request(broker: &Broker, method: &str, args: Value) -> Res
     arc_power_tauri::backend::wire::decode(&reply)?.into_json()
 }
 
+fn native_temperature_lease_target(physical_target: &Value, device_id: u64, device_key: &str) -> Value {
+    let mut target = physical_target.clone();
+    if !target.is_object() { target = json!({}); }
+    target["id"] = json!(device_id);
+    target["electronOrdinal"] = json!(device_id);
+    target["deviceKey"] = json!(device_key);
+    target
+}
+
+fn native_temperature_lease_begin_snapshot(
+    epoch: &str,
+    sequence: u64,
+    generation: u64,
+    target: Value,
+    range: Value,
+    requested: Value,
+    ceiling: Option<f64>,
+    units: Value,
+    caps: &Value,
+) -> Value {
+    json!({
+        "type": "temperature-refusal-cache:begin",
+        "schemaVersion": 1,
+        "epoch": epoch,
+        "transactionSequence": sequence,
+        "cacheGeneration": generation,
+        "target": target,
+        "ranges": {"tempLimitC": range},
+        "requestedSettings": requested,
+        "cache": {
+            "status": "available",
+            "ceilings": {"tempLimitC": ceiling},
+            "units": {"tempLimitC": units},
+        },
+        "ocMode": caps.get("ocMode").cloned().unwrap_or(Value::Null),
+        "extendedControls": caps.get("extendedControls").cloned().unwrap_or(json!({})),
+    })
+}
+
+fn native_temperature_lease_finish_reply(
+    lease_id: &str,
+    begin: &Value,
+    generation: u64,
+    ceiling: Option<f64>,
+    publication: &str,
+    attempted: Option<f64>,
+    result: Value,
+) -> Value {
+    let attempted_settings = attempted.map(|value| json!({"tempLimitC":value})).unwrap_or_else(|| json!({}));
+    let finish = json!({
+        "type":"temperature-refusal-cache:finish",
+        "schemaVersion":1,
+        "epoch":begin["epoch"],
+        "transactionSequence":begin["transactionSequence"],
+        "cacheGeneration":generation,
+        "target":begin["target"],
+        "publication":publication,
+        "attemptedSettings":attempted_settings,
+        "ranges":begin["ranges"],
+        "perControl":result.get("perControl").cloned().unwrap_or(json!({})),
+        "cache":{"status":"available","ceilings":{"tempLimitC":ceiling}},
+    });
+    json!({"leaseId":lease_id,"result":result,"snapshot":finish})
+}
+
+fn activate_native_temperature_transaction(
+    request_id: &str,
+    token: &str,
+    activate: impl FnOnce(&str, &str) -> Result<(), String>,
+    cancel: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    if let Err(error) = activate(request_id, token) {
+        if let Err(cancel_error) = cancel(request_id) {
+            return Err(format!("{error}; transaction cancellation also failed: {cancel_error}"));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn native_temperature_cancel_ack(
+    request_id: &str,
+    lease_id: Option<&str>,
+    cancel: impl FnOnce(&str) -> Result<bool, String>,
+) -> Result<Value, String> {
+    let cancelled = cancel(request_id)?;
+    Ok(json!({
+        "requestId":request_id,
+        "cancelled":cancelled,
+        "leaseReleased":lease_id.is_some() && cancelled,
+    }))
+}
+
 fn native_refusal_request(method: &str, args: Value) -> Result<Value, String> {
     let encoded = arc_power_tauri::backend::wire::encode_json(&args)?;
     let reply = arc_power_tauri::backend::services::handle_temperature_refusal_cache_request(method, &encoded)?;
@@ -1777,6 +2167,44 @@ fn native_refusal_request(method: &str, args: Value) -> Result<Value, String> {
 
 fn poison_native_refusal(reason: &str) {
     let _ = native_refusal_request("temperature-refusal-cache-poison", json!([reason]));
+}
+
+/// Validate the two successful finish shapes used by the lease protocol.
+/// `not-applied` is the expected result when native preflight declines before
+/// a setter; it must release the FIFO without poisoning the refusal cache.
+fn validate_native_temperature_finish(
+    outcome: &str,
+    attempted: Option<f64>,
+    result: &Value,
+) -> Result<bool, String> {
+    let controls = result.get("perControl").and_then(Value::as_object)
+        .ok_or("Native temperature lease finish payload is invalid")?;
+    let temp = controls.get("tempLimitC").and_then(Value::as_object)
+        .ok_or("Native temperature lease finish payload is invalid")?;
+    let ok = temp.get("ok").and_then(Value::as_bool)
+        .ok_or("Native temperature lease finish payload is invalid")?;
+    let result_ok = result.get("ok").and_then(Value::as_bool)
+        .ok_or("Native temperature lease finish payload is invalid")?;
+    if controls.len() != 1 || result_ok != ok {
+        return Err("Native temperature lease finish payload is invalid".into());
+    }
+    let code = temp.get("errorCode").and_then(Value::as_str);
+    match outcome {
+        "completed" => {
+            if !ok && code.is_none() { return Err("Native temperature lease finish payload is invalid".into()); }
+            if !ok && code == Some("out-of-range") && attempted.is_none()
+                && !temp.get("capabilityCeiling").and_then(Value::as_f64).is_some_and(f64::is_finite) {
+                return Err("Native temperature lease finish payload is invalid".into());
+            }
+        }
+        "not-applied" => {
+            if attempted.is_some() || ok || code.is_none() || code == Some("out-of-range") {
+                return Err("Native temperature lease finish payload is invalid".into());
+            }
+        }
+        _ => return Err("Native temperature lease finish payload is invalid".into()),
+    }
+    Ok(!ok && code == Some("out-of-range"))
 }
 
 /// Native replacement for Electron's `__native-temperature-apply-lease:*`
@@ -1798,9 +2226,23 @@ fn native_private_invoke(broker: &Broker, channel: &str, payload: &arc_power_tau
 
             let opened = native_transaction_request(broker, "apply-transaction-begin",
                 json!([request_id, "native-temperature-apply-lease", Value::Null]))?;
-            let token = opened["token"].as_str().ok_or("Apply transaction token is missing")?.to_owned();
-            let sequence = opened["sequence"].as_u64().ok_or("Apply transaction sequence is missing")?;
-            native_transaction_request(broker, "apply-transaction-activate", json!([request_id, token.clone()]))?;
+            let Some(token) = opened["token"].as_str().map(str::to_owned) else {
+                let _ = native_transaction_request(broker, "apply-transaction-cancel", json!([request_id]));
+                return Err("Apply transaction token is missing".into());
+            };
+            let Some(sequence) = opened["sequence"].as_u64() else {
+                let _ = native_transaction_request(broker, "apply-transaction-cancel", json!([request_id]));
+                return Err("Apply transaction sequence is missing".into());
+            };
+            // begin has already reserved the FIFO slot. If activation is
+            // rejected, release that reservation before returning so the
+            // next apply cannot wait behind an orphaned lease.
+            activate_native_temperature_transaction(
+                &request_id,
+                &token,
+                |request, token| native_transaction_request(broker, "apply-transaction-activate", json!([request, token])).map(|_| ()),
+                |request| native_transaction_request(broker, "apply-transaction-cancel", json!([request])).map(|_| ()),
+            )?;
 
             let result = (|| -> Result<(String, Value, NativeLeaseEntry), String> {
                 let cache = native_refusal_request("temperature-refusal-cache-read", json!([target.clone()]))?;
@@ -1821,19 +2263,12 @@ fn native_private_invoke(broker: &Broker, channel: &str, payload: &arc_power_tau
                 let epoch = random_hex(16);
                 let lease_id = random_hex(32);
                 let requested = payload.get("requestedSettings").cloned().unwrap_or(json!({}));
-                let snapshot = json!({
-                    "type": "temperature-refusal-cache:begin",
-                    "schemaVersion": 1,
-                    "epoch": epoch.clone(),
-                    "transactionSequence": sequence,
-                    "cacheGeneration": generation,
-                    "target": target.clone(),
-                    "ranges": {"tempLimitC": range.clone()},
-                    "requestedSettings": requested.clone(),
-                    "cache": {"status": "available", "ceilings": {"tempLimitC": ceiling}},
-                    "ocMode": caps.get("ocMode").cloned().unwrap_or(Value::Null),
-                    "extendedControls": caps.get("extendedControls").cloned().unwrap_or(json!({})),
-                });
+                let target = native_temperature_lease_target(&target, payload["deviceId"].as_u64()
+                    .ok_or("Native temperature lease ordinal is invalid")?, &device_key);
+                let snapshot = native_temperature_lease_begin_snapshot(
+                    &epoch, sequence, generation, target.clone(), range.clone(), requested.clone(),
+                    ceiling, cache["units"]["tempLimitC"].clone(), &caps,
+                );
                 let entry = NativeLeaseEntry {
                     request_id: request_id.clone(), token, sequence, epoch, target: target.clone(),
                     ranges: json!({"tempLimitC": range.clone()}), requested,
@@ -1867,17 +2302,26 @@ fn native_private_invoke(broker: &Broker, channel: &str, payload: &arc_power_tau
                 let _ = native_transaction_request(broker, "apply-transaction-finish", json!([entry.request_id, entry.token]));
                 return Err("Native temperature apply outcome is unknown; refresh before another apply".into());
             }
-            let attempted = payload["attemptedValue"].as_f64().filter(|value| value.is_finite());
+            let attempted = match payload.get("attemptedValue") {
+                None => None,
+                Some(value) => match value.as_f64().filter(|value| value.is_finite()) {
+                    Some(value) => Some(value),
+                    None => {
+                        poison_native_refusal("malformed native temperature attempted value");
+                        let _ = native_transaction_request(broker, "apply-transaction-finish", json!([entry.request_id, entry.token]));
+                        return Err("Native temperature lease finish payload is invalid".into());
+                    }
+                },
+            };
             let result = payload["result"].clone();
-            let temp = result.get("perControl").and_then(|p| p.get("tempLimitC"));
-            let ok = temp.and_then(|t| t.get("ok")).and_then(Value::as_bool);
-            let code = temp.and_then(|t| t.get("errorCode")).and_then(Value::as_str);
-            if outcome != "completed" || ok.is_none() || code.is_none() && ok == Some(false) {
+            let refused = match validate_native_temperature_finish(outcome, attempted, &result) {
+                Ok(refused) => refused,
+                Err(error) => {
                 poison_native_refusal("malformed native temperature result");
                 let _ = native_transaction_request(broker, "apply-transaction-finish", json!([entry.request_id, entry.token]));
-                return Err("Native temperature lease finish payload is invalid".into());
-            }
-            let refused = ok == Some(false) && code == Some("out-of-range");
+                    return Err(error);
+                }
+            };
             let mut generation = entry.generation;
             let mut ceiling = entry.ceiling;
             let mut publication = "not-required";
@@ -1905,40 +2349,36 @@ fn native_private_invoke(broker: &Broker, channel: &str, payload: &arc_power_tau
                 }
             }
             native_transaction_request(broker, "apply-transaction-finish", json!([entry.request_id, entry.token]))?;
-            // `temperature_finish_ack_matches` expects the key to be absent
-            // when no setter ran; a JSON `null` is a different wire value.
-            let attempted_settings = attempted.map(|value| json!({"tempLimitC": value}))
-                .unwrap_or_else(|| json!({}));
-            let finish = json!({
-                "type": "temperature-refusal-cache:finish",
-                "schemaVersion": 1,
-                "epoch": entry.epoch,
-                "transactionSequence": entry.sequence,
-                "cacheGeneration": generation,
-                "target": entry.target,
-                "publication": publication,
-                "attemptedSettings": attempted_settings,
-                "ranges": entry.ranges,
-                "perControl": result.get("perControl").cloned().unwrap_or(json!({})),
-                "cache": {"status": "available", "ceilings": {"tempLimitC": ceiling}},
+            let begin = json!({
+                "epoch":entry.epoch,
+                "transactionSequence":entry.sequence,
+                "target":entry.target,
+                "ranges":entry.ranges,
             });
-            arc_power_tauri::backend::wire::encode_json(&json!({
-                "leaseId": lease_id, "result": result, "snapshot": finish,
-            }))
+            arc_power_tauri::backend::wire::encode_json(&native_temperature_lease_finish_reply(
+                &lease_id, &begin, generation, ceiling, publication, attempted, result,
+            ))
         }
         "__native-temperature-apply-lease:cancel" => {
             let request_id = payload["requestId"].as_str().unwrap_or("").to_owned();
-            let released = NATIVE_LEASES.lock().ok()
-                .and_then(|mut leases| leases.iter().find(|(_, entry)| entry.request_id == request_id)
-                    .map(|(id, _)| id.clone()))
-                .and_then(|lease_id| NATIVE_LEASES.lock().ok().and_then(|mut leases| leases.remove(&lease_id)))
-                .is_some();
-            if released {
-                let _ = native_transaction_request(broker, "apply-transaction-cancel", json!([request_id]));
+            let lease_id = NATIVE_LEASES.lock().ok()
+                .and_then(|leases| leases.iter().find(|(_, entry)| entry.request_id == request_id)
+                    .map(|(id, _)| id.clone()));
+            // The begin transaction can exist before NATIVE_LEASES receives an
+            // entry (for example when activation or preflight fails). Always
+            // ask the coordinator and only acknowledge a real cancellation.
+            let ack = native_temperature_cancel_ack(&request_id, lease_id.as_deref(), |request| {
+                let transaction = native_transaction_request(broker, "apply-transaction-cancel", json!([request]))?;
+                transaction.get("cancelled").and_then(Value::as_bool)
+                    .ok_or("Apply transaction cancel acknowledgement is invalid".to_owned())
+            })?;
+            let cancelled = ack["cancelled"].as_bool() == Some(true);
+            if cancelled {
+                if let Some(lease_id) = lease_id.as_ref() {
+                    if let Ok(mut leases) = NATIVE_LEASES.lock() { leases.remove(lease_id); }
+                }
             }
-            arc_power_tauri::backend::wire::encode_json(&json!({
-                "requestId": request_id, "cancelled": true, "leaseReleased": released,
-            }))
+            arc_power_tauri::backend::wire::encode_json(&ack)
         }
         _ => Err(format!("Unknown native private channel: {channel}")),
     }
@@ -2008,7 +2448,7 @@ fn temperature_finish_ack_matches(
     let begin_ceiling = wire_field(begin_ceilings, "tempLimitC");
     let finish_ceiling = wire_field(ceilings, "tempLimitC");
     let ceiling_value = |value: Option<&arc_power_tauri::backend::wire::WireValue>| match value {
-        Some(arc_power_tauri::backend::wire::WireValue::Undefined) | None => Some(None),
+        Some(arc_power_tauri::backend::wire::WireValue::Undefined | arc_power_tauri::backend::wire::WireValue::Null) | None => Some(None),
         Some(value) => wire_finite(value).map(Some),
     };
     let (Some(begin_ceiling), Some(finish_ceiling)) = (ceiling_value(begin_ceiling), ceiling_value(finish_ceiling)) else { return false; };
@@ -2022,10 +2462,10 @@ fn temperature_finish_ack_matches(
     if attempted_value.is_none() && finish_ceiling != begin_ceiling { return false; }
     if finish_ceiling != begin_ceiling && finish_generation <= begin_generation { return false; }
     let Some(attempted_settings) = wire_field(finish, "attemptedSettings") else { return false; };
-    let Some(ack_attempted) = wire_field(attempted_settings, "tempLimitC") else { return false; };
+    let ack_attempted = wire_field(attempted_settings, "tempLimitC");
     match attempted_value {
-        Some(expected) if wire_finite(ack_attempted) == Some(expected) => {},
-        None if matches!(ack_attempted, arc_power_tauri::backend::wire::WireValue::Undefined) => {},
+        Some(expected) if ack_attempted.and_then(wire_finite) == Some(expected) => {},
+        None if matches!(ack_attempted, None | Some(arc_power_tauri::backend::wire::WireValue::Undefined)) => {},
         _ => return false,
     }
     let Some(ack_result) = wire_field(&ack, "result") else { return false; };
@@ -2073,6 +2513,10 @@ fn ordinary_apply_fallback(broker: &Broker, target: &str, args: &Value) -> Reply
     broker.request(json!({"kind":"invoke","target":target,"channel":"apply-settings","args":args}))
 }
 
+fn compatibility_service_available(broker: &Broker) -> bool {
+    broker.writer.lock().unwrap().is_some()
+}
+
 /// The lease finish contract accepts only a single-control temperature result
 /// (`ok` mirrored on the entry, an `errorCode` on a refusal). A pre-setter
 /// decline therefore finishes with this envelope and never with the mode-gate
@@ -2091,8 +2535,12 @@ enum TemperatureLeaseDecision {
     Panicked { reason: &'static str, error: &'static str },
     /// No native reply: finish not-applied and let the broker answer.
     NoReply,
-    /// A pre-setter capability/mode refusal: finish not-applied, then broker.
-    DeclineBeforeSetter,
+    /// A pre-setter capability/mode refusal: finish not-applied, then broker
+    /// when available; native-only hosts can return this known refusal directly.
+    DeclineBeforeSetter { encoded_reply: Value },
+    /// A native preflight gate declined with a concrete reason. Finish as
+    /// not-applied and preserve broker fallback when it is available.
+    PreflightDeclined { error: String },
     /// A publishable reply with the value the lease must publish.
     Publish { response: Value, attempted_value: Option<f64>, encoded_reply: Value },
     /// The outcome is unknown: finish unknown and never fall back.
@@ -2122,6 +2570,11 @@ fn temperature_lease_decision(
     let attempted_value = *attempted_value;
     let encoded_reply = match reply {
         Ok(encoded_reply) => encoded_reply,
+        Err(error) if error.starts_with("native-temperature-preflight-declined:") && attempted_value.is_none() => {
+            return TemperatureLeaseDecision::PreflightDeclined {
+                error: error.trim_start_matches("native-temperature-preflight-declined:").trim().to_owned(),
+            };
+        }
         Err(error) if attempted_value.is_some() => return TemperatureLeaseDecision::UnknownOutcome {
             reason: "native temperature apply failed after a setter attempt",
             error: format!("Native temperature apply outcome is unknown after setter attempt: {error}"),
@@ -2139,7 +2592,7 @@ fn temperature_lease_decision(
     if arc_power_tauri::backend::apply_gates::is_pre_setter_refusal(
         response.get("result").unwrap_or(&Value::Null), attempted_value, oc_mode_refused,
     ) {
-        return TemperatureLeaseDecision::DeclineBeforeSetter;
+        return TemperatureLeaseDecision::DeclineBeforeSetter { encoded_reply: encoded_reply.clone() };
     }
     TemperatureLeaseDecision::Publish { response, attempted_value, encoded_reply: encoded_reply.clone() }
 }
@@ -2165,6 +2618,7 @@ enum NativeApplyRun {
 /// contract accepts.
 fn settle_leased_apply(
     decision: TemperatureLeaseDecision,
+    compatibility_available: bool,
     finish: impl FnOnce(&str, &Value, Option<f64>) -> Result<(), String>,
     finish_unknown: impl FnOnce(&'static str),
     shape_finish: impl FnOnce(&Value) -> Result<Value, (&'static str, String)>,
@@ -2174,11 +2628,23 @@ fn settle_leased_apply(
             finish_unknown(reason);
             NativeApplyRun::Failed(error.into())
         }
-        TemperatureLeaseDecision::NoReply | TemperatureLeaseDecision::DeclineBeforeSetter => {
+        decision @ (TemperatureLeaseDecision::NoReply | TemperatureLeaseDecision::DeclineBeforeSetter { .. }
+            | TemperatureLeaseDecision::PreflightDeclined { .. }) => {
             // Nothing reached a setter: finish not-applied. The caller decides
             // whether the compatibility broker answers from here.
             match finish("not-applied", &temperature_pre_setter_decline(), None) {
-                Ok(()) => NativeApplyRun::Declined,
+                Ok(()) => match decision {
+                    TemperatureLeaseDecision::DeclineBeforeSetter { encoded_reply, .. } if !compatibility_available => {
+                        NativeApplyRun::Replied(encoded_reply)
+                    }
+                    TemperatureLeaseDecision::PreflightDeclined { error } if !compatibility_available => {
+                        NativeApplyRun::Failed(format!("Native temperature apply preflight declined: {error}"))
+                    }
+                    TemperatureLeaseDecision::NoReply if !compatibility_available => NativeApplyRun::Failed(
+                        "Native temperature apply did not pass preflight; no GPU settings were changed. Check GPU support and retry.".into(),
+                    ),
+                    _ => NativeApplyRun::Declined,
+                },
                 Err(error) => NativeApplyRun::Failed(error),
             }
         }
@@ -2217,12 +2683,13 @@ fn settle_leased_apply(
 /// fallback are decided in exactly one place.
 fn settle_temperature_lease(
     decision: TemperatureLeaseDecision,
+    compatibility_available: bool,
     finish: impl FnOnce(&str, &Value, Option<f64>) -> Result<(), String>,
     finish_unknown: impl FnOnce(&'static str),
     fallback: impl FnOnce() -> Reply,
     shape_finish: impl FnOnce(&Value) -> Result<Value, (&'static str, String)>,
 ) -> Reply {
-    match settle_leased_apply(decision, finish, finish_unknown, shape_finish) {
+    match settle_leased_apply(decision, compatibility_available, finish, finish_unknown, shape_finish) {
         NativeApplyRun::Replied(encoded) => Ok(encoded),
         NativeApplyRun::Declined => fallback(),
         NativeApplyRun::Failed(error) => Err(error),
@@ -2356,6 +2823,7 @@ fn leased_renderer_reply(
         LeaseRun::Declined => ordinary_apply_fallback(broker, target, args),
         LeaseRun::Executed { lease_id, begin_snapshot, execution } => settle_temperature_lease(
             temperature_lease_decision(&execution, panic_reason),
+            compatibility_service_available(broker),
             |outcome, result, attempted| finish_temperature_lease(
                 broker, &lease_id, &begin_snapshot, outcome, result, attempted,
             ),
@@ -2541,6 +3009,7 @@ fn run_host_profile_plan(
                 LeaseRun::Executed { lease_id, begin_snapshot, execution } => {
                     match settle_leased_apply(
                         temperature_lease_decision(&execution, "native profile apply panicked"),
+                        compatibility_service_available(broker),
                         |outcome, result, attempted| finish_temperature_lease(
                             broker, &lease_id, &begin_snapshot, outcome, result, attempted,
                         ),
@@ -2589,6 +3058,10 @@ fn native_reset_to_defaults(broker: &Arc<Broker>, device_id: u64) -> Result<Valu
     let target = arc_power_tauri::backend::gpu_devices::list_devices_merged()
         .as_array().and_then(|rows| rows.iter().find(|row| row["id"].as_u64() == Some(device_id)))
         .cloned().ok_or_else(|| "reset-to-defaults: selected GPU is no longer available".to_owned())?;
+    // The reset is authoritative; drop the A-series derived-frequency guard
+    // before reading the pre-reset state so the verification sees the driver.
+    arc_power_tauri::backend::services::forget_frequency_offset_guard(
+        target["deviceKey"].as_str().unwrap_or(""));
     let target_args = encode_json(&json!([device_id]))?;
     let caps_reply = arc_power_tauri::backend::services::invoke("get-capabilities", &target_args,
         arc_power_tauri::backend::services::ServiceContext {
@@ -2603,6 +3076,41 @@ fn native_reset_to_defaults(broker: &Arc<Broker>, device_id: u64) -> Result<Valu
         }
     ).ok_or_else(|| "reset-to-defaults: GPU state is unavailable".to_owned())??;
     let state = decode(&state_reply)?.into_json()?;
+
+    // Electron calls the driver's whole-device OC reset and then verifies the
+    // result. Do the same before falling back to the per-control patch: a
+    // usable reset is the only thing that clears a GPU lock and a custom VF
+    // curve reliably.
+    let driver_reset = (|| -> Result<Option<Value>, String> {
+        let path = arc_power_tauri::backend::gpu_devices::locate_dll()
+            .ok_or_else(|| "reset-to-defaults: Intel graphics runtime was not found".to_owned())?;
+        let _fifo = broker.apply_transactions.acquire_internal("reset-to-defaults", None)?;
+        let _lock = arc_power_tauri::backend::apply_lock::acquire()?;
+        match arc_power_tauri::backend::gpu_capabilities::reset_to_default_for_device(
+            &path, device_id, target["deviceKey"].as_str().unwrap_or(""))? {
+            arc_power_tauri::backend::gpu_capabilities::DriverReset::Unavailable => return Ok(None),
+            arc_power_tauri::backend::gpu_capabilities::DriverReset::Reset => {}
+        }
+        // The driver may need a moment to republish the default controls.
+        let mut mismatch = None;
+        for attempt in 0..6 {
+            if attempt > 0 { std::thread::sleep(std::time::Duration::from_millis(200)); }
+            let Ok(current) = arc_power_tauri::backend::gpu_capabilities::current_settings(&path, device_id) else {
+                continue;
+            };
+            mismatch = reset_mismatch(&caps, &current);
+            if mismatch.is_none() { return Ok(Some(current)); }
+        }
+        let detail = mismatch.unwrap_or_else(|| "the driver did not confirm the reset".into());
+        Err(format!("reset-to-defaults: {detail}; the GPU may be partly reset"))
+    })()?;
+    if let Some(state) = driver_reset {
+        return Ok(json!({"state": state}));
+    }
+
+    // Older drivers may not export the whole-device reset. The per-control
+    // patch remains the compatible fallback; it cannot unlock a GPU lock, so
+    // the verification below still refuses a partial result.
     let settings = reset_settings_from_capabilities(&caps, &state);
     let expected = json!({
         "deviceKey": target["deviceKey"],
@@ -2618,11 +3126,74 @@ fn native_reset_to_defaults(broker: &Arc<Broker>, device_id: u64) -> Result<Valu
     match run_native_apply_fifo(broker, "apply-settings", &args) {
         NativeApplyRun::Replied(encoded) => {
             let reply = decode(&encoded)?.into_json()?;
-            Ok(json!({"state": reply.get("state").cloned().unwrap_or(reply)}))
+            let state = reply.get("state").cloned().unwrap_or(reply);
+            if let Some(mismatch) = reset_mismatch(&caps, &state) {
+                return Err(format!("reset-to-defaults: {mismatch}; the GPU may be partly reset"));
+            }
+            Ok(json!({"state": state}))
         }
         NativeApplyRun::Declined => Err("reset-to-defaults: native apply declined before any write".into()),
         NativeApplyRun::Failed(error) => Err(format!("reset-to-defaults: {error}")),
     }
+}
+
+/// Compare the post-reset controls with the device's own defaults. Returns the
+/// first mismatch instead of reporting a silent no-op as success.
+fn reset_mismatch(caps: &Value, state: &Value) -> Option<String> {
+    let supported = |key: &str| caps.get("controls").and_then(|controls| controls.get(key))
+        .and_then(Value::as_bool) == Some(true);
+    let default = |key: &str| caps.get("ranges").and_then(|ranges| ranges.get(key))
+        .and_then(|range| range.get("default")).and_then(Value::as_f64);
+    let number = |key: &str| state.get(key).and_then(Value::as_f64);
+    let close = |actual: Option<f64>, expected: Option<f64>| match (actual, expected) {
+        (Some(actual), Some(expected)) => (actual - expected).abs() <= 1e-6,
+        (None, None) => true,
+        _ => false,
+    };
+    let checks = [
+        ("gpuFreqOffset", "gpuFreqOffsetMhz", default("gpuFreqOffsetMhz").or(Some(0.0))),
+        ("gpuVoltOffset", "gpuVoltOffsetV", default("gpuVoltOffsetV").or(Some(0.0))),
+        ("powerLimit", "powerLimitW", default("powerLimitW")),
+        ("tempLimit", "tempLimitC", default("tempLimitC")),
+        ("vramFreqOffset", "vramFreqOffsetGts", default("vramFreqOffsetGts").or(Some(0.0))),
+    ];
+    for (control, key, expected) in checks {
+        if supported(control) && !close(number(key), expected) {
+            return Some(format!("{key} did not return to its default"));
+        }
+    }
+    if supported("gpuLock") {
+        let lock = state.get("gpuLock");
+        if lock.is_some_and(|lock| !lock.is_null()) {
+            let voltage = lock.and_then(|lock| lock.get("voltageV")).and_then(Value::as_f64).unwrap_or(0.0);
+            let freq = lock.and_then(|lock| lock.get("freqMhz")).and_then(Value::as_f64).unwrap_or(0.0);
+            if voltage.abs() > 1e-6 || freq.abs() > 1e-6 {
+                return Some("the GPU lock remained applied".into());
+            }
+        }
+    }
+    if caps.get("fan").and_then(|fan| fan.get("canControl")).and_then(Value::as_bool) == Some(true) {
+        if state.get("fanMode").and_then(Value::as_str) != Some("auto") {
+            return Some("the fan mode did not return to auto".into());
+        }
+    }
+    if supported("vfCurve") {
+        let live = state.get("vfCurve").and_then(Value::as_array);
+        let stock = state.get("vfCurveDefault").and_then(Value::as_array);
+        if let Some(stock) = stock {
+            if live.is_none() || live.is_some_and(|live| live.len() != stock.len() || live.iter().zip(stock).any(|(live, stock)| {
+                let near = |key: &str| {
+                    let a = live.get(key).and_then(Value::as_f64).unwrap_or(f64::NAN);
+                    let b = stock.get(key).and_then(Value::as_f64).unwrap_or(f64::NAN);
+                    a.is_finite() && b.is_finite() && (a - b).abs() <= 1.0
+                };
+                !near("voltageV") || !near("freqMhz")
+            })) {
+                return Some("the VF curve did not return to its stock shape".into());
+            }
+        }
+    }
+    None
 }
 
 fn recording_active_modes(state: &Value) -> (bool, bool) {
@@ -2638,6 +3209,16 @@ fn recording_active_modes(state: &Value) -> (bool, bool) {
 }
 
 const NATIVE_OVERLAY_LABEL: &str = "overlay-1000000";
+
+/// Emit a renderer-facing broker-event envelope natively. The host event queue
+/// is only a bridge to the compatibility service; native-only runs have no
+/// writer, so window-state pushes must go straight to the WebView.
+fn emit_native_window_event(app: &tauri::AppHandle, target: &str, channel: &str, payload: Value) {
+    let args = arc_power_tauri::backend::wire::encode_json(&json!([payload]))
+        .unwrap_or_else(|_| json!({"t":"array","v":[]}));
+    let _ = app.emit_to(target, "arc-power:broker-event",
+        json!({"channel": channel, "args": args}));
+}
 
 fn publish_native_overlay_settings(app: &tauri::AppHandle, broker: &Broker, target: &str) {
     let settings = broker.native_store.settings_store().load_settings_sync().ok().flatten()
@@ -2660,8 +3241,8 @@ fn publish_native_overlay_settings(app: &tauri::AppHandle, broker: &Broker, targ
         "overlayBgEnabled": settings.get("overlayBgEnabled").cloned().unwrap_or(json!(false)),
         "overlayBgColor": text("overlayBgColor", "#000000"),
         "overlayBgOpacity": settings.get("overlayBgOpacity").cloned().unwrap_or(json!(0.5)),
-        "chipNames": settings.get("overlayChipNames").cloned().unwrap_or(json!(false)),
-        "pollMs": settings.get("overlayPollMs").cloned().unwrap_or(json!(600)),
+        "overlayChipNames": settings.get("overlayChipNames").cloned().unwrap_or(json!(false)),
+        "overlayPollMs": settings.get("overlayPollMs").cloned().unwrap_or(json!(600)),
         "theme": text("overlayTheme", "arc"),
         "deviceKeys": settings.get("overlayDeviceKeys").cloned().unwrap_or(Value::Null),
     });
@@ -2670,7 +3251,7 @@ fn publish_native_overlay_settings(app: &tauri::AppHandle, broker: &Broker, targ
     }
 }
 
-fn refresh_native_overlay(app: &tauri::AppHandle, broker: &Broker, refresh_lanes: bool) {
+fn refresh_native_overlay(app: &tauri::AppHandle, broker: &Broker, refresh_lanes: bool, reveal: bool) {
     if let Ok(Some(settings)) = broker.native_store.settings_store().load_settings_sync() {
         broker.rtss_osd.apply_settings(&settings);
         let uses_rtss = settings["overlayRenderer"].as_str() != Some("capframex");
@@ -2680,9 +3261,21 @@ fn refresh_native_overlay(app: &tauri::AppHandle, broker: &Broker, refresh_lanes
         } else { Vec::new() };
         broker.telemetry.set_rtss_overlay_targets(app, &broker.native_store, lanes, refresh_lanes);
         if uses_rtss || !enabled {
-            if let Some(window) = app.get_webview_window(NATIVE_OVERLAY_LABEL) { let _ = window.hide(); }
+            // Electron destroys the software HUD handle when the HUD is
+            // disabled or RTSS owns the overlay, rather than keeping a hidden
+            // WebView2 process tree resident.
+            if let Some(window) = app.get_webview_window(NATIVE_OVERLAY_LABEL) { let _ = window.destroy(); }
         } else {
             native_overlay_apply_geometry(app, broker);
+            // A master enable on a live settings save reveals an existing
+            // hotkey-hidden HUD, matching Electron's apply() for an
+            // overlayEnabled change. Boot/renderer_ready and layout refreshes
+            // keep the HUD hidden until the explicit hotkey toggle.
+            if reveal {
+                if let Some(window) = app.get_webview_window(NATIVE_OVERLAY_LABEL) {
+                    let _ = window.show();
+                }
+            }
         }
     }
     publish_native_overlay_settings(app, broker, "main");
@@ -2695,10 +3288,12 @@ fn native_overlay_geometry(app: &tauri::AppHandle, broker: &Broker) -> (f64, f64
     let scale = settings.get("overlayScale").and_then(Value::as_f64)
         .filter(|value| value.is_finite() && *value > 0.0).unwrap_or(1.0).clamp(0.5, 2.0);
     let position = settings.get("overlayPosition").and_then(Value::as_str).unwrap_or("top-left");
-    let monitor = app.get_webview_window("main")
-        .and_then(|window| window.current_monitor().ok().flatten())
+    let selection = crate::overlay_monitors::load();
+    let monitor = crate::overlay_monitors::selected_monitor(app, selection.hud.as_deref())
+        .or_else(|| app.get_webview_window("main")
+            .and_then(|window| window.current_monitor().ok().flatten()))
         .or_else(|| app.primary_monitor().ok().flatten());
-    let (origin_x, origin_y, area_w, area_h) = match monitor {
+    let (origin_x, origin_y, area_w, area_h) = match monitor.as_ref() {
         Some(monitor) => {
             let work = monitor.work_area();
             (work.position.x as f64, work.position.y as f64, work.size.width as f64, work.size.height as f64)
@@ -2708,12 +3303,13 @@ fn native_overlay_geometry(app: &tauri::AppHandle, broker: &Broker) -> (f64, f64
     // The software HUD's grid was designed around the original 336 CSS px
     // surface. A 900 px window stretches its first column and pushes values
     // far away from their labels.
-    let dpi = app.get_webview_window("main")
-        .and_then(|window| window.current_monitor().ok().flatten())
-        .or_else(|| app.primary_monitor().ok().flatten())
-        .map(|monitor| monitor.scale_factor()).unwrap_or(1.0);
-    let gpu_count = settings.get("overlayDeviceKeys").and_then(Value::as_array)
+    let dpi = monitor.as_ref().map(|monitor| monitor.scale_factor()).unwrap_or(1.0);
+    let configured = settings.get("overlayDeviceKeys").and_then(Value::as_array)
         .map(|keys| keys.len().max(1)).unwrap_or(1);
+    let measured = broker.overlay_measured_devices.load(std::sync::atomic::Ordering::SeqCst);
+    // The renderer reports the live monitored count after resolving the
+    // inventory; stale or empty settings must not keep a multi-GPU HUD short.
+    let gpu_count = if measured > 0 { measured.min(32) } else { configured };
     let stats = settings.get("overlayStats").and_then(Value::as_array);
     let enabled = |name: &str| stats.map_or(true, |items| items.iter().any(|item| item.as_str() == Some(name)));
     let gpu_rows = ["gpu-util", "gpu-temp", "gpu-voltage", "gpu-power", "gpu-fan", "gpu-vram", "gpu-vram-temp"]
@@ -2964,13 +3560,15 @@ fn host_profile_apply_all(
             );
             match outcome {
                 HostApplyOutcome::Applied { state, .. } | HostApplyOutcome::AlreadyApplied { state, .. } => {
-                    // The renderer bridge only listens on this envelope; a raw
-                    // channel emit would never reach its `ipcRenderer.on`.
+                    // The renderer bridge only listens on this envelope and
+                    // decodes `args` through the tagged wire codec; a raw array
+                    // makes decodeWire throw before onStateUpdated runs.
+                    let args = arc_power_tauri::backend::wire::encode_json(&json!([{
+                        "deviceId": device_id, "deviceKey": device_key, "state": state,
+                    }])).unwrap_or_else(|_| json!({"t":"array","v":[]}));
                     let _ = exec_app.emit_to("main", "arc-power:broker-event", json!({
                         "channel": "device:state-updated",
-                        "args": [{
-                            "deviceId": device_id, "deviceKey": device_key, "state": state,
-                        }],
+                        "args": args,
                     }));
                 }
                 other => eprintln!("[{log_label}] profile '{profile_id}' did not apply: {other:?}"),
@@ -3027,13 +3625,36 @@ async fn bridge_invoke(window: tauri::WebviewWindow, state: tauri::State<'_, Arc
         return tauri::async_runtime::spawn_blocking(move || maintenance_and_relaunch(&app, &broker, &args))
             .await.map_err(|error| error.to_string())?;
     }
+    if role == "main" && !broker.mock_mode && channel == "monitors:list" {
+        return arc_power_tauri::backend::wire::encode_json(
+            &crate::overlay_monitors::monitor_rows(window.app_handle()));
+    }
+    if role == "main" && !broker.mock_mode && channel == "overlay-monitors:get" {
+        return arc_power_tauri::backend::wire::encode_json(&json!(crate::overlay_monitors::load()));
+    }
+    if role == "main" && !broker.mock_mode && channel == "overlay-monitors:set" {
+        let value = match arc_power_tauri::backend::wire::decode(&args)? {
+            arc_power_tauri::backend::wire::WireValue::Array(items) => items.into_iter().next()
+                .ok_or("overlay-monitors:set expects one selection")?.into_json()?,
+            _ => return Err("overlay-monitors:set expects one selection".into()),
+        };
+        let selection: crate::overlay_monitors::MonitorSelection = serde_json::from_value(value)
+            .map_err(|error| format!("Invalid overlay monitor selection: {error}"))?;
+        crate::overlay_monitors::save(&selection)?;
+        if window.app_handle().get_webview_window(NATIVE_OVERLAY_LABEL).is_some() {
+            native_overlay_apply_geometry(window.app_handle(), &broker);
+        }
+        if let Some(hub) = broker.advanced_overlay.as_ref() { hub.reposition(); }
+        return arc_power_tauri::backend::wire::encode_json(&json!({"ok": true}));
+    }
     let active_invocation = if broker.mock_mode { None } else {
         Some(begin_active_invocation(&broker)?)
     };
     let broker_target = broker_forward_target(role, &target, broker.mock_mode);
-    if channel == "boot-apply-outcome" {
-        // Native boot apply does not maintain Electron's outcome record; the
-        // renderer accepts null, and a missing record is honest.
+    if channel == "boot-apply-outcome" && broker.writer.lock().unwrap().is_none() {
+        // Native-only boot apply does not maintain Electron's outcome record;
+        // the renderer accepts null, and a missing record is honest. A
+        // broker-backed run must keep the real Electron record.
         return arc_power_tauri::backend::wire::encode_json(&Value::Null);
     }
     if role == "main" && !broker.mock_mode && channel == "fps-poll" {
@@ -3198,13 +3819,42 @@ async fn bridge_invoke(window: tauri::WebviewWindow, state: tauri::State<'_, Arc
         } else {
             let app = window.app_handle();
             if channel == "overlay:toggle" { native_overlay_toggle(app, &broker); }
-            if channel == "overlay-resize" { native_overlay_apply_geometry(app, &broker); }
+            if channel == "overlay-resize" {
+                // Electron's resize(deviceCount) sizes the HUD for the live
+                // monitored set, not only the persisted key list.
+                let decoded = arc_power_tauri::backend::wire::decode(&args).ok()
+                    .and_then(|value| value.into_json().ok());
+                if let Some(count) = decoded.as_ref().and_then(Value::as_array)
+                    .and_then(|items| items.first()).and_then(Value::as_u64) {
+                    broker.overlay_measured_devices.store(
+                        count.clamp(1, 32) as usize, std::sync::atomic::Ordering::SeqCst);
+                }
+                native_overlay_apply_geometry(app, &broker);
+            }
+            let settings = broker.native_store.settings_store().load_settings_sync().ok().flatten()
+                .unwrap_or_else(|| json!({}));
             let overlay = app.get_webview_window(NATIVE_OVERLAY_LABEL);
-            json!({"exists":overlay.is_some(),"visible":overlay.is_some_and(|window| window.is_visible().unwrap_or(false))})
+            let (x, y, width, height) = native_overlay_geometry(app, &broker);
+            let text = |key: &str, fallback: &str| settings.get(key).and_then(Value::as_str)
+                .unwrap_or(fallback).to_owned();
+            let hotkey = text("overlayHotkeyLetter", "");
+            json!({
+                "provider": "electron",
+                "available": true,
+                "exists": overlay.is_some(),
+                "visible": overlay.as_ref().is_some_and(|window| window.is_visible().unwrap_or(false)),
+                "bounds": {"x": x, "y": y, "width": width, "height": height},
+                "position": text("overlayPosition", "top-left"),
+                "scale": settings.get("overlayScale").and_then(Value::as_f64)
+                    .filter(|value| value.is_finite() && *value > 0.0).unwrap_or(1.0),
+                "enabled": settings.get("overlayEnabled").and_then(Value::as_bool) == Some(true),
+                "hotkeyRegistered": !hotkey.is_empty() && hotkey != "None",
+                "renderer": text("overlayRenderer", "rtss"),
+            })
         };
         return arc_power_tauri::backend::wire::encode_json(&result);
     }
-    if !broker.mock_mode && (matches!(channel.as_str(), "intel-driver-download-start" | "intel-driver-install" | "registry-catalog" | "registry-apply")
+    if !broker.mock_mode && (matches!(channel.as_str(), "intel-driver-download-start" | "intel-driver-install" | "registry-catalog" | "registry-apply" | "recording-choose-folder" | "game-catalog-add")
         || arc_power_tauri::backend::postprocess_sharpening::is_channel(&channel)) {
         // Long-running native work runs on the blocking pool: driver
         // transfers/installs can hold a worker for the 30-minute budget, and
@@ -3245,6 +3895,12 @@ async fn bridge_invoke(window: tauri::WebviewWindow, state: tauri::State<'_, Arc
             match run_native_apply_fifo(&broker, &channel, &args) {
                 NativeApplyRun::Replied(reply) => Ok(reply),
                 NativeApplyRun::Declined => {
+                    // A native-only build has no compatibility handler to take
+                    // the declined shape. Say no GPU settings were written
+                    // instead of leaking the transport error.
+                    if broker.writer.lock().unwrap().is_none() {
+                        return Err("This control is not supported by this build; no GPU settings were written.".into());
+                    }
                     // Native preflight declined before a setter. Release the
                     // logical turn before the compatibility operation acquires
                     // it through the same native FIFO adapter.
@@ -3255,6 +3911,22 @@ async fn bridge_invoke(window: tauri::WebviewWindow, state: tauri::State<'_, Arc
             }
         }).await.map_err(|error| error.to_string())?;
     }
+    if !broker.mock_mode && channel == "sysinfo:get" {
+        // The first CIM collection can take seconds (and now has a hard 10 s
+        // process deadline). Keep it off the async runtime workers so other
+        // commands and the WebView stay responsive while it runs.
+        let store = broker.native_store.clone();
+        let build_kind = broker.build_kind;
+        let task_channel = channel.clone();
+        let task_args = args.clone();
+        let native = tauri::async_runtime::spawn_blocking(move || {
+            arc_power_tauri::backend::services::invoke(&task_channel, &task_args,
+                arc_power_tauri::backend::services::ServiceContext {
+                    build_kind, mock_mode: false, store: &store,
+                })
+        }).await.map_err(|error| error.to_string())?;
+        if let Some(result) = native { return result; }
+    }
     if let Some(result) = arc_power_tauri::backend::services::invoke(&channel, &args,
         arc_power_tauri::backend::services::ServiceContext { build_kind: broker.build_kind, mock_mode: broker.mock_mode, store: &broker.native_store }) {
         if !broker.mock_mode && result.is_ok() {
@@ -3262,6 +3934,7 @@ async fn bridge_invoke(window: tauri::WebviewWindow, state: tauri::State<'_, Arc
                 // The save already landed; the cache push is best effort and
                 // must never turn a successful save into a failure.
                 push_settings_cache(broker.as_ref());
+                publish_recording_pill_settings(window.app_handle(), broker.as_ref());
                 // memorySavingMode is now native; the recording hub must update
                 // its own meta and idle-shutdown state from the saved settings.
                 broker.recording.on_settings_saved();
@@ -3278,7 +3951,53 @@ async fn bridge_invoke(window: tauri::WebviewWindow, state: tauri::State<'_, Arc
                 });
                 if overlay_changed {
                     let refresh_lanes = patch.as_ref().is_some_and(|patch| patch.get("overlayPollMs").is_some());
-                    refresh_native_overlay(window.app_handle(), &broker, refresh_lanes);
+                    let reveal = patch.as_ref().and_then(|patch| patch.get("overlayEnabled"))
+                        .is_some_and(|value| value == &Value::Bool(true));
+                    refresh_native_overlay(window.app_handle(), &broker, refresh_lanes, reveal);
+                }
+            } else if channel == "oc-mode-set" {
+                // Electron's oc-mode-set wrapper broadcasts the fresh caps/state
+                // to the main window and the Advanced Overlay; the initiating
+                // renderer already refreshes itself. Keep the readback off this
+                // reply's critical path, but publish the same keyed envelope.
+                let result_value = result.as_ref().ok().cloned().unwrap_or(Value::Null);
+                let device_id = arc_power_tauri::backend::wire::decode(&args).ok()
+                    .and_then(|value| value.into_json().ok())
+                    .and_then(|value| value.as_array().and_then(|items| items.get(1)).and_then(Value::as_u64));
+                if let Some(device_id) = device_id {
+                    let app = window.app_handle().clone();
+                    let store = broker.native_store.clone();
+                    let build_kind = broker.build_kind;
+                    std::thread::spawn(move || {
+                        let Ok(id_args) = arc_power_tauri::backend::wire::encode_json(&json!([device_id])) else { return; };
+                        let read = |channel: &str| {
+                            arc_power_tauri::backend::services::invoke(channel, &id_args,
+                                arc_power_tauri::backend::services::ServiceContext {
+                                    build_kind, mock_mode: false, store: &store,
+                                })
+                                .and_then(|reply| reply.ok())
+                                .and_then(|encoded| arc_power_tauri::backend::wire::decode(&encoded).ok())
+                                .and_then(|value| value.into_json().ok())
+                        };
+                        let caps = read("get-capabilities");
+                        let state = read("get-current-settings");
+                        let payload = json!({
+                            "deviceId": device_id,
+                            "deviceKey": result_value.get("deviceKey").cloned().unwrap_or(Value::Null),
+                            "ocMode": result_value.get("ocMode").cloned().unwrap_or(Value::Null),
+                            "caps": caps,
+                            "state": state,
+                            "revision": OC_MODE_REVISION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1,
+                        });
+                        let args = arc_power_tauri::backend::wire::encode_json(&json!([payload]))
+                            .unwrap_or_else(|_| json!({"t":"array","v":[]}));
+                        for (label, _) in app.webview_windows() {
+                            if matches!(roles::role(&label), Some("main" | "advanced-overlay")) {
+                                let _ = app.emit_to(label, "arc-power:broker-event",
+                                    json!({"channel":"oc-mode:updated","args":args.clone()}));
+                            }
+                        }
+                    });
                 }
             } else if arc_power_tauri::backend::overlay_layout_channels::handles(&channel) {
                 publish_layout_reaction(window.app_handle(), broker.as_ref(), &channel);
@@ -3349,7 +4068,13 @@ async fn renderer_ready(window: tauri::WebviewWindow, state: tauri::State<'_, Ar
             // Renderer readiness is a boot/setup refresh. Keep the HUD hidden
             // even when the persisted master switch is enabled; only the
             // explicit overlay:toggle action may reveal it for this session.
-            refresh_native_overlay(&app, &broker, false);
+            refresh_native_overlay(&app, &broker, false, false);
+            if broker.writer.lock().unwrap().is_none() {
+                if let Some(window) = app.get_webview_window("main") {
+                    emit_native_window_event(&app, "main", "window:maximized-changed",
+                        json!({"maximized": window.is_maximized().unwrap_or(false)}));
+                }
+            }
         }
         if roles::role(&target) == Some("advanced-overlay") {
             if let Some(service) = broker.advanced_overlay.as_ref() { service.publish_settings(); }
@@ -3359,14 +4084,17 @@ async fn renderer_ready(window: tauri::WebviewWindow, state: tauri::State<'_, Ar
         // In a native-only run there is no Electron service to send the
         // `startup-splash-dismiss` host operation. Once the main renderer is
         // ready, hand off from the splash ourselves.
-        if role == Some("main") && broker.startup_splash_ready.load(std::sync::atomic::Ordering::SeqCst) {
-            let _ = dismiss_native_startup_splash(&app, broker.as_ref());
+        if role == Some("main") && !broker.mock_mode {
+            broker.startup_main_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+            fail_timed_out_splash_when_main_is_ready(&app, broker.as_ref());
+            dismiss_startup_splash_when_renderers_ready(&app, broker.as_ref());
         }
         if role == Some("splash") && !broker.mock_mode {
-            broker.startup_splash_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+            if !claim_splash_ready(&broker.startup_splash_lifecycle) { return Ok(()); }
             let status = broker.startup_update.latest();
             publish_startup_update_status(&app, &target, &status);
             present_startup_splash(&app, &target, &status);
+            dismiss_startup_splash_when_renderers_ready(&app, broker.as_ref());
         }
         Ok(())
     })
@@ -3380,12 +4108,33 @@ async fn renderer_failed(window: tauri::WebviewWindow, state: tauri::State<'_, A
         if roles::role(window.label()) == Some("splash") && !state.mock_mode {
             let transition = state.startup_update.fatal();
             publish_startup_update_transition(&window.app_handle(), state.inner().as_ref(), transition);
+            let _ = window.destroy();
+            dismiss_startup_splash_when_renderers_ready(&window.app_handle(), state.inner());
+            return Ok(());
         }
         state.host_event_to(window.label(), "render-process-gone", json!({"reason":"Renderer initialization failed"}));
         return window.destroy().map_err(|e| e.to_string());
     }
     state.failed.store(true, std::sync::atomic::Ordering::SeqCst);
-    window.show().map_err(|e| e.to_string())
+    window.show().map_err(|e| e.to_string())?;
+    if !state.mock_mode {
+        state.startup_main_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        reconcile_failed_main_startup(&window.app_handle(), state.inner());
+    }
+    Ok(())
+}
+
+fn reconcile_failed_main_startup(app: &tauri::AppHandle, broker: &Broker) {
+    use std::sync::atomic::Ordering::SeqCst;
+    if !broker.startup_configuration_ready.load(SeqCst) || !broker.failed.load(SeqCst)
+        || !broker.startup_splash_expected.load(SeqCst) { return; }
+    let Ok(guard) = broker.startup_handoff_lock.lock() else { return; };
+    if broker.startup_handoff_done.load(SeqCst) { return; }
+    let transition = broker.startup_update.fatal();
+    drop(guard);
+    publish_startup_update_transition(app, broker, transition);
+    if let Some(splash) = app.get_webview_window("splash-1000000") { let _ = splash.destroy(); }
+    dismiss_startup_splash_when_renderers_ready(app, broker);
 }
 
 #[tauri::command]
@@ -3489,7 +4238,7 @@ fn publish_startup_update_transition(
         for (label, _window) in app.webview_windows() {
             if roles::role(&label) == Some("splash") && !broker.mock_mode {
                 publish_startup_update_status(app, &label, &status);
-                if broker.startup_splash_ready.load(std::sync::atomic::Ordering::SeqCst) {
+                if broker.startup_splash_lifecycle.load(std::sync::atomic::Ordering::SeqCst) == SPLASH_READY {
                     present_startup_splash(app, &label, &status);
                 }
             }
@@ -3557,6 +4306,7 @@ fn start_native_startup_update(app: &tauri::AppHandle, broker: &Arc<Broker>) {
         if let Err(error) = check {
             let transition = broker.startup_update.finish_startup(Err(format!("Could not start native update check: {error}")));
             publish_startup_update_transition(&app, &broker, transition);
+            dismiss_startup_splash_when_renderers_ready(&app, &broker);
             return;
         }
         let transition = match receiver.recv_timeout(startup_update::STARTUP_CHECK_TIMEOUT) {
@@ -3568,10 +4318,12 @@ fn start_native_startup_update(app: &tauri::AppHandle, broker: &Arc<Broker>) {
             Err(mpsc::RecvTimeoutError::Disconnected) => broker.startup_update.finish_startup(Err("Native update check stopped".into())),
         };
         publish_startup_update_transition(&app, &broker, transition);
+        dismiss_startup_splash_when_renderers_ready(&app, &broker);
     });
     if let Err(error) = spawned {
         let transition = broker.startup_update.finish_startup(Err(format!("Could not start native update check: {error}")));
         publish_startup_update_transition(app, broker, transition);
+        dismiss_startup_splash_when_renderers_ready(app, broker);
     }
 }
 
@@ -3584,8 +4336,8 @@ fn apply_native_startup_update_choice(app: &tauri::AppHandle, broker: &Arc<Broke
         }
         let transition = broker.startup_update.choose_skip()?;
         publish_startup_update_transition(app, broker, transition);
-        // Electron used to send the dismiss operation after this choice.
-        let _ = dismiss_native_startup_splash(app, broker);
+        // Keep the status window visible until the main renderer can take over.
+        dismiss_startup_splash_when_renderers_ready(app, broker);
         return Ok(json!({"ok":true,"action":"continue"}));
     }
     let arc_power_tauri::backend::wire::WireValue::Array(values) = decoded else { return Err("Expected argument array".into()); };
@@ -3660,7 +4412,10 @@ fn apply_host_operation(app: &tauri::AppHandle, frame: &Value) -> Result<(), Str
         let Some(pill) = broker.recording_status_pill.as_ref() else {
             return Err("Native recording pill is unavailable".into());
         };
-        pill.set_enabled(enabled);
+        publish_recording_pill_snapshot(&RECORDING_PILL_PUBLISH_LOCK,
+            || Some(broker.native_store.settings_store().load_settings_sync().ok().flatten()
+                .unwrap_or_else(|| json!({"overlayRecordingPill": enabled}))),
+            |settings| pill.set_enabled(recording_pill_enabled_value(&settings)));
         return Ok(());
     }
     if operation != "window" { return Err("Unknown native operation".into()); }
@@ -3733,6 +4488,9 @@ fn install_process_failure_handler(window: &tauri::WebviewWindow) -> tauri::Resu
                             publish_startup_update_transition(&failure_app, broker.inner().as_ref(), transition);
                         }
                         if let Some(window) = failure_app.get_webview_window(&failure_target) { let _ = window.destroy(); }
+                        if roles::role(&failure_target) == Some("splash") && !broker.mock_mode {
+                            dismiss_startup_splash_when_renderers_ready(&failure_app, broker.inner());
+                        }
                         return Ok(());
                     }
                     eprintln!("WebView2 process failed; stopping Arc Power through the service cleanup path. No operations will be replayed.");
@@ -3756,6 +4514,9 @@ fn install_process_failure_handler(window: &tauri::WebviewWindow) -> tauri::Resu
                         publish_startup_update_transition(&app, broker.inner().as_ref(), transition);
                     }
                     if let Some(window) = app.get_webview_window(&target) { let _ = window.destroy(); }
+                    if roles::role(&target) == Some("splash") && !broker.mock_mode {
+                        dismiss_startup_splash_when_renderers_ready(&app, broker.inner());
+                    }
                     return;
                 }
                 let broker = broker.inner().clone();
@@ -3849,6 +4610,10 @@ fn main() {
             });
         })
         .setup(move |app| {
+            let dialog_app = app.handle().clone();
+            arc_power_tauri::backend::dialogs::set_dispatcher(move |task| {
+                dialog_app.run_on_main_thread(move || task()).is_ok()
+            });
             let navigation_app = app.handle().clone();
             let mut builder = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("renderer/index.html".into()))
                 .title("Arc Power").inner_size(1280.0, 820.0).min_inner_size(980.0, 640.0)
@@ -3875,10 +4640,20 @@ fn main() {
                 builder = builder.data_directory(PathBuf::from(app_data).join("ArcPowerTauriCache"));
             }
             let window = builder.build()?;
+            if let Ok(hwnd) = window.hwnd() {
+                arc_power_tauri::backend::dialogs::set_owner(hwnd.0 as isize);
+            }
             let broker = Broker::start(app.handle().clone()).map_err(std::io::Error::other)?;
-            if should_start_native_startup_update(&broker, &setup_launch_args) {
+            let startup_splash_expected = should_start_native_startup_update(&broker, &setup_launch_args);
+            let startup_main_reveal_expected = native_startup_reveal_expected(broker.mock_mode, broker.build_kind);
+            broker.startup_main_reveal_expected.store(startup_main_reveal_expected, std::sync::atomic::Ordering::SeqCst);
+            broker.startup_splash_expected.store(startup_splash_expected, std::sync::atomic::Ordering::SeqCst);
+            if startup_splash_expected {
                 match create_auxiliary_window(app.handle(), "splash-1000000", "splash", 0.0, 0.0, 500.0, 500.0, None) {
-                    Ok(_) => start_native_startup_update(app.handle(), &broker),
+                    Ok(_) => {
+                        start_startup_splash_ready_timeout(app.handle(), &broker);
+                        start_native_startup_update(app.handle(), &broker);
+                    }
                     Err(error) => {
                         eprintln!("Native startup splash unavailable: {error}");
                         let transition = broker.startup_update.fatal();
@@ -3892,7 +4667,12 @@ fn main() {
                     Err(error) => eprintln!("Native tray unavailable: {error}"),
                 }
             }
-            let _ = broker;
+            // Renderer readiness can arrive as soon as Broker::start registers
+            // state. Publish the completed splash setup, then recheck any
+            // readiness events that arrived during setup.
+            broker.startup_configuration_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+            reconcile_failed_main_startup(app.handle(), &broker);
+            dismiss_startup_splash_when_renderers_ready(app.handle(), &broker);
             #[cfg(windows)]
             install_process_failure_handler(&window)?;
             Ok(())
@@ -3916,7 +4696,10 @@ fn main() {
                         } else if roles::role(target) == Some("splash") && !state.mock_mode {
                             let (allowed, transition) = state.startup_update.close();
                             publish_startup_update_transition(window.app_handle(), state.inner().as_ref(), transition);
-                            if allowed { let _ = window.destroy(); }
+                            if allowed {
+                                let _ = window.destroy();
+                                dismiss_startup_splash_when_renderers_ready(window.app_handle(), state.inner());
+                            }
                         } else {
                             state.host_event_to(target, "close", json!({}));
                         }
@@ -3932,6 +4715,10 @@ fn main() {
                     let position = window.outer_position().ok().map(|p| p.to_logical::<f64>(scale));
                     let size = window.inner_size().ok().map(|s| s.to_logical::<f64>(scale));
                     state.host_event_to(target, "maximized-changed", json!({"maximized":window.is_maximized().unwrap_or(false)}));
+                    if target == "main" && state.writer.lock().unwrap().is_none() {
+                        emit_native_window_event(window.app_handle(), "main", "window:maximized-changed",
+                            json!({"maximized": window.is_maximized().unwrap_or(false)}));
+                    }
                     if let (Some(position), Some(size)) = (position, size) {
                         state.host_event_to(target, "bounds-changed", json!({"bounds":{"x":position.x,"y":position.y,"width":size.width,"height":size.height}}));
                     }
@@ -3939,6 +4726,10 @@ fn main() {
                 tauri::WindowEvent::Destroyed => {
                     if roles::role(target) == Some("recording-status-pill") {
                         if let Some(pill) = state.recording_status_pill.as_ref() { pill.window_destroyed(target); }
+                    } else if roles::role(target) == Some("splash") && !state.mock_mode {
+                        let transition = state.startup_update.unexpected_splash_destroyed();
+                        publish_startup_update_transition(window.app_handle(), state.inner().as_ref(), transition);
+                        dismiss_startup_splash_when_renderers_ready(window.app_handle(), state.inner());
                     }
                     state.host_event_to(target, "destroyed", json!({}));
                 }
@@ -4099,6 +4890,26 @@ mod tests {
         assert!(!recording_pill_enabled(Ok(json!({"overlayRecordingPill": "invalid"}))));
         assert!(recording_pill_enabled(Ok(json!({"overlayRecordingPill": true}))));
         assert!(recording_pill_enabled_value(&json!({"overlayRecordingPill": true})));
+        assert_eq!(recording_pill_settings_payload(&json!({"overlayRecordingPill": true, "recordingToastsEnabled": false})),
+            Some(json!({"enabled": true, "toastsEnabled": false})));
+        assert_eq!(recording_pill_settings_payload(&json!({"overlayRecordingPill": "invalid"})), None);
+    }
+
+    #[test]
+    fn recording_pill_publication_reads_current_snapshot_under_lock() {
+        let lock = std::sync::Mutex::new(());
+        let settings = std::sync::Mutex::new(json!({"overlayRecordingPill": false}));
+        let published = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            let guard = lock.lock().unwrap();
+            let worker = scope.spawn(|| publish_recording_pill_snapshot(&lock,
+                || Some(settings.lock().unwrap().clone()),
+                |value| published.lock().unwrap().push(value)));
+            *settings.lock().unwrap() = json!({"overlayRecordingPill": true});
+            drop(guard);
+            worker.join().unwrap();
+        });
+        assert_eq!(*published.lock().unwrap(), vec![json!({"overlayRecordingPill": true})]);
     }
 
     #[test]
@@ -4108,6 +4919,22 @@ mod tests {
         assert!(wait_for_device_manifest_before_renderer_ready(Some("advanced-overlay"), true));
         assert!(wait_for_device_manifest_before_renderer_ready(Some("main"), false));
         assert!(!wait_for_device_manifest_before_renderer_ready(Some("splash"), false));
+    }
+
+    #[test]
+    fn native_splash_handoff_waits_for_both_renderers_in_either_order_and_skips_mock() {
+        for (main_first, order) in [
+            (true, [(true, false), (true, true)]),
+            (false, [(false, true), (true, true)]),
+        ] {
+            let ready = order.map(|(main_ready, splash_ready)| {
+                startup_splash_dismissal_ready(false, main_ready, splash_ready)
+            });
+            assert_eq!(ready, [false, true], "main_first={main_first}");
+        }
+        assert!(!startup_splash_dismissal_ready(true, true, true));
+        assert!(!startup_splash_dismissal_ready(false, false, true));
+        assert!(!startup_splash_dismissal_ready(false, true, false));
     }
 
     #[test]
@@ -4135,8 +4962,10 @@ mod tests {
 
     /// Production source only: everything before the module's own test block,
     /// so the expected tags in the test below are never counted as exit sites.
+    /// `main.rs` also has earlier `#[cfg(test)]` modules; the final test module
+    /// is the one at the end of the file.
     fn production_source(source: &str) -> &str {
-        source.split("\n#[cfg(test)]").next().unwrap_or(source)
+        source.rsplit_once("\n#[cfg(test)]").map(|(production, _)| production).unwrap_or(source)
     }
 
     #[test]
@@ -4150,6 +4979,7 @@ mod tests {
         const MAIN: &str = include_str!("main.rs");
         const TRAY: &str = include_str!("tray.rs");
         let source = [production_source(MAIN), production_source(TRAY)].concat();
+        assert!(source.contains("broker-exited-clean"), "production_source must include the late exit sites");
         let tags = [
             "broker-exited-clean",
             "broker-failed",
@@ -4174,6 +5004,265 @@ mod tests {
         arc_power_tauri::backend::wire::encode_json(value).expect("wire encode")
     }
 
+    #[test]
+    fn native_temperature_finish_accepts_not_applied_profile_refusal_without_poisoning() {
+        // This is the native-only equivalent of the saved Overclock profile
+        // path: the native preflight refused before any setter, and the lease
+        // must be released as not-applied rather than treated as a cache fault.
+        let saved_profile_temperature_refusal = json!({
+            "ok": false,
+            "perControl": {"tempLimitC": {
+                "ok": false,
+                "errorCode": "unsupported",
+                "message": "Native temperature apply declined before the setter."
+            }}
+        });
+        assert_eq!(validate_native_temperature_finish(
+            "not-applied", None, &saved_profile_temperature_refusal,
+        ).unwrap(), false);
+        assert!(validate_native_temperature_finish(
+            "not-applied", Some(90.0), &saved_profile_temperature_refusal,
+        ).is_err(), "a claimed setter attempt cannot be finished as not-applied");
+        assert!(validate_native_temperature_finish(
+            "not-applied", None, &json!({"ok": false, "perControl": {"tempLimitC": {
+                "ok": false, "errorCode": "out-of-range"
+            }}}),
+        ).is_err(), "a driver refusal must carry an attempted value and use completed");
+    }
+
+    #[test]
+    fn native_temperature_finish_accepts_completed_apply_and_driver_refusal() {
+        assert_eq!(validate_native_temperature_finish("completed", Some(90.0), &json!({
+            "ok": true, "perControl": {"tempLimitC": {"ok": true, "readBackEqual": true}}
+        })).unwrap(), false);
+        assert_eq!(validate_native_temperature_finish("completed", Some(101.0), &json!({
+            "ok": false, "perControl": {"tempLimitC": {"ok": false, "errorCode": "out-of-range"}}
+        })).unwrap(), true);
+        assert!(validate_native_temperature_finish("completed", None, &json!({
+            "ok": true, "perControl": {"tempLimitC": {"ok": false, "errorCode": "out-of-range"}}
+        })).is_err(), "driver refusal requires attempted value");
+    }
+
+    #[test]
+    fn saved_overclock_profile_lease_finishes_stock_and_advanced_mixed_apply_without_broker_retry() {
+        // Use the actual persisted Overclock values reported for this device,
+        // then fake only the native result and lease operations. This
+        // covers the renderer route, begin wire contract, apply decision,
+        // finish validator, and native-only response policy without GPU calls.
+        let target_fixture: Value = serde_json::from_str(include_str!("backend/fixtures/profile-apply-parity.json")).unwrap();
+        let fixture_case = target_fixture["cases"].as_array().unwrap().iter()
+            .find(|case| case["name"] == "temperature-bearing profile apply with a granted native lease")
+            .unwrap();
+        let fixture_wire = &target_fixture["values"][fixture_case["wire"].as_u64().unwrap() as usize];
+        let fixture_args = arc_power_tauri::backend::wire::decode(fixture_wire).unwrap().into_json().unwrap();
+        let saved_settings = json!({
+            "powerLimitW": 114,
+            "gpuVoltOffsetV": 30,
+            "gpuFreqOffsetMhz": 150,
+            "tempLimitC": 100,
+            "vramFreqOffsetGts": 2400,
+            "fanMode": "auto",
+        });
+        let saved_wire = encoded(&json!([0, saved_settings, {
+            "profileApply": true,
+            "expectedTarget": fixture_args[2]["expectedTarget"],
+        }]));
+        let request = arc_power_tauri::backend::services::native_profile_apply_request(&saved_wire).unwrap().unwrap();
+        assert_eq!(request.requested_temperature, Some(100.0));
+        assert_eq!(request.settings, saved_settings);
+        for local_mode in ["stock", "advanced"] {
+            // The saved profile is gated as advanced; local mode remains part
+            // of the broker lease snapshot identity in either user selection.
+            let request_id = "b".repeat(32);
+            let lease_id = "a".repeat(64);
+            let mut target = request.physical_target.clone();
+            target["id"] = json!(request.device_id);
+            target["electronOrdinal"] = json!(request.device_id);
+            target["deviceKey"] = json!(request.device_key);
+            let caps_index = fixture_case["caps"].as_u64().unwrap() as usize;
+            let caps = &target_fixture["values"][caps_index];
+            let snapshot = json!({
+                "type":"temperature-refusal-cache:begin",
+                "schemaVersion":1,
+                "epoch":"c".repeat(32),
+                "transactionSequence":1,
+                "cacheGeneration":0,
+                "target":target,
+                "ranges":{"tempLimitC":caps["ranges"]["tempLimitC"]},
+                "requestedSettings":{"tempLimitC":request.requested_temperature},
+                "cache":{"status":"available", "ceilings":{"tempLimitC":null}},
+                "ocMode":local_mode,
+                "extendedControls":caps["extendedControls"],
+            });
+            let begin_reply = encoded(&json!({
+                "requestId": request_id,
+                "leaseId": lease_id,
+                "snapshot": snapshot,
+            }));
+            let (begun_id, begun_snapshot) = begin_temperature_lease(&begin_reply, &request_id).unwrap();
+            assert_eq!(begun_id, lease_id);
+            let begun_snapshot = wire_plain_json(&begun_snapshot).unwrap();
+            assert_eq!(begun_snapshot["requestedSettings"]["tempLimitC"], 100.0);
+            assert_eq!(begun_snapshot["ocMode"], local_mode);
+
+            // Electron's verified mixed-profile policy applies non-W/C
+            // controls and marks unavailable V1 controls unsupported.
+            let native_reply = json!({
+                "result": {"ok":false, "perControl":{
+                    "powerLimitW":{"ok":false,"errorCode":"unsupported"},
+                    "gpuVoltOffsetV":{"ok":true,"readBackEqual":true},
+                    "gpuFreqOffsetMhz":{"ok":true,"readBackEqual":true},
+                    "tempLimitC":{"ok":false,"errorCode":"unsupported"},
+                    "vramFreqOffsetGts":{"ok":true,"readBackEqual":true},
+                    "fanMode":{"ok":true,"readBackEqual":true},
+                }},
+                "state": null,
+                "extendedUnavailable": true,
+                "extendedUnavailablePartial": true,
+            });
+            let decision = temperature_lease_decision(&Ok(Some((Ok(encoded(&native_reply)), None))), "test panic");
+            let finish_count = std::cell::Cell::new(0);
+            let fallback_count = std::cell::Cell::new(0);
+            let reply = settle_temperature_lease(
+                decision,
+                false,
+                |outcome, result, attempted| {
+                    assert_eq!(outcome, "completed");
+                    assert_eq!(attempted, None);
+                    assert_eq!(validate_native_temperature_finish(outcome, attempted, result)?, false);
+                    finish_count.set(finish_count.get() + 1);
+                    Ok(())
+                },
+                |_| panic!("known refusal must not poison the cache"),
+                || { fallback_count.set(fallback_count.get() + 1); Err("broker unavailable".into()) },
+                profile_temperature_finish,
+            );
+            assert_eq!(reply.unwrap(), encoded(&native_reply), "mode={local_mode}");
+            assert_eq!(finish_count.get(), 1, "mode={local_mode}");
+            assert_eq!(fallback_count.get(), 0, "mode={local_mode}");
+        }
+
+        // A missing native reply has no known refusal to return. It fails with
+        // a bounded diagnostic instead of attempting an unavailable broker.
+        let result = settle_temperature_lease(
+            TemperatureLeaseDecision::NoReply,
+            false,
+            |outcome, result, attempted| {
+                assert_eq!(outcome, "not-applied");
+                assert_eq!(validate_native_temperature_finish(outcome, attempted, result)?, false);
+                Ok(())
+            },
+            |_| {},
+            || Err("broker unavailable".into()),
+            profile_temperature_finish,
+        );
+        assert!(result.unwrap_err().contains("no GPU settings were changed"));
+    }
+
+    #[test]
+    fn native_temperature_lease_producer_round_trips_into_consumer_for_direct_and_profile() {
+        use arc_power_tauri::backend::wire::{decode, encode_json};
+        let physical = json!({
+            "deviceKey":"pci:0x00008086:0x0000e20b@3:0.0",
+            "pciVendorId":"0x00008086","pciDeviceId":"0x0000e20b",
+            "bdf":{"bus":3,"device":0,"function":0},"luid":"0x00000001:0x00000002"
+        });
+        let caps = json!({
+            "ocMode":"stock","extendedControls":{},
+            "ranges":{"tempLimitC":{"units":"C","min":60,"max":100,"step":1}}
+        });
+        let profile_fixture: Value = serde_json::from_str(include_str!("backend/fixtures/profile-apply-parity.json")).unwrap();
+        let profile_case = profile_fixture["cases"].as_array().unwrap().iter()
+            .find(|case| case["name"] == "temperature-bearing profile apply with a granted native lease").unwrap();
+        let profile_wire = &profile_fixture["values"][profile_case["wire"].as_u64().unwrap() as usize];
+        let profile_args = decode(profile_wire).unwrap().into_json().unwrap();
+        let profile_request = arc_power_tauri::backend::services::native_profile_apply_request(
+            &encode_json(&json!([0, profile_args[1].clone(), profile_args[2].clone()])).unwrap(),
+        ).unwrap().unwrap();
+        let alchemist = json!({
+            "deviceKey":"pci:0x00008086:0x000056a0@3:0.0",
+            "pciVendorId":"0x00008086","pciDeviceId":"0x000056a0",
+            "bdf":{"bus":3,"device":0,"function":0},"luid":"0x00000001:0x00000002"
+        });
+        let cases = [
+            ("direct", json!({"tempLimitC":95}), physical.clone(), physical.clone()),
+            ("profile", json!({"tempLimitC":profile_request.requested_temperature}), profile_request.physical_target, physical.clone()),
+            // A-series advanced temperature leases carry the same Celsius
+            // control contract while their actual setter remains on the
+            // existing legacy V1 route.
+            ("alchemist-celsius", json!({"tempLimitC":105}), alchemist.clone(), alchemist),
+        ];
+        for (label, requested, proof, expected_target) in cases {
+            let target = native_temperature_lease_target(&proof, 0, expected_target["deviceKey"].as_str().unwrap());
+            let snapshot = native_temperature_lease_begin_snapshot(
+                "0123456789abcdef0123456789abcdef", 7, 2, target, caps["ranges"]["tempLimitC"].clone(),
+                requested.clone(), None, Value::Null, &caps,
+            );
+            // This is the real native producer helper and the real native
+            // consumer validator, joined by the tagged wire codec.
+            let encoded = encode_json(&snapshot).unwrap();
+            let decoded = decode(&encoded).unwrap();
+            let validation = arc_power_tauri::backend::services::validate_temperature_lease_snapshot_for_target(
+                &decoded, 0, &requested, &expected_target,
+            );
+            assert!(validation.is_ok(), "{label} begin contract must validate: {validation:?}");
+            let begin_plain = wire_plain_json(&decoded).unwrap();
+            let refusal = json!({"ok":false,"perControl":{"tempLimitC":{
+                "ok":false,"errorCode":"out-of-range"
+            }}});
+            let finish = native_temperature_lease_finish_reply(
+                "a".repeat(64).as_str(), &begin_plain, 3, Some(94.0), "committed", Some(95.0), refusal.clone(),
+            );
+            let finish_wire = encode_json(&finish).unwrap();
+            assert!(temperature_finish_ack_matches(
+                &finish_wire, "a".repeat(64).as_str(), &decoded, &refusal, Some(95.0),
+            ), "{label} driver-refusal finish must match the real native ack consumer");
+
+            let mut wrong_ordinal = snapshot.clone();
+            wrong_ordinal["target"]["electronOrdinal"] = json!(1);
+            let wrong = decode(&encode_json(&wrong_ordinal).unwrap()).unwrap();
+            assert!(arc_power_tauri::backend::services::validate_temperature_lease_snapshot_for_target(
+                &wrong, 0, &requested, &expected_target,
+            ).is_err(), "{label} mismatched ordinal must fail before native setters");
+        }
+    }
+
+    #[test]
+    fn failed_native_temperature_transaction_activation_cancels_reserved_fifo_slot() {
+        let cancelled = std::cell::Cell::new(false);
+        let result = activate_native_temperature_transaction(
+            "request", "token",
+            |request, token| {
+                assert_eq!((request, token), ("request", "token"));
+                Err("activation rejected".into())
+            },
+            |request| {
+                assert_eq!(request, "request");
+                cancelled.set(true);
+                Ok(())
+            },
+        );
+        assert_eq!(result.unwrap_err(), "activation rejected");
+        assert!(cancelled.get(), "the begin reservation must be released on activation failure");
+
+        let result = activate_native_temperature_transaction(
+            "request", "token",
+            |_, _| Err("activation rejected".into()),
+            |_| Err("cancel acknowledgement lost".into()),
+        );
+        assert!(result.unwrap_err().contains("transaction cancellation also failed"),
+            "cleanup failure must be reported instead of claiming the FIFO was released");
+
+        let ack = native_temperature_cancel_ack("request", None, |request| {
+            assert_eq!(request, "request");
+            Ok(false)
+        }).unwrap();
+        assert_eq!(ack["cancelled"], false,
+            "a missing lease-map entry must not fabricate a successful cancellation ack");
+        assert!(native_temperature_cancel_ack("request", None, |_| Err("coordinator unavailable".into())).is_err(),
+            "a coordinator error must reach the caller");
+    }
+
     fn decision(
         execution: &Result<Option<(Result<Value, String>, Option<f64>)>, ()>,
     ) -> TemperatureLeaseDecision {
@@ -4196,7 +5285,7 @@ mod tests {
         }));
         assert!(matches!(
             decision(&Ok(Some((Ok(temperature), None)))),
-            TemperatureLeaseDecision::DeclineBeforeSetter
+            TemperatureLeaseDecision::DeclineBeforeSetter { .. }
         ));
         // A power-only above-ceiling profile refuses with no tempLimitC entry
         // at all: same pre-setter decline, never the unknown finish.
@@ -4209,7 +5298,7 @@ mod tests {
         }));
         assert!(matches!(
             decision(&Ok(Some((Ok(power_only), None)))),
-            TemperatureLeaseDecision::DeclineBeforeSetter
+            TemperatureLeaseDecision::DeclineBeforeSetter { .. }
         ));
         // The same envelope after a setter attempt is never a decline.
         let after_setter = encoded(&json!({
@@ -4251,6 +5340,15 @@ mod tests {
         match decision(&Ok(Some((pre_setter, None)))) {
             TemperatureLeaseDecision::KnownNotApplied { error } => assert_eq!(error, "preflight failed"),
             _ => panic!("an error before any setter must finish not-applied"),
+        }
+        let diagnosed: Result<Value, String> = Err(
+            "native-temperature-preflight-declined: Native temperature lease range is invalid".into(),
+        );
+        match decision(&Ok(Some((diagnosed, None)))) {
+            TemperatureLeaseDecision::PreflightDeclined { error } => {
+                assert_eq!(error, "Native temperature lease range is invalid");
+            }
+            _ => panic!("a tagged preflight decline must preserve its gate reason"),
         }
         // An error after a setter attempt is unknown: the broker must never
         // retry an apply that may already have changed hardware.
@@ -4320,6 +5418,7 @@ mod tests {
         let seam = std::cell::RefCell::new(LeaseSeam::default());
         let reply = settle_temperature_lease(
             decision,
+            true,
             |outcome, result, attempted| {
                 seam.borrow_mut().finishes.push((outcome.to_owned(), result.clone(), attempted));
                 Ok(())
@@ -4374,7 +5473,7 @@ mod tests {
             // falls back exactly once with the original arguments, and returns
             // the broker's envelope without ever reaching the poison path.
             let decision = temperature_lease_decision(&Ok(Some((Ok(encoded(decline)), None))), "test panic");
-            assert!(matches!(decision, TemperatureLeaseDecision::DeclineBeforeSetter), "{path}");
+            assert!(matches!(decision, TemperatureLeaseDecision::DeclineBeforeSetter { .. }), "{path}");
             let (reply, seam) = settle_observed(decision, "main", args, &broker_envelope);
             assert_eq!(seam.finishes.len(), 1, "{path}: a decline finishes the lease exactly once");
             assert_eq!(seam.finishes[0].0, "not-applied", "{path}: never completed and never unknown");

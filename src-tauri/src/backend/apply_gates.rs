@@ -120,7 +120,9 @@ pub fn refusal_per_control(refusal: &OcRefusal) -> Value {
 /// value. The temperature lease finish contract cannot publish that shape as a
 /// driver refusal (the finish requires an attempted value or a finite capability
 /// ceiling for an `out-of-range` refusal), so such a decline must finish the lease
-/// as `not-applied` and return the compatibility broker's authoritative envelope.
+/// as `not-applied`; compatibility hosts return the broker's authoritative
+/// envelope, while native-only hosts return the already-known refusal without
+/// attempting an unavailable broker request.
 ///
 /// Anything that reached a setter (`attempted_temperature == Some`) keeps the
 /// fail-closed unknown path instead of falling back and re-applying.
@@ -136,7 +138,7 @@ pub fn is_pre_setter_refusal(
 
 pub fn is_sysman_primary_power_request(settings: &Value, ranges: Option<&Value>, has_sysman: bool) -> bool {
     has_sysman
-        && setting(settings, "powerLimitW").is_some_and(|value| value > STD_PL_MAX_W)
+        && setting(settings, "powerLimitW").is_some_and(|value| value > EXTENDED_PL_MAX_W)
         && units(ranges, "powerLimitW").as_deref() == Some("W")
 }
 
@@ -213,15 +215,21 @@ pub fn extended_unavailable_per_control(controls: &[&str]) -> Value {
 pub fn temp_capability_refusal(settings: &Value, ranges: Option<&Value>) -> Option<TempCapabilityRefusal> {
     let value = setting(settings, "tempLimitC")?;
     let range = ranges?.get("tempLimitC")?;
-    if range.get("units").and_then(Value::as_str) != Some("C") { return None; }
+    let units = range.get("units").and_then(Value::as_str)?;
+    if !matches!(units, "C" | "%") { return None; }
     let min = range.get("min").and_then(number)?;
     let max = range.get("max").and_then(number)?;
     if max < min || value <= max { return None; }
     Some(TempCapabilityRefusal {
         controls: vec!["tempLimitC"],
         capability_ceiling: max,
-        message: format!("temperature limit {} °C exceeds the effective capability ceiling of {} °C. Nothing was changed.",
-            js_number(value), js_number(max)),
+        message: if units == "C" {
+            format!("temperature limit {} °C exceeds the effective capability ceiling of {} °C. Nothing was changed.",
+                js_number(value), js_number(max))
+        } else {
+            format!("temperature limit {}% exceeds the effective capability ceiling of {}%. Nothing was changed.",
+                js_number(value), js_number(max))
+        },
     })
 }
 
@@ -242,7 +250,12 @@ pub fn valid_learned_temp_ceiling(learned: f64, range: &Value) -> bool {
     let max = range.get("max").and_then(number);
     let step = range.get("step").and_then(number);
     let (Some(min), Some(max), Some(step)) = (min, max, step) else { return false; };
-    if max < min || step <= 0.0 || learned < min || learned > EXTENDED_TL_MAX_C { return false; }
+    let unit_max = match range.get("units").and_then(Value::as_str) {
+        Some("C") => EXTENDED_TL_MAX_C,
+        Some("%") => max,
+        _ => return false,
+    };
+    if max < min || step <= 0.0 || learned < min || learned > unit_max { return false; }
     let grid = (learned - min) / step;
     if !grid.is_finite() { return false; }
     let snapped = min + grid.round() * step;
@@ -267,10 +280,15 @@ pub fn extended_ranges_for(caps: &Value) -> Value {
         }
     }
     if let Some(temp) = out.get_mut("tempLimitC") {
-        if temp.get("units").and_then(Value::as_str) == Some("C") {
+        if matches!(temp.get("units").and_then(Value::as_str), Some("C" | "%")) {
             let learned = caps.get("learnedCeilings").and_then(|value| value.get("tempLimitC")).and_then(number);
-            let max = learned.filter(|value| valid_learned_temp_ceiling(*value, temp)).unwrap_or(EXTENDED_TL_MAX_C);
-            if let Some(map) = temp.as_object_mut() { map.insert("max".into(), json!(max)); }
+            if temp.get("units").and_then(Value::as_str) == Some("C") {
+                let max = learned.filter(|value| valid_learned_temp_ceiling(*value, temp)).unwrap_or(EXTENDED_TL_MAX_C);
+                if let Some(map) = temp.as_object_mut() { map.insert("max".into(), json!(max)); }
+            } else if let Some(ceiling) = learned.filter(|value| valid_learned_temp_ceiling(*value, temp)) {
+                let live_max = temp.get("max").and_then(number).unwrap_or(ceiling);
+                if let Some(map) = temp.as_object_mut() { map.insert("max".into(), json!(live_max.min(ceiling))); }
+            }
         }
     }
     if let Some(volt) = out.get_mut("gpuVoltOffsetV") {
@@ -319,6 +337,51 @@ pub fn split_by_runtime(settings: &Value, ranges: Option<&Value>, mode: Option<&
     (Value::Object(driverstore), Value::Object(extended))
 }
 
+/// Split profile W/C controls using only the raw, same-device DriverStore
+/// range, before UI or profile policy expands it. An absent witness cannot
+/// establish which runtime owns the write and must fail before any setter.
+pub fn split_profile_by_driver_witness(settings: &Value, driver_ranges: Option<&Value>, sysman_power: bool) -> Result<(Value, Value), String> {
+    let mut driver = Map::new();
+    let mut legacy = Map::new();
+    let entries = settings.as_object().ok_or("Profile settings are invalid")?;
+    for (name, value) in entries {
+        if value.is_null() { continue; }
+        if !matches!(name.as_str(), "powerLimitW" | "tempLimitC") {
+            driver.insert(name.clone(), value.clone());
+            continue;
+        }
+        let requested = number(value).ok_or("Profile limit is invalid")?;
+        let range = driver_ranges.and_then(|ranges| ranges.get(name))
+            .ok_or_else(|| format!("DriverStore range for {name} is unavailable; no settings were written"))?;
+        let unit = range.get("units").and_then(Value::as_str)
+            .ok_or_else(|| format!("DriverStore units for {name} are unavailable; no settings were written"))?;
+        let max = range.get("max").and_then(number)
+            .ok_or_else(|| format!("DriverStore ceiling for {name} is unavailable; no settings were written"))?;
+        let wc = (name == "powerLimitW" && unit == "W") || (name == "tempLimitC" && unit == "C");
+        if unit != "%" && !wc { return Err(format!("DriverStore units for {name} are unsupported; no settings were written")); }
+        if name == "powerLimitW" && sysman_power {
+            driver.insert(name.clone(), value.clone());
+        } else if wc && requested > max {
+            legacy.insert(name.clone(), value.clone());
+        } else {
+            driver.insert(name.clone(), value.clone());
+        }
+    }
+    Ok((Value::Object(driver), Value::Object(legacy)))
+}
+
+pub fn profile_driver_witness_still_matches(settings: &Value, before: &Value, fresh: &Value) -> bool {
+    ["powerLimitW", "tempLimitC"].into_iter().all(|key| {
+        if settings.get(key).is_none_or(Value::is_null) { return true; }
+        let old = before.get(key);
+        let new = fresh.get(key);
+        old.and_then(|range| range.get("units")).and_then(Value::as_str).is_some()
+            && old.and_then(|range| range.get("units")) == new.and_then(|range| range.get("units"))
+            && old.and_then(|range| range.get("max")).and_then(number).is_some()
+            && old.and_then(|range| range.get("max")) == new.and_then(|range| range.get("max"))
+    })
+}
+
 pub fn requires_extended_range(settings: &Value, ranges: Option<&Value>) -> bool {
     let pl_ok = ranges.and_then(|ranges| ranges.get("powerLimitW")).is_none_or(|range| range.get("units").and_then(Value::as_str) == Some("W"));
     let tl_ok = ranges.and_then(|ranges| ranges.get("tempLimitC")).is_none_or(|range| range.get("units").and_then(Value::as_str) == Some("C"));
@@ -333,6 +396,33 @@ fn js_number(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_routes_only_above_raw_driver_witness_to_legacy() {
+        let raw = json!({"powerLimitW":{"units":"W","max":247},"tempLimitC":{"units":"C","max":90}});
+        let settings = json!({"powerLimitW":247,"tempLimitC":90,"gpuFreqOffsetMhz":10});
+        let (driver, legacy) = split_profile_by_driver_witness(&settings, Some(&raw), false).unwrap();
+        assert_eq!(driver, settings);
+        assert_eq!(legacy, json!({}));
+        let (driver, legacy) = split_profile_by_driver_witness(&json!({"powerLimitW":248,"tempLimitC":91}), Some(&raw), false).unwrap();
+        assert_eq!(driver, json!({}));
+        assert_eq!(legacy, json!({"powerLimitW":248,"tempLimitC":91}));
+        let (driver, legacy) = split_profile_by_driver_witness(&json!({"powerLimitW":320}), Some(&raw), true).unwrap();
+        assert_eq!(driver, json!({"powerLimitW":320}));
+        assert_eq!(legacy, json!({}));
+        let sysman_profile = json!({"powerLimitW":320,"tempLimitC":90,"gpuVoltOffsetV":0});
+        let (driver, legacy) = split_profile_by_driver_witness(&sysman_profile, Some(&raw), true).unwrap();
+        assert_eq!(driver, sysman_profile, "routing must preserve zero-voltage cleanup and Sysman-primary power");
+        assert_eq!(legacy, json!({}));
+        let undervolt = json!({"powerLimitW":320,"gpuVoltOffsetV":-0.1});
+        assert_eq!(split_profile_by_driver_witness(&undervolt, Some(&raw), true).unwrap().0, undervolt);
+        assert!(split_profile_by_driver_witness(&settings, None, false).is_err());
+        assert!(split_profile_by_driver_witness(&settings, Some(&json!({"powerLimitW":{"units":"W"}})), false).is_err());
+        assert!(profile_driver_witness_still_matches(&settings, &raw, &raw));
+        let mut changed = raw.clone();
+        changed["powerLimitW"]["max"] = json!(246);
+        assert!(!profile_driver_witness_still_matches(&settings, &raw, &changed));
+    }
 
     fn a750() -> LimitsKey<'static> {
         LimitsKey { pci_device_id: Some("0x000056a1"), aib_vendor: Some("ASRock") }
@@ -391,7 +481,8 @@ mod tests {
         assert_eq!(refusal.controls, vec!["powerLimitW", "tempLimitC"]);
         assert_eq!(refusal.message, EXTENDED_UNAVAILABLE_MSG);
         assert_eq!(extended_unavailable_refusal(&json!({"powerLimitW":330}), &caps, true), None);
-        assert!(is_sysman_primary_power_request(&json!({"powerLimitW":260}), Some(&json!({"powerLimitW":{"units":"W"}})), true));
+        assert!(is_sysman_primary_power_request(&json!({"powerLimitW":320}), Some(&json!({"powerLimitW":{"units":"W"}})), true));
+        assert!(!is_sysman_primary_power_request(&json!({"powerLimitW":260}), Some(&json!({"powerLimitW":{"units":"W"}})), true));
         let explicit = json!({"ranges":{"powerLimitW":{"units":"W"},"tempLimitC":{"units":"C"}},"extendedControls":{"powerLimitW":true,"tempLimitC":true}});
         assert_eq!(extended_unavailable_refusal(&json!({"powerLimitW":260,"tempLimitC":100}), &explicit, false), None);
         assert_eq!(wc_unit_controls(&json!({"powerLimitW":260,"tempLimitC":95,"gpuFreqOffsetMhz":50}), Some(&json!({"powerLimitW":{"units":"W"},"tempLimitC":{"units":"%"}}))), vec!["powerLimitW"]);
@@ -431,6 +522,23 @@ mod tests {
         let learned = json!({"ranges":{"tempLimitC":{"units":"C","min":50,"max":90,"step":1}},"learnedCeilings":{"tempLimitC":85}});
         assert_eq!(extended_ranges_for(&learned)["tempLimitC"]["max"], 85.0);
         assert_eq!(extended_ranges_for(&json!({"ranges":{"tempLimitC":{"units":"C","min":50,"max":90,"step":1}},"learnedCeilings":{"tempLimitC":85.5}}))["tempLimitC"]["max"], 115.0);
+    }
+
+    #[test]
+    fn battlemage_percent_temperature_refusal_keeps_percent_units() {
+        let ranges = json!({"tempLimitC":{"units":"%","min":60,"max":100,"step":1}});
+        let refusal = temp_capability_refusal(&json!({"tempLimitC":101}), Some(&ranges)).unwrap();
+        assert_eq!(refusal.capability_ceiling, 100.0);
+        assert!(refusal.message.contains("100%"));
+        assert!(!valid_learned_temp_ceiling(101.0, &ranges["tempLimitC"]));
+        let wider_percent_range = json!({"units":"%","min":50,"max":120,"step":1});
+        assert!(valid_learned_temp_ceiling(110.0, &wider_percent_range));
+        assert!(!valid_learned_temp_ceiling(121.0, &wider_percent_range));
+        let caps = json!({
+            "ranges":{"tempLimitC":{"units":"%","min":60,"max":100,"step":1}},
+            "learnedCeilings":{"tempLimitC":99}
+        });
+        assert_eq!(extended_ranges_for(&caps)["tempLimitC"]["max"], 99.0);
     }
 
     #[test]

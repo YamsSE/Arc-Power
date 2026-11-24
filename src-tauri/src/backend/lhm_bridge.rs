@@ -205,8 +205,13 @@ fn map_system(hardware: &[&Value], out: &mut Map<String, Value>) {
         let sensors = sensors_of(cpu);
         if let Some(value) = first_value(&sensors, |sensor| sensor_type(sensor) == "load"
             && sensor_name(sensor).contains("cpu total")) { out.insert("cpuUtilPct".into(), json!(value)); }
-        if let Some(value) = first_value(&sensors, |sensor| sensor_type(sensor) == "temperature"
-            && ["core max", "cpu package", "cpu core"].iter().any(|name| sensor_name(sensor).contains(name))) {
+        // Ryzen reports Core (Tdie) or Core (Tctl/Tdie), rather than the
+        // Intel-style CPU Package. Prefer the die temperature over Tctl when
+        // both are exposed because some older Ryzen models offset Tctl.
+        let cpu_temp = ["core (tdie)", "core (tctl/tdie)", "core max", "cpu package", "cpu core"]
+            .iter().find_map(|name| first_value(&sensors, |sensor| sensor_type(sensor) == "temperature"
+                && sensor_name(sensor).contains(name)));
+        if let Some(value) = cpu_temp {
             out.insert("cpuTempC".into(), json!(value));
         }
         let clocks: Vec<f64> = sensors.iter().filter(|sensor| is_cpu_core_clock(sensor))
@@ -216,7 +221,7 @@ fn map_system(hardware: &[&Value], out: &mut Map<String, Value>) {
         // but reads 0.0. Publish nothing rather than a fabricated "0.0 W"
         // (src/main/sys-stats.js:305 does the same for its power meter).
         if let Some(value) = first_value(&sensors, |sensor| sensor_type(sensor) == "power"
-            && sensor_name(sensor).contains("cpu package")).filter(|value| *value > 0.0) {
+            && (sensor_name(sensor).contains("cpu package") || sensor_name(sensor) == "package")).filter(|value| *value > 0.0) {
             out.insert("cpuPowerW".into(), json!(value));
         }
     }
@@ -360,6 +365,21 @@ mod tests {
         let mapped = map_snapshot(&payload(), None);
         assert_eq!(mapped["cpuUtilPct"], 23.0);
         assert!(mapped.get("gpuClockMhz").is_none());
+    }
+    #[test]
+    fn maps_ryzen_die_temperature_and_package_power() {
+        let mut fixture = payload();
+        fixture["hardware"][0]["sensors"] = json!([
+            {"type":"Temperature","name":"Core (Tctl)","value":75.0},
+            {"type":"Temperature","name":"Core (Tdie)","value":55.0},
+            {"type":"Temperature","name":"Core (Tctl/Tdie)","value":60.0},
+            {"type":"Power","name":"Package","value":85.0}
+        ]);
+        let mapped = map_snapshot(&fixture, None);
+        assert_eq!(mapped["cpuTempC"], 55.0);
+        assert_eq!(mapped["cpuPowerW"], 85.0);
+        fixture["hardware"][0]["sensors"][1]["value"] = Value::Null;
+        assert_eq!(map_snapshot(&fixture, None)["cpuTempC"], 60.0);
     }
     #[test]
     fn fresh_gate_only_applies_to_intel_gpu_load() {

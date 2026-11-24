@@ -140,7 +140,14 @@ pub fn list_devices_merged() -> Value {
         .and_then(|devices| devices.as_array().cloned()).unwrap_or_default();
     let append_all = rows.is_empty();
     let mut os_rows = Vec::new();
-    for adapter in super::os_gpu_inventory::enumerate() {
+    // This complete snapshot is used only to prove backwards-compatible
+    // aliases. A partial display inventory is useful for showing OS-only
+    // rows, but cannot establish that an alias is unique.
+    if let Ok(alias_adapters) = super::os_gpu_inventory::enumerate_for_alias_validation() {
+        add_unique_legacy_aliases(&mut rows, &alias_adapters);
+    }
+    let os_adapters = super::os_gpu_inventory::enumerate();
+    for adapter in os_adapters {
         if !append_all && adapter.vendor_id == 0x8086 { continue; }
         if rows.iter().any(|row| os_matches_igcl(&adapter, row)) { continue; }
         os_rows.push(os_row(&adapter, rows.len() + os_rows.len()));
@@ -187,6 +194,61 @@ fn os_matches_igcl(adapter: &super::os_gpu_inventory::OsAdapter, row: &Value) ->
         return bus as u64 == row_bus && device as u64 == row_device && function as u64 == row_function;
     }
     true
+}
+
+/// Keep the pre-1.3 PNP identity as an alias for profiles saved by the
+/// Electron inventory. Add it to an IGCL row only when PCI ids and a complete
+/// nonzero BDF prove one OS row maps to one IGCL row. Matching by model, PCI
+/// ids alone, or enumeration order is not sufficient for a writable alias.
+fn add_unique_legacy_aliases(rows: &mut [Value], adapters: &[super::os_gpu_inventory::OsAdapter]) {
+    let aliases: Vec<(usize, Vec<String>)> = rows.iter().enumerate().filter_map(|(index, row)| {
+        let matches: Vec<&super::os_gpu_inventory::OsAdapter> = adapters.iter()
+            .filter(|adapter| strict_os_matches_igcl(adapter, row))
+            .collect();
+        if matches.len() != 1 { return None; }
+        let adapter = matches[0];
+        if adapter.pnp.trim().is_empty() || adapters.iter().filter(|candidate| candidate.pnp == adapter.pnp).count() != 1 {
+            return None;
+        }
+        if rows.iter().filter(|candidate| strict_os_matches_igcl(adapter, candidate)).count() != 1 {
+            return None;
+        }
+        let (bus, device, function) = adapter.bdf?;
+        let vendor = format!("0x{:04x}", adapter.vendor_id);
+        let pci_device = format!("0x{:04x}", adapter.device_id);
+        Some((index, vec![
+            format!("pnp:{}", adapter.pnp),
+            // Legacy Electron `deviceHardwareKey` spelling.
+            format!("pci:{vendor}:{pci_device}@{bus}:{device}.{function}"),
+            // Legacy enriched-inventory alias with a canonical Windows BDF.
+            format!("pci:{vendor}:{pci_device}@0000:{bus:02x}:{device:02x}.{function}"),
+        ]))
+    }).collect();
+    for (index, candidates) in aliases {
+        let aliases = rows[index]["deviceKeys"].as_array_mut();
+        if let Some(aliases) = aliases {
+            for alias in candidates {
+                if !aliases.iter().any(|existing| existing.as_str() == Some(&alias)) {
+                    aliases.push(json!(alias));
+                }
+            }
+        } else {
+            let key = rows[index].get("deviceKey").cloned();
+            let mut keys = key.into_iter().collect::<Vec<_>>();
+            keys.extend(candidates.into_iter().map(|alias| json!(alias)));
+            rows[index]["deviceKeys"] = json!(keys);
+        }
+    }
+}
+
+fn strict_os_matches_igcl(adapter: &super::os_gpu_inventory::OsAdapter, row: &Value) -> bool {
+    if vendor_id_of(row) != adapter.vendor_id || pci_device_id_of(row) != Some(adapter.device_id) {
+        return false;
+    }
+    let Some((bus, device, function)) = adapter.bdf else { return false; };
+    if (bus, device, function) == (0, 0, 0) { return false; }
+    let row_bdf = (row["bdf"]["bus"].as_u64(), row["bdf"]["device"].as_u64(), row["bdf"]["function"].as_u64());
+    row_bdf == (Some(bus as u64), Some(device as u64), Some(function as u64))
 }
 
 fn os_row(adapter: &super::os_gpu_inventory::OsAdapter, id: usize) -> Value {
@@ -317,6 +379,34 @@ mod tests {
         assert!(os_matches_igcl(&adapter, &json!({"pciVendorId":"0x00008086","pciDeviceId":"0x000056a0","bdf":{"bus":3,"device":0,"function":0}})));
         assert!(!os_matches_igcl(&adapter, &json!({"pciVendorId":"0x00008086","pciDeviceId":"0x000056a0","bdf":{"bus":4,"device":0,"function":0}})));
         assert!(!os_matches_igcl(&adapter, &json!({"pciVendorId":"0x000010de","pciDeviceId":"0x000056a0"})));
+    }
+    #[test]
+    fn legacy_pnp_alias_requires_one_exact_pci_bdf_pair() {
+        let first = adapter("Intel Arc B580", 0xe20b, false);
+        let mut second = adapter("Intel Arc B580", 0xe20b, false);
+        second.bdf.bus = 4;
+        let mut rows = map_adapters(&[first, second], |_| None).as_array().unwrap().clone();
+        let os = |pnp: &str, bus| crate::backend::os_gpu_inventory::OsAdapter {
+            name: "Intel Arc B580".into(), pnp: pnp.into(), vendor_id: 0x8086, device_id: 0xe20b,
+            subsys: None, bdf: Some((bus, 0, 0)), vram_bytes: None, gpu_vendor: "intel",
+            integrated: false, mobile: false,
+        };
+        add_unique_legacy_aliases(&mut rows, &[os("PCI\\VEN_8086&DEV_E20B&SUBSYS_A", 3), os("PCI\\VEN_8086&DEV_E20B&SUBSYS_B", 4)]);
+        assert!(rows[0]["deviceKeys"].as_array().unwrap().iter().any(|key| key == "pnp:PCI\\VEN_8086&DEV_E20B&SUBSYS_A"));
+        assert!(rows[0]["deviceKeys"].as_array().unwrap().iter().any(|key| key == "pci:0x8086:0xe20b@0000:03:00.0"));
+        assert!(rows[1]["deviceKeys"].as_array().unwrap().iter().any(|key| key == "pnp:PCI\\VEN_8086&DEV_E20B&SUBSYS_B"));
+
+        let mut no_bdf_adapter = adapter("Intel Arc B580", 0xe20b, false);
+        no_bdf_adapter.bdf = AdapterBdf { bus: 0, device: 0, function: 0 };
+        let mut no_bdf = map_adapters(&[no_bdf_adapter], |_| None).as_array().unwrap().clone();
+        add_unique_legacy_aliases(&mut no_bdf, &[os("PCI\\VEN_8086&DEV_E20B&SUBSYS_A", 3)]);
+        assert_eq!(no_bdf[0].get("deviceKeys"), None);
+
+        let exact = os("PCI\\VEN_8086&DEV_E20B&SUBSYS_A", 3);
+        let duplicate = exact.clone();
+        let mut duplicated_os = map_adapters(&[adapter("Intel Arc B580", 0xe20b, false)], |_| None).as_array().unwrap().clone();
+        add_unique_legacy_aliases(&mut duplicated_os, &[exact, duplicate]);
+        assert_eq!(duplicated_os[0].get("deviceKeys"), None);
     }
     #[test]
     #[ignore = "live read-only IGCL + SetupAPI inventory"]

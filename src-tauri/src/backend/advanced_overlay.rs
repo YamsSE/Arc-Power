@@ -326,6 +326,16 @@ impl AdvancedOverlayHub {
         }
         self.windows.set_bounds(&geometry_for(settings.position, (self.primary_display)()));
     }
+
+    /// Recompute the panel position after the selected monitor changes. The
+    /// shared settings did not change, so `poll` would otherwise skip it.
+    pub fn reposition(&self) {
+        let _operations = self.lock_operations();
+        let Ok(raw) = (self.load_settings)() else { return; };
+        let settings = PanelSettings::from_value(&raw);
+        if self.windows.panels().is_empty() || !settings.enabled { return; }
+        self.windows.set_bounds(&geometry_for(settings.position, (self.primary_display)()));
+    }
 }
 
 /// Read the normalized native settings document shared by the panel and poll.

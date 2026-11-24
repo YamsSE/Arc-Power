@@ -3941,6 +3941,7 @@ async function main() {
   // They are deliberately independent from the telemetry HUD: disabling or
   // hiding the HUD must never hide a recording/clip result notification.
   // The handle is not created in ui-verify so verification runs stay silent.
+  const nativeRecordingToast = process.env.ARC_POWER_NATIVE_RECORDING_TOAST === '1';
   if (!uiVerify && !nativeRecordingToast) {
     recordingToastHandle = createRecordingToastWindow({
       ...(tauriService ? { createWindow: options => tauriService.createAuxWindow('recording-toast', options) } : {}),
@@ -4551,7 +4552,6 @@ async function main() {
       return settings?.recordingToastsEnabled === true;
     } catch { return false; }
   };
-  const nativeRecordingToast = process.env.ARC_POWER_NATIVE_RECORDING_TOAST === '1';
   const showRecordingActionToast = async (result) => {
     if (nativeRecordingToast) return;
     if (!result || typeof result !== 'object') return;

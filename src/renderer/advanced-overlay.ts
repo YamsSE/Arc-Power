@@ -160,6 +160,8 @@ let recordingQuickDraft: RecordingSettings | null = null;
 let recordingQuickStatus: RecordingEngineState = EMPTY_RECORDING_STATUS;
 let recordingQuickTargets: RecordingCaptureTargets = { displays: [], windows: [] };
 let recordingQuickPillEnabled = false;
+let recordingQuickPillSaving = false;
+let recordingQuickPillRevision = 0;
 let recordingQuickEncoderMigrationId: string | null = null;
 let recordingQuickSettingsRevision = 0;
 let recordingQuickStateRevision = 0;
@@ -358,6 +360,7 @@ api.onRecordingSettingsUpdated((next) => {
 
 api.onRecordingPillSettingsUpdated((next) => {
   if (!next || typeof next.enabled !== 'boolean') return;
+  recordingQuickPillRevision += 1;
   recordingQuickPillEnabled = next.enabled;
   if (activeTab === 'recording') renderRecording();
 });
@@ -1082,7 +1085,7 @@ async function renderTuning(): Promise<void> {
     if (live.workerApply && !live.elevated && panelIdentityMatches(deviceId, deviceKey, generation)) {
       toast('info', 'Administrator approval needed', 'Administrator approval is needed to apply GPU settings.');
     }
-    const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, caps.deviceName || 'this GPU', live.caps?.overclockingSupported !== false);
+    const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, caps.deviceName || 'this GPU', live.caps?.overclockingSupported !== false, selectedDevice);
     if (!panelIdentityMatches(deviceId, deviceKey, generation)) return;
     if (decision === 'cancelled') {
       toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
@@ -1495,6 +1498,7 @@ async function loadRecordingQuick(): Promise<void> {
   if (recordingQuickLoading || recordingQuickInitialized) return;
   recordingQuickLoading = true;
   const loadStateRevision = recordingQuickStateRevision;
+  const loadPillRevision = recordingQuickPillRevision;
   recordingQuickError = null;
   renderRecording();
   try {
@@ -1519,7 +1523,9 @@ async function loadRecordingQuick(): Promise<void> {
       api.profilesList().catch(() => null),
     ]);
     recordingQuickTargets = targets;
-    recordingQuickPillEnabled = profileEnvelope?.settings?.overlayRecordingPill === true;
+    if (recordingQuickPillRevision === loadPillRevision && profileEnvelope) {
+      recordingQuickPillEnabled = profileEnvelope.settings?.overlayRecordingPill === true;
+    }
     recordingQuickInitialized = true;
   } catch (err) {
     recordingQuickError = err instanceof Error ? err.message : String(err);
@@ -1605,16 +1611,20 @@ async function runRecordingQuickAction(action: 'record' | 'replay' | 'stop-video
 }
 
 async function toggleRecordingQuickPill(checked: boolean): Promise<void> {
+  if (recordingQuickPillSaving) return;
   const previous = recordingQuickPillEnabled;
+  recordingQuickPillSaving = true;
+  const revision = ++recordingQuickPillRevision;
   recordingQuickPillEnabled = checked;
   renderRecording();
   try {
     const result = await api.profilesSettingsSave({ overlayRecordingPill: checked });
-    recordingQuickPillEnabled = result.overlayRecordingPill === true;
+    if (recordingQuickPillRevision === revision) recordingQuickPillEnabled = result.overlayRecordingPill === true;
   } catch (err) {
-    recordingQuickPillEnabled = previous;
+    if (recordingQuickPillRevision === revision) recordingQuickPillEnabled = previous;
     toast('error', 'Recording Pill', err instanceof Error ? err.message : String(err));
   }
+  recordingQuickPillSaving = false;
   if (activeTab === 'recording') renderRecording();
 }
 
@@ -1728,8 +1738,8 @@ function renderRecordingQuickSettings(): HTMLElement {
     }, 'btn btn-secondary btn-sm'),
     recordingQuickButton('Open', () => { void api.recordingOpenFolder().catch((err) => toast('error', 'Recording folder', err instanceof Error ? err.message : String(err))); }, 'btn btn-secondary btn-sm', !working.location),
   ]);
-  const checkbox = (label: string, checked: boolean, onChange: (checked: boolean) => void): HTMLElement => {
-    const input = el('input', { type: 'checkbox', checked, 'aria-label': label }) as HTMLInputElement;
+  const checkbox = (label: string, checked: boolean, onChange: (checked: boolean) => void, disabled = false): HTMLElement => {
+    const input = el('input', { type: 'checkbox', checked, disabled, 'aria-label': label }) as HTMLInputElement;
     input.addEventListener('change', () => onChange(input.checked));
     return el('label', { class: 'adv-recording-check' }, [input, el('span', { text: label })]);
   };
@@ -1763,7 +1773,7 @@ function renderRecordingQuickSettings(): HTMLElement {
       recordingQuickField('Color handling', color),
       el('div', { class: 'adv-recording-check-grid' }, [
         checkbox('Show cursor', working.showCursor, (checked) => { recordingQuickPatch({ showCursor: checked }); renderRecording(); }),
-        checkbox('Recording Pill', recordingQuickPillEnabled, (checked) => { void toggleRecordingQuickPill(checked); }),
+        checkbox('Recording Pill', recordingQuickPillEnabled, (checked) => { void toggleRecordingQuickPill(checked); }, recordingQuickPillSaving),
         checkbox('Microphone', working.audio.microphone.enabled, (checked) => { recordingQuickPatch({ audio: { microphone: { enabled: checked } } }); renderRecording(); }),
         checkbox('Full PC audio', working.audio.system.enabled, (checked) => { recordingQuickPatch({ audio: { system: { enabled: checked } } }); renderRecording(); }),
       ]),

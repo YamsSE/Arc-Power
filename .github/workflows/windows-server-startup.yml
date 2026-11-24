@@ -1,0 +1,37 @@
+name: Windows Server startup smoke
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sandboxed-ui:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run build:renderer
+      - name: Launch the sandboxed UI with the mock backend
+        shell: pwsh
+        env:
+          RID_MOCK_FEATURESET: b580
+          RID_MOCK_FAN_RESUME_VERIFY: '1'
+        run: |
+          $stdout = Join-Path $env:RUNNER_TEMP 'arc-startup-stdout.log'
+          $stderr = Join-Path $env:RUNNER_TEMP 'arc-startup-stderr.log'
+          $process = Start-Process -FilePath (Resolve-Path '.\node_modules\electron\dist\electron.exe') `
+            -ArgumentList '.', '--ui-verify' -WorkingDirectory $PWD -WindowStyle Hidden `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr -Wait -PassThru
+          Get-Content -LiteralPath $stdout
+          Get-Content -LiteralPath $stderr
+          if ($process.ExitCode -ne 0) { throw "Sandboxed UI verification failed: $($process.ExitCode)" }

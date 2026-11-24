@@ -361,7 +361,7 @@ fn apply_advanced_overlay_patch(next: &mut Value, current: &Value, patch: &Map<S
     }
     for key in ["overlayLabelColor", "overlayValueColor"] {
         if let Some(value) = patch.get(key) {
-            next[key] = json!(overlay_hex_color("overlayColor", value)?);
+            next[key] = json!(overlay_hex_color(key, value)?);
         } else if let Some(value) = patch.get("overlayColor") {
             // Electron derives both label colors from a changed overlayColor.
             next[key] = json!(overlay_hex_color("overlayColor", value)?);

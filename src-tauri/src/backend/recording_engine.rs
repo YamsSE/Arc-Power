@@ -57,6 +57,19 @@ fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|value| value.as_millis() as i64).unwrap_or(0)
 }
 
+/// Diagnostics for start/stop failures that the UI only sees as a flicker.
+/// The log is best-effort and never changes the recording outcome.
+fn diagnostic(message: &str) {
+    let Some(appdata) = std::env::var_os("APPDATA") else { return; };
+    let directory = PathBuf::from(appdata).join("ArcPower");
+    let _ = std::fs::create_dir_all(&directory);
+    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true)
+        .open(directory.join("recording.log")) else { return; };
+    let seconds = SystemTime::now().duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs()).unwrap_or(0);
+    let _ = writeln!(file, "{seconds} {message}");
+}
+
 #[derive(Clone, Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Modes {
@@ -543,6 +556,13 @@ impl EngineInner {
     fn handle_message(self: &Arc<Self>, message: Value) {
         let event = message.get("event").and_then(Value::as_u64);
         let Some(event) = event else { return };
+        if matches!(event, EVENT_RECORDING_STARTED | EVENT_RECORDING_STOPPED | EVENT_ERR
+            | EVENT_REPLAY_STARTED | EVENT_REPLAY_STOPPED | EVENT_REPLAY_ERROR) {
+            diagnostic(&format!("event={event} id={:?} code={:?} desc={:?}",
+                message.get("identifier").and_then(Value::as_u64),
+                message.get("code").and_then(Value::as_i64),
+                message.get("desc").and_then(Value::as_str)));
+        }
         let identifier = message.get("identifier").and_then(Value::as_u64);
         let started = matches!(event, EVENT_RECORDING_STARTED | EVENT_REPLAY_STARTED);
         let stopped = matches!(event, EVENT_RECORDING_STOPPED | EVENT_REPLAY_STOPPED);
@@ -778,6 +798,8 @@ impl EngineInner {
         }
         let recorder_type = if mode == "replay" { RECORDER_REPLAY } else { RECORDER_VIDEO };
         let output_path = settings.get("outputPath").and_then(Value::as_str).map(str::to_owned);
+        diagnostic(&format!("start mode={mode} requested={} encoder={encoder_id} runtime={runtime_encoder} target={adapter_target:?} output={output_path:?}",
+            settings.get("encoderId").and_then(Value::as_str).unwrap_or("automatic")));
         let payload = build_start_payload(&effective, output_path.as_deref().unwrap_or(""), recorder_type);
         let fields = payload.as_object().cloned().unwrap_or_default();
         let identifier = self.next_identifier.fetch_add(1, Ordering::SeqCst);
@@ -806,6 +828,7 @@ impl EngineInner {
         let expected = if mode == "replay" { EVENT_REPLAY_STARTED } else { EVENT_RECORDING_STARTED };
         match self.request(ASCENT_START, recorder_type, command, &[expected], Duration::from_secs(15), Some(identifier), false) {
             Ok(_) => {
+                diagnostic("started");
                 let target = selection.as_ref().and_then(|value| value.target.clone()).or(adapter_target);
                 {
                     let mut core = self.core.lock().unwrap();
@@ -823,6 +846,7 @@ impl EngineInner {
                 Ok(self.snapshot())
             }
             Err(error) => {
+                diagnostic(&format!("start-error code={:?} timedOut={} message={}", error.code, error.timeout, error.message));
                 let timed_out_ready = {
                     let core = self.core.lock().unwrap();
                     core.starting.get(mode).is_some_and(|recorder| recorder.identifier == identifier && recorder.ready)

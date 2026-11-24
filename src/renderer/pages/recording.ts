@@ -76,6 +76,9 @@ let recordingStateRevision = 0;
 let clipLibraryFilter: ClipLibraryFilter = 'all';
 let clipLibrarySort: ClipLibrarySort = 'newest';
 let recordingPillEnabled = false;
+let recordingPillSaving = false;
+let recordingPillRevision = 0;
+let recordingToastsRevision = 0;
 let recordingToastsEnabled = false;
 let recordingDevices: DeviceInfo[] = [];
 let recordingEncoderMigrationId: string | null = null;
@@ -506,7 +509,7 @@ function renderCaptureActions(): HTMLElement {
 }
 
 function renderRecordingPillSetting(): HTMLElement {
-  const settingRow = (label: string, title: string, note: string, setting: string, checked: boolean, onChange: (event: Event) => void) => el('div', { class: 'recording-pill-setting' }, [
+  const settingRow = (label: string, title: string, note: string, setting: string, checked: boolean, onChange: (event: Event) => void, disabled = false) => el('div', { class: 'recording-pill-setting' }, [
     el('div', { class: 'recording-pill-setting-copy' }, [
       el('span', { class: 'recording-field-label', text: label }),
       el('strong', { text: title }),
@@ -519,6 +522,7 @@ function renderRecordingPillSetting(): HTMLElement {
         dataset: { setting },
         'aria-label': title,
         checked,
+        disabled,
         onchange: onChange,
       }),
     ]),
@@ -527,10 +531,11 @@ function renderRecordingPillSetting(): HTMLElement {
     settingRow(
       'On-screen indicator',
       'Recording Pill',
-      'Shows the Arc Power icon with a red or blue status pill while capture is active.',
+      'Shows an on-screen status indicator while Recording or Instant Replay is active.',
       'overlayRecordingPill',
       recordingPillEnabled,
       (event) => void onRecordingPillToggle((event.target as HTMLInputElement).checked),
+      recordingPillSaving,
     ),
     settingRow(
       'Desktop notifications',
@@ -570,30 +575,35 @@ function renderCapturePanel(): HTMLElement {
 }
 
 async function onRecordingPillToggle(checked: boolean): Promise<void> {
+  if (recordingPillSaving) return;
   const previous = recordingPillEnabled;
+  recordingPillSaving = true;
+  const revision = ++recordingPillRevision;
   recordingPillEnabled = checked;
   render();
   try {
     const result = await api.profilesSettingsSave({ overlayRecordingPill: checked });
-    recordingPillEnabled = result.overlayRecordingPill === true;
-    toast(checked ? 'success' : 'info', checked ? 'Recording Pill enabled' : 'Recording Pill disabled', '');
+    if (recordingPillRevision === revision) recordingPillEnabled = result.overlayRecordingPill === true;
+    toast(recordingPillEnabled ? 'success' : 'info', recordingPillEnabled ? 'Recording Pill enabled' : 'Recording Pill disabled', '');
   } catch (err) {
-    recordingPillEnabled = previous;
+    if (recordingPillRevision === revision) recordingPillEnabled = previous;
     toast('error', 'Recording Pill could not be changed', messageOf(err));
   }
+  recordingPillSaving = false;
   render();
 }
 
 async function onRecordingToastsToggle(checked: boolean): Promise<void> {
   const previous = recordingToastsEnabled;
+  const revision = ++recordingToastsRevision;
   recordingToastsEnabled = checked;
   render();
   try {
     const result = await api.profilesSettingsSave({ recordingToastsEnabled: checked });
-    recordingToastsEnabled = result.recordingToastsEnabled === true;
+    if (recordingToastsRevision === revision) recordingToastsEnabled = result.recordingToastsEnabled === true;
     toast(checked ? 'success' : 'info', checked ? 'Recording toasts enabled' : 'Recording toasts disabled', '');
   } catch (err) {
-    recordingToastsEnabled = previous;
+    if (recordingToastsRevision === revision) recordingToastsEnabled = previous;
     toast('error', 'Recording toasts could not be changed', messageOf(err));
   }
   render();
@@ -2332,6 +2342,8 @@ async function load(): Promise<void> {
   if (loading) return;
   loading = true;
   const loadStateRevision = recordingStateRevision;
+  const loadPillRevision = recordingPillRevision;
+  const loadToastsRevision = recordingToastsRevision;
   try {
     const [loadedSettings, loadedStatus, loadedClips, loadedStorage, profileEnvelope] = await Promise.all([
       api.recordingSettingsGet(),
@@ -2356,8 +2368,12 @@ async function load(): Promise<void> {
     migrateLegacyEncoderSelection();
     clips = loadedClips;
     storageInfo = loadedStorage;
-    recordingPillEnabled = profileEnvelope?.settings?.overlayRecordingPill === true;
-    recordingToastsEnabled = profileEnvelope?.settings?.recordingToastsEnabled === true;
+    if (recordingPillRevision === loadPillRevision && profileEnvelope) {
+      recordingPillEnabled = profileEnvelope.settings?.overlayRecordingPill === true;
+    }
+    if (recordingToastsRevision === loadToastsRevision && profileEnvelope) {
+      recordingToastsEnabled = profileEnvelope.settings?.recordingToastsEnabled === true;
+    }
     activeTab = tabForMode(settings.mode);
     const canonicalMode = modeForTab(activeTab) ?? 'manual';
     if (settings.mode !== canonicalMode) {
@@ -2518,8 +2534,8 @@ export const recordingPage: Page = {
     if (!unsubscribeRecordingPillSettings) {
       unsubscribeRecordingPillSettings = api.onRecordingPillSettingsUpdated((next) => {
         if (!next || (typeof next.enabled !== 'boolean' && typeof next.toastsEnabled !== 'boolean')) return;
-        if (typeof next.enabled === 'boolean') recordingPillEnabled = next.enabled;
-        if (typeof next.toastsEnabled === 'boolean') recordingToastsEnabled = next.toastsEnabled;
+        if (typeof next.enabled === 'boolean') { recordingPillRevision += 1; recordingPillEnabled = next.enabled; }
+        if (typeof next.toastsEnabled === 'boolean') { recordingToastsRevision += 1; recordingToastsEnabled = next.toastsEnabled; }
         if (renderContainer === container) render();
       });
     }
