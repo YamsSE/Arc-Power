@@ -53,6 +53,14 @@ let status: RecordingEngineState = {
 };
 let clips: RecordingClip[] = [];
 let playerClip: RecordingClip | null = null;
+// Live hover previews. A tile can be replaced by a redraw, a tab change or
+// the player before mouseleave fires, so every render path must be able to
+// force-release the media elements (and their decoded buffers).
+const clipPreviewReleases = new Set<() => void>();
+function releaseClipPreviews(): void {
+  for (const release of [...clipPreviewReleases]) release();
+}
+
 let activeTab: RecordingTab = 'manual';
 let renderContainer: HTMLElement | null = null;
 let loading = false;
@@ -1219,7 +1227,10 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
     void preview.play().catch(() => { /* unavailable previews stay quiet */ });
   };
   const stopPreview = () => {
-    if (!preview) return;
+    if (!preview) {
+      clipPreviewReleases.delete(stopPreview);
+      return;
+    }
     const node = preview;
     preview = null;
     loadStarted = false;
@@ -1228,10 +1239,13 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
     // buffered media. Merely pausing left one full <video preload=auto> per
     // hovered tile alive, which could grow to gigabytes on a large library.
     node.removeAttribute('src');
+    node.src = '';
     node.load();
     node.remove();
     thumbnail.hidden = false;
+    clipPreviewReleases.delete(stopPreview);
   };
+  clipPreviewReleases.add(stopPreview);
   const clearHoverTimer = () => {
     if (hoverTimer === null) return;
     window.clearTimeout(hoverTimer);
@@ -1253,6 +1267,7 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
       ...(clip.thumbnailUrl ? { poster: clip.thumbnailUrl } : {}),
     }) as HTMLVideoElement;
     preview.addEventListener('canplay', () => {
+      if (!preview) return;
       thumbnail.hidden = true;
       playPreview();
     });
@@ -1269,7 +1284,7 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
       if (preview?.isConnected) preview.dataset.previewError = 'true';
     });
   };
-  hoverTarget.addEventListener('mouseenter', () => {
+  hoverTarget.addEventListener('pointerenter', () => {
     hovered = true;
     clearHoverTimer();
     hoverTimer = window.setTimeout(() => {
@@ -1278,7 +1293,7 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
       playPreview();
     }, 500);
   });
-  hoverTarget.addEventListener('mouseleave', () => {
+  hoverTarget.addEventListener('pointerleave', () => {
     hovered = false;
     clearHoverTimer();
     stopPreview();
@@ -1295,6 +1310,7 @@ function renderClipList(): HTMLElement {
   sort.classList.add('recording-library-filter');
   const count = el('span', { class: 'recording-library-count', text: `${clips.length} captures` });
   const draw = () => {
+    releaseClipPreviews();
     clear(list);
     const needle = query.value.trim().toLowerCase();
     const visible = clips
@@ -2291,6 +2307,7 @@ function renderPlayerView(): HTMLElement {
 
 function render(): void {
   if (!renderContainer) return;
+  releaseClipPreviews();
   disposePlayerVideo();
   applySettingsButton = null;
   clear(renderContainer);
@@ -2569,6 +2586,7 @@ export const recordingPage: Page = {
     }
   },
   leave(): void {
+    releaseClipPreviews();
     void releaseRecordingRuntimeLease();
     unsubscribeRecordingState?.();
     unsubscribeRecordingState = null;
