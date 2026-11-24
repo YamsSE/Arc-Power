@@ -5089,11 +5089,18 @@ async function main() {
       return;
     }
     if (process.env.RID_MOCK_FAN_RESUME_VERIFY === '1') {
-      const { powerMonitor } = await import('electron');
-      const { runFanResumeUiVerification } = await import('../../test/fan-resume-ui.js');
-      await runFanResumeUiVerification(win, backend, () => powerMonitor.emit('resume'));
-      app.exit(0);
-      return;
+      // The focused fan-resume harness lives in test/, which is deliberately
+      // git-ignored (local-only). A CI checkout must not fail because the
+      // opt-in harness is absent; fall through to the tracked ui-verify flow.
+      const fanResumeTest = path.join(__dirname, '..', '..', 'test', 'fan-resume-ui.js');
+      if (fs.existsSync(fanResumeTest)) {
+        const { powerMonitor } = await import('electron');
+        const { runFanResumeUiVerification } = await import('../../test/fan-resume-ui.js');
+        await runFanResumeUiVerification(win, backend, () => powerMonitor.emit('resume'));
+        app.exit(0);
+        return;
+      }
+      console.log('[ui-verify] fan-resume-ui.js is local-only and absent; skipping focused harness');
     }
     if (process.env.RID_MOCK_DISPLAY_COLOR_VERIFY === '1') {
       const { verifyManagedDisplayColorUi } = await import('../../test/managed-display-color-ui.js');
