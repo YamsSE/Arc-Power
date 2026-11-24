@@ -2,13 +2,31 @@
 //! profile" is relayed to the compatibility service until profile apply is
 //! fully native.
 use serde_json::{json, Value};
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::{mpsc, Mutex, OnceLock};
+use std::time::Duration;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, Wry,
 };
+use webview2_com::{Microsoft::Web::WebView2::Win32::ICoreWebView2_3, TrySuspendCompletedHandler};
+use windows::core::Interface;
+
+static MAIN_SUSPENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn webview_log(message: &str) {
+    let Some(appdata) = std::env::var_os("APPDATA") else { return; };
+    let directory = PathBuf::from(appdata).join("ArcPower");
+    let _ = std::fs::create_dir_all(&directory);
+    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true)
+        .open(directory.join("webview.log")) else { return; };
+    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs()).unwrap_or(0);
+    let _ = writeln!(file, "{seconds} {message}");
+}
 
 static TRAY: OnceLock<Mutex<Option<TrayIcon<Wry>>>> = OnceLock::new();
 static RECORDING_STATUS: OnceLock<Mutex<&'static str>> = OnceLock::new();
@@ -150,15 +168,68 @@ fn build_menu(app: &AppHandle, store: &arc_power_tauri::backend::native_store::N
 fn toggle_main(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else { return; };
     if window.is_minimized().unwrap_or(false) {
+        resume_main_webview(app);
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     } else if window.is_visible().unwrap_or(false) {
         let _ = window.hide();
+        suspend_main_webview(app);
     } else {
+        resume_main_webview(app);
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+/// Ask WebView2 to release its renderer memory while the window is hidden to
+/// the tray. The DOM is preserved; `resume_main_webview` restores it. The
+/// overlay/advanced-overlay/toast windows are separate WebViews and are not
+/// affected.
+pub fn suspend_main_webview(app: &AppHandle) {
+    if MAIN_SUSPENDED.swap(true, std::sync::atomic::Ordering::SeqCst) { return; }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        // Let the hide reach the WebView2 controller; TrySuspend fails on a
+        // visible webview.
+        std::thread::sleep(Duration::from_millis(300));
+        if !MAIN_SUSPENDED.load(std::sync::atomic::Ordering::SeqCst) { return; }
+        let Some(window) = app.get_webview_window("main") else { return; };
+        let _ = window.with_webview(|webview| {
+            let controller = webview.controller();
+            let Ok(core) = (unsafe { controller.CoreWebView2() }) else { return; };
+            let Ok(core3) = core.cast::<ICoreWebView2_3>() else {
+                webview_log("suspend: ICoreWebView2_3 unavailable");
+                return;
+            };
+            // Tauri hides the native window, but WebView2 keeps its own
+            // IsVisible state. TrySuspend refuses while that is true.
+            let _ = unsafe { controller.SetIsVisible(false) };
+            let handler = TrySuspendCompletedHandler::create(Box::new(|result, successful| {
+                webview_log(&format!("suspend completed result={result:?} successful={successful}"));
+                Ok(())
+            }));
+            match unsafe { core3.TrySuspend(&handler) } {
+                Ok(()) => webview_log("suspend requested"),
+                Err(error) => webview_log(&format!("suspend request failed: {error}")),
+            }
+        });
+    });
+}
+
+pub fn resume_main_webview(app: &AppHandle) {
+    if !MAIN_SUSPENDED.swap(false, std::sync::atomic::Ordering::SeqCst) { return; }
+    let Some(window) = app.get_webview_window("main") else { return; };
+    let _ = window.with_webview(|webview| {
+        let controller = webview.controller();
+        let Ok(core) = (unsafe { controller.CoreWebView2() }) else { return; };
+        let Ok(core3) = core.cast::<ICoreWebView2_3>() else { return; };
+        match unsafe { core3.Resume() } {
+            Ok(()) => webview_log("resume"),
+            Err(error) => webview_log(&format!("resume failed: {error}")),
+        }
+        let _ = unsafe { controller.SetIsVisible(true) };
+    });
 }
 
 fn quit(app: &AppHandle) {

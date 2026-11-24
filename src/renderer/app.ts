@@ -369,7 +369,13 @@ function renderPage(id: PageId) {
   // M2b review F4: the page being left stops its timers/subscriptions
   // (e.g. Monitoring's FPS poll) before the next page renders.
   current?.leave?.();
-  if (!samePage) resetScrollPositions(container);
+  if (!samePage) {
+    // Drop the previous page's DOM immediately. Page modules also release
+    // their timers, canvases and media in leave(); this guarantees the
+    // detached tree is not kept alive by the shell.
+    clear(container);
+    resetScrollPositions(container);
+  }
   // Shared dropdown menus are portaled to document.body. Close the active
   // portal before replacing the page or device surface so stale options and
   // focus state cannot survive a navigation/rerender.
@@ -393,6 +399,28 @@ window.addEventListener(HIDDEN_TABS_EVENT, () => {
   }
   renderSidebar();
   renderPage(page);
+});
+
+// Minimized or occluded windows keep only the shell. The active page stops
+// its timers, charts, canvases and media in leave(); returning rebuilds it
+// from the persisted store instead of keeping the old DOM alive.
+let pageSuspended = false;
+function suspendActivePage(): void {
+  if (pageSuspended) return;
+  pageSuspended = true;
+  current?.leave?.();
+  current = null;
+  const container = document.getElementById('page');
+  if (container) clear(container);
+}
+function resumeActivePage(): void {
+  if (!pageSuspended) return;
+  pageSuspended = false;
+  renderPage(currentPage());
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') suspendActivePage();
+  else resumeActivePage();
 });
 
 const SIDEBAR_WIDTH_KEY = 'arcpower.sidebar.width.v1';

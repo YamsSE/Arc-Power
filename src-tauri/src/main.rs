@@ -505,7 +505,10 @@ fn handle_native_main_close(app: &tauri::AppHandle, window: &tauri::WebviewWindo
     }
     if close_to_tray_enabled(broker) {
         match window.hide() {
-            Ok(()) => broker.host_event_to("main", "hide", json!({})),
+            Ok(()) => {
+                crate::tray::suspend_main_webview(app);
+                broker.host_event_to("main", "hide", json!({}))
+            }
             Err(error) => {
                 eprintln!("[window-close] could not hide the main window: {error}");
                 request_controlled_host_exit(app, broker);
@@ -4710,6 +4713,13 @@ fn main() {
                     state.host_event_to(target, if *focused { "focus" } else { "blur" }, json!({}));
                 }
                 tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
+                    if target == "main" {
+                        if window.is_minimized().unwrap_or(false) {
+                            crate::tray::suspend_main_webview(window.app_handle());
+                        } else if window.is_visible().unwrap_or(false) {
+                            crate::tray::resume_main_webview(window.app_handle());
+                        }
+                    }
                     if let Ok(minimized) = window.is_minimized() { state.host_event_to(target, if minimized { "minimize" } else { "restore" }, json!({})); }
                     let scale = window.scale_factor().unwrap_or(1.0);
                     let position = window.outer_position().ok().map(|p| p.to_logical::<f64>(scale));
