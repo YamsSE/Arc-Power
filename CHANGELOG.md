@@ -90,6 +90,21 @@
   now records the requested encoder, resolved runtime encoder, target,
   start result, and every started/stopped/error event. This is the missing
   evidence for the B390 report where recording stops after about one second.
+- **Tray memory.** The main WebView2 is suspended with the official
+  `TrySuspend` when the window is hidden to the tray or minimized, and resumed
+  when shown. The controller is explicitly set `IsVisible(false)` first because
+  WebView2 refuses to suspend a visible webview; the result is logged to
+  `%APPDATA%\ArcPower\webview.log`. The Arc Power HUD, Advanced Overlay,
+  recording toast and status pill are separate WebViews; RTSS is native shared
+  memory, so none of them depend on the main UI WebView.
+- **Inactive pages.** Leaving a tab or hiding the window clears the page DOM,
+  runs the page's `leave` hooks (timers, canvases, media, subscriptions), and
+  rebuilds the page from persisted state when it returns.
+- **Clip hover previews.** Hover videos are metadata-only until hovered and are
+  fully removed, with `src` cleared and `load()` called, on pointer leave,
+  list redraw, tab change, player open and page leave.
+- **CI smoke.** The GitHub workflow now runs the headless mock smoke instead of
+  a local-only UI harness that is not committed.
 - **Delayed ReBAR refresh** joins the verdict into the existing inventory
   instead of replacing the device list and potentially retargeting the
   focused GPU.
