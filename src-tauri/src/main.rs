@@ -505,7 +505,10 @@ fn handle_native_main_close(app: &tauri::AppHandle, window: &tauri::WebviewWindo
     }
     if close_to_tray_enabled(broker) {
         match window.hide() {
-            Ok(()) => broker.host_event_to("main", "hide", json!({})),
+            Ok(()) => {
+                crate::tray::suspend_main_webview(app);
+                broker.host_event_to("main", "hide", json!({}))
+            }
             Err(error) => {
                 eprintln!("[window-close] could not hide the main window: {error}");
                 request_controlled_host_exit(app, broker);
