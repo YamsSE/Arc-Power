@@ -3,12 +3,15 @@
 //! fully native.
 use serde_json::{json, Value};
 use std::sync::{mpsc, Mutex, OnceLock};
+use std::time::Duration;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, Wry,
 };
+use webview2_com::{Microsoft::Web::WebView2::Win32::ICoreWebView2_3, TrySuspendCompletedHandler};
+use windows::core::Interface;
 
 static TRAY: OnceLock<Mutex<Option<TrayIcon<Wry>>>> = OnceLock::new();
 static RECORDING_STATUS: OnceLock<Mutex<&'static str>> = OnceLock::new();
@@ -150,15 +153,49 @@ fn build_menu(app: &AppHandle, store: &arc_power_tauri::backend::native_store::N
 fn toggle_main(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else { return; };
     if window.is_minimized().unwrap_or(false) {
+        resume_main_webview(app);
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     } else if window.is_visible().unwrap_or(false) {
         let _ = window.hide();
+        suspend_main_webview(app);
     } else {
+        resume_main_webview(app);
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+/// Ask WebView2 to release its renderer memory while the window is hidden to
+/// the tray. The DOM is preserved; `resume_main_webview` restores it. The
+/// overlay/advanced-overlay/toast windows are separate WebViews and are not
+/// affected.
+pub fn suspend_main_webview(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        // Let the hide reach the WebView2 controller; TrySuspend fails on a
+        // visible webview.
+        std::thread::sleep(Duration::from_millis(200));
+        let Some(window) = app.get_webview_window("main") else { return; };
+        let _ = window.with_webview(|webview| {
+            let controller = webview.controller();
+            let Ok(core) = (unsafe { controller.CoreWebView2() }) else { return; };
+            let Ok(core3) = core.cast::<ICoreWebView2_3>() else { return; };
+            let handler = TrySuspendCompletedHandler::create(Box::new(|_, _| Ok(())));
+            let _ = unsafe { core3.TrySuspend(&handler) };
+        });
+    });
+}
+
+pub fn resume_main_webview(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else { return; };
+    let _ = window.with_webview(|webview| {
+        let controller = webview.controller();
+        let Ok(core) = (unsafe { controller.CoreWebView2() }) else { return; };
+        let Ok(core3) = core.cast::<ICoreWebView2_3>() else { return; };
+        let _ = unsafe { core3.Resume() };
+    });
 }
 
 fn quit(app: &AppHandle) {
