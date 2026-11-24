@@ -64,10 +64,22 @@ pub fn clamp_fan_pct(pct: f64) -> f64 {js_min(100.0,js_max(0.0,js_round(pct)))}
 pub struct FanPoint {pub t: f64,pub speed_pct: f64}
 pub fn normalize_fan_curve(points: &[FanPoint], max_points: f64) -> Vec<FanPoint> {
     let cap = if max_points>0.0 {max_points.trunc() as usize} else {32};
-    let mut table: Vec<_> = points.iter().take(cap).map(|p| FanPoint{t:js_round(p.t),speed_pct:clamp_fan_pct(p.speed_pct)}).collect();
+    let mut table: Vec<_> = points.iter().take(cap).map(|p| FanPoint{t:js_min(100.0,js_max(20.0,js_round(p.t))),speed_pct:clamp_fan_pct(p.speed_pct)}).collect();
     // Stable, as Array.sort is. NaN subtraction compares as zero in JS.
     table.sort_by(|a,b| (a.t-b.t).partial_cmp(&0.0).unwrap_or(Ordering::Equal));
     for i in 1..table.len() {if table[i].t<=table[i-1].t {table[i].t=table[i-1].t+1.0;}}
+    // A duplicate at the top of the range must not be pushed past 100 C;
+    // the driver silently rejects such a table and stays in Auto. Pull the
+    // top run back so the table is strictly ascending inside the domain.
+    if let Some(last) = table.last() {
+        if last.t > 100.0 {
+            let end = table.len() - 1;
+            table[end].t = 100.0;
+            for i in (0..end).rev() {
+                if table[i].t >= table[i+1].t { table[i].t = table[i+1].t - 1.0; }
+            }
+        }
+    }
     table
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -247,6 +259,19 @@ mod tests {
         assert!(dedicated_memory_bytes_of(f64::INFINITY,false).is_none());
         let lock=clamp_gpu_lock(GpuLock{voltage_v:f64::NAN,freq_mhz:0.0},None);
         assert!(lock.voltage_v.is_nan());assert_eq!(lock.freq_mhz,0.0);
+    }
+    #[test]
+    fn duplicate_top_temperature_is_pulled_back_into_range() {
+        let points = vec![
+            FanPoint { t: 0.0, speed_pct: 20.0 },
+            FanPoint { t: 50.0, speed_pct: 30.0 },
+            FanPoint { t: 100.0, speed_pct: 80.0 },
+            FanPoint { t: 100.0, speed_pct: 100.0 },
+        ];
+        let table = normalize_fan_curve(&points, 10.0);
+        assert_eq!(table.iter().map(|p| p.t).collect::<Vec<_>>(), vec![20.0, 50.0, 99.0, 100.0]);
+        assert_eq!(table.iter().map(|p| p.speed_pct).collect::<Vec<_>>(), vec![20.0, 30.0, 80.0, 100.0]);
+        assert!(table.iter().all(|p| (20.0..=100.0).contains(&p.t)));
     }
     #[test]
     fn frontend_json_decimal_preserves_javascript_number_bits() {

@@ -1,6 +1,6 @@
 // Stage the native host and the remaining compatibility service without
 // rewriting PE resources or using Electron Builder for the distribution.
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -80,10 +80,11 @@ export function assertAdministratorExecutable(file) {
   return { type: 24, id: 1, manifests };
 }
 
-export function stageNativeDistribution({ nativeExecutable, compatibilityDirectory, outputDirectory, testMockFixturesDirectory, nativeOnly = !compatibilityDirectory }) {
+export function stageNativeDistribution({ nativeExecutable, compatibilityDirectory, outputDirectory, testMockFixturesDirectory, nativeOnly = !compatibilityDirectory, projectRoot: projectRootOverride }) {
   nativeExecutable = path.resolve(nativeExecutable);
   compatibilityDirectory = compatibilityDirectory ? path.resolve(compatibilityDirectory) : null;
   outputDirectory = path.resolve(outputDirectory);
+  const runtimeRoot = projectRootOverride ? path.resolve(projectRootOverride) : projectRoot;
   if (existsSync(outputDirectory)) throw new Error(`Output must be a new directory: ${outputDirectory}`);
   if (!nativeOnly && !compatibilityDirectory) throw new Error('Compatibility packaging requires a compatibility input directory');
   const resourceSource = compatibilityDirectory ? path.join(compatibilityDirectory, 'resources') : null;
@@ -99,9 +100,11 @@ export function stageNativeDistribution({ nativeExecutable, compatibilityDirecto
   for (const icon of rootIcons) {
     if (resourceSource && !existsSync(path.join(resourceSource, icon))) throw new Error(`Missing required native root icon: ${icon}`);
   }
+  let backendExecutable = null;
+  let archive = null;
   if (!nativeOnly) {
-    const backendExecutable = path.join(compatibilityDirectory, 'Arc Power.exe');
-    const archive = path.join(resourceSource, 'app.asar');
+    backendExecutable = path.join(compatibilityDirectory, 'Arc Power.exe');
+    archive = path.join(resourceSource, 'app.asar');
     if (!existsSync(archive)) throw new Error(`Missing compatibility archive: ${archive}`);
     if (existsSync(path.join(compatibilityDirectory, 'ArcPower.Backend.exe'))) throw new Error('Input payload already contains the reserved backend executable');
     compatibilityManifest = assertAdministratorExecutable(backendExecutable);
@@ -118,7 +121,7 @@ export function stageNativeDistribution({ nativeExecutable, compatibilityDirecto
   // of the nested service resources.
   mkdirSync(path.join(unpacked, 'resources'), { recursive: true });
   for (const icon of rootIcons) {
-    cpSync(resourceSource ? path.join(resourceSource, icon) : path.join(projectRoot, 'src/assets/app-icon.ico'),
+    cpSync(resourceSource ? path.join(resourceSource, icon) : path.join(runtimeRoot, 'src/assets/app-icon.ico'),
       path.join(unpacked, 'resources', icon));
   }
   // The native host uses the same positive-only D3D12 evidence helper as the
@@ -127,7 +130,7 @@ export function stageNativeDistribution({ nativeExecutable, compatibilityDirecto
   const d3d12HelperName = 'ArcPower.D3D12UploadHeapQuery.exe';
   const d3d12HelperCandidates = [
     ...(resourceSource ? [path.join(resourceSource, 'app.asar.unpacked', 'src', 'main', 'native', d3d12HelperName)] : []),
-    path.join(projectRoot, 'src', 'main', 'native', d3d12HelperName),
+    path.join(runtimeRoot, 'src', 'main', 'native', d3d12HelperName),
   ];
   const d3d12HelperSource = d3d12HelperCandidates.find((candidate) => existsSync(candidate));
   if (!d3d12HelperSource) throw new Error(`Missing bundled D3D12 ReBAR helper: ${d3d12HelperName}`);
@@ -141,12 +144,13 @@ export function stageNativeDistribution({ nativeExecutable, compatibilityDirecto
       ['recording-runtime', 'recording-runtime'],
       ['src/main/backend/igcl2023/IntelControlLib.dll', 'app.asar.unpacked/src/main/backend/igcl2023/IntelControlLib.dll'],
       ['src/main/sharpening-runtime/ArcPower.ScreenSharpen.exe', 'app.asar.unpacked/src/main/sharpening-runtime/ArcPower.ScreenSharpen.exe'],
+      ['src/main/sharpening-runtime/fsr1', 'app.asar.unpacked/src/main/sharpening-runtime/fsr1'],
       ['src/main/backend/PawnIO_setup.exe', 'PawnIO_setup.exe'],
     ];
     for (const [source, destination] of runtimeFiles) {
       const target = path.join(unpacked, 'resources', destination);
       mkdirSync(path.dirname(target), { recursive: true });
-      cpSync(path.join(projectRoot, source), target, { recursive: true, errorOnExist: true, force: false });
+      cpSync(path.join(runtimeRoot, source), target, { recursive: true, errorOnExist: true, force: false });
     }
     // Fail the build rather than silently shipping another telemetry-less
     // package. Every native runtime probe below must resolve in the payload.
@@ -156,6 +160,11 @@ export function stageNativeDistribution({ nativeExecutable, compatibilityDirecto
       'resources/recording-runtime/bin/64bit/ffprobe.exe',
       'resources/recording-runtime/bin/64bit/ascent-obs.exe',
       'resources/app.asar.unpacked/src/main/backend/igcl2023/IntelControlLib.dll',
+      'resources/app.asar.unpacked/src/main/sharpening-runtime/ArcPower.ScreenSharpen.exe',
+      'resources/app.asar.unpacked/src/main/sharpening-runtime/fsr1/ArcPower.Fsr1.hlsl',
+      'resources/app.asar.unpacked/src/main/sharpening-runtime/fsr1/ffx_a.h',
+      'resources/app.asar.unpacked/src/main/sharpening-runtime/fsr1/ffx_fsr1.h',
+      'resources/app.asar.unpacked/src/main/sharpening-runtime/fsr1/LICENSE.txt',
       'resources/ArcPower.D3D12UploadHeapQuery.exe',
       'resources/PawnIO_setup.exe',
     ];
@@ -194,20 +203,30 @@ export function buildNativePortable(options, { runBuilder = spawnSync } = {}) {
   if (process.platform !== 'win32') throw new Error('Windows is required to build the native distribution wrappers');
   const { unpacked, provenance } = stageNativeDistribution(options);
   const output = path.resolve(options.outputDirectory);
+  const changelog = path.join(projectRoot, 'CHANGELOG.md');
+  if (existsSync(changelog)) {
+    cpSync(changelog, path.join(output, 'CHANGELOG.md'));
+    cpSync(changelog, path.join(unpacked, 'CHANGELOG.md'));
+  }
   const makensis = locateNsisCompiler();
+  const withInstaller = options.withInstaller === true;
   const installer = path.join(output, 'Arc-Power_Installer.exe');
   const portable = path.join(output, 'Arc-Power_Portable.exe');
-  buildNativeWrapper({ makensis, payload: unpacked, output: installer, kind: 'installer', runBuilder });
+  if (withInstaller) buildNativeWrapper({ makensis, payload: unpacked, output: installer, kind: 'installer', runBuilder });
   buildNativeWrapper({ makensis, payload: unpacked, output: portable, kind: 'portable', runBuilder });
   provenance.portableManifest = assertAdministratorExecutable(portable);
   provenance.portableSha256 = sha256(portable);
-  provenance.installerManifest = assertAdministratorExecutable(installer);
-  provenance.installerSha256 = sha256(installer);
+  if (withInstaller) {
+    provenance.installerManifest = assertAdministratorExecutable(installer);
+    provenance.installerSha256 = sha256(installer);
+  }
   provenance.wrapperTechnology = 'NSIS native self-extracting wrappers; no Electron runtime';
   writeFileSync(path.join(output, 'native-distribution.json'), JSON.stringify(provenance, null, 2) + '\n');
   const archive = path.join(output, 'Arc-Power_Tauri.zip');
-  const result = runBuilder('tar.exe', ['-a', '-c', '-f', archive, '-C', output,
-    'Arc-Power_Installer.exe', 'Arc-Power_Portable.exe', 'native-distribution.json'],
+  const archiveFiles = ['Arc-Power_Portable.exe', 'native-distribution.json'];
+  if (withInstaller) archiveFiles.unshift('Arc-Power_Installer.exe');
+  if (existsSync(changelog)) archiveFiles.push('CHANGELOG.md');
+  const result = runBuilder('tar.exe', ['-a', '-c', '-f', archive, '-C', output, ...archiveFiles],
     { cwd: projectRoot, stdio: 'inherit', windowsHide: true });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Tauri wrapper archive failed with exit ${result.status}`);
@@ -240,6 +259,9 @@ function buildNativeWrapper({ makensis, payload, output, kind, runBuilder }) {
   // Icon directive NSIS brands both wrappers with its own default icon.
   const icon = path.join(payload, 'resources', 'app-icon.ico');
   if (!existsSync(icon)) throw new Error(`Missing wrapper icon: ${icon}`);
+  const packageVersion = JSON.parse(readFileSync(path.join(projectRoot, 'package.json'), 'utf8')).version;
+  const fileVersion = packageVersion.split('.').map((part) => Number.parseInt(part, 10) || 0)
+    .concat([0, 0, 0, 0]).slice(0, 4).join('.');
   const setPortableMarker = kind === 'portable';
   const sourceText = [
     'Unicode true',
@@ -250,6 +272,12 @@ function buildNativeWrapper({ makensis, payload, output, kind, runBuilder }) {
     'RequestExecutionLevel admin',
     'SilentInstall silent',
     `OutFile ${nsisLiteral(output)}`,
+    `VIProductVersion "${fileVersion}"`,
+    'VIAddVersionKey "ProductName" "Arc Power"',
+    `VIAddVersionKey "FileVersion" "${packageVersion}"`,
+    `VIAddVersionKey "ProductVersion" "${packageVersion}"`,
+    `VIAddVersionKey "FileDescription" "Arc Power ${kind === 'installer' ? 'Setup' : 'Portable'}"`,
+    'VIAddVersionKey "LegalCopyright" "R.ID"',
     'Var payloadRoot',
     'Var childExit',
     'Var cmdArgs',
@@ -305,7 +333,36 @@ export function parseNativeDistributionArgs(args) {
     testMockFixturesDirectory: flags.includes('--test-mock-fixtures') ? path.join(projectRoot, 'mock/featuresets') : undefined };
 }
 
+function newestMtimeMs(root) {
+  let newest = 0;
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(full);
+      else newest = Math.max(newest, statSync(full).mtimeMs);
+    }
+  };
+  visit(root);
+  return newest;
+}
+
+/// Refuse to package a renderer bundle that predates the current frontend
+/// sources. The 1.3.4 settings fix was once absent from the staged bundle
+/// even though the version string was correct; this gate makes that loud.
+export function assertFrontendFresh() {
+  const bundle = path.join(projectRoot, 'tauri-dist/renderer/out/tauri-main.js');
+  if (!existsSync(bundle)) throw new Error('Renderer bundle is missing; run node scripts/build-tauri-frontend.mjs');
+  const source = Math.max(
+    newestMtimeMs(path.join(projectRoot, 'src/renderer')),
+    statSync(path.join(projectRoot, 'src/preload.cjs')).mtimeMs,
+  );
+  if (source > statSync(bundle).mtimeMs) {
+    throw new Error('Renderer bundle is stale; run node scripts/build-tauri-frontend.mjs before packaging');
+  }
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  assertFrontendFresh();
   const options = parseNativeDistributionArgs(process.argv.slice(2));
   buildNativePortable(options);
   console.log(`Created native setup entry: ${path.resolve(options.outputDirectory, 'Arc-Power_Installer.exe')}`);

@@ -1,6 +1,5 @@
-/* M146: a compact, desktop-level capture status indicator. The native window is
-   transparent, click-through, focusless, and fixed to the active display's
-   top-right corner by recording-status-pill.js. */
+/* Compact capture indicator using the app's dark surface and status colors.
+   The transparent, click-through native window supplies the outer bounds. */
 
 html,
 body {
@@ -20,9 +19,12 @@ body {
   height: 100%;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 4px;
-  padding: 4px;
+  padding: 3px;
+  border: 1px solid #33405c;
+  border-radius: 4px;
+  background: #151923;
 }
 
 #recording-status-pill[hidden] {
@@ -42,27 +44,17 @@ body {
   height: 8px;
   flex: 0 0 auto;
   border-radius: 50%;
-  background: #ff6572;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2), 0 0 7px rgba(255, 91, 105, 0.95);
-  animation: status-pulse 1.35s ease-in-out infinite;
+  background: #f87171;
 }
 
 #recording-status-pill.replay .status-dot {
-  background: #65ccff;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2), 0 0 7px rgba(77, 185, 255, 0.95);
+  background: #4cc2ff;
 }
 
 #recording-status-pill.saving .status-dot {
-  background: #f5a623;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2), 0 0 7px rgba(245, 166, 35, 0.95);
+  background: #fbbf24;
 }
 
 #recording-status-pill.error .status-dot {
-  background: #ff6572;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2), 0 0 7px rgba(255, 91, 105, 0.95);
-}
-
-@keyframes status-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.62; transform: scale(0.86); }
+  background: #f87171;
 }

@@ -25,6 +25,7 @@ import {
   removePoint,
   addPointAtMidGap,
   clampPointCount,
+  clampFanTemps,
   seedCurvePoints,
   fanCurvePresets,
   fanSpeedTicks,
@@ -158,7 +159,7 @@ export function renderFanEditor(container: HTMLElement, ctx: PageContext): void 
   const curveSource: CurvePoint[] = reportedCurve && reportedCurve.length >= MIN_CURVE_POINTS
     ? reportedCurve
     : STOCK_FAN_CURVE;
-  const initial: CurvePoint[] = clampPointCount(curveSource, maxPoints);
+  const initial: CurvePoint[] = clampPointCount(clampFanTemps(curveSource), maxPoints);
 
   // M4-A (correction): the waiver STATUS lives ONLY in the dashboard
   // GPU Health card - this view keeps no waiver UI beyond the apply-time
@@ -348,7 +349,7 @@ function renderReadOnly(container: HTMLElement, ctx: PageContext, points: CurveP
         ]),
         fanAxis(),
       ]),
-      el('p', { class: 'card-note', text: 'Editing is disabled: this GPU reports fan control as read-only (canControl=false). The fan stays under driver/IGS management on this card.' }),
+      el('p', { class: 'card-note', text: 'Fan editing is unavailable because control could not be confirmed. The fan remains under driver or GPU utility management.' }),
     ]),
   );
 }
@@ -886,7 +887,7 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
     // skip the gate (the driver's own per-control answer on the fan writes
     // decides; the waiver dialog would only dead-end with UNSUPPORTED_FEATURE).
     const waiverRequired = caps.overclockingSupported !== false;
-    const decision = await ensureWaiver(deviceId, caps.waiverAccepted, caps.deviceName || 'this GPU', waiverRequired);
+    const decision = await ensureWaiver(deviceId, caps.waiverAccepted, caps.deviceName || 'this GPU', waiverRequired, selectedDevice);
     if (decision === 'cancelled') {
       toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before changing fan settings.');
       return;
@@ -920,12 +921,19 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
         .map(([k, per]) => `${k}: ${per.message ?? per.errorCode ?? 'failed'}`)
         .join('; ');
       ctx.store.set({ lastApply: { ok: result.ok, at: Date.now(), detail: result.ok ? 'Fan settings applied' : failedFan } });
+      const shownFailures = new Set<string>();
       for (const [key, per] of Object.entries(result.perControl)) {
         if (per.ok) toast('success', `${key === 'fanMode' ? 'Fan mode' : 'Fan curve'} applied`, '');
         // F3 instant: refusals carry the composed actionable message; hard
         // errors keep the errorCode mapping (M17d item 0b: the shared
         // applyFailureText preference - same as the OC page).
-        else toast('error', 'Fan apply failed', applyFailureText(per, key));
+        else {
+          const text = applyFailureText(per, key);
+          if (!shownFailures.has(text)) {
+            shownFailures.add(text);
+            toast('error', 'Fan apply failed', text);
+          }
+        }
       }
       // M4-A G2 mirror (the OC page's !result.ok branch): a failed apply can
       // mean the DRIVER lost the waiver (waiver-not-set) - re-fetch the caps
@@ -948,7 +956,7 @@ function renderEditor(container: HTMLElement, ctx: PageContext, editor: EditorSt
           && Object.values(result.perControl).some((p) => p?.errorCode === 'waiver-not-set')) {
           waiverRetryCount += 1;
           const live2 = ctx.store.get();
-          const decision = await ensureWaiver(deviceId, live2.caps?.waiverAccepted === true, live2.caps?.deviceName || 'this GPU', live2.caps?.overclockingSupported !== false);
+          const decision = await ensureWaiver(deviceId, live2.caps?.waiverAccepted === true, live2.caps?.deviceName || 'this GPU', live2.caps?.overclockingSupported !== false, selectedDevice);
           if (decision === 'accepted') {
             // Patch the store caps BEFORE the retry - the retry re-enters
             // the pre-apply waiver gate, which reads the store flag; without

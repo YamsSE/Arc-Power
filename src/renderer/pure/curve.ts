@@ -19,7 +19,7 @@ export const MIN_CURVE_POINTS = 2;
 export const MAX_CURVE_POINTS = 32; // ctl_fan_speed_table_t.table size
 export const SPEED_MIN = 0;
 export const SPEED_MAX = 100;
-export const FAN_TEMP_MIN = 0;
+export const FAN_TEMP_MIN = 20;
 export const FAN_TEMP_MAX = 100;
 export const FAN_DOMAIN: CurveDomain = { minT: FAN_TEMP_MIN, maxT: FAN_TEMP_MAX };
 
@@ -85,8 +85,15 @@ export function clampPointCount(points: CurvePoint[], max: number): CurvePoint[]
  * canControl device that reports no curve, or a single point) are seeded
  * with {minT,20} -> {maxT,100} across the domain of the reported points.
  */
+export function clampFanTemps(points: CurvePoint[]): CurvePoint[] {
+  return points.map((p) => ({
+    ...p,
+    t: Math.round(Math.min(FAN_TEMP_MAX, Math.max(FAN_TEMP_MIN, p.t))),
+  }));
+}
+
 export function seedCurvePoints(points: CurvePoint[], max: number): CurvePoint[] {
-  const clamped = clampPointCount(points, max);
+  const clamped = clampPointCount(clampFanTemps(points), max);
   if (clamped.length >= MIN_CURVE_POINTS) return clamped;
   const d = curveDomain(clamped);
   return clampPointCount([
@@ -101,9 +108,21 @@ export function seedCurvePoints(points: CurvePoint[], max: number): CurvePoint[]
  * ascending table).
  */
 export function enforceAscending(points: CurvePoint[]): CurvePoint[] {
-  const out = sortByTemp(points).map((p) => ({ ...p }));
+  const out = sortByTemp(points).map((p) => ({
+    ...p,
+    t: Math.round(Math.min(FAN_TEMP_MAX, Math.max(FAN_TEMP_MIN, p.t))),
+  }));
   for (let i = 1; i < out.length; i++) {
     if (out[i].t <= out[i - 1].t) out[i] = { ...out[i], t: out[i - 1].t + 1 };
+  }
+  // A duplicate at the top of the range must not be pushed past 100 C; the
+  // driver silently rejects the table and stays in Auto. Pull the top run
+  // back so the table stays strictly ascending inside the domain.
+  if (out.length > 0 && out[out.length - 1].t > FAN_TEMP_MAX) {
+    out[out.length - 1].t = FAN_TEMP_MAX;
+    for (let i = out.length - 2; i >= 0; i--) {
+      if (out[i].t >= out[i + 1].t) out[i] = { ...out[i], t: out[i + 1].t - 1 };
+    }
   }
   return out;
 }
@@ -115,8 +134,8 @@ export function enforceAscending(points: CurvePoint[]): CurvePoint[] {
 export function clampTempBetween(points: CurvePoint[], idx: number, t: number): number {
   const prev = idx > 0 ? points[idx - 1].t : -Infinity;
   const next = idx < points.length - 1 ? points[idx + 1].t : Infinity;
-  const lo = prev === -Infinity ? -Infinity : prev + 1;
-  const hi = next === Infinity ? Infinity : next - 1;
+  const lo = prev === -Infinity ? FAN_TEMP_MIN : prev + 1;
+  const hi = next === Infinity ? FAN_TEMP_MAX : next - 1;
   return Math.round(Math.min(Math.max(t, lo), hi));
 }
 

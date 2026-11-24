@@ -165,9 +165,10 @@ function tweakDescription(entry: RegistryEntry, state: RegistryEntryState | unde
     return 'MPO follows the Windows default. Enable writes MPOHack plus DWM OverlayTestMode=5; validate behavior with PresentMon or GPUView.';
   }
   if (entry.id === 'game-dvr') {
-    if (state?.state === 'enabled') return 'Background recording is disabled by this tweak. Disable the tweak to restore it.';
-    if (state?.state === 'disabled') return 'Background recording is active. Enable the tweak to disable it.';
-    return 'Background recording follows the Windows default. Enable the tweak to disable it.';
+    if (state?.state === 'enabled') return 'The Windows policy disables Game Bar background recording. This setting may have been changed by another app. Disable or Revert the tweak to change the policy.';
+    if (state?.state === 'disabled') return 'The Windows policy allows Game Bar recording; the per-user setting still determines whether it is active. Enable the tweak to disable it.';
+    if (state?.state === 'default') return 'The policy is not configured; recording follows the per-user Game Bar setting. Enable the tweak to disable it.';
+    return 'The recording policy could not be determined. Refresh to check it again.';
   }
   if (entry.id === 'fullscreen-optimizations') {
     return 'Windows fullscreen optimizations are controlled per app. Enable this tweak to disable them for the listed apps.';

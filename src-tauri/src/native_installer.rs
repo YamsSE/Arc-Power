@@ -117,7 +117,17 @@ mod windows {
     }
 
     fn installation_dir() -> Result<PathBuf, String> {
-        let root = required_env("LOCALAPPDATA")?.join("Programs").join(PRODUCT);
+        // The packaged setup runs elevated and installs for all users by
+        // default. A non-elevated/dev host falls back to the per-user Programs
+        // folder so the same entry point still works.
+        let base = std::env::var_os("ProgramFiles").map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| std::env::var_os("ProgramW6432").map(PathBuf::from)
+                .filter(|path| path.is_absolute()));
+        let root = match base {
+            Some(base) => base.join(PRODUCT),
+            None => required_env("LOCALAPPDATA")?.join("Programs").join(PRODUCT),
+        };
         if !root.is_absolute() || root.parent().is_none() { return Err("Invalid Arc Power install location".into()); }
         Ok(root)
     }
@@ -133,17 +143,58 @@ mod windows {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(format!("Cannot read Arc Power setup registration: {error}")),
         };
-        let name: String = key.get_value("DisplayName").map_err(|_| "Arc Power setup registration is incomplete")?;
-        if !name.trim().eq_ignore_ascii_case(PRODUCT) { return Err("The Arc Power setup registration belongs to another product".into()); }
-        let value: String = key.get_value("InstallLocation").map_err(|_| "Arc Power setup registration has no install location")?;
+        // Legacy installers may leave a different DisplayName or omit
+        // InstallLocation entirely. A stale registration must not block an
+        // upgrade; treat anything under the Arc Power key as ours and let the
+        // caller decide whether the registered folder still contains the app.
+        let name: String = match key.get_value("DisplayName") {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        let lower = name.trim().to_ascii_lowercase();
+        if !lower.starts_with("arc power") { return Ok(None); }
+        let value: String = match key.get_value("InstallLocation") {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        if value.trim().is_empty() { return Ok(None); }
         let path = PathBuf::from(value);
-        no_reparse_components(&path)?;
+        if no_reparse_components(&path).is_err() { return Ok(None); }
         Ok(Some(path))
     }
 
     fn process_check(current_pid: u32) -> Result<(), String> {
-        let script = format!("$ErrorActionPreference='Stop'; $session=(Get-Process -Id {current_pid} -ErrorAction Stop).SessionId; $running=@(Get-CimInstance Win32_Process -Filter \"Name='Arc Power.exe'\" -ErrorAction Stop | Where-Object {{ $_.ProcessId -ne {current_pid} -and $_.SessionId -eq $session -and $_.CommandLine -notmatch '--type=|--apply-worker|sysman.*helper|rtss-profile-helper|--headless|--gpu-diagnostics|--ui-verify' }}); if ($running.Count -gt 0) {{ throw 'Close Arc Power and retry Setup.' }}");
-        powershell(&script).map_err(|error| if error.contains("Close Arc Power") { error } else { "Setup could not verify whether Arc Power is running. Close other Arc Power copies and retry.".into() })
+        // Enumerate processes natively. The previous PowerShell/WMI check
+        // surfaced CLIXML progress records as the user-facing error and made a
+        // running Arc Power look like a shell failure.
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return Err("Setup could not check running Arc Power copies. Close Arc Power and retry.".into());
+            }
+            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut running = false;
+            let mut found = Process32FirstW(snapshot, &mut entry) != 0;
+            while found {
+                if entry.th32ProcessID != current_pid {
+                    let length = entry.szExeFile.iter().position(|unit| *unit == 0)
+                        .unwrap_or(entry.szExeFile.len());
+                    let name = String::from_utf16_lossy(&entry.szExeFile[..length]);
+                    if name.eq_ignore_ascii_case(INSTALLED_EXE) { running = true; break; }
+                }
+                found = Process32NextW(snapshot, &mut entry) != 0;
+            }
+            let _ = CloseHandle(snapshot);
+            if running {
+                Err("Close Arc Power before installing or removing it, then retry.".into())
+            } else {
+                Ok(())
+            }
+        }
     }
 
     fn write_registration(install_dir: &Path) -> Result<(), String> {
@@ -278,22 +329,55 @@ mod windows {
         fs::remove_dir_all(path).map_err(|error| format!("Could not remove {}: {error}", path.display()))
     }
 
+    /// A prior install tree contains only what the setup payload writes.
+    /// Anything else (a recording folder, a user file) makes the folder
+    /// non-disposable; the installer keeps it and tells the user.
+    fn removable_install_tree(path: &Path) -> bool {
+        let known = ["Arc Power.exe", "resources", "CHANGELOG.md", "uninstall.exe"];
+        let Ok(entries) = fs::read_dir(path) else { return false; };
+        entries.filter_map(Result::ok).all(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            known.iter().any(|known| name.eq_ignore_ascii_case(known))
+        })
+    }
+
     fn install() -> Result<i32, String> {
         let source = source_payload_root()?;
-        let install_dir = installation_dir()?;
+        let default_dir = installation_dir()?;
+        let registered = registered_install_dir()?;
+        let (install_dir, old_install_dir) = match registered {
+            Some(registered) if registered.is_dir() && registered.join(INSTALLED_EXE).is_file() => {
+                let local_programs = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+                    .map(|path| path.join("Programs"));
+                let under_local = local_programs.as_ref().is_some_and(|local| registered.starts_with(local));
+                if under_local && !same_path(&registered, &default_dir) {
+                    let move_to_default = message("Arc Power Setup", &format!(
+                        "Arc Power is currently installed for this Windows account in:\n{}\n\nMove it to the standard all-users location?\n{}\n\nYour profiles and recordings are kept. Choose No to keep the current location.",
+                        registered.display(), default_dir.display()), 0x00000024) == 6;
+                    if move_to_default { (default_dir, Some(registered)) } else { (registered, None) }
+                } else { (registered, None) }
+            }
+            // A stale registration, or a default folder with the app in it,
+            // is replaced in place instead of blocking the upgrade.
+            _ => (default_dir, None),
+        };
+        // A differently-keyed 1.3.2/1.3.3 registration can leave the old
+        // per-user folder behind. If it is the product's default folder and
+        // still contains the app, remove it after the new install lands.
+        let stale_per_user = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+            .map(|path| path.join("Programs").join(PRODUCT))
+            .filter(|path| !same_path(path, &install_dir) && path.join(INSTALLED_EXE).is_file());
+        let old_install_dir = old_install_dir.or(stale_per_user);
         if source.ancestors().any(|parent| same_path(parent, &install_dir))
             || install_dir.ancestors().any(|parent| same_path(parent, &source))
         {
             return Err("Setup payload and install location must be separate folders".into());
         }
         no_reparse_components(&install_dir)?;
-        if let Some(registered) = registered_install_dir()? {
-            let registered = registered.canonicalize().map_err(|_| "The registered Arc Power installation is unavailable")?;
-            if !same_path(&registered, &install_dir) {
-                return Err("A different Arc Power install location is already registered. Remove it before installing this distribution.".into());
-            }
-        } else if install_dir.exists() && fs::read_dir(&install_dir).map_err(|error| error.to_string())?.next().is_some() {
-            return Err("The default Arc Power install folder already contains files and is not registered. Choose an empty folder or remove it first.".into());
+        if install_dir.exists() && fs::read_dir(&install_dir).map_err(|error| error.to_string())?.next().is_some()
+            && !install_dir.join(INSTALLED_EXE).is_file() {
+            return Err("The Arc Power install folder already contains files but no Arc Power executable. Choose an empty folder or remove it first.".into());
         }
         let desktop = message("Arc Power Setup", "Create a desktop shortcut? Choose No to use only the Start Menu shortcut.", 0x00000024) == 6;
         let confirm = message("Arc Power Setup", &format!("Install Arc Power {VERSION} for this Windows account?\n\nInstall location:\n{}\n\nYour ArcPower profile data will be preserved.", install_dir.display()), 0x00000024);
@@ -318,7 +402,9 @@ mod windows {
         process_check(std::process::id())?;
         let had_install = install_dir.exists();
         if had_install {
-            if !registered_install_dir()?.is_some_and(|registered| same_path(&registered, &install_dir)) {
+            let registered_here = registered_install_dir()?.is_some_and(|registered| same_path(&registered, &install_dir));
+            let known_app = install_dir.join(INSTALLED_EXE).is_file();
+            if !registered_here && !known_app {
                 let _ = remove_tree(&stage);
                 return Err("Refusing to replace an unregistered folder at the Arc Power install location".into());
             }
@@ -329,7 +415,9 @@ mod windows {
             let _ = remove_tree(&stage);
             return Err(format!("Cannot install Arc Power: {error}"));
         }
-        let finalize = register_shortcuts(&install_dir, desktop).and_then(|_| write_registration(&install_dir));
+        let finalize = register_shortcuts(&install_dir, desktop)
+            .and_then(|_| write_registration(&install_dir))
+            .map(|_| remove_legacy_uninstall_keys(&install_dir));
         if let Err(error) = finalize {
             let mut rollback_errors = Vec::new();
             if let Err(rollback) = restore_registration(registration_snapshot) { rollback_errors.push(rollback); }
@@ -348,7 +436,24 @@ mod windows {
                 format!("Setup failed: {error}. Rollback needs attention: {}", rollback_errors.join("; "))
             });
         }
-        if had_install { let _ = remove_tree(&backup); }
+        if had_install {
+            if removable_install_tree(&backup) { let _ = remove_tree(&backup); }
+            else {
+                let _ = message("Arc Power Setup", &format!(
+                    "The previous Arc Power folder was kept because it also contains files Setup did not install:\n{}\n\nYou can remove it after checking those files.", backup.display()), 0x00000040);
+            }
+        }
+        // A one-time move from the per-user location leaves the old folder
+        // behind; remove it only after the new install and registration landed.
+        if let Some(old) = old_install_dir {
+            if !same_path(&old, &install_dir) {
+                if removable_install_tree(&old) { let _ = remove_tree(&old); }
+                else {
+                    let _ = message("Arc Power Setup", &format!(
+                        "The previous per-user folder was kept because it also contains files Setup did not install:\n{}\n\nYour profiles and recordings are unaffected. You can remove that folder after checking those files.", old.display()), 0x00000040);
+                }
+            }
+        }
         if message("Arc Power Setup", "Arc Power is installed. Launch it now?", 0x00000024) == 6 {
             let mut launch = Command::new(install_dir.join(INSTALLED_EXE));
             launch.current_dir(&install_dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -357,6 +462,154 @@ mod windows {
             launch.spawn().map_err(|error| format!("Arc Power installed, but it could not be launched: {error}"))?;
         }
         Ok(0)
+    }
+
+    pub struct SetupPlan {
+        pub version: &'static str,
+        pub default_dir: PathBuf,
+        pub registered_dir: Option<PathBuf>,
+    }
+
+    pub struct InstallSelection {
+        pub install_dir: PathBuf,
+        pub old_install_dir: Option<PathBuf>,
+        pub desktop_shortcut: bool,
+    }
+
+    pub fn setup_plan() -> Result<SetupPlan, String> {
+        let default_dir = installation_dir()?;
+        let registered_dir = registered_install_dir()?
+            .filter(|dir| dir.is_dir() && dir.join(INSTALLED_EXE).is_file());
+        Ok(SetupPlan { version: VERSION, default_dir, registered_dir })
+    }
+
+    /// Option-driven install used by the WebView setup. It runs the same
+    /// validation, staging, registration, shortcut and rollback steps as the
+    /// classic prompt flow, but never opens a message box.
+    pub fn install_selected(selection: InstallSelection) -> Result<(), String> {
+        let source = source_payload_root()?;
+        let install_dir = selection.install_dir;
+        let desktop = selection.desktop_shortcut;
+        let old_install_dir = selection.old_install_dir
+            .filter(|old| !same_path(old, &install_dir));
+        if source.ancestors().any(|parent| same_path(parent, &install_dir))
+            || install_dir.ancestors().any(|parent| same_path(parent, &source))
+        {
+            return Err("Setup payload and install location must be separate folders".into());
+        }
+        no_reparse_components(&install_dir)?;
+        if install_dir.exists() && fs::read_dir(&install_dir).map_err(|error| error.to_string())?.next().is_some()
+            && !install_dir.join(INSTALLED_EXE).is_file() {
+            return Err("The Arc Power install folder already contains files but no Arc Power executable. Choose an empty folder or remove it first.".into());
+        }
+        process_check(std::process::id())?;
+        let registration_snapshot = snapshot_registration()?;
+        let shortcut_snapshots = shortcut_paths(desktop)?.iter().map(|path| snapshot_shortcut(path))
+            .collect::<Result<Vec<_>, _>>()?;
+        let parent = install_dir.parent().ok_or("Invalid Arc Power install location")?;
+        fs::create_dir_all(parent).map_err(|error| format!("Cannot create install parent: {error}"))?;
+        let pid = std::process::id();
+        let stage = parent.join(format!(".ArcPower-install-{pid}.stage"));
+        let backup = parent.join(format!(".ArcPower-install-{pid}.backup"));
+        if stage.exists() || backup.exists() { return Err("A previous setup recovery folder needs attention".into()); }
+        fs::create_dir(&stage).map_err(|error| format!("Cannot create setup staging directory: {error}"))?;
+        let copied = (|| {
+            copy_tree(&source.join(INSTALLED_EXE), &stage.join(INSTALLED_EXE))?;
+            copy_tree(&source.join("resources"), &stage.join("resources"))
+        })();
+        if let Err(error) = copied { let _ = remove_tree(&stage); return Err(error); }
+        process_check(std::process::id())?;
+        let had_install = install_dir.exists();
+        if had_install {
+            let registered_here = registered_install_dir()?.is_some_and(|registered| same_path(&registered, &install_dir));
+            let known_app = install_dir.join(INSTALLED_EXE).is_file();
+            if !registered_here && !known_app {
+                let _ = remove_tree(&stage);
+                return Err("Refusing to replace an unregistered folder at the Arc Power install location".into());
+            }
+            fs::rename(&install_dir, &backup).map_err(|error| format!("Cannot preserve the previous Arc Power files: {error}"))?;
+        }
+        if let Err(error) = fs::rename(&stage, &install_dir) {
+            if had_install { let _ = fs::rename(&backup, &install_dir); }
+            let _ = remove_tree(&stage);
+            return Err(format!("Cannot install Arc Power: {error}"));
+        }
+        let finalize = register_shortcuts(&install_dir, desktop)
+            .and_then(|_| write_registration(&install_dir))
+            .map(|_| remove_legacy_uninstall_keys(&install_dir));
+        if let Err(error) = finalize {
+            let mut rollback_errors = Vec::new();
+            if let Err(rollback) = restore_registration(registration_snapshot) { rollback_errors.push(rollback); }
+            for snapshot in shortcut_snapshots.into_iter().rev() {
+                if let Err(rollback) = restore_shortcut(snapshot) { rollback_errors.push(rollback); }
+            }
+            if let Err(rollback) = remove_tree(&install_dir) { rollback_errors.push(rollback); }
+            if had_install {
+                if let Err(rollback) = fs::rename(&backup, &install_dir) {
+                    rollback_errors.push(format!("Could not restore the prior install from {}: {rollback}", backup.display()));
+                }
+            }
+            return Err(if rollback_errors.is_empty() {
+                format!("Setup failed and restored the previous Arc Power files and Windows registration: {error}")
+            } else {
+                format!("Setup failed: {error}. Rollback needs attention: {}", rollback_errors.join("; "))
+            });
+        }
+        if had_install {
+            if removable_install_tree(&backup) { let _ = remove_tree(&backup); }
+        }
+        if let Some(old) = old_install_dir {
+            if !same_path(&old, &install_dir) && removable_install_tree(&old) { let _ = remove_tree(&old); }
+        }
+        Ok(())
+    }
+
+    pub fn launch_installed(install_dir: &Path) -> Result<(), String> {
+        let mut launch = Command::new(install_dir.join(INSTALLED_EXE));
+        launch.current_dir(install_dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        use std::os::windows::process::CommandExt;
+        launch.creation_flags(0x00000008 | 0x00000200);
+        launch.spawn().map(|_| ()).map_err(|error| format!("Arc Power installed, but it could not be launched: {error}"))
+    }
+
+    /// Option-driven uninstall used by the WebView uninstaller. The cleanup
+    /// helper still waits for this process to exit before deleting the folder.
+    pub fn uninstall_selected() -> Result<(), String> {
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        no_reparse_components(&executable)?;
+        let install_path = executable.parent().ok_or("Cannot locate installed Arc Power")?;
+        no_reparse_components(install_path)?;
+        let install_dir = install_path.canonicalize()
+            .map_err(|error| format!("Cannot resolve installed Arc Power: {error}"))?;
+        validate_registered_install(&install_dir)?;
+        process_check(std::process::id())?;
+        let pid = std::process::id();
+        let temp = std::env::temp_dir();
+        no_reparse_components(&temp)?;
+        let helper = temp.join(format!("arc-power-uninstall-{pid}-{}.ps1", rand::random::<u128>()));
+        let script = cleanup_script(pid, &install_dir, &executable, &helper)?;
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&helper)
+            .map_err(|error| format!("Cannot prepare uninstall helper: {error}"))?;
+        file.write_all(b"\xEF\xBB\xBF").and_then(|_| file.write_all(script.as_bytes()))
+            .map_err(|error| format!("Cannot write uninstall helper: {error}"))?;
+        file.sync_all().map_err(|error| format!("Cannot flush uninstall helper: {error}"))?;
+        let recovery = format!("\"{}\" -NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\" -Retry", powershell_path().display(), helper.display());
+        if let Err(error) = set_recovery_registration(&install_dir, &recovery) {
+            let _ = fs::remove_file(&helper);
+            return Err(error);
+        }
+        let mut child = Command::new(powershell_path());
+        child.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&helper).current_dir(&temp).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        use std::os::windows::process::CommandExt;
+        child.creation_flags(0x00000008 | 0x00000200);
+        if let Err(error) = child.spawn() {
+            let _ = fs::remove_file(&helper);
+            let _ = set_recovery_registration(&install_dir, &format!("\"{}\" --uninstall", executable.display()));
+            return Err(format!("Could not start Arc Power removal: {error}"));
+        }
+        Ok(())
     }
 
     fn uninstall() -> Result<i32, String> {
@@ -403,38 +656,51 @@ mod windows {
     }
 
     fn validate_registered_install(install_dir: &Path) -> Result<(), String> {
-        let key = registry_key().open_subkey_with_flags(INSTALL_REGISTRY, KEY_QUERY_VALUE)
-            .map_err(|_| "Arc Power uninstall registration is missing".to_owned())?;
-        let name: String = key.get_value("DisplayName").map_err(|_| "Arc Power uninstall registration is invalid")?;
-        let path: String = key.get_value("InstallLocation").map_err(|_| "Arc Power uninstall registration is invalid")?;
-        let uninstall: String = key.get_value("UninstallString").map_err(|_| "Arc Power uninstall registration is invalid")?;
-        let registered = PathBuf::from(path);
-        no_reparse_components(&registered)?;
-        let registered = registered.canonicalize().map_err(|_| "Registered Arc Power install location is unavailable")?;
-        if !name.trim().eq_ignore_ascii_case(PRODUCT) || !same_path(&registered, install_dir) {
-            return Err("Arc Power uninstall registration does not match this executable".into());
-        }
-        let executable = install_dir.join(INSTALLED_EXE).canonicalize().map_err(|_| "Installed Arc Power executable is unavailable")?;
-        let registered_executable = uninstall.trim_start().strip_prefix('"').and_then(|value| value.split_once('"').map(|pair| pair.0))
-            .unwrap_or_else(|| uninstall.split_whitespace().next().unwrap_or(""));
-        let registered_executable = PathBuf::from(registered_executable);
-        no_reparse_components(&registered_executable)?;
-        let registered_executable = registered_executable.canonicalize()
-            .map_err(|_| "Arc Power uninstall command is invalid")?;
-        if !same_path(&registered_executable, &executable) || !same_path(&executable, &std::env::current_exe().map_err(|error| error.to_string())?) {
-            return Err("Arc Power uninstall registration does not identify this installation".into());
+        // The uninstaller runs from the installed executable. A stale or
+        // malformed registration from a prior release must not make the
+        // uninstaller a no-op; the cleanup script removes the fixed key and
+        // the folder this executable actually lives in.
+        let executable = install_dir.join(INSTALLED_EXE).canonicalize()
+            .map_err(|_| "Installed Arc Power executable is unavailable")?;
+        let current = std::env::current_exe().map_err(|error| error.to_string())?.canonicalize()
+            .map_err(|_| "Cannot resolve the running Arc Power executable")?;
+        if !same_path(&executable, &current) {
+            return Err("Arc Power uninstall must run from the installed executable".into());
         }
         Ok(())
     }
 
     fn set_recovery_registration(install_dir: &Path, uninstall: &str) -> Result<(), String> {
-        let key = registry_key().open_subkey_with_flags(INSTALL_REGISTRY, KEY_SET_VALUE)
-            .map_err(|error| format!("Cannot preserve Arc Power removal recovery: {error}"))?;
+        let key = registry_key().create_subkey(INSTALL_REGISTRY)
+            .map_err(|error| format!("Cannot preserve Arc Power removal recovery: {error}"))?.0;
         for (name, value) in [("UninstallString", uninstall.to_owned()), ("QuietUninstallString", uninstall.to_owned()),
             ("InstallLocation", install_dir.to_string_lossy().into_owned())] {
             key.set_value(name, &value).map_err(|error| format!("Cannot preserve Arc Power removal recovery: {error}"))?;
         }
         Ok(())
+    }
+
+    /// Remove a differently-named legacy uninstall entry left by an earlier
+    /// setup. The fixed Arc Power key is overwritten by `write_registration`;
+    /// this only cleans entries that identify this product and this (or a now
+    /// missing) install folder, so a normal upgrade leaves one entry.
+    fn remove_legacy_uninstall_keys(_install_dir: &Path) {
+        let root = registry_key();
+        let Ok(uninstall) = root.open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall", KEY_ENUMERATE_SUB_KEYS) else { return; };
+        for name in uninstall.enum_keys().flatten() {
+            if name.eq_ignore_ascii_case(PRODUCT) { continue; }
+            let Ok(key) = uninstall.open_subkey_with_flags(&name, KEY_QUERY_VALUE) else { continue; };
+            let Ok(display) = key.get_value::<String, _>("DisplayName") else { continue; };
+            let lower = display.trim().to_ascii_lowercase();
+            if lower != "arc power" && !lower.starts_with("arc power ") { continue; }
+            let publisher = key.get_value::<String, _>("Publisher").unwrap_or_default();
+            if !publisher.trim().is_empty() && !publisher.eq_ignore_ascii_case("R.ID") { continue; }
+            // DisplayName + Publisher identify this product. The install folder
+            // may be the old per-user path, a missing path, or the new all-users
+            // path; any of them is the same legacy entry and must not survive.
+            let _ = uninstall.delete_subkey(&name);
+        }
     }
 
     fn cleanup_script(pid: u32, install_dir: &Path, executable: &Path, script_path: &Path) -> Result<String, String> {
@@ -447,7 +713,7 @@ mod windows {
         let desktop = required_env("USERPROFILE")?.join("Desktop").join("Arc Power.lnk");
         let recovery_command = format!("\"{}\" -NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\" -Retry", powershell_path().display(), script_path.display());
         let cache_paths = [app_data.join("ArcPowerCache"), app_data.join("ArcPowerTauriCache"), app_data.join("arc-power"), app_data.join("rid-arc-power"),
-            local.join("ArcPowerCache"), local.join("arc-power"), local.join("rid-arc-power"), local.join("Arc Power/Cache")];
+            local.join("ArcPowerCache"), local.join("ArcPowerSetupCache"), local.join("arc-power"), local.join("rid-arc-power"), local.join("Arc Power/Cache")];
         let cache_literals = cache_paths.iter().map(|path| ps_literal(&path.to_string_lossy())).collect::<Vec<_>>().join(",");
         let cleanup_paths = [start_menu.clone(), desktop.clone(), profile.clone(), install_dir.to_path_buf()];
         let cleanup_literals = cleanup_paths.iter().map(|path| ps_literal(&path.to_string_lossy())).collect::<Vec<_>>().join(",");
@@ -615,5 +881,18 @@ mod windows {
     pub fn run(_mode: InstallerMode) -> Result<i32, String> { Err("Native setup and uninstall require Windows".into()) }
 }
 
-pub fn run(mode: InstallerMode) -> Result<i32, String> { windows::run(mode) }
+#[cfg(windows)]
+pub use windows::{install_selected, launch_installed, setup_plan, uninstall_selected, InstallSelection, SetupPlan};
+
+pub fn run(mode: InstallerMode) -> Result<i32, String> {
+    match mode {
+        InstallerMode::Install | InstallerMode::Uninstall => match crate::setup_ui::run(mode) {
+            Ok(code) => Ok(code),
+            // A host that cannot create a WebView2 setup window still gets a
+            // working installer through the classic flow.
+            Err(_) => windows::run(mode),
+        },
+        InstallerMode::Update => windows::run(mode),
+    }
+}
 

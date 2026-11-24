@@ -3941,6 +3941,7 @@ async function main() {
   // They are deliberately independent from the telemetry HUD: disabling or
   // hiding the HUD must never hide a recording/clip result notification.
   // The handle is not created in ui-verify so verification runs stay silent.
+  const nativeRecordingToast = process.env.ARC_POWER_NATIVE_RECORDING_TOAST === '1';
   if (!uiVerify && !nativeRecordingToast) {
     recordingToastHandle = createRecordingToastWindow({
       ...(tauriService ? { createWindow: options => tauriService.createAuxWindow('recording-toast', options) } : {}),
@@ -4551,7 +4552,6 @@ async function main() {
       return settings?.recordingToastsEnabled === true;
     } catch { return false; }
   };
-  const nativeRecordingToast = process.env.ARC_POWER_NATIVE_RECORDING_TOAST === '1';
   const showRecordingActionToast = async (result) => {
     if (nativeRecordingToast) return;
     if (!result || typeof result !== 'object') return;
@@ -5089,11 +5089,18 @@ async function main() {
       return;
     }
     if (process.env.RID_MOCK_FAN_RESUME_VERIFY === '1') {
-      const { powerMonitor } = await import('electron');
-      const { runFanResumeUiVerification } = await import('../../test/fan-resume-ui.js');
-      await runFanResumeUiVerification(win, backend, () => powerMonitor.emit('resume'));
-      app.exit(0);
-      return;
+      // The focused fan-resume harness lives in test/, which is deliberately
+      // git-ignored (local-only). A CI checkout must not fail because the
+      // opt-in harness is absent; fall through to the tracked ui-verify flow.
+      const fanResumeTest = path.join(__dirname, '..', '..', 'test', 'fan-resume-ui.js');
+      if (fs.existsSync(fanResumeTest)) {
+        const { powerMonitor } = await import('electron');
+        const { runFanResumeUiVerification } = await import('../../test/fan-resume-ui.js');
+        await runFanResumeUiVerification(win, backend, () => powerMonitor.emit('resume'));
+        app.exit(0);
+        return;
+      }
+      console.log('[ui-verify] fan-resume-ui.js is local-only and absent; skipping focused harness');
     }
     if (process.env.RID_MOCK_DISPLAY_COLOR_VERIFY === '1') {
       const { verifyManagedDisplayColorUi } = await import('../../test/managed-display-color-ui.js');

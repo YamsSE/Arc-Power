@@ -62,6 +62,11 @@ struct FpsStats {
     api: Option<String>,
 }
 
+fn foreground_sample(pid: Option<u32>, stats: &FpsStats) -> Value {
+    json!({"pid":pid,"fps":stats.fps,"frameTimeMs":stats.frame_time,"api":stats.api,
+        "avgFps":stats.avg,"low1Pct":stats.low1,"low01Pct":stats.low01,"p99":stats.p99})
+}
+
 impl Default for FpsStats {
     fn default() -> Self {
         Self { fps: None, avg: None, low1: None, low01: None, p99: None, frame_time: None, api: None }
@@ -535,7 +540,7 @@ impl Publisher {
     fn foreground_metrics(&mut self) -> Value {
         self.refresh();
         if !self.ensure_mapping() {
-            return json!({"pid":Value::Null,"fps":Value::Null,"frameTimeMs":Value::Null,"api":Value::Null});
+            return foreground_sample(None, &FpsStats::default());
         }
         let (pid, stats) = match self.mapping.as_ref() {
             Some(mapping) => {
@@ -545,7 +550,7 @@ impl Publisher {
             }
             None => (None, FpsStats::default()),
         };
-        json!({"pid":pid,"fps":stats.fps,"frameTimeMs":stats.frame_time,"api":stats.api})
+        foreground_sample(pid, &stats)
     }
 
     fn toggle(&mut self) -> Value {
@@ -692,6 +697,18 @@ impl RtssOsdHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foreground_sample_exposes_available_frame_pacing_metrics() {
+        let stats = FpsStats { fps: Some(60.0), frame_time: Some(16.7), avg: Some(58.0),
+            low1: Some(40.0), low01: Some(30.0), p99: Some(42.0), api: Some("DX12".into()) };
+        let sample = foreground_sample(Some(123), &stats);
+        assert_eq!(sample["avgFps"], 58.0);
+        assert_eq!(sample["low1Pct"], 40.0);
+        assert_eq!(sample["low01Pct"], 30.0);
+        assert_eq!(sample["p99"], 42.0);
+        assert_eq!(foreground_sample(None, &FpsStats::default())["avgFps"], Value::Null);
+    }
 
     #[test]
     fn rtss_overlay_starts_hidden_and_settings_do_not_reveal_it() {

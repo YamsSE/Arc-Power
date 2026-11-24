@@ -29,6 +29,14 @@ pub fn acquire() -> Result<ApplyLock, String> {
     acquire_named(APPLY_MUTEX_NAME, Duration::from_secs(10))
 }
 
+/// Bounded probe acquisition: a capabilities read must never wait for a
+/// long apply just to run the reversible fan probe. The caller skips the
+/// probe when the lock is busy and stays read-only.
+#[cfg(windows)]
+pub fn try_acquire(timeout: Duration) -> Result<ApplyLock, String> {
+    acquire_named(APPLY_MUTEX_NAME, timeout)
+}
+
 #[cfg(windows)]
 pub fn acquire_named(name: &str, timeout: Duration) -> Result<ApplyLock, String> {
     use windows_sys::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT};
@@ -66,6 +74,8 @@ impl Drop for ApplyLock {
 
 #[cfg(not(windows))]
 pub fn acquire() -> Result<ApplyLock, String> { Ok(ApplyLock) }
+#[cfg(not(windows))]
+pub fn try_acquire(_timeout: Duration) -> Result<ApplyLock, String> { Ok(ApplyLock) }
 #[cfg(not(windows))]
 pub fn acquire_named(_name: &str, _timeout: Duration) -> Result<ApplyLock, String> { Ok(ApplyLock) }
 

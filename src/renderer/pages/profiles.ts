@@ -123,9 +123,12 @@ export function profileTargetDevice(
   profile: Pick<Profile, 'deviceKey'>,
 ): DeviceInfo | null {
   const devices = Array.isArray(state.devices) ? state.devices : [];
-  if (typeof profile.deviceKey === 'string' && profile.deviceKey.trim()) {
-    const matches = devices.filter((device) => device.deviceKey === profile.deviceKey);
-    return matches.length === 1 ? matches[0] : null;
+  const profileKey = profile.deviceKey;
+  if (typeof profileKey === 'string' && profileKey.trim()) {
+    const matches = devices.filter((device) => device.deviceKey === profileKey
+      || device.deviceKeys?.includes(profileKey) === true);
+    if (matches.length !== 1 || matches[0].identityAmbiguous === true) return null;
+    return matches[0];
   }
   if (!Number.isInteger(state.deviceId)) return null;
   return devices.find((device) => device.id === state.deviceId) ?? null;
@@ -1255,7 +1258,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
 
       // M3-C review F4: the waiver gate reads the target adapter's LIVE caps,
       // not the focused GPU's caps.
-      const decision = await ensureWaiver(targetDeviceId, targetCaps.waiverAccepted === true, targetGpuLabel, targetCaps.overclockingSupported !== false);
+      const decision = await ensureWaiver(targetDeviceId, targetCaps.waiverAccepted === true, targetGpuLabel, targetCaps.overclockingSupported !== false, targetDevice);
       if (decision === 'cancelled') {
         toast('info', 'Load cancelled', 'The warranty waiver must be accepted before applying a profile.');
         return;
@@ -1290,7 +1293,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
           targetCaps = freshCaps;
           updateFocusedStore({ caps: freshCaps });
           waiverRetryCount += 1;
-          const retryDecision = await ensureWaiver(targetDeviceId, freshCaps.waiverAccepted === true, targetGpuLabel, freshCaps.overclockingSupported !== false);
+          const retryDecision = await ensureWaiver(targetDeviceId, freshCaps.waiverAccepted === true, targetGpuLabel, freshCaps.overclockingSupported !== false, targetDevice);
           if (retryDecision === 'accepted') {
             const acceptedCaps = { ...freshCaps, waiverAccepted: true };
             targetCaps = acceptedCaps;
@@ -1334,7 +1337,10 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       // keyed by the target physical GPU, never by the currently focused one.
       const outcome = profileApplyOutcome(result, p.name, changed);
       if (outcome.markActive) {
-        if (!p.deviceKey && targetGpuKey) {
+        // A uniquely verified deviceKeys alias can resolve profiles written
+        // by the prior Electron inventory. Canonicalize that old key only
+        // after a successful apply, using the target row's current key.
+        if (targetGpuKey && p.deviceKey !== targetGpuKey) {
           await api.profilesSave({ ...p, deviceKey: targetGpuKey, deviceName: targetGpuLabel });
         }
         const currentMap = activeProfileIds((await api.profilesList()).settings);

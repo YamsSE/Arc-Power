@@ -145,10 +145,16 @@ export function normalizeFanCurve(points, maxPoints) {
   const cap = maxPoints > 0 ? maxPoints : 32;
   const table = points
     .slice(0, cap)
-    .map((p) => ({ t: Math.round(p.t), speedPct: clampFanPct(p.speedPct) }))
+    .map((p) => ({ t: Math.round(Math.min(100, Math.max(20, p.t))), speedPct: clampFanPct(p.speedPct) }))
     .sort((a, b) => a.t - b.t);
   for (let i = 1; i < table.length; i++) {
     if (table[i].t <= table[i - 1].t) table[i] = { ...table[i], t: table[i - 1].t + 1 };
+  }
+  if (table.length > 0 && table[table.length - 1].t > 100) {
+    table[table.length - 1] = { ...table[table.length - 1], t: 100 };
+    for (let i = table.length - 2; i >= 0; i--) {
+      if (table[i].t >= table[i + 1].t) table[i] = { ...table[i], t: table[i + 1].t - 1 };
+    }
   }
   return table;
 }

@@ -25,9 +25,9 @@
 
 use super::{
     apply_gates::{
-        extended_unavailable_per_control, extended_unavailable_refusal,
+        extended_unavailable_per_control, split_profile_by_driver_witness, unsupported_legacy_targets,
         is_sysman_primary_power_request, oc_mode_refusal, refusal_per_control,
-        wc_unit_controls, ExtendedUnavailable, LimitsKey, EXTENDED_UNAVAILABLE_MSG,
+        LimitsKey, EXTENDED_UNAVAILABLE_MSG,
         OC_MODE_ADVANCED,
     },
     gpu_apply_identity::{identity_from_row, ApplyIdentity},
@@ -372,29 +372,23 @@ pub(crate) fn plan_host_profile_apply_with(
     }
 
     let sysman_primary = is_sysman_primary_power_request(settings, ranges, inputs.sysman_power_limits);
-    let mut gate_caps = caps.clone();
-    gate_caps["extendedRanges"] = json!(inputs.extended_capable);
-    let mut unavailable = extended_unavailable_refusal(settings, &gate_caps, sysman_primary);
-    if unavailable.is_none() && !inputs.extended_capable {
-        let wc: Vec<&'static str> = wc_unit_controls(settings, ranges)
-            .into_iter()
-            .filter(|control| *control != "powerLimitW" || !sysman_primary)
-            .collect();
-        if !wc.is_empty() {
-            unavailable = Some(ExtendedUnavailable {
-                controls: wc,
-                message: EXTENDED_UNAVAILABLE_MSG,
-            });
-        }
-    }
-    if let Some(unavailable) = unavailable {
+    let (_, legacy) = match split_profile_by_driver_witness(settings, caps.get("driverRanges"), sysman_primary) {
+        Ok(split) => split,
+        Err(error) => return HostApplyOutcome::delegate(error),
+    };
+    let targets: Vec<&str> = ["powerLimitW", "tempLimitC"].into_iter()
+        .filter(|key| legacy.get(*key).is_some()).collect();
+    let unavailable = if caps.get("extendedControls").is_some_and(Value::is_object) {
+        unsupported_legacy_targets(&targets, caps)
+    } else if inputs.extended_capable { Vec::new() } else { targets };
+    if !unavailable.is_empty() {
         // Electron refuses only when every requested control is refused;
         // a mixed profile keeps its partial-apply behavior in the broker.
         let all_refused = settings.as_object().is_some_and(|settings| {
             !settings.is_empty()
                 && settings
                     .keys()
-                    .all(|key| unavailable.controls.contains(&key.as_str()))
+                    .all(|key| unavailable.contains(&key.as_str()))
         });
         if !all_refused {
             return HostApplyOutcome::delegate(
@@ -402,8 +396,8 @@ pub(crate) fn plan_host_profile_apply_with(
             );
         }
         return refused(
-            unavailable.message,
-            extended_unavailable_per_control(&unavailable.controls),
+            EXTENDED_UNAVAILABLE_MSG,
+            extended_unavailable_per_control(&unavailable),
             HostRefusalKind::ExtendedUnavailable,
         );
     }
@@ -773,6 +767,10 @@ mod tests {
             "aibVendor": "Intel",
             "overclockingSupported": overclocking,
             "waiverAccepted": waiver,
+            "driverRanges": {
+                "powerLimitW": {"units": "W", "min": 60.0, "max": 250.0, "step": 1.0},
+                "tempLimitC": {"units": "C", "min": 50.0, "max": 90.0, "step": 1.0}
+            },
             "ranges": {
                 "powerLimitW": {"units": "W", "min": 60.0, "max": 250.0, "step": 1.0},
                 "tempLimitC": {"units": "C", "min": 50.0, "max": 90.0, "step": 1.0},
@@ -1229,6 +1227,31 @@ mod tests {
             ));
             assert!(outcome.reason().is_some_and(|reason| reason.contains(expected)));
         }
+    }
+
+    #[test]
+    fn host_sysman_power_and_in_range_temperature_do_not_require_legacy_runtime() {
+        let target = target();
+        let accepted = json!({"waiverAccepted":true});
+        let mut caps = capabilities(true, true, None);
+        caps["pciDeviceId"] = json!("0x000056a0");
+        caps["extendedControls"] = json!({"powerLimitW":false,"tempLimitC":false});
+        let profile = json!({"id":"p","settings":{"powerLimitW":320,"tempLimitC":90,"gpuVoltOffsetV":-0.05}});
+        let outcome = plan_host_profile_apply_with(
+            |key, settings, caps| Ok(ProfileTempCeilings::default().plan_profile_apply(key, settings, caps)),
+            &profile, &target, &HostApplyInputs { app_settings: &accepted, caps: &caps,
+                extended_capable: false, sysman_power_limits: true },
+        );
+        let HostApplyOutcome::Planned(plan) = outcome else { panic!("Sysman profile must be planned: {outcome:?}"); };
+        let args = wire::decode(&plan.payload).unwrap().into_json().unwrap();
+        assert_eq!(args[1], profile["settings"]);
+        caps["driverRanges"] = Value::Null;
+        let outcome = plan_host_profile_apply_with(
+            |key, settings, caps| Ok(ProfileTempCeilings::default().plan_profile_apply(key, settings, caps)),
+            &profile, &target, &HostApplyInputs { app_settings: &accepted, caps: &caps,
+                extended_capable: false, sysman_power_limits: true },
+        );
+        assert!(matches!(outcome, HostApplyOutcome::Delegate { .. }), "missing limit witness must not plan a write");
     }
 
     #[test]

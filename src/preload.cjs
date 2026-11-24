@@ -71,7 +71,9 @@ contextBridge.exposeInMainWorld('arcPower', {
   },
   resetToDefaults: (deviceId) => ipcRenderer.invoke('reset-to-defaults', deviceId),
   waiverGet: (deviceId) => ipcRenderer.invoke('waiver-get', deviceId),
-  waiverAccept: (deviceId) => ipcRenderer.invoke('waiver-accept', deviceId),
+  waiverAccept: (deviceId, expectedTarget) => expectedTarget === undefined
+    ? ipcRenderer.invoke('waiver-accept', deviceId)
+    : ipcRenderer.invoke('waiver-accept', deviceId, expectedTarget),
   telemetryStart: (deviceId, options) => ipcRenderer.invoke('telemetry-start', deviceId, options),
   telemetryLatest: (deviceId) => ipcRenderer.invoke('telemetry-latest', deviceId),
   // Basic Overlay secondary adapters; the selected main-device lane remains
@@ -313,6 +315,9 @@ contextBridge.exposeInMainWorld('arcPower', {
   },
   overlayGetState: () => ipcRenderer.invoke('overlay:get-state'),
   overlayToggle: () => ipcRenderer.invoke('overlay:toggle'),
+  monitorsList: () => ipcRenderer.invoke('monitors:list'),
+  overlayMonitorsGet: () => ipcRenderer.invoke('overlay-monitors:get'),
+  overlayMonitorsSet: (selection) => ipcRenderer.invoke('overlay-monitors:set', selection),
   // M23: the ADVANCED overlay (the M5 triad, new names - the
   // AMD-Adrenaline-style interactive side panel). onAdvancedOverlaySettings
   // receives the pushed 'advanced-overlay:settings' payload (carrying

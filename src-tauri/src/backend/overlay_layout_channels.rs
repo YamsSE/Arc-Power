@@ -399,7 +399,7 @@ mod tests {
         // above, so the guard only requires the delegated matrix to exist.
         // The remaining special-value cases are now owned natively; keep the
         // count assertion so the fixture still records how many were covered.
-        assert!(delegated >= 0, "the delegated matrix must keep its JavaScript payloads: {delegated}");
+        assert_eq!(delegated, 2, "the delegated matrix must keep its two JavaScript payloads");
     }
 
     #[test]

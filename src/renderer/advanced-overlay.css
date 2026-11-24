@@ -302,7 +302,7 @@ html, body {
 
 .adv-tab:hover { color: var(--text); }
 
-.adv-tab-active {
+.adv-tab.oc-mode-btn.adv-tab-active {
   color: var(--accent);
   border-bottom-color: var(--accent);
   background: var(--accent-soft);

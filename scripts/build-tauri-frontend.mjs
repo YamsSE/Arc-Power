@@ -14,7 +14,7 @@ await fs.rm(path.join(output, 'renderer/out/tauri-aux.js'), { force: true });
 const preload = await fs.readFile(path.join(root, 'src/preload.cjs'), 'utf8');
 const invokeChannels = [...new Set([...preload.matchAll(/ipcRenderer\.invoke\('([^']+)'/g)].map((match) => match[1]))].sort();
 const eventChannels = [...new Set([...preload.matchAll(/ipcRenderer\.on\('([^']+)'/g)].map((match) => match[1]))].sort();
-if (invokeChannels.length !== 153 || eventChannels.length !== 20) throw new Error(`Preload contract changed: ${invokeChannels.length} invokes, ${eventChannels.length} events; review migration coverage`);
+if (invokeChannels.length !== 156 || eventChannels.length !== 20) throw new Error(`Preload contract changed: ${invokeChannels.length} invokes, ${eventChannels.length} events; review migration coverage`);
 await fs.mkdir(path.join(root, 'src-tauri/generated'), { recursive: true });
 await fs.writeFile(path.join(root, 'src-tauri/generated/bridge-contract.json'), JSON.stringify({
   invokeChannels, eventChannels: [...new Set([...eventChannels, ...Object.values(TAURI_ROLE_EVENTS).flat()])].sort(),

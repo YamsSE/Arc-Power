@@ -31,6 +31,7 @@ pub struct DisplayBounds {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    pub scale: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,16 +43,23 @@ pub struct PillBounds {
 }
 
 pub fn bounds_for_display(display: DisplayBounds) -> PillBounds {
+    let scale = if display.scale.is_finite() && display.scale > 0.0 { display.scale } else { 1.0 };
+    let width = (WIDTH * scale).round().min(display.width.max(1.0));
+    let height = (HEIGHT * scale).round().min(display.height.max(1.0));
+    let margin = (MARGIN * scale).round();
     PillBounds {
-        x: display.x + display.width - WIDTH - MARGIN,
-        y: display.y + MARGIN,
-        width: WIDTH,
-        height: HEIGHT,
+        x: (display.x + display.width - width - margin).max(display.x),
+        y: (display.y + margin).min(display.y + display.height - height).max(display.y),
+        width,
+        height,
     }
 }
 
 pub fn capture_active(state: &Value) -> bool {
     if !state.is_object() { return false; }
+    // Keep the pill while an in-flight replay save finishes after capture stops.
+    // Errors can persist indefinitely, so they do not extend the idle lifetime.
+    if state["instantReplaySave"]["status"] == "saving" { return true; }
     let modes = &state["activeModes"];
     let starting = &state["startingModes"];
     if modes.is_object() {
@@ -465,6 +473,8 @@ impl WindowController {
             return;
         }
         let now = Instant::now();
+        let bounds = bounds_for_display(display_for_anchor(&self.app));
+        for effect in state.lifecycle.retry(bounds) { self.apply_effect(&mut state, effect); }
         if !state.lifecycle.wants_window() || !state.lifecycle.ready { return; }
         let visible = state.window.as_ref().is_some_and(|window| window.is_visible().unwrap_or(false));
         if should_retry_show(state.lifecycle.wants_window(), state.lifecycle.ready, visible,
@@ -531,8 +541,16 @@ impl WindowController {
                 let target = next_target(&self.app);
                 self.mailbox.register_target(target.clone());
                 match crate::create_auxiliary_window(&self.app, &target, ROLE,
-                    bounds.x, bounds.y, bounds.width, bounds.height, None) {
+                    0.0, 0.0, WIDTH, HEIGHT, None) {
                     Ok(window) => {
+                        if let Err(error) = set_physical_bounds(&window, bounds) {
+                            let _ = window.destroy();
+                            self.mailbox.clear_target(&target);
+                            state.lifecycle.creation_failed();
+                            state.retry_after = Some(Instant::now() + CREATE_RETRY_DELAY);
+                            eprintln!("[recording-pill] initial placement failed: {error}");
+                            return;
+                        }
                         state.target = Some(target);
                         state.window = Some(window);
                         state.last_topmost = Some(Instant::now());
@@ -560,11 +578,9 @@ impl WindowController {
             }
             Effect::SetBounds(bounds) => {
                 if let Some(window) = self.live_window(state) {
-                    if let Err(error) = window.set_position(tauri::LogicalPosition::new(bounds.x, bounds.y)) {
+                    if let Err(error) = set_physical_bounds(window, bounds) {
+                        state.lifecycle.bounds = None;
                         eprintln!("[recording-pill] display placement update failed: {error}");
-                    }
-                    if let Err(error) = window.set_size(tauri::LogicalSize::new(bounds.width, bounds.height)) {
-                        eprintln!("[recording-pill] display size update failed: {error}");
                     }
                 }
             }
@@ -628,6 +644,13 @@ fn next_target(app: &AppHandle) -> String {
     }
 }
 
+fn set_physical_bounds(window: &WebviewWindow, bounds: PillBounds) -> Result<(), String> {
+    window.set_position(tauri::PhysicalPosition::new(bounds.x.round() as i32, bounds.y.round() as i32))
+        .map_err(|error| error.to_string())?;
+    window.set_size(tauri::PhysicalSize::new(bounds.width.round() as u32, bounds.height.round() as u32))
+        .map_err(|error| error.to_string())
+}
+
 fn display_for_anchor(app: &AppHandle) -> DisplayBounds {
     let anchor = app.get_webview_window("main").and_then(|window| {
         let position = window.outer_position().ok()?;
@@ -639,14 +662,11 @@ fn display_for_anchor(app: &AppHandle) -> DisplayBounds {
         .filter(|monitor| intersection_area(anchor, monitor) > 0).cloned())
         .or_else(|| app.primary_monitor().ok().flatten());
     let Some(monitor) = selected else {
-        let fallback = crate::primary_display_bounds(app);
-        return DisplayBounds { x: fallback.x, y: fallback.y, width: fallback.width, height: fallback.height };
+        return DisplayBounds { x: 0.0, y: 0.0, width: 1920.0, height: 1080.0, scale: 1.0 };
     };
-    let position = monitor.position();
-    let size = monitor.size();
-    let dip = arc_power_tauri::backend::advanced_overlay::display_bounds_dip(
-        position.x, position.y, size.width, size.height, monitor.scale_factor());
-    DisplayBounds { x: dip.x, y: dip.y, width: dip.width, height: dip.height }
+    let work = monitor.work_area();
+    DisplayBounds { x: f64::from(work.position.x), y: f64::from(work.position.y),
+        width: f64::from(work.size.width), height: f64::from(work.size.height), scale: monitor.scale_factor() }
 }
 
 fn intersection_area(anchor: (i64, i64, i64, i64), monitor: &tauri::Monitor) -> u64 {
@@ -669,7 +689,7 @@ mod tests {
     use serde_json::json;
 
     fn bounds() -> PillBounds {
-        bounds_for_display(DisplayBounds { x: 0.0, y: 0.0, width: 1920.0, height: 1080.0 })
+        bounds_for_display(DisplayBounds { x: 0.0, y: 0.0, width: 1920.0, height: 1080.0, scale: 1.0 })
     }
 
     #[test]
@@ -682,6 +702,10 @@ mod tests {
         assert!(capture_active(&json!({"running":true,"mode":"replay"})));
         assert!(!capture_active(&json!({"activeModes":{"video":false,"replay":false}})));
         assert!(!capture_active(&json!({"running":true,"mode":"screenshot"})));
+        assert!(capture_active(&json!({"instantReplaySave":{"status":"saving"}})));
+        assert!(!capture_active(&json!({"instantReplaySave":{"status":"error"}})));
+        assert!(capture_active(&json!({"activeModes":{"replay":true},"instantReplaySave":{"status":"error"}})));
+        assert!(!capture_active(&json!({"instantReplaySave":{"status":"done"}})));
         assert!(!capture_active(&Value::Null));
     }
 
@@ -714,8 +738,23 @@ mod tests {
     #[test]
     fn display_placement_keeps_primary_margin_and_negative_origin() {
         assert_eq!(bounds(), PillBounds { x: 1860.0, y: 12.0, width: 48.0, height: 30.0 });
-        assert_eq!(bounds_for_display(DisplayBounds { x: -1920.0, y: 0.0, width: 1920.0, height: 1080.0 }),
+        assert_eq!(bounds_for_display(DisplayBounds { x: -1920.0, y: 0.0, width: 1920.0, height: 1080.0, scale: 1.0 }),
             PillBounds { x: -60.0, y: 12.0, width: 48.0, height: 30.0 });
+        assert_eq!(bounds_for_display(DisplayBounds { x: 1920.0, y: -200.0, width: 2560.0, height: 1400.0, scale: 1.5 }),
+            PillBounds { x: 4390.0, y: -182.0, width: 72.0, height: 45.0 });
+        assert_eq!(bounds_for_display(DisplayBounds { x: -1600.0, y: 40.0, width: 1600.0, height: 860.0, scale: 1.25 }),
+            PillBounds { x: -75.0, y: 55.0, width: 60.0, height: 38.0 });
+    }
+
+    #[test]
+    fn failed_bounds_update_is_retried() {
+        let mut lifecycle = Lifecycle::default();
+        lifecycle.set_enabled(true, bounds());
+        lifecycle.set_state(json!({"activeModes":{"video":true}}), bounds());
+        let moved = PillBounds { x: 100.0, ..bounds() };
+        assert_eq!(lifecycle.retry(moved), vec![Effect::SetBounds(moved)]);
+        lifecycle.bounds = None; // Native placement failed.
+        assert_eq!(lifecycle.retry(moved), vec![Effect::SetBounds(moved)]);
     }
 
     #[test]

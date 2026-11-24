@@ -23,6 +23,7 @@ use super::igcl_raw::{
     ctlGetSet3DFeatureFn,
     ctlOverclockGetPropertiesFn, ctlOverclockGpuFrequencyOffsetGetV2Fn, ctlOverclockGpuFrequencyOffsetSetV2Fn,
     ctlOverclockGpuLockGetFn, ctlOverclockGpuLockSetFn, ctlOverclockGpuMaxVoltageOffsetGetV2Fn, ctlOverclockGpuMaxVoltageOffsetSetV2Fn,
+    ctlOverclockResetToDefaultFn,
     ctlOverclockPowerLimitGetV2Fn, ctlOverclockPowerLimitSetV2Fn, ctlOverclockReadVFCurveFn,
     ctlOverclockTemperatureLimitGetV2Fn, ctlOverclockTemperatureLimitSetV2Fn, ctlOverclockVramMemSpeedLimitGetV2Fn,
     ctlOverclockVramMemSpeedLimitSetV2Fn, ctlOverclockWaiverSetFn, ctlOverclockWriteCustomVFCurveFn,
@@ -189,6 +190,7 @@ struct Functions {
     frequency_offset_set: Option<ctlOverclockGpuFrequencyOffsetSetV2Fn>,
     vram_freq_set: Option<ctlOverclockVramMemSpeedLimitSetV2Fn>,
     vf_write: Option<ctlOverclockWriteCustomVFCurveFn>,
+    overclock_reset: Option<ctlOverclockResetToDefaultFn>,
     waiver_set: Option<ctlOverclockWaiverSetFn>,
     legacy_power_get: Option<ctlOverclockPowerLimitGetFn>,
     legacy_power_set: Option<ctlOverclockPowerLimitSetFn>,
@@ -263,6 +265,7 @@ pub struct AdapterInfo {
 pub struct ReadOnlyIgcl {
     functions: Functions, api: Handle, close_failed: bool,
     pub igsc_full_available: bool,
+    legacy_properties: bool,
     handles: Vec<Handle>,
     #[cfg(windows)]
     library: Option<Library>,
@@ -813,6 +816,16 @@ impl ReadOnlyIgcl {
         let functions = unsafe { library.functions()? };
         Self::initialize(functions, Some(library))
     }
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    pub(crate) fn load_legacy(dll_path: &Path) -> Result<Self, IgclError> {
+        let library = Library::load(dll_path)?;
+        let functions = unsafe { library.functions()? };
+        Self::initialize_legacy(functions, Some(library))
+    }
+    #[cfg(not(all(windows, target_pointer_width = "64")))]
+    pub(crate) fn load_legacy(_dll_path: &Path) -> Result<Self, IgclError> {
+        Err(IgclError::local("load", "only the verified Windows x64 ABI is supported"))
+    }
     #[cfg(not(all(windows, target_pointer_width = "64")))]
     pub fn load(_dll_path: &Path) -> Result<Self, IgclError> {
         Err(IgclError::local("load", "only the verified Windows x64 ABI is supported"))
@@ -820,7 +833,7 @@ impl ReadOnlyIgcl {
 
     fn initialize(functions: Functions, #[cfg(windows)] library: Option<Library>) -> Result<Self, IgclError> {
         let mut session = Self { functions, api: ptr::null_mut(), close_failed: false,
-            igsc_full_available: false, handles: Vec::new(), #[cfg(windows)] library, _thread_affinity: PhantomData };
+            igsc_full_available: false, legacy_properties: false, handles: Vec::new(), #[cfg(windows)] library, _thread_affinity: PhantomData };
         let mut args = InitArgs::new(USE_LEVEL_ZERO | IGSC_FULL);
         let mut result = unsafe { (functions.init)(&mut args, &mut session.api) };
         if result == ERROR_IGSC_LOADER {
@@ -830,6 +843,27 @@ impl ReadOnlyIgcl {
             result = unsafe { (functions.init)(&mut args, &mut session.api) };
         } else {
             session.igsc_full_available = result == SUCCESS;
+        }
+        if result != SUCCESS {
+            let mut error = IgclError::native("ctlInit", result);
+            if let Err(cleanup) = session.close() { error.detail.push_str(&format!("; cleanup: {cleanup}")); }
+            return Err(error);
+        }
+        if session.api.is_null() { return Err(IgclError::local("ctlInit", "success returned a null API handle")); }
+        Ok(session)
+    }
+
+    fn initialize_legacy(functions: Functions, #[cfg(windows)] library: Option<Library>) -> Result<Self, IgclError> {
+        let mut session = Self { functions, api: ptr::null_mut(), close_failed: false,
+            igsc_full_available: false, legacy_properties: true, handles: Vec::new(), #[cfg(windows)] library, _thread_affinity: PhantomData };
+        let mut args = InitArgs::new(USE_LEVEL_ZERO);
+        args.app_version = 1 << 16;
+        let mut result = unsafe { (functions.init)(&mut args, &mut session.api) };
+        if result == 0x4000_0017 || result == 0x4000_0021 {
+            session.close()?;
+            args.application_uid = ApplicationId { data1: 0xe8e10f95, data2: 0x1a70, data3: 0x4b27,
+                data4: [0x9c, 0xcf, 0x02, 0x01, 0x02, 0x64, 0xe9, 0xc8] };
+            result = unsafe { (functions.init)(&mut args, &mut session.api) };
         }
         if result != SUCCESS {
             let mut error = IgclError::native("ctlInit", result);
@@ -857,6 +891,11 @@ impl ReadOnlyIgcl {
             if handle.is_null() { return Err(IgclError::local("enumerate", "driver returned a null adapter handle")); }
             let mut luid = DeviceId([0_u8; 8]);
             let mut props = AdapterProperties::new(&mut luid);
+            if self.legacy_properties {
+                props.version = 0;
+                props.device_id = ptr::null_mut();
+                props.device_id_size = 0;
+            }
             let result = unsafe { (self.functions.properties)(handle, &mut props) };
             if result != SUCCESS { return Err(IgclError::native("ctlGetDeviceProperties", result)); }
             // Never dereference a pointer returned or rewritten by the driver.
@@ -1544,6 +1583,18 @@ impl ReadOnlyIgcl {
         if status == SUCCESS { Ok(()) } else { Err(IgclError::native("ctlOverclockWaiverSet", status)) }
     }
 
+    /// The driver's whole-device OC reset. This is the same primitive Electron
+    /// calls for "Reset to defaults"; callers must hold the shared apply lock
+    /// and verify the read-back before reporting success.
+    pub(crate) fn reset_to_default(&self, index: usize) -> Result<(), IgclError> {
+        let handle = *self.handles.get(index)
+            .ok_or_else(|| IgclError::local("reset", "unknown adapter index"))?;
+        let function = self.functions.overclock_reset
+            .ok_or_else(|| IgclError::local("reset", "ctlOverclockResetToDefault is unavailable"))?;
+        let status = unsafe { function(handle) };
+        if status == SUCCESS { Ok(()) } else { Err(IgclError::native("ctlOverclockResetToDefault", status)) }
+    }
+
     pub(crate) fn legacy_supports_power(&self) -> bool {
         self.functions.legacy_power_get.is_some() && self.functions.legacy_power_set.is_some()
     }
@@ -2169,6 +2220,7 @@ impl Library {
             frequency_offset_set: optional!("ctlOverclockGpuFrequencyOffsetSetV2", ctlOverclockGpuFrequencyOffsetSetV2Fn),
             vram_freq_set: optional!("ctlOverclockVramMemSpeedLimitSetV2", ctlOverclockVramMemSpeedLimitSetV2Fn),
             vf_write: optional!("ctlOverclockWriteCustomVFCurve", ctlOverclockWriteCustomVFCurveFn),
+            overclock_reset: optional!("ctlOverclockResetToDefault", ctlOverclockResetToDefaultFn),
             waiver_set: optional!("ctlOverclockWaiverSet", ctlOverclockWaiverSetFn),
             legacy_power_get: optional!("ctlOverclockPowerLimitGet", ctlOverclockPowerLimitGetFn),
             legacy_power_set: optional!("ctlOverclockPowerLimitSet", ctlOverclockPowerLimitSetFn),
@@ -2719,7 +2771,7 @@ mod tests {
             power_limit: None, temp_limit: None,
             voltage_offset: None, frequency_offset: None, vram_freq: None, gpu_lock: None, gpu_lock_set: None, vf_curve: None,
             power_limit_set: None, temp_limit_set: None, voltage_offset_set: None,
-            frequency_offset_set: None, vram_freq_set: None, vf_write: None, waiver_set: None,
+            frequency_offset_set: None, vram_freq_set: None, vf_write: None, overclock_reset: None, waiver_set: None,
             legacy_power_get: None, legacy_power_set: None, legacy_temp_get: None, legacy_temp_set: None,
             enumerate_displays: None, display_properties: None, display_settings: None,
             edid: None, panel_descriptor: None,
@@ -2736,6 +2788,41 @@ mod tests {
         let mut functions = base_functions();
         configure(&mut functions);
         ReadOnlyIgcl::initialize(functions, #[cfg(windows)] None)
+    }
+
+    #[test]
+    fn legacy_init_uses_2023_arguments_and_retries_only_uid_errors() {
+        use std::cell::RefCell;
+        thread_local! { static CALLS: RefCell<Vec<InitArgs>> = const { RefCell::new(Vec::new()) }; }
+        unsafe extern "C" fn init(args: *mut InitArgs, api: *mut Handle) -> u32 {
+            let args = unsafe { *args };
+            CALLS.with(|calls| calls.borrow_mut().push(args));
+            if args.application_uid == ApplicationId::default() { return 0x4000_0021; }
+            unsafe { *api = 1_usize as Handle; }
+            0
+        }
+        unsafe extern "C" fn properties(_handle: Handle, props: *mut AdapterProperties) -> u32 {
+            let props = unsafe { &*props };
+            assert_eq!(props.version, 0);
+            assert!(props.device_id.is_null());
+            assert_eq!(props.device_id_size, 0);
+            0
+        }
+        STATE.with(|state| *state.borrow_mut() = State { count: 1, ..State::default() });
+        CALLS.with(|calls| calls.borrow_mut().clear());
+        let mut functions = base_functions();
+        functions.init = init;
+        functions.properties = properties;
+        let mut session = ReadOnlyIgcl::initialize_legacy(functions, #[cfg(windows)] None).unwrap();
+        session.enumerate_adapters().unwrap();
+        CALLS.with(|calls| {
+            let calls = calls.borrow();
+            assert_eq!(calls.len(), 2);
+            assert_eq!((calls[0].size, calls[0].version, calls[0].app_version, calls[0].flags), (36, 0, 0x10000, USE_LEVEL_ZERO));
+            assert_eq!(calls[0].application_uid, ApplicationId::default());
+            assert_eq!(calls[1].application_uid.data1, 0xe8e10f95);
+            assert_eq!(calls[1].application_uid.data4, [0x9c, 0xcf, 0x02, 0x01, 0x02, 0x64, 0xe9, 0xc8]);
+        });
     }
 
     #[test]

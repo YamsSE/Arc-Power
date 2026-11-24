@@ -7,7 +7,7 @@ use std::{
 };
 
 #[path = "native_installer.rs"]
-mod native_installer;
+pub(crate) mod native_installer;
 
 pub(super) const NATIVE_PAYLOAD_FILES: &[&str] = &[
     "Arc Power.exe",

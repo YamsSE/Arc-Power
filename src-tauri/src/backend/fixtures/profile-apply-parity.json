@@ -1838,10 +1838,10 @@
       "lease": null
     },
     {
-      "name": "profile apply with a vfCurve payload delegates to the compatibility handler",
+      "name": "profile apply with a vfCurve payload is owned by the native apply seam",
       "deviceId": 0,
       "wire": 30,
-      "delegate": true,
+      "delegate": false,
       "error": null,
       "expectedReply": 31,
       "expectedReplyKeys": 2,
@@ -1850,14 +1850,14 @@
       "expectedState": 5,
       "caps": 6,
       "cacheFailure": null,
-      "route": "delegate",
+      "route": "native",
       "lease": null
     },
     {
-      "name": "profile apply with a STOCK VF intent key delegates to the compatibility handler",
+      "name": "profile apply with a STOCK VF intent key is owned by the native apply seam",
       "deviceId": 0,
       "wire": 34,
-      "delegate": true,
+      "delegate": false,
       "error": null,
       "expectedReply": 35,
       "expectedReplyKeys": 2,
@@ -1866,7 +1866,7 @@
       "expectedState": 5,
       "caps": 6,
       "cacheFailure": null,
-      "route": "delegate",
+      "route": "native",
       "lease": null
     },
     {

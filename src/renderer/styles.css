@@ -4218,6 +4218,7 @@ input[type="number"] {
 .recording-hotkey-copy { display: flex; flex-direction: column; gap: 2px; }
 .recording-hotkey-copy span { color: var(--text-dim); font-size: 11px; }
 .recording-hotkey-status { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+.recording-hotkey-status-note { color: var(--text-dim); font-size: 11px; min-width: 42px; text-align: right; }
 .recording-hotkey-warning { font-size: 11px; }
 .recording-hotkey-dialog { width: min(380px, calc(100vw - 32px)); max-width: 380px; padding: 18px 20px; }
 .recording-hotkey-dialog .modal-title { margin-bottom: 8px; }

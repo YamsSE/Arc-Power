@@ -53,6 +53,14 @@ let status: RecordingEngineState = {
 };
 let clips: RecordingClip[] = [];
 let playerClip: RecordingClip | null = null;
+// Live hover previews. A tile can be replaced by a redraw, a tab change or
+// the player before mouseleave fires, so every render path must be able to
+// force-release the media elements (and their decoded buffers).
+const clipPreviewReleases = new Set<() => void>();
+function releaseClipPreviews(): void {
+  for (const release of [...clipPreviewReleases]) release();
+}
+
 let activeTab: RecordingTab = 'manual';
 let renderContainer: HTMLElement | null = null;
 let loading = false;
@@ -76,6 +84,9 @@ let recordingStateRevision = 0;
 let clipLibraryFilter: ClipLibraryFilter = 'all';
 let clipLibrarySort: ClipLibrarySort = 'newest';
 let recordingPillEnabled = false;
+let recordingPillSaving = false;
+let recordingPillRevision = 0;
+let recordingToastsRevision = 0;
 let recordingToastsEnabled = false;
 let recordingDevices: DeviceInfo[] = [];
 let recordingEncoderMigrationId: string | null = null;
@@ -506,7 +517,7 @@ function renderCaptureActions(): HTMLElement {
 }
 
 function renderRecordingPillSetting(): HTMLElement {
-  const settingRow = (label: string, title: string, note: string, setting: string, checked: boolean, onChange: (event: Event) => void) => el('div', { class: 'recording-pill-setting' }, [
+  const settingRow = (label: string, title: string, note: string, setting: string, checked: boolean, onChange: (event: Event) => void, disabled = false) => el('div', { class: 'recording-pill-setting' }, [
     el('div', { class: 'recording-pill-setting-copy' }, [
       el('span', { class: 'recording-field-label', text: label }),
       el('strong', { text: title }),
@@ -519,6 +530,7 @@ function renderRecordingPillSetting(): HTMLElement {
         dataset: { setting },
         'aria-label': title,
         checked,
+        disabled,
         onchange: onChange,
       }),
     ]),
@@ -527,10 +539,11 @@ function renderRecordingPillSetting(): HTMLElement {
     settingRow(
       'On-screen indicator',
       'Recording Pill',
-      'Shows the Arc Power icon with a red or blue status pill while capture is active.',
+      'Shows an on-screen status indicator while Recording or Instant Replay is active.',
       'overlayRecordingPill',
       recordingPillEnabled,
       (event) => void onRecordingPillToggle((event.target as HTMLInputElement).checked),
+      recordingPillSaving,
     ),
     settingRow(
       'Desktop notifications',
@@ -570,30 +583,35 @@ function renderCapturePanel(): HTMLElement {
 }
 
 async function onRecordingPillToggle(checked: boolean): Promise<void> {
+  if (recordingPillSaving) return;
   const previous = recordingPillEnabled;
+  recordingPillSaving = true;
+  const revision = ++recordingPillRevision;
   recordingPillEnabled = checked;
   render();
   try {
     const result = await api.profilesSettingsSave({ overlayRecordingPill: checked });
-    recordingPillEnabled = result.overlayRecordingPill === true;
-    toast(checked ? 'success' : 'info', checked ? 'Recording Pill enabled' : 'Recording Pill disabled', '');
+    if (recordingPillRevision === revision) recordingPillEnabled = result.overlayRecordingPill === true;
+    toast(recordingPillEnabled ? 'success' : 'info', recordingPillEnabled ? 'Recording Pill enabled' : 'Recording Pill disabled', '');
   } catch (err) {
-    recordingPillEnabled = previous;
+    if (recordingPillRevision === revision) recordingPillEnabled = previous;
     toast('error', 'Recording Pill could not be changed', messageOf(err));
   }
+  recordingPillSaving = false;
   render();
 }
 
 async function onRecordingToastsToggle(checked: boolean): Promise<void> {
   const previous = recordingToastsEnabled;
+  const revision = ++recordingToastsRevision;
   recordingToastsEnabled = checked;
   render();
   try {
     const result = await api.profilesSettingsSave({ recordingToastsEnabled: checked });
-    recordingToastsEnabled = result.recordingToastsEnabled === true;
+    if (recordingToastsRevision === revision) recordingToastsEnabled = result.recordingToastsEnabled === true;
     toast(checked ? 'success' : 'info', checked ? 'Recording toasts enabled' : 'Recording toasts disabled', '');
   } catch (err) {
-    recordingToastsEnabled = previous;
+    if (recordingToastsRevision === revision) recordingToastsEnabled = previous;
     toast('error', 'Recording toasts could not be changed', messageOf(err));
   }
   render();
@@ -1209,10 +1227,25 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
     void preview.play().catch(() => { /* unavailable previews stay quiet */ });
   };
   const stopPreview = () => {
-    if (!preview) return;
-    preview.pause();
-    try { preview.currentTime = 0; } catch { /* metadata may not have loaded */ }
+    if (!preview) {
+      clipPreviewReleases.delete(stopPreview);
+      return;
+    }
+    const node = preview;
+    preview = null;
+    loadStarted = false;
+    node.pause();
+    // Releasing the element is what actually drops Chromium's decoded and
+    // buffered media. Merely pausing left one full <video preload=auto> per
+    // hovered tile alive, which could grow to gigabytes on a large library.
+    node.removeAttribute('src');
+    node.src = '';
+    node.load();
+    node.remove();
+    thumbnail.hidden = false;
+    clipPreviewReleases.delete(stopPreview);
   };
+  clipPreviewReleases.add(stopPreview);
   const clearHoverTimer = () => {
     if (hoverTimer === null) return;
     window.clearTimeout(hoverTimer);
@@ -1228,12 +1261,13 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
       loop: true,
       playsinline: true,
       // The hover surface is the actual recording, not a generated low-res
-      // preview. Let Chromium fetch enough of the original file to render it
-      // cleanly at the tile's reduced size.
-      preload: 'auto',
+      // preview. Metadata only until the hover actually asks for playback;
+      // the element is released on mouseleave so buffers never accumulate.
+      preload: 'metadata',
       ...(clip.thumbnailUrl ? { poster: clip.thumbnailUrl } : {}),
     }) as HTMLVideoElement;
     preview.addEventListener('canplay', () => {
+      if (!preview) return;
       thumbnail.hidden = true;
       playPreview();
     });
@@ -1250,7 +1284,7 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
       if (preview?.isConnected) preview.dataset.previewError = 'true';
     });
   };
-  hoverTarget.addEventListener('mouseenter', () => {
+  hoverTarget.addEventListener('pointerenter', () => {
     hovered = true;
     clearHoverTimer();
     hoverTimer = window.setTimeout(() => {
@@ -1259,7 +1293,7 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
       playPreview();
     }, 500);
   });
-  hoverTarget.addEventListener('mouseleave', () => {
+  hoverTarget.addEventListener('pointerleave', () => {
     hovered = false;
     clearHoverTimer();
     stopPreview();
@@ -1276,6 +1310,7 @@ function renderClipList(): HTMLElement {
   sort.classList.add('recording-library-filter');
   const count = el('span', { class: 'recording-library-count', text: `${clips.length} captures` });
   const draw = () => {
+    releaseClipPreviews();
     clear(list);
     const needle = query.value.trim().toLowerCase();
     const visible = clips
@@ -2272,6 +2307,7 @@ function renderPlayerView(): HTMLElement {
 
 function render(): void {
   if (!renderContainer) return;
+  releaseClipPreviews();
   disposePlayerVideo();
   applySettingsButton = null;
   clear(renderContainer);
@@ -2332,6 +2368,8 @@ async function load(): Promise<void> {
   if (loading) return;
   loading = true;
   const loadStateRevision = recordingStateRevision;
+  const loadPillRevision = recordingPillRevision;
+  const loadToastsRevision = recordingToastsRevision;
   try {
     const [loadedSettings, loadedStatus, loadedClips, loadedStorage, profileEnvelope] = await Promise.all([
       api.recordingSettingsGet(),
@@ -2356,8 +2394,12 @@ async function load(): Promise<void> {
     migrateLegacyEncoderSelection();
     clips = loadedClips;
     storageInfo = loadedStorage;
-    recordingPillEnabled = profileEnvelope?.settings?.overlayRecordingPill === true;
-    recordingToastsEnabled = profileEnvelope?.settings?.recordingToastsEnabled === true;
+    if (recordingPillRevision === loadPillRevision && profileEnvelope) {
+      recordingPillEnabled = profileEnvelope.settings?.overlayRecordingPill === true;
+    }
+    if (recordingToastsRevision === loadToastsRevision && profileEnvelope) {
+      recordingToastsEnabled = profileEnvelope.settings?.recordingToastsEnabled === true;
+    }
     activeTab = tabForMode(settings.mode);
     const canonicalMode = modeForTab(activeTab) ?? 'manual';
     if (settings.mode !== canonicalMode) {
@@ -2518,8 +2560,8 @@ export const recordingPage: Page = {
     if (!unsubscribeRecordingPillSettings) {
       unsubscribeRecordingPillSettings = api.onRecordingPillSettingsUpdated((next) => {
         if (!next || (typeof next.enabled !== 'boolean' && typeof next.toastsEnabled !== 'boolean')) return;
-        if (typeof next.enabled === 'boolean') recordingPillEnabled = next.enabled;
-        if (typeof next.toastsEnabled === 'boolean') recordingToastsEnabled = next.toastsEnabled;
+        if (typeof next.enabled === 'boolean') { recordingPillRevision += 1; recordingPillEnabled = next.enabled; }
+        if (typeof next.toastsEnabled === 'boolean') { recordingToastsRevision += 1; recordingToastsEnabled = next.toastsEnabled; }
         if (renderContainer === container) render();
       });
     }
@@ -2544,6 +2586,7 @@ export const recordingPage: Page = {
     }
   },
   leave(): void {
+    releaseClipPreviews();
     void releaseRecordingRuntimeLease();
     unsubscribeRecordingState?.();
     unsubscribeRecordingState = null;

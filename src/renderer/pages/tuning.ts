@@ -1458,7 +1458,7 @@ export const tuningPage: Page = {
           const isOffsetReset = clamped.voltageV === 0 && clamped.freqMhz === 0;
           // Same waiver gate as every apply path (read LIVE from the store).
           // M17 (B50-class): OC-locked devices have no waiver - skipped.
-          const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, caps.deviceName || 'this GPU', live.caps?.overclockingSupported !== false);
+          const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, caps.deviceName || 'this GPU', live.caps?.overclockingSupported !== false, selectedDevice);
           if (decision === 'cancelled') {
             toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
             return;
@@ -2309,7 +2309,7 @@ export const tuningPage: Page = {
         // have no waiver - the gate is skipped (uniform with every apply path;
         // unreachable today on no-OC devices, but the guard keeps the whole
         // waiver surface uniform).
-        const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, deviceName, live.caps?.overclockingSupported !== false);
+        const decision = await ensureWaiver(deviceId, live.caps?.waiverAccepted === true, deviceName, live.caps?.overclockingSupported !== false, selectedDevice);
         if (!applyContextIsCurrent()) return;
         if (decision === 'cancelled') {
           toast('info', 'Apply cancelled', 'The warranty waiver must be accepted before overclocking.');
@@ -2349,6 +2349,17 @@ export const tuningPage: Page = {
         // The refusal envelope may not contain a fresh state.
         if (fresh) {
           currentState = fresh;
+          // A negative Sysman undervolt can extend the V/F curve and make the
+          // IGCL frequency-offset getter report a derived positive value. When
+          // this payload did not request a frequency offset, keep the user's
+          // current value so the derived value is never shown as a core clock
+          // or captured by a profile save.
+          if (!('gpuFreqOffsetMhz' in settings)) {
+            const priorOffset = before?.gpuFreqOffsetMhz;
+            if (typeof priorOffset === 'number' && Number.isFinite(priorOffset)) {
+              fresh.gpuFreqOffsetMhz = priorOffset;
+            }
+          }
           // Update our native comparison references before publishing our own
           // verified apply result. A following state push must compare against
           // this LIVE result rather than the old editor's before-image.
@@ -2539,7 +2550,7 @@ export const tuningPage: Page = {
             && Object.values(result.perControl).some((p) => p?.errorCode === 'waiver-not-set')) {
             waiverRetryCount += 1;
             const live2 = ctx.store.get();
-            const decision = await ensureWaiver(deviceId, live2.caps?.waiverAccepted === true, deviceName, live2.caps?.overclockingSupported !== false);
+            const decision = await ensureWaiver(deviceId, live2.caps?.waiverAccepted === true, deviceName, live2.caps?.overclockingSupported !== false, selectedDevice);
             if (!applyContextIsCurrent()) return;
             if (decision === 'accepted') {
               // The store caps flag must be patched BEFORE the retry - the
