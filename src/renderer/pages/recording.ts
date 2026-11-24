@@ -1220,8 +1220,17 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
   };
   const stopPreview = () => {
     if (!preview) return;
-    preview.pause();
-    try { preview.currentTime = 0; } catch { /* metadata may not have loaded */ }
+    const node = preview;
+    preview = null;
+    loadStarted = false;
+    node.pause();
+    // Releasing the element is what actually drops Chromium's decoded and
+    // buffered media. Merely pausing left one full <video preload=auto> per
+    // hovered tile alive, which could grow to gigabytes on a large library.
+    node.removeAttribute('src');
+    node.load();
+    node.remove();
+    thumbnail.hidden = false;
   };
   const clearHoverTimer = () => {
     if (hoverTimer === null) return;
@@ -1238,9 +1247,9 @@ function previewVideo(clip: RecordingClip, hoverTarget: HTMLElement, onDuration:
       loop: true,
       playsinline: true,
       // The hover surface is the actual recording, not a generated low-res
-      // preview. Let Chromium fetch enough of the original file to render it
-      // cleanly at the tile's reduced size.
-      preload: 'auto',
+      // preview. Metadata only until the hover actually asks for playback;
+      // the element is released on mouseleave so buffers never accumulate.
+      preload: 'metadata',
       ...(clip.thumbnailUrl ? { poster: clip.thumbnailUrl } : {}),
     }) as HTMLVideoElement;
     preview.addEventListener('canplay', () => {
