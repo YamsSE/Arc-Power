@@ -64,6 +64,15 @@
   destroys the resident WebView process.
 - **Overlay styling.** The Advanced Overlay active tab now wins against the
   shared `.oc-mode-btn.active` rule instead of being overridden.
+- **RTSS overlay chip names.** The native OSD now respects the Chip Names
+  toggle: the GPU row shows the model ("B580") only when the toggle is on, the
+  VRAM row is always plain "VRAM", and factory memory tokens ("12GB GDDR6")
+  are dropped from the label. Multi-GPU rows are numbered when chip names are
+  off.
+- **Arc Power Overlay starts when selected.** Switching the renderer to the Arc
+  Power Overlay (or enabling the overlay, or saving a layout change) starts the
+  software HUD again. A recent change had left it to the hotkey only, so the HUD
+  appeared not to start.
 - **Sysinfo startup safety.** The first CIM snapshot has a hard 10 s process
   deadline, runs off the async workers, and retries after a transient failure
   instead of latching null for the session.

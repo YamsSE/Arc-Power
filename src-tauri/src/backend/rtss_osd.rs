@@ -368,6 +368,7 @@ struct Settings {
     stats: HashSet<String>,
     monitored_keys: Option<HashSet<String>>,
     hotkey_registered: bool,
+    chip_names: bool,
 }
 
 impl Default for Settings {
@@ -376,6 +377,7 @@ impl Default for Settings {
             enabled: false, renderer: "rtss".into(), position: "top-left".into(), scale: 1.0,
             label_color: "#FFFFFF".into(), value_color: "#FFFFFF".into(), temperature_unit: "C".into(),
             stats: DEFAULT_STATS.iter().map(|value| (*value).to_owned()).collect(), monitored_keys: None, hotkey_registered: true,
+            chip_names: false,
         }
     }
 }
@@ -412,6 +414,7 @@ fn settings_from_value(value: &Value) -> Settings {
         monitored_keys: value.get("overlayDeviceKeys").and_then(Value::as_array)
             .map(|keys| keys.iter().filter_map(Value::as_str).map(str::to_owned).collect::<HashSet<_>>()),
         hotkey_registered: !hotkey.eq_ignore_ascii_case("none") && !hotkey.trim().is_empty(),
+        chip_names: value.get("overlayChipNames").and_then(Value::as_bool) == Some(true),
     }
 }
 
@@ -441,11 +444,42 @@ fn temperature(value: Option<f64>, unit: &str) -> String {
 }
 fn short_gpu(name: &str) -> String {
     let normalized = safe_text(name).replace("(R)", " ").replace("(r)", " ").replace("(TM)", " ").replace("(tm)", " ");
-    let mut parts: Vec<&str> = normalized.split_whitespace().filter(|token| {
-        !matches!(token.to_ascii_lowercase().as_str(), "nvidia" | "geforce" | "intel" | "arc" | "amd" | "ati" | "radeon" | "graphics" | "gpu" | "laptop" | "mobile" | "display" | "adapter" | "controller" | "video" | "corporation" | "inc" | "r" | "tm")
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+    // Intel Arc model: "Arc ... B580" -> "B580" (matches the software HUD's
+    // chip label so a factory memory description never leaks into the label).
+    if let Some(index) = tokens.iter().position(|token| token.eq_ignore_ascii_case("arc")) {
+        if let Some(model) = tokens[index + 1..].iter().find(|token| is_arc_model_token(token)) {
+            return model.to_ascii_uppercase();
+        }
+    }
+    let mut parts: Vec<&str> = tokens.into_iter().filter(|token| {
+        let lower = token.to_ascii_lowercase();
+        !is_gpu_memory_token(&lower) && !matches!(lower.as_str(),
+            "nvidia" | "geforce" | "intel" | "arc" | "amd" | "ati" | "radeon" | "graphics" | "gpu"
+            | "laptop" | "mobile" | "display" | "adapter" | "controller" | "video" | "corporation" | "inc" | "r" | "tm")
     }).collect();
     if parts.is_empty() { parts.push("GPU"); }
     parts.join(" ")
+}
+
+/// A model token like "A770" / "B580" (an A/B prefix plus 3-4 digits).
+fn is_arc_model_token(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    (bytes.len() == 4 || bytes.len() == 5)
+        && matches!(bytes[0], b'A' | b'B' | b'a' | b'b')
+        && bytes[1..].iter().all(|byte| byte.is_ascii_digit())
+}
+
+/// A memory-size token like "12GB"/"8MB" or a "GDDR6"/"GDDR6X" token.
+fn is_gpu_memory_token(token: &str) -> bool {
+    for suffix in ["gib", "gb", "mib", "mb"] {
+        if let Some(prefix) = token.strip_suffix(suffix) {
+            return !prefix.is_empty() && prefix.bytes().all(|byte| byte.is_ascii_digit());
+        }
+    }
+    token.strip_prefix("gddr").is_some_and(|rest| {
+        !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit() || byte == b'x')
+    })
 }
 fn position_tag(position: &str) -> &'static str {
     match position { "top-right" => "<P2>", "bottom-left" => "<P6>", "bottom-right" => "<P8>", _ => "<P0>" }
@@ -607,9 +641,18 @@ fn build_text(settings: &Settings, latest: &BTreeMap<String, Value>, stats: &Fps
         let bytes = latest.values().find_map(|sample| sample.get("memoryUsedBytes").and_then(Value::as_f64));
         push(row("RAM", vec![number(bytes.map(|value| value / 1_000_000_000.0), 1, "-") + "GB"]));
     }
-    for (key, sample) in latest.iter() {
-        if settings.monitored_keys.as_ref().is_some_and(|keys| !keys.is_empty() && !keys.contains(key) && !key.starts_with("id:")) { continue; }
-        let name = sample.get("deviceName").and_then(Value::as_str).map(short_gpu).unwrap_or_else(|| "GPU".into());
+    let visible: Vec<(&String, &Value)> = latest.iter()
+        .filter(|(key, _)| !settings.monitored_keys.as_ref()
+            .is_some_and(|keys| !keys.is_empty() && !keys.contains(*key) && !key.starts_with("id:")))
+        .collect();
+    let multi = visible.len() > 1;
+    for (index, (_key, sample)) in visible.into_iter().enumerate() {
+        let ordinal = index + 1;
+        let chip = sample.get("deviceName").and_then(Value::as_str).map(short_gpu).unwrap_or_else(|| "GPU".into());
+        // The chip-name toggle only affects the GPU row label. The VRAM row is
+        // always "VRAM" (numbered only when several GPUs are shown), so the chip
+        // name never appears twice.
+        let gpu_label = if settings.chip_names { chip } else if multi { format!("GPU{ordinal}") } else { "GPU".into() };
         let mut fields = Vec::new();
         if enabled("gpu-util") { fields.push(format!("{}%", number(sample.get("gpuUtilPct").and_then(Value::as_f64), 0, "-"))); }
         if enabled("gpu-clock") { fields.push(format!("{}MHz", number(sample.get("gpuClockMhz").and_then(Value::as_f64), 0, "-"))); }
@@ -620,7 +663,7 @@ fn build_text(settings: &Settings, latest: &BTreeMap<String, Value>, stats: &Fps
             let rpm = sample.get("fanRpm").and_then(|value| value.as_f64().or_else(|| value.as_array().and_then(|items| items.first()).and_then(Value::as_f64)));
             fields.push(format!("{}RPM", number(rpm, 0, "-")));
         }
-        push(row(&name, fields));
+        push(row(&gpu_label, fields));
         let mut fields = Vec::new();
         if enabled("gpu-mem-clock") { fields.push(format!("{}MHz", number(sample["memClockMhz"].as_f64(), 0, "-"))); }
         if enabled("gpu-vram") {
@@ -633,7 +676,8 @@ fn build_text(settings: &Settings, latest: &BTreeMap<String, Value>, stats: &Fps
             });
         }
         if enabled("gpu-vram-temp") { fields.push(temperature(sample["vramTempC"].as_f64(), &settings.temperature_unit)); }
-        push(row(&format!("{name} VRAM"), fields));
+        let vram_label = if multi { format!("VRAM{ordinal}") } else { "VRAM".into() };
+        push(row(&vram_label, fields));
     }
     if enabled("api") { if let Some(api) = stats.api.as_ref().filter(|api| !api.is_empty()) { push(row("API", vec![api.clone()])); } }
     if enabled("frametime") { push(row("Frametime", vec![format!("{}ms", number(stats.frame_time, 2, "-"))])); }
@@ -737,7 +781,7 @@ mod tests {
 
     #[test]
     fn text_contains_classic_rows_and_escapes_values() {
-        let settings = Settings { enabled: true, ..Settings::default() };
+        let settings = Settings { enabled: true, chip_names: true, ..Settings::default() };
         let mut latest = BTreeMap::new();
         latest.insert("gpu".into(), json!({"deviceName":"Intel Arc B580","gpuUtilPct":42.0,"tempC":61.0,"powerW":180.0}));
         let stats = FpsStats { fps: Some(60.0), avg: Some(59.0), frame_time: Some(16.67), api: Some("DX12".into()), ..FpsStats::default() };
@@ -745,8 +789,36 @@ mod tests {
         assert!(text.starts_with("<P0>"));
         assert!(text.contains("<C0=FFFFFF><C0>FPS<C1=FFFFFF><C1> 60<C>"));
         assert!(text.contains("B580"));
+        assert!(text.contains("VRAM"));
+        assert!(!text.contains("B580 VRAM"), "the VRAM row must not repeat the chip name");
         assert!(text.contains("DX12"));
         assert!(text.len() <= MAX_TEXT);
+    }
+
+    #[test]
+    fn chip_name_drops_memory_tokens_and_vram_row_stays_plain() {
+        assert_eq!(short_gpu("Intel(R) Arc(TM) B580 Graphics 12GB GDDR6"), "B580");
+        assert_eq!(short_gpu("Intel(R) Arc(TM) A770 Graphics"), "A770");
+        assert_eq!(short_gpu("NVIDIA GeForce RTX 4070 12GB GDDR6X"), "RTX 4070");
+
+        let off = Settings { enabled: true, ..Settings::default() };
+        let mut latest = BTreeMap::new();
+        latest.insert("gpu".into(), json!({"deviceName":"Intel Arc B580 12GB GDDR6","vramTotalBytes":12.9e9,"gpuMemUsedBytes":3.2e9}));
+        let text = build_text(&off, &latest, &FpsStats::default(), false);
+        assert!(text.contains(">GPU<"), "chip names off must use the stock GPU label: {text}");
+        assert!(text.contains(">VRAM<"), "the VRAM row is always plain: {text}");
+        assert!(!text.contains("B580") && !text.contains("12GB"), "chip names off must not leak the model or memory: {text}");
+    }
+
+    #[test]
+    fn multiple_gpus_are_numbered_when_chip_names_are_off() {
+        let settings = Settings { enabled: true, ..Settings::default() };
+        let mut latest = BTreeMap::new();
+        latest.insert("gpu-a".into(), json!({"deviceName":"Intel Arc B580"}));
+        latest.insert("gpu-b".into(), json!({"deviceName":"Intel Arc B580"}));
+        let text = build_text(&settings, &latest, &FpsStats::default(), false);
+        assert!(text.contains(">GPU1<") && text.contains(">GPU2<"), "{text}");
+        assert!(text.contains(">VRAM1<") && text.contains(">VRAM2<"), "{text}");
     }
 
     #[test]
