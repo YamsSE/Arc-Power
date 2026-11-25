@@ -10,6 +10,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::Duration,
 };
 
 use crate::lifecycle::InstallerMode;
@@ -408,7 +409,7 @@ mod windows {
                 let _ = remove_tree(&stage);
                 return Err("Refusing to replace an unregistered folder at the Arc Power install location".into());
             }
-            fs::rename(&install_dir, &backup).map_err(|error| format!("Cannot preserve the previous Arc Power files: {error}"))?;
+            rename_with_retry(&install_dir, &backup, "Cannot preserve the previous Arc Power files")?;
         }
         if let Err(error) = fs::rename(&stage, &install_dir) {
             if had_install { let _ = fs::rename(&backup, &install_dir); }
@@ -461,6 +462,7 @@ mod windows {
             launch.creation_flags(0x00000008 | 0x00000200);
             launch.spawn().map_err(|error| format!("Arc Power installed, but it could not be launched: {error}"))?;
         }
+        repair_startup_registration(&install_dir);
         Ok(0)
     }
 
@@ -527,7 +529,7 @@ mod windows {
                 let _ = remove_tree(&stage);
                 return Err("Refusing to replace an unregistered folder at the Arc Power install location".into());
             }
-            fs::rename(&install_dir, &backup).map_err(|error| format!("Cannot preserve the previous Arc Power files: {error}"))?;
+            rename_with_retry(&install_dir, &backup, "Cannot preserve the previous Arc Power files")?;
         }
         if let Err(error) = fs::rename(&stage, &install_dir) {
             if had_install { let _ = fs::rename(&backup, &install_dir); }
@@ -561,6 +563,11 @@ mod windows {
         if let Some(old) = old_install_dir {
             if !same_path(&old, &install_dir) && removable_install_tree(&old) { let _ = remove_tree(&old); }
         }
+        // A location change leaves the Windows startup logon task (and the
+        // legacy Run value) pointing at the previous executable. Re-point an
+        // existing registration at the new path so profiles still apply on
+        // boot after moving the install.
+        repair_startup_registration(&install_dir);
         Ok(())
     }
 
@@ -610,6 +617,46 @@ mod windows {
             return Err(format!("Could not start Arc Power removal: {error}"));
         }
         Ok(())
+    }
+
+    pub fn terminate_helpers() {
+        const HELPERS: &[&str] = &["ascent-obs.exe", "ArcPower.LhmBridge.exe",
+            "ArcPower.ScreenSharpen.exe", "ArcPower.Backend.exe"];
+        for name in HELPERS {
+            let mut command = Command::new("taskkill.exe");
+            command.args(["/F", "/IM", name]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+            let _ = command.status();
+        }
+    }
+
+    /// Rename a directory that may be momentarily locked by Arc Power's helper
+    /// processes. On access denied, terminate the helpers and retry briefly.
+    pub fn rename_with_retry(from: &Path, to: &Path, label: &str) -> Result<(), String> {
+        for attempt in 0..8 {
+            match fs::rename(from, to) {
+                Ok(()) => return Ok(()),
+                Err(error) if matches!(error.raw_os_error(), Some(5) | Some(32)) => {
+                    if attempt == 7 { return Err(format!("{label}: {error}")); }
+                    terminate_helpers();
+                    std::thread::sleep(Duration::from_millis(400));
+                }
+                Err(error) => return Err(format!("{label}: {error}")),
+            }
+        }
+        unreachable!()
+    }
+
+    /// Re-point an existing Windows startup logon task (and legacy Run value)
+    /// at the freshly installed executable. A location change leaves the task
+    /// pointing at the old path, which silently breaks profile boot-apply.
+    fn repair_startup_registration(install_dir: &Path) {
+        if let Err(error) = arc_power_tauri::backend::startup::repair_logon_registration(
+            arc_power_tauri::backend::native_system::BuildKind::Installed,
+            &install_dir.join(INSTALLED_EXE)) {
+            eprintln!("[setup] startup registration repair skipped: {error}");
+        }
     }
 
     fn uninstall() -> Result<i32, String> {
@@ -882,7 +929,7 @@ mod windows {
 }
 
 #[cfg(windows)]
-pub use windows::{install_selected, launch_installed, setup_plan, uninstall_selected, InstallSelection, SetupPlan};
+pub use windows::{install_selected, launch_installed, rename_with_retry, setup_plan, uninstall_selected, InstallSelection, SetupPlan};
 
 pub fn run(mode: InstallerMode) -> Result<i32, String> {
     match mode {
