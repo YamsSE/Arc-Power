@@ -303,6 +303,26 @@ pub fn set_registration(kind: BuildKind, enabled: bool) -> Result<(), String> {
     if kind == BuildKind::Dev { set_run(&exec, enabled) } else { set_task(&exec, enabled) }
 }
 
+/// Whether a startup registration currently exists, regardless of which
+/// executable it points at.
+pub fn registration_present(kind: BuildKind) -> Result<bool, String> {
+    if kind == BuildKind::Dev {
+        Ok(read_run()?.value_exists)
+    } else {
+        Ok(read_legacy_task_xml(TASK_NAME)?.is_some())
+    }
+}
+
+/// Re-point an existing logon registration at a new executable after an
+/// install location change. Called by the elevated setup; a missing
+/// registration is left untouched.
+pub fn repair_logon_registration(kind: BuildKind, exec: &Path) -> Result<bool, String> {
+    if !registration_present(kind)? { return Ok(false); }
+    let exec = dunce::canonicalize(exec).map_err(|error| error.to_string())?;
+    if kind == BuildKind::Dev { set_run(&exec, true)?; } else { set_task(&exec, true)?; }
+    Ok(true)
+}
+
 #[derive(Clone, Debug)]
 pub struct RegistrationSnapshot {
     run_value: Option<(String, String)>,

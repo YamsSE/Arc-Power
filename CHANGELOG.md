@@ -110,6 +110,15 @@
   focused GPU.
 - **Installer move safety.** If the old per-user folder contains files Setup
   did not install, it is kept with a notice instead of being deleted.
+- **Updates and reinstalls no longer hit "access denied" on a locked install
+  folder.** When the recording runtime, LHM bridge, sharpening helper or
+  compatibility backend is still holding the install directory open, setup and
+  the update worker now terminate those Arc Power helpers and retry the
+  directory move instead of failing on `os error 5`.
+- **Profiles apply on boot after moving the install.** Setup re-points the
+  Windows startup logon task (and legacy Run value) at the new executable when
+  the install location changes, so the app still launches at logon and runs
+  the `ocOnBoot` profile apply instead of silently pointing at the old path.
 - **Packaging guard.** The native packager refuses a renderer bundle that is
   older than `src/renderer`, and both NSIS wrappers now carry 1.3.4 version
   metadata so a stale portable is identifiable in Explorer.

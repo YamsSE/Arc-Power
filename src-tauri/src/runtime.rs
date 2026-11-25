@@ -380,10 +380,11 @@ fn apply_native_installed_update(args: &[String]) -> Result<(), String> {
         return Err(error);
     }
 
-    fs::rename(&install_dir, &backup).map_err(|error| {
+    if let Err(error) = native_installer::rename_with_retry(
+        &install_dir, &backup, "Cannot preserve the installed Arc Power files") {
         let _ = fs::remove_dir_all(&stage);
-        format!("Cannot preserve the installed Arc Power files: {error}")
-    })?;
+        return Err(error);
+    }
     if let Err(error) = fs::rename(&stage, &install_dir) {
         let restored = fs::rename(&backup, &install_dir).is_ok();
         let _ = fs::remove_dir_all(&stage);
