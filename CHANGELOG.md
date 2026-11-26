@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **Monitoring could stay blank on a slow sensor start.** The
+  LibreHardwareMonitor bridge's first sample enumerates every sensor the host
+  allows (MSR clocks/voltage/power, SuperIO fans, SPD, the GPU) and can take
+  longer than the steady-state poll timeout. The app killed and restarted the
+  bridge every 6 seconds, so no CPU or GPU telemetry ever arrived while the
+  D3DKMT utilization, memory and CPU-frequency fallbacks kept showing partial
+  data. The first request after a bridge start now gets a 30-second window.
 - **Updates and reinstalls no longer hit "access denied" on a locked install
   folder.** When the recording runtime, LHM bridge, sharpening helper or
   compatibility backend is still holding the install directory open, setup and
