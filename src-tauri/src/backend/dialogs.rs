@@ -9,19 +9,17 @@ mod imp {
     use std::io::Write;
     use std::sync::atomic::{AtomicIsize, Ordering};
     use std::sync::Mutex;
-    use windows::core::{Interface, IUnknown, PCWSTR, PWSTR, GUID};
+    use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::{HWND, LPARAM};
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree,
-        CoUninitialize, IBindCtx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
-    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree,
+        CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
+    use windows::Win32::UI::Controls::Dialogs::{CommDlgExtendedError, GetOpenFileNameW,
+        OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST,
+        OPENFILENAMEW};
     use windows::Win32::UI::Shell::{BROWSEINFOW, BIF_RETURNONLYFSDIRS,
-        IFileOpenDialog, IModalWindow, IShellItem, SHBrowseForFolderW,
-        SHCreateItemFromParsingName, SHGetPathFromIDListW, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM,
-        FOS_NOCHANGEDIR, FOS_PATHMUSTEXIST, FOS_PICKFOLDERS, SIGDN_FILESYSPATH};
+        SHBrowseForFolderW, SHGetPathFromIDListW};
     use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 
-    const CLSID_FILE_OPEN_DIALOG: GUID = GUID::from_u128(0xdc1c5a9c_e88a_4dde_a5a1_60f82a20aef7);
-    const ERROR_CANCELLED: i32 = 0x800704C7u32 as i32;
     const COM_UNAVAILABLE: &str = "dialog-main-thread-com-unavailable";
 
     /// Diagnostic trail for the recording/game picker. A hard crash in the
@@ -57,65 +55,6 @@ mod imp {
 
     fn wide(value: &str) -> Vec<u16> {
         value.encode_utf16().chain(std::iter::once(0)).collect()
-    }
-
-    unsafe fn take_string(value: PWSTR) -> String {
-        if value.0.is_null() { return String::new(); }
-        let mut length = 0usize;
-        while *value.0.add(length) != 0 { length += 1; }
-        let text = String::from_utf16_lossy(std::slice::from_raw_parts(value.0, length));
-        CoTaskMemFree(Some(value.0 as *const c_void));
-        text
-    }
-
-    fn show(folder: bool, owner: Option<HWND>, default_path: Option<&str>) -> Result<Option<String>, String> {
-        unsafe {
-            let dialog: IFileOpenDialog = CoCreateInstance(&CLSID_FILE_OPEN_DIALOG,
-                None::<&IUnknown>, CLSCTX_INPROC_SERVER).map_err(|error| error.message())?;
-            let mut options = FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR;
-            options |= if folder { FOS_PICKFOLDERS } else { FOS_FILEMUSTEXIST };
-            dialog.SetOptions(options).map_err(|error| error.message())?;
-            let title = wide(if folder { "Select a recording folder" } else { "Select a game executable" });
-            dialog.SetTitle(PCWSTR::from_raw(title.as_ptr())).map_err(|error| error.message())?;
-            if !folder {
-                let name = wide("Executable files (*.exe)");
-                let spec = wide("*.exe");
-                dialog.SetFileTypes(&[COMDLG_FILTERSPEC {
-                    pszName: PCWSTR::from_raw(name.as_ptr()),
-                    pszSpec: PCWSTR::from_raw(spec.as_ptr()),
-                }]).map_err(|error| error.message())?;
-            }
-            // Open at the current recording/game folder instead of the shell
-            // namespace root. Enumerating "This PC" and network providers is
-            // where the common dialog's third-party namespace crashes occur.
-            let default_path = default_path.filter(|path| !path.trim().is_empty());
-            if let Some(path) = default_path {
-                let path = wide(path);
-                match SHCreateItemFromParsingName::<_, _, IShellItem>(
-                    PCWSTR::from_raw(path.as_ptr()), None::<&IBindCtx>) {
-                    Ok(item) => {
-                        if let Err(error) = dialog.SetFolder(&item) {
-                            log(&format!("set-folder failed: {}", error.message()));
-                        }
-                    }
-                    Err(error) => log(&format!("default-folder unavailable: {}", error.message())),
-                }
-            }
-            let modal: IModalWindow = dialog.cast().map_err(|error| error.message())?;
-            log(&format!("show folder={folder} owner={}", owner.is_some()));
-            match modal.Show(owner) {
-                Ok(()) => {}
-                Err(error) if error.code().0 == ERROR_CANCELLED => { log("canceled"); return Ok(None); }
-                Err(error) => {
-                    log(&format!("show failed: {}", error.message()));
-                    return Err(error.message());
-                }
-            }
-            let item = dialog.GetResult().map_err(|error| error.message())?;
-            let path = take_string(item.GetDisplayName(SIGDN_FILESYSPATH).map_err(|error| error.message())?);
-            log(if path.is_empty() { "selected-empty" } else { "selected" });
-            Ok(if path.is_empty() { None } else { Some(path) })
-        }
     }
 
     /// The modern IFileOpenDialog folder mode crashes inside `Show` on systems
@@ -157,27 +96,66 @@ mod imp {
             .unwrap_or_else(|_| { log("browse panic"); Err("dialog: picker panicked".to_owned()) })
     }
 
+    /// The modern IFileOpenDialog file mode is the same shell path that crashes
+    /// the folder picker, which is why manual game add failed. The classic
+    /// comdlg32 file browser is a separate, stable code path (the file-dialog
+    /// equivalent of the SHBrowseForFolderW fix).
+    fn browse_file(owner: Option<HWND>, default_path: Option<&str>) -> Result<Option<String>, String> {
+        unsafe {
+            let mut buffer = [0u16; 32768];
+            if let Some(path) = default_path.filter(|path| !path.trim().is_empty()) {
+                let path = wide(path);
+                let length = path.len().saturating_sub(1).min(buffer.len() - 1);
+                buffer[..length].copy_from_slice(&path[..length]);
+            }
+            let mut filter: Vec<u16> = "Executable files (*.exe)"
+                .encode_utf16().chain(std::iter::once(0))
+                .chain("*.exe".encode_utf16()).chain(std::iter::once(0))
+                .chain("All files (*.*)".encode_utf16()).chain(std::iter::once(0))
+                .chain("*.*".encode_utf16()).chain(std::iter::once(0))
+                .chain(std::iter::once(0))
+                .collect();
+            let title = wide("Select a game executable");
+            let mut directory = match default_path.filter(|path| !path.trim().is_empty()) {
+                Some(path) => wide(path),
+                None => Vec::new(),
+            };
+            let mut settings = OPENFILENAMEW {
+                lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+                hwndOwner: owner.unwrap_or_default(),
+                lpstrFilter: PCWSTR(filter.as_mut_ptr()),
+                nFilterIndex: 1,
+                lpstrFile: PWSTR(buffer.as_mut_ptr()),
+                nMaxFile: buffer.len() as u32,
+                lpstrInitialDir: if directory.is_empty() { PCWSTR::null() } else { PCWSTR(directory.as_mut_ptr()) },
+                lpstrTitle: PCWSTR::from_raw(title.as_ptr()),
+                Flags: OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_HIDEREADONLY,
+                ..Default::default()
+            };
+            log(&format!("file browse start owner={}", owner.is_some()));
+            if !GetOpenFileNameW(&mut settings).as_bool() {
+                let code = CommDlgExtendedError();
+                if code.0 == 0 { log("file browse canceled"); return Ok(None); }
+                log(&format!("file browse failed 0x{:04x}", code.0));
+                return Err(format!("dialog: the game executable picker failed (0x{:04x})", code.0));
+            }
+            let length = buffer.iter().position(|unit| *unit == 0).unwrap_or(0);
+            let selected = String::from_utf16_lossy(&buffer[..length]);
+            log("file browse selected");
+            Ok(if selected.is_empty() { None } else { Some(selected) })
+        }
+    }
+
+    fn browse_file_here(owner: Option<HWND>, default_path: Option<&str>) -> Result<Option<String>, String> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| browse_file(owner, default_path)))
+            .unwrap_or_else(|_| { log("file browse panic"); Err("dialog: picker panicked".to_owned()) })
+    }
+
     fn owner_handle() -> Option<HWND> {
         let owner = OWNER.load(Ordering::SeqCst);
         if owner == 0 { return None; }
         let hwnd = HWND(owner as *mut c_void);
         unsafe { IsWindow(Some(hwnd)).as_bool().then_some(hwnd) }
-    }
-
-    /// Show the dialog on the current thread. The caller is responsible for
-    /// COM initialization; `show` catches panics so a shell fault becomes a
-    /// normal invoke error rather than an unhandled crash.
-    fn show_here(folder: bool, owner: Option<HWND>, default_path: Option<&str>) -> Result<Option<String>, String> {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            show(folder, owner, default_path)
-        }));
-        match result {
-            Ok(selected) => selected,
-            Err(_) => {
-                log("panic");
-                Err("dialog: picker panicked".to_owned())
-            }
-        }
     }
 
     fn pick_worker(folder: bool, default_path: Option<String>) -> Result<Option<String>, String> {
@@ -189,7 +167,7 @@ mod imp {
             }
             // The owner HWND belongs to the main thread; never pass it from
             // this worker. The dialog is still top-level and modal to itself.
-            let selected = if folder { browse_here(None) } else { show_here(false, None, default_path.as_deref()) };
+            let selected = if folder { browse_here(None) } else { browse_file_here(None, default_path.as_deref()) };
             unsafe { CoUninitialize(); }
             selected
         }).join().map_err(|_| "dialog: picker thread panicked".to_owned())?
@@ -208,7 +186,7 @@ mod imp {
             let selected = if folder {
                 browse_here(owner_handle())
             } else {
-                show_here(false, owner_handle(), task_path.as_deref())
+                browse_file_here(owner_handle(), task_path.as_deref())
             };
             unsafe { CoUninitialize(); }
             let _ = tx.send(selected);

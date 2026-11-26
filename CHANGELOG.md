@@ -25,6 +25,11 @@
   registration check had the same English-only matching, so a missing
   `ArcPowerRTSS` value made the toggle fail on localized Windows when enabling
   or disabling it.
+- **Manually adding a game no longer crashes.** The executable picker used the
+  modern shell dialog (`IFileOpenDialog`) that crashes on systems with a
+  third-party shell namespace or provider. It now uses the classic comdlg32
+  file browser, the same generation of API that fixed the Recording folder
+  picker.
 - **Game scan survives and explains a bad entry.** The scan aborted with "Game
   scan failed safely" whenever one entry panicked. Stripping a trailing `.exe`
   sliced at `len - 4`, which panics when the name ends in a multi-byte
