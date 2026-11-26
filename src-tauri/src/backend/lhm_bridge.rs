@@ -13,6 +13,12 @@ use std::{
 
 const SAMPLE_TTL: Duration = Duration::from_millis(300);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
+/// The first sample after the bridge starts enumerates every sensor the host
+/// permits — MSR clocks/voltage/power, SuperIO fans, SPD and the GPU — and on a
+/// cold elevated start that can take longer than a steady-state poll. Killing
+/// the bridge at the short timeout restarts enumeration and loses every
+/// sample forever, so the first request gets a wider window.
+const FIRST_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn locate_bridge() -> Option<PathBuf> {
     let mut candidates = Vec::new();
@@ -92,14 +98,16 @@ impl Bridge {
             }
         };
         let bridge = Self { child, requests: Some(requests), worker: Some(worker) };
-        bridge.request()?;
+        // Prime the stream with the cold-start window: this is the call that
+        // pays for the full sensor enumeration.
+        bridge.request(FIRST_REQUEST_TIMEOUT)?;
         Ok(bridge)
     }
-    fn request(&self) -> Result<Value, String> {
+    fn request(&self, timeout: Duration) -> Result<Value, String> {
         let (reply, response) = mpsc::sync_channel(1);
         self.requests.as_ref().ok_or("LibreHardwareMonitor bridge is closed")?
             .send(Request::Sample(reply)).map_err(|_| "LibreHardwareMonitor bridge worker is unavailable".to_owned())?;
-        response.recv_timeout(REQUEST_TIMEOUT).map_err(|_| "LibreHardwareMonitor sample timed out".to_owned())?
+        response.recv_timeout(timeout).map_err(|_| "LibreHardwareMonitor sample timed out".to_owned())?
     }
     fn stop(&mut self) {
         if let Some(requests) = self.requests.take() {
@@ -119,9 +127,12 @@ pub struct LhmTelemetry {
     executable: Option<PathBuf>,
     bridge: Option<Bridge>,
     latest: Option<(Instant, Value)>,
+    /// True until the current bridge answers its first request, which is the
+    /// expensive full sensor enumeration.
+    cold: bool,
 }
 impl LhmTelemetry {
-    pub fn new() -> Self { Self { executable: locate_bridge(), bridge: None, latest: None } }
+    pub fn new() -> Self { Self { executable: locate_bridge(), bridge: None, latest: None, cold: true } }
     pub fn available(&self) -> bool { self.executable.is_some() }
     pub fn sample(&mut self) -> Result<Value, String> {
         if let Some((at, value)) = &self.latest {
@@ -130,10 +141,13 @@ impl LhmTelemetry {
         if self.bridge.is_none() {
             let executable = self.executable.as_ref().ok_or("LibreHardwareMonitor bridge is not packaged")?;
             self.bridge = Some(Bridge::start(executable)?);
+            self.cold = true;
         }
-        let result = self.bridge.as_ref().unwrap().request();
+        let timeout = if self.cold { FIRST_REQUEST_TIMEOUT } else { REQUEST_TIMEOUT };
+        let result = self.bridge.as_ref().unwrap().request(timeout);
         if result.is_err() { self.bridge = None; }
         let value = result?;
+        self.cold = false;
         self.latest = Some((Instant::now(), value.clone()));
         Ok(value)
     }
@@ -312,6 +326,17 @@ pub fn map_snapshot(payload: &Value, target: Option<&Value>) -> Map<String, Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_sample_allows_for_the_full_sensor_enumeration() {
+        // A cold elevated bridge can take several seconds to enumerate MSR,
+        // SuperIO, SPD and GPU sensors; restarting at the steady-state timeout
+        // loses every sample, which is what happened on a slow platform.
+        assert!(FIRST_REQUEST_TIMEOUT > REQUEST_TIMEOUT);
+        assert!(FIRST_REQUEST_TIMEOUT >= Duration::from_secs(15));
+        assert!(REQUEST_TIMEOUT >= Duration::from_secs(2));
+    }
+
     fn payload() -> Value {
         json!({"ok":true,"hardware":[
             {"type":"Cpu","sensors":[
