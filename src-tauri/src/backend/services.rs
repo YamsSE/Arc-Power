@@ -4879,7 +4879,7 @@ fn fixture_mode(mode: &str) -> (std::path::PathBuf, NativeStore) {
     fn version_keeps_existing_frontend_shape() {
         let (root, store) = fixture();
         let result = invoke("app-version", &json!({"t":"array","v":[]}), context(&store)).unwrap().unwrap();
-        assert_eq!(decode(&result).unwrap().into_json().unwrap(), json!({"version":"1.3.4"}));
+        assert_eq!(decode(&result).unwrap().into_json().unwrap(), json!({"version":"1.3.5"}));
         assert!(invoke("app-version", &json!({"t":"array","v":[{"t":"undefined"}]}), context(&store)).unwrap().is_err());
         let elevated = invoke("app-elevated", &json!({"t":"array","v":[]}), context(&store)).unwrap().unwrap();
         let elevated = decode(&elevated).unwrap().into_json().unwrap();

@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.3.5 — 2026-11-26
+
+### Fixed
+
+- **Updates and reinstalls no longer hit "access denied" on a locked install
+  folder.** When the recording runtime, LHM bridge, sharpening helper or
+  compatibility backend is still holding the install directory open, setup and
+  the update worker now terminate those Arc Power helpers and retry the
+  directory move instead of failing on `os error 5`.
+- **Profiles apply on boot after moving the install.** Setup re-points the
+  Windows startup logon task (and legacy Run value) at the new executable when
+  the install location changes, so the app still launches at logon and runs the
+  `ocOnBoot` profile apply instead of silently pointing at the old path.
+- **RTSS overlay chip names.** The native OSD now respects the Chip Names
+  toggle: the GPU row shows the model ("B580") only when the toggle is on and
+  "GPU" when off, the CPU row shows the cut-down model ("i7 5960X", "R5 3600"),
+  the VRAM row is always plain "VRAM", and factory memory tokens
+  ("12GB GDDR6") are dropped from the label. Multi-GPU rows are numbered when
+  chip names are off.
+- **Hotkey grammar.** Every hotkey field now accepts a single function key
+  (F1-F24) on its own. Letters and numbers still need Ctrl, Alt, or Shift, and
+  two-modifier chords (for example Ctrl+Alt+F1) are always accepted.
+- **Single instance.** A second Arc Power launch now exits instead of starting
+  a duplicate tray, overlays, hotkeys and recording engine.
+- **Arc Power Overlay starts when selected.** Switching the renderer to the Arc
+  Power Overlay (or enabling the overlay, or saving a layout change) starts the
+  software HUD again. A recent change had left it to the hotkey only, so the HUD
+  appeared not to start.
+- **Arc Image Sharpening / ASR frame pacing.** The capture-overlay provider is
+  gated off in production: its second composition presentation changed the
+  game's VRR/frame-pacing path and produced erratic frame times. Settings stay
+  stored, but sharpening reports unavailable and the helper never launches
+  until a non-intrusive path exists.
+
+### Added
+
+- **Highest power plan tweak.** A Tweaks card switches the Windows power plan
+  between High performance and Balanced with `powercfg /setactive`.
+- **Windows Update driver exclusion.** A Tweaks card writes
+  `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\ExcludeWUDriversInQualityUpdate=1`
+  so Windows Update stops pushing an older driver over the clean install.
+- **Intel oneVPL QSV encoder.** The bundled Ascent recorder now ships and
+  prefers `obs-qsvonevpl`, exposing both the texture encoders
+  (AV1 Tex / HEVC Tex / H264 Tex) and the frame encoders (AV1 / HEVC / H264),
+  with the built-in `obs_qsv11` path as the fallback.
+
+### Changed
+
+- **Tweaks.** Removed the read-only Fullscreen Optimizations card.
+- Version 1.3.5 across the app, installer, README and website.
+
 ## 1.3.4 — 2026-11-24
 
 ### Fixed
@@ -64,25 +115,6 @@
   destroys the resident WebView process.
 - **Overlay styling.** The Advanced Overlay active tab now wins against the
   shared `.oc-mode-btn.active` rule instead of being overridden.
-- **RTSS overlay chip names.** The native OSD now respects the Chip Names
-  toggle: the GPU row shows the model ("B580") only when the toggle is on, the
-  CPU row shows the cut-down model ("i7 5960X", "R5 3600"), the VRAM row is
-  always plain "VRAM", and factory memory tokens ("12GB GDDR6") are dropped
-  from the label. Multi-GPU rows are numbered when chip names are off.
-- **Hotkey grammar.** Every hotkey field now accepts a single function key
-  (F1-F24) on its own. Letters and numbers still need Ctrl, Alt, or Shift, and
-  two-modifier chords (for example Ctrl+Alt+F1) are always accepted.
-- **Single instance.** A second Arc Power launch now exits instead of starting
-  a duplicate tray, overlays, hotkeys and recording engine.
-- **Arc Power Overlay starts when selected.** Switching the renderer to the Arc
-  Power Overlay (or enabling the overlay, or saving a layout change) starts the
-  software HUD again. A recent change had left it to the hotkey only, so the HUD
-  appeared not to start.
-- **Arc Image Sharpening / ASR frame pacing.** The capture-overlay provider is
-  gated off in production: its second composition presentation changed the
-  game's VRR/frame-pacing path and produced erratic frame times. Settings stay
-  stored, but sharpening reports unavailable and the helper never launches
-  until a non-intrusive path exists.
 - **Sysinfo startup safety.** The first CIM snapshot has a hard 10 s process
   deadline, runs off the async workers, and retries after a transient failure
   instead of latching null for the session.
@@ -129,15 +161,6 @@
   focused GPU.
 - **Installer move safety.** If the old per-user folder contains files Setup
   did not install, it is kept with a notice instead of being deleted.
-- **Updates and reinstalls no longer hit "access denied" on a locked install
-  folder.** When the recording runtime, LHM bridge, sharpening helper or
-  compatibility backend is still holding the install directory open, setup and
-  the update worker now terminate those Arc Power helpers and retry the
-  directory move instead of failing on `os error 5`.
-- **Profiles apply on boot after moving the install.** Setup re-points the
-  Windows startup logon task (and legacy Run value) at the new executable when
-  the install location changes, so the app still launches at logon and runs
-  the `ocOnBoot` profile apply instead of silently pointing at the old path.
 - **Packaging guard.** The native packager refuses a renderer bundle that is
   older than `src/renderer`, and both NSIS wrappers now carry 1.3.4 version
   metadata so a stale portable is identifiable in Explorer.
@@ -154,14 +177,6 @@
   Arc Sleep, Monitoring, Recording, Profiles and Tweaks from the sidebar.
   Dashboard, Tuning and Settings always stay visible. The preference is stored
   locally, like the sidebar width.
-- **Highest power plan tweak.** A Tweaks card switches the Windows power plan
-  between High performance and Balanced with `powercfg /setactive`.
-- **Windows Update driver exclusion.** A Tweaks card writes
-  `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\ExcludeWUDriversInQualityUpdate=1`
-  so Windows Update stops pushing an older driver over the clean install.
-- **Intel oneVPL QSV encoder.** The bundled Ascent recorder now ships and
-  prefers `obs-qsvonevpl` (H.264/HEVC/AV1 frame and texture encoders) over the
-  built-in `obs_qsv11` plugin, with the built-in path as the fallback.
 
 ### Changed
 
