@@ -250,6 +250,18 @@ fn process_rows(rows: &mut Vec<ScanRow>) {
 #[cfg(not(windows))]
 fn process_rows(_rows: &mut Vec<ScanRow>) {}
 
+/// Strip a trailing `.exe` without assuming the preceding byte is a character
+/// boundary. `display[len - 4..]` panics when the last four bytes straddle a
+/// multi-byte character (for example a name ending in "ü"), and the whole scan
+/// used to die with it.
+fn strip_exe_suffix(display: &str) -> String {
+    if display.len() > 4 && display.to_ascii_lowercase().ends_with(".exe") {
+        display[..display.len() - 4].to_owned()
+    } else {
+        display.to_owned()
+    }
+}
+
 fn candidate_score(item: &GameApp, source: RowSource) -> i32 {
     let base = Path::new(&item.exe_path).file_stem().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase();
     let display = item.display_name.to_ascii_lowercase().split(|character: char| !character.is_ascii_alphanumeric()).filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ");
@@ -277,9 +289,7 @@ fn normalize_rows(rows: Vec<ScanRow>, current_exe: &Value, excluded: &[Value], o
             .map(|value| value.chars().take(260).collect::<String>()).unwrap_or_else(|| basename.clone());
         let explicit_display = row.display_name.as_deref().map(str::trim).filter(|value| !value.is_empty());
         let display_raw = explicit_display.unwrap_or(&process_name).to_owned();
-        let display_name = if display_raw.len() > 4 && display_raw[display_raw.len() - 4..].eq_ignore_ascii_case(".exe") {
-            display_raw[..display_raw.len() - 4].to_owned()
-        } else { display_raw.clone() };
+        let display_name = strip_exe_suffix(&display_raw);
         if only_games && !is_likely_game_candidate(&json!({"exePath": exe_path, "displayName": display_name, "processName": process_name})) { continue; }        let app = GameApp {
             artwork: row.artwork.clone().unwrap_or_else(|| deterministic_artwork_key(&json!(exe_path))),
             exe_path: exe_path.clone(),
@@ -632,10 +642,21 @@ fn enrich(apps: &mut [GameApp]) {
     }
 }
 
+fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
+    payload.downcast_ref::<&str>().map(|text| (*text).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_owned())
+}
+
 pub fn scan() -> Value {
-    std::panic::catch_unwind(scan_inner).unwrap_or_else(|_| {
-        json!({"apps": [], "error": "Game scan failed safely; no catalog was changed"})
-    })
+    match std::panic::catch_unwind(scan_inner) {
+        Ok(value) => value,
+        Err(payload) => {
+            // Name the panic so a report is actionable instead of a dead end.
+            let detail = panic_detail(payload.as_ref());
+            json!({"apps": [], "error": format!("Game scan failed safely ({detail}); no catalog was changed")})
+        }
+    }
 }
 
 fn excluded_paths() -> Vec<Value> {
@@ -650,17 +671,51 @@ fn scan_inner() -> Value {
     let current_exe = std::env::current_exe().ok().map(|path| json!(path.to_string_lossy())).unwrap_or(Value::Null);
     let excluded = excluded_paths();
     let mut rows = Vec::new();
-    registry_rows(&mut rows);
-    shortcut_rows(&mut rows);
-    process_rows(&mut rows);
+    // One malformed uninstall entry, shortcut or artwork file must not blank
+    // the whole catalog; each phase is isolated.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| registry_rows(&mut rows)));
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| shortcut_rows(&mut rows)));
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| process_rows(&mut rows)));
     let mut apps = normalize_rows(rows, &current_exe, &excluded, true);
-    enrich(&mut apps);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| enrich(&mut apps)));
     json!({"apps": apps.into_iter().map(app_json).collect::<Vec<_>>()})
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panic_detail_names_the_failure() {
+        let payload = std::panic::catch_unwind(|| panic!("bad entry at index 3")).unwrap_err();
+        let detail = panic_detail(payload.as_ref());
+        assert!(detail.contains("bad entry at index 3"), "detail was {detail:?}");
+        assert_eq!(panic_detail(&42u32), "unknown panic");
+    }
+
+    #[test]
+    #[ignore = "live game scan on this machine"]
+    fn live_scan_returns_apps_without_error() {
+        let result = scan();
+        assert!(result.get("error").is_none(), "scan reported {:?}", result.get("error"));
+        let apps = result.get("apps").and_then(Value::as_array).expect("apps array");
+        println!("LIVE_SCAN_APPS {}", apps.len());
+        if let Some(first) = apps.first() {
+            println!("LIVE_SCAN_FIRST {}", serde_json::to_string(first).unwrap_or_default());
+        }
+    }
+
+    #[test]
+    fn exe_suffix_stripping_never_splits_a_character() {
+        // The old code sliced at len-4, which lands inside a 2-byte "ü" here
+        // and panicked the entire scan on Unicode display names.
+        assert_eq!(strip_exe_suffix("Grüße.exe"), "Grüße");
+        assert_eq!(strip_exe_suffix("日本語.EXE"), "日本語");
+        assert_eq!(strip_exe_suffix("Game.exe"), "Game");
+        assert_eq!(strip_exe_suffix("NoSuffix"), "NoSuffix");
+        assert_eq!(strip_exe_suffix("ends with ü"), "ends with ü");
+        assert_eq!(strip_exe_suffix(".exe"), ".exe", "a name that is only the suffix is left alone");
+    }
 
     #[test]
     fn env_expansion_and_display_icon_paths_are_bounded() {
