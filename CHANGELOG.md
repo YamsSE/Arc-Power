@@ -41,11 +41,12 @@
 - **Windows Update driver exclusion.** A Tweaks card writes
   `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\ExcludeWUDriversInQualityUpdate=1`
   so Windows Update stops pushing an older driver over the clean install.
-- **Intel oneVPL QSV encoder.** The recorder ships `obs-qsv-onevpl-boost`
-  rebuilt against its OBS 30.1.2 runtime (headless, no Qt6/frontend): the
-  texture encoders (AV1 Tex / HEVC Tex / H264 Tex) are user-selectable and the
-  internal frame encoders are hidden, with the built-in `obs_qsv11` path as
-  the fallback.
+- **Intel encoder selection is back on the built-in QSV path.** The bundled
+  `obs-qsv-onevpl` plugin enumerates, but the Ascent recorder host only starts
+  its own built-in encoder ids and rejects third-party ids with
+  "unsupported encoder", so Intel AV1/HEVC/H264 now always resolve to the
+  built-in `obs_qsv11` encoders that actually record. The oneVPL plugin and its
+  "Tex" entries are no longer shipped, so they cannot be selected and fail.
 
 ### Changed
 

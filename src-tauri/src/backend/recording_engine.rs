@@ -1623,31 +1623,26 @@ fn resolve_encoder(requested: &str, encoders: &[Value], selection: Option<&Encod
     let codec = selection.map(|value| value.codec.as_str()).unwrap_or(requested);
     let usable = |candidate: &str| encoders.iter().any(|encoder| encoder["type"].as_str() == Some(candidate) && is_usable(encoder));
     if codec == "automatic" {
-        // Prefer the bundled obs-qsvonevpl texture encoders (the actively used
-        // Intel path with the better quality controls), then the built-in QSV.
-        for candidate in ["obs_qsv_vpl_av1_tex", "obs_qsv_vpl_av1", "obs_qsv11_av1"] {
+        // The Ascent host only starts its built-in encoder ids; it rejects
+        // third-party ids such as obs_qsv_vpl_* ("unsupported encoder id
+        // passed"). Resolve to the built-in QSV so a recording can start.
+        for candidate in ["obs_qsv11_av1", "obs_qsv11_hevc", "obs_qsv11_v2"] {
             if usable(candidate) { return Ok(candidate.into()); }
         }
         return Err(unsupported_encoder_error(codec, encoders));
     }
-    // The UI still lists the legacy names (Intel AV1/HEVC/H264) backed by the
-    // built-in ids. Route each onto the bundled obs-qsvonevpl encoder when the
-    // runtime enumerated it, so every shown Intel choice actually runs the
-    // plugin; the built-in id stays the last-resort fallback.
-    let candidates: &[&str] = match codec {
-        "obs_qsv11_av1" => &["obs_qsv_vpl_av1_tex", "obs_qsv_vpl_av1", "obs_qsv11_av1"],
-        "obs_qsv11_hevc" => &["obs_qsv_vpl_hevc_tex", "obs_qsv_vpl_hevc", "obs_qsv11_hevc"],
-        "obs_qsv11_v2" => &["obs_qsv_vpl_h264_tex", "obs_qsv_vpl_h264", "obs_qsv11_v2"],
-        _ if QSV_PREFERENCE.contains(&codec) => {
-            if usable(codec) { return Ok(codec.to_owned()); }
-            return Err(unsupported_encoder_error(codec, encoders));
-        }
-        _ => return Err(unsupported_encoder_error(codec, encoders)),
+    // Map the bundled obs-qsvonevpl ids onto the built-in QSV ids: the plugin
+    // enumerates, but the Ascent host refuses to start its encoder ids.
+    let mapped = match codec {
+        "obs_qsv_vpl_av1_tex" | "obs_qsv_vpl_av1" => "obs_qsv11_av1",
+        "obs_qsv_vpl_hevc_tex" | "obs_qsv_vpl_hevc" => "obs_qsv11_hevc",
+        "obs_qsv_vpl_h264_tex" | "obs_qsv_vpl_h264" => "obs_qsv11_v2",
+        other => other,
     };
-    for candidate in candidates {
-        if usable(candidate) { return Ok((*candidate).to_owned()); }
+    if !QSV_PREFERENCE.contains(&mapped) || !usable(mapped) {
+        return Err(unsupported_encoder_error(codec, encoders));
     }
-    Err(unsupported_encoder_error(codec, encoders))
+    Ok(mapped.to_owned())
 }
 
 fn resolve_encoder_target(target: &Value, encoder: &str) -> Option<(Value, Option<String>)> {

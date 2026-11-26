@@ -60,12 +60,11 @@ function isKnownQsvEncoderId(id: string): boolean {
   return (ALL_QSV_ENCODER_IDS as readonly string[]).includes(id);
 }
 
-/** The encoder set shown for the current runtime: the plugin's six variants
- *  when any is usable, otherwise the built-in three. */
-function activeQsvEncoderIds(encoders: readonly RecordingEncoderLike[]): readonly string[] {
-  const usable = (Array.isArray(encoders) ? encoders : []).filter(encoderIsUsable);
-  const pluginAvailable = PLUGIN_QSV_ENCODER_IDS.some((id) => usable.some((encoder) => encoder.type === id));
-  return pluginAvailable ? PLUGIN_QSV_ENCODER_IDS : LEGACY_QSV_ENCODER_IDS;
+/** The encoder set shown for the current runtime: only the built-in QSV ids,
+ *  because the Ascent host refuses to start third-party ids such as
+ *  obs_qsv_vpl_* even when the oneVPL plugin enumerates them. */
+function activeQsvEncoderIds(_encoders: readonly RecordingEncoderLike[]): readonly string[] {
+  return LEGACY_QSV_ENCODER_IDS;
 }
 
 /** Return true for the generic QSV choices that are only a fallback when no
