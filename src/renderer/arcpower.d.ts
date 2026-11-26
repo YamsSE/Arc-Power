@@ -277,6 +277,10 @@ export interface ArcPowerApi {
   driverInfo(): Promise<{ driverDate: string | null }>;
   /** M2C-B B3: the app version for the header line ("Arc Power Ver. X.XX"). */
   appVersion(): Promise<{ version: string }>;
+  /** Version/platform/GPU/log snapshot for the error-toast diagnostics copy. */
+  diagnosticsText(): Promise<string>;
+  /** Native clipboard writer for text (no WebView clipboard permissions). */
+  clipboardCopyText(text: string): Promise<{ ok: boolean }>;
   /** M4-E: the distribution kind - 'installed' (elevated logon task story),
    *  'portable' (unelevated in-app applies), 'dev' (dev tree). */
   appBuildInfo(): Promise<{ kind: 'installed' | 'portable' | 'dev' }>;

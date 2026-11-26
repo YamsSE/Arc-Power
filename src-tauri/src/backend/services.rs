@@ -150,6 +150,17 @@ fn invoke_inner<'a>(
             no_payload(channel, args)?;
             encode_json(&json!({"version":env!("CARGO_PKG_VERSION")}))
         })()),
+        "diagnostics-text" => Some((|| {
+            no_payload(channel, args)?;
+            encode_json(&json!(super::diagnostics::text(context.build_kind, context.store.root())))
+        })()),
+        "clipboard-copy-text" => Some((|| {
+            let WireValue::Array(items) = decode(args)? else { return Err("clipboard-copy-text expects one string".into()); };
+            if items.len() != 1 { return Err("clipboard-copy-text expects one string".into()); }
+            let WireValue::String(text) = &items[0] else { return Err("clipboard-copy-text expects one string".into()); };
+            super::clipboard::copy_text(text)?;
+            encode_json(&json!({"ok": true}))
+        })()),
         "app-elevated" => Some((|| {
             no_payload(channel, args)?;
             let elevated = process_is_elevated();
@@ -4879,7 +4890,7 @@ fn fixture_mode(mode: &str) -> (std::path::PathBuf, NativeStore) {
     fn version_keeps_existing_frontend_shape() {
         let (root, store) = fixture();
         let result = invoke("app-version", &json!({"t":"array","v":[]}), context(&store)).unwrap().unwrap();
-        assert_eq!(decode(&result).unwrap().into_json().unwrap(), json!({"version":"1.3.6"}));
+        assert_eq!(decode(&result).unwrap().into_json().unwrap(), json!({"version":"1.4.0"}));
         assert!(invoke("app-version", &json!({"t":"array","v":[{"t":"undefined"}]}), context(&store)).unwrap().is_err());
         let elevated = invoke("app-elevated", &json!({"t":"array","v":[]}), context(&store)).unwrap().unwrap();
         let elevated = decode(&elevated).unwrap().into_json().unwrap();

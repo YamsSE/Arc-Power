@@ -19,6 +19,7 @@
 // and the thin Canvas drawing.
 
 import { el, clear } from '../dom.ts';
+import { temperatureSeverity, type ThermalSeverity } from '../pure/thermal.ts';
 import type { AppState, Page, PageContext } from '../router.ts';
 import { consumeOverlayViewRequest } from '../router.ts';
 import { api } from '../ipc.ts';
@@ -83,6 +84,7 @@ interface MonState {
 interface MetricReadout {
   value: string;
   unit: string;
+  severity?: ThermalSeverity | null;
 }
 
 interface MetricBinding {
@@ -282,6 +284,8 @@ function updateMetricBindings(state: AppState): void {
     const readout = binding.read(state);
     binding.valueNode.textContent = readout.value;
     binding.unitNode.textContent = readout.unit;
+    if (readout.severity) binding.valueNode.dataset.severity = readout.severity;
+    else delete binding.valueNode.dataset.severity;
   }
 }
 
@@ -332,7 +336,7 @@ function cpuMetricNodes(state: AppState): HTMLElement[] {
   return [
     metricNode('Util', (s) => ({ value: statValue(systemSample(s)?.cpuUtilPct), unit: '%' }), state, '', 'cpu', systemGraphKey('cpu-util'), 'cpu-util'),
     metricNode('Core Frequency', (s) => ({ value: ghzFreq(systemSample(s)?.cpuFreqMhz), unit: 'GHz' }), state, '', 'cpu', systemGraphKey('cpu-clock'), 'cpu-clock'),
-    metricNode('Temperature', (s) => ({ value: statValue(systemSample(s)?.cpuTempC), unit: '°C' }), state, '', 'cpu', systemGraphKey('cpu-temp'), 'cpu-temp'),
+    metricNode('Temperature', (s) => { const value = systemSample(s)?.cpuTempC; return { value: statValue(value), unit: '°C', severity: temperatureSeverity(value, 'cpu') }; }, state, '', 'cpu', systemGraphKey('cpu-temp'), 'cpu-temp'),
     metricNode('Power', (s) => ({ value: statValue(systemSample(s)?.cpuPowerW, 1), unit: 'W' }), state, '', 'cpu', systemGraphKey('cpu-power'), 'cpu-power'),
   ];
 }
@@ -360,7 +364,7 @@ function gpuMetricNodes(device: DeviceInfo | null, state: AppState): HTMLElement
     }, state, '', category, series('util'), 'gpu-util'),
     metricNode('Core clock', (s) => ({ value: statValue(readSample(s)?.gpuClockMhz), unit: 'MHz' }), state, '', category, series('clock'), 'gpu-clock'),
     metricNode('Voltage', (s) => ({ value: statValue(readSample(s)?.gpuVoltageV, 3), unit: 'V' }), state, '', category, series('voltage'), 'gpu-voltage'),
-    metricNode('Temperature', (s) => ({ value: statValue(readSample(s)?.tempC), unit: '°C' }), state, '', category, series('temp'), 'gpu-temperature'),
+    metricNode('Temperature', (s) => { const value = readSample(s)?.tempC; return { value: statValue(value), unit: '°C', severity: temperatureSeverity(value, 'gpu') }; }, state, '', category, series('temp'), 'gpu-temperature'),
     metricNode('Power', (s) => ({ value: statValue(readSample(s)?.powerW, 1), unit: 'W' }), state, '', category, series('power'), 'gpu-power'),
   ];
   for (let fan = 0; fan < fanCount; fan++) {
@@ -387,7 +391,7 @@ function gpuMemoryMetricNodes(device: DeviceInfo | null, state: AppState): HTMLE
       return { value: formatGpuMemoryGb(v?.gpuMemUsedBytes), unit: gpuMemoryLabel(v?.gpuMemorySource) === 'VRAM' ? 'GB' : 'GB shared' };
     }, state, '', category, gpuGraphKey(device ? deviceKeyOf(device) : 'vendor', 'vram'), 'gpu-vram'),
     metricNode('Memory clock', (s) => ({ value: statValue(readSample(s)?.memClockMhz), unit: 'MHz' }), state, '', category, gpuGraphKey(device ? deviceKeyOf(device) : 'vendor', 'mem-clock'), 'gpu-memory-clock'),
-    metricNode('VramTemp', (s) => ({ value: statValue(readSample(s)?.vramTempC), unit: '°C' }), state, '', category, gpuGraphKey(device ? deviceKeyOf(device) : 'vendor', 'vram-temp'), 'gpu-vram-temperature'),
+    metricNode('VramTemp', (s) => { const value = readSample(s)?.vramTempC; return { value: statValue(value), unit: '°C', severity: temperatureSeverity(value, 'vram') }; }, state, '', category, gpuGraphKey(device ? deviceKeyOf(device) : 'vendor', 'vram-temp'), 'gpu-vram-temperature'),
   ];
 }
 

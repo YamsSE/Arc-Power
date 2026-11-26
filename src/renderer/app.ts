@@ -8,7 +8,8 @@ import { el, svgEl, clear, preserveScrollPositions, resetScrollPositions } from 
 import { Store, currentPage, NAV_LABELS, PAGE_IDS } from './router.ts';
 import type { Page, PageId } from './router.ts';
 import { displayVersion, GpuHeader } from './components/header.ts';
-import { toast } from './components/toast.ts';
+import { setErrorDiagnosticsHandler, toast } from './components/toast.ts';
+import { applyUiPreferences, readUiPreferences } from './pure/ui-preferences.ts';
 import { initTitlebar, initUpdaterControl, startupUpdateCheck } from './components/titlebar.ts';
 import { promptWaiverAtBoot } from './components/waiver-dialog.ts';
 import { dashboardPage } from './pages/dashboard.ts';
@@ -741,6 +742,17 @@ async function boot() {
     store.set({ deviceId });
   };
   if (!noDevice) await resolveFocusedDevice(devices);
+
+  // Display-only UI preferences (density/scale) apply before the first paint.
+  applyUiPreferences(readUiPreferences());
+
+  // Every error toast offers "Copy diagnostics": version, platform, GPU,
+  // startup state and the log tails, with the toast text at the top.
+  setErrorDiagnosticsHandler(async ({ kind, title, message }) => {
+    const snapshot = await api.diagnosticsText();
+    const header = `[${kind}] ${title}${message ? `: ${message}` : ''}`;
+    await api.clipboardCopyText(`${header}\n\n${snapshot}`);
+  });
 
   // App version in the sidebar footer. Failure degrades to the 0.0.0
   // placeholder while keeping updater behavior available.

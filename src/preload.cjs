@@ -132,6 +132,10 @@ contextBridge.exposeInMainWorld('arcPower', {
   intelDriverInstall: (kind, version) => ipcRenderer.invoke('intel-driver-install', kind, version),
   driverInfo: () => ipcRenderer.invoke('driver-info'),
   appVersion: () => ipcRenderer.invoke('app-version'),
+  /** Diagnostic snapshot for the error-toast "Copy diagnostics" action. */
+  diagnosticsText: () => ipcRenderer.invoke('diagnostics-text'),
+  /** Copy arbitrary text with the native clipboard writer. */
+  clipboardCopyText: (text) => ipcRenderer.invoke('clipboard-copy-text', text),
   // M4-E: distribution kind - 'installed' | 'portable' | 'dev'
   // (the Settings start-with-Windows hint differentiates by it).
   appBuildInfo: () => ipcRenderer.invoke('app:build-info'),

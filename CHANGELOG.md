@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.4.0 — 2026-11-27
+
+### Added
+
+- **Copy diagnostics on every error toast.** Each error toast now offers a
+  one-click copy of the app version, Windows build, GPU and driver rows,
+  startup registration state and the tails of the operational logs, with the
+  toast text at the top. No profile contents or credentials are included.
+- **Density and scale.** Settings gains a Density (Comfortable/Compact) and
+  Scale (90/100/110/125%) control for the whole window. Stored per PC.
+- **Consistent temperature colours.** CPU, GPU and VRAM temperatures share one
+  advisory scale (warm/hot/critical) on the monitoring page.
+
+### Changed
+
+- Version 1.4.0 across the app and installer.
+
 ## 1.3.6 — 2026-11-26
 
 ### Fixed

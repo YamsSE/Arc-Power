@@ -4,6 +4,7 @@ pub mod apply_lock;
 pub mod apply_transaction;
 pub mod clipboard;
 pub mod capture_targets;
+pub mod diagnostics;
 pub mod dialogs;
 pub mod credentials;
 pub mod gpu_devices;

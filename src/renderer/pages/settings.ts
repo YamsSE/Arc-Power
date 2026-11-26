@@ -38,6 +38,7 @@ import { showRecordingHotkeyDialog } from '../components/recording-hotkey-dialog
 import { displayVersion as displayVersionLine } from '../components/header.ts';
 import { applyTheme } from '../app.ts';
 import { isValidTheme, reconcileThemeSave, THEMES, type Theme } from '../pure/theme.ts';
+import { applyUiPreferences, readUiPreferences, UI_SCALES, uiScaleLabel, writeUiPreferences } from '../pure/ui-preferences.ts';
 import { HIDEABLE_TABS, HIDDEN_TABS_EVENT, readHiddenTabs, writeHiddenTabs } from '../pure/hidden-tabs.ts';
 import type { StartupGetState } from '../types.ts';
 
@@ -277,6 +278,54 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     // are CSS-class driven (.swatch-*) - CSP style-src 'self' blocks inline
     // style attributes (plan-review N10). The current theme's swatch is
     // marked .active.
+    let uiPreferences = readUiPreferences();
+    const densityButtons: HTMLButtonElement[] = [];
+    const scaleButtons: HTMLButtonElement[] = [];
+    const syncInterfaceButtons = (): void => {
+      for (const button of densityButtons) button.classList.toggle('active', button.dataset.density === uiPreferences.density);
+      for (const button of scaleButtons) button.classList.toggle('active', Number(button.dataset.scale) === uiPreferences.scale);
+    };
+    const updateUiPreferences = (next: Partial<typeof uiPreferences>): void => {
+      uiPreferences = { ...uiPreferences, ...next };
+      writeUiPreferences(uiPreferences);
+      applyUiPreferences(uiPreferences);
+      syncInterfaceButtons();
+    };
+    const interfaceCard = el('section', { class: 'card settings-card settings-interface-card arc-surface-card' }, [
+      el('h2', { class: 'card-title', text: 'Density & scale' }),
+      el('p', { class: 'card-note', text: 'Compact fits more rows on screen; scale enlarges the whole window. Stored on this PC only.' }),
+      el('div', { class: 'settings-row settings-density-row' }, [
+        el('span', { class: 'settings-label', text: 'Density' }),
+        ...(['comfortable', 'compact'] as const).map((density) => {
+          const button = el('button', {
+            type: 'button',
+            class: 'btn btn-secondary settings-density-option',
+            dataset: { density },
+            text: density === 'compact' ? 'Compact' : 'Comfortable',
+            onclick: () => updateUiPreferences({ density }),
+          }) as HTMLButtonElement;
+          densityButtons.push(button);
+          return button;
+        }),
+      ]),
+      el('div', { class: 'settings-row settings-scale-row' }, [
+        el('span', { class: 'settings-label', text: 'Scale' }),
+        ...UI_SCALES.map((scale) => {
+          const button = el('button', {
+            type: 'button',
+            class: 'btn btn-secondary settings-scale-option',
+            dataset: { scale: String(scale) },
+            text: uiScaleLabel(scale),
+            onclick: () => updateUiPreferences({ scale }),
+          }) as HTMLButtonElement;
+          scaleButtons.push(button);
+          return button;
+        }),
+      ]),
+    ]);
+    syncInterfaceButtons();
+
+    // 1.0.1 Themes: the Theme card - one swatch per theme
     const maintenanceCard = el('section', { class: 'card settings-card maintenance-card arc-surface-card' }, [
       el('h2', { class: 'card-title', text: 'Maintenance' }),
       el('div', { class: 'card-note maintenance-descriptions' }, [
@@ -429,7 +478,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
       el('p', { class: 'recording-panel-note', text: 'Hide tabs you do not use. Dashboard, Tuning and Settings always stay visible.' }),
       ...HIDEABLE_TABS.map(navigationRow),
     ]);
-    const settingCards = [startWithCard, startMinimizedCard, closeToTrayCard, memorySavingCard, maintenanceCard, themeCard, aboutCard, hotkeysCard, navigationCard];
+    const settingCards = [startWithCard, startMinimizedCard, closeToTrayCard, memorySavingCard, maintenanceCard, themeCard, interfaceCard, aboutCard, hotkeysCard, navigationCard];
     const preferencesGroup = el('section', { class: 'settings-group settings-preferences-group' }, [
       el('div', { class: 'settings-group-heading' }, [
         el('div', {}, [
@@ -448,7 +497,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
         ]),
         el('span', { class: 'settings-group-index', text: '02' }),
       ]),
-      el('div', { class: 'settings-interface-grid' }, [themeCard]),
+      el('div', { class: 'settings-interface-grid' }, [interfaceCard, themeCard]),
     ]);
     const maintenanceGroup = el('section', { class: 'settings-group settings-maintenance-group' }, [
       el('div', { class: 'settings-group-heading' }, [
@@ -482,7 +531,7 @@ async function mount(ctx: PageContext, container: HTMLElement): Promise<void> {
     ]);
     const settingGroups = [
       { node: preferencesGroup, cards: [startWithCard, startMinimizedCard, closeToTrayCard, memorySavingCard] },
-      { node: interfaceGroup, cards: [themeCard] },
+      { node: interfaceGroup, cards: [interfaceCard, themeCard] },
       { node: maintenanceGroup, cards: [maintenanceCard, aboutCard] },
       { node: hotkeysGroup, cards: [hotkeysCard] },
       { node: navigationGroup, cards: [navigationCard] },
