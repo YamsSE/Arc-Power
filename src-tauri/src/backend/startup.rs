@@ -35,7 +35,11 @@ fn command(program: &str, args: &[&str]) -> Result<Output, String> {
     command.output().map_err(|error| error.to_string())
 }
 
-fn decode_console(bytes: &[u8]) -> String {
+/// Decode output from `reg`/`schtasks`. They write UTF-16 on some paths and,
+/// otherwise, the console **OEM code page** (936, 932, 850, ...), which is not
+/// valid UTF-8 — decoding it as UTF-8 produced the mojibake users saw in error
+/// toasts on CJK installs.
+pub(crate) fn decode_console(bytes: &[u8]) -> String {
     if bytes.starts_with(&[0xff, 0xfe]) {
         let units: Vec<u16> = bytes[2..].chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
         return String::from_utf16_lossy(&units);
@@ -44,7 +48,25 @@ fn decode_console(bytes: &[u8]) -> String {
         let units: Vec<u16> = bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
         return String::from_utf16_lossy(&units);
     }
+    if let Ok(text) = std::str::from_utf8(bytes) { return text.to_owned(); }
+    #[cfg(windows)]
+    if let Some(text) = decode_oem(bytes) { return text; }
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Decode a byte string that is in the system's OEM code page.
+#[cfg(windows)]
+fn decode_oem(bytes: &[u8]) -> Option<String> {
+    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP};
+    let length = i32::try_from(bytes.len()).ok()?;
+    if length == 0 { return None; }
+    let units = unsafe { MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), length, std::ptr::null_mut(), 0) };
+    if units <= 0 { return None; }
+    let mut buffer = vec![0u16; units as usize];
+    let written = unsafe { MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), length, buffer.as_mut_ptr(), units) };
+    if written <= 0 { return None; }
+    buffer.truncate(written as usize);
+    Some(String::from_utf16_lossy(&buffer))
 }
 
 fn quoted_path(value: &str) -> Option<String> {
@@ -453,6 +475,36 @@ mod tests {
     fn read_only_run_query_is_bounded() {
         let registration = read_run().unwrap();
         let _ = registration.value_exists;
+    }
+
+    #[test]
+    #[ignore = "live reg delete probe"]
+    fn live_absent_value_delete_is_treated_as_clean() {
+        // This is the command behind "startup-set: Run cleanup failed" on every
+        // profile activation: the Run value is normally absent for packaged
+        // builds, so `reg delete` exits 1.
+        let output = command("reg", &["delete", RUN_KEY, "/v", "ArcPower__Absent_Test", "/f"])
+            .expect("reg delete must run");
+        assert!(!output.status.success(), "the probe value must not exist");
+        println!("DELETE_EXIT {:?} STDERR {:?}", output.status.code(), decode_console(&output.stderr));
+        assert!(query_found_nothing(&output), "an absent value must count as clean");
+    }
+
+    #[test]
+    fn console_output_decoding_keeps_utf8_and_utf16() {
+        // Valid UTF-8 (modern console CP 65001) must pass through unchanged.
+        assert_eq!(decode_console("Grüße".as_bytes()), "Grüße");
+        assert_eq!(decode_console(b"plain ascii"), "plain ascii");
+        // UTF-16LE with a BOM (the reliable form) decodes any script.
+        let utf16: Vec<u8> = "Ошибка".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let mut bom = vec![0xff, 0xfe];
+        bom.extend_from_slice(&utf16);
+        assert_eq!(decode_console(&bom), "Ошибка");
+        // Without a BOM only the ASCII shape is detectable; the rest is OEM.
+        let ascii16: Vec<u8> = "Error".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(decode_console(&ascii16), "Error");
+        // Bytes that are not UTF-8 must not panic and must not come back empty.
+        assert!(!decode_console(&[0x8f, 0xe0, 0xa8]).is_empty());
     }
 
     #[test]

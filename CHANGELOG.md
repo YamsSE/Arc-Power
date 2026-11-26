@@ -17,7 +17,9 @@
   `ArcPower` Run value or `ArcPowerStartup` task was reported as a failure
   ("task query failed: Das System kann die angegebene Datei nicht finden"),
   which broke the Start-at-boot toggle, profile deletion and the Full Reset
-  snapshot. Absence is now detected by the tools' exit code.
+  snapshot. Absence is now detected by the tools' exit code. Their output is
+  also decoded from the console OEM code page, so Russian and CJK installs no
+  longer show mojibake in these messages.
 - **Starting RTSS with Windows can be enabled again.** The RTSS startup
   registration check had the same English-only matching, so a missing
   `ArcPowerRTSS` value made the toggle fail on localized Windows when enabling

@@ -18,13 +18,7 @@ fn command(program: &str, args: &[&str]) -> Result<Output, String> {
     }
     command.output().map_err(|error| error.to_string())
 }
-fn text(bytes: &[u8]) -> String {
-    if bytes.starts_with(&[0xff, 0xfe]) {
-        String::from_utf16_lossy(&bytes[2..].chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect::<Vec<_>>())
-    } else if bytes.len() >= 2 && bytes[0] != 0 && bytes[1] == 0 {
-        String::from_utf16_lossy(&bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect::<Vec<_>>())
-    } else { String::from_utf8_lossy(bytes).into_owned() }
-}
+fn text(bytes: &[u8]) -> String { super::startup::decode_console(bytes) }
 fn quoted(value: &str) -> String { format!("\"{}\"", value.replace('"', "")) }
 fn unquoted(value: &str) -> String {
     let value = value.trim();

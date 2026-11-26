@@ -72,8 +72,13 @@ export const PRESENTMON_DLL_FALLBACKS = [
  * @returns {boolean}
  */
 export function parseScQueryRunning(stdout) {
-  const m = String(stdout ?? '').match(/^\s*STATE\s*:\s*(\d+)\s+([A-Z_]+)/m);
-  return m !== null && m[1] === '4' && /RUNNING/i.test(m[2]);
+  const text = String(stdout ?? '');
+  const m = text.match(/^\s*STATE\s*:\s*(\d+)\s+([A-Z_]+)/m);
+  if (m) return m[1] === '4' && /RUNNING/i.test(m[2]);
+  // Localized "STATE" label: sc still prints the fixed English state word.
+  const rows = [...text.matchAll(/:\s*(\d+)\s+([A-Z_]+)\s*$/gm)];
+  const state = rows.find((row) => ['RUNNING', 'STOPPED', 'START_PENDING', 'STOP_PENDING', 'CONTINUE_PENDING', 'PAUSE_PENDING', 'PAUSED'].includes(row[2]));
+  return state !== undefined && state[1] === '4' && state[2] === 'RUNNING';
 }
 
 /**

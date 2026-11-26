@@ -57,6 +57,18 @@ export const DEGRADED_STATE = Object.freeze({
 
 const RUNNING_STATES = new Set(['RUNNING', 'START_PENDING', 'STOP_PENDING']);
 const RUNNING_CODES = new Set(['4', '2', '3']); // RUNNING / START_PENDING / STOP_PENDING
+// sc.exe prints its field labels through the OS language on some builds, but
+// the state/start-type words come from its own fixed table. Matching the words
+// keeps the probe working when "STATE"/"START_TYPE" are localized.
+const STATE_WORDS = new Set(['RUNNING', 'STOPPED', 'START_PENDING', 'STOP_PENDING', 'CONTINUE_PENDING', 'PAUSE_PENDING', 'PAUSED']);
+const START_WORDS = new Set(['BOOT_START', 'SYSTEM_START', 'AUTO_START', 'DEMAND_START', 'DISABLED']);
+
+/** Find a `FIELD : 3  DEMAND_START` row by its word, ignoring the label. */
+function matchValueLine(text, words) {
+  const rows = [...String(text ?? '').matchAll(/:\s*(\d+)\s+([A-Z_]+)\s*$/gm)];
+  const hit = rows.find((row) => words.has(row[2]));
+  return hit ? `${hit[1]}  ${hit[2]}` : null;
+}
 const START_TYPE_MAP = {
   AUTO_START: 'auto',
   DEMAND_START: 'manual',
@@ -79,8 +91,8 @@ export function parseScQueryOutput(stdout, stderr = '', exitCode = 0) {
     return { found: false, running: false, startType: 'unknown' };
   }
   const text = String(stdout ?? '').replace(/\r\n/g, '\n');
-  const stateLine = matchFieldLine(text, 'STATE');
-  const startLine = matchFieldLine(text, 'START_TYPE');
+  const stateLine = matchFieldLine(text, 'STATE') ?? matchValueLine(text, STATE_WORDS);
+  const startLine = matchFieldLine(text, 'START_TYPE') ?? matchValueLine(text, START_WORDS);
   if (!stateLine) {
     return { found: false, running: false, startType: parseStartType(startLine) };
   }
