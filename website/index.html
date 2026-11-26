@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Arc Power 1.3.5 | Intel Arc GPU Control</title>
-  <meta name="description" content="Arc Power 1.3.5 completes the Rust/Tauri/WebView2 migration while preserving the existing tuning, monitoring, sharpening, ASR, recording and Driver Library features.">
+  <meta name="description" content="Arc Power 1.3.5 adds the Intel oneVPL encoder, repairs installer and update failures, and refines the RTSS overlay, hotkeys and Windows tweaks.">
   <meta property="og:title" content="Arc Power 1.3.5 | Intel Arc GPU Control">
-  <meta property="og:description" content="Tune and monitor Intel Arc GPUs with Arc Power 1.3.5. The Rust/Tauri/WebView2 migration preserves tuning, overlays, recording and the Driver Library.">
+  <meta property="og:description" content="Tune and monitor Intel Arc GPUs with Arc Power 1.3.5. Native Rust/Tauri host, Intel oneVPL recording, overlays, and the Driver Library.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://yamsse.github.io/Arc-Power/">
   <meta property="og:image" content="https://yamsse.github.io/Arc-Power/assets/og.png?v=1.3.5">
@@ -71,7 +71,7 @@
           Arc <span class="grad-text">Power</span>
         </h1>
         <p class="hero-sub">
-          One place to tune, monitor, and manage Intel Arc graphics. Version 1.3.5 is the Rust/Tauri/WebView2 migration release, retaining the tuning, monitoring, sharpening, ASR, recording and Driver Library features.
+          One place to tune, monitor, and manage Intel Arc graphics. Version 1.3.5 adds the Intel oneVPL encoder, fixes installer and update failures, and refines the RTSS overlay, hotkeys and Windows tweaks.
         </p>
         <div class="hero-actions">
           <div class="hero-actions-row">
@@ -149,9 +149,9 @@
       </div>
     </header>
 
-    <section class="wrap release-callout glass" aria-label="Version 1.3 release">
-      <div><span class="kicker mono">VERSION 1.3</span><h2>Rust and Tauri migration</h2>
-      <p>Version 1.3.5 runs on Rust, Tauri 2, and WebView2 without Electron. It keeps GPU tuning, overlays, recording, and Driver Library, and adds startup restoration for verified Arc Sync settings.</p></div>
+    <section class="wrap release-callout glass" aria-label="Version 1.3.5 release">
+      <div><span class="kicker mono">VERSION 1.3.5</span><h2>oneVPL recording, installer fixes, overlay polish</h2>
+      <p>Intel AV1, HEVC and H.264 now run through the bundled oneVPL (boost) encoder, with the built-in Quick Sync encoder as the fallback. This release also fixes installer and update failures on a busy install folder, repairs boot apply after moving the install, and corrects RTSS overlay chip names, hotkey rules and duplicate launches.</p></div>
       <a class="btn btn-primary" href="https://github.com/YamsSE/Arc-Power/releases/latest" target="_blank" rel="noopener">Latest published release</a>
     </section>
 

@@ -4,23 +4,13 @@
 
 ### Fixed
 
-- **Start-at-boot, profile delete and Full Reset work on non-English Windows.**
-  `reg` and `schtasks` localize their "value/task not found" messages, but the
-  startup code matched English words only. On German Windows a missing
-  `ArcPower` Run value or `ArcPowerStartup` task was reported as a failure
-  ("task query failed: Das System kann die angegebene Datei nicht finden"),
-  which broke the Start-at-boot toggle, profile deletion and the Full Reset
-  snapshot. Absence is now detected by the tools' exit code.
-- **Starting RTSS with Windows can be enabled again.** The RTSS startup
-  registration check had the same English-only matching, so a missing
-  `ArcPowerRTSS` value made the toggle fail on localized Windows when enabling
-  or disabling it.
-- **Game scan survives and explains a bad entry.** The scan aborted with "Game
-  scan failed safely" whenever one entry panicked. Stripping a trailing `.exe`
-  sliced at `len - 4`, which panics when the name ends in a multi-byte
-  character (e.g. "Grüße.exe"), and a single malformed uninstall entry,
-  shortcut or artwork file could blank the whole catalog. Each phase is now
-  isolated and the fallback reports the actual panic.
+- **Monitoring could stay blank on a slow sensor start.** The
+  LibreHardwareMonitor bridge's first sample enumerates every sensor the host
+  allows (MSR clocks/voltage/power, SuperIO fans, SPD, the GPU) and can take
+  longer than the steady-state poll timeout. The app killed and restarted the
+  bridge every 6 seconds, so no CPU or GPU telemetry ever arrived while the
+  D3DKMT utilization, memory and CPU-frequency fallbacks kept showing partial
+  data. The first request after a bridge start now gets a 30-second window.
 - **Updates and reinstalls no longer hit "access denied" on a locked install
   folder.** When the recording runtime, LHM bridge, sharpening helper or
   compatibility backend is still holding the install directory open, setup and

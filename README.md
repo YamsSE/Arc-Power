@@ -8,15 +8,17 @@
 
 # Arc Power Ver. 1.3.5
 
-Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.3.5 is the Rust/Tauri/WebView2 migration release: the native host, persistence, platform services and device inventory move to Rust while the existing tuning, monitoring, sharpening, ASR, recording and Driver Library features are retained.
+Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.3.5 is a fixes-and-features release on the Rust/Tauri/WebView2 host: it adds the Intel oneVPL encoder to the recorder, repairs installer/update and boot-apply failures, and refines the RTSS overlay, hotkeys and Windows tweaks.
 
 ## Version 1.3.5 highlights
 
-- **Native Windows host:** the installed and portable editions run on Rust, Tauri 2, and WebView2 without Electron.
-- **Rust-owned state:** profiles, settings, overlay layouts, stability history, game/recording metadata, fan-resume, window state and OBS credentials are stored by the Rust host under `%APPDATA%\ArcPower`.
-- **Native platform services:** GPU device enumeration, file/folder dialogs, clipboard, recording folder/storage/process inventory and capture targets.
-- **Arc Sync and recording:** verified per-display Arc Sync settings restore at startup, and the clip editor shows export progress and errors.
-- **Retained features:** Arc Image Sharpening, Arc Super Resolution, Advanced Overlay, Driver Library, recording/Instant Replay and the existing GPU tuning surface.
+- **Intel oneVPL encoder.** The bundled Ascent recorder now ships the `obs-qsv-onevpl-boost` plugin rebuilt for its OBS 30.1.2 runtime. "AV1 (oneVPL)", "HEVC (oneVPL)" and "H264 (oneVPL)" appear as Intel encoder choices and are preferred by automatic selection, with the built-in `obs_qsv11` encoders as the fallback.
+- **Installer and update fixes.** Setup and the update worker no longer fail with "access denied (os error 5)" when the recording runtime or a helper still holds the install folder, and they re-point the logon/boot-apply registration when the install location changes.
+- **RTSS overlay chip names.** The Chip Names toggle now really drives the labels: GPU model or "GPU", a cut-down CPU name, a plain "VRAM" row, and numbered rows for multiple GPUs.
+- **Hotkeys and single instance.** Every hotkey field accepts a lone function key (F1-F24), letters and digits still need Ctrl/Alt/Shift, and a second app launch exits instead of duplicating the tray, overlays and recorder.
+- **Overlay and Tweaks.** The Arc Power Overlay starts again when selected, and the Tweaks page drops the read-only Fullscreen Optimizations card while adding a Highest power plan switch and a Windows Update driver-exclusion toggle.
+- **Frame-pacing safety.** Arc Image Sharpening/ASR stay configured but report unavailable in production, because the capture-overlay presentation altered game frame pacing; the helper never launches.
+- **Retained features:** the native Windows host, Rust-owned state, GPU tuning, Arc Sync restoration, Advanced Overlay, Driver Library, recording/Instant Replay and the existing monitoring surface.
 
 ## Upgrading from 1.2.5
 
