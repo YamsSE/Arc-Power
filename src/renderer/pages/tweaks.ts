@@ -45,7 +45,6 @@ const TWEAK_META: Record<string, { category: string; risk: string }> = {
   hags: { category: 'Scheduling', risk: 'Restart required' },
   'game-dvr': { category: 'Recording', risk: 'System-wide' },
   'wu-driver-exclusion': { category: 'Drivers', risk: 'Policy' },
-  'fullscreen-optimizations': { category: 'Compatibility', risk: 'Read-only' },
 };
 
 /** One elevated apply is in flight - all apply buttons disable until it returns. */
@@ -170,9 +169,6 @@ function tweakDescription(entry: RegistryEntry, state: RegistryEntryState | unde
     if (state?.state === 'disabled') return 'The Windows policy allows Game Bar recording; the per-user setting still determines whether it is active. Enable the tweak to disable it.';
     if (state?.state === 'default') return 'The policy is not configured; recording follows the per-user Game Bar setting. Enable the tweak to disable it.';
     return 'The recording policy could not be determined. Refresh to check it again.';
-  }
-  if (entry.id === 'fullscreen-optimizations') {
-    return 'Windows fullscreen optimizations are controlled per app. Enable this tweak to disable them for the listed apps.';
   }
   return entry.description;
 }

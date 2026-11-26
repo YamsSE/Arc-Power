@@ -269,24 +269,5 @@
         ]
       }
     }
-  },
-  {
-    "id": "fullscreen-optimizations",
-    "name": "Fullscreen Optimizations (per-app)",
-    "description": "A per-app compatibility flag - some games stutter with fullscreen optimizations on. There is no system-wide switch; this lists the apps carrying the flag.",
-    "requiresElevation": true,
-    "absentLabel": "No per-app compatibility flags set",
-    "reads": [
-      {
-        "path": "HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers",
-        "value": null,
-        "type": "REG_SZ",
-        "on": "FULLSCREENOPTIMIZATIONS"
-      }
-    ],
-    "apply": {
-      "applyable": false,
-      "revertNote": "Read-only - no system-wide setting to apply or revert."
-    }
   }
 ]
