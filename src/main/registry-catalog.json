@@ -193,22 +193,81 @@
     }
   },
   {
-    "id": "fullscreen-optimizations",
-    "name": "Fullscreen Optimizations (per-app)",
-    "description": "A per-app compatibility flag - some games stutter with fullscreen optimizations on. There is no system-wide switch; this lists the apps carrying the flag.",
+    "id": "wu-driver-exclusion",
+    "name": "Prevent Windows Update driver overwrite",
+    "description": "Windows Update can push an older WHQL display driver over your clean install, wiping the GPU tuning curve and shader cache. This per-machine policy tells Windows Update to exclude driver updates from quality updates.",
     "requiresElevation": true,
-    "absentLabel": "No per-app compatibility flags set",
+    "absentLabel": "Not set - Windows Update may replace the display driver",
     "reads": [
       {
-        "path": "HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers",
-        "value": null,
-        "type": "REG_SZ",
-        "on": "FULLSCREENOPTIMIZATIONS"
+        "path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",
+        "value": "ExcludeWUDriversInQualityUpdate",
+        "type": "DWORD",
+        "on": "1",
+        "off": "0"
       }
     ],
     "apply": {
-      "applyable": false,
-      "revertNote": "Read-only - no system-wide setting to apply or revert."
+      "applyable": true,
+      "revertNote": "Revert deletes ExcludeWUDriversInQualityUpdate - Windows Update resumes offering driver updates.",
+      "actions": {
+        "enable": [
+          {
+            "kind": "add",
+            "path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",
+            "value": "ExcludeWUDriversInQualityUpdate",
+            "type": "REG_DWORD",
+            "data": "1"
+          }
+        ],
+        "disable": [
+          {
+            "kind": "add",
+            "path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",
+            "value": "ExcludeWUDriversInQualityUpdate",
+            "type": "REG_DWORD",
+            "data": "0"
+          }
+        ],
+        "revert": [
+          {
+            "kind": "delete",
+            "path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",
+            "value": "ExcludeWUDriversInQualityUpdate"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "power-plan",
+    "name": "Highest power plan",
+    "description": "Selects the Windows High performance power plan so the CPU stays at its maximum clocks. Off selects Balanced.",
+    "requiresElevation": true,
+    "absentLabel": "No active power scheme recorded",
+    "reads": [
+      {
+        "path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Power\\User\\PowerSchemes",
+        "value": "ActivePowerScheme",
+        "type": "REG_SZ",
+        "on": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+        "off": "381b4222-f694-41f0-9685-ff5bb260df2e"
+      }
+    ],
+    "apply": {
+      "applyable": true,
+      "revertNote": "Revert selects Balanced, the Windows default power plan.",
+      "actions": {
+        "enable": [
+          { "kind": "powercfg", "scheme": "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c" }
+        ],
+        "disable": [
+          { "kind": "powercfg", "scheme": "381b4222-f694-41f0-9685-ff5bb260df2e" }
+        ],
+        "revert": [
+          { "kind": "powercfg", "scheme": "381b4222-f694-41f0-9685-ff5bb260df2e" }
+        ]
+      }
     }
   }
 ]

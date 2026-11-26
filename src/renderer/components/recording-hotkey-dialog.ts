@@ -31,9 +31,9 @@ export function showRecordingHotkeyDialog(
     const value = el('div', { class: 'recording-hotkey-dialog-value', role: 'status', 'aria-live': 'polite', text: current || 'Waiting…' });
     const hint = el('p', {
       class: 'recording-hotkey-dialog-hint',
-      text: options.requireModifier
-        ? 'This shortcut needs Ctrl, Alt, or Shift. Modifiers can be combined with a letter, number, or F1–F24.'
-        : 'Press a letter, number, or F1–F24. Ctrl, Alt, and Shift can be combined.',
+      text: options.requireModifier === false
+        ? 'Press a letter or number with Ctrl, Alt, or Shift, or a function key (F1–F24) alone. Modifiers can be combined.'
+        : 'Press F1–F24 alone, or a letter or number with Ctrl, Alt, or Shift. Modifiers can be combined.',
     });
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
@@ -60,10 +60,13 @@ export function showRecordingHotkeyDialog(
         hint.textContent = 'That key is not supported. Use a letter, number, or F1–F24, with optional Ctrl, Alt, or Shift.';
         return;
       }
-      if (options.requireModifier && !(event.ctrlKey || event.altKey || event.shiftKey)) {
+      const key = accelerator.split('+').pop() ?? '';
+      const isFunctionKey = /^F(?:[1-9]|1[0-9]|2[0-4])$/.test(key);
+      // Letters and numbers always need a modifier; a function key may stand alone.
+      if (!isFunctionKey && !(event.ctrlKey || event.altKey || event.shiftKey)) {
         event.preventDefault();
         event.stopPropagation();
-        hint.textContent = 'Add Ctrl, Alt, or Shift to the key. You can combine modifiers.';
+        hint.textContent = 'Add Ctrl, Alt, or Shift to a letter or number. Function keys (F1–F24) may be used alone.';
         return;
       }
       event.preventDefault();

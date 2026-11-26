@@ -982,7 +982,7 @@ fn publish_layout_reaction(app: &tauri::AppHandle, broker: &Broker, channel: &st
     push_settings_cache(broker);
     if arc_power_tauri::backend::overlay_layout_channels::applies_layout(channel) {
         if let Some(service) = broker.advanced_overlay.as_ref() { service.poll(); }
-        refresh_native_overlay(app, broker, true, false);
+        refresh_native_overlay(app, broker, true, true);
     }
 }
 
@@ -3269,15 +3269,15 @@ fn refresh_native_overlay(app: &tauri::AppHandle, broker: &Broker, refresh_lanes
             // WebView2 process tree resident.
             if let Some(window) = app.get_webview_window(NATIVE_OVERLAY_LABEL) { let _ = window.destroy(); }
         } else {
-            native_overlay_apply_geometry(app, broker);
-            // A master enable on a live settings save reveals an existing
-            // hotkey-hidden HUD, matching Electron's apply() for an
-            // overlayEnabled change. Boot/renderer_ready and layout refreshes
-            // keep the HUD hidden until the explicit hotkey toggle.
-            if reveal {
-                if let Some(window) = app.get_webview_window(NATIVE_OVERLAY_LABEL) {
-                    let _ = window.show();
-                }
+            // A live renderer/enable/layout change starts the software HUD.
+            // Boot and renderer_ready keep it hidden until the explicit hotkey
+            // toggle (M24), so a persisted master switch never pops it at start.
+            let visible = app.get_webview_window(NATIVE_OVERLAY_LABEL)
+                .is_some_and(|window| window.is_visible().unwrap_or(false));
+            if reveal && !visible {
+                native_overlay_toggle(app, broker);
+            } else {
+                native_overlay_apply_geometry(app, broker);
             }
         }
     }
@@ -3954,8 +3954,12 @@ async fn bridge_invoke(window: tauri::WebviewWindow, state: tauri::State<'_, Arc
                 });
                 if overlay_changed {
                     let refresh_lanes = patch.as_ref().is_some_and(|patch| patch.get("overlayPollMs").is_some());
-                    let reveal = patch.as_ref().and_then(|patch| patch.get("overlayEnabled"))
-                        .is_some_and(|value| value == &Value::Bool(true));
+                    // A renderer switch (to the Arc Power Overlay) or a master
+                    // enable starts the software HUD; boot and renderer_ready stay
+                    // hidden until the explicit hotkey toggle (M24).
+                    let reveal = patch.as_ref().is_some_and(|patch| {
+                        patch.get("overlayRenderer").is_some() || patch.get("overlayEnabled").is_some()
+                    });
                     refresh_native_overlay(window.app_handle(), &broker, refresh_lanes, reveal);
                 }
             } else if channel == "oc-mode-set" {
@@ -4529,6 +4533,27 @@ fn install_process_failure_handler(window: &tauri::WebviewWindow) -> tauri::Resu
     })
 }
 
+/// Hold a per-session named mutex for the process lifetime so a second Arc
+/// Power launch exits instead of starting a duplicate tray, overlays, hotkeys
+/// and recording engine. Returns `None` when another instance already owns it.
+#[cfg(windows)]
+fn acquire_single_instance() -> Option<windows_sys::Win32::Foundation::HANDLE> {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    let name: Vec<u16> = "Local\\ArcPower-SingleInstance-v1\0".encode_utf16().collect();
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    let error = unsafe { GetLastError() };
+    if handle.is_null() { return None; }
+    if error == ERROR_ALREADY_EXISTS {
+        unsafe { CloseHandle(handle); }
+        return None;
+    }
+    Some(handle)
+}
+
+#[cfg(not(windows))]
+fn acquire_single_instance() -> Option<()> { None }
+
 fn main() {
     let launch_args: Vec<String> = std::env::args().skip(1).collect();
     match runtime::run_portable_update_if_requested(&launch_args) {
@@ -4560,6 +4585,15 @@ fn main() {
             Ok(code) => std::process::exit(code),
             Err(error) => { eprintln!("{error}"); std::process::exit(1); }
         }
+    }
+    // Only one Arc Power instance may own the tray, overlays, hotkeys and
+    // recording engine. Mock runs (smoke/UI tests) are exempt so parallel
+    // harnesses still work; a second real launch exits quietly.
+    let test_launch = launch_args.iter().any(|arg| arg == "--mock");
+    let _instance_guard = if test_launch { None } else { acquire_single_instance() };
+    if !test_launch && _instance_guard.is_none() {
+        eprintln!("Arc Power is already running.");
+        std::process::exit(0);
     }
     if let Err(error) = lifecycle::validate_launch_args(&launch_args)
         .and_then(|_| lifecycle::prepare_mock_environment(&launch_args))

@@ -81,14 +81,25 @@ export function buildRegArgs(step) {
 }
 
 /**
+ * The executable + argument list for one apply step. `powercfg` steps select
+ * a power scheme; every other step is a fixed `reg.exe` write.
+ * @param {import('./registry-catalog.js').RegistryApplyStep} step
+ * @returns {{ program: string, args: string[] }}
+ */
+export function stepCommand(step) {
+  if (step.kind === 'powercfg') return { program: 'powercfg', args: ['/setactive', step.scheme] };
+  return { program: 'reg', args: buildRegArgs(step) };
+}
+
+/**
  * Human label for one step (used in result messages + button tooltips).
  * @param {import('./registry-catalog.js').RegistryApplyStep} step
  * @returns {string}
  */
 export function stepLabel(step) {
-  return step.kind === 'add'
-    ? `${step.value}=${step.data} written to ${step.path}`
-    : `${step.value} deleted from ${step.path}`;
+  if (step.kind === 'add') return `${step.value}=${step.data} written to ${step.path}`;
+  if (step.kind === 'powercfg') return `power plan set to ${step.scheme}`;
+  return `${step.value} deleted from ${step.path}`;
 }
 
 /**
@@ -122,12 +133,15 @@ export function buildRegApplyScript(entry, action, outPath, selectedSteps = entr
   const steps = selectedSteps;
   const lines = [
     `$reg = 'C:\\Windows\\System32\\reg.exe'`,
+    `$powercfg = 'C:\\Windows\\System32\\powercfg.exe'`,
     `$out = '${psSingleQuote(outPath)}'`,
     '$res = @()',
   ];
   for (const [i, step] of steps.entries()) {
-    const args = buildRegArgs(step).map((a) => `'${psSingleQuote(a)}'`).join(' ');
-    lines.push(`& $reg ${args} | Out-Null`);
+    const { program, args } = stepCommand(step);
+    const exe = program === 'powercfg' ? '$powercfg' : '$reg';
+    const quoted = args.map((a) => `'${psSingleQuote(a)}'`).join(' ');
+    lines.push(`& ${exe} ${quoted} | Out-Null`);
     lines.push(`$res += ,@{ step = ${i}; ok = ($LASTEXITCODE -eq 0) }`);
     lines.push(`if ($LASTEXITCODE -ne 0) { ConvertTo-Json -Compress -InputObject $res | Out-File -Encoding ascii $out; exit 1 }`);
   }
@@ -301,14 +315,15 @@ export function createRegistryApply(catalog = REGISTRY_CATALOG, deps = {}) {
    * privilege already).
    */
   async function applyDirect(entry, action, steps) {
-    log(`[registry-apply] ${entry.id} ${action}: ${steps.length} step(s) via direct reg.exe (elevated process)`);
+    log(`[registry-apply] ${entry.id} ${action}: ${steps.length} step(s) via direct command (elevated process)`);
     const executed = [];
     for (const [i, step] of steps.entries()) {
       try {
-        await exec('reg', buildRegArgs(step), { windowsHide: true, timeout: timeoutMs });
+        const { program, args } = stepCommand(step);
+        await exec(program, args, { windowsHide: true, timeout: timeoutMs });
         executed.push({ step: i, ok: true });
       } catch (err) {
-        log(`[registry-apply] ${entry.id} ${action}: step ${i + 1} failed (${err?.code ?? err?.message ?? 'reg.exe error'})`);
+        log(`[registry-apply] ${entry.id} ${action}: step ${i + 1} failed (${err?.code ?? err?.message ?? 'command error'})`);
         executed.push({ step: i, ok: false });
         break;
       }

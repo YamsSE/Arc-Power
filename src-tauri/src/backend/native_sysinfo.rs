@@ -464,6 +464,12 @@ pub fn collect(store: Option<&NativeStore>) -> Value {
     })
 }
 
+/// The CPU marketing name from `ProcessorNameString` without building the full
+/// WMI snapshot. The native RTSS OSD reads this once for its chip-name label.
+pub fn cpu_name() -> Option<String> {
+    registry_string(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString")
+}
+
 fn cpu(wmi: Option<&Value>) -> Value {
     let wmi_cpu = wmi.and_then(|value| value.get("cpu")).filter(|value| value.is_object());
     let text = |key: &str| wmi_cpu.and_then(|value| value.get(key)).and_then(Value::as_str).map(str::to_owned);

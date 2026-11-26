@@ -9,7 +9,7 @@ import { showRecordingClipDeleteConfirm } from '../components/recording-delete-d
 import { showRecordingShareDialog, type RecordingShareDialogHandle } from '../components/recording-share-dialog.ts';
 import { showRecordingHotkeyDialog } from '../components/recording-hotkey-dialog.ts';
 import { buildDropdown, type DropdownElement } from '../components/dropdown.ts';
-import { parseRecordingEncoderSelection, recordingBitrateRange, recordingEncoderIdIsGlobal, recordingEncoderNameForId, recordingEncoderSelectionLabel, recordingGlobalEncoderOptions, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage, recordingPhysicalSelectionForId } from '../pure/recording.ts';
+import { parseRecordingEncoderSelection, recordingBitrateRange, recordingEncoderCodecIsAv1, recordingEncoderIdIsGlobal, recordingEncoderNameForId, recordingEncoderSelectionLabel, recordingGlobalEncoderOptions, recordingGpuEncoderOptions, recordingGpuEncoderRows, recordingMessage, recordingPhysicalSelectionForId } from '../pure/recording.ts';
 import { clampRecordingEditorRange, normalizeRecordingEditorClipName, recordingEditorResumePosition, recordingEditorSelectionFromRatios, recordingEditorSeekTargetMs, recordingEditorTimelineMsFromRatio } from '../pure/recording-editor.ts';
 
 const TABS: Array<[RecordingTab, string, string]> = [
@@ -344,7 +344,7 @@ function stagePatch(patch: RecordingSettingsPatch, rerender = true): void {
   if (!settings) return;
   draftSettings = mergeRecordingSettings(draftSettings ?? settings, patch);
   const codecId = parseRecordingEncoderSelection(draftSettings.encoderId)?.codec ?? draftSettings.encoderId;
-  const qualityMax = draftSettings.rateControl === 'CQP' && codecId === 'obs_qsv11_av1' ? 63 : 51;
+  const qualityMax = draftSettings.rateControl === 'CQP' && recordingEncoderCodecIsAv1(codecId) ? 63 : 51;
   draftSettings.rateControlQuality = Math.min(qualityMax, Math.max(1, draftSettings.rateControlQuality));
   if (draftSettings.rateControl === 'VBR') {
     draftSettings.maxBitrateKbps = Math.max(draftSettings.bitrateKbps, draftSettings.maxBitrateKbps);
@@ -841,7 +841,7 @@ function renderQualitySettings(): HTMLElement {
     }
   });
   const selectedCodec = parseRecordingEncoderSelection(selectedEncoder)?.codec ?? selectedEncoder;
-  const qualityMax = rateControl === 'CQP' && selectedCodec === 'obs_qsv11_av1' ? 63 : 51;
+  const qualityMax = rateControl === 'CQP' && recordingEncoderCodecIsAv1(selectedCodec) ? 63 : 51;
   const rateQuality = el('input', {
     class: 'recording-number', type: 'number', min: 1, max: qualityMax, step: 1,
     value: working?.rateControlQuality ?? 23,

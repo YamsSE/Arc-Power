@@ -386,13 +386,17 @@ export interface RegistryEntry {
  * for honest display (tooltips, revert notes).
  */
 export interface RegistryApplyStep {
-  kind: 'add' | 'delete';
-  path: string;
-  value: string;
+  kind: 'add' | 'delete' | 'powercfg';
+  /** Registry path (add/delete steps). */
+  path?: string;
+  /** Registry value name (add/delete steps). */
+  value?: string;
   /** REG_DWORD etc. (add steps only). */
   type?: string;
   /** The value data (add steps only; decimal - reg.exe stores DWORD). */
   data?: string;
+  /** The power scheme GUID (powercfg steps only). */
+  scheme?: string;
 }
 
 /** The M3-B apply surface of one catalog entry. */

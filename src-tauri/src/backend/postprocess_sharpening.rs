@@ -660,9 +660,9 @@ impl ForegroundSource for Win32Foreground {
 // ---------------------------------------------------------------------------
 
 pub fn validate_overlay_hotkey_letter(value: &str) -> Result<String, String> {
-    const MESSAGE: &str = "overlayHotkeyLetter must be a modifier chord such as Control+O or Alt+F9";
+    const MESSAGE: &str = "overlayHotkeyLetter must be a modifier chord such as Control+O or Alt+F9, or a single function key such as F9";
     if value == "None" { return Ok("None".into()); }
-    let source = if value.len() == 1 && value.bytes().next().is_some_and(|byte| byte.is_ascii_alphabetic()) {
+    let source = if value.len() == 1 && value.bytes().next().is_some_and(|byte| byte.is_ascii_alphanumeric()) {
         format!("Control+{value}")
     } else { value.to_owned() };
     let mut pieces: Vec<&str> = source.split('+').collect();
@@ -678,7 +678,9 @@ pub fn validate_overlay_hotkey_letter(value: &str) -> Result<String, String> {
                 && digits.parse::<u32>().is_ok_and(|number| (1..=24).contains(&number))
         }
     };
-    if !valid_key || pieces.is_empty() { return Err(MESSAGE.into()); }
+    // A single function key (F1-F24) is a complete hotkey; a letter or number
+    // still needs a modifier chord (a bare single character was auto-prefixed).
+    if !valid_key || (pieces.is_empty() && key.len() == 1) { return Err(MESSAGE.into()); }
     let mut modifiers = Vec::new();
     for piece in pieces {
         let lower = piece.to_ascii_lowercase();
@@ -703,7 +705,12 @@ pub fn validate_postprocess_scale_hotkey(value: Option<&str>) -> Result<String, 
     let accelerator = validate_overlay_hotkey_letter(value)?;
     // 'None' is the explicit off state: the host shell unregisters it.
     if accelerator == "None" { return Ok(accelerator); }
-    if !value.contains('+') { return Err("postprocessScaleHotkey must include Ctrl, Alt, or Shift".into()); }
+    // A single function key is a complete hotkey; a bare letter or number still
+    // needs Ctrl, Alt, or Shift.
+    let is_function_key = accelerator.len() > 1 && accelerator.starts_with('F');
+    if !value.contains('+') && !is_function_key {
+        return Err("postprocessScaleHotkey must include Ctrl, Alt, or Shift, or be a single F1-F24 key".into());
+    }
     Ok(accelerator)
 }
 
@@ -930,8 +937,13 @@ impl RuntimeOptions {
         Self {
             dir: dir.to_path_buf(),
             helper_path: resolve_helper_path(),
-            allow_capture_overlay: true,
-            allow_asr_capture: true,
+            // Safety stop (docs/sharpening-rtss-followup-2026-10-20.md): the
+            // capture-overlay presents an opaque composition surface over the
+            // game, which changes its composition/VRR/frame-pacing path and
+            // produced erratic frame times. The helper must not launch until a
+            // non-intrusive (no second presentation) path exists.
+            allow_capture_overlay: false,
+            allow_asr_capture: false,
             ready_timeout: Duration::from_secs(5),
             kill_timeout: Duration::from_secs(2),
             countdown_tick: Duration::from_secs(1),
@@ -2407,8 +2419,7 @@ mod tests {
         assert_eq!(validate_postprocess_scale_hotkey(Some("None")).unwrap(), "None");
         for invalid in ["O", "9"] {
             assert_eq!(validate_postprocess_scale_hotkey(Some(invalid)).unwrap_err(),
-                if invalid == "9" { "overlayHotkeyLetter must be a modifier chord such as Control+O or Alt+F9" }
-                else { "postprocessScaleHotkey must include Ctrl, Alt, or Shift" }, "{invalid}");
+                "postprocessScaleHotkey must include Ctrl, Alt, or Shift, or be a single F1-F24 key", "{invalid}");
         }
         for invalid in ["Control+F25", "Control+F01", "Control+Control+A", "Control", "Ctrl+Alt+", "Alt+Control", ""] {
             assert!(validate_postprocess_scale_hotkey(Some(invalid)).is_err(), "{invalid}");
@@ -2445,9 +2456,9 @@ mod tests {
         assert_eq!(fixture.runtime.hotkey_set(&fixture.store, Some("Alt+F8")).unwrap_err(),
             "Scale hotkey must differ from both overlay hotkeys.");
         assert_eq!(fixture.runtime.hotkey_set(&fixture.store, Some("O")).unwrap_err(),
-            "postprocessScaleHotkey must include Ctrl, Alt, or Shift");
-        assert_eq!(fixture.runtime.hotkey_set(&fixture.store, Some("F9")).unwrap_err(),
-            "overlayHotkeyLetter must be a modifier chord such as Control+O or Alt+F9");
+            "postprocessScaleHotkey must include Ctrl, Alt, or Shift, or be a single F1-F24 key");
+        // A single function key is now a valid scale hotkey.
+        assert_eq!(fixture.runtime.hotkey_set(&fixture.store, Some("F9")).unwrap()["accelerator"], json!("F9"));
         assert_eq!(fixture.runtime.hotkey_set(&fixture.store, None).unwrap_err(),
             "overlayHotkeyLetter must be a modifier and a letter, number, or function key");
 
