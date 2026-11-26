@@ -4829,15 +4829,23 @@ fn fixture_mode(mode: &str) -> (std::path::PathBuf, NativeStore) {
         assert_eq!(global["provider"], "screen");
         assert_eq!(global["requiresRestart"], false);
         assert_eq!(global["legacyManifestStatus"], "clear");
+        // The capture-overlay provider is gated off in production: enabling is
+        // refused, but a disabling write persists and the settings stay readable.
+        let refused = invoke("postprocess-sharpening:set",
+            &encode_json(&json!([{"enabled": true, "percentage": 90}])).unwrap(), context(&store)).unwrap().unwrap_err();
+        assert_eq!(refused, crate::backend::postprocess_sharpening::SHARPENING_PAUSED_REASON);
         let set = invoke("postprocess-sharpening:set",
-            &encode_json(&json!([{"enabled": true, "percentage": 90}])).unwrap(), context(&store)).unwrap().unwrap();
+            &encode_json(&json!([{"enabled": false, "percentage": 90}])).unwrap(), context(&store)).unwrap().unwrap();
         let set = decode(&set).unwrap().into_json().unwrap();
-        assert_eq!(set["value"], json!({"enabled": true, "percentage": 90}));
+        assert_eq!(set["value"], json!({"enabled": false, "percentage": 90}));
         assert!(root.join("postprocess-sharpening.json").is_file());
-        let asr = invoke("arc-super-resolution:set", &encode_json(&json!([{"enabled": true}])).unwrap(), context(&store))
+        let asr_refused = invoke("arc-super-resolution:set", &encode_json(&json!([{"enabled": true}])).unwrap(), context(&store))
+            .unwrap().unwrap_err();
+        assert_eq!(asr_refused, crate::backend::postprocess_sharpening::ASR_PAUSED_REASON);
+        let asr = invoke("arc-super-resolution:set", &encode_json(&json!([{"enabled": false}])).unwrap(), context(&store))
             .unwrap().unwrap();
         let asr = decode(&asr).unwrap().into_json().unwrap();
-        assert_eq!(asr["value"], json!({"enabled": true}));
+        assert_eq!(asr["value"], json!({"enabled": false}));
         assert_eq!(asr["requiresRestart"], false);
         assert_eq!(asr["selection"]["phase"], "idle");
         let stopped = invoke("postprocess-sharpening:stop-window", &encode_json(&json!([])).unwrap(), context(&store))

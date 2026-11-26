@@ -324,7 +324,7 @@ fn path_for_user_hive(path: &str, user_sid: &str) -> Result<String, String> {
 enum RegistryRoot { AuthenticatedUser, LocalMachine }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RegistryWrite { AddDword(u32), DeleteValue }
+enum RegistryWrite { AddDword(u32), DeleteValue, PowerScheme }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PreparedStep {
@@ -332,6 +332,8 @@ struct PreparedStep {
     key_path: String,
     value_name: String,
     write: RegistryWrite,
+    /// Set only for a `powercfg` step: the validated scheme GUID to activate.
+    power_scheme: Option<String>,
     label: String,
 }
 
@@ -380,6 +382,23 @@ fn parse_registry_path(path: &str, user_sid: Option<&str>) -> Result<(RegistryRo
 
 fn prepare_step(step: &Value, user_sid: Option<&str>) -> Result<PreparedStep, String> {
     let kind = required_step_text(step, "kind")?;
+    // A fixed `powercfg /setactive` step. Only the embedded catalog can emit
+    // this, the scheme is validated as a GUID, and the program is hard-coded,
+    // so the elevated helper can never be steered to another executable.
+    if kind == "powercfg" {
+        let scheme = required_step_text(step, "scheme")?;
+        if !is_valid_power_scheme(scheme) {
+            return Err("registry-apply: invalid embedded power scheme GUID".into());
+        }
+        return Ok(PreparedStep {
+            root: RegistryRoot::LocalMachine,
+            key_path: String::new(),
+            value_name: String::new(),
+            write: RegistryWrite::PowerScheme,
+            power_scheme: Some(scheme.to_owned()),
+            label: format!("power plan set to {scheme}"),
+        });
+    }
     let original_path = required_step_text(step, "path")?;
     let (root, key_path) = parse_registry_path(original_path, user_sid)?;
     let value_name = required_step_text(step, "value")?;
@@ -403,8 +422,26 @@ fn prepare_step(step: &Value, user_sid: Option<&str>) -> Result<PreparedStep, St
     let label = match &write {
         RegistryWrite::AddDword(data) => format!("{value_name}={data} written to {original_path}"),
         RegistryWrite::DeleteValue => format!("{value_name} deleted from {original_path}"),
+        RegistryWrite::PowerScheme => unreachable!("power steps return before the registry parse"),
     };
-    Ok(PreparedStep { root, key_path, value_name: value_name.to_owned(), write, label })
+    Ok(PreparedStep { root, key_path, value_name: value_name.to_owned(), write, power_scheme: None, label })
+}
+
+/// Canonical `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` GUID as emitted by
+/// `powercfg /list`. Only the embedded catalog supplies it, but validate it
+/// anyway so a malformed step fails before `powercfg` runs.
+fn is_valid_power_scheme(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 { return false; }
+    for (index, byte) in bytes.iter().enumerate() {
+        let separator = matches!(index, 8 | 13 | 18 | 23);
+        if separator {
+            if *byte != b'-' { return false; }
+        } else if !byte.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
 }
 
 fn prepared_steps(steps: &[Value], user_sid: Option<&str>) -> Result<Vec<PreparedStep>, String> {
@@ -535,6 +572,7 @@ fn apply_step_to_hive(hive: &winreg::RegKey, step: &PreparedStep) -> Result<(), 
             key.delete_value(&step.value_name)
                 .map_err(|error| format!("Cannot delete embedded registry value: {error}"))
         }
+        RegistryWrite::PowerScheme => Err("registry-apply: power steps are not registry writes".into()),
     }
 }
 
@@ -542,6 +580,9 @@ fn apply_step_to_hive(hive: &winreg::RegKey, step: &PreparedStep) -> Result<(), 
 impl RegistryExecutor for WinregExecutor {
     fn execute(&mut self, step: &PreparedStep) -> Result<(), String> {
         use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+        if let Some(scheme) = step.power_scheme.as_deref() {
+            return activate_power_scheme(scheme);
+        }
         match step.root {
             RegistryRoot::AuthenticatedUser => apply_step_to_hive(
                 self.authenticated_user_hive.as_ref()
@@ -551,6 +592,38 @@ impl RegistryExecutor for WinregExecutor {
             RegistryRoot::LocalMachine => apply_step_to_hive(&RegKey::predef(HKEY_LOCAL_MACHINE), step),
         }
     }
+}
+
+/// Activate a validated power scheme with `powercfg /setactive`, resolved from
+/// the system directory so the elevated helper never relies on PATH.
+#[cfg(windows)]
+fn activate_power_scheme(scheme: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    use std::path::PathBuf;
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut system_directory = [0u16; 32768];
+    let length = unsafe { GetSystemDirectoryW(system_directory.as_mut_ptr(), system_directory.len() as u32) } as usize;
+    if length == 0 || length >= system_directory.len() {
+        return Err("powercfg: the system directory could not be resolved".into());
+    }
+    let executable = PathBuf::from(String::from_utf16(&system_directory[..length])
+        .map_err(|_| "powercfg: the system directory is not valid UTF-16")?)
+        .join("powercfg.exe");
+    let output = std::process::Command::new(executable)
+        .args(["/setactive", scheme])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .output()
+        .map_err(|error| format!("powercfg could not start: {error}"))?;
+    if output.status.success() { return Ok(()); }
+    let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Err(if message.is_empty() {
+        format!("powercfg /setactive {scheme} failed ({:?})", output.status.code())
+    } else {
+        format!("powercfg /setactive {scheme} failed: {message}")
+    })
 }
 
 fn execute_plan<F>(plan: &Value, lease: &mut F, user_sid: Option<&str>) -> Result<Value, String>

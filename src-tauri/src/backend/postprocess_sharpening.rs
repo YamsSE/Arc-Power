@@ -937,8 +937,13 @@ impl RuntimeOptions {
         Self {
             dir: dir.to_path_buf(),
             helper_path: resolve_helper_path(),
-            allow_capture_overlay: true,
-            allow_asr_capture: true,
+            // Safety stop (docs/sharpening-rtss-followup-2026-10-20.md): the
+            // capture-overlay presents an opaque composition surface over the
+            // game, which changes its composition/VRR/frame-pacing path and
+            // produced erratic frame times. The helper must not launch until a
+            // non-intrusive (no second presentation) path exists.
+            allow_capture_overlay: false,
+            allow_asr_capture: false,
             ready_timeout: Duration::from_secs(5),
             kill_timeout: Duration::from_secs(2),
             countdown_tick: Duration::from_secs(1),

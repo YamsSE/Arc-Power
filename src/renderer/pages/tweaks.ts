@@ -44,6 +44,7 @@ const TWEAK_META: Record<string, { category: string; risk: string }> = {
   mpo: { category: 'Display', risk: 'Test carefully' },
   hags: { category: 'Scheduling', risk: 'Restart required' },
   'game-dvr': { category: 'Recording', risk: 'System-wide' },
+  'wu-driver-exclusion': { category: 'Drivers', risk: 'Policy' },
   'fullscreen-optimizations': { category: 'Compatibility', risk: 'Read-only' },
 };
 
@@ -52,9 +53,9 @@ let applyInFlight = false;
 
 /** Human label for one command step (mirrors main's stepLabel - honest tooltips). */
 function stepLabel(step: RegistryApplyStep): string {
-  return step.kind === 'add'
-    ? `${step.value}=${step.data} written to ${step.path}`
-    : `${step.value} deleted from ${step.path}`;
+  if (step.kind === 'add') return `${step.value}=${step.data} written to ${step.path}`;
+  if (step.kind === 'powercfg') return `power plan set to ${step.scheme}`;
+  return `${step.value} deleted from ${step.path}`;
 }
 
 /** Fetch the catalog once (boot may not have finished on early navigation). */

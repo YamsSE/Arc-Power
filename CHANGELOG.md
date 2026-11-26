@@ -78,6 +78,11 @@
   Power Overlay (or enabling the overlay, or saving a layout change) starts the
   software HUD again. A recent change had left it to the hotkey only, so the HUD
   appeared not to start.
+- **Arc Image Sharpening / ASR frame pacing.** The capture-overlay provider is
+  gated off in production: its second composition presentation changed the
+  game's VRR/frame-pacing path and produced erratic frame times. Settings stay
+  stored, but sharpening reports unavailable and the helper never launches
+  until a non-intrusive path exists.
 - **Sysinfo startup safety.** The first CIM snapshot has a hard 10 s process
   deadline, runs off the async workers, and retries after a transient failure
   instead of latching null for the session.
@@ -149,6 +154,14 @@
   Arc Sleep, Monitoring, Recording, Profiles and Tweaks from the sidebar.
   Dashboard, Tuning and Settings always stay visible. The preference is stored
   locally, like the sidebar width.
+- **Highest power plan tweak.** A Tweaks card switches the Windows power plan
+  between High performance and Balanced with `powercfg /setactive`.
+- **Windows Update driver exclusion.** A Tweaks card writes
+  `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\ExcludeWUDriversInQualityUpdate=1`
+  so Windows Update stops pushing an older driver over the clean install.
+- **Intel oneVPL QSV encoder.** The bundled Ascent recorder now ships and
+  prefers `obs-qsvonevpl` (H.264/HEVC/AV1 frame and texture encoders) over the
+  built-in `obs_qsv11` plugin, with the built-in path as the fallback.
 
 ### Changed
 

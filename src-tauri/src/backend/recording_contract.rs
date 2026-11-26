@@ -20,7 +20,11 @@ pub const RECORDING_FPS_MAX: u64 = 360;
 pub const RECORDING_RATE_CONTROL_QUALITY_MIN: u64 = 1;
 pub const RECORDING_RATE_CONTROL_QUALITY_MAX: u64 = 63;
 pub const SAFE_VIDEO_EXTENSIONS: &[&str] = &[".mp4", ".mkv", ".mov", ".webm", ".m4v"];
-const CODECS: &[&str] = &["obs_qsv11_av1", "obs_qsv11_hevc", "obs_qsv11_v2"];
+const CODECS: &[&str] = &[
+    "obs_qsv11_av1", "obs_qsv11_hevc", "obs_qsv11_v2",
+    "obs_qsv_vpl_av1_tex", "obs_qsv_vpl_hevc_tex", "obs_qsv_vpl_h264_tex",
+    "obs_qsv_vpl_av1", "obs_qsv_vpl_hevc", "obs_qsv_vpl_h264",
+];
 const EPOCH: &str = "1970-01-01T00:00:00.000Z";
 
 fn prop<'a>(v: Option<&'a Value>, key: &str) -> Option<&'a Value> { v.and_then(|v| v.get(key)) }
@@ -79,7 +83,11 @@ pub fn recording_encoder_codec_of(value: Option<&Value>) -> Option<&'static str>
     let codec=nullish(parsed.get("codec"),parsed.get("c")).and_then(Value::as_str)?;
     CODECS.iter().find(|c| **c==codec).copied()
 }
-pub fn recording_rate_control_quality_max(rate_control: &str, encoder_id: Option<&Value>) -> u64 { if rate_control=="CQP" && recording_encoder_codec_of(encoder_id)==Some("obs_qsv11_av1") {63}else{51} }
+pub fn recording_rate_control_quality_max(rate_control: &str, encoder_id: Option<&Value>) -> u64 {
+    let av1 = matches!(recording_encoder_codec_of(encoder_id),
+        Some("obs_qsv11_av1" | "obs_qsv_vpl_av1" | "obs_qsv_vpl_av1_tex"));
+    if rate_control == "CQP" && av1 { 63 } else { 51 }
+}
 
 pub fn recording_bitrate_range(resolution: &str) -> Value {
     let (min,max,step,default,label)=match resolution {
