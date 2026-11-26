@@ -3,22 +3,22 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arc Power 1.3.5 | Intel Arc GPU Control</title>
-  <meta name="description" content="Arc Power 1.3.5 adds the Intel oneVPL encoder, repairs installer and update failures, and refines the RTSS overlay, hotkeys and Windows tweaks.">
-  <meta property="og:title" content="Arc Power 1.3.5 | Intel Arc GPU Control">
-  <meta property="og:description" content="Tune and monitor Intel Arc GPUs with Arc Power 1.3.5. Native Rust/Tauri host, Intel oneVPL recording, overlays, and the Driver Library.">
+  <title>Arc Power 1.3.6 | Intel Arc GPU Control</title>
+  <meta name="description" content="Arc Power 1.3.6 fixes blank monitoring, localized startup/reset and RTSS startup, and the game-scan abort.">
+  <meta property="og:title" content="Arc Power 1.3.6 | Intel Arc GPU Control">
+  <meta property="og:description" content="Tune and monitor Intel Arc GPUs with Arc Power 1.3.6. Native Rust/Tauri host, Intel oneVPL recording, overlays, and the Driver Library.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://yamsse.github.io/Arc-Power/">
-  <meta property="og:image" content="https://yamsse.github.io/Arc-Power/assets/og.png?v=1.3.5">
+  <meta property="og:image" content="https://yamsse.github.io/Arc-Power/assets/og.png?v=1.3.6">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="theme-color" content="#0a0d14">
-  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg?v=1.3.5">
-  <link rel="alternate icon" type="image/png" href="assets/favicon.png?v=1.3.5">
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg?v=1.3.6">
+  <link rel="alternate icon" type="image/png" href="assets/favicon.png?v=1.3.6">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=1.3.5">
+  <link rel="stylesheet" href="style.css?v=1.3.6">
 </head>
 <body>
 
@@ -29,7 +29,7 @@
   <!-- ============================== NAV ============================== -->
   <nav class="nav" id="nav">
     <a class="nav-brand" href="#top">
-      <img class="nav-logo" src="assets/ArcPowerIcon.png?v=1.3.5" alt="Arc Power logo" width="28" height="28">
+      <img class="nav-logo" src="assets/ArcPowerIcon.png?v=1.3.6" alt="Arc Power logo" width="28" height="28">
       <span class="nav-name">Arc&nbsp;Power</span>
       <span class="nav-ver mono">1.3</span>
     </a>
@@ -71,7 +71,7 @@
           Arc <span class="grad-text">Power</span>
         </h1>
         <p class="hero-sub">
-          One place to tune, monitor, and manage Intel Arc graphics. Version 1.3.5 adds the Intel oneVPL encoder, fixes installer and update failures, and refines the RTSS overlay, hotkeys and Windows tweaks.
+          One place to tune, monitor, and manage Intel Arc graphics. Version 1.3.6 fixes blank monitoring, start-at-boot and Full Reset on localized Windows, RTSS startup, and the game scan.
         </p>
         <div class="hero-actions">
           <div class="hero-actions-row">
@@ -103,7 +103,7 @@
       <div class="hero-card glass" aria-label="Live telemetry example">
         <div class="card-head">
           <div class="card-head-left">
-            <img src="assets/ArcPowerIcon.png?v=1.3.5" alt="" width="22" height="22">
+            <img src="assets/ArcPowerIcon.png?v=1.3.6" alt="" width="22" height="22">
             <div>
               <div class="card-title">Intel Arc A770</div>
               <div class="card-sub mono">GPU 0 &middot; Alchemist</div>
@@ -149,9 +149,9 @@
       </div>
     </header>
 
-    <section class="wrap release-callout glass" aria-label="Version 1.3.5 release">
-      <div><span class="kicker mono">VERSION 1.3.5</span><h2>oneVPL recording, installer fixes, overlay polish</h2>
-      <p>Intel AV1, HEVC and H.264 now run through the bundled oneVPL (boost) encoder, with the built-in Quick Sync encoder as the fallback. This release also fixes installer and update failures on a busy install folder, repairs boot apply after moving the install, and corrects RTSS overlay chip names, hotkey rules and duplicate launches.</p></div>
+    <section class="wrap release-callout glass" aria-label="Version 1.3.6 release">
+      <div><span class="kicker mono">VERSION 1.3.6</span><h2>Monitoring, startup and scan fixes</h2>
+      <p>The sensor bridge now gets a cold-start window, so CPU and GPU telemetry appears on machines where the first sensor read is slow. Start-at-boot, profile deletion and Full Reset work on localized Windows, RTSS can start with Windows again, and a single bad game entry no longer aborts the scan.</p></div>
       <a class="btn btn-primary" href="https://github.com/YamsSE/Arc-Power/releases/latest" target="_blank" rel="noopener">Latest published release</a>
     </section>
 
@@ -302,22 +302,22 @@
           <span>GPU</span><span>Family</span><span>Status</span>
         </div>
         <div class="gpu-row">
-          <span class="gpu-name"><img src="assets/ArcPowerIcon.png?v=1.3.5" alt="" width="18" height="18">Arc A3 / A5 / A7 series</span>
+          <span class="gpu-name"><img src="assets/ArcPowerIcon.png?v=1.3.6" alt="" width="18" height="18">Arc A3 / A5 / A7 series</span>
           <span>Alchemist</span>
           <span class="chip chip-ok">Verified<span class="chip-sub">- Working</span></span>
         </div>
         <div class="gpu-row">
-          <span class="gpu-name"><img src="assets/ArcPowerIcon.png?v=1.3.5" alt="" width="18" height="18">Arc B580 / B570</span>
+          <span class="gpu-name"><img src="assets/ArcPowerIcon.png?v=1.3.6" alt="" width="18" height="18">Arc B580 / B570</span>
           <span>Battlemage</span>
           <span class="chip chip-ok">Verified<span class="chip-sub">- Working</span></span>
         </div>
         <div class="gpu-row">
-          <span class="gpu-name"><img src="assets/ArcPowerIcon.png?v=1.3.5" alt="" width="18" height="18">Arc Pro</span>
+          <span class="gpu-name"><img src="assets/ArcPowerIcon.png?v=1.3.6" alt="" width="18" height="18">Arc Pro</span>
           <span>Alchemist, Battlemage &amp; Crescent Island</span>
           <span class="chip chip-ok">Verified<span class="chip-sub">- Tweaks &amp; Telemetry only</span></span>
         </div>
         <div class="gpu-row">
-          <span class="gpu-name"><img src="assets/ArcPowerIcon.png?v=1.3.5" alt="" width="18" height="18">Arc iGPU</span>
+          <span class="gpu-name"><img src="assets/ArcPowerIcon.png?v=1.3.6" alt="" width="18" height="18">Arc iGPU</span>
           <span>Alchemist, Battlemage &amp; Crescent Island</span>
           <span class="chip chip-ok">Verified<span class="chip-sub">- Tweaks &amp; Telemetry only</span></span>
         </div>
@@ -373,7 +373,7 @@
   <footer class="footer">
     <div class="wrap footer-inner">
       <div class="footer-brand">
-        <img src="assets/ArcPowerIcon.png?v=1.3.5" alt="Arc Power logo" width="36" height="36">
+        <img src="assets/ArcPowerIcon.png?v=1.3.6" alt="Arc Power logo" width="36" height="36">
         <div>
           <div class="footer-name">Arc Power</div>
           <div class="footer-tag">Overclocking &amp; tuning for Intel Arc GPUs</div>

@@ -1,28 +1,25 @@
 <p align="center">
-  <img src="docs/branding/Arc-Power-Main-Logo-Navy.png?v=1.3.5" alt="Arc Power" width="540">
+  <img src="docs/branding/Arc-Power-Main-Logo-Navy.png?v=1.3.6" alt="Arc Power" width="540">
 </p>
 
 <p align="center">
   <a href="https://discord.gg/nXAjasHy6e"><img src="https://api.iconify.design/simple-icons/discord.svg?color=%235865F2" alt="Join the Arc Power Discord" title="Join the Arc Power Discord" width="22" height="22"></a>
 </p>
 
-# Arc Power Ver. 1.3.5
+# Arc Power Ver. 1.3.6
 
-Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.3.5 is a fixes-and-features release on the Rust/Tauri/WebView2 host: it adds the Intel oneVPL encoder to the recorder, repairs installer/update and boot-apply failures, and refines the RTSS overlay, hotkeys and Windows tweaks.
+Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.3.6 is a bug-fix release: monitoring recovers on machines where the sensor bridge's first read is slow, start-at-boot and Full Reset work on localized Windows, RTSS can start with Windows again, and the game scan no longer aborts on a single bad entry.
 
-## Version 1.3.5 highlights
+## Version 1.3.6 highlights
 
-- **Intel oneVPL encoder.** The bundled Ascent recorder now ships the `obs-qsv-onevpl-boost` plugin rebuilt for its OBS 30.1.2 runtime. "AV1 (oneVPL)", "HEVC (oneVPL)" and "H264 (oneVPL)" appear as Intel encoder choices and are preferred by automatic selection, with the built-in `obs_qsv11` encoders as the fallback.
-- **Installer and update fixes.** Setup and the update worker no longer fail with "access denied (os error 5)" when the recording runtime or a helper still holds the install folder, and they re-point the logon/boot-apply registration when the install location changes.
-- **RTSS overlay chip names.** The Chip Names toggle now really drives the labels: GPU model or "GPU", a cut-down CPU name, a plain "VRAM" row, and numbered rows for multiple GPUs.
-- **Hotkeys and single instance.** Every hotkey field accepts a lone function key (F1-F24), letters and digits still need Ctrl/Alt/Shift, and a second app launch exits instead of duplicating the tray, overlays and recorder.
-- **Overlay and Tweaks.** The Arc Power Overlay starts again when selected, and the Tweaks page drops the read-only Fullscreen Optimizations card while adding a Highest power plan switch and a Windows Update driver-exclusion toggle.
-- **Frame-pacing safety.** Arc Image Sharpening/ASR stay configured but report unavailable in production, because the capture-overlay presentation altered game frame pacing; the helper never launches.
-- **Retained features:** the native Windows host, Rust-owned state, GPU tuning, Arc Sync restoration, Advanced Overlay, Driver Library, recording/Instant Replay and the existing monitoring surface.
-
+- **Monitoring no longer stays blank.** The LibreHardwareMonitor bridge's first sample (full sensor enumeration) can take longer than the steady-state poll timeout, which made the app kill and restart it every six seconds. The first request after a bridge start now gets a 30-second window, so CPU/GPU temperature, power, VRAM and fan values appear instead of dashes.
+- **Start-at-boot, profile delete and Full Reset on non-English Windows.** `reg` and `schtasks` localize their "not found" messages, and the startup code only matched English text. Missing entries are now detected by exit code, so the toggle, profile deletion and the reset snapshot work on German and other localized installs.
+- **Start RTSS with Windows can be enabled again.** The RTSS startup check had the same English-only matching; enabling and disabling both work now.
+- **Game scan survives a bad entry.** A trailing `.exe` was stripped with a byte slice that panics on names ending in a multi-byte character (for example "Grüße.exe"), and one malformed entry could blank the whole catalog. Each scan phase is isolated, and a failure now names the panic.
+- **Also included from 1.3.6:** the Intel oneVPL encoder option with the built-in Quick Sync fallback, installer/update fixes for a locked install folder, boot apply after moving the install, RTSS overlay chip names, single-instance and hotkey grammar, the Arc Power Overlay start fix, and the Highest power plan / Windows Update driver tweaks.
 ## Upgrading from 1.2.5
 
-Once version 1.3.5 is published on GitHub, the 1.2.5 updater can find it through the existing installer and portable asset names. The upgrade is designed to preserve user data in `%APPDATA%\ArcPower`.
+Once version 1.3.6 is published on GitHub, the 1.2.5 updater can find it through the existing installer and portable asset names. The upgrade is designed to preserve user data in `%APPDATA%\ArcPower`.
 
 ## What Arc Power does
 
@@ -72,7 +69,7 @@ Build the Tauri renderer and compile the Windows release host with your Rust and
 npm ci --prefix src-tauri/frontend-deps
 node scripts/build-tauri-frontend.mjs
 cargo build --manifest-path src-tauri/Cargo.toml --locked --release
-npm run dist -- src-tauri/target/release/arc-power-tauri.exe dist-tauri/1.3.5
+npm run dist -- src-tauri/target/release/arc-power-tauri.exe dist-tauri/1.3.6
 ```
 
 ## First steps
