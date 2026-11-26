@@ -36,35 +36,40 @@ export interface RecordingGpuEncoderRow {
 
 export const RECORDING_GPU_ENCODER_SELECTION_PREFIX = 'arc-gpu-encoder:v1:';
 const RECORDING_ENCODER_SELECTION_MAX_LENGTH = 128;
-// Bundled obs-qsvonevpl encoders: texture (zero-copy) first, then frame.
+// Bundled obs-qsvonevpl frame encoders, registered under ids the Ascent
+// recorder host accepts (its allowlist is prefix-based).
 const PLUGIN_QSV_ENCODER_IDS = [
-  'obs_qsv_vpl_av1_tex', 'obs_qsv_vpl_hevc_tex', 'obs_qsv_vpl_h264_tex',
-  'obs_qsv_vpl_av1', 'obs_qsv_vpl_hevc', 'obs_qsv_vpl_h264',
+  'obs_qsv11_vpl_av1', 'obs_qsv11_vpl_hevc', 'obs_qsv11_vpl_h264',
 ] as const;
 // Built-in QSV fallback, shown only when no plugin encoder is usable.
 const LEGACY_QSV_ENCODER_IDS = ['obs_qsv11_av1', 'obs_qsv11_hevc', 'obs_qsv11_v2'] as const;
 const ALL_QSV_ENCODER_IDS = [...PLUGIN_QSV_ENCODER_IDS, ...LEGACY_QSV_ENCODER_IDS] as const;
 const RECORDING_QSV_ENCODER_LABELS: Record<string, string> = {
+  obs_qsv11_vpl_av1: 'AV1 (oneVPL)',
+  obs_qsv11_vpl_hevc: 'HEVC (oneVPL)',
+  obs_qsv11_vpl_h264: 'H264 (oneVPL)',
   obs_qsv_vpl_av1_tex: 'AV1 Tex',
   obs_qsv_vpl_hevc_tex: 'HEVC Tex',
   obs_qsv_vpl_h264_tex: 'H264 Tex',
   obs_qsv_vpl_av1: 'AV1',
   obs_qsv_vpl_hevc: 'HEVC',
   obs_qsv_vpl_h264: 'H264',
-  obs_qsv11_av1: 'Intel AV1',
-  obs_qsv11_hevc: 'Intel HEVC',
-  obs_qsv11_v2: 'Intel H264',
+  obs_qsv11_av1: 'AV1',
+  obs_qsv11_hevc: 'HEVC',
+  obs_qsv11_v2: 'H264',
 };
 
 function isKnownQsvEncoderId(id: string): boolean {
   return (ALL_QSV_ENCODER_IDS as readonly string[]).includes(id);
 }
 
-/** The encoder set shown for the current runtime: only the built-in QSV ids,
- *  because the Ascent host refuses to start third-party ids such as
- *  obs_qsv_vpl_* even when the oneVPL plugin enumerates them. */
-function activeQsvEncoderIds(_encoders: readonly RecordingEncoderLike[]): readonly string[] {
-  return LEGACY_QSV_ENCODER_IDS;
+/** The Intel encoder set shown for the current runtime: the bundled oneVPL
+ *  frame encoders that the recorder host accepts, then the built-in QSV
+ *  encoders as the default/fallback. */
+function activeQsvEncoderIds(encoders: readonly RecordingEncoderLike[]): readonly string[] {
+  const usable = (Array.isArray(encoders) ? encoders : []).filter(encoderIsUsable);
+  const pluginIds = PLUGIN_QSV_ENCODER_IDS.filter((id) => usable.some((encoder) => encoder.type === id));
+  return [...pluginIds, ...LEGACY_QSV_ENCODER_IDS];
 }
 
 /** Return true for the generic QSV choices that are only a fallback when no
@@ -77,6 +82,7 @@ export function recordingEncoderIdIsGlobal(id: string): boolean {
 export function recordingEncoderCodecIsAv1(id: string | null | undefined): boolean {
   const normalized = String(id ?? '').trim();
   return normalized === 'obs_qsv11_av1'
+    || normalized === 'obs_qsv11_vpl_av1'
     || normalized === 'obs_qsv_vpl_av1'
     || normalized === 'obs_qsv_vpl_av1_tex';
 }
@@ -93,7 +99,17 @@ export function recordingPhysicalSelectionForId(
   encoders: RecordingEncoderLike[] = [],
 ): string | null {
   if (!recordingEncoderIdIsGlobal(id)) return null;
-  const normalized = String(id ?? '').trim();
+  // Persisted oneVPL ids from earlier builds resolve to their built-in QSV
+  // equivalent, since the recorder host only starts the built-in ids.
+  const BUILTIN_FOR_PLUGIN: Record<string, string> = {
+    obs_qsv_vpl_av1_tex: 'obs_qsv11_av1',
+    obs_qsv_vpl_av1: 'obs_qsv11_av1',
+    obs_qsv_vpl_hevc_tex: 'obs_qsv11_hevc',
+    obs_qsv_vpl_hevc: 'obs_qsv11_hevc',
+    obs_qsv_vpl_h264_tex: 'obs_qsv11_v2',
+    obs_qsv_vpl_h264: 'obs_qsv11_v2',
+  };
+  const normalized = BUILTIN_FOR_PLUGIN[String(id ?? '').trim()] ?? String(id ?? '').trim();
   const codecLabel = RECORDING_QSV_ENCODER_LABELS[normalized]?.replace(/^Intel\s+/i, '');
   if (!codecLabel) return null;
   return recordingGpuEncoderOptions(devices, encoders)

@@ -46,6 +46,7 @@ const RECORDER_REPLAY: u64 = 2;
 const QSV_PREFERENCE: &[&str] = &[
     "obs_qsv_vpl_av1_tex", "obs_qsv_vpl_hevc_tex", "obs_qsv_vpl_h264_tex",
     "obs_qsv_vpl_av1", "obs_qsv_vpl_hevc", "obs_qsv_vpl_h264",
+    "obs_qsv11_vpl_av1", "obs_qsv11_vpl_hevc", "obs_qsv11_vpl_h264",
     "obs_qsv11_av1", "obs_qsv11_hevc", "obs_qsv11_v2",
 ];
 const SELECTION_PREFIX: &str = "arc-gpu-encoder:v1:";
@@ -871,7 +872,12 @@ impl EngineInner {
                     drop(core);
                     self.publish();
                 }
-                if error.is_encoder_rejection() {
+                // A failed start on a bundled oneVPL encoder is treated the
+                // same way: demote it so the automatic path falls back to the
+                // built-in QSV encoder on the next attempt.
+                let plugin_start_failure = encoder_id.starts_with("obs_qsv11_vpl_")
+                    && matches!(error.code, Some(-6 | -8 | -14));
+                if error.is_encoder_rejection() || plugin_start_failure {
                     let failed_target = selection.as_ref().and_then(|value| value.target.clone()).or(adapter_target);
                     let mut core = self.core.lock().unwrap();
                     core.demoted.insert(encoder_demotion_key(&encoder_id, failed_target.as_ref()));
@@ -1328,7 +1334,7 @@ fn color_settings(settings: &Value) -> Value {
 }
 
 fn encoder_profile(encoder: &str) -> &'static str {
-    if encoder.contains("qsv11_v2") || encoder.contains("qsv11_soft_v2") || encoder.contains("qsv_vpl_h264") { "high" } else { "main" }
+    if encoder.contains("qsv11_v2") || encoder.contains("qsv11_soft_v2") || encoder.contains("qsv_vpl_h264") || encoder.contains("qsv11_vpl_h264") { "high" } else { "main" }
 }
 
 pub fn build_start_payload(settings: &Value, output_path: &str, recorder_type: u64) -> Value {
@@ -1353,9 +1359,9 @@ pub fn build_start_payload(settings: &Value, output_path: &str, recorder_type: u
             Value::Object(object)
         }));
     let rate = settings.get("rateControl").and_then(Value::as_str).unwrap_or("CBR");
-    let h264 = encoder.contains("qsv11_v2") || encoder.contains("qsv11_soft_v2") || encoder.contains("qsv_vpl_h264");
+    let h264 = encoder.contains("qsv11_v2") || encoder.contains("qsv11_soft_v2") || encoder.contains("qsv_vpl_h264") || encoder.contains("qsv11_vpl_h264");
     let quality = settings.get("rateControlQuality").and_then(Value::as_f64).unwrap_or(23.0);
-    let plugin_encoder = encoder.starts_with("obs_qsv_vpl_");
+    let plugin_encoder = encoder.starts_with("obs_qsv_vpl_") || encoder.starts_with("obs_qsv11_vpl_");
     let mut video_encoder = if plugin_encoder {
         // obs-qsvonevpl uses its own target-usage vocabulary and oneVPL option
         // names; the OBS-style preset/latency keys are ignored by that plugin.
@@ -1623,16 +1629,20 @@ fn resolve_encoder(requested: &str, encoders: &[Value], selection: Option<&Encod
     let codec = selection.map(|value| value.codec.as_str()).unwrap_or(requested);
     let usable = |candidate: &str| encoders.iter().any(|encoder| encoder["type"].as_str() == Some(candidate) && is_usable(encoder));
     if codec == "automatic" {
-        // The Ascent host only starts its built-in encoder ids; it rejects
-        // third-party ids such as obs_qsv_vpl_* ("unsupported encoder id
-        // passed"). Resolve to the built-in QSV so a recording can start.
-        for candidate in ["obs_qsv11_av1", "obs_qsv11_hevc", "obs_qsv11_v2"] {
+        // Prefer the bundled oneVPL encoders (they register under ids the
+        // Ascent host accepts); fall back to the built-in QSV encoders.
+        for candidate in [
+            "obs_qsv11_vpl_av1", "obs_qsv11_vpl_hevc", "obs_qsv11_vpl_h264",
+            "obs_qsv11_av1", "obs_qsv11_hevc", "obs_qsv11_v2",
+        ] {
             if usable(candidate) { return Ok(candidate.into()); }
         }
         return Err(unsupported_encoder_error(codec, encoders));
     }
-    // Map the bundled obs-qsvonevpl ids onto the built-in QSV ids: the plugin
-    // enumerates, but the Ascent host refuses to start its encoder ids.
+    // Map the bundled obs-qsvonevpl texture ids onto the built-in QSV ids: the
+    // Ascent host rejects third-party texture ids outright. The plugin's frame
+    // encoders are registered under whitelisted obs_qsv11_vpl_* ids and are
+    // selected explicitly.
     let mapped = match codec {
         "obs_qsv_vpl_av1_tex" | "obs_qsv_vpl_av1" => "obs_qsv11_av1",
         "obs_qsv_vpl_hevc_tex" | "obs_qsv_vpl_hevc" => "obs_qsv11_hevc",
