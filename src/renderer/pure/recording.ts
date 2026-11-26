@@ -98,7 +98,7 @@ export function recordingPhysicalSelectionForId(
   const codecLabel = RECORDING_QSV_ENCODER_LABELS[normalized]?.replace(/^Intel\s+/i, '');
   if (!codecLabel) return null;
   return recordingGpuEncoderOptions(devices, encoders)
-    .find(([, label]) => label.endsWith(` ${codecLabel}`))?.[0] ?? null;
+    .find(([, label]) => label.includes(` ${codecLabel}`))?.[0] ?? null;
 }
 
 export interface RecordingAdapterBdf {
