@@ -36,17 +36,50 @@ export interface RecordingGpuEncoderRow {
 
 export const RECORDING_GPU_ENCODER_SELECTION_PREFIX = 'arc-gpu-encoder:v1:';
 const RECORDING_ENCODER_SELECTION_MAX_LENGTH = 128;
-const RECORDING_QSV_ENCODER_IDS = ['obs_qsv11_av1', 'obs_qsv11_hevc', 'obs_qsv11_v2'] as const;
-const RECORDING_QSV_ENCODER_LABELS: Record<typeof RECORDING_QSV_ENCODER_IDS[number], string> = {
+// Bundled obs-qsvonevpl encoders: texture (zero-copy) first, then frame.
+const PLUGIN_QSV_ENCODER_IDS = [
+  'obs_qsv_vpl_av1_tex', 'obs_qsv_vpl_hevc_tex', 'obs_qsv_vpl_h264_tex',
+  'obs_qsv_vpl_av1', 'obs_qsv_vpl_hevc', 'obs_qsv_vpl_h264',
+] as const;
+// Built-in QSV fallback, shown only when no plugin encoder is usable.
+const LEGACY_QSV_ENCODER_IDS = ['obs_qsv11_av1', 'obs_qsv11_hevc', 'obs_qsv11_v2'] as const;
+const ALL_QSV_ENCODER_IDS = [...PLUGIN_QSV_ENCODER_IDS, ...LEGACY_QSV_ENCODER_IDS] as const;
+const RECORDING_QSV_ENCODER_LABELS: Record<string, string> = {
+  obs_qsv_vpl_av1_tex: 'AV1 Tex',
+  obs_qsv_vpl_hevc_tex: 'HEVC Tex',
+  obs_qsv_vpl_h264_tex: 'H264 Tex',
+  obs_qsv_vpl_av1: 'AV1',
+  obs_qsv_vpl_hevc: 'HEVC',
+  obs_qsv_vpl_h264: 'H264',
   obs_qsv11_av1: 'Intel AV1',
   obs_qsv11_hevc: 'Intel HEVC',
   obs_qsv11_v2: 'Intel H264',
 };
 
+function isKnownQsvEncoderId(id: string): boolean {
+  return (ALL_QSV_ENCODER_IDS as readonly string[]).includes(id);
+}
+
+/** The encoder set shown for the current runtime: the plugin's six variants
+ *  when any is usable, otherwise the built-in three. */
+function activeQsvEncoderIds(encoders: readonly RecordingEncoderLike[]): readonly string[] {
+  const usable = (Array.isArray(encoders) ? encoders : []).filter(encoderIsUsable);
+  const pluginAvailable = PLUGIN_QSV_ENCODER_IDS.some((id) => usable.some((encoder) => encoder.type === id));
+  return pluginAvailable ? PLUGIN_QSV_ENCODER_IDS : LEGACY_QSV_ENCODER_IDS;
+}
+
 /** Return true for the generic QSV choices that are only a fallback when no
  * physical Intel GPU encoder can be identified. */
 export function recordingEncoderIdIsGlobal(id: string): boolean {
-  return RECORDING_QSV_ENCODER_IDS.includes(String(id ?? '').trim() as typeof RECORDING_QSV_ENCODER_IDS[number]);
+  return isKnownQsvEncoderId(String(id ?? '').trim());
+}
+
+/** True when the encoder id is an AV1 variant (CQP range is 63, not 51). */
+export function recordingEncoderCodecIsAv1(id: string | null | undefined): boolean {
+  const normalized = String(id ?? '').trim();
+  return normalized === 'obs_qsv11_av1'
+    || normalized === 'obs_qsv_vpl_av1'
+    || normalized === 'obs_qsv_vpl_av1_tex';
 }
 
 /**
@@ -62,11 +95,8 @@ export function recordingPhysicalSelectionForId(
 ): string | null {
   if (!recordingEncoderIdIsGlobal(id)) return null;
   const normalized = String(id ?? '').trim();
-  const codecLabel = normalized === 'obs_qsv11_av1'
-    ? 'AV1'
-    : normalized === 'obs_qsv11_hevc'
-      ? 'HEVC'
-      : 'H264';
+  const codecLabel = RECORDING_QSV_ENCODER_LABELS[normalized]?.replace(/^Intel\s+/i, '');
+  if (!codecLabel) return null;
   return recordingGpuEncoderOptions(devices, encoders)
     .find(([, label]) => label.endsWith(` ${codecLabel}`))?.[0] ?? null;
 }
@@ -120,7 +150,7 @@ function cleanEncoderName(value: unknown): string | null {
 export function recordingEncoderName(encoder: RecordingEncoderNameLike): string | null {
   const type = String(encoder?.type ?? '').trim();
   const description = String(encoder?.description ?? '').trim();
-  const known = RECORDING_QSV_ENCODER_LABELS[type as typeof RECORDING_QSV_ENCODER_IDS[number]];
+  const known = RECORDING_QSV_ENCODER_LABELS[type];
   if (known) return known;
 
   const source = `${type} ${description}`.toLowerCase();
@@ -142,14 +172,14 @@ export function recordingEncoderNameForId(
   const runtimeEncoder = encoders.find((encoder) => encoder?.type === normalized);
   return runtimeEncoder
     ? recordingEncoderName(runtimeEncoder)
-    : RECORDING_QSV_ENCODER_LABELS[normalized as typeof RECORDING_QSV_ENCODER_IDS[number]] ?? null;
+    : RECORDING_QSV_ENCODER_LABELS[normalized] ?? null;
 }
 
 /** Return only actual, usable global encoder choices with name-only labels. */
 export function recordingGlobalEncoderOptions(
   encoders: readonly RecordingEncoderLike[] = [],
 ): Array<[string, string]> {
-  return RECORDING_QSV_ENCODER_IDS.flatMap((id) => {
+  return activeQsvEncoderIds(encoders).flatMap((id) => {
     const encoder = encoders.find((candidate) => candidate?.type === id);
     if (!encoder || !encoderIsUsable(encoder)) return [];
     const label = recordingEncoderName(encoder);
@@ -260,7 +290,7 @@ function base64UrlDecode(value: string): string {
 }
 
 export function encodeRecordingEncoderSelection(codec: string, device: RecordingGpuLike): string | null {
-  if (!RECORDING_QSV_ENCODER_IDS.includes(codec as typeof RECORDING_QSV_ENCODER_IDS[number])) return null;
+  if (!isKnownQsvEncoderId(codec)) return null;
   const target = recordingAdapterTargetOf(device);
   if (!target) return null;
   const encoded = `${RECORDING_GPU_ENCODER_SELECTION_PREFIX}${base64UrlEncode(JSON.stringify({ c: codec, ...compactTargetOf(target) }))}`;
@@ -281,7 +311,7 @@ export function parseRecordingEncoderSelection(value: string): RecordingEncoderS
     if (!parsed || typeof parsed !== 'object') return null;
     const record = parsed as Record<string, unknown>;
     const codec = typeof record.codec === 'string' ? record.codec : record.c;
-    if (typeof codec !== 'string' || !RECORDING_QSV_ENCODER_IDS.includes(codec as typeof RECORDING_QSV_ENCODER_IDS[number])) return null;
+    if (typeof codec !== 'string' || !isKnownQsvEncoderId(codec)) return null;
     const compactTarget = record.target ?? {
       ...(typeof record.k === 'string' ? { deviceKey: record.k } : {}),
       ...(Array.isArray(record.b) ? { bdf: record.b } : {}),
@@ -296,11 +326,13 @@ export function parseRecordingEncoderSelection(value: string): RecordingEncoderS
   }
 }
 
-function encoderShortLabel(encoder: RecordingEncoderLike): 'AV1' | 'HEVC' | 'H264' | null {
+function encoderShortLabel(encoder: RecordingEncoderLike): string | null {
+  const known = RECORDING_QSV_ENCODER_LABELS[encoder.type];
+  if (known) return known.replace(/^Intel\s+/i, '');
   const source = `${encoder.type} ${encoder.description}`.toLowerCase();
   if (source.includes('av1')) return 'AV1';
   if (source.includes('hevc') || source.includes('h.265') || source.includes('h265')) return 'HEVC';
-  if (source.includes('h264') || source.includes('h.264') || source.includes('avc') || encoder.type === 'obs_qsv11_v2') return 'H264';
+  if (source.includes('h264') || source.includes('h.264') || source.includes('avc')) return 'H264';
   return null;
 }
 
@@ -324,7 +356,7 @@ export function recordingGpuEncoderOptions(
 ): Array<[string, string]> {
   const usable = (Array.isArray(encoders) ? encoders : [])
     .filter(encoderIsUsable)
-    .filter((encoder) => RECORDING_QSV_ENCODER_IDS.includes(encoder.type as typeof RECORDING_QSV_ENCODER_IDS[number]));
+    .filter((encoder) => isKnownQsvEncoderId(encoder.type));
   const gpuDevices = (Array.isArray(devices) ? devices : [])
     .filter(intelGpu)
     .map((device) => ({ device, target: recordingAdapterTargetOf(device) }))
@@ -332,7 +364,7 @@ export function recordingGpuEncoderOptions(
   const annotated = usable.map((encoder) => ({ encoder, metadata: metadataOf(encoder) }));
   const options: Array<[string, string]> = [];
 
-  for (const encoderId of RECORDING_QSV_ENCODER_IDS) {
+  for (const encoderId of activeQsvEncoderIds(encoders)) {
     const codec = usable.find((encoder) => encoder.type === encoderId);
     if (!codec) continue;
     const codecLabel = encoderShortLabel(codec);
@@ -371,7 +403,7 @@ export function recordingEncoderSelectionLabel(
   });
   const name = matchingDevice?.name ?? selection.deviceName ?? 'GPU';
   const sku = name.match(/\b[AB]\d{3}\b/i)?.[0]?.toUpperCase();
-  const codec = selection.codec === 'obs_qsv11_av1' ? 'AV1' : selection.codec === 'obs_qsv11_hevc' ? 'HEVC' : 'H264';
+  const codec = RECORDING_QSV_ENCODER_LABELS[selection.codec]?.replace(/^Intel\s+/i, '') ?? 'AV1';
   return `${sku ?? name} ${codec}`;
 }
 
