@@ -328,6 +328,21 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "live LibreHardwareMonitor bridge"]
+    fn live_lhm_bridge_first_sample() {
+        let mut lhm = LhmTelemetry::new();
+        assert!(lhm.available(), "the bridge executable was not found");
+        let started = Instant::now();
+        let payload = lhm.sample().expect("the first sample must arrive");
+        let elapsed = started.elapsed();
+        let target = json!({"pciVendorId":"0x00008086","pciDeviceId":"0x0000e20b"});
+        let mapped = map_snapshot(&payload, Some(&target));
+        println!("FIRST_SAMPLE_MS {}", elapsed.as_millis());
+        println!("MAPPED {}", serde_json::to_string(&mapped).unwrap_or_default());
+        assert!(elapsed <= FIRST_REQUEST_TIMEOUT);
+    }
+
+    #[test]
     fn first_sample_allows_for_the_full_sensor_enumeration() {
         // A cold elevated bridge can take several seconds to enumerate MSR,
         // SuperIO, SPD and GPU sensors; restarting at the steady-state timeout
