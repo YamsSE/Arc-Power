@@ -510,6 +510,17 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live read-only power limit"]
+    fn live_read_power_limit() {
+        let path = crate::backend::gpu_devices::locate_dll().expect("IGCL DLL not found");
+        let caps = crate::backend::gpu_capabilities::capabilities(&path, 0, "stock", false).expect("capabilities");
+        let state = crate::backend::gpu_capabilities::current_settings(&path, 0).expect("state");
+        println!("LIVE_DEVICE {}", caps["deviceName"]);
+        println!("LIVE_POWER_LIMIT {}", state["powerLimitW"]);
+        println!("LIVE_TEMP_LIMIT {}", state["tempLimitC"]);
+    }
+
+    #[test]
     #[ignore = "live reversible scalar write; requires explicit approval"]
     fn live_reversible_power_limit_when_approved() {
         use crate::backend::igcl_read_only::ReadOnlyIgcl;

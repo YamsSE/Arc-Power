@@ -2,23 +2,48 @@
 //! HKCU Run value; Arc Power never elevates or launches RTSS from this path.
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use winreg::{
+    enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_SET_VALUE},
+    RegKey,
+};
 
-const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "ArcPowerRTSS";
 const RTSS_EXE: &str = "RTSS.exe";
 
-fn command(program: &str, args: &[&str]) -> Result<Output, String> {
-    let mut command = Command::new(program);
-    command.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
+/// Registry API instead of `reg.exe`: no output parsing, no console code page.
+fn registration_value() -> Result<Option<String>, String> {
+    let key = match RegKey::predef(HKEY_CURRENT_USER).open_subkey(RUN_SUBKEY) {
+        Ok(key) => key,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("rtss-startup: could not open the Run key: {error}")),
+    };
+    match key.get_value::<String, _>(RUN_VALUE) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("rtss-startup: registry query failed: {error}")),
     }
-    command.output().map_err(|error| error.to_string())
 }
-fn text(bytes: &[u8]) -> String { super::startup::decode_console(bytes) }
+
+fn write_registration(value: &str) -> Result<(), String> {
+    let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN_SUBKEY)
+        .map_err(|error| format!("rtss-startup: could not open the Run key: {error}"))?;
+    key.set_value(RUN_VALUE, &value).map_err(|error| format!("rtss-startup: registry write failed: {error}"))
+}
+
+fn remove_registration() -> Result<(), String> {
+    let key = match RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN_SUBKEY, KEY_SET_VALUE) {
+        Ok(key) => key,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("rtss-startup: could not open the Run key: {error}")),
+    };
+    match key.delete_value(RUN_VALUE) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("rtss-startup: registry removal failed: {error}")),
+    }
+}
+
 fn quoted(value: &str) -> String { format!("\"{}\"", value.replace('"', "")) }
 fn unquoted(value: &str) -> String {
     let value = value.trim();
@@ -27,28 +52,20 @@ fn unquoted(value: &str) -> String {
 fn same_path(left: &str, right: &str) -> bool {
     left.trim().replace('/', "\\").to_ascii_lowercase() == right.trim().replace('/', "\\").to_ascii_lowercase()
 }
-fn parse_query(output: &str) -> Option<String> {
-    output.lines().find_map(|line| {
-        let value = line.split_once("REG_SZ").map(|(_, value)| value)
-            .or_else(|| line.split_once("REG_EXPAND_SZ").map(|(_, value)| value))?;
-        let value = value.trim();
-        (!value.is_empty()).then(|| unquoted(value))
-    })
-}
 fn registry_install_path() -> Option<String> {
-    for (key, value) in [
-        (r"HKLM\SOFTWARE\WOW6432Node\Unwinder\RTSS", "InstallPath"),
-        (r"HKLM\SOFTWARE\Unwinder\RTSS", "InstallPath"),
-        (r"HKLM\SOFTWARE\WOW6432Node\Unwinder\RTSS", "InstallDir"),
-        (r"HKLM\SOFTWARE\Unwinder\RTSS", "InstallDir"),
+    for (hive, subkey) in [
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Unwinder\RTSS"),
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Unwinder\RTSS"),
     ] {
-        if let Ok(output) = command("reg", &["query", key, "/v", value]) {
-            if output.status.success() {
-                if let Some(path) = parse_query(&text(&output.stdout)) {
-                    let path = if path.to_ascii_lowercase().ends_with(&RTSS_EXE.to_ascii_lowercase()) { path } else { Path::new(&path).join(RTSS_EXE).to_string_lossy().into_owned() };
-                    if Path::new(&path).is_file() { return Some(path); }
-                }
-            }
+        let Ok(key) = RegKey::predef(hive).open_subkey(subkey) else { continue; };
+        for name in ["InstallPath", "InstallDir"] {
+            let Ok(path) = key.get_value::<String, _>(name) else { continue; };
+            let path = if path.to_ascii_lowercase().ends_with(&RTSS_EXE.to_ascii_lowercase()) {
+                path
+            } else {
+                Path::new(&path).join(RTSS_EXE).to_string_lossy().into_owned()
+            };
+            if Path::new(&path).is_file() { return Some(path); }
         }
     }
     None
@@ -117,15 +134,7 @@ fn resolve_executable(registered: Option<&str>) -> Option<String> {
     None
 }
 fn query_registration() -> Result<Option<String>, String> {
-    let output = command("reg", &["query", RUN_KEY, "/v", RUN_VALUE])?;
-    if !output.status.success() {
-        let error = text(&output.stderr);
-        // `reg` localizes its error text ("Das System kann ... nicht finden"),
-        // so a missing value is recognized by its exit code alone.
-        if output.status.code() == Some(1) { return Ok(None); }
-        return Err(format!("rtss-startup: registry query failed: {}", error.trim()));
-    }
-    Ok(parse_query(&text(&output.stdout)))
+    Ok(registration_value()?.map(|value| unquoted(&value)))
 }
 
 /// Read the exact ArcPowerRTSS Run target for maintenance rollback without
@@ -136,11 +145,7 @@ pub fn registration_snapshot() -> Result<Option<String>, String> { query_registr
 /// the existing path directly, so rollback does not depend on RTSS discovery.
 pub fn restore_registration(previous: Option<&str>) -> Result<(), String> {
     let Some(previous) = previous else { return set(false).map(|_| ()); };
-    let value = quoted(previous);
-    let output = command("reg", &["add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &value, "/f"])?;
-    if !output.status.success() {
-        return Err(format!("rtss-startup: registration rollback failed: {}", text(&output.stderr).trim()));
-    }
+    write_registration(&quoted(previous))?;
     let after = query_registration()?;
     if after.as_deref().is_none_or(|path| !same_path(path, previous)) {
         return Err("rtss-startup: registration rollback could not be verified".into());
@@ -168,19 +173,12 @@ pub fn set(enabled: bool) -> Result<Value, String> {
         let current = state()?;
         let executable = current.get("executablePath").and_then(Value::as_str).filter(|value| Path::new(value).is_file())
             .ok_or("rtss-startup: RTSS.exe was not found")?;
-        let value = quoted(executable);
-        let output = command("reg", &["add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &value, "/f"])?;
-        if !output.status.success() { return Err(format!("rtss-startup: registry write failed: {}", text(&output.stderr).trim())); }
+        write_registration(&quoted(executable))?;
         let after = state()?;
         if after.get("registered").and_then(Value::as_bool) != Some(true) { return Err("rtss-startup: registration could not be verified".into()); }
         return Ok(after);
     }
-    let output = command("reg", &["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])?;
-    if !output.status.success() && output.status.code() != Some(1) {
-        // Exit code 1 means the value was already absent, which is the goal;
-        // the message itself is localized.
-        return Err(format!("rtss-startup: registry removal failed: {}", text(&output.stderr).trim()));
-    }
+    remove_registration()?;
     let after = state()?;
     if after.get("valueExists").and_then(Value::as_bool) == Some(true) { return Err("rtss-startup: registration removal could not be verified".into()); }
     Ok(after)
@@ -195,7 +193,6 @@ mod tests {
         assert_eq!(quoted(r"C:\RivaTuner Statistics Server\RTSS.exe"), r#""C:\RivaTuner Statistics Server\RTSS.exe""#);
         assert_eq!(unquoted(r#""C:\RTSS.exe""#), r"C:\RTSS.exe");
         assert!(same_path(r"C:\RTSS.EXE", "c:/rtss.exe"));
-        assert_eq!(parse_query("HKEY_CURRENT_USER\n    ArcPowerRTSS    REG_SZ    \"C:\\RTSS.exe\"\n").as_deref(), Some(r"C:\RTSS.exe"));
     }
 
     #[test]

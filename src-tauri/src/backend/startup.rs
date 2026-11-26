@@ -5,8 +5,12 @@ use super::{native_store::NativeStore, native_system::BuildKind};
 use serde_json::{json, Value};
 use std::{io::Write, path::{Path, PathBuf}};
 use std::process::{Command, Output};
+use winreg::{
+    enums::{HKEY_CURRENT_USER, KEY_SET_VALUE, REG_EXPAND_SZ, REG_SZ},
+    RegKey, RegValue,
+};
 
-const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "ArcPower";
 const TASK_NAME: &str = "ArcPowerStartup";
 const BOOT_APPLY_TASK_NAME: &str = "ArcPowerBootApply";
@@ -76,12 +80,44 @@ fn quoted_path(value: &str) -> Option<String> {
 
 fn build_run_value(exec: &Path) -> String { format!("\"{}\"", exec.to_string_lossy()) }
 
-fn parse_run_query(text: &str) -> Option<String> {
-    text.lines().find_map(|line| {
-        let value = line.split_once("REG_SZ").map(|(_, value)| value)
-            .or_else(|| line.split_once("REG_EXPAND_SZ").map(|(_, value)| value))?;
-        quoted_path(value.trim())
-    })
+/// Read one HKCU Run value straight from the registry. Using the registry API
+/// (instead of `reg.exe`) removes every dependency on the system language and
+/// console code page.
+fn run_value(name: &str) -> Result<Option<String>, String> {
+    let key = match RegKey::predef(HKEY_CURRENT_USER).open_subkey(RUN_SUBKEY) {
+        Ok(key) => key,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("startup-get: could not open the Run key: {error}")),
+    };
+    match key.get_value::<String, _>(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("startup-get: could not read {name}: {error}")),
+    }
+}
+
+fn write_run_value(name: &str, value: &str) -> Result<(), String> {
+    let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN_SUBKEY)
+        .map_err(|error| format!("startup-set: could not open the Run key: {error}"))?;
+    key.set_value(name, &value).map_err(|error| format!("startup-set: could not write {name}: {error}"))
+}
+
+/// Removing an absent value is success: that is the state the caller wants.
+fn remove_run_value(name: &str) -> Result<(), String> {
+    let key = match RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(RUN_SUBKEY, KEY_SET_VALUE) {
+        Ok(key) => key,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("startup-set: could not open the Run key: {error}")),
+    };
+    match key.delete_value(name) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("startup-set: Run cleanup failed: {error}")),
+    }
+}
+
+fn read_run() -> Result<Registration, String> {
+    Ok(Registration { value_exists: run_value(RUN_VALUE)?.is_some(), task_exists: false })
 }
 
 fn logon_executable(kind: BuildKind) -> Result<PathBuf, String> {
@@ -106,18 +142,6 @@ fn query_found_nothing(output: &Output) -> bool {
     // prints alongside is localized (German: "Das System kann die angegebene
     // Datei nicht finden"), so it must not be part of the decision.
     exit_code_is_missing(output.status.code())
-}
-
-fn read_run() -> Result<Registration, String> {
-    let output = command("reg", &["query", RUN_KEY, "/v", RUN_VALUE])?;
-    if !output.status.success() {
-        if query_found_nothing(&output) {
-            return Ok(Registration { value_exists: false, task_exists: false });
-        }
-        return Err(format!("startup-get: reg query failed: {}", decode_console(&output.stderr).trim()));
-    }
-    let parsed = parse_run_query(&decode_console(&output.stdout));
-    Ok(Registration { value_exists: parsed.is_some(), task_exists: false })
 }
 
 fn xml_text(xml: &str, tag: &str) -> Option<String> {
@@ -153,39 +177,45 @@ fn read_registration(kind: BuildKind, exec: &Path) -> Result<Registration, Strin
 
 fn ignore_exit(output: Result<Output, String>) { let _ = output; }
 
-fn delete_run_value() -> Result<(), String> {
-    let output = command("reg", &["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])?;
-    if output.status.success() { return Ok(()); }
-    // Deleting an absent value also exits 1; that is already the desired state.
-    if query_found_nothing(&output) { return Ok(()); }
-    Err(format!("startup-set: Run cleanup failed: {}", decode_console(&output.stderr).trim()))
-}
+fn delete_run_value() -> Result<(), String> { remove_run_value(RUN_VALUE) }
 
 fn cleanup_legacy() {
     for task in LEGACY_TASK_NAMES { ignore_exit(command("schtasks", &["/delete", "/tn", task, "/f"])); }
-    for value in LEGACY_RUN_VALUES { ignore_exit(command("reg", &["delete", RUN_KEY, "/v", value, "/f"])); }
+    for value in LEGACY_RUN_VALUES { let _ = remove_run_value(value); }
 }
 
 fn read_legacy_run_value(name: &'static str) -> Result<Option<(String, String)>, String> {
-    let output = command("reg", &["query", RUN_KEY, "/v", name])?;
-    if !output.status.success() {
-        if query_found_nothing(&output) { return Ok(None); }
-        let error = decode_console(&output.stderr);
-        let error = if error.trim().is_empty() { decode_console(&output.stdout) } else { error };
-        return Err(format!("startup-set: could not snapshot legacy Run value {name}: {}", error.trim()));
+    let key = match RegKey::predef(HKEY_CURRENT_USER).open_subkey(RUN_SUBKEY) {
+        Ok(key) => key,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("startup-set: could not open the Run key: {error}")),
+    };
+    let raw = match key.get_raw_value(name) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("startup-set: could not snapshot legacy Run value {name}: {error}")),
+    };
+    let kind = match raw.vtype {
+        REG_SZ => "REG_SZ",
+        REG_EXPAND_SZ => "REG_EXPAND_SZ",
+        other => return Err(format!("startup-set: legacy Run value {name} has unsupported type {other:?}")),
+    };
+    if raw.bytes.len() % 2 != 0 {
+        return Err(format!("startup-set: legacy Run value {name} is not UTF-16"));
     }
-    let output = decode_console(&output.stdout);
-    for line in output.lines() {
-        let lower = line.to_ascii_lowercase();
-        if !lower.contains(&name.to_ascii_lowercase()) { continue; }
-        if let Some((_, value)) = line.split_once("REG_EXPAND_SZ") {
-            return Ok(Some(("REG_EXPAND_SZ".into(), value.trim().to_owned())));
-        }
-        if let Some((_, value)) = line.split_once("REG_SZ") {
-            return Ok(Some(("REG_SZ".into(), value.trim().to_owned())));
-        }
-    }
-    Err(format!("startup-set: could not parse legacy Run value {name}"))
+    let units: Vec<u16> = raw.bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+    let text = String::from_utf16_lossy(&units).trim_end_matches('\u{0}').to_owned();
+    Ok(Some((kind.to_owned(), text)))
+}
+
+fn write_legacy_run_value(name: &str, kind: &str, data: &str) -> Result<(), String> {
+    let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN_SUBKEY)
+        .map_err(|error| format!("startup-set: could not open the Run key: {error}"))?;
+    let units: Vec<u16> = data.encode_utf16().chain(std::iter::once(0)).collect();
+    let bytes: Vec<u8> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
+    let vtype = if kind.eq_ignore_ascii_case("REG_EXPAND_SZ") { REG_EXPAND_SZ } else { REG_SZ };
+    key.set_raw_value(name, &RegValue { bytes: bytes.into(), vtype })
+        .map_err(|error| format!("startup-set: could not restore legacy Run value {name}: {error}"))
 }
 
 fn read_legacy_task_xml(name: &'static str) -> Result<Option<Vec<u8>>, String> {
@@ -208,17 +238,13 @@ pub fn legacy_registration_snapshot() -> Result<LegacyRegistrationSnapshot, Stri
 fn restore_legacy_run_value(name: &'static str, previous: Option<&(String, String)>) -> Result<(), String> {
     match previous {
         Some((kind, data)) => {
-            let output = command("reg", &["add", RUN_KEY, "/v", name, "/t", kind, "/d", data, "/f"])?;
-            if !output.status.success() { return Err(format!("startup-set: could not restore legacy Run value {name}")); }
+            write_legacy_run_value(name, kind, data)?;
             if read_legacy_run_value(name)?.as_ref() != previous {
                 return Err(format!("startup-set: legacy Run value {name} rollback could not be verified"));
             }
         }
         None => {
-            let output = command("reg", &["delete", RUN_KEY, "/v", name, "/f"])?;
-            if !output.status.success() && read_legacy_run_value(name)?.is_some() {
-                return Err(format!("startup-set: could not restore absence of legacy Run value {name}"));
-            }
+            remove_run_value(name)?;
             if read_legacy_run_value(name)?.is_some() {
                 return Err(format!("startup-set: legacy Run value {name} still exists after rollback"));
             }
@@ -281,11 +307,9 @@ pub fn restore_legacy_registration(snapshot: &LegacyRegistrationSnapshot) -> Res
 
 fn set_run(exec: &Path, enabled: bool) -> Result<(), String> {
     if enabled {
-        let value = build_run_value(exec);
-        let output = command("reg", &["add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &value, "/f"])?;
-        if !output.status.success() { return Err(format!("startup-set: reg add failed: {}", decode_console(&output.stderr).trim())); }
-    } else if let Err(error) = delete_run_value() {
-        return Err(error);
+        write_run_value(RUN_VALUE, &build_run_value(exec))?;
+    } else {
+        delete_run_value()?;
     }
     cleanup_legacy();
     Ok(())
@@ -459,8 +483,6 @@ mod tests {
         let value = build_run_value(exec);
         assert_eq!(value, r#""C:\Program Files\Arc Power\Arc Power.exe""#);
         assert_eq!(quoted_path(&value).as_deref(), Some(r"C:\Program Files\Arc Power\Arc Power.exe"));
-        let query = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\n    ArcPower    REG_SZ    \"C:\\Arc Power.exe\"\n";
-        assert_eq!(parse_run_query(query).as_deref(), Some(r"C:\Arc Power.exe"));
     }
 
     #[test]
@@ -478,16 +500,32 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "live reg delete probe"]
+    #[ignore = "live registry Run-value probe"]
     fn live_absent_value_delete_is_treated_as_clean() {
-        // This is the command behind "startup-set: Run cleanup failed" on every
-        // profile activation: the Run value is normally absent for packaged
-        // builds, so `reg delete` exits 1.
-        let output = command("reg", &["delete", RUN_KEY, "/v", "ArcPower__Absent_Test", "/f"])
-            .expect("reg delete must run");
-        assert!(!output.status.success(), "the probe value must not exist");
-        println!("DELETE_EXIT {:?} STDERR {:?}", output.status.code(), decode_console(&output.stderr));
-        assert!(query_found_nothing(&output), "an absent value must count as clean");
+        // The path behind "startup-set: Run cleanup failed" on every profile
+        // activation: the Run value is normally absent for packaged builds.
+        // This is now a registry call, so no locale or code page is involved.
+        let name = "ArcPower__Absent_Test";
+        assert_eq!(run_value(name).expect("reading must succeed"), None);
+        remove_run_value(name).expect("removing an absent value is success");
+        assert_eq!(run_value(name).expect("reading must succeed"), None);
+    }
+
+    #[test]
+    #[ignore = "live registry Run-value round trip"]
+    fn live_run_value_round_trip_preserves_type_and_text() {
+        let name = "ArcPower__RoundTrip_Test";
+        let _ = remove_run_value(name);
+        write_run_value(name, "\"C:\\Arc Power.exe\"").expect("write");
+        assert_eq!(run_value(name).expect("read").as_deref(), Some("\"C:\\Arc Power.exe\""));
+        remove_run_value(name).expect("remove");
+        assert_eq!(run_value(name).expect("read"), None);
+
+        // The reset rollback must put REG_EXPAND_SZ back exactly as it was.
+        write_legacy_run_value(name, "REG_EXPAND_SZ", "%TEMP%\\Arc Power.exe").expect("write expand");
+        assert_eq!(read_legacy_run_value(name), Ok(Some(("REG_EXPAND_SZ".to_owned(), "%TEMP%\\Arc Power.exe".to_owned()))));
+        remove_run_value(name).expect("remove");
+        assert_eq!(read_legacy_run_value(name), Ok(None));
     }
 
     #[test]
