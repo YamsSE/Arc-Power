@@ -126,9 +126,9 @@ fn query_registration() -> Result<Option<String>, String> {
     let output = command("reg", &["query", RUN_KEY, "/v", RUN_VALUE])?;
     if !output.status.success() {
         let error = text(&output.stderr);
-        if output.status.code() == Some(1) && (error.to_ascii_lowercase().contains("unable to find") || error.to_ascii_lowercase().contains("cannot find") || error.trim().is_empty()) {
-            return Ok(None);
-        }
+        // `reg` localizes its error text ("Das System kann ... nicht finden"),
+        // so a missing value is recognized by its exit code alone.
+        if output.status.code() == Some(1) { return Ok(None); }
         return Err(format!("rtss-startup: registry query failed: {}", error.trim()));
     }
     Ok(parse_query(&text(&output.stdout)))
@@ -182,12 +182,10 @@ pub fn set(enabled: bool) -> Result<Value, String> {
         return Ok(after);
     }
     let output = command("reg", &["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])?;
-    if !output.status.success() {
-        let error = text(&output.stderr);
-        let lower = error.to_ascii_lowercase();
-        if !(lower.contains("unable to find") || lower.contains("cannot find") || error.trim().is_empty()) {
-            return Err(format!("rtss-startup: registry removal failed: {}", error.trim()));
-        }
+    if !output.status.success() && output.status.code() != Some(1) {
+        // Exit code 1 means the value was already absent, which is the goal;
+        // the message itself is localized.
+        return Err(format!("rtss-startup: registry removal failed: {}", text(&output.stderr).trim()));
     }
     let after = state()?;
     if after.get("valueExists").and_then(Value::as_bool) == Some(true) { return Err("rtss-startup: registration removal could not be verified".into()); }

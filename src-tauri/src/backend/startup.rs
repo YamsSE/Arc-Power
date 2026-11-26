@@ -73,17 +73,26 @@ fn logon_executable(kind: BuildKind) -> Result<PathBuf, String> {
     dunce::canonicalize(&current).map_err(|_| format!("Cannot resolve the Arc Power executable at {}", current.display()))
 }
 
+/// `reg` and `schtasks` localize their error text, so "the value/task does not
+/// exist" cannot be matched by English words. Both tools return exit code 1
+/// when the requested value or task is absent, which is the dependable signal
+/// on every display language.
+fn exit_code_is_missing(code: Option<i32>) -> bool { code == Some(1) }
+
+fn query_found_nothing(output: &Output) -> bool {
+    // Exit code 1 means "the requested value/task is not present"; the text it
+    // prints alongside is localized (German: "Das System kann die angegebene
+    // Datei nicht finden"), so it must not be part of the decision.
+    exit_code_is_missing(output.status.code())
+}
+
 fn read_run() -> Result<Registration, String> {
     let output = command("reg", &["query", RUN_KEY, "/v", RUN_VALUE])?;
     if !output.status.success() {
-        let error = decode_console(&output.stderr);
-        if output.status.code() == Some(1) && (error.to_ascii_lowercase().contains("unable to find") || error.to_ascii_lowercase().contains("cannot find")) {
+        if query_found_nothing(&output) {
             return Ok(Registration { value_exists: false, task_exists: false });
         }
-        if output.status.code() == Some(1) && error.trim().is_empty() {
-            return Ok(Registration { value_exists: false, task_exists: false });
-        }
-        return Err(format!("startup-get: reg query failed: {}", error.trim()));
+        return Err(format!("startup-get: reg query failed: {}", decode_console(&output.stderr).trim()));
     }
     let parsed = parse_run_query(&decode_console(&output.stdout));
     Ok(Registration { value_exists: parsed.is_some(), task_exists: false })
@@ -100,8 +109,7 @@ fn xml_text(xml: &str, tag: &str) -> Option<String> {
 fn read_task(exec: &Path) -> Result<Registration, String> {
     let output = command("schtasks", &["/query", "/tn", TASK_NAME, "/xml"])?;
     if !output.status.success() {
-        let error = decode_console(&output.stderr).to_ascii_lowercase();
-        if error.contains("cannot find") || error.contains("does not exist") || error.trim().is_empty() {
+        if query_found_nothing(&output) {
             return Ok(Registration { value_exists: false, task_exists: false });
         }
         return Err(format!("startup-get: task query failed: {}", decode_console(&output.stderr).trim()));
@@ -126,10 +134,9 @@ fn ignore_exit(output: Result<Output, String>) { let _ = output; }
 fn delete_run_value() -> Result<(), String> {
     let output = command("reg", &["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])?;
     if output.status.success() { return Ok(()); }
-    let error = decode_console(&output.stderr);
-    let lower = error.to_ascii_lowercase();
-    if lower.contains("unable to find") || lower.contains("cannot find") || error.trim().is_empty() { Ok(()) }
-    else { Err(format!("startup-set: Run cleanup failed: {}", error.trim())) }
+    // Deleting an absent value also exits 1; that is already the desired state.
+    if query_found_nothing(&output) { return Ok(()); }
+    Err(format!("startup-set: Run cleanup failed: {}", decode_console(&output.stderr).trim()))
 }
 
 fn cleanup_legacy() {
@@ -137,18 +144,12 @@ fn cleanup_legacy() {
     for value in LEGACY_RUN_VALUES { ignore_exit(command("reg", &["delete", RUN_KEY, "/v", value, "/f"])); }
 }
 
-fn missing_entry_error(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    lower.contains("cannot find the file specified") || lower.contains("unable to find")
-        || lower.contains("cannot find") || lower.contains("does not exist") || lower.contains("not found")
-}
-
 fn read_legacy_run_value(name: &'static str) -> Result<Option<(String, String)>, String> {
     let output = command("reg", &["query", RUN_KEY, "/v", name])?;
     if !output.status.success() {
+        if query_found_nothing(&output) { return Ok(None); }
         let error = decode_console(&output.stderr);
         let error = if error.trim().is_empty() { decode_console(&output.stdout) } else { error };
-        if output.status.code() == Some(1) && (missing_entry_error(&error) || error.trim().is_empty()) { return Ok(None); }
         return Err(format!("startup-set: could not snapshot legacy Run value {name}: {}", error.trim()));
     }
     let output = decode_console(&output.stdout);
@@ -168,9 +169,9 @@ fn read_legacy_run_value(name: &'static str) -> Result<Option<(String, String)>,
 fn read_legacy_task_xml(name: &'static str) -> Result<Option<Vec<u8>>, String> {
     let output = command("schtasks", &["/query", "/tn", name, "/xml"])?;
     if output.status.success() { return Ok(Some(output.stdout)); }
+    if query_found_nothing(&output) { return Ok(None); }
     let error = decode_console(&output.stderr);
     let error = if error.trim().is_empty() { decode_console(&output.stdout) } else { error };
-    if missing_entry_error(&error) || error.trim().is_empty() { return Ok(None); }
     Err(format!("startup-set: could not snapshot legacy task {name}: {}", error.trim()))
 }
 
@@ -354,13 +355,9 @@ pub fn restore_registration(kind: BuildKind, snapshot: RegistrationSnapshot) -> 
 pub fn boot_apply_task_exists() -> Result<bool, String> {
     let output = command("schtasks", &["/query", "/tn", BOOT_APPLY_TASK_NAME])?;
     if output.status.success() { return Ok(true); }
-    let error = decode_console(&output.stderr);
-    let lower = error.to_ascii_lowercase();
-    if lower.contains("cannot find the file specified") || lower.contains("does not exist") || lower.contains("not found") {
-        Ok(false)
-    } else {
-        Err(format!("boot-setup: could not verify {BOOT_APPLY_TASK_NAME}: {}", error.trim()))
-    }
+    // Exit code 1 is "no such task" regardless of the display language.
+    if query_found_nothing(&output) { return Ok(false); }
+    Err(format!("boot-setup: could not verify {BOOT_APPLY_TASK_NAME}: {}", decode_console(&output.stderr).trim()))
 }
 
 pub fn boot_apply_task_snapshot() -> Result<Option<Vec<u8>>, String> {
@@ -456,5 +453,30 @@ mod tests {
     fn read_only_run_query_is_bounded() {
         let registration = read_run().unwrap();
         let _ = registration.value_exists;
+    }
+
+    #[test]
+    fn missing_entries_are_detected_by_exit_code_not_localized_text() {
+        // `reg`/`schtasks` print a localized message; only the exit code is
+        // dependable ("FEHLER: Das System kann die angegebene Datei nicht finden.").
+        assert!(exit_code_is_missing(Some(1)));
+        assert!(!exit_code_is_missing(Some(0)));
+        assert!(!exit_code_is_missing(Some(2)));
+        assert!(!exit_code_is_missing(None));
+    }
+
+    #[test]
+    #[ignore = "live reg/schtasks query in this machine's display language"]
+    fn live_missing_registration_entries_are_absent() {
+        // These two names are never registered, and the command's message is
+        // localized; before the exit-code fix both returned Err on German
+        // Windows instead of "absent".
+        assert_eq!(read_legacy_run_value("ArcPower__Absent_Test"), Ok(None));
+        assert_eq!(read_legacy_task_xml("ArcPower__Absent_Test"), Ok(None));
+        // The real startup task may exist on this machine; querying it must
+        // never fail just because the executable moved.
+        let registration = read_task(Path::new(r"C:\nonexistent\Arc Power.exe"))
+            .expect("querying the startup task must not fail");
+        let _ = registration.task_exists;
     }
 }
