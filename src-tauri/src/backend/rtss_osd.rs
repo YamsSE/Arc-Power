@@ -481,6 +481,101 @@ fn is_gpu_memory_token(token: &str) -> bool {
         !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit() || byte == b'x')
     })
 }
+
+/// Vendor/legal/prefix CPU tokens the chip-name cut-down drops.
+const CPU_DROP_TOKENS: &[&str] = &["intel", "amd", "core", "r", "tm", "cpu"];
+/// Core-count / "processor" tokens dropped from the END only.
+const CPU_TAIL_DROP_TOKENS: &[&str] = &["eight", "quad", "dual", "six", "twelve", "core", "processor"];
+
+/// Split a raw device name into alphanumeric tokens.
+fn tokens_of(name: &str) -> Vec<&str> {
+    name.split(|c: char| !c.is_ascii_alphanumeric()).filter(|token| !token.is_empty()).collect()
+}
+
+/// A clock token like "3.00GHz" / "4300MHz" / "3600KHz".
+fn is_clock_token(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    let Some(unit) = lower.strip_suffix("ghz").or_else(|| lower.strip_suffix("mhz")).or_else(|| lower.strip_suffix("khz")) else {
+        return false;
+    };
+    if unit.is_empty() { return false; }
+    let mut dot = false;
+    for c in unit.chars() {
+        if c == '.' { if dot { return false; } dot = true; }
+        else if !c.is_ascii_digit() { return false; }
+    }
+    true
+}
+
+/// The CPU chip-name cut-down (port of the software HUD's `chipLabelCpu`):
+/// "Intel(R) Core(TM) i7-5960X CPU @ 3.00GHz" -> "i7 5960X",
+/// "AMD Ryzen 5 3600" -> "R5 3600",
+/// "AMD Ryzen Threadripper 1920X" -> "TR 1920X",
+/// "Intel(R) Xeon(R) CPU E5-1860V2 @ 3.40GHz" -> "Xeon 1860V2".
+fn chip_label_cpu(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() { return None; }
+    if let Some(label) = chip_label_ryzen(name) { return Some(label); }
+    if let Some(label) = chip_label_threadripper(name) { return Some(label); }
+    let cut = chip_label_xeon_e5(name).unwrap_or_else(|| name.to_owned());
+    let without_clocks = cut.split_whitespace().filter(|token| !is_clock_token(token))
+        .collect::<Vec<_>>().join(" ");
+    let mut kept: Vec<String> = Vec::new();
+    for token in tokens_of(&without_clocks) {
+        let lower = token.to_ascii_lowercase();
+        if CPU_DROP_TOKENS.contains(&lower.as_str()) { continue; }
+        kept.push(token.to_owned());
+    }
+    while kept.last().is_some_and(|token| CPU_TAIL_DROP_TOKENS.contains(&token.to_ascii_lowercase().as_str())) {
+        kept.pop();
+    }
+    if kept.is_empty() { None } else { Some(kept.join(" ")) }
+}
+
+fn chip_label_ryzen(name: &str) -> Option<String> {
+    let tokens: Vec<&str> = name.split_whitespace().collect();
+    for (index, token) in tokens.iter().enumerate() {
+        if !token.eq_ignore_ascii_case("ryzen") { continue; }
+        let (Some(tier), Some(model)) = (tokens.get(index + 1), tokens.get(index + 2)) else { return None; };
+        if matches!(*tier, "3" | "5" | "7" | "9") {
+            let model = model.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            if !model.is_empty() { return Some(format!("R{tier} {model}")); }
+        }
+        return None;
+    }
+    None
+}
+
+fn chip_label_threadripper(name: &str) -> Option<String> {
+    let tokens: Vec<&str> = name.split_whitespace().collect();
+    for (index, token) in tokens.iter().enumerate() {
+        if !token.eq_ignore_ascii_case("ryzen")
+            || !tokens.get(index + 1).is_some_and(|next| next.eq_ignore_ascii_case("threadripper")) { continue; }
+        let model = tokens_of(&tokens[index + 2..].join(" ")).join(" ");
+        return Some(if model.is_empty() { "TR".to_owned() } else { format!("TR {model}") });
+    }
+    None
+}
+
+fn chip_label_xeon_e5(name: &str) -> Option<String> {
+    // Match "Xeon" as a word: the registry name is "Intel(R) Xeon(R) CPU ...",
+    // so an exact whitespace token compare would miss it.
+    if !tokens_of(name).iter().any(|token| token.eq_ignore_ascii_case("xeon")) { return None; }
+    let mut replaced = false;
+    let mut out: Vec<String> = Vec::new();
+    for token in name.split_whitespace() {
+        if token.to_ascii_lowercase().strip_prefix("e5-").is_some() {
+            let model = token[3..].trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            if !model.is_empty() {
+                out.push(model.to_owned());
+                replaced = true;
+                continue;
+            }
+        }
+        out.push(token.to_owned());
+    }
+    replaced.then(|| out.join(" "))
+}
 fn position_tag(position: &str) -> &'static str {
     match position { "top-right" => "<P2>", "bottom-left" => "<P6>", "bottom-right" => "<P8>", _ => "<P0>" }
 }
@@ -511,10 +606,17 @@ struct Publisher {
     visible: bool,
     latest: BTreeMap<String, Value>,
     frame_history: Vec<f64>,
+    cpu_name: Option<String>,
 }
 
 impl Publisher {
-    fn new() -> Self { Self { mapping: None, settings: load_settings(), last_mtime: None, visible: false, latest: BTreeMap::new(), frame_history: Vec::new() } }
+    fn new() -> Self {
+        Self {
+            mapping: None, settings: load_settings(), last_mtime: None, visible: false,
+            latest: BTreeMap::new(), frame_history: Vec::new(),
+            cpu_name: super::native_sysinfo::cpu_name(),
+        }
+    }
     fn refresh(&mut self) {
         let mtime = settings_path().and_then(|path| std::fs::metadata(path).ok()).and_then(|metadata| metadata.modified().ok());
         if mtime == self.last_mtime { return; }
@@ -558,7 +660,7 @@ impl Publisher {
             if self.frame_history.len() > 512 { self.frame_history.drain(0..self.frame_history.len() - 512); }
         }
         let graph_supported = self.mapping.as_ref().is_some_and(|mapping| mapping.graph_supported());
-        let text = build_text(&self.settings, &self.latest, &stats, graph_supported);
+        let text = build_text(&self.settings, &self.latest, &stats, graph_supported, self.cpu_name.as_deref());
         if let Some(mapping) = self.mapping.as_mut() {
             if mapping.write_text(&text).is_none() {
                 // A stale/restarted RTSS mapping is reopened on the next tick.
@@ -614,7 +716,7 @@ impl Publisher {
     }
 }
 
-fn build_text(settings: &Settings, latest: &BTreeMap<String, Value>, stats: &FpsStats, graph_supported: bool) -> String {
+fn build_text(settings: &Settings, latest: &BTreeMap<String, Value>, stats: &FpsStats, graph_supported: bool, cpu_name: Option<&str>) -> String {
     let enabled = |id: &str| settings.stats.contains(id);
     let mut lines = Vec::new();
     let mut push = |line: String| if !line.is_empty() { lines.push(line); };
@@ -636,7 +738,12 @@ fn build_text(settings: &Settings, latest: &BTreeMap<String, Value>, stats: &Fps
     if enabled("cpu-clock") { cpu_fields.push(format!("{}GHz", number(latest.values().find_map(|sample| sample.get("cpuFreqMhz").and_then(Value::as_f64)).map(|value| value / 1000.0), 1, "-"))); }
     if enabled("cpu-temp") { cpu_fields.push(temperature(latest.values().find_map(|sample| sample.get("cpuTempC").and_then(Value::as_f64)), &settings.temperature_unit)); }
     if enabled("cpu-power") { cpu_fields.push(format!("{}W", number(latest.values().find_map(|sample| sample.get("cpuPowerW").and_then(Value::as_f64)), 1, "-"))); }
-    push(row("CPU", cpu_fields));
+    // The chip-name toggle replaces the stock "CPU" prefix with the cut-down
+    // model ("i7 5960X", "R5 3600"); a missing name keeps the stock prefix.
+    let cpu_label = if settings.chip_names {
+        cpu_name.and_then(chip_label_cpu).unwrap_or_else(|| "CPU".into())
+    } else { "CPU".to_owned() };
+    push(row(&cpu_label, cpu_fields));
     if enabled("memory-util") {
         let bytes = latest.values().find_map(|sample| sample.get("memoryUsedBytes").and_then(Value::as_f64));
         push(row("RAM", vec![number(bytes.map(|value| value / 1_000_000_000.0), 1, "-") + "GB"]));
@@ -764,6 +871,7 @@ mod tests {
             visible: false,
             latest: BTreeMap::new(),
             frame_history: Vec::new(),
+            cpu_name: None,
         };
         publisher.update_settings(Settings { enabled: true, ..Settings::default() });
         assert!(!publisher.visible, "enabling the master switch must not reveal the OSD");
@@ -785,9 +893,10 @@ mod tests {
         let mut latest = BTreeMap::new();
         latest.insert("gpu".into(), json!({"deviceName":"Intel Arc B580","gpuUtilPct":42.0,"tempC":61.0,"powerW":180.0}));
         let stats = FpsStats { fps: Some(60.0), avg: Some(59.0), frame_time: Some(16.67), api: Some("DX12".into()), ..FpsStats::default() };
-        let text = build_text(&settings, &latest, &stats, true);
+        let text = build_text(&settings, &latest, &stats, true, Some("Intel(R) Core(TM) i7-5960X CPU @ 3.00GHz"));
         assert!(text.starts_with("<P0>"));
         assert!(text.contains("<C0=FFFFFF><C0>FPS<C1=FFFFFF><C1> 60<C>"));
+        assert!(text.contains("i7 5960X"), "chip names replace the CPU prefix: {text}");
         assert!(text.contains("B580"));
         assert!(text.contains("VRAM"));
         assert!(!text.contains("B580 VRAM"), "the VRAM row must not repeat the chip name");
@@ -804,9 +913,10 @@ mod tests {
         let off = Settings { enabled: true, ..Settings::default() };
         let mut latest = BTreeMap::new();
         latest.insert("gpu".into(), json!({"deviceName":"Intel Arc B580 12GB GDDR6","vramTotalBytes":12.9e9,"gpuMemUsedBytes":3.2e9}));
-        let text = build_text(&off, &latest, &FpsStats::default(), false);
+        let text = build_text(&off, &latest, &FpsStats::default(), false, None);
         assert!(text.contains(">GPU<"), "chip names off must use the stock GPU label: {text}");
         assert!(text.contains(">VRAM<"), "the VRAM row is always plain: {text}");
+        assert!(text.contains(">CPU<"), "chip names off must use the stock CPU label: {text}");
         assert!(!text.contains("B580") && !text.contains("12GB"), "chip names off must not leak the model or memory: {text}");
     }
 
@@ -816,7 +926,7 @@ mod tests {
         let mut latest = BTreeMap::new();
         latest.insert("gpu-a".into(), json!({"deviceName":"Intel Arc B580"}));
         latest.insert("gpu-b".into(), json!({"deviceName":"Intel Arc B580"}));
-        let text = build_text(&settings, &latest, &FpsStats::default(), false);
+        let text = build_text(&settings, &latest, &FpsStats::default(), false, None);
         assert!(text.contains(">GPU1<") && text.contains(">GPU2<"), "{text}");
         assert!(text.contains(">VRAM1<") && text.contains(">VRAM2<"), "{text}");
     }
@@ -830,8 +940,18 @@ mod tests {
         };
         let latest = BTreeMap::new();
         let stats = FpsStats { fps: Some(60.0), frame_time: Some(16.67), ..FpsStats::default() };
-        assert!(build_text(&settings, &latest, &stats, true).contains("<OBJ=00000000>"));
-        assert!(!build_text(&settings, &latest, &stats, false).contains("<OBJ="));
+        assert!(build_text(&settings, &latest, &stats, true, None).contains("<OBJ=00000000>"));
+        assert!(!build_text(&settings, &latest, &stats, false, None).contains("<OBJ="));
+    }
+
+    #[test]
+    fn cpu_chip_label_matches_the_software_hud() {
+        assert_eq!(chip_label_cpu("Intel(R) Core(TM) i7-5960X CPU @ 3.00GHz").as_deref(), Some("i7 5960X"));
+        assert_eq!(chip_label_cpu("AMD Ryzen 5 3600 6-Core Processor").as_deref(), Some("R5 3600"));
+        assert_eq!(chip_label_cpu("AMD Ryzen Threadripper 1920X").as_deref(), Some("TR 1920X"));
+        assert_eq!(chip_label_cpu("Intel(R) Xeon(R) CPU E5-1860V2 @ 3.40GHz").as_deref(), Some("Xeon 1860V2"));
+        assert_eq!(chip_label_cpu("AMD Athlon(tm) 860K Quad Core").as_deref(), Some("Athlon 860K"));
+        assert_eq!(chip_label_cpu(""), None);
     }
 
     #[test]

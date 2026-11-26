@@ -201,6 +201,10 @@ pub fn normalize_accelerator(value: &str) -> Option<String> {
             _ => return None,
         }
     }
+    // A single function key is a complete hotkey; a letter or number needs a
+    // Ctrl/Alt/Shift chord.
+    let is_function_key = key.len() > 1;
+    if !control && !alt && !shift && !is_function_key { return None; }
     let mut output = String::new();
     if control { output.push_str("Control+"); }
     if alt { output.push_str("Alt+"); }
@@ -248,7 +252,9 @@ mod tests {
         assert_eq!(parse_accelerator("F1").unwrap().2, 0x70);
         assert_eq!(parse_accelerator("F24").unwrap().2, 0x87);
         assert_eq!(parse_accelerator("Control+A").unwrap().1, MOD_CONTROL);
-        assert_eq!(parse_accelerator("A").unwrap().1, 0);
+        // Bare letters now require a modifier; a bare function key stays valid.
+        assert!(parse_accelerator("A").is_none());
+        assert_eq!(parse_accelerator("F9").unwrap().1, 0);
     }
 
     #[test]

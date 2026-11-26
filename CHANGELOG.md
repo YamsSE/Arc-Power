@@ -66,9 +66,14 @@
   shared `.oc-mode-btn.active` rule instead of being overridden.
 - **RTSS overlay chip names.** The native OSD now respects the Chip Names
   toggle: the GPU row shows the model ("B580") only when the toggle is on, the
-  VRAM row is always plain "VRAM", and factory memory tokens ("12GB GDDR6")
-  are dropped from the label. Multi-GPU rows are numbered when chip names are
-  off.
+  CPU row shows the cut-down model ("i7 5960X", "R5 3600"), the VRAM row is
+  always plain "VRAM", and factory memory tokens ("12GB GDDR6") are dropped
+  from the label. Multi-GPU rows are numbered when chip names are off.
+- **Hotkey grammar.** Every hotkey field now accepts a single function key
+  (F1-F24) on its own. Letters and numbers still need Ctrl, Alt, or Shift, and
+  two-modifier chords (for example Ctrl+Alt+F1) are always accepted.
+- **Single instance.** A second Arc Power launch now exits instead of starting
+  a duplicate tray, overlays, hotkeys and recording engine.
 - **Arc Power Overlay starts when selected.** Switching the renderer to the Arc
   Power Overlay (or enabling the overlay, or saving a layout change) starts the
   software HUD again. A recent change had left it to the hotkey only, so the HUD

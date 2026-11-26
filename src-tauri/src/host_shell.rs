@@ -232,7 +232,9 @@ fn parse_accelerator(value: &str, action: &'static str) -> Option<Hotkey> {
             _ => return None,
         }
     }
-    if modifiers == 0 { return None; }
+    // A single function key is a complete hotkey; a letter or number needs a chord.
+    let is_function_key = key.len() > 1;
+    if modifiers == 0 && !is_function_key { return None; }
     names.sort_by_key(|name| match *name { "Control" => 0, "Alt" => 1, _ => 2 });
     names.dedup();
     let mut canonical: Vec<String> = names.into_iter().map(str::to_owned).collect();

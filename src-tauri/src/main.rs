@@ -4533,6 +4533,27 @@ fn install_process_failure_handler(window: &tauri::WebviewWindow) -> tauri::Resu
     })
 }
 
+/// Hold a per-session named mutex for the process lifetime so a second Arc
+/// Power launch exits instead of starting a duplicate tray, overlays, hotkeys
+/// and recording engine. Returns `None` when another instance already owns it.
+#[cfg(windows)]
+fn acquire_single_instance() -> Option<windows_sys::Win32::Foundation::HANDLE> {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    let name: Vec<u16> = "Local\\ArcPower-SingleInstance-v1\0".encode_utf16().collect();
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    let error = unsafe { GetLastError() };
+    if handle.is_null() { return None; }
+    if error == ERROR_ALREADY_EXISTS {
+        unsafe { CloseHandle(handle); }
+        return None;
+    }
+    Some(handle)
+}
+
+#[cfg(not(windows))]
+fn acquire_single_instance() -> Option<()> { None }
+
 fn main() {
     let launch_args: Vec<String> = std::env::args().skip(1).collect();
     match runtime::run_portable_update_if_requested(&launch_args) {
@@ -4564,6 +4585,15 @@ fn main() {
             Ok(code) => std::process::exit(code),
             Err(error) => { eprintln!("{error}"); std::process::exit(1); }
         }
+    }
+    // Only one Arc Power instance may own the tray, overlays, hotkeys and
+    // recording engine. Mock runs (smoke/UI tests) are exempt so parallel
+    // harnesses still work; a second real launch exits quietly.
+    let test_launch = launch_args.iter().any(|arg| arg == "--mock");
+    let _instance_guard = if test_launch { None } else { acquire_single_instance() };
+    if !test_launch && _instance_guard.is_none() {
+        eprintln!("Arc Power is already running.");
+        std::process::exit(0);
     }
     if let Err(error) = lifecycle::validate_launch_args(&launch_args)
         .and_then(|_| lifecycle::prepare_mock_environment(&launch_args))
