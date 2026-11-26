@@ -1,26 +1,25 @@
 <p align="center">
-  <img src="docs/branding/Arc-Power-Main-Logo-Navy.png?v=1.3.5" alt="Arc Power" width="540">
+  <img src="docs/branding/Arc-Power-Main-Logo-Navy.png?v=1.3.6" alt="Arc Power" width="540">
 </p>
 
 <p align="center">
   <a href="https://discord.gg/nXAjasHy6e"><img src="https://api.iconify.design/simple-icons/discord.svg?color=%235865F2" alt="Join the Arc Power Discord" title="Join the Arc Power Discord" width="22" height="22"></a>
 </p>
 
-# Arc Power Ver. 1.3.5
+# Arc Power Ver. 1.3.6
 
-Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.3.5 is the Rust/Tauri/WebView2 migration release: the native host, persistence, platform services and device inventory move to Rust while the existing tuning, monitoring, sharpening, ASR, recording and Driver Library features are retained.
+Arc Power is an open source Windows application for Intel Arc GPU tuning, monitoring, and control. Version 1.3.6 is a bug-fix release: monitoring recovers on machines where the sensor bridge's first read is slow, start-at-boot and Full Reset work on localized Windows, RTSS can start with Windows again, and the game scan no longer aborts on a single bad entry.
 
-## Version 1.3.5 highlights
+## Version 1.3.6 highlights
 
-- **Native Windows host:** the installed and portable editions run on Rust, Tauri 2, and WebView2 without Electron.
-- **Rust-owned state:** profiles, settings, overlay layouts, stability history, game/recording metadata, fan-resume, window state and OBS credentials are stored by the Rust host under `%APPDATA%\ArcPower`.
-- **Native platform services:** GPU device enumeration, file/folder dialogs, clipboard, recording folder/storage/process inventory and capture targets.
-- **Arc Sync and recording:** verified per-display Arc Sync settings restore at startup, and the clip editor shows export progress and errors.
-- **Retained features:** Arc Image Sharpening, Arc Super Resolution, Advanced Overlay, Driver Library, recording/Instant Replay and the existing GPU tuning surface.
-
+- **Monitoring no longer stays blank.** The LibreHardwareMonitor bridge's first sample (full sensor enumeration) can take longer than the steady-state poll timeout, which made the app kill and restart it every six seconds. The first request after a bridge start now gets a 30-second window, so CPU/GPU temperature, power, VRAM and fan values appear instead of dashes.
+- **Start-at-boot, profile delete and Full Reset on non-English Windows.** `reg` and `schtasks` localize their "not found" messages, and the startup code only matched English text. Missing entries are now detected by exit code, so the toggle, profile deletion and the reset snapshot work on German and other localized installs.
+- **Start RTSS with Windows can be enabled again.** The RTSS startup check had the same English-only matching; enabling and disabling both work now.
+- **Game scan survives a bad entry.** A trailing `.exe` was stripped with a byte slice that panics on names ending in a multi-byte character (for example "Grüße.exe"), and one malformed entry could blank the whole catalog. Each scan phase is isolated, and a failure now names the panic.
+- **Also included from 1.3.6:** the Intel oneVPL encoder option with the built-in Quick Sync fallback, installer/update fixes for a locked install folder, boot apply after moving the install, RTSS overlay chip names, single-instance and hotkey grammar, the Arc Power Overlay start fix, and the Highest power plan / Windows Update driver tweaks.
 ## Upgrading from 1.2.5
 
-Once version 1.3.5 is published on GitHub, the 1.2.5 updater can find it through the existing installer and portable asset names. The upgrade is designed to preserve user data in `%APPDATA%\ArcPower`.
+Once version 1.3.6 is published on GitHub, the 1.2.5 updater can find it through the existing installer and portable asset names. The upgrade is designed to preserve user data in `%APPDATA%\ArcPower`.
 
 ## What Arc Power does
 
@@ -70,7 +69,7 @@ Build the Tauri renderer and compile the Windows release host with your Rust and
 npm ci --prefix src-tauri/frontend-deps
 node scripts/build-tauri-frontend.mjs
 cargo build --manifest-path src-tauri/Cargo.toml --locked --release
-npm run dist -- src-tauri/target/release/arc-power-tauri.exe dist-tauri/1.3.5
+npm run dist -- src-tauri/target/release/arc-power-tauri.exe dist-tauri/1.3.6
 ```
 
 ## First steps
